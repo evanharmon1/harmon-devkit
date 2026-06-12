@@ -9,10 +9,10 @@ github_release_init: true
 github_remote_create: true
 license: mit
 obsidian_project_add: false
-project_description: My personal developer kit of code templates, boilerplates,
-    scripts, and AI assets.
-project_name: Harmon DevKit
-project_slug: harmon-devkit
+project_description: My boilerplates for various stacks such as Docker Compose, Ansible,
+    Terraform, shell scripts, etc.
+project_name: Harmon Boilerplates
+project_slug: harmon-boilerplates
 project_url: None
 run_task_bootstrap: false
 run_task_install: false
