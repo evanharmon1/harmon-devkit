@@ -1,7 +1,7 @@
-# Taskfile for Harmon Boilerplates
+# Taskfile for Harmon DevKit
 version: '3'
 tasks:
-  boostrap:
+  bootstrap:
     cmds:
       - /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
       - brew install python #TODO: Might need to use a non-homebrew method

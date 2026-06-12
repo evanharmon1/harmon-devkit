@@ -1,4 +1,4 @@
-# Checklist - Harmon Boilerplates
+# Checklist - Harmon DevKit
 - [ ] Raycast
   - Setup Raycast VS Code Workspace alias (use its cli?)
 - [ ] Framework/Application
@@ -11,7 +11,7 @@
   - Java
     - [Maven Archetype](https://maven.apache.org/guides/introduction/introduction-to-archetypes.html)
   - Shell
-    - `dev/templates/shellScriptTemplate`
+    - `templates/scriptTemplates/shellScriptTemplate.sh`
 - [ ] .gitignore
   - Configure gitignore with [gitignore.io - Create Useful .gitignore Files For Your Project](https://www.toptal.com/developers/gitignore)
 - [ ] Adapt doc files

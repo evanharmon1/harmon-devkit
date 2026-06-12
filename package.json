@@ -1,7 +1,7 @@
 {
-  "name": "harmon-boilerplates",
+  "name": "harmon-devkit",
   "version": "0.0.1",
-  "description": "My boilerplates for various stacks such as Docker Compose, Ansible, Terraform, shell scripts, etc.",
+  "description": "My personal developer kit: code templates and boilerplates for various stacks (Docker Compose, Ansible, shell scripts, serverless functions, etc.), standalone scripts, and AI assets.",
   "scripts": {
     "start": "TODO: define npm command",
     "dev": "TODO: define npm command",
@@ -26,5 +26,5 @@
     "dotenv": "^16.0.0"
   },
   "author": "Evan Harmon",
-  "license": "See LICENSE"
+  "license": "MIT"
 }
