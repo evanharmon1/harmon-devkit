@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A collection of reusable boilerplates and templates for Docker Compose, Ansible, Terraform, shell scripts, serverless functions, and more. This is not a monorepo — it's a flat collection of independent templates organized by category under `boilerplates/`.
+Harmon DevKit — a personal developer kit of reusable templates and boilerplates (Docker Compose, Ansible, shell scripts, serverless functions, and more), standalone scripts, and AI assets. This is not a monorepo — it's a flat collection of independent templates organized by category under `templates/`, with scripts under `scripts/` and AI assets under `ai/`.
 
 ## Commands
 
@@ -53,6 +53,11 @@ Pre-commit is configured with `no-commit-to-branch` — direct commits to `main`
 - **PRs**: pre-commit hooks, ESLint, Prettier, security scans (Snyk + Whispers)
 - **Merge to main**: Auto-bumps patch version via git tag and creates a GitHub release with generated notes
 
-## Boilerplate Categories
+## Repository Layout
 
-Templates live under `boilerplates/` organized as: `ansible.md`, `appleScripts/`, `automationTemplates/` (n8n, Kestra, Trigger.dev), `docker/`, `scriptTemplates/` (Go, Python, Shell), `serverlessFunctionTemplates/` (AWS Lambda, GCP, Netlify), `webTemplates/`.
+- `templates/` — copy-paste boilerplates organized by category: `ansible.md`, `docker/` (genericStack, n8n-compose), `scriptTemplates/` (Go, Python, Shell), `serverlessFunctionTemplates/` (AWS Lambda, GCP, Netlify), `webTemplates/`. Each category directory has a README; the root README has a full template index.
+- `scripts/` — standalone scripts and utilities: `appleScripts/` (AppleScript/Automator apps with accompanying notes), `cmd/` (command snippets).
+- `ai/` — AI assets (skills, prompts, agents, rules, evals, etc.); mostly placeholder directories at this stage.
+- `snippets/` — small reusable code snippets (placeholder).
+- `docs/` — project docs, e.g. the new-project checklist.
+- `test/` — tool configuration used by scans (e.g. `whisperConfig.yml` for Whispers); not actual tests.

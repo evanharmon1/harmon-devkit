@@ -1,4 +1,4 @@
-# Contributing to Harmon Boilerplates
+# Contributing to Harmon DevKit
 First of all, thank you for taking the time to contribute! 🎉
 
 The following is a set of guidelines to ensure your contribution is as smooth as possible. We welcome all types of contributions, including issues, documentation updates, bug fixes, feature requests, and more!
