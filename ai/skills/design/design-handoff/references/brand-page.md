@@ -145,10 +145,10 @@ far to take it"). Generate only the selected groups, build every piece from the 
 on-brand, and confirm the specifics (which platforms, sizes, formats) before producing. The four
 selectable buckets:
 
-- **Social & web** — social profile art (avatar, cover/banner) and post/story templates sized per
-  platform (LinkedIn, Instagram, X, Facebook, Bluesky, TikTok, YouTube thumbnails); OG/share cards
-  (static or dynamically generated); display/banner ads in standard IAB sizes. Export at the correct
-  per-platform dimensions.
+- **Social & web** — social profile art (avatar, cover/banner), post/story templates sized per platform
+  (LinkedIn, Instagram, X, Facebook, Bluesky, TikTok, YouTube thumbnails), and podcast cover art;
+  OG/share cards (static or dynamically generated); display/banner ads in standard IAB sizes. Export at
+  the correct per-platform dimensions.
 - **Email** — transactional and marketing templates, a newsletter layout, and an email signature; built
   with **React Email**, shipped as HTML/CSS bundles, and tested against major clients (Gmail, Outlook,
   Apple Mail).
@@ -166,7 +166,7 @@ Pick **Other** and name it for the long tail:
   wayfinding signage.
 - **Product & app-store** — app-store screenshots and listing graphics, in-app illustration and
   empty-state art, onboarding graphics.
-- **Audio & bespoke** — podcast cover art, audio-brand stings, or anything one-off.
+- **Audio & bespoke** — audio-brand stings, sonic logos, or anything one-off.
 
 These groups map onto the design suite's artifact taxonomy in `ai/skills/README.md` (Tokens /
 Components / Pages & Templates / Assets / Collateral), so `/brand` stays aligned with the broader
