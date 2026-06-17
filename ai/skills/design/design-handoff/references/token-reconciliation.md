@@ -5,11 +5,11 @@ of brand/dark-mode overrides) carrying the design's primitives — palette, font
 scale. What you do with it depends on the **mode**, but one rule is constant: **the bundle's tokens are
 a proposal; `globals.css` is truth.**
 
-- **`establish`** (no system yet) — _write canonical_ tokens from the bundle. That's the bulk of this
+- **`establish-design-system`** (no system yet) — _write canonical_ tokens from the bundle. That's the bulk of this
   doc: the conflicts, the skeleton, the by-role merge recipe, and authoring `.dark`.
 - **`implement-feature`** (a feature against an existing system) — _consume-first_: diff and map to the
   existing tokens, adding nothing by default. **Start at "Consume-first" below.**
-- **`evolve`** (changing the system) — diff and version the change; see `evolving-the-system.md`.
+- **`evolve-design-system`** (changing the system) — diff and version the change; see `evolving-the-system.md`.
 
 Either way it is **not** a drop-in — pasting a token file into `globals.css` breaks the system.
 
@@ -32,14 +32,14 @@ drifted — so you **consume** them, you don't rewrite:
      difference is incidental or the value appears once.
    - **Deliberately extend** (when the need is real and reusable): add the token _additively_ (the
      shadcn pattern — define `--warning`/`--warning-foreground` in `:root` and `.dark`, expose via
-     `@theme inline`), update `/brand` and `DESIGN.md`, and record a DDR. That's an `evolve`-style
+     `@theme inline`), update `/brand` and `DESIGN.md`, and record a DDR. That's an `evolve-design-system`-style
      change folded into the feature, so it carries a SemVer bump (`evolving-the-system.md`).
    - **Heuristic:** extend only if the value (a) is a _semantic role_, not just a shade, (b) will
      plausibly recur, and (c) you'd document it in `/brand`. Otherwise force-fit.
 4. **Never overwrite `globals.css` wholesale** from a feature bundle — it may re-emit the whole token
    block; you apply only deliberate, approved additions.
 
-The rest of this doc (the conflicts, skeleton, and merge recipe) is the `establish` path — you'll also
+The rest of this doc (the conflicts, skeleton, and merge recipe) is the `establish-design-system` path — you'll also
 dip into it when a feature legitimately extends the system.
 
 ## Why you can't paste it in

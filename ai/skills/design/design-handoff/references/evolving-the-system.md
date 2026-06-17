@@ -1,6 +1,6 @@
 # Evolving an established design system
 
-Read this during **Phase 2** in **`evolve`** mode — when the bundle deliberately changes the design
+Read this during **Phase 2** in **`evolve-design-system`** mode — when the bundle deliberately changes the design
 system itself (not a single feature). The doctrine is the same as everywhere: the repo is truth, the
 bundle is a proposal. Evolve means reconciling a proposed token change into canonical `globals.css`
 **carefully and versioned** — never a blind overwrite, because much of a bundle's token block is a
@@ -59,7 +59,7 @@ change can quietly break a contrast pair or a component that depended on the old
 ## Why this care
 
 A system's tokens are referenced across the whole app, so changing them ripples. Renaming a token after
-hundreds of components reference it means touching every reference — which is why `establish` builds
-semantic naming in from the start and `evolve` aliases rather than renames in place. This discipline is
+hundreds of components reference it means touching every reference — which is why `establish-design-system` builds
+semantic naming in from the start and `evolve-design-system` aliases rather than renames in place. This discipline is
 what lets the system change without breaking everything downstream — the difference between a design
 system and a pile of values.

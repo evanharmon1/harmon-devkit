@@ -25,8 +25,8 @@ this repo's stack, not paste it in.
 
 **Three modes — detect which one you're in (Phase 0) and route accordingly:**
 
-- **`establish`** — the repo has no design system yet; bootstrap one from the bundle.
-- **`evolve`** — the repo has a design system and the bundle deliberately changes it (new/changed/removed
+- **`establish-design-system`** — the repo has no design system yet; bootstrap one from the bundle.
+- **`evolve-design-system`** — the repo has a design system and the bundle deliberately changes it (new/changed/removed
   tokens or brand); reconcile and **version** the change.
 - **`implement-feature`** — the repo has a design system and the bundle is a bounded feature; build it
   **consume-first**, honoring the design without clobbering the established system.
@@ -55,13 +55,13 @@ Reconciliation
 - [ ] Bundle ingested **defensively** (parse what's there; don't assume exact filenames): intent/README
       → chat transcript → markup → token file → assets, read for intent and **ported**, never pasted
       into `src/`
-- [ ] **Mode detected** — `establish` / `evolve` / `implement-feature` (asked if ambiguous); framework +
+- [ ] **Mode detected** — `establish-design-system` / `evolve-design-system` / `implement-feature` (asked if ambiguous); framework +
       router detected; up-front questions asked
 - [ ] Bundle tokens treated as a **proposal** — diffed against canonical `globals.css`, never
       overwritten wholesale; new tokens resolved (force-fit to existing, or deliberate extension)
 - [ ] Tokens in `globals.css` are by **role** (not export name) — Tailwind v4, OKLCH, three-layer;
       `.dark` authored (brand hue held, neutrals inverted); `--tw-prose-*` mapped if prose is used
-- [ ] `DESIGN.md` reconciled (not clobbered); a system change (`establish`/`evolve`, or a feature
+- [ ] `DESIGN.md` reconciled (not clobbered); a system change (`establish-design-system`/`evolve-design-system`, or a feature
       extension) carries a **DDR + SemVer bump**
 
 Implementation
@@ -125,8 +125,8 @@ All the up-front orientation happens here, before any building:
    and adapt if a piece is named or shaped differently. The prototype code is prototype-grade — read it
    for structure and intent, then **port** it; don't paste markup into `src/`. Locate the bundle (often
    `docs/design/handoff-*/`); if you can't find it, ask where the export landed. (`ingesting-the-bundle.md`)
-2. **Detect mode, framework & router.** **Mode** — `establish` (no design system: no real `:root` tokens
-   in `globals.css` and no `/brand` route), `evolve` (a system exists and the bundle is
+2. **Detect mode, framework & router.** **Mode** — `establish-design-system` (no design system: no real `:root` tokens
+   in `globals.css` and no `/brand` route), `evolve-design-system` (a system exists and the bundle is
    token/brand-dominant, or intent says "update the design system"), or `implement-feature` (a system
    exists and the bundle is a page/feature, its tokens mostly a re-emission of the existing set). Judge
    from the bundle's content (tokens vs. screens), the chat intent, and the repo state; **if it's
@@ -135,7 +135,7 @@ All the up-front orientation happens here, before any building:
    and `src/components/ui`; React Router/plain → a normal `/brand` route; Astro → `src/pages/brand.astro`
    with React **islands** for interactive specimens; any other framework maps the same three roles
    (global stylesheet import, component dir, route entry) — never block on an unrecognized router.
-   `establish` runs Phase 1 next; `evolve`/`implement-feature` skip to Phase 2.
+   `establish-design-system` runs Phase 1 next; `evolve-design-system`/`implement-feature` skip to Phase 2.
 3. **Decide up front — one `AskUserQuestion` batch.** Now that you've read the intent and know the
    stack, ask **everything you'll need at once** (up to 4 questions) so Phases 1–5 run uninterrupted:
    the **`/brand` scope** (core guide → brand/press kit → collateral groups; `brand-page.md`), plus any
@@ -143,7 +143,7 @@ All the up-front orientation happens here, before any building:
    dark mode if unclear). Only ask what you can't determine yourself. The **one** thing that can't be
    front-loaded is the Phase 6 **sign-off** — it approves the built result.
 
-### Phase 1 — `establish`: greenfield bootstrap (only if no design system exists)
+### Phase 1 — `establish-design-system`: greenfield bootstrap (only if no design system exists)
 
 If detection found no design system, stand one up before reconciling: install and configure Tailwind v4
 and shadcn for the detected framework, let `shadcn init` write the default three-layer `globals.css`,
@@ -156,16 +156,16 @@ working frontend app already exists. See `greenfield-bootstrap.md`. (An existing
 ### Phase 2 — Reconcile tokens — GATE: static contrast
 
 The most error-prone step, and where the modes diverge — **the bundle's tokens are a proposal,
-`globals.css` is truth.** Read `token-reconciliation.md` (and `evolving-the-system.md` for `evolve`):
+`globals.css` is truth.** Read `token-reconciliation.md` (and `evolving-the-system.md` for `evolve-design-system`):
 
-- **`establish`** — write canonical tokens from the bundle: map by **role** into the shadcn three-layer
+- **`establish-design-system`** — write canonical tokens from the bundle: map by **role** into the shadcn three-layer
   OKLCH `globals.css`, author `.dark` by hand (hold brand hue, invert neutrals), map `--tw-prose-*` if
   prose is used.
 - **`implement-feature` (consume-first)** — **diff** against canonical and map each value to the
   **existing** token (inline hex/oklch → `bg-primary`, `text-muted-foreground`, …); add **nothing** by
   default. A value with no close match is a **decision point**: force-fit to the nearest token, or
   extend the system additively with a DDR — never inline.
-- **`evolve`** — a three-bucket diff (added/changed/removed), classified with **SemVer**, breaking
+- **`evolve-design-system`** — a three-bucket diff (added/changed/removed), classified with **SemVer**, breaking
   changes handled by **aliasing + deprecating** (not deleting), recorded as a **DDR + version bump**.
 
 Reconcile `DESIGN.md` (don't clobber it). Then run `task lint:design` (`scripts/check-contrast.mjs`) and
@@ -216,7 +216,7 @@ the user explicitly approves.** The bundle stays fully in place through this ste
 
 Delete `docs/design/handoff-<feature>/` (or extract a thin screenshot + intent note first if states
 remain), update `docs/design/` and `/brand`, and record a **DDR (with a SemVer bump)** in `/decisions/`
-for any design-system change — `establish` (v1.0.0), `evolve` (patch/minor/major), or a feature token
+for any design-system change — `establish-design-system` (v1.0.0), `evolve-design-system` (patch/minor/major), or a feature token
 extension. Commit with Conventional Commits on a **feature branch** (direct
 commits to `main` are blocked) and open a **PR** for human review — never merge to `main` directly. See
 `verification-and-signoff.md`.
@@ -233,7 +233,7 @@ commits to `main` are blocked) and open a **PR** for human review — never merg
   bundle — diff against canonical and apply deliberate, approved changes only.
 - **New tokens are a decision point.** Map to an existing token, or extend the system deliberately
   (additive, with a DDR) — never invent ad-hoc values inline.
-- **Record system changes as a DDR with a SemVer bump** (`establish` = v1.0.0; `evolve` =
+- **Record system changes as a DDR with a SemVer bump** (`establish-design-system` = v1.0.0; `evolve-design-system` =
   patch/minor/major; a feature extension = minor).
 - **`/brand` is a maintained route, not a doc.** Keep it synced with the tokens; never let it drift.
 - **Get sign-off before deleting anything.** Approval is the user's decision, never inferred from a
@@ -245,12 +245,12 @@ commits to `main` are blocked) and open a **PR** for human review — never merg
 
 - **`ingesting-the-bundle.md`** — Phase 0: defensive, format-agnostic ingest; the common Claude Design
   anatomy; and the prototype→production port.
-- **`token-reconciliation.md`** — Phase 2: the proposal-vs-canonical doctrine — `establish` writes
+- **`token-reconciliation.md`** — Phase 2: the proposal-vs-canonical doctrine — `establish-design-system` writes
   canonical tokens by role; `implement-feature` diffs and maps to existing (the new-token decision
   point). shadcn three-layer OKLCH, `.dark`, and the `--tw-prose-*` mapping.
-- **`evolving-the-system.md`** — Phase 2 (`evolve`): the token diff (added/changed/removed), SemVer
+- **`evolving-the-system.md`** — Phase 2 (`evolve-design-system`): the token diff (added/changed/removed), SemVer
   classification, aliasing + deprecation, and the DDR/version record.
-- **`greenfield-bootstrap.md`** — Phase 1 (`establish`): stand up Tailwind v4 + shadcn + `globals.css` +
+- **`greenfield-bootstrap.md`** — Phase 1 (`establish-design-system`): stand up Tailwind v4 + shadcn + `globals.css` +
   `/brand` + Taskfile, per framework.
 - **`components-and-states.md`** — Phase 3: port the JSX, shadcn-first, Lucide, the full UI-state
   matrix.
