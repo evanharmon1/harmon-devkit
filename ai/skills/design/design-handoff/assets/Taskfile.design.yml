@@ -39,6 +39,13 @@ tasks:
       - cmd: echo "Extracted to {{.DEST}}/ — open README.md first (the 'CODING AGENTS READ THIS FIRST' file), then chats/, then the HTML."
         silent: true
 
+  verify:browsers:
+    desc: Cross-browser/viewport screenshot sweep (Playwright — Chromium/Firefox/WebKit × devices)
+    # Requires @playwright/test and `npx playwright install`; the skill provisions both if missing.
+    # Needs the dev server running (or a Playwright webServer config). Captures the Phase 5 matrix.
+    cmds:
+      - npx playwright test {{.CLI_ARGS}}
+
   # Aggregator for repos that DON'T already define `verify`. If the repo HAS a `verify`/`check`
   # task, delete this and instead add `lint:design` to that task's `deps:` so the design gate
   # runs as part of the normal verification pass.

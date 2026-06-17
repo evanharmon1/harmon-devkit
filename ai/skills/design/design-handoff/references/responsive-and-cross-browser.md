@@ -41,8 +41,18 @@ Pass on all three at your breakpoints and you've covered the matrix.
 
 Playwright drives **chromium, firefox, and webkit** from one config, emulates devices/viewports, and
 produces repeatable screenshots — and it can read computed styles, so it doubles for the rendered
-contrast check in `accessibility-verification.md`. Most repos here already have it (`@playwright/test`
-plus the Playwright CLI). Install the browser binaries once with `npx playwright install`.
+contrast check in `accessibility-verification.md`.
+
+**Set it up if the repo doesn't have it.** Check for `@playwright/test`; if it's missing (always the
+case in a greenfield repo), provision it — the same way this skill provisions its other gates:
+
+```bash
+pnpm add -D @playwright/test
+npx playwright install            # download the chromium/firefox/webkit binaries (once)
+```
+
+Then write `playwright.config.ts` with the projects below and add the `verify:browsers` task from
+`assets/Taskfile.design.yml`, so the cross-engine sweep runs like every other gate.
 
 ```ts
 // playwright.config.ts — the cross-engine × device matrix
@@ -82,6 +92,11 @@ a cloud lab (BrowserStack, LambdaTest, Sauce Labs).
 
 Use whatever the repo standardizes on for interactive poking, but use Playwright (or a cloud lab) for
 the actual cross-engine verification.
+
+If Playwright genuinely can't run here and only **agent-browser** is available, you can still do the
+Chromium responsive pass with it — but the **cross-engine** half of gate ③ is then unmet. Provision
+Playwright (or use a cloud lab); if neither is possible, **flag the gap to the user** rather than
+reporting the cross-browser gate as PASS.
 
 ## The Phase 5 matrix
 

@@ -166,7 +166,8 @@ become the brand. If any license is unclear, **stop and flag it** rather than gu
 Run the gates (`task lint:design`, `check`, `verify` — create any that's missing; never `--no-verify`).
 Build, run the app, and screenshot every view in **both light and dark**, for every state, **and across
 key breakpoints (phone/tablet/desktop) and engines (Chromium/Firefox/WebKit incl. mobile Safari)** —
-Playwright drives all three from one config (`responsive-and-cross-browser.md`). Then
+Playwright drives all three from one config; set it up if the repo lacks it (agent-browser is
+Chromium-only and doesn't substitute) — see `responsive-and-cross-browser.md`. Then
 measure **rendered** contrast on the running page (static tokens passing isn't enough — a runtime layer
 like `.prose` can override them): computed colors, both themes, every text role incl. long-form prose,
 reported as **numbers**. Fix and re-measure failures before showing the user. See

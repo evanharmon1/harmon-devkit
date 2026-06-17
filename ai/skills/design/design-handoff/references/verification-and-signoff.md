@@ -14,6 +14,9 @@ discipline.
      scan.
    - `task check` — typecheck + lint + format (fast static verification).
    - `task verify` — the fuller pass (build, etc.).
+   - `task verify:browsers` — the Playwright cross-engine/viewport screenshot sweep. Set Playwright up
+     if the repo lacks it (`responsive-and-cross-browser.md`); agent-browser is Chromium-only and does
+     **not** substitute for it.
 
    **Never use `--no-verify`** or otherwise skip git hooks — the hooks and CI are the authoritative
    gates, and bypassing them defeats the point. If a needed task doesn't exist in the repo, **add it**
