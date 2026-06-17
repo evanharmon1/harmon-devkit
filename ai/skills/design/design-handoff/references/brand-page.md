@@ -135,8 +135,58 @@ This route is also a machine source of truth, so give it a stable, queryable str
 
 ## Tier 2 — downloadable brand / press kit (opt-in)
 
-- Downloadable logos, wordmarks, monograms, and favicons (SVG + PNG) with usage do's and don'ts.
-- A press/brand-kit bundle (zip) of the above for external use.
+The brand/press kit is the **external-facing** counterpart to the style guide: the assets, metadata,
+and copy a partner, journalist, vendor, or downstream system needs to represent the brand correctly.
+Build it as both a human page **and** a machine-consumable endpoint, generated from the same tokens and
+source as `globals.css`/`DESIGN.md` so it never drifts.
+
+### Contents
+
+- **Logo suite** — primary lockup, monogram/mark, and wordmark; horizontal and stacked variants; in
+  full-color, single-color (black, white), and reversed (for dark backgrounds). Each as **SVG**
+  (primary) and transparent **PNG** at several resolutions; add PDF/EPS when print vendors need them.
+  Include the clear-space rule, minimum size, and a misuse row.
+- **Favicon & app-icon set** — `favicon.ico`, `favicon.svg`, `apple-touch-icon.png` (180), PWA icons
+  (192/512 plus a maskable), and `site.webmanifest` (the set generated in `assets-fonts-favicons.md`).
+- **Color** — the palette as swatches with **hex, oklch, RGB, and CMYK** (add Pantone/spot for print),
+  plus a downloadable Adobe swatch file (`.ase`) and a JSON block.
+- **Typography** — the brand font files (or links and license), the fallback stack, and a one-page
+  type spec (families, roles, scale, weights).
+- **Brand guidelines** — a downloadable **PDF brand book** (logo usage, color, type, spacing, voice,
+  do's and don'ts): the portable form of Tier 1.
+- **Boilerplate copy** — company/product descriptions in short (~25 words), medium (~50), and long
+  (~100) forms; the tagline; founder/team bios; key facts (founded, location, category); and a
+  press/contact email.
+- **Imagery** — approved hero/product shots, team/founder photos, and any brand illustration, at both
+  web and print resolution, with usage and credit notes.
+- **Links & license** — canonical site, social handles, press contact, and a short usage statement
+  (what third parties may and may not do — e.g. don't alter or recolor the logo).
+
+### Packaging & download
+
+- A single **`brand-kit.zip`** at a stable URL, organized into `logo/`, `favicon/`, `color/`, `type/`,
+  `guidelines/`, `images/`, and `copy/`, with a `README` manifest at the root.
+- A human **press-kit page** (e.g. `/brand/press-kit`, or a section of `/brand`) that previews
+  everything and links each asset plus the full zip — with the same stable anchors and `data-*` hooks
+  as Tier 1.
+
+### As an automation endpoint
+
+Expose the kit so other systems and agents can consume it programmatically, not just humans:
+
+- **`/brand/kit.json`** (or `/press-kit.json`) — a machine-readable **manifest** carrying a `version`
+  and `updatedAt`, every asset with its `name`, `description`, and per-format / per-resolution URLs, the
+  full color set (hex/oklch/rgb/cmyk/pantone), font names and license URLs, the boilerplate copy
+  variants, social links, and the press contact. Generate it from the same source as the tokens so it
+  can't drift.
+- **Stable, versioned asset URLs** — each logo/icon/image at a durable path (e.g. `/brand/assets/...`),
+  and `brand-kit.zip` at a fixed URL automations can fetch.
+- **CORS** — if the JSON or zip will be fetched cross-origin (partner sites, agents), enable permissive
+  CORS on those endpoints.
+- Keep the manifest the single thing other tools read, and render the page from it — so page and
+  endpoint can never disagree. This extends Tier 1's automation structure outward: Tier 1's
+  `#brand-tokens` JSON is the _internal_ token truth; this manifest is the _external_ asset/metadata
+  truth.
 
 ## Tier 3 — collateral (opt-in, chosen by group)
 
