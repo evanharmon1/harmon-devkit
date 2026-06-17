@@ -47,12 +47,14 @@ pnpm dlx shadcn@latest init            # choose a base color (Neutral/Stone/Zinc
 ```
 
 - **Vite plugin:** add Tailwind to `vite.config.ts`:
+
   ```ts
   import tailwindcss from "@tailwindcss/vite";
   export default defineConfig({
     plugins: [tailwindcss() /*, …router plugin, react() */],
   });
   ```
+
 - **Path alias:** ensure `@/*→ ./src/*` in `tsconfig.json` and `resolve.alias` in `vite.config.ts`
   (shadcn init prompts for this; components import as `@/components/ui/...`).
 - **Global stylesheet:** `src/styles/globals.css` (starts with `@import "tailwindcss";`), imported
