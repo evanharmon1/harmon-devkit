@@ -26,13 +26,23 @@ rather than duplicating.
 
 ## Decide how far to take it (asked up front)
 
-`/brand` can range from a single-page style guide to a full brand/press kit with downloadable
-collateral. The right scope depends on the handoff, so it's settled **up front in the intake batch**
-(see SKILL.md, "Gather decisions up front") rather than mid-build — by the time you reach Phase 3 you
-already have the answer. Offer the tiers below, defaulting to the core style guide and adding
-collateral the user opts into. A `.pptx` deck and email templates are wasted effort for a small feature
-handoff and exactly right for a brand launch — let the user decide. If the scope somehow wasn't
-captured during intake, ask before building `/brand` rather than assuming.
+`/brand` always includes the **core style guide** (Tier 1). The two opt-in layers — the **brand/press
+kit** (Tier 2) and **marketing collateral** (Tier 3) — are settled **up front in the intake batch** (see
+SKILL.md, "Gather decisions up front") rather than mid-build, so by Phase 3 you already have the answer.
+Ask with `AskUserQuestion`:
+
+1. **Scope (multiSelect):** "Beyond the core style guide, what should `/brand` deliver?" — options
+   **Brand/press kit** and **Marketing collateral**. Selecting neither means core-only; choosing both is
+   fine.
+2. **Collateral groups (only if collateral was chosen, multiSelect):** "Which collateral groups?" — offer
+   the four buckets from Tier 3 (Social & web, Email, Print, Presentations & documents). A question caps
+   at four options, so the buckets fill the slots and the auto **Other** option (free text) captures the
+   long tail (motion/video, merch, app-store, audio). For each chosen group, confirm the specifics —
+   which platforms, sizes, and formats — before generating.
+
+Default to core-only and add only what the user opts into: a `.pptx` deck and email templates are wasted
+effort for a small feature handoff and exactly right for a brand launch. If scope somehow wasn't captured
+during intake, ask before building `/brand` rather than assuming.
 
 ## Tier 1 — the core living style guide (always)
 
@@ -128,18 +138,37 @@ This route is also a machine source of truth, so give it a stable, queryable str
 - Downloadable logos, wordmarks, monograms, and favicons (SVG + PNG) with usage do's and don'ts.
 - A press/brand-kit bundle (zip) of the above for external use.
 
-## Tier 3 — collateral (opt-in, "when it makes sense")
+## Tier 3 — collateral (opt-in, chosen by group)
 
-Generate only what the user asks for:
+Collateral spans dozens of artifact types, so the user picks **groups** during intake (see "Decide how
+far to take it"). Generate only the selected groups, build every piece from the same tokens so it stays
+on-brand, and confirm the specifics (which platforms, sizes, formats) before producing. The four
+selectable buckets:
 
-- **Social media** — example posts/templates for LinkedIn, Instagram, Facebook, Bluesky, etc.
-- **Print** — flyers, business cards, and the like, downloadable as PDFs.
-- **Email** — templates and snippets, downloadable as HTML/CSS bundles, preferably built with **React
-  Email**.
-- **Slides** — an example deck template in `.pptx` that is genuinely **editable** (real text and
-  shapes), not a flat, image-based deck.
+- **Social & web** — social profile art (avatar, cover/banner) and post/story templates sized per
+  platform (LinkedIn, Instagram, X, Facebook, Bluesky, TikTok, YouTube thumbnails); OG/share cards
+  (static or dynamically generated); display/banner ads in standard IAB sizes. Export at the correct
+  per-platform dimensions.
+- **Email** — transactional and marketing templates, a newsletter layout, and an email signature; built
+  with **React Email**, shipped as HTML/CSS bundles, and tested against major clients (Gmail, Outlook,
+  Apple Mail).
+- **Print** — business cards, letterhead, flyers, posters, brochures, stickers, and signage as
+  **print-ready PDFs** (CMYK, 300dpi, with bleed and crop marks).
+- **Presentations & documents** — an **editable** `.pptx` (and/or Google Slides) deck with real text and
+  shapes (never a flat, image-based deck), a pitch deck, and a one-pager/sales sheet; plus document
+  templates (proposals, reports, case studies, invoices, résumé) for Word / Google Docs / Notion.
 
-These tiers map onto the design suite's artifact taxonomy in `ai/skills/README.md` (Tokens /
+Pick **Other** and name it for the long tail:
+
+- **Motion & video** — animated logo (Lottie), social-video templates, intro/outro stingers, animated
+  GIFs.
+- **Merch & environmental** — apparel, stickers, tote bags, mugs; event/booth banners; office and
+  wayfinding signage.
+- **Product & app-store** — app-store screenshots and listing graphics, in-app illustration and
+  empty-state art, onboarding graphics.
+- **Audio & bespoke** — podcast cover art, audio-brand stings, or anything one-off.
+
+These groups map onto the design suite's artifact taxonomy in `ai/skills/README.md` (Tokens /
 Components / Pages & Templates / Assets / Collateral), so `/brand` stays aligned with the broader
 design-suite roadmap.
 
