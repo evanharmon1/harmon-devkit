@@ -85,7 +85,7 @@ state in **both themes** during Phase 5.
 
 ## Then
 
-Place assets and fonts (`assets-fonts-favicons.md`), clear licensing (`ethics-and-licensing.md`),
-build and maintain `/brand` (`brand-page.md`), and verify with sign-off (`verification-and-signoff.md`
-
-- `accessibility-verification.md`).
+Place assets and fonts (`assets-fonts-favicons.md`), build responsively across viewports and engines
+(`responsive-and-cross-browser.md`), clear licensing (`ethics-and-licensing.md`), build and maintain
+`/brand` (`brand-page.md`), and verify with sign-off (`verification-and-signoff.md` and
+`accessibility-verification.md`).

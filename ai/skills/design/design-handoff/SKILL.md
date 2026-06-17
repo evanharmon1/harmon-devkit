@@ -48,6 +48,8 @@ Implementation
 - [ ] shadcn/ui + Lucide (named imports) only; styled **exclusively** with semantic tokens (zero
       arbitrary hex / one-off color literals)
 - [ ] States covered: default, empty, loading, error, disabled
+- [ ] Responsive (mobile-first): holds at phone/tablet/desktop with no horizontal overflow;
+      cross-browser verified on Chromium, Firefox, and WebKit (incl. mobile Safari) via Playwright
 - [ ] `/brand` built/updated in the **same** change (scope chosen up front during intake)
 - [ ] Assets placed (static → repo, user media → R2); fonts self-hosted OFL/Apache `.woff2`; favicons
       generated from the mark
@@ -150,9 +152,11 @@ sub-AA pair — this static gate must be **green** before you implement. Numbers
 Build the UI in the stack: shadcn-first (check for an existing component before building), port the
 prototype JSX to typed components, Lucide **named** imports, and style **exclusively** with semantic
 tokens — never arbitrary hex. Cover the states the bundle won't show: empty, loading, error, disabled.
-Place assets (static → repo, user media → R2), self-host OFL/Apache `.woff2` fonts (mind the `@import`
-order), and generate the favicon set. Build/maintain the living `/brand` page to the **scope chosen
-during intake** (no need to ask again here). See `components-and-states.md`, `assets-fonts-favicons.md`,
+Build **mobile-first and responsive** — Tailwind breakpoints, fluid layout, no fixed widths, `dvh`, and
+container queries where apt. Place assets (static → repo, user media → R2), self-host OFL/Apache
+`.woff2` fonts (mind the `@import` order), and generate the favicon set. Build/maintain the living
+`/brand` page to the **scope chosen during intake** (no need to ask again here). See
+`components-and-states.md`, `responsive-and-cross-browser.md`, `assets-fonts-favicons.md`,
 `brand-page.md`.
 
 ### Phase 4 — Licensing gate (blocks commit)
@@ -166,7 +170,9 @@ become the brand. If any license is unclear, **stop and flag it** rather than gu
 ### Phase 5 — Verify — GATE: rendered contrast
 
 Run the gates (`task lint:design`, `check`, `verify` — create any that's missing; never `--no-verify`).
-Build, run the app, and screenshot every view in **both light and dark** and for every state. Then
+Build, run the app, and screenshot every view in **both light and dark**, for every state, **and across
+key breakpoints (phone/tablet/desktop) and engines (Chromium/Firefox/WebKit incl. mobile Safari)** —
+Playwright drives all three from one config (`responsive-and-cross-browser.md`). Then
 measure **rendered** contrast on the running page (static tokens passing isn't enough — a runtime layer
 like `.prose` can override them): computed colors, both themes, every text role incl. long-form prose,
 reported as **numbers**. Fix and re-measure failures before showing the user. See
@@ -214,6 +220,8 @@ commits to `main` are blocked) and open a **PR** for human review — never merg
   matrix.
 - **`assets-fonts-favicons.md`** — Phase 3: asset placement, self-hosted fonts (+ the `@import` order
   rule), favicon generation.
+- **`responsive-and-cross-browser.md`** — Phases 3 & 5: build mobile-first/responsive and verify across
+  viewports and rendering engines with Playwright (Chromium/Firefox/WebKit, incl. mobile Safari).
 - **`accessibility-verification.md`** — Phases 2 & 5: the dual (static + rendered) WCAG AA contrast
   gate.
 - **`brand-page.md`** — Phase 3: the living `/brand` style guide, the runtime scope question, and the

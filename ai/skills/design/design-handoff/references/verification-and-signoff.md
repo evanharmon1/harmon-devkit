@@ -22,8 +22,10 @@ discipline.
 2. **Build** to confirm it compiles.
 3. **Make it viewable.** Run the app (`task dev` / the project's run skill) and exercise every
    implemented screen.
-4. **Screenshot every implemented view, in both light and dark mode**, and for every state you built
-   (default, empty, loading, error, disabled). These are what the user signs off against.
+4. **Screenshot every implemented view** — in both light and dark, for every state (default, empty,
+   loading, error, disabled), and across key breakpoints (phone/tablet/desktop) and rendering engines
+   (Chromium/Firefox/WebKit incl. mobile Safari). Playwright drives the whole matrix from one config —
+   see `responsive-and-cross-browser.md`. These are what the user signs off against.
 5. **Measure rendered contrast** (`accessibility-verification.md`): computed colors on the running
    page, both themes, every text role including long-form prose. Report the numbers. Fix and
    re-measure anything that fails **before** showing the user.
