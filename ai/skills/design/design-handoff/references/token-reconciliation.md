@@ -1,12 +1,46 @@
 # Token reconciliation: Claude Design `tokens.css` → shadcn `globals.css`
 
-Read this during **Phase 2** of the `design-handoff` skill. The handoff bundle ships
-`project/styles/tokens.css` (the design system's primitives — palette, fonts, spacing, radii,
-type scale) plus `project/styles/site.css` (brand overrides, sometimes including a few dark-mode
-hints). Your job: merge those into the repo's canonical `src/styles/globals.css` in shadcn's
-three-layer **OKLCH** form — by **role**, not by name. It is **not** a drop-in; pasting `tokens.css`
-into `globals.css` breaks the system. This is the most error-prone step in the whole handoff, which
-is why it has its own reference.
+Read this during **Phase 2**. The bundle ships a token file (commonly `tokens.css`, plus a `site.css`
+of brand/dark-mode overrides) carrying the design's primitives — palette, fonts, spacing, radii, type
+scale. What you do with it depends on the **mode**, but one rule is constant: **the bundle's tokens are
+a proposal; `globals.css` is truth.**
+
+- **`establish`** (no system yet) — _write canonical_ tokens from the bundle. That's the bulk of this
+  doc: the conflicts, the skeleton, the by-role merge recipe, and authoring `.dark`.
+- **`implement-feature`** (a feature against an existing system) — _consume-first_: diff and map to the
+  existing tokens, adding nothing by default. **Start at "Consume-first" below.**
+- **`evolve`** (changing the system) — diff and version the change; see `evolving-the-system.md`.
+
+Either way it is **not** a drop-in — pasting a token file into `globals.css` breaks the system.
+
+## Consume-first (`implement-feature`): diff, don't redefine
+
+When the repo already has a design system, the feature bundle's tokens are a re-emission that may have
+drifted — so you **consume** them, you don't rewrite:
+
+1. **Map every value to an existing semantic token.** For each color/spacing/radius/type value in the
+   bundle, resolve it to the matching token and use the utility (`bg-primary`, `text-muted-foreground`,
+   `rounded-lg`, …). Replace any inline `oklch(...)`/hex in the markup with the token. Add **nothing**
+   to `globals.css` by default.
+2. **Match by OKLCH closeness, with a tolerance.** Treat a bundle color as "the same as" a canonical
+   token when it's within a small ΔL/ΔC/Δh bound (pick a default; let the user tune it), and **report
+   drift** rather than silently adopting the bundle's value — e.g. "bundle `--primary` is
+   `oklch(0.62 0.19 255)`, canonical is `oklch(0.60 0.16 250)` — keeping canonical."
+3. **A value with no close match is a DECISION POINT — stop and surface it.** Two legitimate
+   resolutions:
+   - **Force-fit** (preferred for one-offs): snap to the nearest existing token. Use when the
+     difference is incidental or the value appears once.
+   - **Deliberately extend** (when the need is real and reusable): add the token _additively_ (the
+     shadcn pattern — define `--warning`/`--warning-foreground` in `:root` and `.dark`, expose via
+     `@theme inline`), update `/brand` and `DESIGN.md`, and record a DDR. That's an `evolve`-style
+     change folded into the feature, so it carries a SemVer bump (`evolving-the-system.md`).
+   - **Heuristic:** extend only if the value (a) is a _semantic role_, not just a shade, (b) will
+     plausibly recur, and (c) you'd document it in `/brand`. Otherwise force-fit.
+4. **Never overwrite `globals.css` wholesale** from a feature bundle — it may re-emit the whole token
+   block; you apply only deliberate, approved additions.
+
+The rest of this doc (the conflicts, skeleton, and merge recipe) is the `establish` path — you'll also
+dip into it when a feature legitimately extends the system.
 
 ## Why you can't paste it in
 

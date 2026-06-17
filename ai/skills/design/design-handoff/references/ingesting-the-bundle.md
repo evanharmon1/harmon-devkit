@@ -4,6 +4,17 @@ Read this during **Phase 0**. It covers what the "Handoff to Claude Code" export
 open it, what to read and in what order, and the single most important mental shift: **the bundle is
 a prototype, not production code — you _port_ it, you don't copy it.**
 
+## Be defensive about the format
+
+Claude Design is a fast-moving research preview, and its handoff is a **proprietary, non-standard**
+format (not DTCG/W3C tokens, not Figma) that can change without notice. So **don't hard-code the
+layout** — parse for _intent_, not for exact filenames or folders. The anatomy below is the common
+shape as of now, not a contract: read what's actually present, and if a piece is named or structured
+differently, adapt. The same posture lets this skill handle other design tools (e.g. Google Stitch),
+whose bundles differ but carry the same ingredients — intent, tokens, markup, assets. Whatever the
+format, the destination is identical: the repo's canonical `globals.css` / `DESIGN.md` / `/brand`, with
+the bundle treated as a proposal.
+
 ## What the export actually is
 
 "Handoff to Claude Code" produces a **gzipped tarball** (`.tar.gz`, served as `application/gzip`) —
@@ -18,7 +29,7 @@ It extracts to a single project directory. Move/rename it to `docs/design/handof
 
 ## Anatomy (verified, current as of mid-2026)
 
-```
+```text
 <project>/
   README.md                # headed "CODING AGENTS: READ THIS FIRST"
   chats/chat1.md           # the full Claude Design conversation — design intent & rationale

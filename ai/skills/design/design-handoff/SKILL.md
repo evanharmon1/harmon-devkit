@@ -14,17 +14,29 @@ description: >-
 
 # Design Handoff (Claude Design → repo)
 
-Turn a finished Claude Design into working, on-brand code in this repo. The "Handoff to Claude Code"
-export is a **`.tar.gz` bundle** — a README, the design **chat transcript**, prototype HTML/JSX/CSS, a
-`tokens.css`, and your uploads. That code is **prototype-grade** (it runs on in-browser Babel + UMD
-React); your job is to **port** it into this repo's stack, not paste it in. There are two paths:
-**reconcile** into an existing design system, or **bootstrap** a new one when the repo has none.
+Turn a finished design from **Claude Design** (or a similar tool) into working, on-brand code in this
+repo. The export is a **handoff bundle** — commonly a `.tar.gz` from "Handoff to Claude Code" holding a
+README, the design **chat transcript**, prototype HTML/JSX/CSS, a token file, and uploads. But that
+format is an unstable research preview, not a standard, so **parse defensively**: read what's actually
+present rather than assuming exact filenames or folders. That same defensiveness lets the skill absorb
+Claude Design's format changes and adapt to other tools (e.g. Google Stitch). The prototype code is
+**prototype-grade** (it often runs on in-browser Babel + UMD React); your job is to **port** it into
+this repo's stack, not paste it in.
 
-The core principle running through every step: **`src/styles/globals.css` is the canonical runtime
-token source, and `DESIGN.md` is the AI-facing statement of intent.** When they disagree, `globals.css`
-wins for runtime. The handoff bundle is the reference for the _intended_ design — it stays in place
-until **the user has reviewed the implementation and approved it**, and only then is it removed before
-merge. Never assume your implementation is correct; the user decides whether it matches the intent.
+**Three modes — detect which one you're in (Phase 0) and route accordingly:**
+
+- **`establish`** — the repo has no design system yet; bootstrap one from the bundle.
+- **`evolve`** — the repo has a design system and the bundle deliberately changes it (new/changed/removed
+  tokens or brand); reconcile and **version** the change.
+- **`implement-feature`** — the repo has a design system and the bundle is a bounded feature; build it
+  **consume-first**, honoring the design without clobbering the established system.
+
+The core principle running through all three: **`src/styles/globals.css` is the canonical runtime token
+source and `DESIGN.md` is the AI-facing statement of intent — the repo is the source of truth, and the
+bundle is a _proposal_.** When they disagree, `globals.css` wins; **never overwrite it wholesale from a
+bundle** — diff and apply deliberate changes only. The bundle stays in place until **the user has
+reviewed the implementation and approved it**, and only then is it removed before merge. Never assume
+your implementation is correct; the user decides whether it matches the intent.
 
 ## Definition of done
 
@@ -40,14 +52,17 @@ have shown why in the chat.
 
 Reconciliation
 
-- [ ] Bundle ingested from the `.tar.gz`: README → chat transcript → HTML → `tokens.css`/`site.css` →
-      `js/*.jsx` (read for intent and **ported**, never pasted into `src/`)
-- [ ] Framework + router detected; greenfield-vs-brownfield decided; up-front questions asked
-- [ ] Tokens merged into `globals.css` by **role** (not export name) — Tailwind v4, OKLCH, three-layer;
-      export never blind-pasted
-- [ ] `.dark` authored by hand (brand hue held, neutrals inverted); `--tw-prose-*` mapped if prose is
-      used
-- [ ] `DESIGN.md` reconciled, not clobbered
+- [ ] Bundle ingested **defensively** (parse what's there; don't assume exact filenames): intent/README
+      → chat transcript → markup → token file → assets, read for intent and **ported**, never pasted
+      into `src/`
+- [ ] **Mode detected** — `establish` / `evolve` / `implement-feature` (asked if ambiguous); framework +
+      router detected; up-front questions asked
+- [ ] Bundle tokens treated as a **proposal** — diffed against canonical `globals.css`, never
+      overwritten wholesale; new tokens resolved (force-fit to existing, or deliberate extension)
+- [ ] Tokens in `globals.css` are by **role** (not export name) — Tailwind v4, OKLCH, three-layer;
+      `.dark` authored (brand hue held, neutrals inverted); `--tw-prose-*` mapped if prose is used
+- [ ] `DESIGN.md` reconciled (not clobbered); a system change (`establish`/`evolve`, or a feature
+      extension) carries a **DDR + SemVer bump**
 
 Implementation
 
@@ -76,7 +91,7 @@ Gates — post **PASS + evidence** in the chat before taking the guarded action
 Close-out (only once gate ④ is green)
 
 - [ ] Handoff bundle deleted (or a thin screenshot + intent note extracted first if states remain)
-- [ ] `docs/design/` and `/brand` updated; DDR flagged if a real design-system decision was made
+- [ ] `docs/design/` and `/brand` updated; a system change recorded as a **DDR with a SemVer bump**
 - [ ] Conventional Commit on a **feature branch**; PR opened for human review; hooks never bypassed
       (`--no-verify` prohibited); no direct merge to `main`
 
@@ -102,20 +117,25 @@ the referenced files — read the reference when you reach its phase.
 
 All the up-front orientation happens here, before any building:
 
-1. **Ingest.** Decompress the `.tar.gz` and read in the order its README dictates: `README.md` ("CODING
-   AGENTS: READ THIS FIRST") → `chats/chat1.md` (design intent — the bundle's real value) → the entry
-   HTML → `tokens.css`/`site.css` → the `js/*.jsx` components → `uploads/` (your inputs, **not**
-   screenshots). The code is prototype-grade; read it for structure and intent, then **port** it —
-   don't paste `.jsx`/`.html` into `src/`. Don't expect a `tokens.json`, a machine-readable spec, or
-   per-state screenshots — none ship. Locate the bundle at `docs/design/handoff-*/`; if you can't find
-   it, ask where the export landed before proceeding. (`ingesting-the-bundle.md`)
-2. **Detect framework, router & design-system state** — they drive every later file-placement decision.
-   Router/framework: TanStack → `src/routes/brand.tsx` and `src/components/ui`; React Router/plain → a
-   normal `/brand` route; Astro → `src/pages/brand.astro` with React **islands** for interactive
-   specimens; any other framework maps the same three roles (global stylesheet import, component dir,
-   route entry) — never block on an unrecognized router. Greenfield vs brownfield: a design system is
-   present when `globals.css` has real `:root` semantic tokens **and** a `/brand` route exists →
-   reconcile into it (skip to Phase 2); otherwise → bootstrap first (Phase 1).
+1. **Ingest (defensively).** Unpack the bundle and read it for intent — don't hard-code its layout; the
+   format is an unstable preview and varies by tool. The common Claude Design shape is a `.tar.gz` with
+   a README ("CODING AGENTS: READ THIS FIRST") → `chats/*.md` (the design conversation — the real
+   intent) → the entry HTML → a token file (`tokens.css`/`site.css`) → components → `uploads/`. Read
+   whatever is actually present in that spirit (intent/README → transcript → markup → tokens → assets),
+   and adapt if a piece is named or shaped differently. The prototype code is prototype-grade — read it
+   for structure and intent, then **port** it; don't paste markup into `src/`. Locate the bundle (often
+   `docs/design/handoff-*/`); if you can't find it, ask where the export landed. (`ingesting-the-bundle.md`)
+2. **Detect mode, framework & router.** **Mode** — `establish` (no design system: no real `:root` tokens
+   in `globals.css` and no `/brand` route), `evolve` (a system exists and the bundle is
+   token/brand-dominant, or intent says "update the design system"), or `implement-feature` (a system
+   exists and the bundle is a page/feature, its tokens mostly a re-emission of the existing set). Judge
+   from the bundle's content (tokens vs. screens), the chat intent, and the repo state; **if it's
+   ambiguous, ask** (fold the question into the batch below) rather than guess — a wrong guess risks
+   clobbering the system. **Framework + router** drive file placement: TanStack → `src/routes/brand.tsx`
+   and `src/components/ui`; React Router/plain → a normal `/brand` route; Astro → `src/pages/brand.astro`
+   with React **islands** for interactive specimens; any other framework maps the same three roles
+   (global stylesheet import, component dir, route entry) — never block on an unrecognized router.
+   `establish` runs Phase 1 next; `evolve`/`implement-feature` skip to Phase 2.
 3. **Decide up front — one `AskUserQuestion` batch.** Now that you've read the intent and know the
    stack, ask **everything you'll need at once** (up to 4 questions) so Phases 1–5 run uninterrupted:
    the **`/brand` scope** (core guide → brand/press kit → collateral groups; `brand-page.md`), plus any
@@ -123,22 +143,33 @@ All the up-front orientation happens here, before any building:
    dark mode if unclear). Only ask what you can't determine yourself. The **one** thing that can't be
    front-loaded is the Phase 6 **sign-off** — it approves the built result.
 
-### Phase 1 — Greenfield bootstrap (only if no design system exists)
+### Phase 1 — `establish`: greenfield bootstrap (only if no design system exists)
 
-If detection found no design system, stand one up before reconciling: install and configure Tailwind
-v4 and shadcn for the detected framework, let `shadcn init` write the default three-layer
-`globals.css`, scaffold the `/brand` route, `DESIGN.md`, and `docs/design/`, copy
-`scripts/check-contrast.mjs`, and add the design Taskfile tasks. Assumes a working frontend app already
-exists. See `greenfield-bootstrap.md`. (Brownfield repos skip to Phase 2.)
+If detection found no design system, stand one up before reconciling: install and configure Tailwind v4
+and shadcn for the detected framework, let `shadcn init` write the default three-layer `globals.css`,
+scaffold the `/brand` route, `DESIGN.md`, and `docs/design/`, copy `scripts/check-contrast.mjs`, and add
+the design Taskfile tasks. **Normalize whatever the bundle emits** (often HSL or inline values) into the
+canonical OKLCH three-layer form, and record a **DDR establishing the system at v1.0.0**. Assumes a
+working frontend app already exists. See `greenfield-bootstrap.md`. (An existing system skips to Phase
+2.)
 
 ### Phase 2 — Reconcile tokens — GATE: static contrast
 
-The most error-prone step; it has its own reference — **read `token-reconciliation.md` and follow
-it.** Map the bundle's `tokens.css` into `globals.css`'s semantic slots **by role** (not by name),
-express values in OKLCH, fill the roles shadcn needs but the export lacks, author the `.dark` block by
-hand (hold brand hue, invert neutrals), and map `--tw-prose-*` if the app renders prose. Reconcile
-`DESIGN.md`, don't clobber it. Then run `task lint:design` (`scripts/check-contrast.mjs`) and fix every
-sub-AA pair — this static gate must be **green** before you implement. Numbers in
+The most error-prone step, and where the modes diverge — **the bundle's tokens are a proposal,
+`globals.css` is truth.** Read `token-reconciliation.md` (and `evolving-the-system.md` for `evolve`):
+
+- **`establish`** — write canonical tokens from the bundle: map by **role** into the shadcn three-layer
+  OKLCH `globals.css`, author `.dark` by hand (hold brand hue, invert neutrals), map `--tw-prose-*` if
+  prose is used.
+- **`implement-feature` (consume-first)** — **diff** against canonical and map each value to the
+  **existing** token (inline hex/oklch → `bg-primary`, `text-muted-foreground`, …); add **nothing** by
+  default. A value with no close match is a **decision point**: force-fit to the nearest token, or
+  extend the system additively with a DDR — never inline.
+- **`evolve`** — a three-bucket diff (added/changed/removed), classified with **SemVer**, breaking
+  changes handled by **aliasing + deprecating** (not deleting), recorded as a **DDR + version bump**.
+
+Reconcile `DESIGN.md` (don't clobber it). Then run `task lint:design` (`scripts/check-contrast.mjs`) and
+fix every sub-AA pair — this static gate must be **green** before you implement. Numbers in
 `accessibility-verification.md`.
 
 ### Phase 3 — Implement components, assets & `/brand`
@@ -184,8 +215,9 @@ the user explicitly approves.** The bundle stays fully in place through this ste
 ### Phase 7 — Close out (only after approval)
 
 Delete `docs/design/handoff-<feature>/` (or extract a thin screenshot + intent note first if states
-remain), update `docs/design/` and `/brand`, and flag a **DDR** in `/decisions/` if a genuine
-design-system decision was made. Commit with Conventional Commits on a **feature branch** (direct
+remain), update `docs/design/` and `/brand`, and record a **DDR (with a SemVer bump)** in `/decisions/`
+for any design-system change — `establish` (v1.0.0), `evolve` (patch/minor/major), or a feature token
+extension. Commit with Conventional Commits on a **feature branch** (direct
 commits to `main` are blocked) and open a **PR** for human review — never merge to `main` directly. See
 `verification-and-signoff.md`.
 
@@ -197,6 +229,12 @@ commits to `main` are blocked) and open a **PR** for human review — never merg
 - **Semantic tokens only.** Never arbitrary hex or one-off Tailwind color literals — they skip dark
   mode and the contrast gate.
 - **`globals.css` wins over `DESIGN.md`** for runtime. If they drift, flag it.
+- **The bundle is a proposal; the repo is truth.** Never overwrite `globals.css` wholesale from a
+  bundle — diff against canonical and apply deliberate, approved changes only.
+- **New tokens are a decision point.** Map to an existing token, or extend the system deliberately
+  (additive, with a DDR) — never invent ad-hoc values inline.
+- **Record system changes as a DDR with a SemVer bump** (`establish` = v1.0.0; `evolve` =
+  patch/minor/major; a feature extension = minor).
 - **`/brand` is a maintained route, not a doc.** Keep it synced with the tokens; never let it drift.
 - **Get sign-off before deleting anything.** Approval is the user's decision, never inferred from a
   green build or your own confidence.
@@ -205,12 +243,15 @@ commits to `main` are blocked) and open a **PR** for human review — never merg
 
 ## Reference files
 
-- **`ingesting-the-bundle.md`** — Phase 0: the verified bundle anatomy and the prototype→production
-  port.
-- **`token-reconciliation.md`** — Phase 2: `tokens.css` → shadcn three-layer OKLCH `globals.css`, by
-  role, including `.dark` and the `--tw-prose-*` mapping.
-- **`greenfield-bootstrap.md`** — Phase 1: stand up Tailwind v4 + shadcn + `globals.css` + `/brand` +
-  Taskfile, per framework.
+- **`ingesting-the-bundle.md`** — Phase 0: defensive, format-agnostic ingest; the common Claude Design
+  anatomy; and the prototype→production port.
+- **`token-reconciliation.md`** — Phase 2: the proposal-vs-canonical doctrine — `establish` writes
+  canonical tokens by role; `implement-feature` diffs and maps to existing (the new-token decision
+  point). shadcn three-layer OKLCH, `.dark`, and the `--tw-prose-*` mapping.
+- **`evolving-the-system.md`** — Phase 2 (`evolve`): the token diff (added/changed/removed), SemVer
+  classification, aliasing + deprecation, and the DDR/version record.
+- **`greenfield-bootstrap.md`** — Phase 1 (`establish`): stand up Tailwind v4 + shadcn + `globals.css` +
+  `/brand` + Taskfile, per framework.
 - **`components-and-states.md`** — Phase 3: port the JSX, shadcn-first, Lucide, the full UI-state
   matrix.
 - **`assets-fonts-favicons.md`** — Phase 3: asset placement, self-hosted fonts (+ the `@import` order
