@@ -150,8 +150,9 @@ and shadcn for the detected framework, let `shadcn init` write the default three
 scaffold the `/brand` route, `DESIGN.md`, and `docs/design/`, copy `scripts/check-contrast.mjs`, and add
 the design Taskfile tasks. **Normalize whatever the bundle emits** (often HSL or inline values) into the
 canonical OKLCH three-layer form, and record a **DDR establishing the system at v1.0.0**. Assumes a
-working frontend app already exists. See `greenfield-bootstrap.md`. (An existing system skips to Phase
-2.)
+working frontend app already exists. Use `deliverables-checklist.md` to confirm the **full** token and
+component set is covered, not just the brand colors. See `greenfield-bootstrap.md`. (An existing system
+skips to Phase 2.)
 
 ### Phase 2 — Reconcile tokens — GATE: static contrast
 
@@ -266,6 +267,9 @@ commits to `main` are blocked) and open a **PR** for human review — never merg
   lock-in.
 - **`verification-and-signoff.md`** — Phases 5–7: the gates, the sign-off loop, cleanup, and commit +
   PR.
+- **`deliverables-checklist.md`** — a completeness self-check for token, component, brand, asset, and
+  collateral coverage; used in `establish-design-system`/`evolve-design-system` and when building
+  `/brand`.
 
 Bundled assets (the skill installs these into the target repo):
 

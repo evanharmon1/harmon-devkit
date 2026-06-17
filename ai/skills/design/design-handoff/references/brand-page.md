@@ -55,6 +55,9 @@ include it; this is the one place where more is better.
 
 ### Foundations
 
+> Coverage check: run this section past `deliverables-checklist.md` so no token category (chart palette,
+> gradients, named z-index layers, named animations, …) is forgotten.
+
 - **Brand & voice** — the design's name, tagline, and a one-line positioning statement; 3–5
   personality adjectives; voice & tone with two or three do/don't microcopy examples; capitalization,
   terminology, and how to refer to the product; date/number formatting conventions.

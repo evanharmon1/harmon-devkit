@@ -4,7 +4,9 @@ Read this during **Phase 2** in **`evolve-design-system`** mode — when the bun
 system itself (not a single feature). The doctrine is the same as everywhere: the repo is truth, the
 bundle is a proposal. Evolve means reconciling a proposed token change into canonical `globals.css`
 **carefully and versioned** — never a blind overwrite, because much of a bundle's token block is a
-re-emission that may have drifted from canonical.
+re-emission that may have drifted from canonical. If the change adds a new role, cross-check
+`deliverables-checklist.md` so the system stays complete (e.g. a new semantic color also needs its
+`-foreground`, its `/brand` swatch, and a contrast pass).
 
 ## 1. Diff before you write
 

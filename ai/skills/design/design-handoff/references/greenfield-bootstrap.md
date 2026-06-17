@@ -112,4 +112,5 @@ the design's real tokens are in.
 
 With the design system stood up, proceed to **Phase 2 — token reconciliation**
 (`token-reconciliation.md`): replace the default token _values_ with the design's, author `.dark`, and
-get the static contrast gate green before implementing components.
+get the static contrast gate green before implementing components. Before you call the system complete,
+run it past `deliverables-checklist.md` so no token category or component family is missed.
