@@ -1,0 +1,50 @@
+# Taskfile.design.yml — design-handoff tasks (go-task / https://taskfile.dev)
+#
+# The design-handoff skill merges these into the TARGET repo's Taskfile.yml when they're
+# missing. They assume:
+#   - check-contrast.mjs has been copied into the target repo at scripts/check-contrast.mjs
+#   - the canonical tokens live in src/styles/globals.css
+# Adjust the vars below if the repo differs. If the repo already has `verify`/`check`, add
+# `lint:design` to its deps instead of using the aggregator at the bottom (see the comment).
+
+version: "3"
+
+vars:
+  GLOBALS: src/styles/globals.css
+  CONTRAST_SCRIPT: scripts/check-contrast.mjs
+
+tasks:
+  lint:design:
+    desc: Static design gate — WCAG-AA token contrast (both themes) + off-palette scan
+    cmds:
+      # 1. Static contrast: parses globals.css, fails on any sub-AA text pair in :root or .dark.
+      - node {{.CONTRAST_SCRIPT}} {{.GLOBALS}}
+      # 2. Off-palette guard: components must style with semantic tokens, never arbitrary color
+      #    literals. Flags Tailwind arbitrary-color utilities (bg-[#…], text-[oklch(…)], …).
+      #    `! grep` => the task fails when a match is found, passes when there are none.
+      - >-
+        ! grep -rEn --include=*.ts --include=*.tsx --include=*.jsx --include=*.astro
+        '(bg|text|border|fill|stroke|ring|from|via|to|outline|decoration|accent|caret|shadow)-\[(#|rgb|oklch|hsl)'
+        src 2>/dev/null
+
+  ingest:design:
+    desc: Decompress a Claude Design handoff .tar.gz into docs/design/
+    vars:
+      DEST: '{{.DEST | default "docs/design"}}'
+    requires:
+      vars: [BUNDLE]
+    cmds:
+      - mkdir -p {{.DEST}}
+      - tar -xzf {{.BUNDLE}} -C {{.DEST}}
+      - cmd: echo "Extracted to {{.DEST}}/ — open README.md first (the 'CODING AGENTS READ THIS FIRST' file), then chats/, then the HTML."
+        silent: true
+
+  # Aggregator for repos that DON'T already define `verify`. If the repo HAS a `verify`/`check`
+  # task, delete this and instead add `lint:design` to that task's `deps:` so the design gate
+  # runs as part of the normal verification pass.
+  verify:design:
+    desc: Design verification — repo checks then the static design gate (rendered check is manual)
+    cmds:
+      - task: lint:design
+      - cmd: echo "Static gate green. Now run the app and measure RENDERED contrast in both themes — see the skill's accessibility-verification.md (Phase 5)."
+        silent: true

@@ -1,0 +1,83 @@
+# Ingesting the bundle: what Claude Design actually hands off
+
+Read this during **Phase 0**. It covers what the "Handoff to Claude Code" export really is, how to
+open it, what to read and in what order, and the single most important mental shift: **the bundle is
+a prototype, not production code — you _port_ it, you don't copy it.**
+
+## What the export actually is
+
+"Handoff to Claude Code" produces a **gzipped tarball** (`.tar.gz`, served as `application/gzip`) —
+**not** a `.zip`. (Claude Design's separate "Download as .zip" menu item is a different raw-assets
+export; the coding handoff is the tarball.) Decompress it into the repo's design folder:
+
+```bash
+tar -xzf <bundle>.tar.gz -C docs/design/        # or: task ingest:design BUNDLE=<bundle>.tar.gz
+```
+
+It extracts to a single project directory. Move/rename it to `docs/design/handoff-<feature>/`.
+
+## Anatomy (verified, current as of mid-2026)
+
+```
+<project>/
+  README.md                # headed "CODING AGENTS: READ THIS FIRST"
+  chats/chat1.md           # the full Claude Design conversation — design intent & rationale
+  project/
+    *.html                 # an HTML shell + a print-ready variant
+    js/*.jsx               # small JSX component files; the root app.jsx is imported LAST
+    styles/tokens.css      # design-system primitives (palette, fonts, spacing, radii, type scale)
+    styles/site.css        # brand overrides, sometimes including a few dark-mode bits
+    uploads/               # YOUR uploaded inputs (photos, sketches) — NOT rendered UI screenshots
+```
+
+File names are project-specific, not a fixed schema — treat the _shape_ (README + chat + HTML/JSX +
+`tokens.css`/`site.css` + uploads) as the contract, not the exact filenames.
+
+## Read order (the README dictates it)
+
+1. **`README.md`** — it states the structure and tells coding agents what to read.
+2. **`chats/chat1.md`** — the intent. This is the bundle's real advantage over a static Figma export:
+   it preserves _why_ — the decisions made, what was tried and rejected, the rationale behind the
+   palette and layout. Read it; it resolves ambiguity that later steps would otherwise have to guess.
+3. **The entry HTML, in full** — see how the sections compose into a page.
+4. **Follow the imports** — `project/js/*.jsx` (root `app.jsx` last), then `styles/tokens.css` and
+   `styles/site.css`.
+5. **`uploads/`** — your original source inputs, for reference.
+
+## It's a prototype — port it, don't copy it
+
+The bundle runs in a browser with **no build step**: pinned-unpkg **UMD React 18.3.1** + ReactDOM +
+`@babel/standalone`, JSX transpiled in the browser via `type="text/babel"`, components shared on
+`window` through `Object.assign`, and uniquely-named inline style objects. That is _prototype-grade_.
+It must become real code in the repo's stack — this translation is the central job of the handoff:
+
+| Bundle (prototype)                       | Repo (production)                                                                   |
+| ---------------------------------------- | ----------------------------------------------------------------------------------- |
+| in-browser Babel + UMD React on `window` | the repo's Vite + React + TypeScript build, real ES module imports                  |
+| `type="text/babel"` `.jsx`               | typed `.tsx` components (`components-and-states.md`)                                |
+| inline style objects / ad-hoc classes    | Tailwind v4 utilities driven by semantic tokens (`token-reconciliation.md`)         |
+| the static HTML shell                    | the repo's routing — TanStack Router / React Router / Astro pages (`brand-page.md`) |
+| `tokens.css` flat primitives             | shadcn three-layer OKLCH `globals.css` (`token-reconciliation.md`)                  |
+
+Read the prototype for **structure and intent**, then re-implement it idiomatically. **Do not** drop
+the bundle's `.jsx`/`.html` into `src/`.
+
+## What the bundle does NOT contain (correct these assumptions)
+
+- **No machine-readable spec / `tokens.json` / DTCG file.** The "spec" _is_ the code plus the chat.
+  Parse `tokens.css` and the JSX/HTML; don't wait for a structured token export that isn't there.
+- **No per-state screenshots.** `uploads/` holds _your_ inputs, not rendered UI states. You generate
+  screenshots yourself during Phase 5 verification.
+- **No `?v=N` cache-busted files.** Current exports use clean, un-suffixed paths. _Defensive note:_ if
+  you ever do encounter a `sections.jsx?v=18`-style file beside a plain `sections.jsx`, the plain file
+  is canonical — read it and ignore the `?v=…` snapshot. This is not expected in current bundles; if
+  you see it widely, the export format changed and this skill needs revisiting.
+
+## After ingest
+
+Inventory what you got — the `tokens.css` palette/scales, the component list under `js/`, the fonts
+referenced, the `uploads/` — then **detect the repo's framework + router** (see SKILL.md) so every
+later file-placement decision is correct, and decide **greenfield vs brownfield**
+(`greenfield-bootstrap.md` if no design system exists yet). Leave the bundle in
+`docs/design/handoff-<feature>/` **untouched**: it is the reference the user signs off against in
+Phase 6 and is not removed until Phase 7, after explicit approval.
