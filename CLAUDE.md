@@ -57,7 +57,10 @@ Pre-commit is configured with `no-commit-to-branch` — direct commits to `main`
 
 - `templates/` — copy-paste boilerplates organized by category: `ansible.md`, `docker/` (genericStack, n8n-compose), `scriptTemplates/` (Go, Python, Shell), `serverlessFunctionTemplates/` (AWS Lambda, GCP, Netlify), `webTemplates/`. Each category directory has a README; the root README has a full template index.
 - `scripts/` — standalone scripts and utilities: `appleScripts/` (AppleScript/Automator apps with accompanying notes), `cmd/` (command snippets).
-- `ai/` — AI assets (skills, prompts, agents, rules, evals, etc.); mostly placeholder directories at this stage.
+- `ai/` — AI assets organized by type: `skills/`, `prompts/`, `agents/`, `rules/`, `evals/`, `tools/`, `workflows/`, `mcp/`, `knowledge/`, `memories/`. Most are placeholder directories for now; `skills/` is the populated one. Skills follow the Agent Skills convention — a `SKILL.md` with YAML frontmatter (`name`, `description`) plus optional `references/`. Current content is a `design/` suite for the Claude Design → code workflow:
+  - `skills/design/explore-designs/` — guides using Claude Design to explore design directions (asks about the target frontend stack/tooling).
+  - `skills/design/create-design-system/` — placeholder for design-system setup.
+  - `skills/design/design-handoff/` — full skill: reconcile a finished Claude Design export into a real codebase (tokens → shadcn/Tailwind v4 OKLCH, `/brand` page, contrast + licensing gates).
 - `snippets/` — small reusable code snippets (placeholder).
 - `docs/` — project docs, e.g. the new-project checklist.
 - `test/` — tool configuration used by scans (e.g. `whisperConfig.yml` for Whispers); not actual tests.
