@@ -55,9 +55,15 @@ Then write `playwright.config.ts` with the projects below and add the `verify:br
 `assets/Taskfile.design.yml`, so the cross-engine sweep runs like every other gate.
 
 ```ts
-// playwright.config.ts — the cross-engine × device matrix
+// playwright.config.ts — baseURL + dev server, then the cross-engine × device matrix
 import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
+  use: { baseURL: "http://localhost:5173" }, // your dev server (Vite 5173, Astro 4321, …)
+  webServer: {
+    command: "pnpm dev",
+    url: "http://localhost:5173",
+    reuseExistingServer: true,
+  },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
     { name: "firefox", use: { ...devices["Desktop Firefox"] } },
@@ -74,8 +80,18 @@ For a quick ad-hoc capture without a test file, the Playwright CLI takes one scr
 npx playwright screenshot --device="iPhone 14" http://localhost:5173/brand brand-iphone.png
 ```
 
-For the full Phase 5 sweep, drive a short script over `[chromium, firefox, webkit]` × `[viewports]` ×
-`[light, dark]`, saving a PNG per cell.
+For the full Phase 5 sweep, use the bundled **`assets/brand-screenshots.spec.ts`** template, run by
+`task verify:browsers`. It is a parameterized harness, not a from-scratch write: the engine × device
+axis comes from the `projects` above, and the spec adds the route × theme axis, writing one full-page
+PNG per route × theme per project. Fill in three spots and it works:
+
+- **`ROUTES`** — always include `/brand`, plus the feature's pages.
+- **`baseURL` and `webServer`** (in the config above) — point them at the dev server.
+- **`setTheme()`** — defaults to shadcn's `.dark` class on `<html>`; change it only if the repo toggles
+  dark mode differently (data attribute, cookie).
+
+To capture per-specimen shots on `/brand`, extend the spec to locate the `data-brand-specimen` hooks
+(`brand-page.md`); the template includes a commented starting point.
 
 **WebKit ≈ Safari, not identical.** Playwright's WebKit is the open-source engine — very close to
 Safari and the best automated proxy for Safari and iOS Safari, but it lacks Apple-proprietary bits and

@@ -41,8 +41,9 @@ tasks:
 
   verify:browsers:
     desc: Cross-browser/viewport screenshot sweep (Playwright — Chromium/Firefox/WebKit × devices)
-    # Requires @playwright/test and `npx playwright install`; the skill provisions both if missing.
-    # Needs the dev server running (or a Playwright webServer config). Captures the Phase 5 matrix.
+    # Requires @playwright/test and `npx playwright install` (the skill provisions both if missing),
+    # plus a baseURL/webServer in playwright.config.ts. Runs the bundled brand-screenshots.spec.ts —
+    # the route × theme × engine/device sweep that captures the Phase 5 matrix.
     cmds:
       - npx playwright test {{.CLI_ARGS}}
 

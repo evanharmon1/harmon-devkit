@@ -230,8 +230,11 @@ Bundled assets (the skill installs these into the target repo):
 
 - **`assets/check-contrast.mjs`** — zero-dependency static WCAG-AA token-contrast checker; copy to
   `scripts/check-contrast.mjs`.
-- **`assets/Taskfile.design.yml`** — design task snippets (`lint:design`, `ingest:design`) to merge
-  into the repo's `Taskfile.yml`.
+- **`assets/Taskfile.design.yml`** — design task snippets (`lint:design`, `ingest:design`,
+  `verify:browsers`) to merge into the repo's `Taskfile.yml`.
+- **`assets/brand-screenshots.spec.ts`** — a parameterized Playwright sweep (route × theme × the
+  config's engine/device matrix); fill in `ROUTES`, `baseURL`/`webServer`, and `setTheme()`. Run by
+  `task verify:browsers`.
 
 ## Complements
 
