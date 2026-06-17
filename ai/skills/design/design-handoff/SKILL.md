@@ -48,7 +48,7 @@ Implementation
 - [ ] shadcn/ui + Lucide (named imports) only; styled **exclusively** with semantic tokens (zero
       arbitrary hex / one-off color literals)
 - [ ] States covered: default, empty, loading, error, disabled
-- [ ] `/brand` built/updated in the **same** change (scope asked at runtime)
+- [ ] `/brand` built/updated in the **same** change (scope chosen up front during intake)
 - [ ] Assets placed (static → repo, user media → R2); fonts self-hosted OFL/Apache `.woff2`; favicons
       generated from the mark
 
@@ -95,6 +95,22 @@ file-placement decision:
   tokens **and** a `/brand` route exists → reconcile into it. Otherwise → bootstrap it first (Phase 1).
 - **Where the bundle landed.** Find `docs/design/handoff-*/`; if you can't, ask before proceeding.
 
+## Gather decisions up front (one `AskUserQuestion` batch)
+
+You've now read the design intent and know the framework and greenfield-vs-brownfield — so this is the
+moment to ask **everything you'll need from the user at once, in a single `AskUserQuestion` batch** (it
+takes up to 4 questions). Front-loading lets Phases 1–5 run uninterrupted instead of stopping to ask
+mid-build. Ask about:
+
+- **`/brand` scope** — core style guide → full brand/press kit with collateral (tiers in
+  `brand-page.md`); default to the core style guide.
+- **Any other genuine ambiguity** the chat transcript left open — e.g. which routes/pages are in scope
+  for a feature, whether a specific font/icon set is required, dark mode if not obvious. Only ask what
+  you genuinely can't determine yourself; don't pad the batch.
+
+The **one** decision that can't be front-loaded is the **Phase 6 sign-off** — it is approval of the
+_built_ result, so it necessarily comes after implementation. Settle everything else here.
+
 ---
 
 ## Procedure
@@ -135,9 +151,9 @@ Build the UI in the stack: shadcn-first (check for an existing component before 
 prototype JSX to typed components, Lucide **named** imports, and style **exclusively** with semantic
 tokens — never arbitrary hex. Cover the states the bundle won't show: empty, loading, error, disabled.
 Place assets (static → repo, user media → R2), self-host OFL/Apache `.woff2` fonts (mind the `@import`
-order), and generate the favicon set. Build/maintain the living `/brand` page — **ask the user how
-expansive** (style guide → full brand kit) at the start. See `components-and-states.md`,
-`assets-fonts-favicons.md`, `brand-page.md`.
+order), and generate the favicon set. Build/maintain the living `/brand` page to the **scope chosen
+during intake** (no need to ask again here). See `components-and-states.md`, `assets-fonts-favicons.md`,
+`brand-page.md`.
 
 ### Phase 4 — Licensing gate (blocks commit)
 

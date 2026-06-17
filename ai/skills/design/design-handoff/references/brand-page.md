@@ -24,13 +24,15 @@ Whenever tokens, type, or brand rules change, update `/brand` **in the same chan
 lockstep with `DESIGN.md` / `globals.css`. If a `/brand` route already exists, reconcile into it
 rather than duplicating.
 
-## Ask the user how far to take it (runtime scope question)
+## Decide how far to take it (asked up front)
 
 `/brand` can range from a single-page style guide to a full brand/press kit with downloadable
-collateral. The right scope depends on the handoff, so **ask at the start of Phase 3 with
-`AskUserQuestion`** — don't assume. Offer the tiers below, defaulting to the core style guide and
-adding collateral the user opts into. A `.pptx` deck and email templates are wasted effort for a small
-feature handoff and exactly right for a brand launch — let the user decide.
+collateral. The right scope depends on the handoff, so it's settled **up front in the intake batch**
+(see SKILL.md, "Gather decisions up front") rather than mid-build — by the time you reach Phase 3 you
+already have the answer. Offer the tiers below, defaulting to the core style guide and adding
+collateral the user opts into. A `.pptx` deck and email templates are wasted effort for a small feature
+handoff and exactly right for a brand launch — let the user decide. If the scope somehow wasn't
+captured during intake, ask before building `/brand` rather than assuming.
 
 ## Tier 1 — the core living style guide (always)
 
