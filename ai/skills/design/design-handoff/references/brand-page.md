@@ -28,7 +28,7 @@ rather than duplicating.
 
 `/brand` always includes the **core style guide** (Tier 1). The two opt-in layers — the **brand/press
 kit** (Tier 2) and **marketing collateral** (Tier 3) — are settled **up front in the intake batch** (see
-SKILL.md, "Gather decisions up front") rather than mid-build, so by Phase 3 you already have the answer.
+SKILL.md Phase 0, "Decide up front") rather than mid-build, so by Phase 3 you already have the answer.
 Ask with `AskUserQuestion`:
 
 1. **Scope (multiSelect):** "Beyond the core style guide, what should `/brand` deliver?" — options

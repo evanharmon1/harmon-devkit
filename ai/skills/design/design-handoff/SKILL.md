@@ -28,15 +28,21 @@ merge. Never assume your implementation is correct; the user decides whether it 
 
 ## Definition of done
 
-Copy this checklist into your reply at the **start** of the run and tick each box as you finish it. Do
-not report the handoff complete until every box is checked. The three **gates** are blocking — you may
-not take the action a gate guards until its box is true.
+**Render this in the chat — don't just leave it buried in this file.** At the **start** of the run,
+paste the checklist below into your reply. Re-post it with boxes ticked as you finish each phase, and at
+every **gate** state in the chat whether it **PASSED**, with the **evidence** (the measured numbers, the
+screenshots taken, the user's words). Do **not** declare the handoff done until every box is ticked **in
+the chat** and all four gates show **PASS with evidence**. Keeping the criteria visible in the
+conversation is how you and the user know nothing was skipped.
+
+The four **gates** are blocking: you may not take the action a gate guards until it is green and you
+have shown why in the chat.
 
 Reconciliation
 
 - [ ] Bundle ingested from the `.tar.gz`: README → chat transcript → HTML → `tokens.css`/`site.css` →
       `js/*.jsx` (read for intent and **ported**, never pasted into `src/`)
-- [ ] Framework + router detected; greenfield-vs-brownfield decided
+- [ ] Framework + router detected; greenfield-vs-brownfield decided; up-front questions asked
 - [ ] Tokens merged into `globals.css` by **role** (not export name) — Tailwind v4, OKLCH, three-layer;
       export never blind-pasted
 - [ ] `.dark` authored by hand (brand hue held, neutrals inverted); `--tw-prose-*` mapped if prose is
@@ -48,29 +54,31 @@ Implementation
 - [ ] shadcn/ui + Lucide (named imports) only; styled **exclusively** with semantic tokens (zero
       arbitrary hex / one-off color literals)
 - [ ] States covered: default, empty, loading, error, disabled
-- [ ] Responsive (mobile-first): holds at phone/tablet/desktop with no horizontal overflow;
-      cross-browser verified on Chromium, Firefox, and WebKit (incl. mobile Safari) via Playwright
+- [ ] Responsive (mobile-first): holds at phone/tablet/desktop with no horizontal overflow
 - [ ] `/brand` built/updated in the **same** change (scope chosen up front during intake)
 - [ ] Assets placed (static → repo, user media → R2); fonts self-hosted OFL/Apache `.woff2`; favicons
       generated from the mark
 
-Gates (each blocks the action it guards — do not proceed until true)
+Gates — post **PASS + evidence** in the chat before taking the guarded action
 
-- [ ] **Licensing** (blocks commit): every font/icon/image cleared for commercial use; AI logos
-      flagged; anything unclear stopped, not guessed
-- [ ] **Contrast** (blocks sign-off): static `task lint:design` green **and** rendered ratios measured
-      on the running page — both themes, every text role incl. long-form prose — reported as
-      **numbers**, never "looks fine". WCAG AA (4.5:1 text; 3:1 large/UI).
-- [ ] **Sign-off** (blocks deletion): screenshots shown (both themes, all built states), deltas
-      surfaced, user has **explicitly approved** — not inferred from a green build or your confidence
+- [ ] **① Static contrast** (blocks implementation — Phase 2): `task lint:design` is green; every token
+      pair meets WCAG AA (4.5:1 text, 3:1 large/UI) in **both** themes. _Evidence:_ the checker output.
+- [ ] **② Licensing** (blocks commit — Phase 4): every font/icon/image cleared for commercial use; AI
+      logos flagged; anything unclear stopped, not guessed. _Evidence:_ the per-asset license list.
+- [ ] **③ Verification** (blocks sign-off — Phase 5): `task verify` green and the build compiles;
+      **rendered** contrast measured as **numbers** (both themes, every text role incl. long-form
+      prose); responsive at phone/tablet/desktop with no overflow; cross-browser on
+      Chromium/Firefox/WebKit (incl. mobile Safari). _Evidence:_ the numbers + the screenshot matrix.
+- [ ] **④ Sign-off** (blocks deletion & close-out — Phase 6): screenshots shown (both themes, all
+      states, key breakpoints), deltas surfaced, user has **explicitly approved**. _Evidence:_ the
+      user's approval in the chat — never inferred from a green build or your own confidence.
 
-Close-out (only once the sign-off gate is true)
+Close-out (only once gate ④ is green)
 
-- [ ] `task verify` green and the build compiles; hooks never bypassed (`--no-verify` prohibited)
 - [ ] Handoff bundle deleted (or a thin screenshot + intent note extracted first if states remain)
 - [ ] `docs/design/` and `/brand` updated; DDR flagged if a real design-system decision was made
-- [ ] Conventional Commit on a **feature branch**; PR opened for human review (no direct merge to
-      `main`)
+- [ ] Conventional Commit on a **feature branch**; PR opened for human review; hooks never bypassed
+      (`--no-verify` prohibited); no direct merge to `main`
 
 ## Inputs & stack
 
@@ -82,52 +90,38 @@ Close-out (only once the sign-off gate is true)
   Pages/Workers. Named primary router **TanStack Router**; **React Router**/plain React and **Astro 6**
   fully supported. Favor **shadcn/ui** for components and **Lucide** for icons.
 
-## Detect first: framework, router, design-system state
-
-Before changing anything, read the repo to establish three things — they drive every later
-file-placement decision:
-
-- **Framework + router.** Where `/brand`, routes, and shadcn live differs per framework: TanStack →
-  `src/routes/brand.tsx` + `src/components/ui`; React Router/plain → a normal `/brand` route; Astro →
-  `src/pages/brand.astro` with React **islands** for interactive specimens. Any other framework adapts
-  the same three roles (global stylesheet import, component dir, route entry) — never block on an
-  unrecognized router. Details in `greenfield-bootstrap.md`, `components-and-states.md`,
-  `brand-page.md`.
-- **Greenfield vs brownfield.** A design system is present when `globals.css` has real `:root` semantic
-  tokens **and** a `/brand` route exists → reconcile into it. Otherwise → bootstrap it first (Phase 1).
-- **Where the bundle landed.** Find `docs/design/handoff-*/`; if you can't, ask before proceeding.
-
-## Gather decisions up front (one `AskUserQuestion` batch)
-
-You've now read the design intent and know the framework and greenfield-vs-brownfield — so this is the
-moment to ask **everything you'll need from the user at once, in a single `AskUserQuestion` batch** (it
-takes up to 4 questions). Front-loading lets Phases 1–5 run uninterrupted instead of stopping to ask
-mid-build. Ask about:
-
-- **`/brand` scope** — core style guide → full brand/press kit with collateral (tiers in
-  `brand-page.md`); default to the core style guide.
-- **Any other genuine ambiguity** the chat transcript left open — e.g. which routes/pages are in scope
-  for a feature, whether a specific font/icon set is required, dark mode if not obvious. Only ask what
-  you genuinely can't determine yourself; don't pad the batch.
-
-The **one** decision that can't be front-loaded is the **Phase 6 sign-off** — it is approval of the
-_built_ result, so it necessarily comes after implementation. Settle everything else here.
-
 ---
 
 ## Procedure
 
-Work the phases in order. Each gate blocks the action it guards. Explanations of _why_ live in the
-referenced files — read the reference when you reach its phase.
+Work the phases in order, and **track them in the chat** (see "Definition of done"): post the checklist
+up front, tick boxes as you go, and report each gate's PASS with evidence. Explanations of _why_ live in
+the referenced files — read the reference when you reach its phase.
 
-### Phase 0 — Ingest the bundle
+### Phase 0 — Ingest, detect & decide
 
-Decompress the `.tar.gz` and read in the order its README dictates: `README.md` ("CODING AGENTS: READ
-THIS FIRST") → `chats/chat1.md` (design intent — the bundle's real value) → the entry HTML →
-`tokens.css`/`site.css` → the `js/*.jsx` components → `uploads/` (your inputs, **not** screenshots).
-The code is prototype-grade; read it for structure and intent, then **port** it — don't paste
-`.jsx`/`.html` into `src/`. Do not expect a `tokens.json`, a machine-readable spec, or per-state
-screenshots — none ship. See `ingesting-the-bundle.md`.
+All the up-front orientation happens here, before any building:
+
+1. **Ingest.** Decompress the `.tar.gz` and read in the order its README dictates: `README.md` ("CODING
+   AGENTS: READ THIS FIRST") → `chats/chat1.md` (design intent — the bundle's real value) → the entry
+   HTML → `tokens.css`/`site.css` → the `js/*.jsx` components → `uploads/` (your inputs, **not**
+   screenshots). The code is prototype-grade; read it for structure and intent, then **port** it —
+   don't paste `.jsx`/`.html` into `src/`. Don't expect a `tokens.json`, a machine-readable spec, or
+   per-state screenshots — none ship. Locate the bundle at `docs/design/handoff-*/`; if you can't find
+   it, ask where the export landed before proceeding. (`ingesting-the-bundle.md`)
+2. **Detect framework, router & design-system state** — they drive every later file-placement decision.
+   Router/framework: TanStack → `src/routes/brand.tsx` and `src/components/ui`; React Router/plain → a
+   normal `/brand` route; Astro → `src/pages/brand.astro` with React **islands** for interactive
+   specimens; any other framework maps the same three roles (global stylesheet import, component dir,
+   route entry) — never block on an unrecognized router. Greenfield vs brownfield: a design system is
+   present when `globals.css` has real `:root` semantic tokens **and** a `/brand` route exists →
+   reconcile into it (skip to Phase 2); otherwise → bootstrap first (Phase 1).
+3. **Decide up front — one `AskUserQuestion` batch.** Now that you've read the intent and know the
+   stack, ask **everything you'll need at once** (up to 4 questions) so Phases 1–5 run uninterrupted:
+   the **`/brand` scope** (core guide → brand/press kit → collateral groups; `brand-page.md`), plus any
+   **genuine ambiguity** the transcript left open (routes/pages in scope, a required font/icon set,
+   dark mode if unclear). Only ask what you can't determine yourself. The **one** thing that can't be
+   front-loaded is the Phase 6 **sign-off** — it approves the built result.
 
 ### Phase 1 — Greenfield bootstrap (only if no design system exists)
 
@@ -167,7 +161,7 @@ trademark-able but **not** copyrightable — recommend human edits + a clearance
 become the brand. If any license is unclear, **stop and flag it** rather than guessing. See
 `ethics-and-licensing.md`.
 
-### Phase 5 — Verify — GATE: rendered contrast
+### Phase 5 — Verify — GATE: verification (contrast, responsive, cross-browser)
 
 Run the gates (`task lint:design`, `check`, `verify` — create any that's missing; never `--no-verify`).
 Build, run the app, and screenshot every view in **both light and dark**, for every state, **and across
