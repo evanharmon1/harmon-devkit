@@ -60,7 +60,7 @@ Pre-commit is configured with `no-commit-to-branch` — direct commits to `main`
 - `ai/` — AI assets organized by type: `skills/`, `prompts/`, `agents/`, `rules/`, `evals/`, `tools/`, `workflows/`, `mcp/`, `knowledge/`, `memories/`. Most are placeholder directories for now; `skills/` is the populated one. Skills follow the Agent Skills convention — a `SKILL.md` with YAML frontmatter (`name`, `description`) plus optional `references/`. Current content is a `design/` suite for the Claude Design → code workflow:
   - `skills/design/explore-designs/` — guides using Claude Design to explore design directions (asks about the target frontend stack/tooling).
   - `skills/design/create-design-system/` — placeholder for design-system setup.
-  - `skills/design/design-handoff/` — full skill: reconcile a finished Claude Design export into a real codebase (tokens → shadcn/Tailwind v4 OKLCH, `/brand` page, contrast + licensing gates).
+  - `skills/design/design-handoff/` — full skill: implement a Claude Design `.tar.gz` handoff bundle into a real codebase — either reconcile into an existing design system or **bootstrap a new one** (tokens → shadcn/Tailwind v4 OKLCH, `/brand`, contrast + licensing gates). A lean phased/gated `SKILL.md` plus a `references/` set and bundled `assets/` (a zero-dependency contrast checker + Taskfile snippets).
 - `snippets/` — small reusable code snippets (placeholder).
 - `docs/` — project docs, e.g. the new-project checklist.
 - `test/` — tool configuration used by scans (e.g. `whisperConfig.yml` for Whispers); not actual tests.

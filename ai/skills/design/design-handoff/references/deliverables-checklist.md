@@ -1,0 +1,74 @@
+# Deliverables coverage checklist
+
+A completeness check, **not** a build list. Consult it in **`establish-design-system`** and
+**`evolve-design-system`** mode, and when building **`/brand`**, to make sure you haven't missed a token
+category, component family, or brand asset. **Awareness, not a mandate:** only implement what the
+handoff actually needs — this list prevents _missing_ things, it doesn't force _adding_ everything. It's
+a self-check, **not** part of the chat-tracked Definition of Done. Each line points to the reference
+that explains it.
+
+## Tokens & foundations → `token-reconciliation.md`, `brand-page.md`
+
+- [ ] Color — brand/primary, secondary, accent; neutral ramp; semantic (success/warning/error/info);
+      surfaces (base/card/popover/overlay); foreground (default/muted/on-color); border/input/ring;
+      interactive states; **data-viz / chart palette**; **named gradients**; light **and** dark
+- [ ] Typography — families (display/body/mono); scale; weights; line-height; tracking;
+      heading/body/prose/link/list/code styles; responsive type; font loading and fallbacks
+- [ ] Spacing & sizing — spacing scale; sizing/control heights; container/max-width; layout grid;
+      breakpoints; aspect-ratios
+- [ ] Shape — radius scale; border widths
+- [ ] Elevation — shadow scale; **named z-index layers**
+      (dropdown/sticky/overlay/modal/popover/toast/tooltip); focus ring
+- [ ] Effects — opacity scale; blur/backdrop; overlay/scrim
+- [ ] Motion — durations; easings; transition presets; **named animations**
+      (spinner/skeleton/toast/accordion); reduced-motion variants
+- [ ] Interaction states — hover, focus-visible, active, disabled, loading, selected, error, read-only
+
+## Components (each in all states) → `components-and-states.md`
+
+- [ ] Actions; form inputs; labels and helpers; data display
+      (tables/lists/cards/stats/charts/avatars/badges); feedback and status; overlays and surfaces;
+      navigation; containers and layout; composed patterns (search+filter, bulk actions, user menu,
+      onboarding, consent, paywall)
+
+## Brand identity → `brand-page.md` (Tier 1/2), `ethics-and-licensing.md`
+
+- [ ] Logo system (lockup/mark/wordmark, mono/reversed/responsive, clear-space, min-size, misuse,
+      SVG/PNG/PDF exports)
+- [ ] Brand color values in HEX / RGB / OKLCH / CMYK / Pantone; usage proportions
+- [ ] Brand typography and licensing (OFL/Apache); web/print/fallback; pairings
+- [ ] Voice & tone — personality, tagline, boilerplate (S/M/L), terminology, naming conventions
+- [ ] Visual language — iconography (Lucide), illustration, photography direction, patterns/textures,
+      data-viz style, motion principles
+- [ ] Brand book (web and downloadable PDF) with in-context application examples
+
+## Assets → `assets-fonts-favicons.md`, `brand-page.md`
+
+- [ ] Icon set; favicon (.ico and PNG); app icons (iOS/Android/PWA); apple-touch-icon
+- [ ] Illustrations / graphics (spot, hero, empty-state); patterns / backgrounds
+- [ ] **OG / social share images** (template and per-page variants)
+- [ ] PWA `manifest.json` icons and theme color; splash screens
+
+## Collateral (opt-in groups) → `brand-page.md` (Tier 3)
+
+- [ ] Social & web; email; print; presentations & documents; and the "Other" long tail
+      (motion/video, merch/environmental, product/app-store, audio) — only the groups the user selected
+
+## Design-system docs → `evolving-the-system.md`, `brand-page.md`
+
+- [ ] `DESIGN.md` (intent and soft rules); token reference; component usage docs; accessibility
+      guidelines; **versioning / changelog** (SemVer and DDRs)
+
+## Scoped OUT — belongs to the Claude Design _creation_ skill, not this one
+
+This skill **implements what was handed off**; it doesn't commission the full design program. The
+following are produced _in_ Claude Design and are out of scope here — a separate creation skill owns
+them:
+
+- Page/screen catalog (marketing-site set, auth/account set, full app screens)
+- UX-process artifacts (personas, jobs-to-be-done, IA/sitemaps, user flows/journeys, wireframes,
+  clickable prototypes, usability test plans)
+- Marketing _production_ (vehicle wraps, trade-show booths, swag, printed mailers)
+
+If the handoff bundle happens to include any of these, implement what it contains — just don't treat
+their absence as a gap in _this_ skill.
