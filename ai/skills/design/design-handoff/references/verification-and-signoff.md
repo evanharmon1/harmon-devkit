@@ -1,9 +1,9 @@
 # Verification & sign-off: prove it, get approval, then close out
 
 Read this during **Phases 5–7**. This is where you prove the implementation with numbers and
-screenshots, get the user's explicit approval, and only **then** clean up and open a PR. Three gates
-live here: rendered contrast, sign-off (blocks deleting the bundle), and the no-bypass commit
-discipline.
+screenshots, get the user's explicit approval, and only **then** clean up and open a PR. Two of the
+skill's four gates fall in these phases — **③ Verification** (Phase 5) and **④ Sign-off** (Phase 6); the
+upstream two (**① static contrast** at Phase 2, **② licensing** at Phase 4) are already behind you.
 
 ## Phase 5 — Verify (don't trust a green build)
 
@@ -70,10 +70,16 @@ against.
    `main` are blocked and wrong. The agent **never merges to `main` directly**: open a **PR** for human
    review of the diff.
 
-## Definition-of-done recap (the gates, in order)
+## The four gates, in order
 
-- **Licensing** (Phase 4) blocks **commit** — every asset cleared for commercial use.
-- **Rendered contrast** (Phase 5) measured as **numbers**, both themes.
-- **Sign-off** (Phase 6) blocks **deletion** — explicit user approval, never inferred.
-- **Close-out** (Phase 7): `task verify` green, hooks not bypassed, bundle removed, docs + `/brand`
-  updated, DDR flagged if warranted, Conventional Commit, PR opened (no direct merge to `main`).
+- **① Static contrast** (Phase 2) blocks **implementation** — `task lint:design` green; WCAG AA in both
+  themes.
+- **② Licensing** (Phase 4) blocks **commit** — every font/icon/image cleared for commercial use.
+- **③ Verification** (Phase 5) blocks **sign-off** — `task verify` green and the build compiles;
+  rendered contrast measured as **numbers** (both themes); responsive at phone/tablet/desktop;
+  cross-browser on Chromium/Firefox/WebKit (incl. mobile Safari).
+- **④ Sign-off** (Phase 6) blocks **deletion & close-out** — explicit user approval, never inferred.
+
+Then **close-out** (Phase 7 — not a gate): bundle removed, docs and `/brand` updated, DDR + SemVer bump
+recorded, Conventional Commit, PR opened — hooks never bypassed (`--no-verify` prohibited), no direct
+merge to `main`.
