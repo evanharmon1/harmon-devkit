@@ -87,8 +87,8 @@ the bundle's `.jsx`/`.html` into `src/`.
 ## After ingest
 
 Inventory what you got — the `tokens.css` palette/scales, the component list under `js/`, the fonts
-referenced, the `uploads/` — then **detect the repo's framework + router** (see SKILL.md) so every
-later file-placement decision is correct, and decide **greenfield vs brownfield**
-(`greenfield-bootstrap.md` if no design system exists yet). Leave the bundle in
-`docs/design/handoff-<feature>/` **untouched**: it is the reference the user signs off against in
-Phase 6 and is not removed until Phase 7, after explicit approval.
+referenced, the `uploads/` — then **detect the framework, router, and mode** (SKILL.md Phase 0):
+`establish-design-system` (no system yet — `greenfield-bootstrap.md`), `evolve-design-system`
+(changing the system — `evolving-the-system.md`), or `implement-feature` (a feature against an existing
+system). Leave the bundle in `docs/design/handoff-<feature>/` **untouched**: it is the reference the
+user signs off against in Phase 6 and is not removed until Phase 7, after explicit approval.
