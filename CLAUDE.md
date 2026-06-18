@@ -6,6 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Harmon DevKit — a personal developer kit of reusable templates and boilerplates (Docker Compose, Ansible, shell scripts, serverless functions, and more), standalone scripts, and AI assets. This is not a monorepo — it's a flat collection of independent templates organized by category under `templates/`, with scripts under `scripts/` and AI assets under `ai/`.
 
+## harmon-stack
+
+One of five repos in **harmon-stack** (Evan's homelab + dev-ops stack):
+[harmon-init](https://github.com/evanharmon1/harmon-init) (repo template),
+[**harmon-devkit**](https://github.com/evanharmon1/harmon-devkit) (this repo — boilerplates/scripts/AI assets),
+[harmon-dotfiles](https://github.com/evanharmon1/harmon-dotfiles) (chezmoi dotfiles),
+[harmon-ops](https://github.com/evanharmon1/harmon-ops) (machine setup),
+[harmon-infra](https://github.com/harmonops/harmon-infra) (homelab IaC). See the README for the full table.
+
 ## Commands
 
 The primary task runner is [Taskfile](https://taskfile.dev/) (Go Task), not npm scripts (most npm scripts are TODO stubs).
