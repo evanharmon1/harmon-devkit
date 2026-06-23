@@ -59,6 +59,7 @@ See [`templates/README.md`](./templates/README.md) for conventions and per-categ
 | [`design/explore-designs`](./ai/skills/design/explore-designs/)           | Draft       | Guides using Claude Design to explore design directions across your frontend stack                                                                                                                       |
 | [`design/create-design-system`](./ai/skills/design/create-design-system/) | Placeholder | Design-system setup                                                                                                                                                                                      |
 | [`design/design-handoff`](./ai/skills/design/design-handoff/)             | Ready       | Implements a Claude Design `.tar.gz` handoff into a real codebase — reconcile an existing design system or bootstrap a new one (tokens → shadcn/Tailwind v4 OKLCH, `/brand`, contrast + licensing gates) |
+| [`repo/standardize-repo`](./ai/skills/repo/standardize-repo/)             | Ready       | Applies the [harmon-init](https://github.com/evanharmon1/harmon-init) Copier template's conventions to a repo — scaffold a new repo, adopt the template into an existing one, or audit drift from the standards. Bundles the authoritative repo-conventions catalog.       |
 
 ## Inspired by Other Boilerplate Repos
 
