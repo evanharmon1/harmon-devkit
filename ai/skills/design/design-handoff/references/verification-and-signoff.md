@@ -53,18 +53,18 @@ against.
 
 ## Phase 7 — Close out (only after explicit approval)
 
-1. **Delete the bundle.** Once approved, delete `docs/design/handoff-<feature>/` so a stale runnable
+1. **Delete the bundle.** Once approved, delete `specs/handoff-<feature>/` so a stale runnable
    snapshot can't later mislead an agent into treating it as a source of truth. The one exception: if
    the design includes states not yet built, extract a _thin_ screenshot + intent note into the
    relevant spec first, then delete the rest. The durable records are the merged code,
    `DESIGN.md`/`globals.css`, `/brand`, and any DDR.
-2. **Update the docs.** `docs/design/` (`brand.md`, `design-system.md`, `components.md`,
-   `accessibility.md`, `ux.md`) and the `/brand` page whenever brand-level things changed — keep them
-   in lockstep with `DESIGN.md`/`globals.css`. Update `README.md` if new scripts or usage were
-   introduced.
+2. **Update the docs.** `docs/architecture/design-language.md` (the visual + UX design language —
+   brand, design system, components, accessibility, UX) and the `/brand` page whenever brand-level
+   things changed — keep them in lockstep with `DESIGN.md`/`globals.css`. Update `README.md` if new
+   scripts or usage were introduced.
 3. **Flag decisions.** If the design embodied a genuine, debatable design-system decision (a new token
    architecture, a palette-philosophy shift, a vendor choice), tell the user it warrants a **DDR** in
-   `/decisions/`. Architecture decisions don't belong in this skill or in `DESIGN.md` prose — they
+   `docs/decisions/`. Architecture decisions don't belong in this skill or in `DESIGN.md` prose — they
    belong in a decision record.
 4. **Commit & PR.** Use **Conventional Commits**. Commit on a **feature branch** — direct commits to
    `main` are blocked and wrong. The agent **never merges to `main` directly**: open a **PR** for human

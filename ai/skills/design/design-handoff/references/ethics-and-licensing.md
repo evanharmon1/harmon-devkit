@@ -66,7 +66,7 @@ the user chooses consciously, and record genuine decisions as a **DDR** (see
   is just CSS.
 
 These are conscious tradeoffs, not blockers. A genuine, debatable choice (a backend, a token
-architecture, a palette-philosophy shift) warrants a DDR in `/decisions/` — not prose buried in
+architecture, a palette-philosophy shift) warrants a DDR in `docs/decisions/` — not prose buried in
 `DESIGN.md`.
 
 ## The gate

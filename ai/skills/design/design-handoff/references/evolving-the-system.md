@@ -44,7 +44,7 @@ Treat tokens like API endpoints — version, alias, and deprecate slowly:
 
 ## 4. Record a DDR with the version bump
 
-Every system change is a **DDR** in `/decisions/` — your design-system changelog and governance trail.
+Every system change is a **DDR** in `docs/decisions/` — your design-system changelog and governance trail.
 A token-change DDR carries: a unique ID (e.g. `DDR-0xx`), status, context (why the change), the decision
 (the exact token delta), alternatives considered, consequences (which components are affected, what
 migration is needed), and the resulting **SemVer bump**. DDRs are append-only (the ADR tradition) — if a
