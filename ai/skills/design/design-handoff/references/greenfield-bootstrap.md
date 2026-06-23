@@ -24,7 +24,7 @@ existing `globals.css` (`token-reconciliation.md`).
 2. A starter `src/styles/globals.css` in shadcn three-layer OKLCH form (default neutral tokens — Phase
    2 replaces the _values_ with the design's).
 3. A `/brand` route stub (filled in during Phase 3 — see `brand-page.md`).
-4. `DESIGN.md` (root, AI-facing intent) and `docs/design/` human docs.
+4. `DESIGN.md` (root, AI-facing intent) and `docs/architecture/design-language.md` human docs.
 5. The design Taskfile gates: `scripts/check-contrast.mjs` copied in, and `lint:design` /
    `ingest:design` merged into `Taskfile.yml`.
 
@@ -92,8 +92,8 @@ pnpm dlx shadcn@latest init             # configures components.json + path alia
   palette, type scale, spacing, radii, component rules, and the prose "do's and don'ts" tokens can't
   capture. Phase 2/3 fill it from the design; `globals.css` wins for _runtime_ values, `DESIGN.md`
   carries _intent_.
-- **`docs/design/`** — human-facing docs: `brand.md`, `design-system.md`, `components.md`,
-  `accessibility.md`, `ux.md`. Stubs are fine now; they grow as the design lands.
+- **`docs/architecture/design-language.md`** — the human-facing visual + UX design language (brand,
+  design system, components, accessibility, UX). A stub is fine now; it grows as the design lands.
 - **`/brand`** — create the route stub now; build it out in Phase 3 (`brand-page.md`).
 
 ## Wire the quality gates

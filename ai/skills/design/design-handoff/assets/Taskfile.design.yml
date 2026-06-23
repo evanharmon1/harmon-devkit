@@ -28,9 +28,9 @@ tasks:
         src 2>/dev/null
 
   ingest:design:
-    desc: Decompress a Claude Design handoff .tar.gz into docs/design/
+    desc: Decompress a Claude Design handoff .tar.gz into specs/
     vars:
-      DEST: '{{.DEST | default "docs/design"}}'
+      DEST: '{{.DEST | default "specs"}}'
     requires:
       vars: [BUNDLE]
     cmds:

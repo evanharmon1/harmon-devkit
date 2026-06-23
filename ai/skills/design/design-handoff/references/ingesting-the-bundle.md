@@ -19,13 +19,13 @@ the bundle treated as a proposal.
 
 "Handoff to Claude Code" produces a **gzipped tarball** (`.tar.gz`, served as `application/gzip`) —
 **not** a `.zip`. (Claude Design's separate "Download as .zip" menu item is a different raw-assets
-export; the coding handoff is the tarball.) Decompress it into the repo's design folder:
+export; the coding handoff is the tarball.) Decompress it into the repo's `specs/` folder:
 
 ```bash
-tar -xzf <bundle>.tar.gz -C docs/design/        # or: task ingest:design BUNDLE=<bundle>.tar.gz
+tar -xzf <bundle>.tar.gz -C specs/        # or: task ingest:design BUNDLE=<bundle>.tar.gz
 ```
 
-It extracts to a single project directory. Move/rename it to `docs/design/handoff-<feature>/`.
+It extracts to a single project directory. Move/rename it to `specs/handoff-<feature>/`.
 
 ## Anatomy (verified, current as of mid-2026)
 
@@ -90,5 +90,5 @@ Inventory what you got — the `tokens.css` palette/scales, the component list u
 referenced, the `uploads/` — then **detect the framework, router, and mode** (SKILL.md Phase 0):
 `establish-design-system` (no system yet — `greenfield-bootstrap.md`), `evolve-design-system`
 (changing the system — `evolving-the-system.md`), or `implement-feature` (a feature against an existing
-system). Leave the bundle in `docs/design/handoff-<feature>/` **untouched**: it is the reference the
+system). Leave the bundle in `specs/handoff-<feature>/` **untouched**: it is the reference the
 user signs off against in Phase 6 and is not removed until Phase 7, after explicit approval.

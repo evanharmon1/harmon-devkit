@@ -91,15 +91,15 @@ Gates — post **PASS + evidence** in the chat before taking the guarded action
 Close-out (only once gate ④ is green)
 
 - [ ] Handoff bundle deleted (or a thin screenshot + intent note extracted first if states remain)
-- [ ] `docs/design/` and `/brand` updated; a system change recorded as a **DDR with a SemVer bump**
+- [ ] `docs/architecture/design-language.md` and `/brand` updated; a system change recorded as a **DDR with a SemVer bump**
 - [ ] Conventional Commit on a **feature branch**; PR opened for human review; hooks never bypassed
       (`--no-verify` prohibited); no direct merge to `main`
 
 ## Inputs & stack
 
-- A handoff bundle, usually unpacked to `docs/design/handoff-<feature>/`. If you can't find one, ask
+- A handoff bundle, usually unpacked to `specs/handoff-<feature>/`. If you can't find one, ask
   the user where the export landed (or whether they've exported yet) before proceeding.
-- The existing repo: `DESIGN.md` (root), `src/styles/globals.css`, `docs/design/`, `Taskfile.yml`, and
+- The existing repo: `DESIGN.md` (root), `src/styles/globals.css`, `docs/architecture/design-language.md`, `Taskfile.yml`, and
   the project's `CLAUDE.md`.
 - **Stack target:** TypeScript, React, Vite, pnpm, Tailwind CSS v4, shadcn/ui, Lucide, Cloudflare
   Pages/Workers. Named primary router **TanStack Router**; **React Router**/plain React and **Astro 6**
@@ -124,7 +124,7 @@ All the up-front orientation happens here, before any building:
    whatever is actually present in that spirit (intent/README → transcript → markup → tokens → assets),
    and adapt if a piece is named or shaped differently. The prototype code is prototype-grade — read it
    for structure and intent, then **port** it; don't paste markup into `src/`. Locate the bundle (often
-   `docs/design/handoff-*/`); if you can't find it, ask where the export landed. (`ingesting-the-bundle.md`)
+   `specs/handoff-*/`); if you can't find it, ask where the export landed. (`ingesting-the-bundle.md`)
 2. **Detect mode, framework & router.** **Mode** — `establish-design-system` (no design system: no real `:root` tokens
    in `globals.css` and no `/brand` route), `evolve-design-system` (a system exists and the bundle is
    token/brand-dominant, or intent says "update the design system"), or `implement-feature` (a system
@@ -147,7 +147,7 @@ All the up-front orientation happens here, before any building:
 
 If detection found no design system, stand one up before reconciling: install and configure Tailwind v4
 and shadcn for the detected framework, let `shadcn init` write the default three-layer `globals.css`,
-scaffold the `/brand` route, `DESIGN.md`, and `docs/design/`, copy `scripts/check-contrast.mjs`, and add
+scaffold the `/brand` route, `DESIGN.md`, and `docs/architecture/design-language.md`, copy `scripts/check-contrast.mjs`, and add
 the design Taskfile tasks. **Normalize whatever the bundle emits** (often HSL or inline values) into the
 canonical OKLCH three-layer form, and record a **DDR establishing the system at v1.0.0**. Assumes a
 working frontend app already exists. Use `deliverables-checklist.md` to confirm the **full** token and
@@ -215,8 +215,8 @@ the user explicitly approves.** The bundle stays fully in place through this ste
 
 ### Phase 7 — Close out (only after approval)
 
-Delete `docs/design/handoff-<feature>/` (or extract a thin screenshot + intent note first if states
-remain), update `docs/design/` and `/brand`, and record a **DDR (with a SemVer bump)** in `/decisions/`
+Delete `specs/handoff-<feature>/` (or extract a thin screenshot + intent note first if states
+remain), update `docs/architecture/design-language.md` and `/brand`, and record a **DDR (with a SemVer bump)** in `docs/decisions/`
 for any design-system change — `establish-design-system` (v1.0.0), `evolve-design-system` (patch/minor/major), or a feature token
 extension. Commit with Conventional Commits on a **feature branch** (direct
 commits to `main` are blocked) and open a **PR** for human review — never merge to `main` directly. See
