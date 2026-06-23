@@ -241,14 +241,26 @@ matches `<project_type>`:
 
 ## 4. Secrets & environment
 
-- [ ] **[human-only]** For local `.env` needs, use **1Password** (`op inject` /
-      `op run`, or the 1Password Developer Environments feature). Commit only
-      `.env.example`-style files — never real secrets. (Requires an
-      authenticated `op` session, so treat as human-driven.)
+- [ ] **[human-only]** For local `.env` needs, use **1Password Environments**
+      (mounts a virtual `.env` over a UNIX pipe — values never hit disk or git)
+      or `op run` / `op inject`. Commit only `.env.example`-style files.
 
-- [ ] **[human-only]** (devcontainer projects) Devcontainer secrets land in
-      `.devcontainer/devcontainer.env` via `init-env.sh` (1Password locally, host
-      env on Coder) — never committed.
+- [ ] **[human-only]** (devcontainer projects) Devcontainer secrets: create a
+      **1Password environment** with destination "Local .env file" mounted at
+      `.devcontainer/devcontainer.env` (and `.devcontainer/dev/devcontainer.env`),
+      holding `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_DECK_TELEGRAM_KEY`
+      (+ `TS_AUTHKEY` for the dev profile; `ANTHROPIC_API_KEY` is forbidden).
+      `init-env.sh` only enforces the per-profile allow-list and seeds from the
+      **host env** (the Coder/Codespaces path) — it does **not** call `op`. Full
+      walkthrough in the generated repo's `docs/guides/devcontainers.md`.
+
+- [ ] **[human-only]** (Coder) To run the devcontainer in Coder, create a
+      workspace from the **org-level Coder devcontainer template** (not part of
+      the repo — canonical example: `terraform/coder/devcontainer/` in
+      harmonops/harmon-infra) with its `repo` parameter set to this repo and the
+      secret parameters above (Coder passes them as host env → `init-env.sh`).
+      The build pulls `<devcontainer_image>` from GHCR as a cache (private
+      package ⇒ give the builder a read token; a miss only slows the first build).
 
 ---
 

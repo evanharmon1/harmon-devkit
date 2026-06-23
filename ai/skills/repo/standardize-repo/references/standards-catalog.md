@@ -217,13 +217,18 @@ Shared structure:
   precedence) + **`config/claude-hooks/`** (5 hooks: `protect-files.sh`,
   `block-no-verify.sh`, `enforce-conventional-commits.sh`, `post-edit-format.sh`,
   `session-start-context.sh`, installed to `/etc/claude-code/hooks/`).
-- **`scripts/init-env.sh`** — runs as `initializeCommand` on the HOST; seeds
-  `.devcontainer/**/devcontainer.env` from **1Password** locally (or host env on
-  Coder/Codespaces). Per-profile allow-list of managed vars (`GH_TOKEN`,
-  `CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_DECK_TELEGRAM_KEY`, `TS_AUTHKEY` dev-only);
-  **strips `ANTHROPIC_API_KEY` unconditionally** (it silently overrides
-  `CLAUDE_CODE_OAUTH_TOKEN`) and evicts forbidden vars (bot strips `TS_AUTHKEY`).
-  Portable to BSD/macOS sed.
+- **Secret standard — 1Password Environments. [manual]** The values in
+  `.devcontainer/devcontainer.env` (+ `dev/devcontainer.env`) come from a
+  **1Password environment** with destination "Local .env file" mounted at those
+  paths — a virtual `.env` over a UNIX pipe, never written to disk or git. Vars:
+  `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_DECK_TELEGRAM_KEY` (+ `TS_AUTHKEY`
+  dev-only).
+- **`scripts/init-env.sh`** — runs as `initializeCommand` on the HOST. It does
+  **not** call `op`; it enforces the per-profile allow-list (evicts forbidden
+  vars — bot strips `TS_AUTHKEY`; **strips `ANTHROPIC_API_KEY` unconditionally**
+  since it silently overrides `CLAUDE_CODE_OAUTH_TOKEN`) and seeds the env-file
+  from the **host environment** — the path used on **Coder/Codespaces**, where
+  secrets arrive as workspace/template parameters. Portable to BSD/macOS sed.
 - **`post-create.sh` / `post-start.sh`** (+ `dev/` variants) and
   `scripts/post-create-common.sh`; bot sets git identity to `<user>-bot`.
 - **`hooks/post-checkout`** — repo-managed git hook (auto-installs node_modules in
@@ -231,6 +236,12 @@ Shared structure:
 - **GHCR prebuild:** images push to `ghcr.io/<org>/<slug>-devcontainer[-dev]`
   (`devcontainer_image`) via the `devcontainer-build.yml` workflow as build
   caches. **[manual]** GHCR publishing permission + first prebuild on merge.
+- **Coder. [manual]** The devcontainers are Coder-ready (CODER passthrough;
+  `config/` baked to `/usr/local/share/devcontainer-config/` to survive Coder's
+  `/tmp` shadowing). The Coder workspace *template* is **org-level infra, not
+  per-repo** (canonical: harmon-infra `terraform/coder/devcontainer/`): point its
+  `repo` + secret parameters at the repo → host env → `init-env.sh`. The
+  generated repo's `docs/guides/devcontainers.md` has the full walkthrough.
 - **`devcontainer.env`** is gitignored; only `devcontainer.env.example` is
   committed. **[manual]** to populate real secrets.
 - Smoke tests: `task test:devcontainer:root` / `test:devcontainer:dev`.
