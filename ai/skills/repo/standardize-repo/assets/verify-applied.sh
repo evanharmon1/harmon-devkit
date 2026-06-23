@@ -104,11 +104,26 @@ fi
 # while bash bare-word tests ([[ true ]]) are not. Block markers anchor on the
 # jinja keyword set, including the raw/endraw the template actually emits and the
 # [%- whitespace-control form used in LICENSE.jinja.
+#
+# Enumerate files the way gitleaks (step 5) does — honoring .gitignore — so
+# vendored dependencies in gitignored dirs cannot false-trip the scan: .venv
+# ships Ansible's own .j2/jinja templates and plugin docs, .terraform caches
+# provider source, node_modules is third-party. `git ls-files --cached --others
+# --exclude-standard` lists tracked AND untracked-but-not-ignored files, so a
+# freshly rendered, not-yet-staged repo is still fully checked. Fall back to a
+# recursive grep (with explicit excludes) when the target is not a git work tree.
 varpfx='project_|author_|github_|organization|repo_url|ci_runner|include_|use_|devcontainer|git_init|bunch_add|obsidian_|run_task_install|projects_directory|bunches_directory|license|current_|country|state'
 blockkw='if|for|set|else|elif|endif|endfor|endset|raw|endraw|macro|endmacro|block|endblock|include|extends|with|endwith|filter|endfilter'
-leaks=$(grep -rIlE \
-    "\[\[-? ($varpfx)|\{\{-? ($varpfx)|\[%-? ($blockkw) " \
-    --exclude-dir=.git --exclude-dir=node_modules . 2>/dev/null || true)
+marker_re="\[\[-? ($varpfx)|\{\{-? ($varpfx)|\[%-? ($blockkw) "
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    leaks=$(git ls-files --cached --others --exclude-standard -z 2>/dev/null |
+        xargs -0 grep -IlE "$marker_re" 2>/dev/null || true)
+else
+    leaks=$(grep -rIlE "$marker_re" \
+        --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv \
+        --exclude-dir=.terraform --exclude-dir=.task --exclude-dir=.worktrees \
+        --exclude-dir=dist . 2>/dev/null || true)
+fi
 if [ -n "$leaks" ]; then
     err "unrendered template markers found in:"
     # Print one path per line for readability; indented so it groups under the FAIL.
