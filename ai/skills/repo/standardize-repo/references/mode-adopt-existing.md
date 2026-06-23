@@ -196,15 +196,10 @@ These are the recurring drifts harmon-init exists to fix (source:
    `docs/runbooks/` (**plural**), and `docs/CHECKLIST.md`. Don't delete existing
    docs with real content — fold them into the standard locations.
 
-3. **Rename drifted YAML extensions to `.yml`.** The standard is `.yml` for
-   `Taskfile`, `lefthook`, and everything under `.github/workflows/`. Repos that
-   drifted to `.yaml` must be renamed (use `git mv` to preserve history):
-
-   ```bash
-   [ -f Taskfile.yaml ] && git mv Taskfile.yaml Taskfile.yml
-   [ -f lefthook.yaml ] && git mv lefthook.yaml lefthook.yml
-   for f in .github/workflows/*.yaml; do [ -e "$f" ] && git mv "$f" "${f%.yaml}.yml"; done
-   ```
+3. **Leave YAML extensions alone.** Do not rename `.yaml`↔`.yml`. Each tool
+   keeps its own conventional extension (`Taskfile.yml`, `.coderabbit.yaml`,
+   GitHub Actions accepts either) — homogenizing extensions across the repo is
+   not a goal.
 
    (Note `.coderabbit.yaml` is intentionally `.yaml` — leave it.) After renaming,
    update any branch-ruleset required-check contexts that referenced the old job

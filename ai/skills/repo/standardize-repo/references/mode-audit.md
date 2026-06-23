@@ -181,11 +181,10 @@ the required check — the template renames the devcontainer job to
 rename the devcontainer job, and align CI job names to `verify` + `security`.
 Severity: **blocker** (wrong contexts mean the gate is unenforced or unsatisfiable).
 
-**E. `.yaml` → `.yml` workflow extension.** Standard extension is `.yml` for
-`Taskfile`, `lefthook`, and everything in `.github/workflows/` (matches the
-harmon-init root + template). Old repos use `.yaml`. Fix: `git mv` each
-`*.yaml` → `*.yml` (re-templating renames them, but only for files copier owns).
-Severity: **should**.
+**E. YAML file extensions — NOT drift; do not flag.** `.yml` vs `.yaml` is left
+to each tool's own convention (`Taskfile.yml`, `.coderabbit.yaml`, GitHub Actions
+accepts either). Never rename a tool's file to homogenize extensions across the
+repo. Severity: **none** (listed only so audits don't wrongly raise it).
 
 **F. Duplicate / `-max` Claude workflows to consolidate.** Standard set is exactly
 three: `claude-plan.yml`, `claude-implement.yml`, `claude-review.yml`. Old repos
@@ -256,7 +255,7 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
 
    - **Non-templated bits — hand-edit.** Copier won't *delete* or *move* files,
      so renames and relocations are manual: `git mv docs/specs specs`,
-     `git mv docs/runbook docs/runbooks`, `git mv *.yaml *.yml`, delete `-max`
+     `git mv docs/runbook docs/runbooks`, delete `-max`
      duplicate workflows, re-import the branch ruleset JSON, repoint the
      AGENTS.md symlinks. Use the gap report's Reconciliation plan as the work
      list.

@@ -69,8 +69,9 @@ Repo-root siblings of `docs/` (deliberately NOT under `docs/`):
 
 ### 1.2 Taskfile (`Taskfile.yml`, go-task v3)
 
-**[copier]** generates `Taskfile.yml`. (Live repos may use `Taskfile.yaml` — both
-extensions are valid; the template emits `.yml`.) The Taskfile is the **single
+**[copier]** generates `Taskfile.yml`. (`Taskfile.yaml` is equally valid — go-task
+accepts both; use whichever extension the tool conventionally uses, don't
+normalize.) The Taskfile is the **single
 source of truth for commands** — lefthook hooks and CI workflows delegate to
 `task` targets so local/CI/hook runs are byte-identical. Never reimplement command
 logic in a workflow or a hook.
@@ -121,8 +122,9 @@ Notable command bodies (for an auditor checking they match):
   conventional uppercase root files keep their names: `README.md`, `AGENTS.md`,
   `DESIGN.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
   `LICENSE`, `CHECKLIST.md`. **[copier]**
-- **YAML uses `.yml`** (not `.yaml`) per `conventions.md`. (Live repos diverge —
-  see Part 3.)
+- **YAML extensions follow each tool's own convention** — no repo-wide
+  `.yml`-vs-`.yaml` normalization (go-task → `Taskfile.yml`, CodeRabbit →
+  `.coderabbit.yaml`). Don't rename a tool's file to homogenize extensions.
 - **Feature branches only.** Direct commits to `main` are blocked by the
   `guard:no-commit-to-main` pre-commit hook AND the branch ruleset. **[copier]**
   for the hook/ruleset file; **[manual]** to import the ruleset to GitHub.
@@ -519,10 +521,9 @@ a repo being *brought up to current standard* would update them:
 - **Symlink direction flipped:** live repos have `AGENTS.md -> CLAUDE.md` (and
   `GEMINI.md -> CLAUDE.md`), keeping the real content in `CLAUDE.md`. The current
   template makes **`AGENTS.md` canonical** with the others symlinked to it.
-- **File extensions:** live repos use `Taskfile.yaml` / `lefthook.yaml` /
-  `.github/workflows/*.yaml`; the current template emits `Taskfile.yml`,
-  `lefthook.yml`, and `.yml` workflows (and `conventions.md` mandates `.yml`).
-  Both extensions are functionally valid.
+- **File extensions (not drift):** repos vary between `.yml` and `.yaml`
+  (e.g. `Taskfile.yaml` vs `Taskfile.yml`). This is by design — use whichever
+  extension each tool conventionally uses; never normalize or flag it.
 - **Older docs layout:** live repos have flat top-level docs (`docs/security.md`,
   `docs/branchProtection.md` (camelCase!), `docs/containerUpdates.md`,
   `docs/dependencyUpdates.md`, `docs/architecture/architecture.md`) instead of the
