@@ -211,12 +211,19 @@ Shared structure:
 - **`devcontainer.json` `features`:** python 3.14, docker-in-docker, github-cli,
   go-task, 1password; terraform feature when `include_terraform`; tailscale only
   in dev.
-- **`config/`** — baked dotfiles (zshrc, starship, tmux, zellij, micro, gitconfig,
-  television, agent-deck) + **`config/claude-settings.json`** (installed as Claude
-  Code **managed settings** at `/etc/claude-code/managed-settings.json`, highest
-  precedence) + **`config/claude-hooks/`** (5 hooks: `protect-files.sh`,
-  `block-no-verify.sh`, `enforce-conventional-commits.sh`, `post-edit-format.sh`,
-  `session-start-context.sh`, installed to `/etc/claude-code/hooks/`).
+- **`devcontainer.json` `hostRequirements`:** a minimum floor (`cpus: 2`,
+  `memory: 4gb`) on both profiles — a hard gate (Codespaces won't offer a smaller
+  machine; VS Code warns; Coder ignores it), not a comfort target. Recommended
+  sizing lives in `docs/guides/devcontainer-performance.md`.
+- **`config/`** — baked dotfiles (zshrc, shell-aliases, starship, tmux, zellij,
+  micro, gitconfig, television, agent-deck) + **`config/claude-settings.json`**
+  (installed as Claude Code **managed settings** at
+  `/etc/claude-code/managed-settings.json`, highest precedence) +
+  **`config/claude-hooks/`** (5 hooks: `protect-files.sh`, `block-no-verify.sh`,
+  `enforce-conventional-commits.sh`, `post-edit-format.sh`,
+  `session-start-context.sh`, installed to `/etc/claude-code/hooks/`;
+  `post-edit-format` + `enforce-conventional-commits` delegate to the `format:file`
+  / `lint:commit-msg:text` Taskfile targets).
 - **Secret standard — 1Password Environments. [manual]** The values in
   `.devcontainer/devcontainer.env` (+ `dev/devcontainer.env`) come from a
   **1Password environment** with destination "Local .env file" mounted at those
@@ -313,7 +320,7 @@ Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKE
 - **Renovate, NOT Dependabot** for version updates. CHECKLIST explicitly says
   enable Dependabot *alerts* + Private vulnerability reporting but **do NOT add
   `dependabot.yml`** — Renovate owns updates. **[manual]** repo settings.
-- **`CODEOWNERS`** = `* @<author_git_provider_username>`. **[copier]**
+- **`CODEOWNERS`** = `* @<code_owner>` — an asked question that defaults to `github_org`. **[copier]**
 - **Secrets via 1Password** locally (`op run`/`op inject`); CI reads Actions
   secrets. **`.env` is fully gitignored** (`.env`, `**/.env`, `.env.*`); commit
   only `.env.example`-style files. **[copier]** gitignore; **[manual]** wiring.
