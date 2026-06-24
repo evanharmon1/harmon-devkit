@@ -104,7 +104,16 @@ Universal task targets every repo has (from the template):
 `test`, `security`, `security:secrets`, `security:audit`, `security:sast`
 (Snyk), `security:sca` (Snyk), `bootstrap`, `install`, `install:hooks`,
 `release:init`, `release:patch`, `release:minor`, `release:major`, `clean`,
-`status` (+ `status:git|gh|code|env`), `util:bunch-add`, `util:obsidian-add`.
+`status` (+ `status:git|gh|code|env`), `status:setup`, `util:bunch-add`,
+`util:obsidian-add`.
+
+`status:setup` is a **setup-completeness audit** (run by hand, not part of the
+default dashboard): it checks the repo against `docs/CHECKLIST.md` and reports
+✓/✗/?/– per item across GitHub config (ruleset, Dependabot alerts, private vuln
+reporting, Renovate/CodeRabbit apps, Actions secrets/variables by name only,
+GHCR image, linked Project, release), toolchain (`brew bundle check`),
+devcontainer profiles, and dev environment (1Password CLI, direnv). Useful as a
+quick first pass when auditing an already-standardized repo.
 
 Notable command bodies (for an auditor checking they match):
 
