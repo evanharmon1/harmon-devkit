@@ -245,6 +245,19 @@ default; `task release:*` stays a manual override); stale `CHECKLIST.md`
 workspace/bunch/slug files and the repo slug. Map each to its catalog area and
 assign severity by the §2 rubric.
 
+**J. Missing universal Taskfile targets (e.g. `status:setup`).** Every
+standardized repo defines the universal targets from
+[`standards-catalog.md`](./standards-catalog.md) §1.2 regardless of
+`project_type` — notably `verify`, `check`, `security`, `install:hooks`, and
+**`status:setup`** (the setup-completeness audit, `./scripts/status.sh setup`).
+Repos whose `Taskfile` / `scripts/status.sh` predate or forked away from the
+template often lack `status:setup` (the older `status.sh` had no `setup`
+section). Detect by listing targets (`task --list-all`) and checking the
+universal set; `assets/verify-applied.sh` enforces this. Fix: port the
+setup-check helpers + the "Setup Completeness" section from the template's
+`scripts/status.sh` (preserving any repo-specific sections) and add the
+`status:setup` task. Severity: **should**.
+
 ---
 
 ## 4. Fix flow
