@@ -43,14 +43,16 @@ push so the remote exists.
 
 ## 2. GitHub repo settings
 
-- [ ] **[scriptable via gh]** Import the branch ruleset that protects `main`
+- [ ] **[manual — GitHub UI]** Import the branch ruleset that protects `main`
       (required reviews + the `verify`/`security` status checks). The JSON is
-      generated into the repo's `.github/`:
+      generated into the repo's `.github/`. Import it via the UI:
+      **Settings → Rules → Rulesets → New ruleset ▸ Import a ruleset** → select
+      `.github/Branch Protection Ruleset - Protect Main.json`. To change an
+      existing ruleset, edit it in the UI — don't re-import.
 
-  ```bash
-  gh api "repos/<org>/<repo>/rulesets" --method POST \
-    --input ".github/Branch Protection Ruleset - Protect Main.json"
-  ```
+  > Avoid `gh api … rulesets`: `POST` is **not idempotent** (re-running creates a
+  > duplicate ruleset) and both `POST`/`PUT` currently reject the `merge_queue`
+  > rule (`422 Invalid rule 'merge_queue'`). The UI import handles every rule type.
 
 - [ ] **[scriptable via gh]** Enable **Dependabot alerts**. Do NOT add a
       `dependabot.yml` — Renovate owns version updates; Dependabot is alerts-only.
