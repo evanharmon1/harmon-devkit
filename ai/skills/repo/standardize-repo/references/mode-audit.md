@@ -206,6 +206,35 @@ copies use `mapfile` + `grep -P` and a brittle self-skip. Fix: replace with the
 template version (`$TEMPLATE/scripts/lint-hygiene.sh`). Severity: **blocker** if
 `task lint:hygiene` errors on macOS; otherwise **should**.
 
+**I. Brewfile ↔ local-tooling parity (run-locally goal).** The repo must be able
+to run its tooling on a **bare host**, not only in the devcontainer (catalog 1.11
+"Local ↔ devcontainer parity"). Every binary the `Taskfile`, lefthook hooks, and
+`scripts/` invoke must be installable via the `Brewfile`; when a devcontainer
+exists, the same toolset must also be in the devcontainer `Dockerfile`. The
+recurring miss: a binary added to the `Dockerfile` (so it works in-container) but
+never added to the `Brewfile`, so the matching `task` fails on a fresh host
+(observed with `gum` — the `status` dashboard renderer — and `television`/`tv` —
+the interactive `task` menu; also `tokei`). Build the invoked-tool set and diff it
+against the `Brewfile`:
+
+```bash
+# Tools the repo invokes (tasks + hooks + scripts), then what Brewfile installs
+grep -rhoE '\b(gum|tv|television|tokei|jq|yq|fzf|fd|ripgrep|bat|shfmt|shellcheck|actionlint|yamllint|gitleaks|snyk|hadolint|lychee|direnv|terraform|terraform-docs|tflint|black|ansible-lint|pip-audit|uv|uvx|pnpm|node|npx|gh|lefthook|delta)\b' \
+  "$TARGET/Taskfile.yml" "$TARGET/lefthook.yml" "$TARGET"/scripts/*.sh 2>/dev/null | sort -u
+grep -oE 'brew "[^"]+"' "$TARGET/Brewfile" | sort -u
+# If a devcontainer exists, the Dockerfile should cover the same set:
+grep -rnE 'ARG .*_VERSION|apt-get install' "$TARGET"/.devcontainer/*ockerfile* 2>/dev/null
+```
+
+Map invoked binaries to their brew formula (note the names differ: `tv` →
+`television`, `rg` → `ripgrep`, npx/pnpm-run tools resolve through `node`/`pnpm`,
+`black`/`ansible-lint`/`pip-audit` through `uv`). Anything invoked but not
+installable is a gap. Fix: add the missing `brew "<formula>"` to the `Brewfile`
+(template owns it — prefer `copier update`, else hand-add), and to the
+devcontainer `Dockerfile` if one exists. Severity: **blocker** if the missing
+tool makes a routine `task` target fail on a host (e.g. bare `task` → `tv`);
+**should** if the task degrades gracefully (e.g. `status` without `gum`).
+
 **Also seeded from sourceRepoFollowUps (verify per repo):** legacy-bloated
 `Brewfile` (deprecated formulae, missing gitleaks/yamllint/actionlint); CI that
 reinstalls lint tools inline every run instead of using the prebuilt devcontainer
