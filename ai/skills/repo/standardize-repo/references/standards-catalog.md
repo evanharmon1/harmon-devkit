@@ -377,7 +377,7 @@ install the Renovate GitHub App on the repo. Conventions:
 
 - **`Brewfile`** — pins the core toolchain (go-task, lefthook, git, gh,
   shellcheck, shfmt, actionlint, yamllint, gitleaks, snyk, node, jq, fzf, fd,
-  ripgrep, bat; conditionally pnpm/lychee, uv, terraform, hadolint). Installed via
+  ripgrep, bat, tokei; conditionally pnpm/lychee, uv, terraform, hadolint). Installed via
   `task install`. `Brewfile.lock.json` is gitignored. **[copier]**
 - **Python** (when `use_python`): `pyproject.toml` (`requires-python >=3.14`,
   dev group with `black`; ansible adds `ansible-lint`/`ansible-core`),
