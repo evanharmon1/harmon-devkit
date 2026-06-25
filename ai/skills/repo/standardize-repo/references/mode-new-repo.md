@@ -155,7 +155,7 @@ companion reference:
 
 - In the new repo: work through `docs/CHECKLIST.md` (rendered from
   `template/docs/CHECKLIST.md.jinja`). It covers, in order: local setup → GitHub
-  repo settings (branch ruleset import via `gh api ... rulesets`, Dependabot
+  repo settings (branch ruleset import via the GitHub UI, Dependabot
   alerts + private vulnerability reporting, Renovate app, CodeRabbit app, Actions
   secrets/variables, the CI GitHub App, GHCR publishing) → framework scaffolding
   for the chosen `project_type` → secrets/env → docs/meta (fill `TODO:` markers,

@@ -322,8 +322,11 @@ Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKE
   Main.json`: blocks deletion/non-ff/creation, requires linear history, PR with 1
   code-owner approval + thread resolution + last-push approval, required status
   checks `verify` + `security`, merge methods squash/rebase; org repos add a
-  `merge_queue` rule. **[copier]** ships the file; **[manual]** import via
-  `gh api repos/<org>/<slug>/rulesets --method POST --input "…"`.
+  `merge_queue` rule. **[copier]** ships the file; **[manual]** import via the
+  GitHub UI (Settings → Rules → Rulesets → **Import a ruleset**) — not
+  `gh api … rulesets`, whose `POST` is non-idempotent (duplicates the ruleset)
+  and rejects the `merge_queue` rule (422); edit the existing ruleset in the UI
+  to change it later.
 - **`SECURITY.md`** lives in **`.github/`** (Private Vulnerability Reporting).
   **[copier]**
 - **Renovate, NOT Dependabot** for version updates. CHECKLIST explicitly says

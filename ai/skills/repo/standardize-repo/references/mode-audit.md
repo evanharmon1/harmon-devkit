@@ -176,9 +176,10 @@ shipped ruleset JSON is already `verify`+`security` — so check the JSON, not j
 the doc. Relatedly, ambiguous `verify` contexts: if both `build.yml` and the
 devcontainer workflow define a job literally named `verify`, either can satisfy
 the required check — the template renames the devcontainer job to
-**`devcontainer-verify`**. Fix: re-import the ruleset
-(`gh api repos/<org>/<repo>/rulesets --method POST --input "<ruleset>.json"`),
-rename the devcontainer job, and align CI job names to `verify` + `security`.
+**`devcontainer-verify`**. Fix: re-import the ruleset via the GitHub UI
+(Settings → Rules → Rulesets → **Import a ruleset**; avoid `gh api … rulesets`,
+which is non-idempotent and rejects the `merge_queue` rule), rename the
+devcontainer job, and align CI job names to `verify` + `security`.
 Severity: **blocker** (wrong contexts mean the gate is unenforced or unsatisfiable).
 
 **E. YAML file extensions — NOT drift; do not flag.** `.yml` vs `.yaml` is left
@@ -298,8 +299,8 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
    - **Non-templated bits — hand-edit.** Copier won't *delete* or *move* files,
      so renames and relocations are manual: `git mv docs/specs specs`,
      `git mv docs/runbook docs/runbooks`, delete `-max`
-     duplicate workflows, re-import the branch ruleset JSON, repoint the
-     AGENTS.md symlinks. Use the gap report's Reconciliation plan as the work
+     duplicate workflows, re-import the branch ruleset JSON (via the GitHub UI),
+     repoint the AGENTS.md symlinks. Use the gap report's Reconciliation plan as the work
      list.
 
 3. **Verify locally.** Run the same gates the standard requires, from the target:
