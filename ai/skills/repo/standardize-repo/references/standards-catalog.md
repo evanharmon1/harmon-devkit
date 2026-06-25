@@ -375,10 +375,24 @@ install the Renovate GitHub App on the repo. Conventions:
 
 ### 1.11 Package / tool management
 
+> **Local ↔ devcontainer parity (a hard goal).** Every tool the repo's
+> `Taskfile` targets, lefthook hooks, and `scripts/` invoke must be installable
+> **locally via the `Brewfile`** — the repo's tooling has to run on a bare host,
+> not only inside the devcontainer. When the repo ships a devcontainer, the
+> `Brewfile` (host) and the devcontainer `Dockerfile` (container) must cover the
+> **same toolset** so `task <anything>` behaves identically in both. Concretely:
+> if a task/script/hook calls a binary (e.g. `gum`, `tv`/television, `tokei`,
+> `jq`, `gitleaks`, `shfmt`), that binary belongs in the `Brewfile` — and, if a
+> devcontainer exists, also in the `Dockerfile`. Auditing this is a first-class
+> check (see mode-audit drift class **I**).
+
 - **`Brewfile`** — pins the core toolchain (go-task, lefthook, git, gh,
   shellcheck, shfmt, actionlint, yamllint, gitleaks, snyk, node, jq, fzf, fd,
-  ripgrep, bat, tokei; conditionally pnpm/lychee, uv, terraform, hadolint). Installed via
-  `task install`. `Brewfile.lock.json` is gitignored. **[copier]**
+  ripgrep, bat, tokei, gum, television; conditionally pnpm/lychee, uv, terraform,
+  hadolint). `gum` + `television` (the `tv` binary) power the universal
+  `status`/`status:*` dashboard and the interactive `task` menu (`menu-tv`), so
+  they are required for the dashboard and the bare-`task` menu to work on a host.
+  Installed via `task install`. `Brewfile.lock.json` is gitignored. **[copier]**
 - **Python** (when `use_python`): `pyproject.toml` (`requires-python >=3.14`,
   dev group with `black`; ansible adds `ansible-lint`/`ansible-core`),
   **`.python-version`** = `3.14`, `.envrc` (direnv), managed with **uv** (`uv
