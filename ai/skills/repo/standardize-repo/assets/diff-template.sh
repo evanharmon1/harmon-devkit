@@ -69,10 +69,18 @@ data_args+=(
     --data obsidian_project_add=false
 )
 
+# Render at the version the repo is PINNED to (_commit), not the template's HEAD.
+# Drift should mean "what this repo customized relative to its own template
+# baseline" — rendering at HEAD instead conflates that with template changes the
+# repo simply hasn't pulled yet (which is what made early audits look huge).
+# Falls back to HEAD if _commit is somehow absent.
+src_ref="$(yq -r '._commit // "HEAD"' "$answers" 2>/dev/null || echo HEAD)"
+[ -n "$src_ref" ] || src_ref=HEAD
+
 render="$(mktemp -d -t harmon-init-render-XXXXXX)"
 trap 'rm -rf "$render"' EXIT
-copier copy "$template" "$render" --vcs-ref=HEAD --trust --defaults "${data_args[@]}" >/dev/null 2>&1 || {
-    echo "FAIL: copier render failed" >&2
+copier copy "$template" "$render" --vcs-ref="$src_ref" --trust --defaults "${data_args[@]}" >/dev/null 2>&1 || {
+    echo "FAIL: copier render failed (template ref: $src_ref)" >&2
     exit 2
 }
 
