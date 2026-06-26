@@ -31,7 +31,11 @@ TEMPLATE=~/git/harmon-init           # source of truth
    template: look for `.copier-answers.yml` at the target root.
    - Present → it can be reconciled with `copier update --trust` (it records
      `_commit` / `_src_path`). Note the recorded commit; drift is "template moved
-     ahead since then."
+     ahead since then." **Also check `_src_path` is a resolvable git URL** — if it's
+     a relative/machine-local path (e.g. `harmon-init`), `copier update` aborts with
+     `Updating is only supported in git-tracked templates`; normalize it to
+     `https://github.com/evanharmon1/harmon-init` first (a real finding — see
+     [copier-gotchas.md](./copier-gotchas.md) gotcha 8 / [mode-update.md](./mode-update.md) §2).
    - Absent → it was never templated (or was adopted by a raw `copier copy`).
      Reconciling the templated bits means a fresh adopt:
      `copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD` (see §4). Treat

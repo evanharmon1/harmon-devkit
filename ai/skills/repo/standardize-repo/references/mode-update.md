@@ -46,17 +46,35 @@ the diff tells you which. This is your reconciliation worklist for §3.
 
 ## 2. Run the update
 
+**Preflight — ensure `_src_path` is a resolvable git source.** `copier update`
+reuses the `_src_path` recorded in `.copier-answers.yml`; if it's a relative or
+machine-local path (e.g. `harmon-init`), the update aborts with `Updating is only
+supported in git-tracked templates` (see [copier-gotchas.md](./copier-gotchas.md)
+gotcha 8). Normalize it to the GitHub URL first — once, committed:
+
 ```bash
-copier update --trust --vcs-ref=HEAD
+grep '^_src_path:' .copier-answers.yml   # is it a URL? if relative/local, fix it:
+yq -i '._src_path = "https://github.com/evanharmon1/harmon-init"' .copier-answers.yml
+git commit -am "chore: point copier _src_path at the harmon-init GitHub URL"
 ```
 
-`copier update` reuses the `_src_path` + `_commit` from `.copier-answers.yml` and
-three-way-merges the template's changes into the repo. `--vcs-ref=HEAD` renders the
-template's working tree (a local checkout); omit it to update to the latest **tag**
-(the normal case once harmon-init has cut a release). First-run `_tasks` are guarded
-on `_copier_operation == 'copy'`, so update will **not** make a scaffold commit,
-re-init git, or re-cut a release; one-time seeds (README, CHANGELOG, AGENTS.md,
-product docs) are protected by `_skip_if_exists`.
+```bash
+copier update --trust
+```
+
+**Always do a full update to the latest released version.** Plain `copier update`
+goes to harmon-init's newest **tag** and three-way-merges the *entire* delta from the
+repo's recorded `_commit` up to that tag, preserving local edits. Don't get fancy
+scoping the update to a specific intermediate version (no `--vcs-ref vX.Y.Z`, no
+hand-picking which template changes to take) — pull all the way to latest and
+reconcile in §3. First-run `_tasks` are guarded on `_copier_operation == 'copy'`, so
+update will **not** make a scaffold commit, re-init git, or re-cut a release. Only
+`CHANGELOG.md` is frozen (`_skip_if_exists`); every other template improvement
+(README, AGENTS.md, docs, scripts, …) flows in through the merge.
+
+> `--vcs-ref=HEAD` is **only** for a *template developer* testing **unreleased**
+> harmon-init changes from a local checkout (see [copier-gotchas.md](./copier-gotchas.md)
+> gotcha 1). It is never needed for a normal repo update — don't add it here.
 
 ## 3. Reconcile conflicts (in place — no special files)
 

@@ -94,18 +94,18 @@ template output, the new template output, and your current files:
 
 ```bash
 ls .copier-answers.yml          # present → use update
-copier update --trust --vcs-ref=HEAD
+copier update --trust
 ```
 
 `copier update` takes no source argument — it reuses the `_src_path` recorded in
-`.copier-answers.yml`. When that `_src_path` is a **local** harmon-init checkout
-(which it is for repos adopted via Path B's `copier copy ~/git/harmon-init`),
-pass `--vcs-ref=HEAD` so update renders your working tree. Omitting it renders the
-latest **local git tag** of that checkout — silently dropping any
-committed-but-untagged + uncommitted template work, the exact trap described in
-`copier-gotchas.md`. Use `--vcs-ref=HEAD` unless you deliberately want the last
-tagged release. Override stale answers with `--data key=value` as needed (e.g. a
-changed `github_org`).
+`.copier-answers.yml`, which must be a **resolvable git URL** (see
+[copier-gotchas.md](./copier-gotchas.md) gotcha 8; normalize it first if it's a
+relative/local path). **Always do a full update to the latest released version** —
+plain `copier update` goes to harmon-init's newest tag and three-way-merges the whole
+delta into your files; don't scope it to a specific intermediate version. Override
+stale answers with `--data key=value` as needed (e.g. a changed `github_org`).
+(`--vcs-ref=HEAD` is only for a *template developer* testing unreleased local
+changes — never for a normal update.)
 
 > v2-generated repos are the exception: per the harmon-init README, v3 was a
 > breaking redesign (new question set, jinja delimiters, lefthook+gitleaks, manual
