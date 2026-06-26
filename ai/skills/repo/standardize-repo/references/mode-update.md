@@ -46,6 +46,18 @@ the diff tells you which. This is your reconciliation worklist for §3.
 
 ## 2. Run the update
 
+**Preflight — ensure `_src_path` is a resolvable git source.** `copier update`
+reuses the `_src_path` recorded in `.copier-answers.yml`; if it's a relative or
+machine-local path (e.g. `harmon-init`), the update aborts with `Updating is only
+supported in git-tracked templates` (see [copier-gotchas.md](./copier-gotchas.md)
+gotcha 8). Normalize it to the GitHub URL first — once, committed:
+
+```bash
+grep '^_src_path:' .copier-answers.yml   # is it a URL? if relative/local, fix it:
+yq -i '._src_path = "https://github.com/evanharmon1/harmon-init"' .copier-answers.yml
+git commit -am "chore: point copier _src_path at the harmon-init GitHub URL"
+```
+
 ```bash
 copier update --trust --vcs-ref=HEAD
 ```

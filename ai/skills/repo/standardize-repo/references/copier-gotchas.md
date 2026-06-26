@@ -176,9 +176,41 @@ remote/release task ahead of the scaffold commit.
 
 ---
 
+## 8. `_src_path` must be a resolvable git source for `copier update`
+
+**Symptom:** `copier update` aborts with **`Updating is only supported in
+git-tracked templates`** — even though harmon-init *is* a git repo. The repo can be
+generated and pass every gate, yet never accept a template update.
+
+**Why:** `copier update` has no source argument — it reuses the `_src_path` recorded
+in `.copier-answers.yml`, which is whatever path was passed to the original `copier
+copy`. If the repo was scaffolded with a **relative or machine-local path** (e.g.
+`copier copy harmon-init <dest>` run from `~/git`, recording `_src_path:
+harmon-init`), that string doesn't resolve to a git repo from the target's directory
+later, so copier can't find a git-tracked template to diff against.
+
+**Rule:** Record a **globally resolvable** `_src_path` — the GitHub URL
+`https://github.com/evanharmon1/harmon-init` (works on any machine and in CI). When
+adopting/auditing an existing repo whose `_src_path` is relative or local-absolute,
+normalize it **before** running `copier update`:
+
+```bash
+# one-time fix, committed; copier overwrites _src_path on its next run anyway
+yq -i '._src_path = "https://github.com/evanharmon1/harmon-init"' .copier-answers.yml
+```
+
+This is independent of `--vcs-ref` (gotcha 1): `--vcs-ref` picks *which ref* of the
+source to render; `_src_path` is *where the source is*. A local checkout is fine for
+testing WIP, but the **committed** `_src_path` should be the URL so the repo stays
+updatable everywhere.
+
+---
+
 ## Quick checklist when touching the template
 
 - Rendering local WIP to test? → `--vcs-ref=HEAD`.
+- Generated repo must stay updatable? → committed `_src_path` is the GitHub URL, not
+  a relative/local path (gotcha 8).
 - New templating? → `[[ ]]` / `[% %]` / `[# #]`; POSIX `[ ]` in shell; `[% endif +%]`
   inline.
 - New side-effect question? → default `no`.
