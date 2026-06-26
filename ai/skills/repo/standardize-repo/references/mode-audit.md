@@ -259,6 +259,29 @@ setup-check helpers + the "Setup Completeness" section from the template's
 `scripts/status.sh` (preserving any repo-specific sections) and add the
 `status:setup` task. Severity: **should**.
 
+**K. Template-owned file content drift (the general check).** The generalization of
+H/J and the bootstrap/idempotency class: any **template-owned** file (the set in
+[`assets/template-owned-files.txt`](../assets/template-owned-files.txt) —
+`Taskfile.yml`, `scripts/*.sh`, lint configs, the standard `.github/workflows/*`,
+devcontainer files) that no longer matches a fresh render is potentially missing
+template improvements. Detect it mechanically — this is how the audit "checks
+everything" instead of eyeballing each file:
+
+```bash
+~/git/harmon-devkit/ai/skills/repo/standardize-repo/assets/diff-template.sh "$TARGET"
+# --show to see the per-file diff
+```
+
+It renders harmon-init from the repo's own `.copier-answers.yml` and reports each
+template-owned file that differs (mapping `.yml`↔`.yaml`). Each `DRIFT` is either a
+**missed template improvement** or a **legitimate local customization** — read the
+diff to tell them apart. Fix the former with `copier update`
+([`mode-update.md`](./mode-update.md)) or by copying the template's version; leave
+the latter, reconciling **in place** (keep the customization in its normal file — do
+not extract it elsewhere). Severity: **should** (blocker if the drift breaks a
+required gate, e.g. a non-portable `lint-hygiene.sh`). Run this as a standard step of
+every audit.
+
 ---
 
 ## 4. Fix flow

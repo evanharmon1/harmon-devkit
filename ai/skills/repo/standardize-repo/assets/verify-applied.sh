@@ -155,6 +155,21 @@ else
     echo "WARN: gitleaks not installed — skipping secrets scan"
 fi
 
+# ── 6. Template-owned file content drift (advisory) ─────────────────
+# Renders harmon-init from this repo's .copier-answers.yml and diffs the
+# template-owned file set (see diff-template.sh / template-owned-files.txt).
+# Advisory here — some drift is legitimate local customization, and the
+# update/audit modes review and reconcile it. After a `copier update` it should
+# show only intentional customizations.
+diff_tool="$(dirname "$0")/diff-template.sh"
+if [ -f .copier-answers.yml ] && [ -x "$diff_tool" ] && have copier && have yq; then
+    if ! "$diff_tool" . >/dev/null 2>&1; then
+        echo "WARN: template-owned files differ from a fresh harmon-init render —" >&2
+        echo "      review with $diff_tool --show . and reconcile (mode-update.md /" >&2
+        echo "      mode-audit.md drift class K). Legit customizations are expected." >&2
+    fi
+fi
+
 # ── Result ──────────────────────────────────────────────────────────
 if [ "$fail" -ne 0 ]; then
     echo "verify-applied: FAILED" >&2

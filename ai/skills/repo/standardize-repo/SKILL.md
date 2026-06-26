@@ -42,6 +42,7 @@ Detect the situation, then follow the matching reference file end to end.
 | --- | --- | --- |
 | Target dir is empty / does not exist yet (new project) | **new-repo** | `references/mode-new-repo.md` |
 | Target is an existing repo **with git history** (retrofit) | **adopt-existing** | `references/mode-adopt-existing.md` |
+| Repo already generated from harmon-init (**v3+**, has `.copier-answers.yml`) and user wants the **latest template changes** ("update", "keep in sync", "pull latest harmon-init") | **update** | `references/mode-update.md` |
 | User says "audit" / "check" / "what's missing" / "bring up to standard" / drift report | **audit** | `references/mode-audit.md` |
 
 If it is ambiguous (e.g. a non-empty dir that is not a git repo), ask the user which
