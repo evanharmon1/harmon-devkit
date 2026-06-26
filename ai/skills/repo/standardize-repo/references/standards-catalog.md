@@ -76,6 +76,17 @@ source of truth for commands** — lefthook hooks and CI workflows delegate to
 `task` targets so local/CI/hook runs are byte-identical. Never reimplement command
 logic in a workflow or a hook.
 
+**Staying in sync (no special repo structure). [copier]** `Taskfile.yml` and the
+other template-owned files (`scripts/*`, lint configs, the standard workflows,
+devcontainer — full list in
+[`assets/template-owned-files.txt`](../assets/template-owned-files.txt)) are
+refreshed by `copier update`'s three-way merge, which preserves a repo's own edits.
+Customize them **normally, in place** — there is no extension-file convention a
+repo's developers need to learn. `assets/diff-template.sh` reports which
+template-owned files differ from a fresh render, so an audit/update pulls in missed
+improvements (the recurring status.sh / lint-hygiene / bootstrap class) without
+losing local customizations — see mode-audit drift class **K**.
+
 Naming & structure conventions:
 
 - **`group:action` (kebab + colon namespacing).** Group/domain first, action

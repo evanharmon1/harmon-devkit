@@ -1,0 +1,55 @@
+# Template-owned files — files harmon-init generates and keeps improving. They
+# normally track the template; a repo may still customize them in place (that's
+# fine — target repos stay plain). diff-template.sh compares each against a fresh
+# render of the template so the agent can SEE, per file, which template
+# improvements a repo is missing, then reconcile (pull the improvements in via
+# `copier update`, keep the legit local customizations). It is a review aid, not a
+# "must match exactly" gate.
+#
+# Lines starting with # and blank lines are ignored. Paths use the template's
+# default extension; diff-template.sh maps .yml<->.yaml to whatever the repo uses.
+# Entries not present in a given render (e.g. codeql.yml for a non-node/python
+# repo) are skipped automatically.
+
+# ── Task runner + git hooks ──────────────────────────────────────────────────
+Taskfile.yml
+lefthook.yml
+
+# ── Shared scripts ───────────────────────────────────────────────────────────
+scripts/status.sh
+scripts/lint-hygiene.sh
+scripts/summarize-gitleaks.mjs
+scripts/test-tasks.sh
+scripts/test-hooks.sh
+scripts/devcontainer-assert.sh
+
+# ── Lint / format / security config ──────────────────────────────────────────
+.editorconfig
+.yamllint
+.shellcheckrc
+.markdownlint.json
+.markdownlint-cli2.jsonc
+commitlint.config.mjs
+.gitleaks.toml
+.dockerignore
+.coderabbit.yaml
+
+# ── Standard CI workflows ─────────────────────────────────────────────────────
+.github/workflows/build.yml
+.github/workflows/claude-plan.yml
+.github/workflows/claude-implement.yml
+.github/workflows/claude-review.yml
+.github/workflows/codeql.yml
+.github/workflows/release.yml
+.github/workflows/devcontainer-build.yml
+.github/workflows/project-automation.yml
+
+# ── Devcontainer (template-owned lifecycle + tooling) ─────────────────────────
+.devcontainer/Dockerfile
+.devcontainer/devcontainer.json
+.devcontainer/dev/devcontainer.json
+.devcontainer/post-create.sh
+.devcontainer/post-start.sh
+.devcontainer/scripts/init-env.sh
+.devcontainer/scripts/post-create-common.sh
+.devcontainer/scripts/post-start-common.sh
