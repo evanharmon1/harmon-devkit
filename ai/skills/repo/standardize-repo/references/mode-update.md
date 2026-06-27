@@ -34,7 +34,7 @@ git switch -c chore/update-harmon-init
 ## 1. See what's missing (read-only)
 
 ```bash
-~/git/harmon-devkit/ai/skills/repo/standardize-repo/assets/diff-template.sh .
+assets/diff-template.sh .
 # add --show to print the full per-file diff
 ```
 
@@ -102,9 +102,9 @@ app content was clobbered and no copier marker leaked (`[[`, `[%`,
 ## 4. Verify comprehensively
 
 ```bash
-~/git/harmon-devkit/ai/skills/repo/standardize-repo/assets/diff-template.sh .   # should now show only legit customizations
+assets/diff-template.sh .   # should now show only legit customizations
 task verify
-~/git/harmon-devkit/ai/skills/repo/standardize-repo/assets/verify-applied.sh .
+assets/verify-applied.sh .
 ```
 
 Walk the [`mode-audit.md`](./mode-audit.md) drift classes too — `copier update`
