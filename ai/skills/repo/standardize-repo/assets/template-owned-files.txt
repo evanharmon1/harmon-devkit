@@ -53,3 +53,7 @@ commitlint.config.mjs
 .devcontainer/scripts/init-env.sh
 .devcontainer/scripts/post-create-common.sh
 .devcontainer/scripts/post-start-common.sh
+# config/shell-aliases.sh is meant to be adopted ~verbatim (image-baked + sourced),
+# so its content drift is worth reviewing; config/zshrc is intentionally omitted
+# (heavily per-repo customized — drift there is expected, not signal).
+.devcontainer/config/shell-aliases.sh

@@ -82,10 +82,11 @@ devcontainer — full list in
 [`assets/template-owned-files.txt`](../assets/template-owned-files.txt)) are
 refreshed by `copier update`'s three-way merge, which preserves a repo's own edits.
 Customize them **normally, in place** — there is no extension-file convention a
-repo's developers need to learn. `assets/diff-template.sh` reports which
-template-owned files differ from a fresh render, so an audit/update pulls in missed
-improvements (the recurring status.sh / lint-hygiene / bootstrap class) without
-losing local customizations — see mode-audit drift class **K**.
+repo's developers need to learn. `assets/diff-template.sh` reports both content
+`DRIFT` in the curated set and `MISSING` template files the repo lacks entirely
+(a whole-render, manifest-independent scan), so an audit/update pulls in missed
+improvements (the recurring status.sh / lint-hygiene / bootstrap class) and missed
+whole files without losing local customizations — see mode-audit drift class **K**.
 
 Naming & structure conventions:
 

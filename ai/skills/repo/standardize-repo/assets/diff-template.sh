@@ -2,13 +2,22 @@
 # diff-template.sh — show how a repo's template-owned files differ from a fresh
 # harmon-init render, so the agent can find missed template improvements.
 #
-# Renders harmon-init using the TARGET repo's own .copier-answers.yml, then diffs
-# each path in template-owned-files.txt against the repo (mapping .yml<->.yaml).
-# This is a REVIEW AID for apply/update/audit, not a pass/fail gate: a listed file
-# may differ because the repo legitimately customized it (terraform tasks, a custom
-# status section) OR because it's missing template improvements (the recurring
-# status.sh / lint-hygiene / bootstrap class). For each DRIFT, inspect the diff and
-# reconcile — pull template improvements in via `copier update`, keep local edits.
+# Renders harmon-init using the TARGET repo's own .copier-answers.yml, then runs
+# two checks against that render:
+#   • DRIFT   — content differences in the curated template-owned-files.txt set
+#               (mapping .yml<->.yaml). A listed file may differ because the repo
+#               legitimately customized it (terraform tasks, a custom status
+#               section) OR because it's missing template improvements (the
+#               recurring status.sh / lint-hygiene / bootstrap class).
+#   • MISSING — template files the repo lacks ENTIRELY. This scan is
+#               manifest-INDEPENDENT (it walks the whole render), because the
+#               manifest is hand-maintained and lags the template — a file added
+#               after the last manifest edit, or dropped by a hand-reconciled
+#               `copier update`, would otherwise slip through silently. (.gitkeep
+#               dir-stubs are listed as benign ABSENT, not flagged as drift.)
+# This is a REVIEW AID for apply/update/audit, not a pass/fail gate. For each
+# DRIFT/MISSING, inspect and reconcile — pull template improvements in via
+# `copier update`, keep legit local customizations.
 #
 # Usage: diff-template.sh [TARGET_DIR]            (default: .)
 #        diff-template.sh -v|--show TARGET_DIR    (print the full per-file diff)
@@ -123,12 +132,35 @@ while IFS= read -r f; do
     fi
 done <"$manifest"
 
+# --- Missing-file scan (manifest-INDEPENDENT) --------------------------------
+# Walk the ENTIRE render and flag any template file the repo lacks. The manifest
+# loop above only catches CONTENT drift in curated files; a file the repo is
+# missing outright — added after the last manifest edit, or dropped by a
+# hand-reconciled `copier update` — needs this manifest-free scan or it slips
+# through silently. .gitkeep dir-stubs are benign (a populated dir legitimately
+# omits them), so they're shown as ABSENT but not counted as drift.
+while IFS= read -r abs; do
+    g="${abs#"$render"/}"
+    case "$g" in
+    .git/* | .copier-answers.yml | CHANGELOG.md) continue ;;
+    esac
+    grep -qxF "$g" "$manifest" 2>/dev/null && continue # manifest loop owns it
+    [ -n "$(repo_variant "$g")" ] && continue          # repo has it (or .yml/.yaml twin)
+    case "$g" in
+    *.gitkeep) echo "ABSENT   $g  (template dir-stub — benign if the dir has real content)" ;;
+    *)
+        echo "MISSING  $g  (template ships it; repo lacks it — review)"
+        drift=1
+        ;;
+    esac
+done < <(find "$render" -type f | sort)
+
 echo ""
 if [ "$drift" -ne 0 ]; then
-    echo "diff-template: $checked template-owned files checked; some differ from the"
-    echo "  template (above). For each, review the diff (\`diff-template.sh --show\`):"
-    echo "  pull missed template improvements in with \`copier update\`, and keep the"
-    echo "  repo's legitimate local customizations."
+    echo "diff-template: $checked curated files checked for drift; whole render"
+    echo "  scanned for missing files. Findings above (DRIFT/MISSING). For each,"
+    echo "  review the diff (\`diff-template.sh --show\`): pull missed template"
+    echo "  improvements in with \`copier update\`, keep legit local customizations."
     exit 1
 fi
-echo "diff-template: OK — all $checked template-owned files match the template."
+echo "diff-template: OK — $checked curated files match and no template files missing."

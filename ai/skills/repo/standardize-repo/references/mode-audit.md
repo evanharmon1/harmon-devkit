@@ -276,8 +276,12 @@ assets/diff-template.sh "$TARGET"
 # --show to see the per-file diff
 ```
 
-It renders harmon-init from the repo's own `.copier-answers.yml` and reports each
-template-owned file that differs (mapping `.yml`↔`.yaml`). Each `DRIFT` is either a
+It renders harmon-init from the repo's own `.copier-answers.yml` and reports both
+content **`DRIFT`** in the curated set and **`MISSING`** template files the repo
+lacks entirely (mapping `.yml`↔`.yaml`). The `MISSING` scan walks the whole render
+and is **manifest-independent**, so a file the template added after the curated list
+was last edited — or one a hand-reconciled update dropped — is still caught
+(`.gitkeep` dir-stubs show as benign `ABSENT`). Each `DRIFT` is either a
 **missed template improvement** or a **legitimate local customization** — read the
 diff to tell them apart. Fix the former with `copier update`
 ([`mode-update.md`](./mode-update.md)) or by copying the template's version; leave
