@@ -272,7 +272,7 @@ template improvements. Detect it mechanically — this is how the audit "checks
 everything" instead of eyeballing each file:
 
 ```bash
-~/git/harmon-devkit/ai/skills/repo/standardize-repo/assets/diff-template.sh "$TARGET"
+assets/diff-template.sh "$TARGET"
 # --show to see the per-file diff
 ```
 
@@ -344,7 +344,7 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
    actually resolved by running the skill's checker:
 
    ```bash
-   ~/git/harmon-devkit/ai/skills/repo/standardize-repo/assets/verify-applied.sh "$TARGET"
+   assets/verify-applied.sh "$TARGET"
    ```
 
    (See [`../assets/verify-applied.sh`](../assets/verify-applied.sh) — it should
