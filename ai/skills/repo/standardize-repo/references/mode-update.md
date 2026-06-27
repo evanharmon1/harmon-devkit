@@ -59,8 +59,14 @@ git commit -am "chore: point copier _src_path at the harmon-init GitHub URL"
 ```
 
 ```bash
-copier update --trust
+copier update --trust --defaults
 ```
+
+**`--defaults` is mandatory when running non-interactively (agents have no TTY).**
+Without it copier tries to prompt for answers and crashes with
+`OSError: [Errno 22] Invalid argument` (prompt_toolkit can't attach to a missing
+terminal). It reuses the stored answers and accepts defaults for any new questions
+the template added since `_commit`.
 
 **Always do a full update to the latest released version.** Plain `copier update`
 goes to harmon-init's newest **tag** and three-way-merges the *entire* delta from the
