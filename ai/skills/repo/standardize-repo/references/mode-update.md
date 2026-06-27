@@ -107,6 +107,17 @@ separate file. Then read the full diff (`git add -A -N && git diff`) and confirm
 app content was clobbered and no copier marker leaked (`[[`, `[%`,
 `TODO: project_description`).
 
+**Silent reverts have NO conflict marker.** copier only emits markers / `.rej`
+where edits *overlap*. A file the repo customized **outside copier's tracked
+answers** — anything restored wholesale from `main` during a Path-B adopt
+(`.vscode/settings.json`, `.gitignore`, `renovate.json`, a forked `Taskfile.yml`) —
+can be reverted to the template default *cleanly and invisibly*. (`.vscode/settings.json`
+is gitignored, so its revert doesn't even show in a normal `git diff`.) So the diff
+review above is not optional: eyeball every high-churn, locally-customized file by
+name and confirm your customization survived. Cross-check the §1 `diff-template.sh`
+worklist — any file that was `DRIFT` *before* the update but is now byte-identical to
+the template was silently reverted; restore the customization.
+
 ## 4. Verify comprehensively
 
 ```bash
