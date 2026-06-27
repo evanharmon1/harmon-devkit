@@ -94,8 +94,11 @@ template output, the new template output, and your current files:
 
 ```bash
 ls .copier-answers.yml          # present → use update
-copier update --trust
+copier update --trust --defaults
 ```
+
+`--defaults` is **required non-interactively** — without a TTY copier crashes trying
+to prompt (`OSError: [Errno 22]`). See [`mode-update.md`](./mode-update.md) §2.
 
 `copier update` takes no source argument — it reuses the `_src_path` recorded in
 `.copier-answers.yml`, which must be a **resolvable git URL** (see
@@ -119,17 +122,55 @@ write `.copier-answers.yml` so future runs can use `copier update`:
 
 ```bash
 ls .copier-answers.yml          # absent → adopt fresh
-copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD \
+copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD --defaults --overwrite \
   --data project_type="$PROJECT_TYPE" \
   --data project_name="<Formal Project Name>" \
   --data project_slug="$(basename "$(pwd)")" \
   --data github_org="<org-or-user>" \
-  # ...remaining --data / --defaults, side-effect answers = no
+  --data git_init=false        # ← REQUIRED: see note below
+  # ...remaining --data; all other side-effect answers already default = no
 ```
 
 `--vcs-ref=HEAD` is **mandatory** here when `~/git/harmon-init` is a local path:
 without it copier silently renders the latest git tag and ignores
 committed-but-untagged + uncommitted template work.
+
+`--defaults` is **required non-interactively** (no TTY → `OSError: [Errno 22]`), and
+because copier can't prompt per-file, `--overwrite` makes the run deterministic
+(write every template-owned file; reconcile afterward from git — see below).
+
+**Pass `--data git_init=false` explicitly.** `git_init` defaults to `yes`, and the
+`git init` / scaffold-commit `_tasks` fire on `_copier_operation == 'copy'` — which
+adopt **is** — so without it copier attempts a `git add -A && git commit` over the
+existing repo's history. (harmon-init ≥ the "repo-update hardening" change makes
+those `_tasks` idempotent so this is a no-op anyway, but pass it for older templates.)
+
+### Non-interactive reconciliation (the safe pattern for a mature repo)
+
+`--overwrite` resets **every** template-owned file to the new render, clobbering
+local customization. On a clean feature branch that is fully recoverable — reconcile
+from git rather than hand-merging conflict markers:
+
+1. **Survey the damage:** `git diff --stat main` — most entries are pure tooling
+   (accept the template version). Identify the files that carried real local
+   customization (`git show main:<f>` vs the working tree).
+2. **Restore customized files** wholesale from `main`:
+   `git checkout main -- <Taskfile.yml> <renovate.json> <.gitignore> …`. The repo
+   was likely already close to current (hand-synced), so this loses little template
+   improvement while preserving every customization.
+3. **Keep** the template version for uncustomized tooling **and all additive new
+   files** (docs scaffold, codeql/release-please, helper scripts, `.copier-answers.yml`).
+4. **Canonicalize AGENTS.md** — fold the old real guidance (often the pre-existing
+   real `CLAUDE.md`) into `AGENTS.md`; leave `CLAUDE.md`/`GEMINI.md`/
+   `.github/copilot-instructions.md` as the symlinks copier wrote (§4.1).
+5. **Confirm:** `diff-template.sh .` should now list only the files you deliberately
+   restored. Each remaining `DRIFT` must be an intentional customization you can name.
+
+Caveat: `.copier-answers.yml` now records the new `_commit`, so a future
+`copier update` will **not** re-offer this version's improvements to the files you
+restored. That's correct when the divergence is deliberate (e.g. a repo that keeps
+its own CI auth model / runners / workflow tiers); otherwise backport the specific
+improvement now.
 
 ---
 
