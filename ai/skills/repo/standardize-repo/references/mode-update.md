@@ -38,11 +38,19 @@ git switch -c chore/update-harmon-init
 # add --show to print the full per-file diff
 ```
 
-This renders harmon-init from the repo's own `.copier-answers.yml` and lists every
-template-owned file that differs from a fresh render (mapping `.yml`↔`.yaml`). Each
-`DRIFT` line is either a **template improvement the repo is missing** (the
-status.sh / lint-hygiene / bootstrap class) or a **legitimate local customization** —
-the diff tells you which. This is your reconciliation worklist for §3.
+This renders harmon-init from the repo's own `.copier-answers.yml` and runs two
+checks (mapping `.yml`↔`.yaml`):
+
+- **`DRIFT`** — content differences in the curated file set. Each is either a
+  **template improvement the repo is missing** (the status.sh / lint-hygiene /
+  bootstrap class) or a **legitimate local customization** — the diff tells you
+  which.
+- **`MISSING`** — a template file the repo lacks entirely. This scan walks the
+  whole render (it does **not** depend on the curated list), so a file the
+  template added later, or one a previous hand-reconciled update dropped, can't
+  slip through silently. (`.gitkeep` dir-stubs show as benign `ABSENT`.)
+
+Together these are your reconciliation worklist for §3.
 
 ## 2. Run the update
 
