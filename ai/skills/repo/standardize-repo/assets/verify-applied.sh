@@ -107,6 +107,29 @@ if { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
     done
 fi
 
+# ── 3c. Workflow ↔ Taskfile contract ────────────────────────────────
+# Every CI job / git hook delegates to a `task` target; enforce the CONVERSE —
+# every `task <target>` a workflow invokes MUST exist in the Taskfile. CI's
+# lint/build jobs call targets `task verify` never runs (e.g. test:tasks,
+# test:hooks, test:devcontainer:permissions). A Taskfile that drifted from the
+# template — or was restored wholesale from a pre-template `main` during a
+# Path-B adopt while the template's workflows were taken as-is — can omit them,
+# so `task verify` (and this script's §1 gate) stays GREEN while CI goes RED.
+# This existence check catches that class at apply time. We anchor on a command
+# CONTEXT — `run: task <t>`, a run-block line starting with `task <t>`, or
+# `&& task <t>` — so prose ("the specific task described"), renovate comments
+# (`go-task/task extractVersion`), and `setup-task@<sha>` never match.
+if [ -d .github/workflows ] && { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
+    tasklist="$(task --list-all 2>/dev/null || true)"
+    called="$(grep -rhoE '(run:[[:space:]]*|^[[:space:]]*|&&[[:space:]]*)task +[a-z][a-z0-9:_-]*' .github/workflows/ 2>/dev/null |
+        sed -E 's/.*task +//' | sort -u)"
+    for t in $called; do
+        if ! printf '%s\n' "$tasklist" | grep -qE "^[* ]*${t}:([[:space:]]|\$)"; then
+            err "workflow calls 'task ${t}' but the Taskfile has no such target"
+        fi
+    done
+fi
+
 # ── 4. No unrendered template markers leaked into the repo ──────────
 # harmon-init uses CUSTOM jinja delimiters ([[ var ]], [% block %]). Legitimate
 # look-alikes must NOT trip this: go-task uses {{.VAR}} (dot, no space), GitHub
