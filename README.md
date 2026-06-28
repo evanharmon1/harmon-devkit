@@ -29,7 +29,7 @@ This repo is part of **harmon-stack** — my personal stack of homelab, dev-tool
 | [`scripts/`](./scripts/)     | Standalone scripts and utilities (AppleScript/Automator apps, command snippets)                       |
 | [`ai/`](./ai/)               | AI assets — skills, prompts, agents, rules, evals, etc. — see the [AI assets index](#ai-assets) below |
 | [`snippets/`](./snippets/)   | Small reusable code snippets (work in progress)                                                       |
-| [`docs/`](./docs/)           | Project docs — the [new-project checklist](./docs/new-project-checklist.md) and the harmon-init [post-generation checklist](./docs/CHECKLIST.md) |
+| [`docs/`](./docs/)           | Project docs, e.g. the harmon-init [post-generation checklist](./docs/CHECKLIST.md)                   |
 
 ## Template Index
 
