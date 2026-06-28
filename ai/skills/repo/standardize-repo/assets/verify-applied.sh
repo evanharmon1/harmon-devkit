@@ -203,6 +203,25 @@ if [ -f .copier-answers.yml ] && [ -x "$diff_tool" ] && have copier && have yq; 
     fi
 fi
 
+# ── 7. CODEOWNERS must not lose owners on adopt (access-control regression) ─
+# CODEOWNERS is rendered from the single `code_owner` answer (`* @owner`), so a
+# Path-B adopt over a repo with MORE owners (or a team) silently drops them — an
+# access-control change that must be surfaced and confirmed, never auto-applied.
+# harmon-init also freezes CODEOWNERS via _skip_if_exists; this is the belt to
+# that suspenders (and catches a hand-overwritten CODEOWNERS too). Compare the
+# @owners in the pre-adopt CODEOWNERS (on `main`) against the current one; skip
+# cleanly when there is no main, no CODEOWNERS, or not a git tree.
+co=".github/CODEOWNERS"
+if [ -f "$co" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+    git cat-file -e "main:$co" 2>/dev/null; then
+    before="$(git show "main:$co" 2>/dev/null | grep -oE '@[A-Za-z0-9_/-]+' | sort -u)"
+    after="$(grep -oE '@[A-Za-z0-9_/-]+' "$co" 2>/dev/null | sort -u)"
+    dropped="$(comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -v '^$' || true)"
+    if [ -n "$dropped" ]; then
+        err "CODEOWNERS dropped owner(s) present on main: $(printf '%s ' $dropped)— adopting must NOT silently reduce access. The template's single code_owner answer can't hold multiple owners/teams; restore the dropped owner(s) and confirm the change with the user."
+    fi
+fi
+
 # ── Result ──────────────────────────────────────────────────────────
 if [ "$fail" -ne 0 ]; then
     echo "verify-applied: FAILED" >&2
