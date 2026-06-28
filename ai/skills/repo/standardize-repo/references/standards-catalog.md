@@ -127,6 +127,19 @@ Universal task targets every repo has (from the template):
 `status` (+ `status:git|gh|code|env`), `status:setup`, `util:bunch-add`,
 `util:obsidian-add`.
 
+**Lint vs. format discipline (read-only gates).** Every `lint:*` target and the
+`check`/`verify` aggregates are **read-only** — they report and fail, never
+modify files. All auto-fixing lives in `format`, `format:file`, and `fix` (=
+format then lint); **no `lint:*` body runs `--fix`/`--write`/`-w`/`-i`**.
+Pre-commit hooks call the read-only `lint:*` so a failing check blocks-and-tells
+instead of silently rewriting the tree. **Flag any `lint:*` that mutates** — the
+classic regression is `lint:markdown` carrying `markdownlint-cli2 --fix`, which
+makes CI report green while discarding the fix and makes the markdown hook commit
+the unfixed staged blob (no `stage_fixed`). Formatters (Prettier, Black, shfmt,
+`terraform fmt`, markdownlint) have a check side in `lint:*` + a write side in
+`format`; pure analyzers (shellcheck, actionlint, yamllint, ESLint, ansible-lint)
+are check-only by design.
+
 `status:setup` is a **setup-completeness audit** (run by hand, not part of the
 default dashboard): it checks the repo against `docs/CHECKLIST.md` and reports
 ✓/✗/?/– per item across GitHub config (ruleset, Dependabot alerts, private vuln
@@ -138,7 +151,8 @@ quick first pass when auditing an already-standardized repo.
 Notable command bodies (for an auditor checking they match):
 
 - `lint:shell` → `shellcheck --severity=error` + `shfmt -d`
-- `lint:markdown` → `npx --yes markdownlint-cli2 --fix '**/*.md' '#.claude/**' …`
+- `lint:markdown` → `npx --yes markdownlint-cli2 '**/*.md' '#.claude/**' …`
+  (check-only; **no `--fix`** — auto-fix lives in `format`)
 - `lint:hygiene` → `./scripts/lint-hygiene.sh`
 - `security:secrets` → `gitleaks detect --no-banner --redact --source .`
 - `install` → `brew bundle --file=Brewfile` (+ `uv sync` / `pnpm install`) →
