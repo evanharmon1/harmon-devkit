@@ -118,9 +118,33 @@ name and confirm your customization survived. Cross-check the §1 `diff-template
 worklist — any file that was `DRIFT` *before* the update but is now byte-identical to
 the template was silently reverted; restore the customization.
 
-## 4. Verify comprehensively
+**Heavily-forked files: take `--ours` and re-apply the new bits.** When a file is
+*heavily* customized (a forked `Taskfile.yml`, a bespoke `status.sh`), copier's
+three-way merge can scramble it — a single conflict hunk spanning several unrelated
+targets. Hand-resolving that is error-prone. Take the repo's complete version and
+cherry-pick only the genuinely-new pieces:
 
 ```bash
+git checkout --ours Taskfile.yml   # keep the repo's complete, working file
+# then add just what the update introduced (e.g. a new `status:setup` target)
+```
+
+**The template absorbed something this repo pioneered → add/add conflict; keep
+yours.** A canonical convention repo's innovations get *generalized* and upstreamed;
+on its next update, the template's new generic version collides with the repo's
+specific original (an add/add conflict on, e.g., `scripts/validate-*.mjs`). Keep the
+repo's specific version (`git checkout --ours <file>`) — the generic one is for
+*other* repos. Recognise this when a file you know the repo authored shows up as a
+conflict against a near-identical-but-blander template version.
+
+## 4. Verify comprehensively
+
+copier renders files in the **template's** style, which may not match the repo's
+formatter (e.g. Prettier reformatting freshly-rendered workflow YAML or config).
+Run **`task format` first**, or `task verify` can fail on formatting alone:
+
+```bash
+task format                 # reconcile rendered files to the repo's formatter
 assets/diff-template.sh .   # should now show only legit customizations
 task verify
 assets/verify-applied.sh .
