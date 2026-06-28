@@ -425,6 +425,13 @@ install the Renovate GitHub App on the repo. Conventions:
   CHANGELOG entry (`feat`→minor, `fix`→patch; pre-1.0 `feat` bumps minor;
   chore/docs/ci → no release). Files: `release-please-config.json`,
   `.release-please-manifest.json`. **[copier]**
+- **A change that alters what the repo emits to consumers must be `fix:`/`feat:`,
+  never `chore:`.** This matters most for a *template/library* repo (e.g.
+  harmon-init): a `chore:` edit to generated output — `template/**`, `copier.yml`
+  `_tasks`, or a shipped file's mode (`chmod +x`) — cuts no release, so downstreams
+  pinned to a tagged `_commit` can never `copier update` to it (they'd have to chase
+  untagged HEAD via `--vcs-ref=HEAD`, which the update path forbids). Reserve
+  `chore:`/`docs:`/`ci:` for changes that do **not** affect what consumers receive.
 - **Keep a Changelog** format; `CHANGELOG.md` is release-please-generated (and
   ignored by markdownlint). **[copier]** seeds it.
 - `task release:init` seeds the first `v0.1.0`; `task release:patch|minor|major`

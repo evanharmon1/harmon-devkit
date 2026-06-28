@@ -158,6 +158,16 @@ from git rather than hand-merging conflict markers:
    `git checkout main -- <Taskfile.yml> <renovate.json> <.gitignore> …`. The repo
    was likely already close to current (hand-synced), so this loses little template
    improvement while preserving every customization.
+   - **If you restore a customized `Taskfile.yml` but keep the template's
+     workflows, reconcile the contract.** The template's `.github/workflows/*`
+     delegate to `task` targets (e.g. `test:tasks`, `test:hooks`,
+     `test:devcontainer:permissions`) that a pre-template Taskfile won't have.
+     `task verify` will **not** catch the gap — CI will. List every target the
+     adopted workflows call and ensure each exists, porting the missing targets +
+     their `scripts/*.sh` from the template:
+     `grep -rhoE '(run:[[:space:]]*|^[[:space:]]*|&&[[:space:]]*)task +[a-z][a-z0-9:_-]*' .github/workflows/ | sed -E 's/.*task +//' | sort -u`.
+     `verify-applied.sh` §3c enforces this (see [mode-audit.md](./mode-audit.md)
+     drift class L).
 3. **Keep** the template version for uncustomized tooling **and all additive new
    files** (docs scaffold, codeql/release-please, helper scripts, `.copier-answers.yml`).
 4. **Canonicalize AGENTS.md** — fold the old real guidance (often the pre-existing
