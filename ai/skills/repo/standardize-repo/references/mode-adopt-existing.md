@@ -169,6 +169,14 @@ from git rather than hand-merging conflict markers:
    `git checkout main -- <Taskfile.yml> <renovate.json> <.gitignore> …`. The repo
    was likely already close to current (hand-synced), so this loses little template
    improvement while preserving every customization.
+   - **`.github/CODEOWNERS` is access control — never silently reduce it.** The
+     template renders it from the single `code_owner` answer (`* @code_owner`),
+     which can't hold a second owner or a team, so the adopt render drops any
+     extras. `git checkout main -- .github/CODEOWNERS` (or merge the owners) and
+     **confirm any owner change with the user** — dropping a code owner is a
+     security regression, not a tooling sync. (harmon-init ≥ the CODEOWNERS-freeze
+     change keeps it via `_skip_if_exists`, and `verify-applied.sh` FAILS if an
+     owner present on `main` is missing post-adopt — but check it by hand too.)
    - **If you restore a customized `Taskfile.yml` but keep the template's
      workflows, reconcile the contract.** The template's `.github/workflows/*`
      delegate to `task` targets (e.g. `test:tasks`, `test:hooks`,
