@@ -1,0 +1,108 @@
+{
+  // Local dev profile.
+  // This intentionally omits the root profile's containerEnv block because the
+  // local runArgs env-file already provides TS_AUTHKEY and GH_TOKEN.
+  "name": "DEV - devcontainer-harmon-devkit",
+  "containerName": "devcontainer-harmon-devkit-dev",
+  // Minimum to run the intended workload (Playwright + agents). Codespaces
+  // enforces it; local Docker / Coder may not — see
+  // docs/guides/devcontainer-performance.md for recommended sizing.
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "4gb"
+  },
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": "../..",
+    "cacheFrom": "ghcr.io/evanharmon1/harmon-devkit-devcontainer-dev"
+  },
+  // Dev profile is the only place TS_AUTHKEY is allowed — Tailscale is
+  // installed here and tailscale-connect.sh needs the key to bring up the
+  // tunnel.
+  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/dev/devcontainer.env TS_AUTHKEY GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY",
+  "runArgs": [
+    "--init",
+    "--shm-size=2g",
+    "--device=/dev/net/tun",
+    "--env-file",
+    ".devcontainer/dev/devcontainer.env"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.14"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "dockerDashComposeVersion": "v2"
+    },
+    "ghcr.io/tailscale/codespace/tailscale": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers-extra/features/go-task:1": {},
+    "ghcr.io/itsmechlark/features/1password:1.5.0": {}
+  },
+  "mounts": [
+    "source=claude-code-config-${devcontainerId},target=/home/vscode/.claude,type=volume",
+    "source=codex-config-${devcontainerId},target=/home/vscode/.codex,type=volume",
+    "source=gemini-config-${devcontainerId},target=/home/vscode/.gemini,type=volume",
+    "source=agent-deck-config-${devcontainerId},target=/home/vscode/.agent-deck,type=volume",
+    "source=shell-history-${devcontainerId},target=/home/vscode/.shell-history,type=volume",
+    "source=zoxide-data-${devcontainerId},target=/home/vscode/.local/share/zoxide,type=volume"
+  ],
+  "containerEnv": {
+    "CODER": "${localEnv:CODER}",
+    "DEVCONTAINER_TAILSCALE": "true",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+  },
+  "postCreateCommand": "bash .devcontainer/dev/post-create.sh",
+  "postStartCommand": "bash .devcontainer/dev/post-start.sh",
+  "customizations": {
+    "coder": {
+      "name": "devcontainer"
+    },
+    "vscode": {
+      "settings": {
+        "terminal.integrated.inheritEnv": true,
+        "python.defaultInterpreterPath": ".venv/bin/python",
+        "[python]": {
+          "editor.defaultFormatter": "ms-python.black-formatter"
+        },
+        "debug.javascript.autoAttachFilter": "disabled",
+        "terminal.integrated.env.linux": {
+          "NODE_OPTIONS": "",
+          "BROWSER": ""
+        },
+        "remote.autoForwardPortsSource": "output",
+        "terminal.integrated.minimumContrastRatio": 1,
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "extensions.ignoreRecommendations": false
+      },
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "ms-python.python",
+        "ms-python.black-formatter",
+        "esbenp.prettier-vscode",
+        "timonwong.shellcheck",
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml",
+        "mikestead.dotenv",
+        "davidanson.vscode-markdownlint",
+        "foxundermoon.shell-format",
+        "GitHub.vscode-github-actions",
+        "github.vscode-pull-request-github",
+        "task.vscode-task",
+        "EditorConfig.EditorConfig",
+        "anthropic.claude-code",
+        "openai.chatgpt",
+        "ms-playwright.playwright"
+      ]
+    }
+  },
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true,
+  "forwardPorts": [4321, 8420],
+  "portsAttributes": {
+    "8420": {
+      "label": "Agent Deck Web UI",
+      "onAutoForward": "notify"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# Agent Deck default configuration for devcontainer.
+# See: https://github.com/asheshgoplani/agent-deck
+
+[session]
+default_tool = "claude"
+
+[worktree]
+default_location = "subdirectory"
+
+[claude]
+dangerous_mode = true
+
+[docker]
+default_enabled = false
+mount_ssh = true
+auto_cleanup = true
+
+[logs]
+clean_orphans = true
+
+[costs]
+retention_days = 90
+
+[conductor]
+enabled = true
+heartbeat_seconds = 15
+
+[conductor.telegram]
+user_id = 8585038481
+token = ""

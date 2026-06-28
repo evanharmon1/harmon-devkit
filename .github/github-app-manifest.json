@@ -1,0 +1,16 @@
+{
+  "name": "evanharmon1-ci",
+  "description": "CI automation app for evanharmon1: mints short-lived tokens for release-please, Claude Code, and project automation. See docs/architecture/security.md.",
+  "url": "https://github.com/evanharmon1",
+  "hook_attributes": {
+    "url": "https://github.com/evanharmon1",
+    "active": false
+  },
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "workflows": "write",
+    "metadata": "read"  }
+}

@@ -1,1 +1,38 @@
-{}
+{
+  "editor.formatOnSave": true,
+  "[shellscript]": {
+    "editor.defaultFormatter": "foxundermoon.shell-format"
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml"
+  },
+  "[markdown]": {
+    "files.trimTrailingWhitespace": false
+  },
+  "[mdx]": {
+    "files.trimTrailingWhitespace": false
+  },
+  "files.trimTrailingWhitespace": true,
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/**": true,
+    "**/.venv/**": true,
+    "**/.terraform/**": true,
+    "**/dist/**": true,
+    "**/.task/**": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/.venv": true,
+    "**/.terraform": true,
+    "**/dist": true,
+    "**/uv.lock": true,
+    "**/.task": true,
+    "**/playwright-report": true,
+    "**/test-results": true
+  },
+  "search.smartCase": true,
+  "terminal.integrated.defaultProfile.linux": "zsh",
+  "npm.packageManager": "npm"
+}

@@ -1,0 +1,26 @@
+# oh-my-tmux local overrides for devcontainer environment
+# See https://github.com/gpakosz/.tmux for all options
+
+# -- mouse ---------------------------------------------------------------------
+
+# enable mouse for pane selection, resizing, and scrolling
+set -g mouse on
+
+# -- clipboard (VS Code devcontainer) -----------------------------------------
+
+# VS Code's terminal intercepts OSC 52 escape sequences and puts the content on
+# the host clipboard. This is the reliable copy/paste mechanism in devcontainers
+# where X11/Wayland is unavailable.
+set -g set-clipboard on
+
+# Make 'y' in vi copy-mode use copy-pipe so OSC 52 fires (oh-my-tmux defaults
+# to copy-selection which only fills the tmux buffer).
+bind -T copy-mode-vi y send -X copy-pipe-and-cancel
+
+# -- smart split ---------------------------------------------------------------
+
+# prefix + a: split right if pane is wider than tall, else split below.
+# Cell aspect ratio is ~2:1 (wide:tall), so multiply height by 2 for fair comparison.
+bind-key a if-shell '[ "$(tmux display -p "#{pane_width}")" -gt "$(($(tmux display -p "#{pane_height}") * 2))" ]' \
+  'split-window -h -c "#{pane_current_path}"' \
+  'split-window -v -c "#{pane_current_path}"'

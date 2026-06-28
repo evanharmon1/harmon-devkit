@@ -6,6 +6,7 @@
 - [ ] New feature (non-breaking change which adds functionality)
 - [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
 - [ ] Documentation update
+- [ ] Task / chore (maintenance, tooling, no product change)
 
 ## How Has This Been Tested?
 { Testing: please describe the tests that you ran to verify your changes. Provide instructions so that others can reproduce the behavior. List any relevant details for your test configuration. }

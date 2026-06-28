@@ -1,0 +1,73 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "America/Chicago",
+  "schedule": ["before 9am on Monday"],
+  "prConcurrentLimit": 10,
+  "automerge": false,
+  "dependencyDashboard": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Devcontainer Dockerfile ARG pins annotated with renovate comments",
+      "managerFilePatterns": ["/Dockerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+ARG \\w+=(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Workflow tool pins, `version:` style",
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+version:\\s*(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Workflow tool pins, `FOO_VERSION=x.y.z` shell-variable style",
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[A-Z_]+_VERSION=(?<currentValue>\\S+)"
+      ]
+    }  ],
+  "packageRules": [
+    {
+      "description": "Never auto-merge anything",
+      "matchPackageNames": ["*"],
+      "automerge": false
+    },
+    {
+      "description": "Wait 3 days before proposing any update",
+      "matchPackageNames": ["*"],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Batch all GitHub Actions updates into one PR",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Batch regex-managed workflow updates into one PR",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [".github/workflows/**"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Eject anthropics/claude-code-action from the batched GitHub Actions group and skip the 3-day release-age wait. It ships near-daily first-party releases, so grouping + minimumReleaseAge kept the whole Actions batch perpetually pending on the renovate/stability-days gate. Must come after the GitHub Actions group rules so this override wins.",
+      "matchPackageNames": ["anthropics/claude-code-action"],
+      "groupName": null,
+      "minimumReleaseAge": "0 days"
+    },
+    {
+      "description": "Batch all Docker image updates into one PR",
+      "matchDatasources": ["docker"],
+      "groupName": "Docker images"
+    },
+    {
+      "description": "Batch all devcontainer updates (base image + annotated tools) into one PR — must come after the Docker images rule so the base image lands here instead",
+      "matchFileNames": [".devcontainer/**"],
+      "groupName": "Devcontainer"
+    }
+  ]
+}

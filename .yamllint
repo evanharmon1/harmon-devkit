@@ -1,6 +1,18 @@
 ---
 extends: default
 
+ignore:
+  - node_modules/
+  - dist/
+  - .astro/
+  - .task/
+  - .worktrees/
+  - .venv/
+  - .terraform/
+  - pnpm-lock.yaml
+  - playwright-report/
+  - test-results/
+
 rules:
   braces:
     level: warning
@@ -23,6 +35,7 @@ rules:
     level: warning
     indent-sequences: consistent
   line-length:
+    max: 200
     level: warning
     allow-non-breakable-inline-mappings: true
   truthy: disable

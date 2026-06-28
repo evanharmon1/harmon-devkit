@@ -51,7 +51,8 @@ Feel free to submit a pull request with your improvements.
 We follow the [Conventional Commits](https://www.conventionalcommits.org) standard for writing commit messages. This helps us manage the code history, generate changelogs, and automate CI/CD tooling. Example:
 
 Example commit message:
-```
+
+```text
 feat(api): add support for custom endpoints
 
 Added support for creating and managing custom endpoints in the API.
@@ -59,7 +60,8 @@ Resolves issue #42.
 ```
 
 Commit message structure:
-```
+
+```text
 <type>[optional scope]: <description>
 
 [optional body]

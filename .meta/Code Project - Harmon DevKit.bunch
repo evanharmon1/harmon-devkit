@@ -1,0 +1,9 @@
+---
+title: Code Project - Harmon DevKit 🪛
+---
+< snippet.code
+
+$ open -a 'Visual Studio Code' ~/git/harmon-devkit/harmon-devkit.code-workspace
+%Visual Studio Code^
+
+< snippet.maximize

@@ -331,13 +331,17 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
    - **Templated bits — re-run copier.** For files the template owns, reconcile
      rather than hand-porting:
      - Generated from the template (has `.copier-answers.yml`):
+
        ```bash
        ( cd "$TARGET" && copier update --trust )
        ```
+
      - Never templated / adopting fresh:
+
        ```bash
        ( cd "$TARGET" && copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD )
        ```
+
      `--vcs-ref=HEAD` is **load-bearing**: from a local path copier otherwise
      renders the latest git tag and silently ignores committed-but-untagged work;
      with it, copier includes dirty/untracked template changes via a throwaway

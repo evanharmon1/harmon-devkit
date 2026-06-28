@@ -4,9 +4,7 @@ My personal developer kit: reusable code templates and boilerplates for various 
 
 Author: Evan Harmon
 
-[![Validate](https://github.com/evanharmon1/harmon-devkit/actions/workflows/validate.yml/badge.svg)](https://github.com/evanharmon1/harmon-devkit/actions/workflows/validate.yml)
-[![Build](https://github.com/evanharmon1/harmon-devkit/actions/workflows/build.yaml/badge.svg)](https://github.com/evanharmon1/harmon-devkit/actions/workflows/build.yaml)
-[![Security](https://github.com/evanharmon1/harmon-devkit/actions/workflows/security.yml/badge.svg)](https://github.com/evanharmon1/harmon-devkit/actions/workflows/security.yml)
+[![Build](https://github.com/evanharmon1/harmon-devkit/actions/workflows/build.yml/badge.svg)](https://github.com/evanharmon1/harmon-devkit/actions/workflows/build.yml)
 [![Copier](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/copier-org/copier/master/img/badge/badge-grayscale-inverted-border-orange.json)](https://github.com/copier-org/copier)
 [![Maintained](https://img.shields.io/badge/maintained%3F-yes-brightgreen.svg?style=flat-square)](https://github.com/evanharmon1/harmon-devkit)
 [![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat-square)](https://github.com/evanharmon1/harmon-devkit)
@@ -31,7 +29,7 @@ This repo is part of **harmon-stack** — my personal stack of homelab, dev-tool
 | [`scripts/`](./scripts/)     | Standalone scripts and utilities (AppleScript/Automator apps, command snippets)                       |
 | [`ai/`](./ai/)               | AI assets — skills, prompts, agents, rules, evals, etc. — see the [AI assets index](#ai-assets) below |
 | [`snippets/`](./snippets/)   | Small reusable code snippets (work in progress)                                                       |
-| [`docs/`](./docs/)           | Project docs, e.g. the new-project [checklist](./docs/CHECKLIST.md)                                   |
+| [`docs/`](./docs/)           | Project docs, e.g. the harmon-init [post-generation checklist](./docs/CHECKLIST.md)                   |
 
 ## Template Index
 
@@ -78,9 +76,9 @@ If there isn't an existing template in this repo, start with looking at the <htt
 
 ### Requirements
 
-- Homebrew
-- Python
-- [Taskfile](https://taskfile.dev/)
+- Homebrew (installs the toolchain via `Brewfile`)
+- [Taskfile](https://taskfile.dev/) (task runner)
+- Node (for npx-based tools: markdownlint-cli2, commitlint)
 
 ### Bootstrap
 
@@ -98,20 +96,20 @@ Templates are meant to be copied into your project and adapted — there is no s
 
 ### Task Runner
 
-[Taskfile.yaml](./Taskfile.yml)
+[Taskfile.yml](./Taskfile.yml)
 
-### Testing
+### Verify
 
-#### Validate
-
-`task validate`
+`task verify` runs the fast local gate (lint + Taskfile/hook guards); `task ci`
+mirrors the full pipeline (verify + tests + security + devcontainer assert).
 
 #### Security
 
-`task security`
+`task security` — gitleaks secret scan + dependency audit.
 
-#### Linting, Formatting, Conventions, Style Guidelines, etc
+#### Linting, formatting & conventions
 
-- .pre-commit-config.yaml
-- .shellcheckrc
-- .ansible-lint
+Git hooks (managed by [lefthook](https://lefthook.dev/), `lefthook.yml`) and CI
+delegate to the same Taskfile targets. Config lives in `.editorconfig`,
+`.shellcheckrc`, `.yamllint`, `.markdownlint.json`, `commitlint.config.mjs`, and
+`.gitleaks.toml`.

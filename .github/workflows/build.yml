@@ -1,0 +1,114 @@
+name: Build & Validate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  merge_group:
+  workflow_dispatch:
+
+# Parallel jobs that all call into the Taskfile so local + CI run identical commands.
+# A final `verify` job aggregates statuses for branch protection
+# (required checks: verify + security).
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: [ "ubuntu-latest" ]
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          # renovate: datasource=node-version
+          node-version: "24"
+      - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        with:
+          # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
+          version: 3.51.1
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install lint tools (shellcheck, shfmt, actionlint, yamllint)
+        run: |
+          # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
+          SHELLCHECK_VERSION=0.10.0
+          curl -sSL -o /tmp/shellcheck.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          # renovate: datasource=github-releases depName=mvdan/sh extractVersion=^v?(?<version>.+)$
+          SHFMT_VERSION=3.13.1
+          sudo curl -sSL -o /usr/local/bin/shfmt \
+            "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
+          sudo chmod +x /usr/local/bin/shfmt
+          # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v?(?<version>.+)$
+          ACTIONLINT_VERSION=1.7.12
+          curl -sSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /tmp actionlint
+          sudo mv /tmp/actionlint /usr/local/bin/
+          pip install yamllint
+      - name: Lint
+        run: task check
+      - run: task test:tasks
+      - run: task test:hooks
+      - run: task test:devcontainer:permissions
+
+  security:
+    runs-on: [ "ubuntu-latest" ]
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          # renovate: datasource=node-version
+          node-version: "24"
+      - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        with:
+          # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
+          version: 3.51.1
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install gitleaks
+        run: |
+          # renovate: datasource=github-releases depName=gitleaks/gitleaks extractVersion=^v?(?<version>.+)$
+          GITLEAKS_VERSION=8.24.3
+          curl -sSL -o /tmp/gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tgz -C /tmp
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+      - name: Security scan
+        run: task security
+
+  verify:
+    if: always()
+    needs: [lint, security]
+    runs-on: [ "ubuntu-latest" ]
+    steps:
+      - name: Check job results
+        run: |
+          fail=0
+          check() {
+            [ "$2" = "success" ] || [ "$2" = "skipped" ] || { echo "Job $1 result: $2"; fail=1; }
+          }
+          check lint "${{ needs.lint.result }}"
+          check security "${{ needs.security.result }}"
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi
+          echo "All required jobs passed."
