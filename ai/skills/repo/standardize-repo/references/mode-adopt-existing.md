@@ -79,8 +79,16 @@ Defaults worth knowing so you only override what's wrong (from `copier.yml`):
   `github_remote_create`, `github_release_init`, `bunch_add`,
   `obsidian_project_add`, `run_task_install`. The repo already exists and has a
   remote/history — let those run by hand later, not as a copier `_task`. Pass
-  `--defaults` (with the `--data` overrides above) to lock the rest down
-  non-interactively, or answer interactively and explicitly decline each one.
+  `--defaults` to avoid prompts **and explicitly pass each one `=false`** — do
+  NOT rely on copier.yml's `no` defaults. On a **re-adopt over an existing
+  `.copier-answers.yml`** (every v2 repo — see Path A's v2 note), copier seeds
+  defaults *from that answers file*, so a stale `true` there sails straight
+  through `--defaults` and **fires the side-effect `_task`** (observed: a v2
+  re-adopt's stale `github_remote_create: true` ran `gh repo create`; a stale
+  `github_release_init: true` would cut a bogus `release:init` v0.1.0).
+  harmon-init ≥ the side-effect-task hardening also gates these on `git_init`,
+  so `git_init=false` neutralizes them on a current template — but pass them all
+  `=false` to stay correct across template versions.
 
 ---
 
@@ -127,8 +135,11 @@ copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD --defaults --overwrite \
   --data project_name="<Formal Project Name>" \
   --data project_slug="$(basename "$(pwd)")" \
   --data github_org="<org-or-user>" \
-  --data git_init=false        # ← REQUIRED: see note below
-  # ...remaining --data; all other side-effect answers already default = no
+  --data git_init=false \
+  --data github_remote_create=false --data github_release_init=false \
+  --data bunch_add=false --data obsidian_project_add=false --data run_task_install=false
+  # ↑ pass EVERY side effect =false (see §1). On a v2 RE-adopt copier seeds
+  #   defaults from the stale .copier-answers.yml, so they do NOT "default to no".
 ```
 
 `--vcs-ref=HEAD` is **mandatory** here when `~/git/harmon-init` is a local path:
@@ -277,6 +288,37 @@ These are the recurring drifts harmon-init exists to fix (source:
    bump-on-merge `release.yml` in favor of release-please; de-bloat a legacy
    `Brewfile`; make scripts portable to macOS bash 3.2 (no `mapfile`, no
    `grep -P`).
+
+6. **v2→v3 re-adopt cleanup (the v2 question set predates lefthook/gitleaks).**
+   After the Path B render, **delete the superseded v2 artifacts** the template no
+   longer ships: `.pre-commit-config.yaml` (→ lefthook); `check_for_pattern.sh` +
+   any `test/whisperConfig.yml` (→ gitleaks); a v2 `package.json` (eslint/prettier
+   stubs) and `requirements.txt` (whispers/pre-commit deps) on a non-node repo;
+   `.ansible-lint` when ansible isn't in the pipeline; and the old `build.yaml` /
+   `security.yml` / `validate.yml` workflows the template's `build.yml` supersedes.
+   Untrack a now-gitignored root `todo.md` and drop a stale
+   `<old-slug>.code-workspace`. **`node_modules/` gotcha:** an older `general`
+   (`use_node=false`) `.gitignore` did NOT ignore `node_modules/`, so a v2 repo
+   carrying one needs it added (now fixed in harmon-init — present in every
+   profile). Restore the rich `README.md` from `main` and update its stale refs
+   (badges `validate.yml`/`build.yaml` → `build.yml`; `task validate` → `task
+   verify`; drop `.pre-commit-config.yaml`/`.ansible-lint` mentions). Fold the old
+   real `CLAUDE.md` into `AGENTS.md` per step 1.
+
+7. **Scope the repo's linters past reference/example content.** A repo that
+   *houses* example or vendored content — a boilerplate library (`templates/`,
+   `snippets/`), copy-paste Windows scripts, an agent-skill source — should not be
+   held to its own operational lint standard for that content (the same reason the
+   template excludes `.claude/**`). Patterns that worked: `lint:shell`'s
+   `SHELL_FILES` adds `':!:templates/' ':!:snippets/'`; `scripts/lint-hygiene.sh`
+   skips `*.cmd`/`*.bat` (Windows files use CRLF by convention). NB a `SHELL_FILES`
+   exclusion does **not** apply when lefthook passes `{staged_files}` via
+   `CLI_ARGS`, so add a matching lefthook `exclude:` if staged edits to that
+   content must skip too. A **chezmoi** dotfiles source needs none of this: its
+   `.tmpl` files aren't `*.sh`/`*.yml` (so `lint:shell`/`yamllint` skip them) and
+   `{{ .chezmoi.* }}` Go-templates don't match the copier marker scan — the only
+   snag is app-managed configs missing a trailing newline (e.g.
+   `private_karabiner.json`), which just need one appended.
 
 ---
 
