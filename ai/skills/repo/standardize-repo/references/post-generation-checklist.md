@@ -94,7 +94,7 @@ push so the remote exists.
   ```
 
 - [ ] **[human-only]** Create or reuse the CI **GitHub App** `<org>-ci`, then
-      set `CI_APP_ID` (Actions **variable**) + `CI_APP_PRIVATE_KEY` (Actions
+      set `CI_APP_CLIENT_ID` (Actions **variable**) + `CI_APP_PRIVATE_KEY` (Actions
       **secret**). This App authenticates `release.yml` (release-please) and the
       `claude-*` workflows; minting an App-authored commit is what lets a release
       PR's required checks actually run (the built-in `GITHUB_TOKEN` would not
@@ -129,7 +129,7 @@ push so the remote exists.
 
     ```bash
     # personal-account repo only; org-level should be set in the UI / non-destructively
-    gh variable set CI_APP_ID --repo "<org>/<repo>" --body "<app-id>"
+    gh variable set CI_APP_CLIENT_ID --repo "<org>/<repo>" --body "<app-id>"
     gh secret set CI_APP_PRIVATE_KEY --repo "<org>/<repo>" < path/to/app.pem
     ```
 

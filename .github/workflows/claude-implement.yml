@@ -1,7 +1,7 @@
 name: Claude Implement
 run-name: ${{ github.actor }} is running Claude Implement
 # Requires: CLAUDE_CODE_OAUTH_TOKEN secret, plus the CI GitHub App
-# (CI_APP_ID variable + CI_APP_PRIVATE_KEY secret). See docs/CHECKLIST.md
+# (CI_APP_CLIENT_ID variable + CI_APP_PRIVATE_KEY secret). See docs/CHECKLIST.md
 # and docs/architecture/security.md.
 on:
   issue_comment:
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
-          client-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           # Least-privilege token: implement pushes commits (contents), opens
           # PRs (pull-requests), comments (issues), and may touch

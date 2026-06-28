@@ -314,7 +314,7 @@ Workflow inventory:
 **GitHub App auth** (the claude-* workflows, `release.yml`, and
 `project-automation.yml`): authenticate as a **`<owner>-ci` GitHub App** (one App
 per org/account), not a PAT. Each job mints a short-lived (~1h) token via
-`actions/create-github-app-token` reading **`CI_APP_ID`** (Actions **variable**) +
+`actions/create-github-app-token` reading **`CI_APP_CLIENT_ID`** (Actions **variable**) +
 **`CI_APP_PRIVATE_KEY`** (Actions **secret**), with **least-privilege
 `permission-*` inputs** (e.g. plan: `permission-contents: read` +
 `permission-issues|pull-requests: write`; implement adds
@@ -325,7 +325,7 @@ lacks fails token minting — that's why org-only perms are jinja-gated.
 **[manual]:** create the App, install it on the repo, set the variable + secret.
 
 Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKEN`
-(secret), `SNYK_TOKEN` (secret), `CI_APP_ID` (variable) + `CI_APP_PRIVATE_KEY`
+(secret), `SNYK_TOKEN` (secret), `CI_APP_CLIENT_ID` (variable) + `CI_APP_PRIVATE_KEY`
 (secret), `FULL_SECURITY_SCAN=true` (variable, to enable CodeQL).
 
 ### 1.8 Security

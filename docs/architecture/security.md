@@ -42,7 +42,7 @@ contained to a single org (no cross-org reach).
 Each job mints a short-lived (1h) installation token at runtime via
 `actions/create-github-app-token`, reading:
 
-- `CI_APP_ID` — Actions **variable** (this App's **Client ID** — the `Iv…`-style
+- `CI_APP_CLIENT_ID` — Actions **variable** (this App's **Client ID** — the `Iv…`-style
   string from the App's settings page, NOT the numeric App ID; not secret)
 - `CI_APP_PRIVATE_KEY` — Actions **secret** (this App's PEM private key)
 
@@ -75,7 +75,7 @@ a machine-readable reference; mirror it in the form.
 3. **Generate a private key** (downloads a `.pem`) and copy the **Client ID**
    (shown at the top of the App's settings page — not the numeric App ID).
 4. **Install App** → on this org, **Only select repositories** (not "All").
-5. Set `CI_APP_ID` (Actions variable = the App's Client ID) and `CI_APP_PRIVATE_KEY`
+5. Set `CI_APP_CLIENT_ID` (Actions variable = the App's Client ID) and `CI_APP_PRIVATE_KEY`
    (Actions secret = the `.pem` contents) — org-level for an org, per-repo for a
    personal account.
 
@@ -127,7 +127,7 @@ TODO: enumerate the tokens/secrets this repo depends on and where each lives:
 
 | Secret / variable | Used by | Stored in | Rotation |
 |---|---|---|---|
-| `CI_APP_ID` (var) + `CI_APP_PRIVATE_KEY` (secret) | release-please, claude-* | repo or org Actions variable + secret | rotate App key per policy |
+| `CI_APP_CLIENT_ID` (var) + `CI_APP_PRIVATE_KEY` (secret) | release-please, claude-* | repo or org Actions variable + secret | rotate App key per policy |
 | `CLAUDE_CODE_OAUTH_TOKEN` | claude-* workflows | repo Actions secret | TODO |
 | `SNYK_TOKEN` | `task security:sast`/`sca` | repo Actions secret | TODO |
 | TODO | TODO | TODO | TODO |

@@ -628,10 +628,10 @@ if [[ "${SECTION}" == "setup" ]]; then
                     checkline na "CLAUDE_CODE_OAUTH_TOKEN" "no claude-* workflows"
                 fi
                 if [ "${uses_ci_app}" = 1 ]; then
-                    if has_cred "${d}/vars.json" "CI_APP_ID"; then
-                        checkline ok "CI_APP_ID (variable)"
+                    if has_cred "${d}/vars.json" "CI_APP_CLIENT_ID"; then
+                        checkline ok "CI_APP_CLIENT_ID (variable)"
                     else
-                        checkline no "CI_APP_ID (variable)" "gh variable set"
+                        checkline no "CI_APP_CLIENT_ID (variable)" "gh variable set"
                     fi
                     if has_cred "${d}/secrets.json" "CI_APP_PRIVATE_KEY"; then
                         checkline ok "CI_APP_PRIVATE_KEY (secret)"

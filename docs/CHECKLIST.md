@@ -30,7 +30,7 @@ config, toolchain, devcontainer, and dev environment — against the items below
 - [ ] CI GitHub App `evanharmon1-ci`: create it by hand for this org (one App
       per org; **Settings → Developer settings → GitHub Apps**), or reuse the
       org's existing one;
-      install it on this repo, then set `CI_APP_ID` (Actions
+      install it on this repo, then set `CI_APP_CLIENT_ID` (Actions
       **variable**) + `CI_APP_PRIVATE_KEY` (Actions **secret**) — org-level for
       an org, per-repo for a personal account. Drives release-please, the
       claude-* workflows, and project-automation. See docs/architecture/security.md.
