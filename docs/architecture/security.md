@@ -42,7 +42,8 @@ contained to a single org (no cross-org reach).
 Each job mints a short-lived (1h) installation token at runtime via
 `actions/create-github-app-token`, reading:
 
-- `CI_APP_ID` — Actions **variable** (this App's numeric id; not secret)
+- `CI_APP_CLIENT_ID` — Actions **variable** (this App's **Client ID** — the `Iv…`-style
+  string from the App's settings page, NOT the numeric App ID; not secret)
 - `CI_APP_PRIVATE_KEY` — Actions **secret** (this App's PEM private key)
 
 Set both once as **org-level** Actions variable + secret (every repo in the org
@@ -62,7 +63,7 @@ a machine-readable reference; mirror it in the form.
    personal account, `https://github.com/settings/apps/new`
    (**Settings → Developer settings → GitHub Apps → New GitHub App**).
 2. Set **GitHub App name** `evanharmon1-ci` (names are globally unique — if
-   it's taken, add a suffix; the workflows reference the **App ID**, not the
+   it's taken, add a suffix; the workflows reference the **Client ID**, not the
    name), **Description** = the `description` from the manifest (optional,
    cosmetic — documents what the App is for), **Homepage URL** = the owner's page
    `https://github.com/evanharmon1` (also required-but-cosmetic — it doesn't
@@ -71,9 +72,10 @@ a machine-readable reference; mirror it in the form.
    CI uses installation tokens, not the user-to-server tokens this governs), grant
    the permissions in the table below, and choose **"Only on this account"**. Then
    scroll down and click **Create GitHub App**.
-3. **Generate a private key** (downloads a `.pem`) and note the **App ID**.
+3. **Generate a private key** (downloads a `.pem`) and copy the **Client ID**
+   (shown at the top of the App's settings page — not the numeric App ID).
 4. **Install App** → on this org, **Only select repositories** (not "All").
-5. Set `CI_APP_ID` (Actions variable = the App ID) and `CI_APP_PRIVATE_KEY`
+5. Set `CI_APP_CLIENT_ID` (Actions variable = the App's Client ID) and `CI_APP_PRIVATE_KEY`
    (Actions secret = the `.pem` contents) — org-level for an org, per-repo for a
    personal account.
 
@@ -125,7 +127,7 @@ TODO: enumerate the tokens/secrets this repo depends on and where each lives:
 
 | Secret / variable | Used by | Stored in | Rotation |
 |---|---|---|---|
-| `CI_APP_ID` (var) + `CI_APP_PRIVATE_KEY` (secret) | release-please, claude-* | repo or org Actions variable + secret | rotate App key per policy |
+| `CI_APP_CLIENT_ID` (var) + `CI_APP_PRIVATE_KEY` (secret) | release-please, claude-* | repo or org Actions variable + secret | rotate App key per policy |
 | `CLAUDE_CODE_OAUTH_TOKEN` | claude-* workflows | repo Actions secret | TODO |
 | `SNYK_TOKEN` | `task security:sast`/`sca` | repo Actions secret | TODO |
 | TODO | TODO | TODO | TODO |

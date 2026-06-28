@@ -94,7 +94,7 @@ push so the remote exists.
   ```
 
 - [ ] **[human-only]** Create or reuse the CI **GitHub App** `<org>-ci`, then
-      set `CI_APP_ID` (Actions **variable**) + `CI_APP_PRIVATE_KEY` (Actions
+      set `CI_APP_CLIENT_ID` (Actions **variable**) + `CI_APP_PRIVATE_KEY` (Actions
       **secret**). This App authenticates `release.yml` (release-please) and the
       `claude-*` workflows; minting an App-authored commit is what lets a release
       PR's required checks actually run (the built-in `GITHUB_TOKEN` would not
@@ -120,7 +120,7 @@ push so the remote exists.
     | Workflows | Read and write | claude may edit files under `.github/workflows/` |
     | Metadata | Read-only | required baseline |
 
-  - Generate a private key (`.pem`) and note the **App ID**.
+  - Generate a private key (`.pem`) and copy the **Client ID** (the Iv-style string on the App's settings page, not the numeric App ID).
   - **Install App** → on this org → **Only select repositories** (not "All").
   - Set the variable + secret. **Do this by hand and do not script org-scoped
     secret-setting** — the bulk `--repos` form *replaces* the secret's value and
@@ -129,7 +129,7 @@ push so the remote exists.
 
     ```bash
     # personal-account repo only; org-level should be set in the UI / non-destructively
-    gh variable set CI_APP_ID --repo "<org>/<repo>" --body "<app-id>"
+    gh variable set CI_APP_CLIENT_ID --repo "<org>/<repo>" --body "<client-id>"
     gh secret set CI_APP_PRIVATE_KEY --repo "<org>/<repo>" < path/to/app.pem
     ```
 
