@@ -1,0 +1,66 @@
+# Ensure UTF-8 locale for Nerd Font glyphs and multi-byte characters.
+export LANG="en_US.UTF-8"
+export LC_ALL="en_US.UTF-8"
+
+# Path to your Oh My Zsh installation.
+export ZSH="$HOME/.oh-my-zsh"
+
+# Disable oh-my-zsh theme — starship prompt is initialized at the bottom.
+ZSH_THEME=""
+
+# Disable automatic updates — the devcontainer image pins the version.
+zstyle ':omz:update' mode disabled
+
+# Plugins — loaded in alphabetical order for readability.
+# Standard plugins (bundled with oh-my-zsh):
+#   aliases             — `acs` command to list aliases from all plugins
+#   ansible             — completions for ansible-*
+#   colored-man-pages   — colorizes man page output
+#   command-not-found   — suggests apt packages for unknown commands
+#   copypath            — `copypath` copies current directory to clipboard
+#   direnv              — hooks direnv into the shell for auto .envrc loading
+#   docker              — completions for docker and docker-compose
+#   extract             — `extract` command handles any archive format
+#   fzf                 — Ctrl+R history search and Ctrl+T file finder via fzf
+#   gcloud              — completions for Google Cloud CLI
+#   gh                  — completions for the GitHub CLI
+#   git                 — aliases (gst, gco, gcm, etc.) and completions
+#   sudo                — press Esc twice to prepend sudo to last command
+#   terraform           — completions and aliases for terraform
+#   zoxide              — activates zoxide's `z` command for smart cd
+# Custom plugins (cloned during image build):
+#   zsh-autosuggestions     — fish-like inline suggestions from history
+#   zsh-syntax-highlighting — colors valid/invalid commands as you type
+plugins=(
+  aliases
+  ansible
+  colored-man-pages
+  command-not-found
+  copypath
+  direnv
+  docker
+  extract
+  fzf
+  gcloud
+  gh
+  git
+  sudo
+  terraform
+  zoxide
+  zsh-autosuggestions
+  zsh-syntax-highlighting
+)
+
+source $ZSH/oh-my-zsh.sh
+
+# Persistent shell history (volume-mounted directory survives container rebuilds).
+export HISTFILE="$HOME/.shell-history/.zsh_history"
+
+# Default editor — micro with custom keybindings (Ctrl+S save, Ctrl+X quit).
+# Used by git commit, crontab -e, kubectl edit, etc.
+export EDITOR="micro"
+export VISUAL="$EDITOR"
+
+# Starship prompt — must be after oh-my-zsh sourcing.
+# Config lives at ~/.config/starship.toml (installed from .devcontainer/config/).
+eval "$(starship init zsh)"

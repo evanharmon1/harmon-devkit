@@ -1,0 +1,113 @@
+{
+  // Primary profile for AI agents (Claude Code, Codex, Gemini).
+  // Secrets (GH_TOKEN) come from the --env-file, not containerEnv.
+  // Tailscale is not installed in this profile — see dev/ for the human profile.
+  "name": "BOT - devcontainer-harmon-devkit",
+  "containerName": "devcontainer-harmon-devkit-bot",
+  // Minimum to run the intended workload (Playwright + agents). Codespaces
+  // enforces it; local Docker / Coder may not — see
+  // docs/guides/devcontainer-performance.md for recommended sizing.
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "4gb"
+  },
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "cacheFrom": "ghcr.io/evanharmon1/harmon-devkit-devcontainer"
+  },
+  // Bot profile intentionally omits TS_AUTHKEY from the allow-list — this
+  // container has no Tailscale feature installed, and we don't want a tailnet
+  // auth key sitting in its env-file. init-env.sh will strip any stale
+  // TS_AUTHKEY entry on every rebuild.
+  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/devcontainer.env GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY",
+  "runArgs": [
+    "--init",
+    "--shm-size=2g",
+    "--env-file",
+    ".devcontainer/devcontainer.env"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.14"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "dockerDashComposeVersion": "v2"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers-extra/features/go-task:1": {},
+    "ghcr.io/itsmechlark/features/1password:1.5.0": {}
+  },
+  "mounts": [
+    "source=claude-code-config-${localWorkspaceFolderBasename},target=/home/vscode/.claude,type=volume",
+    "source=codex-config-${localWorkspaceFolderBasename},target=/home/vscode/.codex,type=volume",
+    "source=gemini-config-${localWorkspaceFolderBasename},target=/home/vscode/.gemini,type=volume",
+    "source=agent-deck-config-${localWorkspaceFolderBasename},target=/home/vscode/.agent-deck,type=volume",
+    "source=shell-history-${localWorkspaceFolderBasename},target=/home/vscode/.shell-history,type=volume",
+    "source=zoxide-data-${localWorkspaceFolderBasename},target=/home/vscode/.local/share/zoxide,type=volume"
+  ],
+  // Secrets (GH_TOKEN) are populated into the --env-file by init-env.sh
+  // (from 1Password locally, or from host env on Coder/Codespaces).
+  // Do NOT forward them via containerEnv — ${localEnv:...} resolves to ""
+  // when the host shell doesn't export them, which overrides the env-file
+  // values (Docker --env takes precedence over --env-file).
+  "containerEnv": {
+    "CODER": "${localEnv:CODER}",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postStartCommand": "bash .devcontainer/post-start.sh",
+  "customizations": {
+    "coder": {
+      "name": "devcontainer"
+    },
+    "vscode": {
+      "settings": {
+        "terminal.integrated.inheritEnv": true,
+        "python.defaultInterpreterPath": ".venv/bin/python",
+        "[python]": {
+          "editor.defaultFormatter": "ms-python.black-formatter"
+        },
+        "debug.javascript.autoAttachFilter": "disabled",
+        "terminal.integrated.env.linux": {
+          "NODE_OPTIONS": "",
+          "BROWSER": ""
+        },
+        "remote.autoForwardPortsSource": "output",
+        "terminal.integrated.minimumContrastRatio": 1,
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "extensions.ignoreRecommendations": false
+      },
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "ms-python.python",
+        "ms-python.black-formatter",
+        "esbenp.prettier-vscode",
+        "timonwong.shellcheck",
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml",
+        "mikestead.dotenv",
+        "davidanson.vscode-markdownlint",
+        "foxundermoon.shell-format",
+        "GitHub.vscode-github-actions",
+        "github.vscode-pull-request-github",
+        "task.vscode-task",
+        "EditorConfig.EditorConfig",
+        "anthropic.claude-code",
+        "openai.chatgpt",
+        "ms-playwright.playwright"
+      ]
+    }
+  },
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true,
+  "forwardPorts": [
+    8420
+  ],
+  "portsAttributes": {
+    "8420": {
+      "label": "Agent Deck Web UI",
+      "onAutoForward": "notify"
+    }
+  }
+}

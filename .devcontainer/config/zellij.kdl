@@ -1,0 +1,23 @@
+// ── General ─────────────────────────────────────────────────────────
+mouse_mode true                              // Enable mouse for pane selection, resizing, scrolling
+pane_frames true                             // Show borders between panes
+scrollback_lines_to_serialize 5000           // Persist 5k lines per pane across sessions
+scroll_buffer_size 50000                     // 50k lines of scrollback in memory (matches tmux)
+copy_on_select true                          // Automatically copy selected text to clipboard
+mirror_session false                         // Each connected client can view different tabs
+
+// ── Clipboard (VS Code compatible) ──────────────────────────────────
+// Zellij uses OSC 52 for clipboard by default, which VS Code's terminal
+// intercepts. copy_command is a fallback for non-OSC52 terminals.
+// Setting copy_clipboard to "system" tells zellij to prefer system clipboard.
+copy_clipboard "system"
+
+// ── UI ──────────────────────────────────────────────────────────────
+default_layout "compact"                     // Minimal UI — hides the mode indicator bar at bottom
+                                             // to save vertical space in VS Code's terminal panel
+simplified_ui true                           // Use ASCII box chars instead of Unicode (safer in VS Code)
+                                             // Prevents rendering glitches with some terminal fonts
+
+// ── Session ─────────────────────────────────────────────────────────
+on_force_close "quit"                        // Ctrl+Q quits immediately without prompting
+default_shell "zsh"                          // Explicit shell (avoids inheriting VS Code's node shell)

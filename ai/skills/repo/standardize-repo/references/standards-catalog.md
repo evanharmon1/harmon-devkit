@@ -163,7 +163,7 @@ Notable command bodies (for an auditor checking they match):
   **type enum** (read from `commitlint.config.mjs`, identical in template and
   both live repos):
 
-  ```
+  ```text
   build, change, chore, ci, docs, feat, fix, perf, refactor, remove, revert, style, test
   ```
 
@@ -373,7 +373,7 @@ install the Renovate GitHub App on the repo. Conventions:
   Terraform providers each into one PR.
 - **`anthropics/claude-code-action` ejection:** removed from the Actions group
   (`groupName: null`) and `minimumReleaseAge: 0 days` (ships near-daily; grouping
-  + the 3-day gate kept the whole batch perpetually pending). Rule ordered AFTER
+  - the 3-day gate kept the whole batch perpetually pending). Rule ordered AFTER
   the group rules so the override wins.
 - npm `overrides` deptype disabled (avoids `EOVERRIDE`).
 - `dependencyDashboard: true`; weekly schedule `before 9am on Monday`,
@@ -514,7 +514,7 @@ Adds (all [copier]):
 - **`include_terraform`** → `terraform/` skeleton (`main.tf`, `variables.tf`,
   `outputs.tf`, `tfvars.env.example`); tasks `lint:terraform` (`fmt -check`),
   `lint:terraform:validate`, `validate`→validate; lefthook terraform (pre-commit)
-  + terraform-validate (pre-push); terraform devcontainer feature; Renovate
+  - terraform-validate (pre-push); terraform devcontainer feature; Renovate
   Terraform-providers group; hashicorp/terraform extension.
 - **`include_ansible`** → `ansible/` skeleton (`ansible.cfg`, `requirements.yaml`,
   `inventory/ playbooks/ roles/` each `.gitkeep`); **`.ansible-lint`**; tasks

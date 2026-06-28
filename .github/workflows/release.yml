@@ -1,70 +1,46 @@
-name: Bump Release Version
+name: Release Please
+run-name: release-please maintaining the release PR
+
+# Releases stay intentional: release-please maintains a rolling release PR from
+# conventional commits (feat -> minor, fix -> patch; pre-1.0 feat bumps minor;
+# chore/docs/ci produce no release). Merging that PR — a deliberate act — is
+# what creates the tag, GitHub release, and CHANGELOG entry. Nothing is bumped
+# automatically on a normal merge to main.
+
 on:
   push:
     branches:
       - main
 
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
-  bump-release:
-    runs-on: ubuntu-latest
+  release-please:
+    runs-on: [ "ubuntu-latest" ]
+    timeout-minutes: 10
     permissions:
       contents: write
+      pull-requests: write
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      # CI GitHub App token, not GITHUB_TOKEN: PRs opened by GITHUB_TOKEN never
+      # trigger CI, and branch protection requires those checks to pass before
+      # the release PR can merge. (Same App the claude-* workflows use.)
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
         with:
-          fetch-depth: 0 # Fetch all history for versioning
-
-      - name: Get Latest Tag
-        id: get_latest_tag
-        run: |
-          LATEST_TAG=$(git tag --sort=-version:refname | head -n1)
-          echo "LATEST_TAG=${LATEST_TAG}" >> $GITHUB_ENV
-
-      - name: Get Current Version
-        id: get_current_version
-        run: |
-          VERSION=${{ env.LATEST_TAG }}
-          VERSION=${VERSION#v}
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-
-      - name: Split Version into Components
-        id: split_version
-        run: |
-          MAJOR=$(echo "${{ env.VERSION }}" | cut -d. -f1)
-          MINOR=$(echo "${{ env.VERSION }}" | cut -d. -f2)
-          PATCH=$(echo "${{ env.VERSION }}" | cut -d. -f3)
-          echo "MAJOR=${MAJOR}" >> $GITHUB_ENV
-          echo "MINOR=${MINOR}" >> $GITHUB_ENV
-          echo "PATCH=${PATCH}" >> $GITHUB_ENV
-
-      - name: Calculate New Patch Version
-        id: calculate_new_patch_version
-        run: |
-          NEW_PATCH=$(( ${{ env.PATCH }} + 1 ))
-          echo "NEW_PATCH=${NEW_PATCH}" >> $GITHUB_ENV
-
-      - name: Set New Version
-        id: set_new_version
-        run: |
-          NEW_VERSION="v${{ env.MAJOR }}.${{ env.MINOR }}.${{ env.NEW_PATCH }}"
-          echo "NEW_VERSION=${NEW_VERSION}" >> $GITHUB_ENV
-
-      - name: Display Version Info
-        run: |
-          echo "Latest tag is ${{ env.LATEST_TAG }}"
-          echo "Current version is ${{ env.VERSION }}"
-          echo "Bumping patch version to ${{ env.NEW_VERSION }}"
-
-      - name: Create New Git Tag
-        run: |
-          git tag "${{ env.NEW_VERSION }}"
-          git push origin "${{ env.NEW_VERSION }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release
-        run: |
-          gh release create "${{ env.NEW_VERSION }}" --generate-notes
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          # Least-privilege: release-please commits/tags/releases (contents),
+          # maintains the release PR (pull-requests), and applies the
+          # autorelease:* lifecycle labels (issues — PR labels use the Issues API).
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}

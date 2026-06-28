@@ -1,0 +1,10 @@
+[metadata]
+name = "gh-issues"
+description = "Pick a GitHub issue from the current repo"
+
+[source]
+command = "gh issue list --limit 100 --json number,title --template '{{range .}}{{printf \"%v\\t%s\\n\" .number .title}}{{end}}'"
+
+[preview]
+command = "gh issue view $(printf '%s' '{}' | cut -f1)"
+size = 60

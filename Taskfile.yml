@@ -1,142 +1,385 @@
 # Taskfile for Harmon DevKit
-version: '3'
+# https://taskfile.dev
+version: "3"
+
+output:
+  group:
+    begin: "::group::{{.TASK}}"
+    end: "::endgroup::"
+
+# ── Entry Points ───────────────────────────────────────────────────
 tasks:
-  bootstrap:
+  default:
+    desc: Interactive task menu (tv)
     cmds:
-      - /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-      - brew install python #TODO: Might need to use a non-homebrew method
+      - task: menu-tv
+
+  menu:
+    desc: Interactive task menu (fzf)
     silent: true
+    interactive: true
+    cmds:
+      - |
+        selected=$(task --list-all | fzf --reverse --header-lines=1)
+        if [ -n "$selected" ]; then
+          task_name=$(echo "$selected" | awk '{sub(/:$/, "", $2); print $2}')
+          task "$task_name"
+        fi
+
+  menu-tv:
+    desc: Interactive task menu (tv)
+    silent: true
+    interactive: true
+    cmds:
+      - |
+        selected=$(task --list-all | grep -v "task: Available" | grep -v "\* menu:" | tv)
+        if [ -n "$selected" ]; then
+          task_name=$(echo "$selected" | awk '{sub(/:$/, "", $2); print $2}')
+          task "$task_name"
+        fi
+
+  # ── CI / Verification Pipelines ────────────────────────────────
+  ci:
+    # Full local mirror of the CI pipeline — run before (or instead of) opening
+    # a PR to catch everything CI would, on demand, without waiting on a PR run.
+    # Builds on `verify` and adds the heavier / environment-dependent checks
+    # (the devcontainer permission assert needs a Docker daemon, like CI has).
+    desc: Full CI mirror (verify → [test:devcontainer:permissions →] test → security)
+    cmds:
+      - task: verify
+      - task: test:devcontainer:permissions
+      - task: test
+      - task: security
+
+  verify:
+    # Fast local gate (target: well under a minute) — safe for editors, git
+    # hooks, and AI agents to run on every change without getting bogged down.
+    # Add a check here ONLY if it stays fast; heavier or environment-dependent
+    # checks (test, security, the devcontainer permission assert) live in `ci`.
+    desc: Fast local gate (check → validate → guards)
+    cmds:
+      - task: check
+      - task: validate
+      - task: test:tasks
+      - task: test:hooks
+
+  # ── Quality Checks ────────────────────────────────────────────
+  check:
+    desc: Run all linters (parallel)
+    deps:
+      - lint
+
+  lint:
+    desc: Run all linters in parallel
+    deps:
+      - lint:yaml
+      - lint:shell
+      - lint:markdown
+      - lint:actions
+      - lint:hygiene
+
+  lint:yaml:
+    desc: yamllint
+    cmds:
+      - yamllint {{.CLI_ARGS | default "."}}
+
+  lint:shell:
+    desc: shellcheck + shfmt
+    vars:
+      SHELL_FILES:
+        # Exclude the boilerplate/snippet library (templates/, snippets/): those are
+        # copy-paste example starters with intentionally varied/loose style, not the
+        # repo's own operational scripts (cf. the .claude/** markdown lint exclude).
+        sh: git ls-files '*.sh' '*.bash' ':!:templates/' ':!:snippets/' 2>/dev/null | tr '\n' ' '
+    cmds:
+      - |
+        files="{{.CLI_ARGS}}"
+        [ -z "$files" ] && files="{{.SHELL_FILES}}"
+        [ -z "$files" ] && exit 0
+        shellcheck --severity=error $files
+        shfmt -d $files
+
+  lint:markdown:
+    desc: markdownlint-cli2
+    cmds:
+      - |
+        if [ -n "{{.CLI_ARGS}}" ]; then
+          npx --yes markdownlint-cli2 --fix {{.CLI_ARGS}}
+        else
+          npx --yes markdownlint-cli2 --fix '**/*.md' '#.claude/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**' '#**/.terraform/**' '#**/.venv/**' '#**/.task/**'
+        fi
+
+  lint:actions:
+    desc: actionlint on GitHub workflows
+    env:
+      # SC2016 flags '$' in single quotes, but we intentionally single-quote
+      # jq expressions that use '$var' placeholders.
+      SHELLCHECK_OPTS: --exclude=SC2016
+    cmds:
+      - actionlint
+
+  lint:hygiene:
+    desc: File hygiene (trailing whitespace, EOF newlines, merge markers, etc.)
+    cmds:
+      - ./scripts/lint-hygiene.sh {{.CLI_ARGS}}
+
+  lint:commit-msg:
+    desc: Validate commit message (conventional commits)
+    cmds:
+      - npx --yes --package @commitlint/cli --package @commitlint/config-conventional -- commitlint --edit {{.CLI_ARGS}}
+
+  lint:commit-msg:text:
+    desc: "Validate a commit message read from stdin (usage: printf '%s' <message> | task lint:commit-msg:text)"
+    cmds:
+      - npx --yes --package @commitlint/cli --package @commitlint/config-conventional -- commitlint
+
+  # ── Validation ─────────────────────────────────────────────────
+  validate:
+    desc: Validate project config/artifacts
+    cmds:
+      - 'echo "No validate steps for this project type yet — see docs/CHECKLIST.md."'
+
+  guard:no-commit-to-main:
+    desc: Block direct commits to main
+    cmds:
+      - |
+        branch=$(git rev-parse --abbrev-ref HEAD)
+        if [ "$branch" = "main" ]; then
+          echo "Direct commits to main are blocked. Use a feature branch."
+          exit 1
+        fi
+
+  format:
+    desc: Auto-format code
+    cmds:
+      - |
+        files=$(git ls-files '*.sh' '*.bash')
+        [ -n "$files" ] && shfmt -w $files || true
+      - npx --yes markdownlint-cli2 --fix '**/*.md' '#.claude/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**'
+
+  format:file:
+    desc: "Format a single file by extension (usage: task format:file -- <path>)"
+    cmds:
+      - |
+        f={{.CLI_ARGS}}
+        [ -z "$f" ] && exit 0
+        [ -f "$f" ] || exit 0
+        case "$f" in
+        *.sh | *.bash) shfmt -w "$f" ;;
+        *.md | *.mdx) npx --yes markdownlint-cli2 --fix "$f" ;;
+        esac
+
+  fix:
+    desc: Format then lint
+    cmds:
+      - task: format
+      - task: lint
+
+  # ── Tests ──────────────────────────────────────────────────────
+  test:
+    desc: Run all tests
+    cmds:
+      - 'echo "TODO: wire tests for this project (see docs/architecture/tests.md); test files live in tests/"'
+
+  test:tasks:
+    desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)
+    cmds:
+      - ./scripts/test-tasks.sh
+
+  test:devcontainer:root:
+    desc: Smoke test the primary (AI bot) devcontainer via the devcontainers CLI
+    cmds:
+      - ./scripts/devcontainer-smoke.sh .devcontainer/devcontainer.json
+
+  test:devcontainer:dev:
+    desc: Smoke test the dev (human) devcontainer via the devcontainers CLI
+    cmds:
+      - ./scripts/devcontainer-smoke.sh .devcontainer/dev/devcontainer.json
+
+  test:devcontainer:permissions:
+    desc: Unit-assert devcontainer permission invariants (no container needed)
+    cmds:
+      - ./scripts/devcontainer-assert.sh unit
+
+  test:hooks:
+    desc: Round-trip the Taskfile targets the Claude hooks delegate to
+    cmds:
+      - ./scripts/test-hooks.sh
+
+  # ── Security ───────────────────────────────────────────────────
+  security:
+    desc: Run all security checks (parallel)
+    deps:
+      - security:secrets
+      - security:audit
+
+  security:secrets:
+    desc: Scan for leaked secrets (gitleaks)
+    cmds:
+      - |
+        if [ -z "$GITHUB_STEP_SUMMARY" ]; then
+          gitleaks detect --no-banner --redact --source .
+        else
+          rc=0
+          gitleaks detect --no-banner --redact --source . \
+            --report-format json --report-path /tmp/harmon-devkit-gitleaks.json || rc=$?
+          node scripts/summarize-gitleaks.mjs /tmp/harmon-devkit-gitleaks.json
+          exit $rc
+        fi
+
+  security:audit:
+    desc: Dependency audit
+    cmds:
+      - echo "No package manifests to audit yet."
+
+  security:sast:
+    desc: Static application security testing (Snyk)
+    cmds:
+      - snyk code test --exclude=.worktrees --severity-threshold=high
+
+  security:sca:
+    desc: Software composition analysis (Snyk)
+    cmds:
+      - snyk test --severity-threshold=high --show-vulnerable-paths=all
+
+  # ── Setup ──────────────────────────────────────────────────────
+  bootstrap:
+    desc: One-time machine setup (Homebrew)
+    cmds:
+      # Idempotent: skip the installer when Homebrew is already present. The
+      # official installer's NONINTERACTIVE mode demands sudo up front and aborts
+      # even when there is nothing to install, so guard on `brew` existing.
+      - command -v brew >/dev/null 2>&1 || NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
   install:
+    desc: Install all project dependencies and tools
     cmds:
       - brew bundle --file=Brewfile
-      - python install -r requirements.txt
-    silent: true
-  validate:
+      - task: install:hooks
+
+  install:hooks:
+    desc: Install git hooks via lefthook
     cmds:
-      - task: preCommit
-      - task: check
-    silent: true
-  preCommit:
-    cmds:
-      - pre-commit run --all-files
-    silent: true
-  check:
-    cmds:
-      - npm run check:astro
-      - npm run check:eslint
-      - cmd: npm run check:prettier
-        # - shellcheck osConfig/mac/updateMac.sh
-        # - shellcheck osConfig/mac/setupMac.sh
-        # - shellcheck osConfig/mac/configureMacSettings.sh
-        ignore_error: true
-    silent: true
-  fix:
-    cmds:
-      - npm run fix
-    silent: true
-  security:
-    cmds:
-      - task: secrets
-      - task: sast
-    ignore_error: true
-    silent: true
-  secrets:
-    cmds:
-      - ./check_for_pattern.sh . "*secret*"
-      - whispers --config test/whisperConfig.yml --severity BLOCKER,CRITICAL .
-    silent: true
-  sast:
-    cmds:
-      - task: sast-dependencies
-      - task: sast-code
-    silent: true
-  sast-dependencies:
-    cmds:
-      - snyk test --all-projects
-    silent: true
-  sast-code:
-    cmds:
-      - snyk code test
-    silent: true
-  ghReleaseInit:
-    cmds:
-      - git add .
-      - git commit -m 'Initial release v0.0.1'
-      - git tag -a v0.0.1 -m "Initial release v0.0.1"
-      - git push origin main
-      - git push origin --tags
-      - gh release create
-    silent: false
-  vBumpPatch:
-    desc: Bump to the next patch version
+      - lefthook install
+
+  # ── GitHub setup ───────────────────────────────────────────────
+  # One-time, idempotent repo settings applied via gh (safe to re-run); run once
+  # the repo exists on GitHub. The remaining setup steps need a browser or a real
+  # credential and stay manual — see docs/CHECKLIST.md (branch ruleset import,
+  # Renovate/CodeRabbit app installs, Actions secrets, the CI GitHub App).
+  setup:github:
+    desc: Apply idempotent GitHub repo settings via gh (Dependabot alerts, private vulnerability reporting, CodeQL variable)
     vars:
-      LATEST_TAG:
-        sh: git tag --sort=-version:refname | head -n1
-      VERSION:
-        sh: echo "{{.LATEST_TAG}}" | sed 's/^v//'
-      MAJOR:
-        sh: echo "{{.VERSION}}" | cut -d. -f1
-      MINOR:
-        sh: echo "{{.VERSION}}" | cut -d. -f2
-      PATCH:
-        sh: echo "{{.VERSION}}" | cut -d. -f3
-      NEW_PATCH:
-        sh: expr {{.PATCH}} + 1
-      NEW_VERSION: v{{.MAJOR}}.{{.MINOR}}.{{.NEW_PATCH}}
+      REPO: "evanharmon1/harmon-devkit"
     cmds:
-      - echo "Latest tag is {{.LATEST_TAG}}"
-      - echo "Current version is {{.VERSION}}"
-      - echo "Bumping patch version to {{.NEW_VERSION}}"
-      - git tag {{.NEW_VERSION}}
-      - git push origin {{.NEW_VERSION}}
-      - gh release create
-  vBumpMinor:
-    desc: Bump to the next minor version
+      - gh api "repos/{{.REPO}}/vulnerability-alerts" --method PUT
+      # Private vulnerability reporting is a public-repo-only feature; harmon-init
+      # creates repos --private, so guard on visibility to avoid a 404 that would
+      # abort the task. Applies cleanly if the repo is later made public.
+      - |
+        if [ "$(gh api "repos/{{.REPO}}" --jq '.private')" = "false" ]; then
+          gh api "repos/{{.REPO}}/private-vulnerability-reporting" --method PUT
+        else
+          echo "Skipping private vulnerability reporting ({{.REPO}} is private; public-repo-only feature)."
+        fi
+      - gh variable set FULL_SECURITY_SCAN --repo "{{.REPO}}" --body true
+
+  # ── Release ────────────────────────────────────────────────────
+  # Releases are intentional via release-please (.github/workflows/release.yml):
+  # merge the rolling release PR to cut a release. release:init seeds the first
+  # v0.1.0 tag; the release:patch/minor/major tasks remain as a manual override.
+  release:init:
+    desc: Create initial v0.1.0 tag
+    cmds:
+      - git tag -a v0.1.0 -m "Initial release"
+      - git push origin v0.1.0
+      - gh release create v0.1.0 --generate-notes --title "v0.1.0"
+
+  release:patch:
+    desc: Bump patch version and release
     vars:
-      LATEST_TAG:
-        sh: git tag --sort=-version:refname | head -n1
-      VERSION:
-        sh: echo "{{.LATEST_TAG}}" | sed 's/^v//'
-      MAJOR:
-        sh: echo "{{.VERSION}}" | cut -d. -f1
-      MINOR:
-        sh: echo "{{.VERSION}}" | cut -d. -f2
-      NEW_MINOR:
-        sh: expr {{.MINOR}} + 1
-      NEW_VERSION: v{{.MAJOR}}.{{.NEW_MINOR}}.0
+      CURRENT_TAG:
+        sh: git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
+      NEXT_TAG:
+        sh: echo "{{.CURRENT_TAG}}" | awk -F. '{printf "%s.%s.%d", $1, $2, $3+1}'
     cmds:
-      - echo "Latest tag is {{.LATEST_TAG}}"
-      - echo "Current version is {{.VERSION}}"
-      - echo "Bumping minor version to {{.NEW_VERSION}}"
-      - git tag {{.NEW_VERSION}}
-      - git push origin {{.NEW_VERSION}}
-      - gh release create {{.NEW_VERSION}} --generate-notes
-  vBumpMajor:
-    desc: Bump to the next major version
+      - echo "Releasing {{.NEXT_TAG}} (was {{.CURRENT_TAG}})"
+      - git tag -a {{.NEXT_TAG}} -m "Release {{.NEXT_TAG}}"
+      - git push origin {{.NEXT_TAG}}
+      - gh release create {{.NEXT_TAG}} --generate-notes --title "{{.NEXT_TAG}}"
+
+  release:minor:
+    desc: Bump minor version and release
     vars:
-      LATEST_TAG:
-        sh: git tag --sort=-version:refname | head -n1
-      VERSION:
-        sh: echo "{{.LATEST_TAG}}" | sed 's/^v//'
-      MAJOR:
-        sh: echo "{{.VERSION}}" | cut -d. -f1
-      NEW_MAJOR:
-        sh: expr {{.MAJOR}} + 1
-      NEW_VERSION: v{{.NEW_MAJOR}}.0.0
+      CURRENT_TAG:
+        sh: git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
+      NEXT_TAG:
+        sh: echo "{{.CURRENT_TAG}}" | awk -F. '{printf "%s.%d.0", $1, $2+1}'
     cmds:
-      - echo "Latest tag is {{.LATEST_TAG}}"
-      - echo "Current version is {{.VERSION}}"
-      - echo "Bumping major version to {{.NEW_VERSION}}"
-      - git tag {{.NEW_VERSION}}
-      - git push origin {{.NEW_VERSION}}
-      - gh release create
-  bunchAdd:
+      - echo "Releasing {{.NEXT_TAG}} (was {{.CURRENT_TAG}})"
+      - git tag -a {{.NEXT_TAG}} -m "Release {{.NEXT_TAG}}"
+      - git push origin {{.NEXT_TAG}}
+      - gh release create {{.NEXT_TAG}} --generate-notes --title "{{.NEXT_TAG}}"
+
+  release:major:
+    desc: Bump major version and release
+    vars:
+      CURRENT_TAG:
+        sh: git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
+      NEXT_TAG:
+        sh: echo "{{.CURRENT_TAG}}" | awk -F. '{printf "v%d.0.0", substr($1,2)+1}'
     cmds:
-      - mv '.meta/Code Project - Harmon Boilerplates.bunch' '/Users/evan/Library/Mobile Documents/com~apple~CloudDocs/Bunches/'
-      - ln -s '/Users/evan/Library/Mobile Documents/com~apple~CloudDocs/Bunches/Code Project - Harmon Boilerplates.bunch' .meta
-    silent: false
-  obsidianAdd:
+      - echo "Releasing {{.NEXT_TAG}} (was {{.CURRENT_TAG}})"
+      - git tag -a {{.NEXT_TAG}} -m "Release {{.NEXT_TAG}}"
+      - git push origin {{.NEXT_TAG}}
+      - gh release create {{.NEXT_TAG}} --generate-notes --title "{{.NEXT_TAG}}"
+
+  # ── Clean ──────────────────────────────────────────────────────
+  clean:
+    desc: Remove build artifacts and caches
     cmds:
-      - mv '.meta/Harmon Boilerplates.md' '/Users/evan/Local/Memex/Personal/Digital'
-      - ln -s '/Users/evan/Local/Memex/Personal/Digital/Harmon Boilerplates.md' .meta
-    silent: false
+      - rm -rf .task
+
+  # ── Status ─────────────────────────────────────────────────────
+  status:
+    desc: Project status dashboard
+    cmds:
+      - ./scripts/status.sh
+
+  status:git:
+    desc: Git status section
+    cmds:
+      - ./scripts/status.sh git
+
+  status:gh:
+    desc: GitHub status section
+    cmds:
+      - ./scripts/status.sh gh
+
+  status:code:
+    desc: Codebase stats section
+    cmds:
+      - ./scripts/status.sh code
+
+  status:env:
+    desc: Environment info section
+    cmds:
+      - ./scripts/status.sh env
+
+  status:setup:
+    desc: Setup completeness audit (GitHub, toolchain, devcontainer, dev env)
+    cmds:
+      - ./scripts/status.sh setup
+
+  # ── Utilities ──────────────────────────────────────────────────
+  util:bunch-add:
+    desc: Move Bunch file to iCloud and replace with symlink (macOS)
+    cmds:
+      - mv '.meta/Code Project - Harmon DevKit.bunch' '/Users/evan/Library/Mobile Documents/com~apple~CloudDocs/Bunches/'
+      - ln -s '/Users/evan/Library/Mobile Documents/com~apple~CloudDocs/Bunches/Code Project - Harmon DevKit.bunch' .meta
+
+  util:obsidian-add:
+    desc: Move Obsidian note to the vault and replace with symlink (macOS)
+    cmds:
+      - mv '.meta/Harmon DevKit.md' '/Users/evan/Local/Memex/Personal/Digital'
+      - ln -s '/Users/evan/Local/Memex/Personal/Digital/Harmon DevKit.md' .meta

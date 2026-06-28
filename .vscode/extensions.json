@@ -1,0 +1,18 @@
+{
+  "recommendations": [
+    "ms-azuretools.vscode-docker",
+    "timonwong.shellcheck",
+    "foxundermoon.shell-format",
+    "redhat.vscode-yaml",
+    "tamasfe.even-better-toml",
+    "mikestead.dotenv",
+    "davidanson.vscode-markdownlint",
+    "GitHub.vscode-github-actions",
+    "github.vscode-pull-request-github",
+    "task.vscode-task",
+    "EditorConfig.EditorConfig",
+    "anthropic.claude-code",
+    "openai.chatgpt"
+  ],
+  "unwantedRecommendations": []
+}

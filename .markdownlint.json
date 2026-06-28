@@ -2,6 +2,11 @@
   "default": true,
   "MD003": { "style": "atx" },
   "MD013": false,
+  "MD024": { "siblings_only": true },
+  "MD034": false,
+  "MD036": false,
+  "MD041": false,
+  "MD060": false,
   "blanks-around-headings": false,
   "blanks-around-lists": false
 }

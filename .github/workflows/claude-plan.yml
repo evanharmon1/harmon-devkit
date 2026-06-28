@@ -1,0 +1,57 @@
+name: Claude Plan
+run-name: ${{ github.actor }} is running Claude Plan
+# Requires: CLAUDE_CODE_OAUTH_TOKEN secret, plus the CI GitHub App
+# (CI_APP_ID variable + CI_APP_PRIVATE_KEY secret). See docs/CHECKLIST.md
+# and docs/architecture/security.md.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, assigned, labeled]
+jobs:
+  plan:
+    if: >-
+      (github.event.sender.login == 'evanharmon1' ||
+       github.event.sender.login == 'evanharmon1-bot') &&
+      (contains(github.event.comment.body, '@claude plan') ||
+       contains(github.event.review.body, '@claude plan') ||
+       contains(github.event.issue.body, '@claude plan') ||
+       (github.event.action == 'labeled' &&
+        github.event.label.name == 'claude-plan'))
+    runs-on: [ "ubuntu-latest" ]
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          # Least-privilege token: plan only comments (issues/pull-requests) and
+          # reads the repo (no push). org-projects gated to org repos only —
+          # requesting a permission the installation lacks makes this step fail.
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: write
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1.0.148
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
+          trigger_phrase: "@claude plan"
+          label_trigger: "claude-plan"
+          track_progress: true
+          base_branch: main
+          branch_prefix: claude/
+          claude_args: "--model opus --disallowedTools Edit Write Bash --max-turns 80"
+          prompt: |
+            Post the plan as a comment. Do not write code or modify files.
+            Focus on the specific task described in the triggering comment or
+            issue. Cite relevant files and existing patterns in the repo.

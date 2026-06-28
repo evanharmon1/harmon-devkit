@@ -1,0 +1,40 @@
+# Lefthook config for Harmon DevKit
+# Install:  task install:hooks   (runs `lefthook install`)
+# Run all:  lefthook run pre-commit --all-files
+#
+# All logic lives in Taskfile.yml so GitHub Actions, Claude hooks, and local
+# developers run the exact same commands. Lefthook only orchestrates which
+# task runs at which git stage and passes the relevant file list.
+
+assert_lefthook_installed: true
+
+pre-commit:
+  parallel: true
+  commands:
+    no-commit-to-main:
+      run: task guard:no-commit-to-main
+    yaml:
+      glob: "*.{yml,yaml}"
+      run: task lint:yaml -- {staged_files}
+    shell:
+      glob: "*.{sh,bash}"
+      run: task lint:shell -- {staged_files}
+    markdown:
+      glob: "*.{md,mdx}"
+      run: task lint:markdown -- {staged_files}
+    actions:
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: task lint:actions
+    hygiene:
+      run: task lint:hygiene -- {staged_files}
+
+commit-msg:
+  commands:
+    conventional:
+      run: task lint:commit-msg -- {1}
+
+pre-push:
+  parallel: true
+  commands:
+    secrets:
+      run: task security:secrets

@@ -1,18 +1,21 @@
 # Changes here will be overwritten by Copier
-_commit: v2.3.1
-_src_path: harmon-init
-bunch_add: true
-devcontainer: false
-git_init: true
-github_collaboration_templates: true
-github_release_init: true
-github_remote_create: true
+_commit: v3.8.0
+_src_path: https://github.com/evanharmon1/harmon-init
+bunch_add: false
+ci_runner: ubuntu-latest
+code_owner: evanharmon1
+devcontainer: true
+git_init: false
+github_org: evanharmon1
+github_release_init: false
+github_remote_create: false
+include_ansible: false
+include_terraform: false
 license: mit
 obsidian_project_add: false
-project_description: My boilerplates for various stacks such as Docker Compose, Ansible,
-    Terraform, shell scripts, etc.
-project_name: Harmon Boilerplates
-project_slug: harmon-boilerplates
-project_url: None
-run_task_bootstrap: false
+project_description: 'My personal developer kit: reusable templates and boilerplates, standalone scripts, and AI assets (skills, prompts, agents).'
+project_name: Harmon DevKit
+project_slug: harmon-devkit
+project_type: general
 run_task_install: false
+use_release_please: true

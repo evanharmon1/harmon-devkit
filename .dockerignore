@@ -1,0 +1,10 @@
+# Devcontainer build context filter.
+# Both .devcontainer/ profiles set context to the repo root. Without this
+# file the entire repo (.git, node_modules, .venv, .terraform, etc.) is
+# sent to the Docker daemon on every build.
+#
+# The Dockerfile COPY only needs .devcontainer/config/, so deny everything
+# else. If another Dockerfile ever needs the repo root as context, switch
+# to a selective-exclude strategy instead.
+*
+!.devcontainer/config/

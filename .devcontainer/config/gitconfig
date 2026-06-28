@@ -1,0 +1,28 @@
+# Git config baked into the dev container image.
+# Source of truth: .devcontainer/config/gitconfig
+# Installed to:    /home/vscode/.config/git/config
+#
+# This is git's XDG-compliant second user config location. Git reads it in
+# addition to ~/.gitconfig and merges the two — single-valued keys in
+# ~/.gitconfig (e.g. user.name set by post-create-common.sh) take precedence,
+# but values here apply unmodified unless explicitly overridden.
+
+[alias]
+	ll = log --graph --oneline --decorate
+	ss = status
+	aa = add -A
+	cc = commit
+	cm = commit -m
+	aam = "!f() { MSG=\"$*\"; git add -A && git commit -m \"$MSG\"; }; f"
+	com = checkout main
+	co = checkout
+	cob = checkout -b
+
+[color]
+	status = always
+
+[init]
+	defaultBranch = main
+
+[push]
+	autoSetupRemote = true

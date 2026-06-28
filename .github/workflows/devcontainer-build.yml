@@ -1,0 +1,107 @@
+name: Devcontainer Build
+run-name: ${{ github.actor }} is ${{ github.event_name == 'push' && 'prebuilding' || 'testing' }} devcontainers
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".devcontainer/**"
+      - ".github/workflows/devcontainer-build.yml"
+  pull_request:
+    paths:
+      - ".devcontainer/**"
+      - ".github/workflows/devcontainer-build.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: devcontainer-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: [ "ubuntu-latest" ]
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ai
+            config_file: .devcontainer/devcontainer.json
+            image_name: ghcr.io/evanharmon1/harmon-devkit-devcontainer
+          - name: dev
+            config_file: .devcontainer/dev/devcontainer.json
+            image_name: ghcr.io/evanharmon1/harmon-devkit-devcontainer-dev
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          # renovate: datasource=node-version
+          node-version: "24"
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+        with:
+          config-inline: |
+            [worker.oci]
+              networkMode = "host"
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Free up runner disk space
+        # Only on disposable GitHub-hosted runners: these rm -rf / prune commands
+        # would permanently delete real SDKs and Docker images on a persistent
+        # self-hosted runner. The devcontainer image is large (toolchains,
+        # browsers, language runtimes), and hosted ubuntu-latest's free space is
+        # too small — the build fails with "no space left on device" — so reclaim
+        # ~13GB of preinstalled SDKs we don't use. Self-hosted machines are
+        # assumed to have adequate disk and are skipped entirely.
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/share/swift
+          sudo docker image prune --all --force || true
+          df -h /
+      - name: Build ${{ matrix.name }} devcontainer
+        uses: devcontainers/ci@513af61f4de4f75d37e4438f184ba4358f0fc1ca # v0.3
+        env:
+          CODER: ""
+          GH_TOKEN: ""
+          TS_AUTHKEY: ""
+        with:
+          # Dedicated registry cache ref with mode=max: inline cache
+          # (BUILDKIT_INLINE_CACHE) does not survive the devcontainer CLI's
+          # multi-stage load-then-push flow, so cacheFrom on the image itself
+          # never produced cache hits. The action auto-adds the image name as
+          # a fallback cacheFrom, so only the -cache ref is listed here.
+          # Cache is only written on pushes to main, never from PR builds.
+          cacheFrom: type=registry,ref=${{ matrix.image_name }}-cache
+          cacheTo: ${{ github.event_name == 'push' && format('type=registry,ref={0}-cache,mode=max', matrix.image_name) || '' }}
+          configFile: ${{ matrix.config_file }}
+          imageName: ${{ matrix.image_name }}
+          push: ${{ github.event_name == 'push' && 'always' || 'never' }}
+      - name: Clean up buildx cache and dangling images
+        if: always()
+        continue-on-error: true
+        run: |
+          docker buildx prune --force --keep-storage 20GB
+          docker image prune --force
+
+  devcontainer-verify:
+    if: always()
+    needs: [build]
+    runs-on: [ "ubuntu-latest" ]
+    steps:
+      - name: Check job results
+        run: |
+          result="${{ needs.build.result }}"
+          if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+            echo "Devcontainer build failed."
+            exit 1
+          fi
+          echo "Devcontainer build passed."
