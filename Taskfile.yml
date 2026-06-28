@@ -100,13 +100,17 @@ tasks:
         shfmt -d $files
 
   lint:markdown:
-    desc: markdownlint-cli2
+    # Check-only (no --fix) so this is a read-only gate like lint:prettier /
+    # lint:shell: CI and the pre-commit hook fail loudly instead of silently
+    # mutating the tree (and, in CI, discarding the fix while reporting green).
+    # Auto-fix lives in `task format` / `task format:file`.
+    desc: markdownlint-cli2 (check mode)
     cmds:
       - |
         if [ -n "{{.CLI_ARGS}}" ]; then
-          npx --yes markdownlint-cli2 --fix {{.CLI_ARGS}}
+          npx --yes markdownlint-cli2 {{.CLI_ARGS}}
         else
-          npx --yes markdownlint-cli2 --fix '**/*.md' '#.claude/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**' '#**/.terraform/**' '#**/.venv/**' '#**/.task/**'
+          npx --yes markdownlint-cli2 '**/*.md' '#.claude/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**' '#**/.terraform/**' '#**/.venv/**' '#**/.task/**'
         fi
 
   lint:actions:
