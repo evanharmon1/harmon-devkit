@@ -156,16 +156,20 @@ marker_re="\[\[-? ($varpfx)|\{\{-? ($varpfx)|\[%-? ($blockkw) "
 # Jinja ({{ x }} / {% x %}) — Ansible templates, nginx configs, etc. — and the
 # {{ <stem> }} branch of marker_re can't tell `{{ github_runner_image }}` (a real
 # Ansible var) from a copier leak. Copier's own delimiters are [[ ]] / [% %], so
-# dropping these files loses no real-leak coverage.
+# dropping these files loses no real-leak coverage. Likewise drop anything under
+# a `skills/` dir: agent-skill references/assets legitimately DOCUMENT copier's
+# [[ ]] / [% %] delimiters as examples (the standardize-repo skill itself does),
+# so they would false-positive on the repo that HOSTS the skill — cf. the
+# .claude/** exclude in the markdownlint config.
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     leaks=$(git ls-files --cached --others --exclude-standard -z 2>/dev/null |
         xargs -0 grep -IlE "$marker_re" 2>/dev/null |
-        grep -vE '\.(j2|jinja)$' || true)
+        grep -vE '\.(j2|jinja)$|(^|/)skills/' || true)
 else
     leaks=$(grep -rIlE "$marker_re" \
         --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv \
         --exclude-dir=.terraform --exclude-dir=.task --exclude-dir=.worktrees \
-        --exclude-dir=dist --exclude='*.j2' --exclude='*.jinja' . 2>/dev/null || true)
+        --exclude-dir=dist --exclude-dir=skills --exclude='*.j2' --exclude='*.jinja' . 2>/dev/null || true)
 fi
 if [ -n "$leaks" ]; then
     err "unrendered template markers found in:"
