@@ -95,8 +95,16 @@ Naming & structure conventions:
   `security:secrets`, `install:hooks`, `status:git`, `deploy:ansible:base`.
   **Never action-first** (`shell:lint`, `yaml:lint`).
 - **Pipeline order:** `check → build → validate → test → security`, with
-  `verify` (local gate) and `ci` (full) as aggregates. `verify` =
-  `check [→ build] → validate`.
+  `verify` (fast local gate) and `ci` (full CI mirror) as aggregates.
+  **`verify`** is tuned to stay well under a minute so editors, git hooks, and AI
+  agents can run it on every change: `check [→ build] → validate → test:tasks
+  [→ test:hooks]`. **`ci`** reproduces the whole CI pipeline on demand (run it
+  locally instead of opening a PR): `verify [→ test:devcontainer:permissions] →
+  test → security`. The rule: a check only belongs in `verify` if it stays fast;
+  heavy or Docker-dependent checks (`test`, `security`, `test:devcontainer:permissions`)
+  live in `ci`. Every `task` target a workflow invokes must still exist (drift
+  class L) — but `verify` is intentionally a *subset* of what CI runs, so "`verify`
+  is green" is not "CI is green"; use `ci` for that.
 - **Parallel deps:** umbrella tasks fan out via `deps:` (which run in parallel),
   e.g. `lint` deps on `lint:yaml`, `lint:shell`, `lint:markdown`,
   `lint:actions`, `lint:hygiene`; `security` deps on `security:secrets` +
