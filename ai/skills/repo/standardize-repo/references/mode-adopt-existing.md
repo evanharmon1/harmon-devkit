@@ -248,8 +248,12 @@ These are the recurring drifts harmon-init exists to fix (source:
    ln -sf ../AGENTS.md .github/copilot-instructions.md   # note: ../ from .github/
    ```
 
-   Merge any unique guidance from the old real file into `AGENTS.md` *before*
-   replacing it with a symlink. Then confirm the tool excludes are in place so
+   **Fold the old file's *substantive* guidance** — architecture, directory
+   structure, real commands, project-specific conventions — into `AGENTS.md`
+   *before* replacing it with a symlink. Don't settle for a thin fold that keeps
+   only the one-line project blurb (and a `TODO: run /init`): the old file's real
+   content is the whole point of the merge. Then confirm the tool excludes are
+   in place so
    linters don't choke on the symlinks: `lefthook.yml`'s prettier hook must
    `exclude` `CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md`
    (these are explicit excludes in the template's `lefthook.yml`).
@@ -312,6 +316,25 @@ These are the recurring drifts harmon-init exists to fix (source:
    (badges `validate.yml`/`build.yaml` → `build.yml`; `task validate` → `task
    verify`; drop `.pre-commit-config.yaml`/`.ansible-lint` mentions). Fold the old
    real `CLAUDE.md` into `AGENTS.md` per step 1.
+
+   **Three traps that block the first commit/push after a v2→v3 render:**
+   (a) **Stale pre-commit hook** — deleting `.pre-commit-config.yaml` leaves the
+   installed `.git/hooks/pre-commit` behind, which blocks *every* commit with
+   "No .pre-commit-config.yaml file was found"; run **`pre-commit uninstall`**,
+   then `task install:hooks` (lefthook) to wire the v3 hooks. (b) **gitleaks
+   scans full history** — adopting it surfaces pre-existing leaks (a committed
+   key/cert/`.env`) that fail the pre-push hook *and* CI; for each KNOWN finding
+   add its fingerprint (`gitleaks detect --report-format json` → `.Fingerprint`)
+   to **`.gitleaksignore`** AND **rotate the secret** (urgent if the repo is
+   public — the allowlist stops re-flagging, it does not un-expose the key).
+   (c) **Mis-shebanged scripts** — a `#!/bin/sh` script that uses bash features
+   (`&>`, `function`, arrays) makes `shfmt` parse it as POSIX and fail; fix the
+   shebang to `#!/usr/bin/env bash`.
+
+   Path B's `--overwrite` also **resets `.gitignore`** to the template's —
+   re-merge the repo's custom ignores (binary/cache patterns like `*.dll`,
+   `.output/`) from `main`, but NOT what v3 now tracks (`*.code-workspace`,
+   `.vscode/settings.json`, `.meta/`).
 
 7. **Scope the repo's linters past reference/example content.** A repo that
    *houses* example or vendored content — a boilerplate library (`templates/`,
