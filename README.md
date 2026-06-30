@@ -9,9 +9,9 @@ Author: Evan Harmon
 [![Maintained](https://img.shields.io/badge/maintained%3F-yes-brightgreen.svg?style=flat-square)](https://github.com/evanharmon1/harmon-devkit)
 [![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat-square)](https://github.com/evanharmon1/harmon-devkit)
 
-## Part of harmon-stack
+## Part of harmon-platform
 
-This repo is part of **harmon-stack** — my personal stack of homelab, dev-tooling, and automation repos that work together.
+This repo is part of **harmon-platform** — my custom development platform with machine configuration, DevOps systems, homelab infrastructure, and automation repos that work together to help me develop software and manage my homelab.
 
 | Repo | What it is |
 | --- | --- |
