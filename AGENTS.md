@@ -18,9 +18,9 @@ Repo: https://github.com/evanharmon1/harmon-devkit — see [docs/README.md](docs
 documentation map, [docs/architecture/README.md](docs/architecture/README.md)
 for the architecture, and [DESIGN.md](DESIGN.md) for design/UX intent.
 
-## harmon-stack
+## harmon-platform
 
-One of five repos in **harmon-stack** (Evan's homelab + dev-ops stack):
+One of five repos in **harmon-platform** (Evan's developer & DevOps platform + homelab):
 [harmon-init](https://github.com/evanharmon1/harmon-init) (the Copier repo template),
 [**harmon-devkit**](https://github.com/evanharmon1/harmon-devkit) (this repo — boilerplates/scripts/AI assets),
 [harmon-dotfiles](https://github.com/evanharmon1/harmon-dotfiles) (chezmoi dotfiles),
