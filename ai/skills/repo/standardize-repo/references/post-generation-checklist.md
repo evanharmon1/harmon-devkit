@@ -152,35 +152,23 @@ push so the remote exists.
 
 ### Org repos only (`github_org != author_git_provider_username`)
 
-- [ ] **[scriptable via gh]** Create a **Project V2** so that, after linking, it
-      is **project number 1** for the org, with a `Status` single-select field
-      (`project-automation.yml` and the `claude-*` workflows drive it). Use the
-      GraphQL API via `gh`:
+- [ ] **[scriptable via gh]** Create/sync the org **Project V2**. The generated
+      repo ships an idempotent task; run it (needs the `project` scope —
+      `gh auth refresh -s project`):
 
   ```bash
-  # 1. org node id
-  ORG_ID=$(gh api graphql -f query='query($l:String!){organization(login:$l){id}}' \
-    -f l="<org>" --jq '.data.organization.id')
-
-  # 2. create the project (note its number in the response)
-  gh api graphql -f query='mutation($o:ID!,$t:String!){createProjectV2(input:{ownerId:$o,title:$t}){projectV2{id number}}}' \
-    -f o="$ORG_ID" -f t="<repo>"
-
-  # 3. add the Status single-select field (capture PROJECT_ID from step 2)
-  gh api graphql -f query='mutation($p:ID!){createProjectV2Field(input:{projectId:$p,dataType:SINGLE_SELECT,name:"Status",singleSelectOptions:[{name:"Shaping",color:GRAY,description:""},{name:"In Progress",color:BLUE,description:""},{name:"Verifying",color:YELLOW,description:""},{name:"In Review",color:PURPLE,description:""},{name:"Ready to Merge",color:ORANGE,description:""},{name:"Done",color:GREEN,description:""}]}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}' \
-    -f p="<PROJECT_ID>"
+  task setup:github-project
   ```
 
-  > These six options are the ones the automation writes
-  > (`Shaping` → `In Progress` → `Verifying` → `In Review` → `Ready to Merge` →
-  > `Done`). The fuller Backlog/Unstarted/Started/Completed board is documented
-  > in harmon-init's `docs/project-management.md` — add those columns as desired.
+  > It looks the project up by title, so it is safe to re-run and safe to run
+  > from any org repo (the first run creates it, later runs only reconcile). It
+  > seeds the full `Status` pipeline plus the Priority/Estimate/Product/Agent
+  > fields and never deletes existing options or fields.
+  > `project-automation.yml` and the `claude-*` workflows drive `Status`.
   >
-  > Note: "number 1" assumes this is the org's first Project V2. If other
-  > projects exist, the new project's number will differ — record the actual
-  > number and reconcile it with whatever the automation workflow references.
-  > TODO: confirm whether `project-automation.yml` hardcodes project number 1
-  > or reads it from a variable.
+  > It must be the org's **project number 1** — those workflows query
+  > `projectV2(number: 1)`, and the task warns if it isn't. For the exact
+  > GraphQL (or to run it by hand), see `scripts/setup-github-project.sh`.
 
 - [ ] **[scriptable via gh]** Add the bot machine account
       (`<author_git_provider_username>-bot`) as a **Write** collaborator (it does
