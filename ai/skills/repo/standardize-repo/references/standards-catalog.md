@@ -178,7 +178,7 @@ Notable command bodies (for an auditor checking they match):
   both live repos):
 
   ```text
-  build, change, chore, ci, docs, feat, fix, perf, refactor, remove, revert, style, test
+  build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test
   ```
 
   Format `type(scope): subject`, imperative mood. Subject/body lines ≤ 100 chars
