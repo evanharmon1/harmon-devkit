@@ -167,10 +167,15 @@ push so the remote exists.
     -f o="$ORG_ID" -f t="<repo>"
 
   # 3. add the Status single-select field (capture PROJECT_ID from step 2)
-  gh api graphql -f query='mutation($p:ID!){createProjectV2Field(input:{projectId:$p,dataType:SINGLE_SELECT,name:"Status",singleSelectOptions:[{name:"Shaping",color:GRAY,description:""},{name:"In Progress",color:BLUE,description:""},{name:"Validating",color:YELLOW,description:""},{name:"In Review",color:PURPLE,description:""},{name:"Done",color:GREEN,description:""}]}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}' \
+  gh api graphql -f query='mutation($p:ID!){createProjectV2Field(input:{projectId:$p,dataType:SINGLE_SELECT,name:"Status",singleSelectOptions:[{name:"Shaping",color:GRAY,description:""},{name:"In Progress",color:BLUE,description:""},{name:"Verifying",color:YELLOW,description:""},{name:"In Review",color:PURPLE,description:""},{name:"Ready to Merge",color:ORANGE,description:""},{name:"Done",color:GREEN,description:""}]}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}' \
     -f p="<PROJECT_ID>"
   ```
 
+  > These six options are the ones the automation writes
+  > (`Shaping` → `In Progress` → `Verifying` → `In Review` → `Ready to Merge` →
+  > `Done`). The fuller Backlog/Unstarted/Started/Completed board is documented
+  > in harmon-init's `docs/project-management.md` — add those columns as desired.
+  >
   > Note: "number 1" assumes this is the org's first Project V2. If other
   > projects exist, the new project's number will differ — record the actual
   > number and reconcile it with whatever the automation workflow references.
