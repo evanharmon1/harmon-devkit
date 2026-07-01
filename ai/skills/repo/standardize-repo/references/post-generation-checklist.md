@@ -164,11 +164,11 @@ push so the remote exists.
   > from any org repo (the first run creates it, later runs only reconcile). It
   > seeds the full `Status` pipeline plus the Priority/Estimate/Product/Agent
   > fields and never deletes existing options or fields.
-  > `project-automation.yml` and the `claude-*` workflows drive `Status`.
-  >
-  > It must be the org's **project number 1** — those workflows query
-  > `projectV2(number: 1)`, and the task warns if it isn't. For the exact
-  > GraphQL (or to run it by hand), see `scripts/setup-github-project.sh`.
+  > `project-automation.yml` and the `claude-*` workflows drive `Status`: the
+  > task records the project id in the `ORG_PROJECT_ID` org variable those
+  > workflows read (falling back to the project's title), so it no longer has to
+  > be the org's project number 1. For the exact GraphQL (or to run it by hand),
+  > see `scripts/setup-github-project.sh`.
 
 - [ ] **[scriptable via gh]** Add the bot machine account
       (`<author_git_provider_username>-bot`) as a **Write** collaborator (it does
