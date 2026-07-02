@@ -33,9 +33,14 @@ cd "$target"
 have() { command -v "$1" >/dev/null 2>&1; }
 
 fail=0
+fail_msgs=""
 err() {
     echo "FAIL: $*" >&2
     fail=1
+    # accumulate a one-line summary of each failed check for the final verdict,
+    # so "FAILED" names what failed rather than trailing the advisory drift WARN
+    fail_msgs="${fail_msgs}    - $(printf '%s' "$*" | head -n 1)
+"
 }
 
 echo "Verifying applied conventions in: $(pwd)"
@@ -224,7 +229,8 @@ fi
 
 # ── Result ──────────────────────────────────────────────────────────
 if [ "$fail" -ne 0 ]; then
-    echo "verify-applied: FAILED" >&2
+    echo "verify-applied: FAILED — checks that did not pass:" >&2
+    printf '%s' "$fail_msgs" >&2
     exit 1
 fi
 echo "verify-applied: PASS"

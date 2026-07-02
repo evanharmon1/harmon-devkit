@@ -276,19 +276,39 @@ assets/diff-template.sh "$TARGET"
 # --show to see the per-file diff
 ```
 
-It renders harmon-init from the repo's own `.copier-answers.yml` and reports both
-content **`DRIFT`** in the curated set and **`MISSING`** template files the repo
-lacks entirely (mapping `.yml`↔`.yaml`). The `MISSING` scan walks the whole render
-and is **manifest-independent**, so a file the template added after the curated list
-was last edited — or one a hand-reconciled update dropped — is still caught
-(`.gitkeep` dir-stubs show as benign `ABSENT`). Each `DRIFT` is either a
-**missed template improvement** or a **legitimate local customization** — read the
-diff to tell them apart. Fix the former with `copier update`
-([`mode-update.md`](./mode-update.md)) or by copying the template's version; leave
-the latter, reconciling **in place** (keep the customization in its normal file — do
-not extract it elsewhere). Severity: **should** (blocker if the drift breaks a
+It renders harmon-init **at the repo's own `_commit`** (from its
+`.copier-answers.yml`) and reports both content **`DRIFT`** in the curated set and
+**`MISSING`** template files the repo lacks entirely (mapping `.yml`↔`.yaml`). The
+`MISSING` scan walks the whole render and is **manifest-independent**, so a file the
+template added after the curated list was last edited — or one a hand-reconciled
+update dropped — is still caught (`.gitkeep` dir-stubs show as benign `ABSENT`).
+Because the render is at `_commit`, each **`DRIFT`** is the repo's **local
+customization** relative to its own baseline — or a **regression** where a past
+hand-reconcile dropped a same-baseline improvement (the status.sh / lint-hygiene /
+bootstrap class). It is **not** a newer-version improvement — those arrive via the
+`copier update` merge, not diff-template. Read the diff to tell them apart: restore
+a regression (copy the template's version), and leave a deliberate customization,
+reconciling **in place** (keep it in its normal file — do not extract it elsewhere). Severity: **should** (blocker if the drift breaks a
 required gate, e.g. a non-portable `lint-hygiene.sh`). Run this as a standard step of
 every audit.
+
+**Known false-`MISSING` categories — verify before "fixing".** Some `MISSING`
+findings are legitimate divergences, not gaps; re-adding the template's version is
+wrong. The recurring ones (nearly every iac/dotfiles repo hit ≥1):
+
+- **chezmoi `private_`/`dot_` prefix** — a dotfiles repo names the template's root
+  `Brewfile` `private_Brewfile` (→ `~/Brewfile`), so `Brewfile` reads `MISSING`. Add
+  a root `Brewfile` per [mode-adopt-existing.md](./mode-adopt-existing.md) §4.7, not
+  a "restored" copy.
+- **ADR renumbering** — the seed `docs/decisions/0001-record-architecture-decisions.md`
+  shows `MISSING` when the repo renumbered it (its `0001`/`0002` are real decisions).
+  Don't re-add — it would duplicate.
+- **Replaced terraform skeleton** — an iac repo with real infra (e.g.
+  `terraform/environments/…`) deleted the template's flat
+  `terraform/{main,variables,outputs}.tf` skeleton. `MISSING`, but correct — leave it.
+- **Gitignored `.envrc`** — a repo that resolves `.envrc`/`.envrc.local` from an
+  `.envrc.tpl` via `op inject` gitignores the resolved file, so it reads `MISSING`.
+  Leave it (it's the secure pattern the template now ships).
 
 **L. Workflow ↔ Taskfile contract.** Every `task <target>` referenced in
 `.github/workflows/*.yml` must exist in `Taskfile.yml`. CI's `lint`/`build` jobs
