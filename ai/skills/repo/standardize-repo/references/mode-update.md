@@ -188,6 +188,20 @@ repo's specific version (`git checkout --ours <file>`) — the generic one is fo
 *other* repos. Recognise this when a file you know the repo authored shows up as a
 conflict against a near-identical-but-blander template version.
 
+**Bunch/Obsidian util targets — self-contained `bunch-add` vs. the template's
+add+install split.** The template splits the macOS-launcher helpers into
+`util:bunch-add` (scaffolds `.meta/*.bunch` via `scripts/meta-create.sh`) +
+`util:bunch-install` (moves it to iCloud) — same for `util:obsidian-*`. Older repos
+instead have a **self-contained `util:bunch-add`** that writes the launcher straight
+to iCloud with a hardcoded heredoc (no `.meta` step, no `install` target). On update,
+copier interleaves the two models — naively taking the "after" side leaves a new
+`util:bunch-install` whose input (`.meta/*.bunch`) the repo's direct-write `bunch-add`
+never produces, and the repo's real heredoc dangles as if it were the install cmds.
+These are low-stakes, macOS-only helpers, so pick ONE model cleanly: either adopt the
+template's full add+install pair (drop the heredoc) or keep the repo's self-contained
+`bunch-add` (and don't add a stray `install`) — do not mix. Keep the `docs/CHECKLIST.md`
+Bunch/Obsidian line consistent with whichever you chose.
+
 ## 4. Verify comprehensively
 
 copier renders files in the **template's** style, which may not match the repo's
