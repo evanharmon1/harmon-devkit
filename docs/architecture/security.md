@@ -77,15 +77,40 @@ a machine-readable reference; mirror it in the form.
 4. **Install App** → on this org, **Only select repositories** (not "All").
 5. Set `CI_APP_CLIENT_ID` (Actions variable = the App's Client ID) and `CI_APP_PRIVATE_KEY`
    (Actions secret = the `.pem` contents) — org-level for an org, per-repo for a
-   personal account.
+   personal account. **Set the private key by piping the `.pem` file in, never by
+   pasting it** — redirecting the file preserves its newlines, whereas a copy-paste
+   into the web UI (or a `gh secret set -b "…"` string) can flatten them and leave
+   the key undecodable. `create-github-app-token` then fails at JWT-signing time
+   with `error:1E08010C:DECODER routines::unsupported` (or `Invalid keyData`):
+
+   ```bash
+   # personal account / single repo:
+   gh secret set CI_APP_PRIVATE_KEY --repo <owner>/<repo> < evanharmon1-ci.*.private-key.pem
+
+   # org: set the value once, scoped to the repos that need it now (add the
+   # variable the same way). Then finalize/audit repo access in the UI — see below.
+   gh secret set CI_APP_PRIVATE_KEY --org evanharmon1 \
+     --visibility selected --repos <repo>[,<repo2>] < evanharmon1-ci.*.private-key.pem
+   ```
 
 **Set the secrets by hand — don't script it.** Run the `gh variable set` /
-`gh secret set` commands (or use the GitHub UI) deliberately; **key rotation is
-manual too.** Do **not** automate org `selected`-visibility secret-setting: the
-bulk `--repos` form *replaces* the secret's value and its repo allow-list, so
-running it from a second repo silently evicts the first. (To add a repo to an
-existing org secret non-destructively, grant it in the GitHub UI or
-`PUT /orgs/{org}/actions/secrets/{name}/repositories/{repo_id}`.)
+`gh secret set` commands deliberately; **key rotation is manual too.**
+
+**Recommended process — the CLI sets the value, the UI owns the repo list.** Set
+the value once from the `.pem` file (above), scoped with `--visibility selected
+--repos` to whatever repos make sense at the time (selecting them all is fine if
+that's the reality). From then on, **finalize and maintain which repos can read
+it in the GitHub UI** — org → *Settings → Secrets and variables → Actions* → the
+secret → **Repository access**. Editing the list there changes scope **without**
+re-entering the value, and the page doubles as a sanity check of exactly who has
+access. Don't reach for `--visibility all` as a shortcut: it exposes the key to
+every org repo until you narrow it.
+
+Keep list-management in the UI because `gh secret set` is **declarative** — the
+`--repos` form *replaces* the secret's value **and** its whole repo allow-list on
+every run, so re-running it from a second repo silently evicts the first. The UI
+(or `PUT /orgs/{org}/actions/secrets/{name}/repositories/{repo_id}`) is the
+non-destructive way to add a repo.
 
 **Why an App, not a PAT:** tokens are short-lived (nothing to rotate yearly), the
 App consumes no user seat, permissions are granular, and — unlike the built-in

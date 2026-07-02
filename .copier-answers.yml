@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier
-_commit: v3.8.0
+_commit: v3.14.0
 _src_path: https://github.com/evanharmon1/harmon-init
 bunch_add: false
 ci_runner: ubuntu-latest
@@ -13,7 +13,9 @@ include_ansible: false
 include_terraform: false
 license: mit
 obsidian_project_add: false
-project_description: 'My personal developer kit: reusable templates and boilerplates, standalone scripts, and AI assets (skills, prompts, agents).'
+project_description: 'My personal developer kit: reusable templates and boilerplates,
+    standalone scripts, and AI assets (skills, prompts, agents).'
+project_management: none
 project_name: Harmon DevKit
 project_slug: harmon-devkit
 project_type: general

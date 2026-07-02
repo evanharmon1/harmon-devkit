@@ -68,8 +68,8 @@ can reproduce a CI run locally on demand instead of waiting on a PR.
 ## Definition of Done
 
 - `task verify` passes.
-- Conventional commit message (types: build, change, chore, ci, docs, feat,
-  fix, perf, refactor, remove, revert, style, test).
+- Conventional commit message (types: build, chore, ci, docs, feat, fix, perf,
+  refactor, revert, style, test).
 - Never bypass git hooks (`--no-verify` is forbidden); fix the underlying issue.
 - Work on a feature branch; direct commits to `main` are blocked.
 - Releases are intentional: release-please keeps a rolling release PR from
