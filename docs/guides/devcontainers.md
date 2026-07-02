@@ -12,6 +12,14 @@ which secrets and capabilities they allow.
 The bot profile intentionally omits `TS_AUTHKEY` from its allow-list so a tailnet
 key never reaches an agent container.
 
+**Claude permission mode differs by profile.** The **bot** defaults to
+`bypassPermissions` (Claude runs tools without per-action prompts — the container
+is the isolation boundary); the **dev** profile keeps the normal prompt-on-action
+default so a human stays in the loop. The shared managed settings
+(`config/claude-settings.json`) deliberately omit `defaultMode`; the bot opts in
+at create time via `scripts/enable-claude-bypass.sh`. `bypassPermissions` is only
+safe because it is container-scoped — it is never set on the host.
+
 ## Run it locally
 
 - **VS Code:** "Dev Containers: Reopen in Container" → pick the **Dev** profile
@@ -87,6 +95,41 @@ repo** (one template serves every repo). To stand this repo up in Coder:
 > base image, so the classic-PAT / private-base-image (`ghcr_read_token`)
 > complication does not apply here — only the repo's own `-devcontainer` cache
 > image matters.
+
+## Working on related repos
+
+To work across several repos in one container, list them in
+`.devcontainer/related-repos.txt` (one `owner/repo` per line; `@branch`, full
+URLs, and ssh URLs also work). They are:
+
+- **cloned** into `/workspaces/`, beside this repo, on container **create**
+  (`scripts/bootstrap-related-repos.sh`) — so a rebuilt or persistence-lost
+  container re-populates them;
+- **fetched** non-destructively on container **start**
+  (`scripts/fetch-related-repos.sh`).
+
+Both are safe to re-run: an already-cloned sibling is **never clobbered** —
+clone skips it, and start runs `git fetch` only (never pull / merge / checkout),
+so uncommitted work, local commits, and the checked-out branch stay put. The
+list is preserved across `copier update` (an empty list is a no-op).
+
+To let Claude read and search the cloned siblings, add them to
+`.claude/settings.json` in **two** places — `permissions.additionalDirectories`
+(Claude's own Read/Grep/Glob tools) and `sandbox.filesystem.allowRead` (the Bash
+sandbox):
+
+```json
+{
+  "permissions": {
+    "additionalDirectories": ["../sibling-repo"]
+  },
+  "sandbox": {
+    "filesystem": {
+      "allowRead": ["../sibling-repo"]
+    }
+  }
+}
+```
 
 ## See also
 

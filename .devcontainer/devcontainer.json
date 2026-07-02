@@ -51,6 +51,12 @@
   // Do NOT forward them via containerEnv — ${localEnv:...} resolves to ""
   // when the host shell doesn't export them, which overrides the env-file
   // values (Docker --env takes precedence over --env-file).
+  //
+  // CLAUDE_CODE_EFFORT_LEVEL: default Claude Code thinking effort. Set here
+  // (not in settings.json) because Claude Code's settings schema only accepts
+  // low|medium|high for the persisted effortLevel field, while the env var
+  // accepts low|medium|high|max. Resolution order at runtime: env var >
+  // settings.json effortLevel > model default.
   "containerEnv": {
     "CODER": "${localEnv:CODER}",
     "CLAUDE_CODE_EFFORT_LEVEL": "max"

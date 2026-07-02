@@ -159,7 +159,10 @@ tasks:
       - |
         files=$(git ls-files '*.sh' '*.bash')
         [ -n "$files" ] && shfmt -w $files || true
-      - npx --yes markdownlint-cli2 --fix '**/*.md' '#.claude/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**'
+      # Best-effort: markdownlint --fix auto-fixes what it can but must NOT abort
+      # `format` on un-auto-fixable rule violations (e.g. MD024 duplicate heading,
+      # MD040 missing fence language) — `lint:markdown` (check-only) is the gate.
+      - npx --yes markdownlint-cli2 --fix '**/*.md' '#.claude/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**' || true
 
   format:file:
     desc: "Format a single file by extension (usage: task format:file -- <path>)"
@@ -170,7 +173,7 @@ tasks:
         [ -f "$f" ] || exit 0
         case "$f" in
         *.sh | *.bash) shfmt -w "$f" ;;
-        *.md | *.mdx) npx --yes markdownlint-cli2 --fix "$f" ;;
+        *.md | *.mdx) npx --yes markdownlint-cli2 --fix "$f" || true ;;
         esac
 
   fix:
@@ -377,13 +380,23 @@ tasks:
 
   # ── Utilities ──────────────────────────────────────────────────
   util:bunch-add:
-    desc: Move Bunch file to iCloud and replace with symlink (macOS)
+    desc: Scaffold the Bunch launcher in .meta (mirrors what the template generates)
+    cmds:
+      - ./scripts/meta-create.sh bunch 'Harmon DevKit' 'harmon-devkit' '~/git'
+
+  util:bunch-install:
+    desc: Move the Bunch file to iCloud and replace it with a symlink (macOS)
     cmds:
       - mv '.meta/Code Project - Harmon DevKit.bunch' '/Users/evan/Library/Mobile Documents/com~apple~CloudDocs/Bunches/'
       - ln -s '/Users/evan/Library/Mobile Documents/com~apple~CloudDocs/Bunches/Code Project - Harmon DevKit.bunch' .meta
 
   util:obsidian-add:
-    desc: Move Obsidian note to the vault and replace with symlink (macOS)
+    desc: Scaffold the Obsidian project note in .meta (mirrors what the template generates)
+    cmds:
+      - ./scripts/meta-create.sh obsidian 'Harmon DevKit' 'Evan Harmon'
+
+  util:obsidian-install:
+    desc: Move the Obsidian note to the vault and replace it with a symlink (macOS)
     cmds:
       - mv '.meta/Harmon DevKit.md' '/Users/evan/Local/Memex/Personal/Digital'
       - ln -s '/Users/evan/Local/Memex/Personal/Digital/Harmon DevKit.md' .meta

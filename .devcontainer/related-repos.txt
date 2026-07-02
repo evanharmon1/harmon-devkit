@@ -1,0 +1,23 @@
+# Related repos to work on alongside this one inside the devcontainer.
+# Cloned into /workspaces/ on container CREATE, and git-fetched (non-
+# destructively) on container START. Read by:
+#   .devcontainer/scripts/bootstrap-related-repos.sh   (clone if missing)
+#   .devcontainer/scripts/fetch-related-repos.sh       (git fetch if present)
+#
+# One entry per line:
+#   owner/repo                       # default branch, cloned via gh CLI
+#   owner/repo@branch                # specific branch
+#   https://github.com/owner/repo    # full URL (also supports .git suffix)
+#   git@github.com:owner/repo.git    # ssh URL
+#
+# Lines starting with # are comments; blank lines are ignored. Existing
+# /workspaces/<repo> dirs are never clobbered (no pull, no checkout, no reset).
+#
+# To let Claude read/search the cloned siblings, also list them in
+# .claude/settings.json under permissions.additionalDirectories (Claude's file
+# tools) AND sandbox.filesystem.allowRead (the Bash sandbox). See
+# docs/guides/devcontainers.md.
+#
+# Examples — uncomment and edit:
+#   your-org/shared-libs
+#   your-org/api@main

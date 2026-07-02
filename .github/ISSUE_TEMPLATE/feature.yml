@@ -1,0 +1,30 @@
+name: Feature
+description: Suggest a new capability or improvement
+title: "[Feature]: "
+assignees:
+  - evanharmon1
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem does this solve? (e.g. "I'm frustrated when …")
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you'd like to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ]
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
