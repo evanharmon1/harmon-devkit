@@ -276,17 +276,19 @@ assets/diff-template.sh "$TARGET"
 # --show to see the per-file diff
 ```
 
-It renders harmon-init from the repo's own `.copier-answers.yml` and reports both
-content **`DRIFT`** in the curated set and **`MISSING`** template files the repo
-lacks entirely (mapping `.yml`↔`.yaml`). The `MISSING` scan walks the whole render
-and is **manifest-independent**, so a file the template added after the curated list
-was last edited — or one a hand-reconciled update dropped — is still caught
-(`.gitkeep` dir-stubs show as benign `ABSENT`). Each `DRIFT` is either a
-**missed template improvement** or a **legitimate local customization** — read the
-diff to tell them apart. Fix the former with `copier update`
-([`mode-update.md`](./mode-update.md)) or by copying the template's version; leave
-the latter, reconciling **in place** (keep the customization in its normal file — do
-not extract it elsewhere). Severity: **should** (blocker if the drift breaks a
+It renders harmon-init **at the repo's own `_commit`** (from its
+`.copier-answers.yml`) and reports both content **`DRIFT`** in the curated set and
+**`MISSING`** template files the repo lacks entirely (mapping `.yml`↔`.yaml`). The
+`MISSING` scan walks the whole render and is **manifest-independent**, so a file the
+template added after the curated list was last edited — or one a hand-reconciled
+update dropped — is still caught (`.gitkeep` dir-stubs show as benign `ABSENT`).
+Because the render is at `_commit`, each **`DRIFT`** is the repo's **local
+customization** relative to its own baseline — or a **regression** where a past
+hand-reconcile dropped a same-baseline improvement (the status.sh / lint-hygiene /
+bootstrap class). It is **not** a newer-version improvement — those arrive via the
+`copier update` merge, not diff-template. Read the diff to tell them apart: restore
+a regression (copy the template's version), and leave a deliberate customization,
+reconciling **in place** (keep it in its normal file — do not extract it elsewhere). Severity: **should** (blocker if the drift breaks a
 required gate, e.g. a non-portable `lint-hygiene.sh`). Run this as a standard step of
 every audit.
 

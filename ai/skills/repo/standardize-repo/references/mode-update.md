@@ -41,10 +41,15 @@ assets/diff-template.sh .
 This renders harmon-init from the repo's own `.copier-answers.yml` and runs two
 checks (mapping `.yml`↔`.yaml`):
 
-- **`DRIFT`** — content differences in the curated file set. Each is either a
-  **template improvement the repo is missing** (the status.sh / lint-hygiene /
-  bootstrap class) or a **legitimate local customization** — the diff tells you
-  which.
+- **`DRIFT`** — a curated file differs from a render at the repo's **own recorded
+  `_commit`** (diff-template.sh renders at `_commit`, not the template's HEAD). So
+  DRIFT is the repo's **local customization** relative to its own baseline — or,
+  less often, a **regression** where a past hand-reconciled update dropped a
+  template improvement at/below that baseline (the status.sh / lint-hygiene /
+  bootstrap class). It is **not** "an improvement from a newer template version":
+  those arrive through the `copier update` three-way merge (§2), never via
+  diff-template. Read the diff to tell a deliberate customization from a regression
+  to restore.
 - **`MISSING`** — a template file the repo lacks entirely. This scan walks the
   whole render (it does **not** depend on the curated list), so a file the
   template added later, or one a previous hand-reconciled update dropped, can't
@@ -140,6 +145,19 @@ review above is not optional: eyeball every high-churn, locally-customized file 
 name and confirm your customization survived. Cross-check the §1 `diff-template.sh`
 worklist — any file that was `DRIFT` *before* the update but is now byte-identical to
 the template was silently reverted; restore the customization.
+
+**AGENTS.md is co-owned — always 3-way-merge it by hand; the safety net above does
+NOT cover it.** `AGENTS.md` is deliberately **not** in
+[`template-owned-files.txt`](../assets/template-owned-files.txt), so `diff-template.sh`
+never checks it and the silent-revert cross-check cannot catch an AGENTS.md clobber —
+yet it is usually the most heavily customized file in the repo (project overview,
+architecture, real commands, project-specific conventions). Treat every update as a
+genuine three-way merge on AGENTS.md, section by section: **keep the repo's
+substantive customizations**, but **do adopt the template's real improvements** —
+some template sections legitimately supersede the repo's (e.g. a corrected
+Conventional-Commits type enum, a reworded workflow rule). It is a judgment call, not
+a wholesale `--ours`/`--theirs`. Diff the merged result against the pre-update file
+(`git show HEAD:AGENTS.md`) and confirm both sides survived where each should.
 
 **Heavily-forked files: take `--ours` and re-apply the new bits.** When a file is
 *heavily* customized (a forked `Taskfile.yml`, a bespoke `status.sh`), copier's
