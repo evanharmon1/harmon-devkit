@@ -292,6 +292,24 @@ reconciling **in place** (keep it in its normal file — do not extract it elsew
 required gate, e.g. a non-portable `lint-hygiene.sh`). Run this as a standard step of
 every audit.
 
+**Known false-`MISSING` categories — verify before "fixing".** Some `MISSING`
+findings are legitimate divergences, not gaps; re-adding the template's version is
+wrong. The recurring ones (nearly every iac/dotfiles repo hit ≥1):
+
+- **chezmoi `private_`/`dot_` prefix** — a dotfiles repo names the template's root
+  `Brewfile` `private_Brewfile` (→ `~/Brewfile`), so `Brewfile` reads `MISSING`. Add
+  a root `Brewfile` per [mode-adopt-existing.md](./mode-adopt-existing.md) §4.7, not
+  a "restored" copy.
+- **ADR renumbering** — the seed `docs/decisions/0001-record-architecture-decisions.md`
+  shows `MISSING` when the repo renumbered it (its `0001`/`0002` are real decisions).
+  Don't re-add — it would duplicate.
+- **Replaced terraform skeleton** — an iac repo with real infra (e.g.
+  `terraform/environments/…`) deleted the template's flat
+  `terraform/{main,variables,outputs}.tf` skeleton. `MISSING`, but correct — leave it.
+- **Gitignored `.envrc`** — a repo that resolves `.envrc`/`.envrc.local` from an
+  `.envrc.tpl` via `op inject` gitignores the resolved file, so it reads `MISSING`.
+  Leave it (it's the secure pattern the template now ships).
+
 **L. Workflow ↔ Taskfile contract.** Every `task <target>` referenced in
 `.github/workflows/*.yml` must exist in `Taskfile.yml`. CI's `lint`/`build` jobs
 call targets `task verify` never runs (e.g. `test:tasks`, `test:hooks`,

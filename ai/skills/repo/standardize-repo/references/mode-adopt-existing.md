@@ -345,11 +345,27 @@ These are the recurring drifts harmon-init exists to fix (source:
    skips `*.cmd`/`*.bat` (Windows files use CRLF by convention). NB a `SHELL_FILES`
    exclusion does **not** apply when lefthook passes `{staged_files}` via
    `CLI_ARGS`, so add a matching lefthook `exclude:` if staged edits to that
-   content must skip too. A **chezmoi** dotfiles source needs none of this: its
-   `.tmpl` files aren't `*.sh`/`*.yml` (so `lint:shell`/`yamllint` skip them) and
-   `{{ .chezmoi.* }}` Go-templates don't match the copier marker scan — the only
-   snag is app-managed configs missing a trailing newline (e.g.
-   `private_karabiner.json`), which just need one appended.
+   content must skip too. A **chezmoi** dotfiles source is a special case: it is
+   **both** a chezmoi source directory **and** a harmon-init-templated repo, so its
+   repo-maintenance files sit at the root next to the dotfiles — and chezmoi must
+   not deploy any of them to `$HOME`. Handle it explicitly:
+   - **Root `Brewfile` for repo tooling, separate from the deployed one.** The repo
+     needs a root `Brewfile` (its own toolchain, for `task install` / `status.sh`),
+     kept distinct from the `private_Brewfile` chezmoi renders to `~/Brewfile` (the
+     full dev-machine set). `diff-template.sh` reports the root `Brewfile` as
+     `MISSING` because chezmoi names its copy `private_Brewfile` — a **false
+     MISSING**; add a root `Brewfile`, don't "restore" one.
+   - **`.chezmoiignore` every repo-maintenance file.** Files not starting with `.`
+     are NOT auto-ignored, so `AGENTS.md`, `GEMINI.md`, `DESIGN.md`, `CHANGELOG.md`,
+     `commitlint.config.mjs`, `lefthook.yml`, `Taskfile.yml`, `Brewfile`,
+     `renovate.json`, `release-please-config.json`, and the `scripts/`, `specs/`,
+     `tests/` dirs would otherwise be deployed to `$HOME` on the next
+     `chezmoi apply`. Add them all to `.chezmoiignore` and verify with
+     `chezmoi status` (an `A` line = would be added to `$HOME`) / `chezmoi managed`.
+   - The `.tmpl` files themselves are safe: they aren't `*.sh`/`*.yml` (so
+     `lint:shell`/`yamllint` skip them) and `{{ .chezmoi.* }}` Go-templates don't
+     match the copier marker scan. The one lint snag is app-managed configs missing
+     a trailing newline (e.g. `private_karabiner.json`) — append one.
 
 ---
 

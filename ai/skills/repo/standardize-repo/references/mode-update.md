@@ -166,9 +166,19 @@ targets. Hand-resolving that is error-prone. Take the repo's complete version an
 cherry-pick only the genuinely-new pieces:
 
 ```bash
-git checkout --ours Taskfile.yml   # keep the repo's complete, working file
+git checkout main -- Taskfile.yml   # restore the repo's clean pre-update file
 # then add just what the update introduced (e.g. a new `status:setup` target)
 ```
+
+> **Don't hand-take a spanning "after" hunk — grep first.** The scrambled hunk's
+> "after" side often re-lists targets that ALSO live elsewhere in the file (copier
+> couldn't align them), so accepting it wholesale **duplicates keys** — a
+> `yamllint` `key-duplicates` error or a `task --list-all` parse failure catches it,
+> but only after the fact. Before taking any spanning "after" hunk, `grep -n '^  <target>:' <file>`
+> each target it defines; if one already appears outside the hunk, don't take it.
+> `git checkout main -- <file>` + re-applying only the genuinely-new targets is the
+> reliable path (prefer it over `git checkout --ours`, which needs a real merge
+> state a copier conflict may not have).
 
 **The template absorbed something this repo pioneered → add/add conflict; keep
 yours.** A canonical convention repo's innovations get *generalized* and upstreamed;
