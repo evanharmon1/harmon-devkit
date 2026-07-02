@@ -462,8 +462,67 @@ install the Renovate GitHub App on the repo. Conventions:
 - Other root files: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`
   (mit/private), `<slug>.code-workspace`, `.vscode/{settings,extensions}.json`,
   `.coderabbit.yaml` (CodeRabbit reviews — [manual] install the app),
-  `.github/PULL_REQUEST_TEMPLATE.md`, `.github/ISSUE_TEMPLATE/{bug,feature,task,research}.md`,
-  `.dockerignore`. **[copier]**
+  `.github/PULL_REQUEST_TEMPLATE.md`, the `.github/ISSUE_TEMPLATE/` YAML **Issue
+  Forms** (`{bug,feature,task,research}.yml` and `config.yml`, always generated —
+  see §1.13 for the `type:`/assignee behavior), `.dockerignore`. **[copier]**
+
+### 1.13 Project management (GitHub Projects) — when `project_management: github`
+
+The `project_management` copier answer (`github` / `linear` / `none`, default
+`none`) gates a GitHub-Projects playbook. **`github`** ships
+`docs/project-management.md` — the authoritative doc (statuses, fields, labels,
+milestones, hierarchy, cross-repo, views) — plus the setup tasks/scripts below.
+**`linear`** ships a `# Linear` TODO stub; **`none`** ships neither. **[copier]**
+for the doc/tasks/workflows; **[manual]** to run the setup (they hit the live
+GitHub API and are shellcheck/shfmt-gated only, never CI-tested).
+
+**One default Project (V2) per owner**, titled after the owner's GitHub login
+(`<owner> Project`); every repo feeds the one board. Slice it (by Product /
+`layer:` / Agent) instead of spinning up more projects.
+
+**Setup tasks** (idempotent + non-destructive; **[copier]** generates them, **[manual]** to run):
+
+| Task | Needs | Rendered when | Does |
+|---|---|---|---|
+| `setup:github-project` | `gh` + `project` scope | `project_management: github` | Create/sync the board + `Status` pipeline; write the `ORG_PROJECT_ID` org var (org only); on a **personal** account also create Priority/Effort/Product/Agent as project fields |
+| `setup:github-labels` | `gh` + repo write | `project_management: github` | `gh label create --force` for the five label families |
+| `setup:github-issue-fields` | `gh` + `admin:org` | `github` **and** org owner | Add the org **issue fields** Product + Agent (public preview) |
+| `setup:github-issue-types` | `gh` + `admin:org` | **org owner** (independent of `project_management`) | Ensure org issue types Bug/Feature/Task/Research (Task is GitHub's default; adds Research) |
+
+**Conventions the doc encodes** (audit the doc + the field/label/workflow
+artifacts; the prose rules are guidance, not lint):
+
+- **`Status`** — project single-select, one meaning ("where in delivery"):
+  Inbox/Icebox/Next · Todo/Shaping/Ready/Agent Queue · In Progress/Verifying/
+  In Review/Ready to Merge · Done/Deployed/Accepted. `Done` is the sole terminal
+  status; **no `Archived`** (native 90-day auto-archive); Canceled/Duplicate are
+  close reasons; Blocked is the native blocked-by relationship or `blocked` label.
+  `Agent Queue` is the AI-agent hand-off lane.
+- **Fields** — `Status` is a project field. **Priority + Effort are GitHub built-in
+  issue fields** (Effort must be a **Number** — story points, Fibonacci — so views
+  can sum it); **Product + Agent** are org issue fields from
+  `setup:github-issue-fields`. On a personal account all four are project fields.
+- **Issue types** — Bug/Feature/Task/Research (org). The Issue Forms set `type:` on
+  org repos and a **default assignee**, and apply **no labels** (type is the Type
+  field, not a label).
+- **Labels** — repo-level, five color families (Concerns / Source / Workflow /
+  Layer / Domain), orthogonal to Status and Type. There is no shared org label
+  pool; run `setup:github-labels` per repo.
+- **Milestones** — named after release versions (title == git tag), small +
+  rolling, preferred over iterations pre-launch.
+  `.github/workflows/close-milestone-on-release.yml` closes the matching milestone
+  on release publish — **[copier]** when `use_release_please` + `github`.
+- **Views** (Board / Triage / Agent queue / Planning / Mine) are **UI-only** —
+  Projects V2 has no view API. **[manual]**.
+- **Hierarchy** — sub-issues, no Epic type: the parent holds the spec +
+  milestone/project (children inherit both); leaves hold the `Task` type + `Effort`
+  points.
+
+**Org-only automation** (`github_org != author`):
+`.github/workflows/project-automation.yml` syncs `Status` from PR/CI events as the
+CI GitHub App, reading the `ORG_PROJECT_ID` org variable (title fallback).
+**[copier]**. The project's built-in **"Auto-add to project"** workflow
+(**[manual]**, UI, no API) puts every issue/PR on the board.
 
 ---
 
