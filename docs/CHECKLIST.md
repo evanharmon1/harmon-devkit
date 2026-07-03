@@ -25,8 +25,13 @@ config, toolchain, devcontainer, and dev environment — against the items below
 
 - [ ] Install the [Renovate app](https://github.com/apps/renovate) on the repo
 - [ ] Install the [CodeRabbit app](https://github.com/apps/coderabbitai) on the repo (`.coderabbit.yaml` is pre-configured)
-- [ ] Actions secrets: `CLAUDE_CODE_OAUTH_TOKEN` (claude-* workflows),
-      `SNYK_TOKEN` (snyk tasks)
+- [ ] Actions secret: `CLAUDE_CODE_OAUTH_TOKEN` (claude-* workflows)
+- [ ] Snyk is **optional and local-only**: `task security:sast`/`security:sca` are
+      opt-in — they are NOT in CI or `task security`, so run them by hand with
+      `SNYK_TOKEN` in your local env / 1Password (no Actions secret needed). If the
+      **Snyk GitHub App** is installed it posts `code/snyk`/`security/snyk` PR checks,
+      which the branch ruleset does **not** require; remove the app (or this repo from
+      it) to drop them.
 - [ ] CI GitHub App `evanharmon1-ci`: create it by hand for this org (one App
       per org; **Settings → Developer settings → GitHub Apps**), or reuse the
       org's existing one;
