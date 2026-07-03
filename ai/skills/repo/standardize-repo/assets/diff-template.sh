@@ -115,6 +115,8 @@ repo_variant() {
 
 drift=0
 checked=0
+drift_count=0
+missing_count=0
 while IFS= read -r f; do
     case "$f" in '' | \#*) continue ;; esac
     [ -f "$render/$f" ] || continue # conditional file not in this profile
@@ -123,11 +125,13 @@ while IFS= read -r f; do
     if [ -z "$rv" ]; then
         echo "MISSING  $f  (template ships it; repo doesn't)"
         drift=1
+        missing_count=$((missing_count + 1))
         continue
     fi
     if ! diff -q "$render/$f" "$rv" >/dev/null 2>&1; then
         echo "DRIFT    ${rv#"$target"/}"
         drift=1
+        drift_count=$((drift_count + 1))
         [ "$show" -eq 1 ] && diff -u "$rv" "$render/$f" | sed 's/^/    /'
     fi
 done <"$manifest"
@@ -151,14 +155,17 @@ while IFS= read -r abs; do
     *)
         echo "MISSING  $g  (template ships it; repo lacks it — review)"
         drift=1
+        missing_count=$((missing_count + 1))
         ;;
     esac
 done < <(find "$render" -type f | sort)
 
 echo ""
 if [ "$drift" -ne 0 ]; then
-    echo "diff-template: $checked curated files checked for drift; whole render"
-    echo "  scanned for missing files. Findings above (DRIFT/MISSING). For each,"
+    # The counts make truncated output self-evident: if you can't see
+    # $drift_count DRIFT + $missing_count MISSING lines above, you cut them off.
+    echo "diff-template: ${drift_count} DRIFT + ${missing_count} MISSING across $checked curated files"
+    echo "  checked and a whole-render missing-file scan. Findings above. For each,"
     echo "  review the diff (\`diff-template.sh --show\`): pull missed template"
     echo "  improvements in with \`copier update\`, keep legit local customizations."
     exit 1

@@ -8,13 +8,14 @@ should this repo have, and where does it come from?"**
 Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 `harmon-init/AGENTS.md`, the `harmon-init/template/` tree. Live reference repos
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
-project) and `sommerlawn/sommerlawn-web` (a `web-astro` project). Note: the live
-repos are pinned to **older template commits** (e.g. harmon-infra `_commit:
-v2.3.1`) and predate several current conventions (release-please, the
-AGENTS.md-canonical symlink flip, the dual-profile devcontainer, the
-`docs/product|architecture|decisions|guides|runbooks` layout). Treat the
-**template** as canonical; treat divergences in the live repos as either legit
-project-type specifics (Part 3) or as drift the repo itself would need to update.
+project) and `sommerlawn/sommerlawn-web` (a `web-astro` project). The platform
+and client repos are kept current via mode-update passes (all six were at
+v3.15.2 as of 2026-07-03), so their remaining divergences are **deliberate
+customizations** (Part 3.2), not lag — but they can drift between passes, so
+read the repo's actual `_commit` in `.copier-answers.yml` rather than assuming
+either way. Treat the **template** as canonical; treat divergences in a live
+repo as legit project-type/stack specifics (Part 3), deliberate customizations,
+or — in a repo that hasn't been updated recently — template-version lag (3.3).
 
 Every item is tagged:
 
@@ -656,11 +657,14 @@ picks from this palette:
   .ignoreCves`. **Do not flag** project-specific dependencies, overrides, or
   CVE-ignore entries — those are app decisions.
 
-### 3.3 Drift from older template commits (live repos lag the template)
+### 3.3 Drift from older template commits (recognition patterns for un-reconciled repos)
 
-The live reference repos were generated from older harmon-init commits and have
-since diverged. These are **template-version lag**, not violations of intent — but
-a repo being *brought up to current standard* would update them:
+Repos generated from **pre-v3** harmon-init that haven't been reconciled show
+these patterns. The platform/client reference repos were reconciled in 2026-06/07
+and no longer do — keep the list for **other** older repos (pre-v3 personal or
+client projects) an audit may target. These are **template-version lag**, not
+violations of intent — a repo being *brought up to current standard* would update
+them:
 
 - **Symlink direction flipped:** live repos have `AGENTS.md -> CLAUDE.md` (and
   `GEMINI.md -> CLAUDE.md`), keeping the real content in `CLAUDE.md`. The current
@@ -674,16 +678,19 @@ a repo being *brought up to current standard* would update them:
   current `product/ architecture/{ci-cd,security,branch-protection,tests} guides/
   runbooks/` + kebab-case filenames. They lack `docs/product/`, `docs/guides/`,
   `docs/glossary.md`, `docs/conventions.md`.
-- **Split CI workflows:** harmon-infra splits `build`/`security`/`validate`/
-  `terraform` into separate workflow files and has extra ones (`deploy.yaml`,
-  `mirror-devcontainer-base.yaml`); sommerlawn-web has `-max` variants of the
-  claude workflows and `links-online.yml`. The current template consolidates
-  lint+security+build-test into `build.yml`.
-- **Older copier answer keys:** harmon-infra's `.copier-answers.yml` references
+- **Split CI workflows:** an older repo may split `build`/`security`/`validate`
+  into separate workflow files where the current template consolidates
+  lint+security+build-test into `build.yml`. NB: **harmon-infra retains** its
+  split workflows, extra `deploy.yaml`/`mirror-devcontainer-base.yaml`, and
+  self-hosted `contraption` runners as an **accepted permanent customization** —
+  treat that as 3.2-class, not lag. (sommerlawn-web's old `-max` claude-workflow
+  variants are gone; its extra `links-online.yml` is a legit addition.)
+- **Older copier answer keys:** a pre-v3 `.copier-answers.yml` references
   now-renamed/removed questions (`github_collaboration_templates`,
-  `run_task_bootstrap`, `project_url`) — expected for a `_commit: v2.3.1` repo.
-- **Stale `requirements.txt`** in harmon-infra alongside `pyproject.toml`/`uv.lock`
-  — the current template is uv/pyproject-only.
+  `run_task_bootstrap`, `project_url`).
+- **Stale `requirements.txt`** alongside `pyproject.toml`/`uv.lock` — the current
+  template is uv/pyproject-only. (Removed from harmon-infra 2026-07-03 once its
+  last consumer, a legacy Snyk CI step, was dropped.)
 
 When auditing: distinguish "**legit conditional/stack difference**" (3.1, 3.2 —
 leave alone) from "**template-version lag**" (3.3 — candidate for an update toward
