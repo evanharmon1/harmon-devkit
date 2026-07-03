@@ -41,10 +41,15 @@ assets/diff-template.sh .
 This renders harmon-init from the repo's own `.copier-answers.yml` and runs two
 checks (mapping `.yml`↔`.yaml`):
 
-- **`DRIFT`** — content differences in the curated file set. Each is either a
-  **template improvement the repo is missing** (the status.sh / lint-hygiene /
-  bootstrap class) or a **legitimate local customization** — the diff tells you
-  which.
+- **`DRIFT`** — a curated file differs from a render at the repo's **own recorded
+  `_commit`** (diff-template.sh renders at `_commit`, not the template's HEAD). So
+  DRIFT is the repo's **local customization** relative to its own baseline — or,
+  less often, a **regression** where a past hand-reconciled update dropped a
+  template improvement at/below that baseline (the status.sh / lint-hygiene /
+  bootstrap class). It is **not** "an improvement from a newer template version":
+  those arrive through the `copier update` three-way merge (§2), never via
+  diff-template. Read the diff to tell a deliberate customization from a regression
+  to restore.
 - **`MISSING`** — a template file the repo lacks entirely. This scan walks the
   whole render (it does **not** depend on the curated list), so a file the
   template added later, or one a previous hand-reconciled update dropped, can't
@@ -141,6 +146,19 @@ name and confirm your customization survived. Cross-check the §1 `diff-template
 worklist — any file that was `DRIFT` *before* the update but is now byte-identical to
 the template was silently reverted; restore the customization.
 
+**AGENTS.md is co-owned — always 3-way-merge it by hand; the safety net above does
+NOT cover it.** `AGENTS.md` is deliberately **not** in
+[`template-owned-files.txt`](../assets/template-owned-files.txt), so `diff-template.sh`
+never checks it and the silent-revert cross-check cannot catch an AGENTS.md clobber —
+yet it is usually the most heavily customized file in the repo (project overview,
+architecture, real commands, project-specific conventions). Treat every update as a
+genuine three-way merge on AGENTS.md, section by section: **keep the repo's
+substantive customizations**, but **do adopt the template's real improvements** —
+some template sections legitimately supersede the repo's (e.g. a corrected
+Conventional-Commits type enum, a reworded workflow rule). It is a judgment call, not
+a wholesale `--ours`/`--theirs`. Diff the merged result against the pre-update file
+(`git show HEAD:AGENTS.md`) and confirm both sides survived where each should.
+
 **Heavily-forked files: take `--ours` and re-apply the new bits.** When a file is
 *heavily* customized (a forked `Taskfile.yml`, a bespoke `status.sh`), copier's
 three-way merge can scramble it — a single conflict hunk spanning several unrelated
@@ -148,9 +166,19 @@ targets. Hand-resolving that is error-prone. Take the repo's complete version an
 cherry-pick only the genuinely-new pieces:
 
 ```bash
-git checkout --ours Taskfile.yml   # keep the repo's complete, working file
+git checkout main -- Taskfile.yml   # restore the repo's clean pre-update file
 # then add just what the update introduced (e.g. a new `status:setup` target)
 ```
+
+> **Don't hand-take a spanning "after" hunk — grep first.** The scrambled hunk's
+> "after" side often re-lists targets that ALSO live elsewhere in the file (copier
+> couldn't align them), so accepting it wholesale **duplicates keys** — a
+> `yamllint` `key-duplicates` error or a `task --list-all` parse failure catches it,
+> but only after the fact. Before taking any spanning "after" hunk, `grep -n '^  <target>:' <file>`
+> each target it defines; if one already appears outside the hunk, don't take it.
+> `git checkout main -- <file>` + re-applying only the genuinely-new targets is the
+> reliable path (prefer it over `git checkout --ours`, which needs a real merge
+> state a copier conflict may not have).
 
 **The template absorbed something this repo pioneered → add/add conflict; keep
 yours.** A canonical convention repo's innovations get *generalized* and upstreamed;
@@ -159,6 +187,20 @@ specific original (an add/add conflict on, e.g., `scripts/validate-*.mjs`). Keep
 repo's specific version (`git checkout --ours <file>`) — the generic one is for
 *other* repos. Recognise this when a file you know the repo authored shows up as a
 conflict against a near-identical-but-blander template version.
+
+**Bunch/Obsidian util targets — self-contained `bunch-add` vs. the template's
+add+install split.** The template splits the macOS-launcher helpers into
+`util:bunch-add` (scaffolds `.meta/*.bunch` via `scripts/meta-create.sh`) +
+`util:bunch-install` (moves it to iCloud) — same for `util:obsidian-*`. Older repos
+instead have a **self-contained `util:bunch-add`** that writes the launcher straight
+to iCloud with a hardcoded heredoc (no `.meta` step, no `install` target). On update,
+copier interleaves the two models — naively taking the "after" side leaves a new
+`util:bunch-install` whose input (`.meta/*.bunch`) the repo's direct-write `bunch-add`
+never produces, and the repo's real heredoc dangles as if it were the install cmds.
+These are low-stakes, macOS-only helpers, so pick ONE model cleanly: either adopt the
+template's full add+install pair (drop the heredoc) or keep the repo's self-contained
+`bunch-add` (and don't add a stray `install`) — do not mix. Keep the `docs/CHECKLIST.md`
+Bunch/Obsidian line consistent with whichever you chose.
 
 ## 4. Verify comprehensively
 
@@ -179,6 +221,15 @@ Re-run `diff-template.sh`: every remaining `DRIFT` should be an intentional loca
 customization you can explain, not a missed update. In particular, a `DRIFT` on a
 file the repo *renamed* (e.g. `.yaml`) may be an update copier skipped, not a
 customization — confirm against the §2 renamed-files note before dismissing it.
+
+**Check the git hooks aren't shadowed or stale, too.** Even in an already-templated
+repo two non-lefthook hook managers can lurk: a **pre-commit.com** stub in
+`.git/hooks/pre-commit` (globally seeded by `~/.git-template`, silently no-oping next
+to lefthook's hooks) and, in a **git-lfs** repo, a git-lfs `pre-push` that lefthook's
+install shadowed to `pre-push.old` (LFS objects then stop uploading on push). Both are
+covered under §5 / trap (a) of [`mode-adopt-existing.md`](./mode-adopt-existing.md) —
+audit with `grep -rl 'generated by pre-commit' .git/hooks` and
+`grep -l git-lfs .git/hooks/*`.
 
 ## 5. Hand off
 
