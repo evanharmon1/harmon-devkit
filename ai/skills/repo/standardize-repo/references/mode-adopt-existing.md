@@ -375,7 +375,11 @@ These are the recurring drifts harmon-init exists to fix (source:
    - The `.tmpl` files themselves are safe: they aren't `*.sh`/`*.yml` (so
      `lint:shell`/`yamllint` skip them) and `{{ .chezmoi.* }}` Go-templates don't
      match the copier marker scan. The one lint snag is app-managed configs missing
-     a trailing newline (e.g. `private_karabiner.json`) — append one.
+     a trailing newline (e.g. `private_karabiner.json`, `private_dot_mackup.cfg`) —
+     append one, and expect it to **recur**: the app rewrites its config without a
+     newline and the next `chezmoi re-add` re-imports it, failing `lint:hygiene`
+     again (bit harmon-dotfiles twice, 2026-06/07). Re-append on each occurrence;
+     a durable per-file lint-hygiene ignore is a harmon-init backlog item.
    - **If the source uses chezmoi `git.autoCommit`/`autoPush`, reconcile it with
      lefthook.** A chezmoi source that auto-commits to `main` collides with the
      template hooks head-on — the `no-commit-to-main` guard blocks the commit and
