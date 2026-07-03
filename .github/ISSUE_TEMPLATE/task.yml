@@ -1,0 +1,23 @@
+name: Task
+description: General work — maintenance, chores, cleanup, or a small improvement
+title: "[Task]: "
+assignees:
+  - evanharmon1
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What needs doing?
+      description: Briefly describe the task and the outcome it should achieve.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ]
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context

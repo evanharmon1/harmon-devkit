@@ -14,7 +14,7 @@ config, toolchain, devcontainer, and dev environment — against the items below
 - [ ] Verify `harmon-devkit.code-workspace` opens the repo's folder in VS Code and has a unique VS Code Workspace color. Then add any other related repos (e.g. other org repos) to the `folders` list in the workspace file so you have quick access to those repos
 - [ ] Extend `.gitignore` for your stack — the template ships a base; add stack-specific entries via [gitignore.io](https://www.toptal.com/developers/gitignore)
 - [ ] macOS: add a Raycast quicklink/alias that opens the `harmon-devkit.code-workspace`
-- [ ] macOS: confirm the project is in your Bunch — auto-added at generation via `task util:bunch-add` (re-run it if needed)
+- [ ] macOS (Bunch): scaffold the launcher with `task util:bunch-add` (if not generated at copier time), then `task util:bunch-install` to move it to iCloud and leave a `.meta/*.bunch` symlink (re-run install if missing)
 
 ## 2. GitHub repo settings
 
@@ -32,7 +32,11 @@ config, toolchain, devcontainer, and dev environment — against the items below
       org's existing one;
       install it on this repo, then set `CI_APP_CLIENT_ID` (Actions
       **variable**) + `CI_APP_PRIVATE_KEY` (Actions **secret**) — org-level for
-      an org, per-repo for a personal account. Drives release-please, the
+      an org, per-repo for a personal account. Set the private key by piping the
+      `.pem` in (`gh secret set CI_APP_PRIVATE_KEY … < key.pem`), not by pasting —
+      flattened newlines make the key undecodable. For an org, scope it
+      (`--visibility selected --repos …`) and then finalize/audit repo access in
+      the UI. Drives release-please, the
       claude-* workflows, and project-automation. See docs/architecture/security.md.
 - [ ] GHCR: ensure the org/user allows publishing packages; the first
       devcontainer prebuild populates `ghcr.io/evanharmon1/harmon-devkit-devcontainer` on merge to main

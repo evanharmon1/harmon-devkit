@@ -9,8 +9,8 @@ it points here.
 ## Commits & git
 
 - **Conventional Commits**, enforced by commitlint at the `commit-msg` hook.
-  Allowed types: `build`, `change`, `chore`, `ci`, `docs`, `feat`, `fix`,
-  `perf`, `refactor`, `remove`, `revert`, `style`, `test`. Format
+  Allowed types: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`,
+  `refactor`, `revert`, `style`, `test`. Format
   `type(scope): subject`, imperative mood.
 - **Subject and body lines ≤ 100 characters** (config-conventional).
 - **Breaking changes:** `feat!:` (or a `BREAKING CHANGE:` footer) — drives a
@@ -32,6 +32,14 @@ it points here.
   `yaml:lint`).
 - Pipeline order is **`check → build → validate → test → security`**, with
   `verify` (local gate) and `ci` (full) as the aggregates.
+- **`lint:*` and `check` are read-only gates** — they report and fail, never
+  modify files. All auto-fixing lives in **`task format`**, **`task format:file
+  -- <path>`**, and **`task fix`** (= format then lint). Pre-commit hooks run the
+  read-only `lint:*`, so a failing check **blocks the commit and tells you** to
+  run `task format` rather than silently rewriting your tree.
+- Formatters (e.g. Prettier, Black, shfmt, `terraform fmt`, markdownlint) expose
+  a check side in `lint:*` and a write side in `format`; pure analyzers (e.g.
+  shellcheck, actionlint, yamllint, ESLint) are check-only by design.
 - **Workflows delegate to `task` targets** so local hooks, CI, and humans run
   identical commands — the Taskfile is the single source of truth. Don't
   reimplement command logic in a workflow or a hook.
@@ -91,3 +99,8 @@ it points here.
 - Releases are intentional via **release-please**: merge the rolling release PR
   to cut the tag, GitHub release, and CHANGELOG entry. `task release:*` remains a
   manual override. Nothing auto-releases on a normal merge.
+- **The commit type drives the release.** release-please reads the type to pick
+  the CHANGELOG section and bump: `feat` → **Features** (minor), `fix` → **Bug
+  Fixes** (patch), `feat!` / `BREAKING CHANGE:` → major. The rest (`build`,
+  `chore`, `ci`, `docs`, `perf`, `refactor`, `revert`, `style`, `test`) don't cut
+  a release on their own — they ride along in the next one.

@@ -209,4 +209,9 @@ if command -v direnv &>/dev/null && [ -f .envrc ]; then
     direnv allow
 fi
 
+# Clone related repos into /workspaces/ (idempotent + non-destructive; reads
+# .devcontainer/related-repos.txt). Runs on create so a rebuilt container
+# re-populates siblings. No-op when the list is empty/absent.
+bash .devcontainer/scripts/bootstrap-related-repos.sh
+
 echo "==> Setup complete! Run 'task verify' to validate your environment."

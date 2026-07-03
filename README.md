@@ -4,7 +4,12 @@ My personal developer kit: reusable code templates and boilerplates for various 
 
 Author: Evan Harmon
 
-[![Build](https://github.com/evanharmon1/harmon-devkit/actions/workflows/build.yml/badge.svg)](https://github.com/evanharmon1/harmon-devkit/actions/workflows/build.yml)
+[![Build & Validate](https://github.com/evanharmon1/harmon-devkit/actions/workflows/build.yml/badge.svg)](https://github.com/evanharmon1/harmon-devkit/actions/workflows/build.yml)
+[![Devcontainer Build](https://github.com/evanharmon1/harmon-devkit/actions/workflows/devcontainer-build.yml/badge.svg)](https://github.com/evanharmon1/harmon-devkit/actions/workflows/devcontainer-build.yml)
+[![Open in Dev Containers](https://img.shields.io/static/v1?label=Dev%20Containers&message=Open&color=blue&logo=visualstudiocode)](https://vscode.dev/redirect?url=vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/evanharmon1/harmon-devkit)
+[![Latest Release](https://img.shields.io/github/v/release/evanharmon1/harmon-devkit?sort=semver)](https://github.com/evanharmon1/harmon-devkit/releases)
+[![Renovate](https://img.shields.io/badge/maintained%20with-renovate-blue?logo=renovatebot)](https://github.com/apps/renovate)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Copier](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/copier-org/copier/master/img/badge/badge-grayscale-inverted-border-orange.json)](https://github.com/copier-org/copier)
 [![Maintained](https://img.shields.io/badge/maintained%3F-yes-brightgreen.svg?style=flat-square)](https://github.com/evanharmon1/harmon-devkit)
 [![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat-square)](https://github.com/evanharmon1/harmon-devkit)

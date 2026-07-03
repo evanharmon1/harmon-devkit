@@ -1,0 +1,34 @@
+name: Bug
+description: Report something that's broken or behaving incorrectly
+title: "[Bug]: "
+assignees:
+  - evanharmon1
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to '...'
+        2. Click '...'
+        3. See error
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, browser/app version, device — whatever's relevant.
+      placeholder: "e.g. macOS 15 · Chrome 130 · app v1.2.3"
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Logs, screenshots, or anything else that helps.

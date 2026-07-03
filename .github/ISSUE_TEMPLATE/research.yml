@@ -1,0 +1,46 @@
+name: Research
+description: Track a research question or investigation
+title: "[Research]: "
+assignees:
+  - evanharmon1
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Deliverable:** a research issue concludes in a **decision record** — an
+        ADR in `docs/decisions/` (see `docs/conventions.md`). Track the
+        investigation here; close it once the ADR is merged.
+  - type: textarea
+    id: question
+    attributes:
+      label: Research question
+      description: What is being investigated, and what decision will it inform?
+    validations:
+      required: true
+  - type: textarea
+    id: background
+    attributes:
+      label: Background / context
+      description: What do we already know, and why is this worth investigating?
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What's in scope and out of scope.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected outcome
+      description: The decision to be made and recorded as an ADR, plus any supporting artifacts.
+    validations:
+      required: true
+  - type: textarea
+    id: resources
+    attributes:
+      label: Resources / references
+  - type: checkboxes
+    id: done
+    attributes:
+      label: Definition of done
+      options:
+        - label: Decision recorded as an ADR in docs/decisions/
