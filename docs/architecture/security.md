@@ -19,6 +19,63 @@ current — it is the reference for "where do secrets live and who can do what".
 - **Auditable changes.** `main` is protected; changes land via reviewed PRs
   (see [branch-protection.md](branch-protection.md)).
 
+## Security scanning: SAST, SCA, secrets & audits
+
+Scanning is layered across a few axes. Each check runs at a defined place — a
+`task` target, a CI job, a git hook, or a GitHub-native setting — so local runs,
+git hooks, and CI stay identical. **The default stack is GitHub-native + CI-local
+and needs no paid service.**
+
+| Axis | Catches | Default tool | Where it runs |
+|---|---|---|---|
+| **SAST** — flaws in *your own code* | injection, XSS, SSRF, path traversal, crypto/auth misuse | **CodeQL** (`codeql.yml`; JS/TS + Python) | CI, opt-in via the `FULL_SECURITY_SCAN=true` repo variable; results land in the GitHub Security tab |
+| **SCA** — CVEs in *dependencies* | vulnerable third-party packages | **Dependabot alerts** + **`task security:audit`** (`pnpm audit` / `pip-audit`) | Dependabot continuous (GitHub-native); audit in the CI `security` job + `task security` locally |
+| **Secrets** — committed credentials | keys, tokens, certs, `.env` | **gitleaks** (`task security:secrets`) | pre-push git hook + CI `security` job |
+| **IaC** — insecure infrastructure | open security groups, public buckets, … | **checkov** (`task lint:terraform:security`) | CI `lint` job + `task check` locally (Terraform repos) |
+| **Freshness** — stale dependencies | a widening exposure window | **Renovate** (`minimumReleaseAge: 3 days`) | continuous, grouped update PRs |
+
+- **`task security`** (the CI `security` job) is `security:secrets` (gitleaks) +
+  `security:audit` (dependency audit). It does **not** run Snyk.
+- **CodeQL is opt-in** — its analyze jobs skip unless `FULL_SECURITY_SCAN=true`,
+  which `task setup:github` sets. If CodeQL is your only SAST, confirm it is on.
+- **`task setup:github`** turns on the GitHub-native layers: Dependabot alerts,
+  Private Vulnerability Reporting, and the `FULL_SECURITY_SCAN` variable; the branch
+  ruleset makes `verify` + `security` required checks. See
+  [../CHECKLIST.md](../CHECKLIST.md).
+- Which tools apply depends on the stack: SAST/SCA need code + a manifest (web/app,
+  or Python for iac); IaC scanning is Terraform-only. A `general`/`docs` repo leans
+  mainly on secrets + audit.
+
+### Snyk is optional and redundant by default
+
+The template ships Snyk targets — `task security:sast` (`snyk code test`, SAST) and
+`task security:sca` (`snyk test`, SCA) — but they are **opt-in, local-only, and not
+in CI**, because the default stack already covers both axes: **CodeQL** for SAST and
+**Dependabot + `security:audit`** for SCA. On a normal repo Snyk is redundant — leave
+it off. (`SNYK_TOKEN` is a local credential, not a CI secret; and if the Snyk GitHub
+App is installed, its `code/snyk`/`security/snyk` PR checks are **not** required by
+the branch ruleset — remove the app to drop them.)
+
+### Exception: a shipped product (e.g. a B2B SaaS web app)
+
+For a product that holds customer data, revisit the above — the redundancy stops
+being waste and a **paid Snyk tier** is worth weighing:
+
+- **Defense in depth** — a second SAST/SCA opinion matters when a miss means a
+  customer-data breach, not a broken marketing page.
+- **License compliance** — you are distributing a product, and **Dependabot does not
+  scan dependency licences**; Snyk (or FOSSA) does.
+- **Reachability** — Snyk can rank which dependency CVEs are actually reachable in
+  your code, cutting noise.
+- **Sales & compliance** — B2B customers send security questionnaires and may require
+  SOC 2 / a vendor review, where a recognised commercial scanner is a checkbox. A
+  paid tier also removes the free Snyk-Code monthly test limit.
+
+A web app also needs layers this stack does **not** cover: **DAST** (scanning the
+running app for auth bypass / IDOR / injection on live endpoints), **multi-tenant
+isolation** (the top B2B web-app risk), and **container/image scanning** if it ships
+images.
+
 ## Two identities: the bot vs the operator
 
 - **AI bot** (`evanharmon1-bot`) — runs in the primary
@@ -154,7 +211,7 @@ TODO: enumerate the tokens/secrets this repo depends on and where each lives:
 |---|---|---|---|
 | `CI_APP_CLIENT_ID` (var) + `CI_APP_PRIVATE_KEY` (secret) | release-please, claude-* | repo or org Actions variable + secret | rotate App key per policy |
 | `CLAUDE_CODE_OAUTH_TOKEN` | claude-* workflows | repo Actions secret | TODO |
-| `SNYK_TOKEN` | `task security:sast`/`sca` | repo Actions secret | TODO |
+| `SNYK_TOKEN` | `task security:sast`/`sca` (optional, local-only — not in CI) | local env / 1Password | TODO |
 | TODO | TODO | TODO | TODO |
 
 ## Rotation & incident notes
