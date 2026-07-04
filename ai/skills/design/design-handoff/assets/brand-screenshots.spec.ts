@@ -44,10 +44,20 @@ for (const route of ROUTES) {
         await document.fonts.ready; // avoid a flash of unstyled text in the capture
       });
       await page.waitForTimeout(700); // let entrance animations settle
-      await page.screenshot({
-        path: `screenshots/${testInfo.project.name}/${slugify(route)}-${theme}.png`,
-        fullPage: true,
-      });
+      // Browsers cap captures at 32767 device px per dimension; on 3x mobile
+      // devices a tall page (a full /brand) exceeds it — clip to the cap.
+      const { height, width, dpr } = await page.evaluate(() => ({
+        height: document.documentElement.scrollHeight,
+        width: document.documentElement.clientWidth,
+        dpr: window.devicePixelRatio || 1,
+      }));
+      const maxCss = Math.floor(32000 / dpr);
+      const path = `screenshots/${testInfo.project.name}/${slugify(route)}-${theme}.png`;
+      if (height > maxCss) {
+        await page.screenshot({ path, clip: { x: 0, y: 0, width, height: maxCss } });
+      } else {
+        await page.screenshot({ path, fullPage: true });
+      }
     });
   }
 }
