@@ -261,7 +261,9 @@ tasks:
   install:
     desc: Install all project dependencies and tools
     cmds:
-      - brew bundle --file=Brewfile
+      # Use THIS repo's Brewfile by absolute path (never a user/global one), and
+      # don't cascade-upgrade unrelated already-installed brew dependents.
+      - HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 brew bundle --file={{.ROOT_DIR}}/Brewfile
       - task: install:hooks
 
   install:hooks:

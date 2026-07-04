@@ -11,5 +11,18 @@
   // rewrites a leading "+ " in prose to "- "), so exclude it everywhere. Without
   // this, the lefthook markdown hook (which passes staged files explicitly) would
   // still touch them even though `task lint:markdown` skips .claude via its glob.
-  "ignores": ["CHANGELOG.md", ".claude/**"]
+  //
+  // The remaining entries are gitignored artifact/cache dirs that can exist on
+  // disk (terraform provider cache, uv venv, go-task cache, npm deps) —
+  // markdownlint-cli2 does not read .gitignore, and while `task lint:markdown`
+  // excludes them via its glob, direct cli2 invocations (editor integrations,
+  // `format`) would otherwise scan them. Matching nothing is a no-op.
+  "ignores": [
+    "CHANGELOG.md",
+    ".claude/**",
+    "**/.terraform/**",
+    "**/.venv/**",
+    "**/.task/**",
+    "**/node_modules/**"
+  ]
 }

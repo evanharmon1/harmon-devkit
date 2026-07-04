@@ -471,10 +471,6 @@ if [[ "${SECTION}" == "setup" ]]; then
         has_release_wf=0
         find .github/workflows -maxdepth 1 \( -name 'release.yml' -o -name 'release.yaml' \) 2>/dev/null | grep -q . && has_release_wf=1
         uses_ci_app=$((has_claude_wf || has_release_wf))
-        uses_snyk=0
-        for tf in Taskfile.yml Taskfile.yaml; do
-            [ -f "$tf" ] && grep -qi 'snyk' "$tf" && uses_snyk=1
-        done
         uses_full_scan=0
         grep -rq 'FULL_SECURITY_SCAN' .github/workflows >/dev/null 2>&1 && uses_full_scan=1
 
@@ -682,15 +678,6 @@ if [[ "${SECTION}" == "setup" ]]; then
                     fi
                 else
                     checkline na "CI App credentials" "not used by this repo"
-                fi
-                if [ "${uses_snyk}" = 1 ]; then
-                    if has_cred "${d}/secrets.json" "SNYK_TOKEN"; then
-                        checkline ok "SNYK_TOKEN"
-                    else
-                        checkline no "SNYK_TOKEN" "gh secret set"
-                    fi
-                else
-                    checkline na "SNYK_TOKEN" "no snyk tasks"
                 fi
                 if [ "${uses_full_scan}" = 1 ]; then
                     if has_cred "${d}/vars.json" "FULL_SECURITY_SCAN"; then
