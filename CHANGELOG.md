@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.3.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.2.0...v0.3.0) (2026-07-04)
+
+
+### Features
+
+* **design-handoff:** session-hardened gates, assets, and guidance from the ponderous-web v2 run ([#60](https://github.com/evanharmon1/harmon-devkit/issues/60)) ([c75baea](https://github.com/evanharmon1/harmon-devkit/commit/c75baeada3385a4199a30d5890bd11d10a9cc5ca))
+
 ## [0.2.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.1.0...v0.2.0) (2026-07-01)
 
 
