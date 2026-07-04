@@ -412,8 +412,18 @@ install the Renovate GitHub App on the repo. Conventions:
   commits have the symlink flipped the other way (`AGENTS.md -> CLAUDE.md`) — see
   Part 3. **[copier]**
 - **`.claude/settings.json`** (repo-level): minimal allow-list —
-  `Bash(task:*)`, `Bash(git status:*)`, `Bash(git diff:*)`, `Bash(git log:*)`.
+  `Bash(task:*)`, `Bash(git status:*)`, `Bash(git diff:*)`, `Bash(git log:*)` —
+  plus a `permissions.ask` list that forces a prompt on merge commands:
+  `gh pr merge` (all variants incl. `--auto`/`--admin`), `git merge`,
+  `git push origin main`, and force pushes (harmon-init ≥3.18.0, init #221).
   **[copier]**
+- **Agents never merge to main.** AGENTS.md Definition of Done carries the rule
+  (harmon-init ≥3.18.0, init #221): no `gh pr merge`/`git merge`/push to `main`
+  without the maintainer's explicit per-merge approval, even with green CI and
+  a permissive ruleset — open the PR, report checks, stop. The settings `ask`
+  rules above are the harness backstop (note: `ask` is skipped under
+  `bypassPermissions`, e.g. the devcontainer bot profile — the AGENTS.md rule
+  is the binding convention there). **[copier]**
 - **`.claude/skills/`** with a `.gitkeep`. **[copier]**
 - Devcontainer ships richer `config/claude-settings.json` as managed settings (see
   1.6). **[copier]**
