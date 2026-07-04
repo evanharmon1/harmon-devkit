@@ -499,10 +499,13 @@ artifacts; the prose rules are guidance, not lint):
   status; **no `Archived`** (native 90-day auto-archive); Canceled/Duplicate are
   close reasons; Blocked is the native blocked-by relationship or `blocked` label.
   `Agent Queue` is the AI-agent hand-off lane.
-- **Fields** — `Status` is a project field. **Priority + Effort are GitHub built-in
-  issue fields** (Effort must be a **Number** — story points, Fibonacci — so views
-  can sum it); **Product + Agent** are org issue fields from
-  `setup:github-issue-fields`. On a personal account all four are project fields.
+- **Fields** — `Status` is a project field. **Size is ALWAYS a project Number
+  field** (estimation points, Fibonacci): only project number fields sum in view
+  group headers, so it lives on the project even for orgs. The GitHub built-in
+  issue fields (**Priority**, single-select **Effort**, Start/Target date) are
+  left at their defaults; **Product + Agent** are org issue fields from
+  `setup:github-issue-fields`. On a personal account (no issue fields)
+  `setup:github-project` creates Priority/Product/Agent/Size as project fields.
 - **Issue types** — Bug/Feature/Task/Research (org). The Issue Forms set `type:` on
   org repos and a **default assignee**, and apply **no labels** (type is the Type
   field, not a label).
