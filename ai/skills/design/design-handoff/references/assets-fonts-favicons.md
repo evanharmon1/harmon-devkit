@@ -30,8 +30,24 @@ with the build; user media is runtime data and must never be committed.
   smaller than shipping many static cuts.
 - Declare with `@font-face` + **`font-display: swap`** so text renders immediately in the fallback and
   swaps in when the webfont arrives (no flash of invisible text).
-- Convert TTF/OTF → woff2 with Google's `woff2` tools, or use **Fontsource**, which ships `.woff2`
-  directly.
+- **The lowest-friction self-hosting path is Fontsource as an npm dependency** — it _is_
+  self-hosting (the woff2 ships from your origin via the bundler), version-pinned, and each package
+  carries the font's LICENSE file (handy for the licensing gate and for redistributing woff2 +
+  license inside a press kit). Prefer the variable packages:
+
+  ```css
+  /* globals.css — package imports are @imports: they MUST sit above tailwindcss (order rule below) */
+  @import "@fontsource-variable/space-grotesk";
+  @import "@fontsource-variable/jetbrains-mono";
+  @import "tailwindcss";
+  @theme {
+    /* Fontsource variable families register as "<Family> Variable" */
+    --font-sans: "Space Grotesk Variable", "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  }
+  ```
+
+  Manual alternative: convert TTF/OTF → woff2 with Google's `woff2` tools and declare `@font-face`
+  yourself (the block below).
 - Define families by **role** in `globals.css` under `@theme` — `--font-sans`, `--font-display`,
   `--font-mono`. Components use `font-sans` / `font-display`; never hardcode a family name in a
   component.
@@ -83,6 +99,12 @@ at build time:
   ideally preloaded.
 - **SVG** for logos, icons, and vector art — crisp at any size, tiny, and themeable via
   `currentColor`.
+- **SVG marks that use live `<text>`** (wordmarks set in the brand font) render correctly on the
+  site — the self-hosted font is loaded — but are **font-dependent as standalone files**: opened
+  elsewhere they fall back to whatever the viewer has installed. For press kits and downloads,
+  either outline the text or ship **font-true PNG renders** alongside (render the SVG in headless
+  Chromium with a `file://` `@font-face` pointing at the repo's woff2, then screenshot — zero new
+  dependencies; see the collateral pattern in `brand-page.md`).
 
 ## Then
 

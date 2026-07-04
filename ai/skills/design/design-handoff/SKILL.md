@@ -168,6 +168,9 @@ The most error-prone step, and where the modes diverge — **the bundle's tokens
   extend the system additively with a DDR — never inline.
 - **`evolve-design-system`** — a three-bucket diff (added/changed/removed), classified with **SemVer**, breaking
   changes handled by **aliasing + deprecating** (not deleting), recorded as a **DDR + version bump**.
+  A **wholesale replacement** (new brand; every consumer rewritten in the same change) is still
+  evolve _governance_ — major bump + DDR — executed with establish _mechanics_: write canonical
+  tokens fresh; aliasing serves nobody when no consumer of the old tokens survives the change.
 
 Reconcile `DESIGN.md` (don't clobber it). Then run `task lint:design` (`scripts/check-contrast.mjs`) and
 fix every sub-AA pair — this static gate must be **green** before you implement. Numbers in
@@ -273,13 +276,16 @@ commits to `main` are blocked) and open a **PR** for human review — never merg
 
 Bundled assets (the skill installs these into the target repo):
 
-- **`assets/check-contrast.mjs`** — zero-dependency static WCAG-AA token-contrast checker; copy to
-  `scripts/check-contrast.mjs`.
+- **`assets/check-contrast.mjs`** — zero-dependency static WCAG-AA token-contrast checker (resolves
+  `var()` chains, merges the `@theme`/`:root`/`.dark` cascade); copy to `scripts/check-contrast.mjs`.
+- **`assets/measure-rendered-contrast.mjs`** — the rendered half of the gate: samples computed
+  colors on real pages in both themes (parses Chromium's oklch/oklab serialization, composites
+  alpha); copy to `scripts/`, fill `SAMPLES`. Run by `task verify:contrast`.
 - **`assets/Taskfile.design.yml`** — design task snippets (`lint:design`, `ingest:design`,
-  `verify:browsers`) to merge into the repo's `Taskfile.yml`.
+  `verify:browsers`, `verify:contrast`) to merge into the repo's `Taskfile.yml`.
 - **`assets/brand-screenshots.spec.ts`** — a parameterized Playwright sweep (route × theme × the
-  config's engine/device matrix); fill in `ROUTES`, `baseURL`/`webServer`, and `setTheme()`. Run by
-  `task verify:browsers`.
+  config's engine/device matrix) plus a per-route horizontal-overflow guard; fill in `ROUTES`,
+  `baseURL`/`webServer`, and the theme mechanism. Run by `task verify:browsers`.
 
 ## Complements
 

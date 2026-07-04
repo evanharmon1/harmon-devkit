@@ -47,12 +47,18 @@ illegible text. You must measure the **actual painted color** on the running pag
   gate is green. Fix it by mapping `--tw-prose-*` to your semantic tokens (see
   `token-reconciliation.md`); `dark:prose-invert` and `prose-headings:*` element modifiers are
   partial, narrower fixes.
-- **How to measure:**
-  - In the browser console, read the **computed** color against the effective background and compute
-    the ratio: `getComputedStyle(el).color` vs the painted background; require ≥ 4.5 (≥ 3 for large
-    text). Do it for a real element, not a swatch.
-  - Or run **axe-core**, **Lighthouse**, or the browser's built-in accessibility audit on each page —
-    they read computed colors and report failures with the measured ratio.
+- **How to measure:** the skill ships **`assets/measure-rendered-contrast.mjs`** — copy it to
+  `scripts/`, fill its `SAMPLES` table (one row per route × selector × text role), start the dev
+  server, and run it (wire to `task verify:contrast`, see `assets/Taskfile.design.yml`). It loads
+  real pages in Chromium, walks each element's ancestor chain to composite the effective background
+  (including alpha layers and semi-transparent text), and prints pass/fail ratios for both themes.
+  - **Why a script and not the console:** with oklch tokens, Chromium serializes computed colors as
+    `oklch(...)` — and opacity-modified colors as `oklab(... / a)`. Regex-for-rgb parsing and even
+    canvas-fillStyle normalization silently fail on these; the shipped script parses them correctly.
+  - **Selector gotcha:** `form label`-style selectors can first-match a _hidden honeypot_ label and
+    measure the wrong element — target explicitly (`label[for="…"]`).
+  - **axe-core**, **Lighthouse**, or the browser's accessibility audit remain good complements —
+    they read computed colors too and catch non-contrast issues along the way.
 - **Measure in both themes**, for every text role: body, headings, muted/meta, links, on-color-block
   text (text on `bg-primary` and friends), and **especially long-form prose / article bodies** — the
   place runtime layers most often override your colors.
