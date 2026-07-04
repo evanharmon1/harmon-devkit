@@ -317,7 +317,29 @@ These are the recurring drifts harmon-init exists to fix (source:
    verify`; drop `.pre-commit-config.yaml`/`.ansible-lint` mentions). Fold the old
    real `CLAUDE.md` into `AGENTS.md` per step 1.
 
-   **Three traps that block the first commit/push after a v2→v3 render:**
+   **Prettier config: keep the repo's, not the template's (web-astro/web-app).**
+   The template ships `prettier.config.cjs` assuming astrowind-era devDeps
+   (`prettier-config-standard`, `prettier-plugin-tailwindcss`) that a mature
+   repo's `package.json` may not have — `lint:prettier` then dies with "Cannot
+   find module" — and its style (`semi: false`, `singleQuote`) would reformat
+   the entire codebase. On adopt: **delete the rendered `prettier.config.cjs`
+   and keep the repo's own `.prettierrc.cjs`**, then run one
+   `prettier --write` pass over the template-shipped JS/JSONC files
+   (`commitlint.config.mjs`, `scripts/*.mjs`, `.markdownlint-cli2.jsonc`,
+   `*.code-workspace`) so they conform to the repo's style. Expect
+   `diff-template.sh` to report those files as DRIFT + `prettier.config.cjs`
+   as MISSING — both intentional.
+
+   **Normalize `.copier-answers.yml` after a local-path render.** Rendering
+   with `--vcs-ref=HEAD` from a *dirty* local template checkout records a
+   throwaway `_commit` describe-string (e.g. `v3.16.0-3-g<sha>` — a commit
+   that exists in no clone), which breaks the next `copier update` (the
+   three-way-merge base ref is unresolvable). Post-adopt, reset both keys:
+   `_commit` → the real released tag the render corresponds to (e.g.
+   `v3.16.0`), `_src_path` → the GitHub URL (gotcha 8). If the render
+   included commits past that tag, the next update harmlessly re-offers them.
+
+   **Four traps that block the first commit/push after a v2→v3 render:**
    (a) **Stale pre-commit.com hook** — deleting `.pre-commit-config.yaml` leaves the
    installed `.git/hooks/pre-commit` behind, which blocks *every* commit with
    "No .pre-commit-config.yaml file was found"; run **`pre-commit uninstall`**,
@@ -340,6 +362,13 @@ These are the recurring drifts harmon-init exists to fix (source:
    (c) **Mis-shebanged scripts** — a `#!/bin/sh` script that uses bash features
    (`&>`, `function`, arrays) makes `shfmt` parse it as POSIX and fail; fix the
    shebang to `#!/usr/bin/env bash`.
+   (d) **`.meta/*.md` symlinks fail the prettier hook** — v2's
+   `obsidian_project_add`/`bunch_add` left `.meta/<name>.md` (and `.bunch`) as
+   symlinks into the Obsidian vault / iCloud; v3 *tracks* `.meta/`, so the
+   first commit stages them and lefthook's prettier hook passes the `.md`
+   symlink explicitly — prettier errors on explicit symlinks (same failure
+   class as the `CLAUDE.md`/`GEMINI.md` excludes). Add `".meta/*.md"` to the
+   prettier hook's `exclude:` list in `lefthook.yml`.
 
    Path B's `--overwrite` also **resets `.gitignore`** to the template's —
    re-merge the repo's custom ignores (binary/cache patterns like `*.dll`,
