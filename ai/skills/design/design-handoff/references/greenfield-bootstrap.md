@@ -29,8 +29,26 @@ existing `globals.css` (`token-reconciliation.md`).
    `ingest:design` merged into `Taskfile.yml`.
 
 Order matters: install + `shadcn init` first (it writes a default `globals.css`), **then** Phase 2
-reconciles the design's tokens into that file. Don't hand-write `globals.css` before `shadcn init` —
+reconciles the design's tokens into that file. Don't hand-write token _values_ before `shadcn init` —
 let the tool establish the structure, then edit values.
+
+Two `shadcn init` safety rules (learned the hard way):
+
+- **Create an empty `src/styles/globals.css` before running init.** The CLI hunts for an existing
+  stylesheet to update — and it will happily pick a _bundle's_ `globals.css` under `specs/…` (or any
+  stray css file) and rewrite it in place, corrupting the sign-off reference. An empty file at the
+  canonical path gives it the right target.
+- **Verify `components.json` immediately after init.** Check `tailwind.css` points at
+  `src/styles/globals.css`; if init grabbed another file, repoint it and restore the touched file
+  (`git checkout`/`git restore` for tracked files; re-extract the bundle if it edited that).
+
+Current CLI shape (drifts fast — trust `pnpm dlx shadcn@latest init --help` over this doc):
+`-b` selects the **primitive library** (`radix` | `base`), not a base color; a **preset** supplies
+style + icon/font defaults (`-p nova` = the Lucide pairing; omitting `-p` prompts interactively, so
+pass it in scripted runs). Init emits `@import "tw-animate-css"` and `@import "shadcn/tailwind.css"`
+at the top of the stylesheet — **keep both** (behavioral CSS: data-state variants, accordion
+keyframes, utilities; no color tokens) — and installs the preset's font package (e.g.
+`@fontsource-variable/geist`); **remove that dependency** when the design brings its own fonts.
 
 ## Per-framework setup
 
@@ -43,7 +61,7 @@ framework's conventions; never block on an unrecognized router.
 
 ```bash
 pnpm add tailwindcss @tailwindcss/vite
-pnpm dlx shadcn@latest init            # choose a base color (Neutral/Stone/Zinc/Gray/Slate); writes components.json + globals.css
+pnpm dlx shadcn@latest init -y -b radix -p nova   # writes components.json + updates the css file (see the safety rules above)
 ```
 
 - **Vite plugin:** add Tailwind to `vite.config.ts`:
@@ -75,7 +93,7 @@ Identical install and Tailwind/shadcn wiring as above. Differences:
 ```bash
 pnpm astro add tailwind                 # wires Tailwind v4 via @tailwindcss/vite
 pnpm astro add react                    # @astrojs/react — required: shadcn components are React islands
-pnpm dlx shadcn@latest init             # configures components.json + path aliases for Astro
+pnpm dlx shadcn@latest init -y -b radix -p nova   # components.json + aliases for Astro (safety rules above)
 ```
 
 - **Global stylesheet:** create `src/styles/globals.css` (`@import "tailwindcss";`) and import it in

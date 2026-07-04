@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // check-contrast.mjs — static WCAG-AA contrast gate for a shadcn/Tailwind-v4 globals.css
 //
-// WHAT: parses the semantic color tokens out of a globals.css (the `:root` and `.dark`
-// blocks), then proves every foreground/background pair the design relies on meets WCAG AA
-// in BOTH themes. It is the *static* half of the dual contrast gate — necessary but not
+// WHAT: parses the semantic color tokens out of a globals.css (the `@theme`, `:root` and
+// `.dark` blocks, cascade-merged so dark inherits what it doesn't redefine), resolves
+// `var(--x)` indirection to the real colors, then proves every foreground/background pair
+// the design relies on meets WCAG AA in BOTH themes. It is the *static* half of the dual contrast gate — necessary but not
 // sufficient (it sees the tokens, not the color that actually paints; a runtime layer like
 // the Tailwind Typography `.prose` plugin can still override a token). Always pair it with the
 // rendered-page measurement in Phase 5. See references/accessibility-verification.md.
@@ -128,14 +129,43 @@ function contrastRatio(c1, c2) {
 
 // ---------- globals.css parsing ----------
 
-// Pull the declaration body of the first matching `<selector> { ... }` rule (flat, no nesting).
+// Pull the declaration body of the first matching `<selector> { ... }` rule,
+// with balanced-brace matching so nested blocks (@keyframes inside @theme, a
+// @media inside a layer) don't truncate the capture.
 function extractBlock(css, selector) {
-  const re = new RegExp(
-    `(?:^|[}\\s])${selector.replace(".", "\\.")}\\s*\\{([^}]*)\\}`,
+  const startRe = new RegExp(
+    `(?:^|[}\\s])${selector.replace(/[.\\]/g, "\\$&")}\\s*\\{`,
     "m",
   );
-  const m = css.match(re);
-  return m ? m[1] : null;
+  const m = css.match(startRe);
+  if (!m) return null;
+  const open = m.index + m[0].length;
+  let depth = 1;
+  for (let i = open; i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}" && --depth === 0) return css.slice(open, i);
+  }
+  return null;
+}
+
+// Every `@theme` block's declarations (constants like --color-brand), merged.
+// Needed so var() chains that terminate in @theme constants resolve.
+function extractThemeTokens(css) {
+  const tokens = new Map();
+  const re = /@theme[^{]*\{/g;
+  let m;
+  while ((m = re.exec(css)) !== null) {
+    const open = m.index + m[0].length;
+    let depth = 1;
+    for (let i = open; i < css.length; i++) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}" && --depth === 0) {
+        for (const [k, v] of parseTokens(css.slice(open, i))) tokens.set(k, v);
+        break;
+      }
+    }
+  }
+  return tokens;
 }
 
 // Parse `--token: value;` declarations from a block body into a Map.
@@ -145,6 +175,19 @@ function parseTokens(blockBody) {
   let m;
   while ((m = re.exec(blockBody)) !== null) tokens.set(m[1], m[2].trim());
   return tokens;
+}
+
+// Resolve a value that is entirely a var() reference (with optional fallback)
+// through the token map, so the canonical indirection this skill prescribes
+// (`--background: var(--paper)`) audits the real color instead of skipping.
+function resolveVar(tokens, raw) {
+  let value = raw?.trim();
+  for (let hops = 0; hops < 16 && value; hops++) {
+    const m = value.match(/^var\(\s*--([\w-]+)\s*(?:,\s*([^)]+))?\)$/);
+    if (!m) break;
+    value = tokens.get(m[1])?.trim() ?? m[2]?.trim();
+  }
+  return value;
 }
 
 // ---------- the pairs we audit ----------
@@ -161,6 +204,15 @@ const TEXT_PAIRS = [
   ["destructive", "destructive-foreground"],
 ];
 
+// REPO-SPECIFIC text pairs — extend when the design renders text on grounds
+// beyond the shadcn defaults (a brand marquee, a footer well, muted text on a
+// raised surface, constant on-dark helpers). Names are token names WITHOUT
+// the leading `--`; @theme constants use their full name (e.g. "color-blue").
+// Example (a site with a constant blue marquee + secondary text on cards):
+//   ["paper-2", "muted-fg"],
+//   ["color-blue", "color-on-dark-soft"],
+const EXTRA_TEXT_PAIRS = [];
+
 // UI/non-text pairs: reported at 3:1 but warn-only (subtle dividers are legitimately faint).
 const UI_PAIRS = [
   ["border", "background"],
@@ -173,8 +225,8 @@ function auditTheme(label, tokens) {
   let failures = 0;
 
   const evaluate = (bgName, fgName, need, kind) => {
-    const bgRaw = tokens.get(bgName);
-    const fgRaw = tokens.get(fgName);
+    const bgRaw = resolveVar(tokens, tokens.get(bgName));
+    const fgRaw = resolveVar(tokens, tokens.get(fgName));
     if (bgRaw === undefined || fgRaw === undefined) {
       const missing = bgRaw === undefined ? `--${bgName}` : `--${fgName}`;
       rows.push({
@@ -209,6 +261,7 @@ function auditTheme(label, tokens) {
   };
 
   for (const [bg, fg] of TEXT_PAIRS) evaluate(bg, fg, 4.5, "text");
+  for (const [bg, fg] of EXTRA_TEXT_PAIRS) evaluate(bg, fg, 4.5, "text");
   for (const [bg, fg] of UI_PAIRS) evaluate(bg, fg, 3.0, "ui");
   return { label, rows, failures };
 }
@@ -244,9 +297,20 @@ function main() {
   }
   const darkBody = extractBlock(css, ".dark");
 
-  const themes = [auditTheme("light (:root)", parseTokens(rootBody))];
+  // Cascade order: @theme constants < :root < .dark overrides. Dark inherits
+  // every :root token it doesn't redefine, exactly as the browser cascades —
+  // so `--background: var(--paper)` resolves against the dark `--paper`.
+  const themeTokens = extractThemeTokens(css);
+  const lightTokens = new Map([...themeTokens, ...parseTokens(rootBody)]);
+
+  const themes = [auditTheme("light (:root)", lightTokens)];
   if (darkBody !== null)
-    themes.push(auditTheme("dark (.dark)", parseTokens(darkBody)));
+    themes.push(
+      auditTheme(
+        "dark (.dark)",
+        new Map([...lightTokens, ...parseTokens(darkBody)]),
+      ),
+    );
 
   const evaluated = themes
     .flatMap((t) => t.rows)

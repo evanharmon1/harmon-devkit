@@ -43,9 +43,18 @@ tasks:
     desc: Cross-browser/viewport screenshot sweep (Playwright — Chromium/Firefox/WebKit × devices)
     # Requires @playwright/test and `npx playwright install` (the skill provisions both if missing),
     # plus a baseURL/webServer in playwright.config.ts. Runs the bundled brand-screenshots.spec.ts —
-    # the route × theme × engine/device sweep that captures the Phase 5 matrix.
+    # the route × theme × engine/device sweep that captures the Phase 5 matrix. Scoped to the spec
+    # file so it doesn't re-run the repo's whole e2e suite.
     cmds:
-      - npx playwright test {{.CLI_ARGS}}
+      - npx playwright test tests/brand-screenshots.spec.ts {{.CLI_ARGS}}
+
+  verify:contrast:
+    desc: Rendered WCAG contrast — computed colors on real pages, both themes (Phase 5)
+    # Requires a running dev/preview server (the script defaults to http://localhost:4321;
+    # pass another base URL via `-- <url>`). Uses the bundled measure-rendered-contrast.mjs
+    # copied into scripts/ with its SAMPLES table filled in for this repo.
+    cmds:
+      - node scripts/measure-rendered-contrast.mjs {{.CLI_ARGS}}
 
   # Aggregator for repos that DON'T already define `verify`. If the repo HAS a `verify`/`check`
   # task, delete this and instead add `lint:design` to that task's `deps:` so the design gate
@@ -54,5 +63,5 @@ tasks:
     desc: Design verification — repo checks then the static design gate (rendered check is manual)
     cmds:
       - task: lint:design
-      - cmd: echo "Static gate green. Now run the app and measure RENDERED contrast in both themes — see the skill's accessibility-verification.md (Phase 5)."
+      - cmd: echo "Static gate green. Now run the app and measure RENDERED contrast in both themes — task verify:contrast (see accessibility-verification.md, Phase 5)."
         silent: true

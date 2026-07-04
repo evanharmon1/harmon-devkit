@@ -225,6 +225,31 @@ These groups map onto the design suite's artifact taxonomy in `ai/skills/README.
 Components / Pages & Templates / Assets / Collateral), so `/brand` stays aligned with the broader
 design-suite roadmap.
 
+### Zero-dependency collateral rendering (the proven pattern)
+
+Collateral does **not** need image/PDF libraries (`satori`, `astro-og-canvas`, `sharp`, React
+Email…) — the repo's existing Playwright renders everything, driven by one script (e.g.
+`scripts/build-brand-assets.mjs`, wired to a `task brand:assets`):
+
+- **Parse the live tokens** from `globals.css` (same extraction approach as `check-contrast.mjs`)
+  so every artifact is _generated from_ the system and can't drift; regenerate after any token
+  change, never hand-edit outputs.
+- **HTML template strings + `page.setContent()`** — no server needed. Load brand fonts with a
+  `file://` `@font-face` pointing at the repo's woff2 (Fontsource packages work:
+  `node_modules/@fontsource-variable/<font>/files/…`), inline the logo SVGs, and
+  `await page.evaluate(() => document.fonts.ready)` before capturing.
+- **PNGs** via `page.screenshot` with an exact-size viewport/clip (OG cards 1200×630, platform
+  banners, avatars); **PDFs** via `page.pdf({ printBackground: true, preferCSSPageSize: true })`
+  with `@page { size: … }` — print pieces render at **bleed size** (e.g. a 3.5×2in card at
+  3.75×2.25in) with type inside the safe zone, and CMYK values in the spec sheet marked
+  _digital-derived, verify with the print vendor_.
+- **Email** stays hand-built table-HTML with inline styles and system font stacks (email clients
+  can't load brand fonts reliably); a slide deck works well as an unlisted print-styled route the
+  user exports via Print → PDF.
+- Emit **`kit.json`** (versioned manifest: colors in hex/rgb/oklch/cmyk, font names + licenses,
+  asset URLs, boilerplate copy) from the same parsed tokens, and assemble `brand-kit.zip` from the
+  generated tree — the Tier 2 endpoint and the zip stay in lockstep by construction.
+
 ## Where `/brand` lives per framework
 
 - **TanStack Router** — file-based route at `src/routes/brand.tsx`.

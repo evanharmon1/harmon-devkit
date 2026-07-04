@@ -25,7 +25,32 @@ export; the coding handoff is the tarball.) Decompress it into the repo's `specs
 tar -xzf <bundle>.tar.gz -C specs/        # or: task ingest:design BUNDLE=<bundle>.tar.gz
 ```
 
-It extracts to a single project directory. Move/rename it to `specs/handoff-<feature>/`.
+It extracts to a single project directory. Move/rename it to `specs/handoff-<feature>/` — do this
+**even when the user pre-placed it under another name**: consistent naming is what the repo's ignore
+conventions and future sessions key off.
+
+## Shield the bundle from repo tooling (do this at ingest, not when CI breaks)
+
+The bundle is vendored prototype content sitting inside a linted repo — left unshielded, it fails
+`verify` in ways that look like your bugs: prettier/eslint attack its `.jsx` (and prettier would
+_reformat the sign-off reference_), markdownlint its `readme.md`, yamllint any `.yml` it carries,
+JSON-hygiene checks choke on empty manifest files (hygiene scripts often scan **untracked** files
+too), and framework typechecks (`astro check`, `tsc`) sweep its bundled JS. Cover every surface the
+repo lints:
+
+- `.gitignore` → `specs/*/` (bundles are deleted at sign-off, never committed; top-level
+  `specs/*.md` stay tracked)
+- `.prettierignore` → `specs/*/`
+- eslint flat config `ignores` → `'specs/'`
+- `.yamllint` `ignore:` → `specs/*/`
+- markdownlint invocation → `'#specs/*/**'`
+- `tsconfig.json` → `"exclude": ["specs"]` (this is what `astro check` respects)
+
+Repos standardized with **harmon-init** ship these ignores out of the box — check before adding
+duplicates. One more anatomy note: bundles sometimes contain a copy of **this skill itself** under
+`uploads/` (the designer uploaded it so the design would be handoff-aware) — treat it as reference
+input like any other upload; the canonical skill lives in the repo, and skill scripts inside the
+bundle may be renamed `.txt` to keep Claude Design's compiler happy.
 
 ## Anatomy (verified, current as of mid-2026)
 

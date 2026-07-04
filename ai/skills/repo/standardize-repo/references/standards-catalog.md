@@ -217,6 +217,16 @@ Conditional formatters/linters (see Part 2 for which project types):
 - **terraform fmt / validate** — iac/terraform only.
 - **ansible-lint** — `.ansible-lint` (ansible only).
 
+**Design-bundle shield (`specs/*/`)** — spec *subdirectories* hold vendored
+design-handoff bundles (Claude Design exports; deleted at sign-off, never
+committed) and are excluded from git and every linter, while top-level
+`specs/*.md` stay tracked and linted. Audit that all surfaces agree:
+`.gitignore` + `.prettierignore` (`specs/*/`), `.yamllint` ignores
+(`specs/*/`), the markdownlint invocation in the Taskfile (`'#specs/*/**'`),
+and — web repos, [manual] since those files are scaffolded — eslint `ignores`
+(`'specs/'`) and tsconfig `"exclude": ["specs"]`. A repo missing these fails
+`verify` the moment a bundle lands (untracked-file hygiene scans included).
+
 ### 1.5 Git hooks (lefthook)
 
 **[copier]** ships `lefthook.yml`; installed via `task install:hooks` (`lefthook
@@ -571,7 +581,9 @@ Adds (all [copier] unless noted):
 - **[manual] CHECKLIST:** `pnpm create astro@latest .`; add **Tailwind v4**
   (`@tailwindcss/vite`), **zod**, **vitest**, **lucide**; move lint tooling into
   `devDependencies`; switch Taskfile `npx --yes` calls to `pnpm exec`; review
-  `lighthouserc.json` URLs.
+  `lighthouserc.json` URLs; enable **mobile device projects** in
+  `playwright.config.ts` (e.g. Pixel + iPhone — the scaffold ships them
+  commented out, and mobile-first is the stated convention).
 
 ### 2.3 web-app (TanStack/React apps) — `use_node: true`
 

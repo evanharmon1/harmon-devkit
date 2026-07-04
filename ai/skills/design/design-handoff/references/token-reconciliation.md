@@ -71,6 +71,10 @@ the bundle's `--color-primary` is a paint value and is **not** necessarily shadc
 ```css
 /* Any hosted-font @import MUST sit above this line — see assets-fonts-favicons.md. */
 @import "tailwindcss";
+/* Current shadcn CLIs also emit these two — KEEP them (behavioral CSS only:
+   data-state variants, accordion keyframes, utilities; they carry no tokens): */
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 @custom-variant dark (&:is(.dark *));
 
 :root {

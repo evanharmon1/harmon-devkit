@@ -83,6 +83,39 @@ state in **both themes** during Phase 5.
   directive will render but never hydrate — it won't be interactive, which is a common and confusing
   Astro mistake.
 
+## Astro trap: `asChild` cannot cross the framework boundary
+
+`<Button asChild><a href="…">…</a></Button>` written in a **`.astro`** file renders a **bare,
+completely unstyled anchor** — no classes, no `data-slot`, nothing. Radix `Slot` works by cloning a
+React element child, but Astro passes its children across the boundary as opaque pre-rendered HTML,
+so there is nothing to clone and the child passes through untouched. This fails **silently**: the
+build is green, the page renders, and every CTA is a plain text link (it can even un-hide a
+`hidden md:inline-flex` responsive class and break mobile layout). `asChild` is fine **inside**
+`.tsx` islands, where children are real React elements.
+
+For static templates, apply the variants to a real anchor instead — a small `ButtonLink.astro`:
+
+```astro
+---
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+interface Props {
+  href: string;
+  variant?: "default" | "outline" | "ghost" | "link"; // match the repo's variants
+  size?: "sm" | "default" | "lg";
+  class?: string;
+}
+const { href, variant = "default", size = "default", class: className } = Astro.props;
+---
+
+<a href={href} class={cn(buttonVariants({ variant, size }), "no-underline", className)}>
+  <slot />
+</a>
+```
+
+The sweep's horizontal-overflow guard (`assets/brand-screenshots.spec.ts`) and the rendered checks
+are what catch this class of bug — another reason not to skip Phase 5 on "it builds".
+
 ## Then
 
 Place assets and fonts (`assets-fonts-favicons.md`), build responsively across viewports and engines
