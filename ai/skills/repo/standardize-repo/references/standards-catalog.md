@@ -8,7 +8,7 @@ should this repo have, and where does it come from?"**
 Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 `harmon-init/AGENTS.md`, the `harmon-init/template/` tree. Live reference repos
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
-project) and `sommerlawn/sommerlawn-web` (a `web-astro` project). The platform
+project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). The platform
 and client repos are kept current via mode-update passes (all six were at
 v3.15.2 as of 2026-07-03), so their remaining divergences are **deliberate
 customizations** (Part 3.2), not lag — but they can drift between passes, so
@@ -62,7 +62,7 @@ Repo-root siblings of `docs/` (deliberately NOT under `docs/`):
 - **`.gitkeep`** keeps otherwise-empty dirs in git (`tests/.gitkeep`,
   `.claude/skills/.gitkeep`, and ansible `roles|playbooks|inventory/.gitkeep`
   for iac). Across the live repos, `docs/` subdirs are also kept with `.gitkeep`
-  (harmon-infra: `architecture/decisions/specs`; sommerlawn-web:
+  (harmon-infra: `architecture/decisions/specs`; sommerlawn-site:
   `decisions/runbooks/specs`).
 - **Filling content is [manual]:** most generated docs carry literal `TODO:`
   markers (e.g. `security.md`, `design-language.md`, `DESIGN.md`); the operator
@@ -558,6 +558,15 @@ Driven by the `project_type` copier answer: `general` / `web-astro` / `web-app` 
 `include_ansible`). `include_terraform` / `include_ansible` default to true for
 `iac`.
 
+**Repo naming (`<base>-<suffix>`).** Name a repo by what it contains:
+`-site` (websites / marketing / static sites — typically `web-astro`), `-app`
+(web/product applications — `web-app`), `-infra` (IaC — `iac`), `-docs`
+(documentation sites — `docs`), `-mobile` (mobile apps), `-hub`
+(umbrella / landing repos). Use **`-site`, never the older `-web`**: "web" is
+overloaded (every app is on the web) and collides with the natural name for a
+web client, whereas `-site` lines up cleanly with the other suffixes. So
+`sommerlawn-site` / `ponderous-site`, not `*-web`.
+
 **Important:** harmon-init is a **conventions-only** template — for web/app types
 it scaffolds the tooling/config but **not the framework itself**. Installing the
 actual framework + stack is a [manual] CHECKLIST step.
@@ -675,8 +684,8 @@ picks from this palette:
 - **Astro** (web-astro), **TanStack Start / vite + react** (web-app),
   **TypeScript**, **Vite**, **pnpm**, **Tailwind v4**, **zod**, **vitest**,
   **lucide** (icons), **shadcn/ui** (web-app components), **alpine** (some Astro
-  marketing sites — e.g. sommerlawn-web uses `@astrojs/alpinejs` + `alpinejs`).
-- A real web repo's `package.json` (sommerlawn-web) legitimately carries many
+  marketing sites — e.g. sommerlawn-site uses `@astrojs/alpinejs` + `alpinejs`).
+- A real web repo's `package.json` (sommerlawn-site) legitimately carries many
   extra deps (markdoc, mermaid, photoswipe, remark/rehype plugins, sitemap,
   astro-seo) and a large `pnpm.overrides` security-pin block + `auditConfig
   .ignoreCves`. **Do not flag** project-specific dependencies, overrides, or
@@ -708,7 +717,7 @@ them:
   lint+security+build-test into `build.yml`. NB: **harmon-infra retains** its
   split workflows, extra `deploy.yaml`/`mirror-devcontainer-base.yaml`, and
   self-hosted `contraption` runners as an **accepted permanent customization** —
-  treat that as 3.2-class, not lag. (sommerlawn-web's old `-max` claude-workflow
+  treat that as 3.2-class, not lag. (sommerlawn-site's old `-max` claude-workflow
   variants are gone; its extra `links-online.yml` is a legit addition.)
 - **Older copier answer keys:** a pre-v3 `.copier-answers.yml` references
   now-renamed/removed questions (`github_collaboration_templates`,
