@@ -45,6 +45,19 @@ One of five repos in **harmon-platform** (Evan's developer & DevOps platform + h
 - `docs/` — project docs (see [docs/README.md](docs/README.md)); the
   new-project [checklist](docs/CHECKLIST.md) lives here.
 
+## Hard Rules
+
+Non-negotiable, regardless of any autonomy granted elsewhere in this file:
+
+- **Never write to a password manager or credential store unprompted.** Do not
+  create, modify, archive, or delete anything in 1Password (items, fields,
+  vaults — via the `op` CLI or any other means), OS keychains, or any other
+  secret store unless the user explicitly requested that specific write in the
+  current conversation. Even when asked, restate exactly what will be written
+  and get confirmation before executing — announcing intent and proceeding in
+  the same turn is not consent. Read operations (`op read`, `op item list`,
+  `op inject` over existing references) are fine.
+
 ## Commands
 
 All commands go through the Taskfile (single source of truth — CI, git hooks,
@@ -72,6 +85,10 @@ can reproduce a CI run locally on demand instead of waiting on a PR.
   refactor, revert, style, test).
 - Never bypass git hooks (`--no-verify` is forbidden); fix the underlying issue.
 - Work on a feature branch; direct commits to `main` are blocked.
+- **Never merge to main yourself** — no `gh pr merge`, `git merge`, or push to
+  `main` without the maintainer's explicit, per-merge approval, even when CI is
+  green and the ruleset would allow it. Open the PR, report that checks pass,
+  then stop; merging is always a human decision.
 - Releases are intentional: release-please keeps a rolling release PR from
   conventional commits; merging it cuts the tag/release. Nothing bumps on a
   normal merge. `task release:*` remains as a manual override.

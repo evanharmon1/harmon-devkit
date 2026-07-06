@@ -8,6 +8,12 @@
 #
 # Usage: ./scripts/lint-hygiene.sh [file ...]
 #   If no files given, checks all tracked files.
+#
+# Per-file exemptions: an optional repo-root .lint-hygiene-ignore lists one
+# path or glob per line ('#' comments and blank lines allowed); matching files
+# are skipped entirely. Reserve it for app-managed configs the app rewrites on
+# its own terms (e.g. karabiner.json dropping the final newline) — it is not a
+# general lint escape hatch.
 set -euo pipefail
 
 errors=0
@@ -26,9 +32,36 @@ else
     done < <(git ls-files --cached --others --exclude-standard 2>/dev/null)
 fi
 
+# Load per-file exemption patterns (bash 3.2 compatible)
+ignore_patterns=()
+if [ -f .lint-hygiene-ignore ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        '' | '#'*) continue ;;
+        esac
+        ignore_patterns+=("$line")
+    done <.lint-hygiene-ignore
+fi
+
+is_ignored() {
+    # Empty-array guard: "${arr[@]}" on an empty array is an unbound-variable
+    # error under `set -u` in bash 3.2.
+    [ "${#ignore_patterns[@]}" -eq 0 ] && return 1
+    local p pat
+    p="$1"
+    for pat in "${ignore_patterns[@]}"; do
+        # shellcheck disable=SC2254  # unquoted on purpose: glob match
+        case "$p" in
+        $pat) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 for f in "${files[@]}"; do
     [ -f "$f" ] || continue
     [ -L "$f" ] && continue # skip symlinks (AGENTS.md aliases etc.)
+    if is_ignored "$f"; then continue; fi
 
     # Skip binary files and known binary extensions
     case "$f" in

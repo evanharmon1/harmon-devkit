@@ -22,7 +22,9 @@ jobs:
        contains(github.event.issue.body, '@claude implement') ||
        (github.event.action == 'labeled' &&
         github.event.label.name == 'claude-implement'))
-    runs-on: [ "ubuntu-latest" ]
+    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
+    # default; set it to a JSON runner spec to override without a commit.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 180
     permissions:
       contents: write
