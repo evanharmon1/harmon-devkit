@@ -28,8 +28,17 @@ conflicts. For copier mechanics see [`copier-gotchas.md`](./copier-gotchas.md).
 cd <repo>
 git switch main && git pull
 git status --porcelain   # MUST be empty
-git switch -c chore/update-harmon-init
+git switch -c chore/update-harmon-init-v<X.Y.Z>   # e.g. chore/update-harmon-init-v3.20.0
 ```
+
+**Use a version-suffixed branch name.** A bare `chore/update-harmon-init` often
+already exists locally as a leftover from a prior run whose PR was
+*squash-merged* — the local branch is never deleted, and its commits look
+"unmerged" by SHA, so `git switch -c chore/update-harmon-init` aborts with
+`a branch named '…' already exists`. Suffixing the target version
+(`chore/update-harmon-init-v3.20.0`) sidesteps the collision and self-documents
+the PR. (Deleting the stale local branch also works, but is destructive — prefer
+the versioned name.)
 
 ## 1. See what's missing (read-only)
 
@@ -53,7 +62,12 @@ checks (mapping `.yml`↔`.yaml`):
 - **`MISSING`** — a template file the repo lacks entirely. This scan walks the
   whole render (it does **not** depend on the curated list), so a file the
   template added later, or one a previous hand-reconciled update dropped, can't
-  slip through silently. (`.gitkeep` dir-stubs show as benign `ABSENT`.)
+  slip through silently. (`.gitkeep` dir-stubs show as benign `ABSENT`.) Some
+  `MISSING` findings are **intentional divergences, not gaps** — see the
+  known-false-`MISSING` list in [`mode-audit.md`](./mode-audit.md) §3 (drift
+  class K) before "restoring" any of them (e.g. a repo using `.prettierrc.cjs`
+  instead of the template's `prettier.config.cjs`, a replaced terraform
+  skeleton, or a renumbered seed ADR).
 
 Together these are your reconciliation worklist for §3.
 
@@ -114,6 +128,16 @@ git -C ~/git/harmon-init diff <old>..<new> -- template/<path>
 Apply the meaningful changes into the repo's renamed file, keeping its local
 customizations. harmon-infra is the standing example (every `.yml` renamed to
 `.yaml`, so its workflows/Taskfile/lefthook always need this hand-port).
+
+**The hand-port is only needed when the skipped delta actually intersects the
+repo.** Diff the template range first (above) and check whether the change is
+gated on a copier flag the repo doesn't have. Example: for the v3.16→v3.20
+range the *only* `lefthook` change (v3.18.1, a `.meta/*.md` prettier exclude)
+lives inside the `[% if use_node %]` prettier hook — so an **iac** repo with a
+renamed `lefthook.yaml` (no `use_node`, no prettier hook) needs **no** port for
+that range even though the file was skipped. Don't assume every renamed file
+needs porting on every update; confirm the delta is non-empty *for this repo's
+answers* before hand-editing.
 
 ## 3. Reconcile conflicts (in place — no special files)
 
@@ -180,6 +204,24 @@ git checkout main -- Taskfile.yml   # restore the repo's clean pre-update file
 > reliable path (prefer it over `git checkout --ours`, which needs a real merge
 > state a copier conflict may not have).
 
+**Many near-identical blocks? Rule-resolve them, then hand-do the rest.** A
+heavily-forked repo can surface *dozens* of conflict blocks (harmon-infra: 13
+files; sommerlawn-site: 16 files, 40+ blocks). Eyeballing every one is slow and
+error-prone, and most are the **same** mechanical swap — overwhelmingly the
+v3.19.0 `CI_RUNS_ON` switch (`runs-on: [ "ubuntu-latest" ]` →
+`runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}`), which
+conflicts wherever the repo's `runs-on` spelling had drifted (`['ubuntu-latest']`
+single-quote, plain `ubuntu-latest`, …). Write a tiny throwaway resolver that
+decides **by before-side content** — take the template's "after" when the
+before-side is exactly a `runs-on:` line (adopt the switch), otherwise keep the
+repo's side — and let it clear the bulk, printing anything it doesn't recognize
+for you to hand-resolve. That isolates the genuinely-nuanced blocks (production
+URLs, fork-guards, `settings.json` merges) from the mechanical noise. **Always
+re-scan for duplicate keys afterward** (`grep` each re-listed target/key): a
+scripted or spanning take can duplicate a `Taskfile`/JSON key that also lives
+elsewhere, which `yamllint key-duplicates` / a `task --list-all` parse failure
+only catches after the fact.
+
 **The template absorbed something this repo pioneered → add/add conflict; keep
 yours.** A canonical convention repo's innovations get *generalized* and upstreamed;
 on its next update, the template's new generic version collides with the repo's
@@ -187,6 +229,29 @@ specific original (an add/add conflict on, e.g., `scripts/validate-*.mjs`). Keep
 repo's specific version (`git checkout --ours <file>`) — the generic one is for
 *other* repos. Recognise this when a file you know the repo authored shows up as a
 conflict against a near-identical-but-blander template version.
+
+**Doc/guide "after" that grows the prose → check for redundancy before adopting.**
+copier only shows you the *conflicting hunk*, not the rest of the file. When a
+template update *expands* a doc's intro (e.g. a `docs/guides/deploying.md` intro
+that grows Preview/Production/Credentials bullets), the repo often **already has**
+richer, repo-specific sections covering exactly that content further down — outside
+the conflict, so you can't see them at resolve time. Naively taking the "after"
+then leaves the template's generic summary duplicating the repo's own detailed
+sections. Before adopting an expanded doc hunk, read the whole file: if later
+sections already cover it, the right resolution is usually `git checkout main --
+<doc>` (the repo's version is richer) plus grafting any single genuinely-new line.
+
+**A template that *tightens a quality gate* is a per-repo decision — treat it like
+a conflict even when copier merges it cleanly.** When an update raises a threshold
+the repo's existing content must clear — a Lighthouse score
+(`categories:accessibility` minScore `0.85 → 1.0`, harmon-init v3.18.0), a coverage
+floor, a lint-severity bump — adopting it can turn a mechanical *sync* PR **red** on
+content the update never touched. Don't silently take the stricter value: keep the
+repo's current threshold if its content doesn't yet pass, and file the bump as
+separate content work. (Real case: sommerlawn-site's blog page scored a11y 0.92, so
+the 1.0 gate failed CI; reverting that one `lighthouserc.json` line to 0.85 kept the
+update PR clean. evanharmon-site already met 1.0, so it kept the raise — it *is*
+per-repo.) This class is doubly dangerous because the local gate misses it — see §4.
 
 **Bunch/Obsidian util targets — self-contained `bunch-add` vs. the template's
 add+install split.** The template splits the macOS-launcher helpers into
@@ -214,6 +279,17 @@ assets/diff-template.sh .   # should now show only legit customizations
 task verify
 assets/verify-applied.sh .
 ```
+
+**A green `task verify` does NOT cover the Lighthouse gates on web repos.** For
+web-astro repos the a11y/perf/SEO assertions (`lighthouserc.json`) run in the
+heavier CI `build-test` job via `task test:lighthouse` — which needs a full build
+and a served site — **not** in `task verify` (the fast lint/build/validate gate
+this skill runs). So a raised a11y gate (see §3) sails through `task verify` and
+`verify-applied.sh` locally, then fails CI's `build-test`. If the update touched
+`lighthouserc.json` or any a11y/perf threshold, either run `task test:lighthouse`
+locally (build + serve) before opening the PR, or expect CI to be the gate that
+catches a regression — and don't report "locally verified, all green" as if it
+covered Lighthouse.
 
 Walk the [`mode-audit.md`](./mode-audit.md) drift classes too — `copier update`
 refreshes templated files, but renames/moves and GitHub-side settings it cannot do.

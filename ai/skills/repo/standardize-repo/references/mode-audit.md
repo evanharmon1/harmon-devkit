@@ -309,6 +309,13 @@ wrong. The recurring ones (nearly every iac/dotfiles repo hit ≥1):
 - **Gitignored `.envrc`** — a repo that resolves `.envrc`/`.envrc.local` from an
   `.envrc.tpl` via `op inject` gitignores the resolved file, so it reads `MISSING`.
   Leave it (it's the secure pattern the template now ships).
+- **`.prettierrc.cjs` vs `prettier.config.cjs`** — a web/node repo that uses the
+  `.prettierrc.cjs` filename (higher precedence in Prettier's config search) instead
+  of the template's `prettier.config.cjs` reads as `MISSING prettier.config.cjs`. An
+  intentional filename divergence (like `.yml`/`.yaml`, drift class E), **not** a gap.
+  `copier update` correctly leaves it alone — the file is unchanged between template
+  versions, so nothing is added and no dead second config results. Confirm the repo
+  actually has a `.prettierrc*`/`prettier` package.json key, then leave it.
 
 **L. Workflow ↔ Taskfile contract.** Every `task <target>` referenced in
 `.github/workflows/*.yml` must exist in `Taskfile.yml`. CI's `lint`/`build` jobs
