@@ -43,6 +43,11 @@ node_modules/
 # Git worktrees
 .worktrees/
 
+# Design-handoff bundles (Claude Design exports) live as specs/ subdirectories
+# while being implemented and are deleted at sign-off — never committed.
+# Top-level specs/*.md (README, _template, feature specs) stay tracked.
+specs/*/
+
 # Lefthook local overrides (not committed)
 .lefthook-local.yml
 

@@ -110,7 +110,7 @@ tasks:
         if [ -n "{{.CLI_ARGS}}" ]; then
           npx --yes markdownlint-cli2 {{.CLI_ARGS}}
         else
-          npx --yes markdownlint-cli2 '**/*.md' '#.claude/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**' '#**/.terraform/**' '#**/.venv/**' '#**/.task/**'
+          npx --yes markdownlint-cli2 '**/*.md' '#.claude/**' '#specs/*/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**' '#**/.terraform/**' '#**/.venv/**' '#**/.task/**'
         fi
 
   lint:actions:
