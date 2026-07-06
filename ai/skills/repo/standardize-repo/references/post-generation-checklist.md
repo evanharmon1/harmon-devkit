@@ -122,16 +122,26 @@ push so the remote exists.
 
   - Generate a private key (`.pem`) and copy the **Client ID** (the Iv-style string on the App's settings page, not the numeric App ID).
   - **Install App** → on this org → **Only select repositories** (not "All").
-  - Set the variable + secret. **Do this by hand and do not script org-scoped
-    secret-setting** — the bulk `--repos` form *replaces* the secret's value and
-    its repo allow-list, silently evicting other repos. For a **personal-account
-    repo** the per-repo form is safe:
+  - Set the variable + secret. **Scope the secret least-privilege** to the repos
+    that use the App (`--visibility selected --repos`), not the whole org — the key
+    can act as the App (commits, PRs, releases, workflow edits). **Pipe the `.pem`
+    in**, never paste it (flattened newlines break the key):
 
     ```bash
-    # personal-account repo only; org-level should be set in the UI / non-destructively
-    gh variable set CI_APP_CLIENT_ID --repo "<org>/<repo>" --body "<client-id>"
+    # org — scope to the repos where the App is installed
+    gh secret set CI_APP_PRIVATE_KEY --org <org> \
+      --visibility selected --repos <repo-a>,<repo-b> < path/to/app.pem
+    gh variable set CI_APP_CLIENT_ID --org <org> \
+      --visibility selected --repos <repo-a>,<repo-b> --body "<client-id>"
+
+    # personal account — per-repo
     gh secret set CI_APP_PRIVATE_KEY --repo "<org>/<repo>" < path/to/app.pem
+    gh variable set CI_APP_CLIENT_ID --repo "<org>/<repo>" --body "<client-id>"
     ```
+
+    Caveat: re-running `--repos` **replaces** the list (evicting repos not in it) —
+    re-run with the full list to add a repo, or append one with `gh api --method PUT
+    /orgs/<org>/actions/secrets/CI_APP_PRIVATE_KEY/repositories/{repo_id}`.
 
   See `docs/architecture/security.md` for blast-radius and rotation notes.
 
