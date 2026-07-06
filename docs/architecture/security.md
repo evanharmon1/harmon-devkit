@@ -214,7 +214,61 @@ TODO: enumerate the tokens/secrets this repo depends on and where each lives:
 | `SNYK_TOKEN` | `task security:sast`/`sca` (optional, local-only — not in CI) | local env / 1Password | TODO |
 | TODO | TODO | TODO | TODO |
 
+### 1Password conventions (source of truth)
+
+1Password is the source of truth for every credential, consistent across orgs,
+provider accounts, and machines. The standard:
+
+- **One vault per org** (this repo: the `evanharmon1` vault). No
+  credentials in personal/shared vaults.
+- **API credentials use the 1Password "API Credential" type**, named
+  `<Provider> <scope-descriptor>` — e.g. `Cloudflare harmon-devkit-terraform`,
+  `Cloudflare R2 harmon-devkit-tfstate-rw`. One item per credential;
+  related fields live on the item rather than as separate items.
+- **Field labels match the provider's own documentation, verbatim.**
+  `Access Key ID` / `Secret Access Key` map 1:1 to AWS/S3 docs; `Account ID`
+  and `API Token` to Cloudflare's. That means you (or an agent) can go from
+  provider documentation to the 1Password item with no translation layer.
+  Don't invent generic labels (`key`, `secret`) and don't normalize to a
+  house case style (kebab-case, Title Case) — the provider's spelling wins.
+  Common results: `API Token`, `Access Key ID`, `Secret Access Key`,
+  `Default Endpoint`, `Account ID`, `App ID`, `Client ID`, `Client Secret`.
+  References must match labels exactly.
+- **Account-level identifiers** get a per-account item (e.g. `Cloudflare
+  <org>` holding `Account ID`) so identifiers have one home too.
+- **SSH keys use the 1Password SSH key type** (fields: `public key`,
+  `fingerprint`, `private key`, `passphrase`).
+- Repos consume credentials only through references or CI
+  secrets fed from these items (`op read "…" | gh secret set …`) — never by
+  copying values into other stores of record.
+
+## Remote access (SSH, Tailscale, VNC)
+
+- **Tailscale is the standard network layer** for remote access — homelab
+  hosts and remote sites join the tailnet rather than exposing ports. Its
+  OAuth client lives in the org vault (fields: `Client ID`, `Client Secret`,
+  `Tailnet ID`); scope OAuth clients narrowly (e.g. auth-key creation only)
+  and prefer ephemeral/pre-authorized keys minted from them.
+- **SSH** keys are stored as 1Password SSH-key items (see conventions above)
+  and served by the 1Password SSH agent where possible, so private keys never
+  sit loose on disk.
+- **VNC / screen sharing: Screens 5 is the standard client**, connecting over
+  the tailnet (never an exposed VNC port); any credential it needs lives on
+  the relevant 1Password item.
+
 ## Rotation & incident notes
 
-TODO: how and how often each secret rotates; what to do if one leaks (revoke,
-re-scope, rotate, scrub history). Record notable past incidents here.
+- **Cadence**: long-lived provider tokens carry a 1-year TTL; set a calendar
+  reminder ~1 week before expiry. Expired-token symptom: the CI jobs using
+  the credential fail with authentication errors.
+- **Rotate create → verify → revoke, never delete-first**: create the
+  replacement, update 1Password and the Actions secret, prove it works (a
+  trivial PR whose checks exercise the credential), then revoke the old one.
+  Paired credentials (e.g. R2 key pairs) rotate as a unit — deleting the old
+  token first cuts off everything that still uses it.
+- **If a secret leaks**: revoke it at the provider immediately, rotate per
+  above, re-scope downward if it was broader than needed, and check the
+  provider's audit log for actions taken since the exposure. An allowlist
+  entry stops the scanner re-flagging — it does not un-expose the key.
+
+Record notable past incidents here.
