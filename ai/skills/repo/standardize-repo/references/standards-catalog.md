@@ -381,6 +381,22 @@ Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKE
 - **Secrets via 1Password** locally (`op run`/`op inject`); CI reads Actions
   secrets. **`.env` is fully gitignored** (`.env`, `**/.env`, `.env.*`); commit
   only `.env.example`-style files. **[copier]** gitignore; **[manual]** wiring.
+- **1Password credential naming (source of truth).** Authoritative convention is
+  in the generated repo's `docs/architecture/security.md` ("1Password
+  conventions"); when creating a repo's credentials, follow it verbatim:
+  - **One vault per org** (the `<org>` vault) — nothing in personal/shared vaults.
+  - **API credentials** use 1Password's **API Credential** type, named
+    `<Provider> <scope-descriptor>` — e.g. `Cloudflare <slug>-terraform`,
+    `Cloudflare R2 <slug>-tfstate` (Terraform state backend), and **`Cloudflare
+    <slug>-github-actions`** for a per-site Workers-deploy token
+    (`CLOUDFLARE_API_TOKEN`). One token per site/purpose (least privilege), one
+    1Password item per credential.
+  - **Account-level identifiers** get their own per-account item — e.g. `Cloudflare
+    <org>` holding `Account ID` (drives the `CLOUDFLARE_ACCOUNT_ID` Actions var).
+  - **Field labels match the provider's docs verbatim** (`Account ID`, `API Token`,
+    `Access Key ID`, `Secret Access Key`, `Default Endpoint`) — don't invent
+    generic labels (`key`, `secret`) or re-case them; references must match exactly.
+  **[manual]** — a human creates credentials; the agent never fabricates them.
 
 ### 1.9 Dependency management (Renovate)
 

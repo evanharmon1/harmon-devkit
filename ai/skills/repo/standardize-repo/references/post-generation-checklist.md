@@ -78,7 +78,10 @@ push so the remote exists.
 - [ ] **[human-only]** Set Actions **secret** `CLAUDE_CODE_OAUTH_TOKEN`
       (consumed by `claude-plan.yml`, `claude-implement.yml`,
       `claude-review.yml`). This is a real credential the agent must not invent;
-      a human pastes the token. Once you have it:
+      a human generates it with `claude setup-token` and pastes it. It **must**
+      start `sk-ant-oat01-` (an OAuth token billed to the Claude **subscription**)
+      — **not** `sk-ant-api03-` (a raw API key billed at pay-as-you-go **API
+      rates**, an easy and expensive mix-up). Once you have it:
 
   ```bash
   # human supplies the token value; do not fabricate it
@@ -122,6 +125,9 @@ push so the remote exists.
 
   - Generate a private key (`.pem`) and copy the **Client ID** (the Iv-style string on the App's settings page, not the numeric App ID).
   - **Install App** → on this org → **Only select repositories** (not "All").
+    **Creating the App is not enough:** an App with credentials set but *not
+    installed* on the repo makes `actions/create-github-app-token` fail at runtime
+    with a **404** (`Not Found`). This is the single easiest step to miss.
   - Set the variable + secret. **Scope the secret least-privilege** to the repos
     that use the App (`--visibility selected --repos`), not the whole org — the key
     can act as the App (commits, PRs, releases, workflow edits). **Pipe the `.pem`
@@ -142,6 +148,12 @@ push so the remote exists.
     Caveat: re-running `--repos` **replaces** the list (evicting repos not in it) —
     re-run with the full list to add a repo, or append one with `gh api --method PUT
     /orgs/<org>/actions/secrets/CI_APP_PRIVATE_KEY/repositories/{repo_id}`.
+
+  > **Free-org caveat:** org-level Actions variables/secrets only reach **private**
+  > repos on GitHub **Team/Enterprise**. On a **Free** org they read *empty* in a
+  > private repo's workflows — a silent failure (e.g. an empty `CLOUDFLARE_ACCOUNT_ID`
+  > made Terraform plan a resource *replacement*). On a Free org, set org-wide values
+  > (including `CI_APP_*`) **per-repo** instead. Public repos are unaffected.
 
   See `docs/architecture/security.md` for blast-radius and rotation notes.
 
@@ -197,17 +209,35 @@ The template ships conventions, not an application. Scaffold the framework that
 matches `<project_type>`:
 
 - [ ] **[scriptable via gh]** (`web-astro`) Scaffold Astro and add the standard
-      stack:
+      stack. **Scaffold BEFORE the first push** when the repo deploys to Cloudflare
+      Workers: the pre-push hook runs `astro check`, which fails on a bare repo with
+      no app — so scaffold on a branch, fast-forward it into `main`, *then*
+      `gh repo create --push` (never `--no-verify`).
 
   ```bash
   pnpm create astro@latest . --template minimal
   pnpm add -D @tailwindcss/vite vitest
+  pnpm add @astrojs/react react react-dom   # if using React islands (the standard stack)
   pnpm add zod lucide
+  # install the plugins the shipped eslint.config.js + prettier config expect:
+  pnpm add -D eslint @eslint/js typescript-eslint eslint-plugin-astro globals
+  pnpm add -D prettier prettier-config-standard prettier-plugin-astro prettier-plugin-tailwindcss
   ```
 
   Then move lint tooling (prettier, eslint, markdownlint-cli2, @commitlint/cli)
   into `devDependencies` and switch the generated `Taskfile.yml`'s `npx --yes`
   calls to `pnpm exec`. Review `lighthouserc.json` URLs once routes exist.
+
+  Build-script approvals + the esbuild security floor already ship in
+  `pnpm-workspace.yaml` (`allowBuilds: esbuild, sharp`, plus `workerd` when
+  deploying to Workers; `overrides: esbuild >=0.28.1`) — add any other packages
+  your deps need to `allowBuilds`, not the `package.json` `pnpm` field (pnpm 10+
+  ignores it).
+
+  > **Cloudflare Workers deploy:** bootstrap the Worker **once** before PR
+  > previews work. A preview (`wrangler versions upload`) requires the Worker to
+  > already exist, so run the production deploy first (Actions → *Release Please*
+  > → *Run workflow* on `main`). See the generated `docs/guides/deploying.md`.
 
 - [ ] **[scriptable via gh]** (`web-app`) Scaffold a TanStack Start app (or
       vite + react) and add the standard stack:

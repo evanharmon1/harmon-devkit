@@ -128,6 +128,28 @@ If you left the side-effectful answers at their `no` defaults (the CI-safe,
 recommended path for unattended generation), only steps 1–2 run and you finish
 setup manually in the next section.
 
+## 4a. Normalize `_src_path` (local-path renders) — REQUIRED for updatability
+
+When you rendered from a **local checkout** (`copier copy ~/git/harmon-init …`),
+copier records that machine-local path as `_src_path` in the generated
+`.copier-answers.yml`, and the auto-run genesis commit (§4, task 2) captures it.
+A relative/local `_src_path` makes a later `copier update` abort with *"Updating
+is only supported in git-tracked templates"* (`copier-gotchas.md` §8) — the repo
+can pass every gate yet never accept a template update. Rewrite it to the
+canonical GitHub URL and fold the fix into the genesis commit **before the first
+push**:
+
+```bash
+cd <dest>
+yq -i '._src_path = "https://github.com/evanharmon1/harmon-init"' .copier-answers.yml
+git add .copier-answers.yml && git commit --amend --no-edit   # fold into the genesis scaffold commit
+```
+
+Skip this only if you rendered from the GitHub URL directly (then `_src_path` is
+already the URL). If the remote was **already** created/pushed (you set
+`github_remote_create=true`), don't amend — make it a normal follow-up commit
+instead. Always verify: `grep _src_path .copier-answers.yml` should show the URL.
+
 ## 5. After generation — local setup & self-check
 
 ```bash
