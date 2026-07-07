@@ -132,7 +132,12 @@ while IFS= read -r f; do
         echo "DRIFT    ${rv#"$target"/}"
         drift=1
         drift_count=$((drift_count + 1))
-        [ "$show" -eq 1 ] && diff -u "$rv" "$render/$f" | sed 's/^/    /'
+        if [ "$show" -eq 1 ]; then
+            # `diff` exits 1 when files differ (they always do here); `|| true`
+            # keeps that from aborting the loop under `set -euo pipefail`, so
+            # --show prints EVERY drifting file, not just the first.
+            diff -u "$rv" "$render/$f" | sed 's/^/    /' || true
+        fi
     fi
 done <"$manifest"
 

@@ -231,8 +231,9 @@ matches `<project_type>`:
   Build-script approvals + the esbuild security floor already ship in
   `pnpm-workspace.yaml` (`allowBuilds: esbuild, sharp`, plus `workerd` when
   deploying to Workers; `overrides: esbuild >=0.28.1`) — add any other packages
-  your deps need to `allowBuilds`, not the `package.json` `pnpm` field (pnpm 10+
-  ignores it).
+  your deps need to `allowBuilds` (a pnpm 11+ setting — it replaced pnpm 10's
+  `onlyBuiltDependencies`, so the shipped file needs pnpm 11+), not the
+  `package.json` `pnpm` field (pnpm 10+ ignores it).
 
   > **Cloudflare Workers deploy:** bootstrap the Worker **once** before PR
   > previews work. A preview (`wrangler versions upload`) requires the Worker to
