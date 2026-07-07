@@ -39,6 +39,11 @@ guard in `task lint:design` fails the build on arbitrary color utilities like `b
 automatically in dark mode and are contrast-checked by the gate; a hardcoded color does neither, so it
 silently breaks theming _and_ accessibility the moment someone toggles the theme.
 
+For a surface that must **not** theme — constant chrome (a black nav / tooltip / toast), an always-dark
+marketing slab, a product-shot specimen — don't reach for a raw `text-white` / `bg-black`; use the
+constant `sidebar-*` tokens or a `.dark` wrapper instead. See "Surfaces that don't theme" in
+`token-reconciliation.md`.
+
 ## Icons: Lucide, named imports only
 
 - Use **Lucide** (`lucide-react`) and import **by name**:
@@ -115,6 +120,17 @@ const { href, variant = "default", size = "default", class: className } = Astro.
 
 The sweep's horizontal-overflow guard (`assets/brand-screenshots.spec.ts`) and the rendered checks
 are what catch this class of bug — another reason not to skip Phase 5 on "it builds".
+
+## Astro: `@lucide/astro` and typechecking
+
+- **`@lucide/astro` icons take `stroke-width` (kebab-case), not React's `strokeWidth`.** In a `.tsx`
+  island it's `<Camera strokeWidth={1.75} />`; in an `.astro` template it's
+  `<Camera stroke-width={1.75} />`. The React prop name is a **typecheck error** in Astro — an easy miss
+  when porting the same icon usage across an island and a template.
+- **`astro check` only typechecks files reachable from a route.** A component you've written but not yet
+  imported into a page isn't checked — so a whole batch of new `src/components/ui/*.tsx` can read as
+  "green" while it isn't. Run `pnpm exec tsc --noEmit` to typecheck components directly as you build,
+  before they're wired into `/brand` or a page.
 
 ## Then
 

@@ -51,28 +51,34 @@ pnpm add -D @playwright/test
 npx playwright install            # download the chromium/firefox/webkit binaries (once)
 ```
 
-Then write `playwright.config.ts` with the projects below and add the `verify:browsers` task from
-`assets/Taskfile.design.yml`, so the cross-engine sweep runs like every other gate.
+Then drop in the bundled **`assets/playwright.config.ts`** (copy it to the repo root) and add the
+`verify:browsers` task from `assets/Taskfile.design.yml`, so the cross-engine sweep runs like every
+other gate. It wires `baseURL` + a `webServer` + the engine × device matrix; you fill two spots — the
+build/serve command + port, and the device set if you want different targets:
 
 ```ts
-// playwright.config.ts — baseURL + dev server, then the cross-engine × device matrix
-import { defineConfig, devices } from "@playwright/test";
+// assets/playwright.config.ts (excerpt) — build & serve, then the cross-engine × device matrix
+const PORT = 4321; // Astro preview; Vite preview 4173
 export default defineConfig({
-  use: { baseURL: "http://localhost:5173" }, // your dev server (Vite 5173, Astro 4321, …)
-  webServer: {
-    command: "pnpm dev",
-    url: "http://localhost:5173",
-    reuseExistingServer: true,
-  },
+  testDir: "tests",
+  use: { baseURL: `http://localhost:${PORT}` },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
     { name: "firefox", use: { ...devices["Desktop Firefox"] } },
     { name: "webkit", use: { ...devices["Desktop Safari"] } },
-    { name: "mobile-safari", use: { ...devices["iPhone 14"] } },
-    { name: "tablet", use: { ...devices["iPad (gen 7) landscape"] } },
+    { name: "Mobile Safari", use: { ...devices["iPhone 13"] } }, // iOS WebKit
+    { name: "Mobile Chrome", use: { ...devices["Pixel 5"] } }, // Android Chromium
   ],
+  webServer: {
+    command: `pnpm build && pnpm preview --port ${PORT}`, // production build ≈ what ships
+    url: `http://localhost:${PORT}`,
+    reuseExistingServer: !process.env.CI,
+  },
 });
 ```
+
+Serve the **production build** (`build && preview`), not the dev server — no HMR/error-overlay flicker,
+so screenshots and the horizontal-overflow guard are stabler and truer to what ships.
 
 For a quick ad-hoc capture without a test file, the Playwright CLI takes one screenshot per device:
 

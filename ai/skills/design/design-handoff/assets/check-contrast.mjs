@@ -4,7 +4,8 @@
 // WHAT: parses the semantic color tokens out of a globals.css (the `@theme`, `:root` and
 // `.dark` blocks, cascade-merged so dark inherits what it doesn't redefine), resolves
 // `var(--x)` indirection to the real colors, then proves every foreground/background pair
-// the design relies on meets WCAG AA in BOTH themes. It is the *static* half of the dual contrast gate — necessary but not
+// the design relies on — including the status `-text` roles it auto-discovers and checks on
+// the light grounds — meets WCAG AA in BOTH themes. It is the *static* half of the dual contrast gate — necessary but not
 // sufficient (it sees the tokens, not the color that actually paints; a runtime layer like
 // the Tailwind Typography `.prose` plugin can still override a token). Always pair it with the
 // rendered-page measurement in Phase 5. See references/accessibility-verification.md.
@@ -205,13 +206,37 @@ const TEXT_PAIRS = [
 ];
 
 // REPO-SPECIFIC text pairs — extend when the design renders text on grounds
-// beyond the shadcn defaults (a brand marquee, a footer well, muted text on a
-// raised surface, constant on-dark helpers). Names are token names WITHOUT
-// the leading `--`; @theme constants use their full name (e.g. "color-blue").
-// Example (a site with a constant blue marquee + secondary text on cards):
-//   ["paper-2", "muted-fg"],
+// beyond the shadcn defaults AND beyond the auto-discovered `-text` roles below
+// (a brand marquee, a footer well, constant on-dark chrome helpers). Names are
+// token names WITHOUT the leading `--`; @theme constants use their full name
+// (e.g. "color-blue"). Example (a constant blue marquee + an on-dark helper):
 //   ["color-blue", "color-on-dark-soft"],
 const EXTRA_TEXT_PAIRS = [];
+
+// AUTO-DISCOVERED text pairs. The skill's core rule is "status text on light uses
+// the `-text` role, never the bright fill" — so every `*-text` token
+// (success-text, info-text, warning-text, destructive-text, …) is proven as text
+// on the common light grounds (background + card) BY DEFAULT, not only when the
+// operator remembers to hand-fill EXTRA_TEXT_PAIRS. muted-foreground gets the same
+// treatment (it renders on the page and on cards, not just the muted surface).
+// This is what catches a `-text` role that's AA on paper (#fff) but sub-AA on a
+// warm/tinted page background — a real failure the fixed default pairs miss.
+function autoTextPairs(tokens) {
+  const pairs = [];
+  const on = (surface, fg) => {
+    if (tokens.has(surface) && tokens.has(fg)) pairs.push([surface, fg]);
+  };
+  for (const name of tokens.keys()) {
+    if (name.startsWith("color-")) continue; // skip the @theme mirror (var()s back → dupes)
+    if (/-text$/.test(name)) {
+      on("background", name);
+      on("card", name);
+    }
+  }
+  on("background", "muted-foreground");
+  on("card", "muted-foreground");
+  return pairs;
+}
 
 // UI/non-text pairs: reported at 3:1 but warn-only (subtle dividers are legitimately faint).
 const UI_PAIRS = [
@@ -260,8 +285,15 @@ function auditTheme(label, tokens) {
     rows.push({ kind, status, pair: `${fgName} / ${bgName}`, ratio, need });
   };
 
-  for (const [bg, fg] of TEXT_PAIRS) evaluate(bg, fg, 4.5, "text");
-  for (const [bg, fg] of EXTRA_TEXT_PAIRS) evaluate(bg, fg, 4.5, "text");
+  // Text pairs from all three sources (fixed defaults, repo-specific, and the
+  // auto-discovered `-text` roles), de-duplicated on a `bg|fg` key.
+  const seen = new Set();
+  for (const [bg, fg] of [...TEXT_PAIRS, ...EXTRA_TEXT_PAIRS, ...autoTextPairs(tokens)]) {
+    const key = `${bg}|${fg}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    evaluate(bg, fg, 4.5, "text");
+  }
   for (const [bg, fg] of UI_PAIRS) evaluate(bg, fg, 3.0, "ui");
   return { label, rows, failures };
 }
