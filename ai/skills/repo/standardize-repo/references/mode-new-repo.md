@@ -170,6 +170,17 @@ expected artifacts are present (e.g. `Taskfile.yml`, `lefthook.yml`, the
 `AGENTS.md` symlinks, `.github/workflows/`). Investigate any failure before
 proceeding.
 
+**`web-app` / `web-astro` are conventions-only stubs.** A fresh render ships the
+DevOps tooling but **no application framework** — there is no `package.json`
+until you scaffold one (`docs/CHECKLIST.md` §3: `pnpm create @tanstack/start` for
+`web-app`, `pnpm create astro` for `web-astro`). This is expected, not a broken
+scaffold: the framework-scaffolding step is the operator's next action, and the
+lint/typecheck/build tasks all skip cleanly in this pre-framework window so
+`task verify` stays green until then. (If you are on a template *older* than
+harmon-init's build-guard fix, `task verify` / CI's build step may go red at
+`pnpm build` until the framework is added — scaffold the app to clear it, or pull
+the latest template.)
+
 ## 6. Hand off — GitHub setup
 
 Finish remote/GitHub configuration via the generated checklist and this skill's
