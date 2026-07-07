@@ -106,6 +106,13 @@ Each job mints a short-lived (1h) installation token at runtime via
 Set both once as **org-level** Actions variable + secret (every repo in the org
 inherits them); for a personal-account repo, set them per-repo.
 
+> **Free-org caveat:** org-level Actions variables/secrets only reach **private**
+> repos on GitHub **Team/Enterprise**. On a **Free** org they resolve to *empty*
+> in a private repo's workflows — a silent failure (e.g. an empty
+> `TF_VAR_cloudflare_account_id` makes Terraform plan a resource *replacement*).
+> On a Free org, set org-wide values **per-repo** instead. Public repos are
+> unaffected.
+
 ### Creating the `evanharmon1-ci` App (once per org)
 
 Create the App **by hand.** GitHub's app-manifest ("one-click") flow only
@@ -210,9 +217,15 @@ TODO: enumerate the tokens/secrets this repo depends on and where each lives:
 | Secret / variable | Used by | Stored in | Rotation |
 |---|---|---|---|
 | `CI_APP_CLIENT_ID` (var) + `CI_APP_PRIVATE_KEY` (secret) | release-please, claude-* | repo or org Actions variable + secret | rotate App key per policy |
-| `CLAUDE_CODE_OAUTH_TOKEN` | claude-* workflows | repo Actions secret | TODO |
+| `CLAUDE_CODE_OAUTH_TOKEN` | claude-* workflows | repo Actions secret | re-run `claude setup-token` |
 | `SNYK_TOKEN` | `task security:sast`/`sca` (optional, local-only — not in CI) | local env / 1Password | TODO |
 | TODO | TODO | TODO | TODO |
+
+> **`CLAUDE_CODE_OAUTH_TOKEN` must be an OAuth token, not an API key.** Generate
+> it with `claude setup-token`; the value starts **`sk-ant-oat01-`** and bills the
+> claude-* workflows to your Claude **subscription**. A raw API key
+> (**`sk-ant-api03-`**) also authenticates but bills at pay-as-you-go **API
+> rates** — an easy, expensive mix-up. Check the prefix before saving the secret.
 
 ### 1Password conventions (source of truth)
 
