@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.4.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.3.1...v0.4.0) (2026-07-07)
+
+
+### Features
+
+* **design-handoff:** harden the skill from a live handoff run ([#74](https://github.com/evanharmon1/harmon-devkit/issues/74)) ([b0d12d1](https://github.com/evanharmon1/harmon-devkit/commit/b0d12d1a43281fe4cf597c30e9932c00d03c4803))
+
 ## [0.3.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.3.0...v0.3.1) (2026-07-07)
 
 
