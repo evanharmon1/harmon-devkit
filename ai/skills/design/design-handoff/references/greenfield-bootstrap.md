@@ -114,14 +114,53 @@ pnpm dlx shadcn@latest init -y -b radix -p nova   # components.json + aliases fo
   design system, components, accessibility, UX). A stub is fine now; it grows as the design lands.
 - **`/brand`** — create the route stub now; build it out in Phase 3 (`brand-page.md`).
 
+## Wire the theme mechanism (the verification gates depend on it)
+
+`.dark` mode isn't optional plumbing here: the bundled `measure-rendered-contrast.mjs` and
+`brand-screenshots.spec.ts` both drive the site by writing a `theme` key to `localStorage` and toggling
+a `.dark` class on `<html>`. Scaffold that mechanism now, or Phase 5 has nothing to drive and the
+`/brand` toggle won't work.
+
+- **No-flash boot script** — set the class **before first paint** from the stored choice, falling back
+  to the OS preference (no flash of the wrong theme; islands hydrate in the right one). Inline it in
+  `<head>` (Astro: `<script is:inline>`; Vite: in `index.html` before the app mounts):
+
+  ```html
+  <script>
+    ;(() => {
+      try {
+        const stored = localStorage.getItem("theme");
+        const dark = stored ? stored === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.classList.toggle("dark", dark);
+      } catch {} // storage blocked → CSS default. Use empty `catch {}` (optional
+      // catch binding), NOT `catch (e) {}` — an unused binding trips eslint.
+    })();
+  </script>
+  ```
+
+- **A `ThemeToggle` island** flips the class and persists the choice under the **same** key:
+
+  ```ts
+  const next = !document.documentElement.classList.contains("dark");
+  document.documentElement.classList.toggle("dark", next);
+  try { localStorage.setItem("theme", next ? "dark" : "light"); } catch {}
+  ```
+
+- **Keep the key in sync.** Boot script, toggle, and the assets all use `THEME_STORAGE_KEY = "theme"` —
+  rename it and you must change `measure-rendered-contrast.mjs` and `brand-screenshots.spec.ts` too, or
+  the Phase 5 gates drive the wrong theme.
+
 ## Wire the quality gates
 
-- Copy `assets/check-contrast.mjs` (from this skill) into the repo at `scripts/check-contrast.mjs`. It
-  is zero-dependency — it needs only Node, no install.
+- Copy `assets/check-contrast.mjs` **and** `assets/check-off-palette.sh` into `scripts/` — the two
+  halves of `lint:design` (`chmod +x` the shell one). Both are zero-dependency: Node and `grep`, no
+  install.
+- Copy `assets/playwright.config.ts` to the repo root and `assets/brand-screenshots.spec.ts` to
+  `tests/` for the Phase 5 cross-browser sweep.
 - Merge `assets/Taskfile.design.yml`'s tasks into the repo's `Taskfile.yml` (create missing ones):
-  `lint:design` (the static contrast + off-palette gate), `ingest:design`, and either a
-  `verify:design` aggregator or — preferably — add `lint:design` to the repo's existing `verify`/
-  `check` deps so the design gate runs on every verification pass.
+  `lint:design` (the static contrast + off-palette gate), `ingest:design`, `verify:browsers`,
+  `verify:contrast`, and either a `verify:design` aggregator or — preferably — add `lint:design` to the
+  repo's existing `verify`/`check` deps so the design gate runs on every verification pass.
 
 A note on the starter tokens: shadcn's default `muted-foreground` sits right at the AA borderline, so
 `task lint:design` may flag it on the raw defaults. That's expected — tightening it is one of the

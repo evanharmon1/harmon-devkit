@@ -2,7 +2,8 @@
 #
 # The design-handoff skill merges these into the TARGET repo's Taskfile.yml when they're
 # missing. They assume:
-#   - check-contrast.mjs has been copied into the target repo at scripts/check-contrast.mjs
+#   - check-contrast.mjs and check-off-palette.sh have been copied into the target repo
+#     at scripts/ (chmod +x the .sh)
 #   - the canonical tokens live in src/styles/globals.css
 # Adjust the vars below if the repo differs. If the repo already has `verify`/`check`, add
 # `lint:design` to its deps instead of using the aggregator at the bottom (see the comment).
@@ -12,37 +13,40 @@ version: "3"
 vars:
   GLOBALS: src/styles/globals.css
   CONTRAST_SCRIPT: scripts/check-contrast.mjs
+  OFF_PALETTE_SCRIPT: scripts/check-off-palette.sh
 
 tasks:
   lint:design:
     desc: Static design gate — WCAG-AA token contrast (both themes) + off-palette scan
     cmds:
-      # 1. Static contrast: parses globals.css, fails on any sub-AA text pair in :root or .dark.
+      # 1. Static contrast: parses globals.css, fails on any sub-AA text pair in
+      #    :root or .dark — including the auto-discovered `-text` status roles.
       - node {{.CONTRAST_SCRIPT}} {{.GLOBALS}}
-      # 2. Off-palette guard: components must style with semantic tokens, never arbitrary color
-      #    literals. Flags Tailwind arbitrary-color utilities (bg-[#…], text-[oklch(…)], …).
-      #    `! grep` => the task fails when a match is found, passes when there are none.
-      - >-
-        ! grep -rEn --include=*.ts --include=*.tsx --include=*.jsx --include=*.astro
-        '(bg|text|border|fill|stroke|ring|from|via|to|outline|decoration|accent|caret|shadow)-\[(#|rgb|oklch|hsl)'
-        src 2>/dev/null
+      # 2. Off-palette guard: components must style with semantic tokens, never
+      #    arbitrary color literals. Lives in a script (not an inline grep) so it's
+      #    shellcheck-covered and keeps this cmds: entry trivial.
+      - ./{{.OFF_PALETTE_SCRIPT}} src
 
   ingest:design:
-    desc: Decompress a Claude Design handoff .tar.gz into specs/
+    desc: Decompress a Claude Design handoff (.tar.gz or .zip) into specs/
     vars:
       DEST: '{{.DEST | default "specs"}}'
     requires:
       vars: [BUNDLE]
     cmds:
       - mkdir -p {{.DEST}}
-      - tar -xzf {{.BUNDLE}} -C {{.DEST}}
+      # Handle both shapes the export ships as — a .tar.gz (older) or a .zip
+      # (current Claude Design). `tar -xf` auto-detects gzip; unzip is the fallback
+      # for a .zip on systems whose tar can't read it (GNU tar).
+      - tar -xf {{.BUNDLE}} -C {{.DEST}} 2>/dev/null || unzip -q -o {{.BUNDLE}} -d {{.DEST}}
       - cmd: echo "Extracted to {{.DEST}}/ — open README.md first (the 'CODING AGENTS READ THIS FIRST' file), then chats/, then the HTML."
         silent: true
 
   verify:browsers:
     desc: Cross-browser/viewport screenshot sweep (Playwright — Chromium/Firefox/WebKit × devices)
     # Requires @playwright/test and `npx playwright install` (the skill provisions both if missing),
-    # plus a baseURL/webServer in playwright.config.ts. Runs the bundled brand-screenshots.spec.ts —
+    # plus a baseURL/webServer in playwright.config.ts (copy the bundled assets/playwright.config.ts).
+    # Runs the bundled brand-screenshots.spec.ts —
     # the route × theme × engine/device sweep that captures the Phase 5 matrix. Scoped to the spec
     # file so it doesn't re-run the repo's whole e2e suite.
     cmds:
