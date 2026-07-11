@@ -5,10 +5,9 @@
 # `.skills-sync.yaml`) and this script materialises exactly those skill
 # categories, FLATTENED, into a destination directory, stamped with provenance.
 #
-# This file is meant to be COPIED into a consumer repo's `scripts/` (it is also
-# unit-tested here, in harmon-devkit, against a throwaway local source repo).
-# See templates/skills-sync/ for the manifest, Taskfile, CI, and Lefthook
-# snippets that go with it.
+# Canonical home: harmon-init's template (rendered into every harmon-init repo);
+# unit-tested in harmon-devkit (scripts/test-skills.sh). Change it there, not in
+# a generated repo — local edits are overwritten on the next `copier update`.
 #
 # Usage:
 #   sync-skills.sh sync            [MANIFEST]   # vendor the pinned skills
@@ -69,7 +68,9 @@ vendor_into() {
 
     clone="$WORKDIR/devkit"
     rm -rf "$clone"
-    git clone --quiet --depth 1 --branch "$ref" "$src_repo" "$clone" ||
+    # Pinned by tag -> the clone lands in detached HEAD by design; silence the
+    # advice so it doesn't clutter CI logs.
+    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ref" "$src_repo" "$clone" ||
         die "git clone of $src_repo @ $ref failed (bad ref, or no read access?)"
     resolved="$(git -C "$clone" rev-parse HEAD)"
 
@@ -79,24 +80,22 @@ vendor_into() {
     rm -rf "$dest"
     mkdir -p "$dest"
 
-    vendored_any=0
     while IFS= read -r cat; do
         [ -n "$cat" ] || continue
         catdir="$skills_src/$cat"
         [ -d "$catdir" ] || die "category '$cat' missing in $src_repo @ $ref"
+        # A category may legitimately be empty (e.g. 'universal' before it has
+        # skills) — vendor whatever SKILL.md-bearing dirs it holds, if any.
         for skilldir in "$catdir"/*/; do
             [ -d "$skilldir" ] || continue           # empty category: glob stayed literal
             [ -f "${skilldir}SKILL.md" ] || continue # skip drafts/placeholders (no SKILL.md)
             name="$(basename "$skilldir")"
             [ -e "$dest/$name" ] && die "duplicate skill name '$name' across categories (dest is flattened)"
             cp -R "${skilldir%/}" "$dest/$name"
-            vendored_any=1
         done
     done <<EOF
 $(manifest_get '.categories[]')
 EOF
-
-    [ "$vendored_any" -eq 1 ] || die "no skills vendored — check 'categories' in $MANIFEST"
 
     {
         echo "# VENDORED from harmon-devkit — DO NOT EDIT HERE."
@@ -118,9 +117,15 @@ cmd_sync() {
 
 cmd_verify() {
     require_tools
-    WORKDIR="$(mktemp -d)"
     real="$(manifest_get '.dest')"
-    [ -d "$real" ] || die "no vendored skills at '$real' — run 'task sync:skills' first"
+    # Fresh scaffold / not synced yet: no provenance means nothing to drift-check.
+    # Skip cleanly (no clone) so a new repo's CI and pre-push stay green until the
+    # first `task sync:skills`.
+    if [ ! -f "$real/.SKILLS_PROVENANCE" ]; then
+        echo "verify:skills: not synced yet — skipping (run 'task sync:skills')"
+        return 0
+    fi
+    WORKDIR="$(mktemp -d)"
     vendor_into "$WORKDIR/vendor"
     if diff -r "$real" "$WORKDIR/vendor" >/dev/null 2>&1; then
         echo "✓ vendored skills in sync with $(manifest_get '.source.ref')"
@@ -135,10 +140,14 @@ cmd_verify() {
 cmd_verify_offline() {
     [ -f "$MANIFEST" ] || die "manifest '$MANIFEST' not found"
     command -v yq >/dev/null 2>&1 || die "yq is required"
-    ref="$(manifest_get '.source.ref')"
     dest="$(manifest_get '.dest')"
     prov="$dest/.SKILLS_PROVENANCE"
-    [ -f "$prov" ] || die "no provenance at '$prov' — run 'task sync:skills'"
+    # Not synced yet -> skip cleanly (keeps fresh scaffolds green).
+    if [ ! -f "$prov" ]; then
+        echo "verify:skills:offline: not synced yet — skipping (run 'task sync:skills')"
+        return 0
+    fi
+    ref="$(manifest_get '.source.ref')"
     if grep -q "^# ref: ${ref} " "$prov"; then
         echo "✓ vendored ref matches manifest ($ref) — offline check"
     else

@@ -11,6 +11,8 @@ wants in a small `.skills-sync.yaml` manifest. Pure `git` + `task` + `yq` — no
 submodules, no package registry, tool-agnostic (skills stay portable `SKILL.md`
 files).
 
+> **If your repo is generated from [harmon-init](https://github.com/evanharmon1/harmon-init), skills-sync is already built in** — the engine, manifest, tasks, CI drift check, and pre-push hook are rendered for you (categories seeded from your `project_type`). Just set the manifest `ref` and run `task sync:skills`. This bundle is the reference for **manually** adopting skills-sync in a repo that does _not_ use harmon-init.
+
 ## How it works
 
 - **Source of truth.** Skills live in harmon-devkit under `ai/skills/<category>/<skill>/SKILL.md`, grouped by category (`universal`, `backend`, `frontend`, `infra`, `mobile`, `repo`).
@@ -64,7 +66,7 @@ Requires `yq` ([mikefarah/yq](https://github.com/mikefarah/yq)) and `git` on `PA
 
 ## CI drift check
 
-Add a job that fails a PR introducing skill drift. The message tells the dev to re-sync. Pin actions by SHA per your conventions.
+Add a job that fails a PR introducing skill drift. The message tells the dev to re-sync. harmon-devkit is **public**, so cloning it needs no token. Pin actions by SHA per your conventions.
 
 ```yaml
 skills-drift:
@@ -79,17 +81,10 @@ skills-drift:
         sudo curl -sSL -o /usr/local/bin/yq \
           https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
         sudo chmod +x /usr/local/bin/yq
-    - name: Allow read access to the private harmon-devkit
-      env:
-        DEVKIT_READ_TOKEN: ${{ secrets.DEVKIT_READ_TOKEN }}
-      run: |
-        git config --global \
-          url."https://x-access-token:${DEVKIT_READ_TOKEN}@github.com/".insteadOf \
-          "https://github.com/"
     - run: task verify:skills
 ```
 
-`verify:skills` vendors into a temp directory outside the repo and diffs — it has no side effects on the working tree, so **no `.gitignore` entry is needed**.
+`verify:skills` vendors into a temp directory outside the repo and diffs — it has no side effects on the working tree, so **no `.gitignore` entry is needed**. It also skips cleanly until the first `task sync:skills`, so a repo that hasn't synced yet stays green.
 
 ## Git hook
 
@@ -117,10 +112,11 @@ Skills are authored in harmon-devkit, not here. See
 unique-name-across-categories rule, and how to add one. After it ships in a
 harmon-devkit release, bump your `ref` and re-sync.
 
-## Auth for the private harmon-devkit
+## Auth
 
-- **Local:** your normal git credentials already cover it — no change.
-- **CI:** store a read-only, fine-grained token scoped to harmon-devkit as the secret `DEVKIT_READ_TOKEN`, injected via `insteadOf` (see the CI job above).
+harmon-devkit is **public**, so cloning it needs no credentials — locally or in
+CI. No token, no secret, no `insteadOf` config. (If it were ever made private,
+you'd add a read-only token and inject it via `insteadOf`.)
 
 ## Why this shape
 
