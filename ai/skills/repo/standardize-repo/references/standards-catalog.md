@@ -440,7 +440,16 @@ install the Renovate GitHub App on the repo. Conventions:
   rules above are the harness backstop (note: `ask` is skipped under
   `bypassPermissions`, e.g. the devcontainer bot profile — the AGENTS.md rule
   is the binding convention there). **[copier]**
-- **`.claude/skills/`** with a `.gitkeep`. **[copier]**
+- **`.claude/skills/`** — vendored shared agent skills from harmon-devkit via
+  **skills-sync**: `.skills-sync.yaml` (categories seeded from `project_type` —
+  `general`→`universal`, `web-astro`→`+frontend`, `web-app`→`+frontend,backend`,
+  `iac`→`+infra`), `scripts/sync-skills.sh`, the
+  `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
+  (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
+  until the first `task sync:skills`, so a fresh scaffold stays green. **[copier]**
+  ships the machinery + an empty `.claude/skills/` (`.gitkeep`); pinning the
+  manifest `ref` to a harmon-devkit release and running `task sync:skills` is
+  **[manual]**. harmon-devkit is public, so no token is needed. **[copier]**
 - Devcontainer ships richer `config/claude-settings.json` as managed settings (see
   1.6). **[copier]**
 - **`DESIGN.md`** — AI-facing statement of design intent (the *why*/prose rules);

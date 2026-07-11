@@ -109,6 +109,12 @@ SRC="$TMPROOT/devkit"
 git_init "$SRC"
 mkskill "$SRC/ai/skills/universal/uni-one" uni-one
 mkskill "$SRC/ai/skills/frontend/fe-one" fe-one
+# fe-one carries nested content (like the real skills' assets/ + references/).
+mkdir -p "$SRC/ai/skills/frontend/fe-one/assets" "$SRC/ai/skills/frontend/fe-one/references"
+echo "echo hi" >"$SRC/ai/skills/frontend/fe-one/assets/helper.sh"
+echo "# reference doc" >"$SRC/ai/skills/frontend/fe-one/references/doc.md"
+mkdir -p "$SRC/ai/skills/emptycat" # a present-but-empty category
+touch "$SRC/ai/skills/emptycat/.gitkeep"
 mkdir -p "$SRC/ai/skills/frontend/fe-draft" # no SKILL.md -> must be skipped on vendor
 touch "$SRC/ai/skills/frontend/fe-draft/.gitkeep"
 mkskill "$SRC/ai/skills/backend/be-one" be-one # not requested -> must NOT vendor
@@ -132,6 +138,11 @@ write_manifest v0.0.0-test universal frontend
 
 run_sync() { (cd "$CON" && bash "$SCRIPTS/sync-skills.sh" "$@"); }
 
+# Before the first sync there is no provenance -> drift checks skip cleanly.
+# This is what keeps a fresh scaffold's CI + pre-push green until first sync.
+expect_ok "verify skips cleanly before first sync (no clone)" run_sync verify
+expect_ok "verify-offline skips cleanly before first sync" run_sync verify-offline
+
 expect_ok "sync vendors the pinned ref" run_sync sync
 prov="$CON/vendored/skills/.SKILLS_PROVENANCE"
 expect_ok "requested universal skill vendored (flattened)" test -f "$CON/vendored/skills/uni-one/SKILL.md"
@@ -139,6 +150,8 @@ expect_ok "requested frontend skill vendored (flattened)" test -f "$CON/vendored
 expect_ok "unrequested category not vendored" test ! -e "$CON/vendored/skills/be-one"
 expect_ok "draft dir without SKILL.md skipped" test ! -e "$CON/vendored/skills/fe-draft"
 expect_ok "categories are flattened (no category dirs)" test ! -e "$CON/vendored/skills/universal"
+expect_ok "nested skill assets/ vendored intact" test -f "$CON/vendored/skills/fe-one/assets/helper.sh"
+expect_ok "nested skill references/ vendored intact" test -f "$CON/vendored/skills/fe-one/references/doc.md"
 expect_ok "provenance records the ref" grep -q "^# ref: v0.0.0-test " "$prov"
 expect_ok "provenance carries do-not-edit marker" grep -q "DO NOT EDIT HERE" "$prov"
 
@@ -160,6 +173,14 @@ write_manifest v0.0.0-test universal frontend # restore
 write_manifest v0.0.0-test universal nonexistent
 expect_fail "sync fails on a missing category" run_sync sync
 write_manifest v0.0.0-test universal frontend
+
+# A present-but-empty category vendors zero skills but still succeeds (e.g.
+# 'universal' before it has any skills) and still writes provenance.
+write_manifest v0.0.0-test emptycat
+expect_ok "sync succeeds with a present-but-empty category" run_sync sync
+expect_ok "provenance written even when zero skills vendored" test -f "$CON/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "verify passes on an empty (but synced) dest" run_sync verify
+write_manifest v0.0.0-test universal frontend # restore
 
 # Duplicate skill name across two requested categories -> sync fails.
 SRC2="$TMPROOT/devkit-dup"
