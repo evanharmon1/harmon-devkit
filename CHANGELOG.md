@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.5.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.4.0...v0.5.0) (2026-07-11)
+
+
+### Features
+
+* **skills-sync:** vendor & sync shared agent skills from harmon-devkit ([#76](https://github.com/evanharmon1/harmon-devkit/issues/76)) ([24ae0d0](https://github.com/evanharmon1/harmon-devkit/commit/24ae0d02ed3bbe42b616f69f6db33accc9460b32)), closes [#53](https://github.com/evanharmon1/harmon-devkit/issues/53)
+
 ## [0.4.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.3.1...v0.4.0) (2026-07-07)
 
 
