@@ -41,7 +41,7 @@ jobs:
           # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
           version: 3.51.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Install lint tools (shellcheck, shfmt, actionlint, yamllint)
+      - name: Install lint tools (shellcheck, shfmt, actionlint, yamllint, yq)
         run: |
           # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
           SHELLCHECK_VERSION=0.10.0
@@ -59,11 +59,18 @@ jobs:
           curl -sSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
             | tar -xz -C /tmp actionlint
           sudo mv /tmp/actionlint /usr/local/bin/
+          # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
+          YQ_VERSION=4.44.3
+          sudo curl -sSL -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
           pip install yamllint
       - name: Lint
         run: task check
+      - run: task validate
       - run: task test:tasks
       - run: task test:hooks
+      - run: task test:skills
       - run: task test:devcontainer:permissions
 
   security:

@@ -62,6 +62,7 @@ tasks:
       - task: validate
       - task: test:tasks
       - task: test:hooks
+      - task: test:skills
 
   # ── Quality Checks ────────────────────────────────────────────
   check:
@@ -141,7 +142,12 @@ tasks:
   validate:
     desc: Validate project config/artifacts
     cmds:
-      - 'echo "No validate steps for this project type yet — see docs/CHECKLIST.md."'
+      - task: validate:skills
+
+  validate:skills:
+    desc: Guard shared agent skills (unique names across categories, valid SKILL.md frontmatter)
+    cmds:
+      - ./scripts/verify-skills.sh
 
   guard:no-commit-to-main:
     desc: Block direct commits to main
@@ -212,6 +218,11 @@ tasks:
     desc: Round-trip the Taskfile targets the Claude hooks delegate to
     cmds:
       - ./scripts/test-hooks.sh
+
+  test:skills:
+    desc: Unit-test the skills tooling (source guard + pinned vendoring engine)
+    cmds:
+      - ./scripts/test-skills.sh
 
   # ── Security ───────────────────────────────────────────────────
   security:

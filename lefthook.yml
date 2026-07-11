@@ -27,6 +27,11 @@ pre-commit:
       run: task lint:actions
     hygiene:
       run: task lint:hygiene -- {staged_files}
+    skills:
+      # Whole-tree guard (unique names across categories, valid SKILL.md); the
+      # glob only gates WHEN it runs, so it stays off the hot path for other edits.
+      glob: "ai/skills/**"
+      run: task validate:skills
 
 commit-msg:
   commands:
