@@ -1,0 +1,11 @@
+# .skills-sync.yaml — declares which shared agent skills THIS repo vendors from
+# harmon-devkit, pinned to a tag. Copy it to your repo root, edit the categories
+# and ref, then run `task sync:skills`. See templates/skills-sync/README.md.
+source:
+  repo: https://github.com/evanharmon1/harmon-devkit.git
+  ref: v0.5.0 # pinned tag — pin to a real released harmon-devkit tag, bump deliberately
+  # path: ai/skills   # optional; where skills live in the source (this is the default)
+categories:
+  - universal
+  - frontend
+dest: .claude/skills # fully managed by sync — do not hand-edit vendored skills here

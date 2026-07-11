@@ -1,0 +1,28 @@
+# Taskfile.skills.yml — skill-sync tasks for a CONSUMER repo.
+#
+# Adopt either by pasting these tasks into your Taskfile.yml, or by including
+# this file from it:
+#
+#   includes:
+#     skills: ./Taskfile.skills.yml
+#
+# Requires `scripts/sync-skills.sh` (copy it from harmon-devkit) and `yq`.
+# Action-first names (`sync:skills`, not `skills:sync`) match the harmon-init
+# convention (`lint:shell`, `deploy:cloudflare:workers`).
+version: "3"
+
+tasks:
+  sync:skills:
+    desc: Vendor the pinned skill categories from harmon-devkit into the manifest dest
+    cmds:
+      - ./scripts/sync-skills.sh sync
+
+  verify:skills:
+    desc: "Drift check (network): fail if vendored skills differ from the pinned ref"
+    cmds:
+      - ./scripts/sync-skills.sh verify
+
+  verify:skills:offline:
+    desc: "Fast offline check that the vendored ref matches the manifest (no network)"
+    cmds:
+      - ./scripts/sync-skills.sh verify-offline
