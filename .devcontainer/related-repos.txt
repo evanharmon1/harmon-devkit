@@ -18,6 +18,9 @@
 # tools) AND sandbox.filesystem.allowRead (the Bash sandbox). See
 # docs/guides/devcontainers.md.
 #
-# Examples — uncomment and edit:
-#   your-org/shared-libs
-#   your-org/api@main
+# Harmon platform sibling repositories. These are cloned into /workspaces/
+# alongside harmon-devkit when the devcontainer is created.
+https://github.com/evanharmon1/harmon-init
+https://github.com/evanharmon1/harmon-dotfiles
+https://github.com/evanharmon1/harmon-ops
+https://github.com/evanharmon1/evanharmon-site
