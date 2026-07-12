@@ -19,7 +19,8 @@ files).
 - **Category-selective.** A consumer requests whole **categories**, not individual skills — so skills can move between categories in one place (harmon-devkit) without touching every consumer.
 - **Flattened on vendor.** Requested categories are flattened into the destination (`.claude/skills/<skill>/`), which is why skill directory names must be **unique across categories**. harmon-devkit enforces this at source with `task validate:skills`; the sync fails loudly if two requested categories collide.
 - **Pinned tag.** The manifest pins a git tag, so updates are a deliberate manifest bump — never a surprise from upstream `main`.
-- **Provenance.** Every synced destination gets a `.SKILLS_PROVENANCE` stamp recording the source, ref, and resolved commit SHA, with a "do not edit here" marker.
+- **Shared destination — local skills are first-class.** The dest (`.claude/skills`) is shared between vendored and local skills. The sync manages **only** the dirs it vendored (recorded on the provenance `# managed:` line); any other directory is a local skill the repo owns — the sync and both verify modes never touch or report it. If a local dir's name collides with an incoming vendored skill, the sync fails loudly **before deleting anything** (rename the local skill or drop the category).
+- **Provenance.** Every synced destination gets a `.SKILLS_PROVENANCE` stamp recording the source, ref, resolved commit SHA, and the `# managed:` list of vendored dirs, with a do-not-edit marker for the managed skills.
 
 ## What's in this bundle
 
@@ -103,7 +104,7 @@ pre-push:
 2. Run `task sync:skills`.
 3. Commit the manifest change and the updated `dest/` in one commit.
 
-`verify:skills:offline` fails fast if the manifest ref and the vendored provenance disagree (i.e. you bumped the ref but forgot to re-sync).
+`verify:skills:offline` fails fast if the manifest ref and the vendored provenance disagree (i.e. you bumped the ref but forgot to re-sync). Renovate can automate the ref bump, but it cannot run the re-sync half — never merge a ref bump without the accompanying `task sync:skills` result.
 
 ## Adding a new skill
 

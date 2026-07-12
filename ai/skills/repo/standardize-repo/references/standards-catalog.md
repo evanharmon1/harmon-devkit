@@ -460,16 +460,26 @@ install the Renovate GitHub App on the repo. Conventions:
   is the binding convention there). **[copier]**
 - **`.claude/skills/`** — vendored shared agent skills from harmon-devkit via
   **skills-sync**, gated on the **`use_skills_sync`** copier answer (default yes;
-  a repo may opt out — its ABSENCE is then deliberate, not drift). When on:
-  `.skills-sync.yaml` (categories from the **`skill_categories`** multiselect,
-  seeded from `project_type` — `general`→`universal`, `web-astro`→`+frontend`,
-  `web-app`→`+frontend,backend`, `iac`→`+infra`), `scripts/sync-skills.sh`, the
+  a repo may opt out — its ABSENCE of vendoring is then deliberate, not drift).
+  When on: `.skills-sync.yaml` (categories from the **`skill_categories`**
+  multiselect, seeded from `project_type` — `general`→`universal`,
+  `web-astro`→`+frontend`, `web-app`→`+frontend,backend`, `iac`→`+infra`),
+  `scripts/sync-skills.sh`, the
   `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
   (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
   until the first `task sync:skills`, so a fresh scaffold stays green. **[copier]**
   ships the machinery + an empty `.claude/skills/` (`.gitkeep`); pinning the
   manifest `ref` to a harmon-devkit release and running `task sync:skills` is
-  **[manual]**. harmon-devkit is public, so no token is needed. **[copier]**
+  **[manual]**. harmon-devkit is public, so no token is needed. The dest is
+  **shared**: the sync manages only the dirs on the provenance `# managed:`
+  line — any other `.claude/skills/<name>` is a **local skill** the repo owns
+  (coexists freely; never drift, never touched by sync/verify; a name collision
+  with an incoming vendored skill fails the sync loudly before any deletion).
+  Pin bumps are the manual pair "bump `ref` → `task sync:skills` → commit"
+  (Renovate can't do the re-sync half). Source-repo exception: **harmon-devkit
+  itself sets `use_skills_sync: false`** — it IS the source of the skills;
+  self-vendoring a pinned copy of its own `ai/skills/` would be circular.
+  **[copier]**
 - Devcontainer ships richer `config/claude-settings.json` as managed settings (see
   1.6). **[copier]**
 - **`DESIGN.md`** — AI-facing statement of design intent (the *why*/prose rules);
