@@ -57,6 +57,13 @@ illegible text. You must measure the **actual painted color** on the running pag
     canvas-fillStyle normalization silently fail on these; the shipped script parses them correctly.
   - **Selector gotcha:** `form label`-style selectors can first-match a _hidden honeypot_ label and
     measure the wrong element — target explicitly (`label[for="…"]`).
+  - **What it can't model:** the script composites ancestor `background-color`s only. Samples whose
+    chain paints a `background-image` (gradient, photo) or a painted `::before`/`::after` are
+    reported as **UNSUPPORTED** and count as failures — measure those **manually** (DevTools
+    eyedropper / pixel sampling over the real ground) and record the ratio. **Overlay siblings**
+    (an absolutely-positioned scrim layered between the text and its ancestor ground) are not
+    detectable at all: if the design uses one, treat that sample as manual-only. No sample is
+    accepted without a measured number from one of these paths.
   - **axe-core**, **Lighthouse**, or the browser's accessibility audit remain good complements —
     they read computed colors too and catch non-contrast issues along the way.
 - **Measure in both themes**, for every text role: body, headings, muted/meta, links, on-color-block

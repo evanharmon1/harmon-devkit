@@ -30,7 +30,12 @@
 
 import { readFileSync } from "node:fs";
 
-// ---------- color math: OKLCH / hex / rgb -> linear sRGB -> relative luminance ----------
+// ALPHA: translucent colors are never scored as their opaque value. A translucent foreground is
+// composited over the audited background (in gamma sRGB, as browsers blend) before scoring; a
+// translucent background can't be composited statically (what's beneath is unknowable here), so
+// the pair is reported as a skip — verify it on the rendered page (Phase 5) — never as a PASS.
+
+// ---------- color math: OKLCH / hex / rgb -> gamma sRGB (+ alpha) -> relative luminance ----------
 
 // OKLCH -> linear sRGB (Björn Ottosson's reference matrices). Returns linear-light r,g,b.
 function oklchToLinearSrgb(L, C, H) {
@@ -57,14 +62,28 @@ function srgbChannelToLinear(v) {
   return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
 }
 
-// Parse any supported CSS color into linear-light {r,g,b} in [0,1], or null if unparseable.
-// All inputs are normalized to linear light so a single luminance formula covers them.
-function parseColorToLinear(raw) {
+// linear-light channel (0..1) -> gamma sRGB (inverse of the above).
+function linearChannelToSrgb(v) {
+  return v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
+}
+
+// "0.6", "60%", or undefined -> alpha in [0,1] (undefined means opaque).
+function parseAlpha(part) {
+  if (part === undefined) return 1;
+  const t = part.trim();
+  const a = t.endsWith("%") ? parseFloat(t) / 100 : parseFloat(t);
+  return Number.isNaN(a) ? 1 : clamp01(a);
+}
+
+// Parse any supported CSS color into { r, g, b, alpha } — channels gamma-encoded
+// sRGB in [0,1] — or null if unparseable. Gamma (not linear) is the working space
+// so alpha compositing below matches how browsers actually blend.
+function parseColor(raw) {
   const value = raw.trim().toLowerCase();
 
   if (value.startsWith("oklch(")) {
     const inner = value.slice(6, value.lastIndexOf(")"));
-    const [coords] = inner.split("/"); // drop any "/ alpha"
+    const [coords, alphaPart] = inner.split("/");
     const nums = coords
       .trim()
       .split(/[\s,]+/)
@@ -78,7 +97,12 @@ function parseColorToLinear(raw) {
       );
     if (nums.length < 3 || nums.some(Number.isNaN)) return null;
     const lin = oklchToLinearSrgb(nums[0], nums[1], nums[2]);
-    return { r: clamp01(lin.r), g: clamp01(lin.g), b: clamp01(lin.b) };
+    return {
+      r: linearChannelToSrgb(clamp01(lin.r)),
+      g: linearChannelToSrgb(clamp01(lin.g)),
+      b: linearChannelToSrgb(clamp01(lin.b)),
+      alpha: parseAlpha(alphaPart),
+    };
   }
 
   if (value.startsWith("#")) {
@@ -90,36 +114,48 @@ function parseColorToLinear(raw) {
     const g = parseInt(hex.slice(2, 4), 16) / 255;
     const b = parseInt(hex.slice(4, 6), 16) / 255;
     if ([r, g, b].some(Number.isNaN)) return null;
-    return {
-      r: srgbChannelToLinear(r),
-      g: srgbChannelToLinear(g),
-      b: srgbChannelToLinear(b),
-    };
+    const alpha = hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1;
+    return { r, g, b, alpha: Number.isNaN(alpha) ? 1 : alpha };
   }
 
   if (value.startsWith("rgb(") || value.startsWith("rgba(")) {
     const inner = value.slice(value.indexOf("(") + 1, value.lastIndexOf(")"));
-    const [coords] = inner.split("/");
-    const parts = coords
-      .split(/[\s,]+/)
-      .filter(Boolean)
-      .slice(0, 3);
+    const [coords, slashAlpha] = inner.split("/");
+    const parts = coords.split(/[\s,]+/).filter(Boolean);
     if (parts.length < 3) return null;
-    const chan = parts.map((p) =>
-      p.endsWith("%") ? parseFloat(p) / 100 : parseFloat(p) / 255,
-    );
+    const chan = parts
+      .slice(0, 3)
+      .map((p) => (p.endsWith("%") ? parseFloat(p) / 100 : parseFloat(p) / 255));
     if (chan.some(Number.isNaN)) return null;
+    // Alpha rides either after "/" (modern) or as the 4th component (legacy rgba()).
+    const alpha = parseAlpha(slashAlpha ?? parts[3]);
     return {
-      r: srgbChannelToLinear(clamp01(chan[0])),
-      g: srgbChannelToLinear(clamp01(chan[1])),
-      b: srgbChannelToLinear(clamp01(chan[2])),
+      r: clamp01(chan[0]),
+      g: clamp01(chan[1]),
+      b: clamp01(chan[2]),
+      alpha,
     };
   }
 
   return null; // var(), hsl(), named colors, etc. — skipped, not failed
 }
 
-const luminance = (c) => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+// Source-over composite of a translucent color onto an opaque backdrop (gamma
+// space, matching browser blending). Returns an opaque color.
+function compositeOver(fg, backdrop) {
+  const a = fg.alpha;
+  return {
+    r: fg.r * a + backdrop.r * (1 - a),
+    g: fg.g * a + backdrop.g * (1 - a),
+    b: fg.b * a + backdrop.b * (1 - a),
+    alpha: 1,
+  };
+}
+
+const luminance = (c) =>
+  0.2126 * srgbChannelToLinear(c.r) +
+  0.7152 * srgbChannelToLinear(c.g) +
+  0.0722 * srgbChannelToLinear(c.b);
 
 function contrastRatio(c1, c2) {
   const l1 = luminance(c1);
@@ -262,8 +298,8 @@ function auditTheme(label, tokens) {
       });
       return;
     }
-    const bg = parseColorToLinear(bgRaw);
-    const fg = parseColorToLinear(fgRaw);
+    const bg = parseColor(bgRaw);
+    const fg = parseColor(fgRaw);
     if (!bg || !fg) {
       rows.push({
         kind,
@@ -273,7 +309,22 @@ function auditTheme(label, tokens) {
       });
       return;
     }
-    const ratio = contrastRatio(bg, fg);
+    // A translucent BACKGROUND can't be scored statically — what it composites
+    // onto is unknowable here. Never PASS it on the opaque value: report it as
+    // unsupported and require the rendered check (Phase 5).
+    if (bg.alpha < 1) {
+      rows.push({
+        kind,
+        status: "skip",
+        pair: `${fgName} / ${bgName}`,
+        note: `translucent background (alpha ${+bg.alpha.toFixed(3)}) — unsupported statically, verify rendered (Phase 5)`,
+      });
+      return;
+    }
+    // A translucent FOREGROUND paints blended into its ground — score the
+    // composited color, not the opaque one.
+    const fgEffective = fg.alpha < 1 ? compositeOver(fg, bg) : fg;
+    const ratio = contrastRatio(bg, fgEffective);
     const pass = ratio >= need; // no rounding
     let status;
     if (pass) status = "PASS";
