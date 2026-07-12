@@ -130,17 +130,20 @@ $2
 EOF
 }
 
-# managed_names PROV DEST INCOMING — the vendored dir names the sync owns, one
-# per line. Three provenance generations:
+# managed_names PROV DEST — the vendored dir names the sync owns, one per
+# line. Requires $WORKDIR/devkit to hold a clone of the CURRENT manifest ref
+# (both callers clone before calling). Three provenance generations:
 #   * no provenance file      -> nothing is managed (never synced)
 #   * `# managed:` line       -> exactly that list
 #   * legacy stamp (no line)  -> the old wholesale-managed model; everything it
-#     vendored is managed. That set is "dirs in DEST that the OLD pin shipped":
-#     when the pin is unchanged it equals INCOMING ∩ DEST; when the pin moved,
-#     the old ref is cloned once more to list what it shipped. A local skill
-#     added AFTER a legacy sync is therefore never claimed.
+#     vendored is managed. That set is "dirs in DEST that the OLD pin's
+#     recorded `# categories:` shipped" — always computed from the provenance,
+#     never the current manifest (whose ref AND categories may both have
+#     changed since), so a local skill added AFTER a legacy sync is never
+#     claimed. Unchanged ref reuses the existing clone; a moved ref costs one
+#     extra shallow clone.
 managed_names() {
-    _mn_prov="$1" _mn_dest="$2" _mn_incoming="$3"
+    _mn_prov="$1" _mn_dest="$2"
     [ -f "$_mn_prov" ] || return 0
     if grep -q '^# managed:' "$_mn_prov"; then
         prov_list "$_mn_prov" "managed"
@@ -149,14 +152,14 @@ managed_names() {
     _mn_oldref="$(prov_field "$_mn_prov" "ref" | sed 's/ (.*//')"
     [ -n "$_mn_oldref" ] || die "provenance '$_mn_prov' has no '# ref:' line — re-run sync manually after inspecting $_mn_dest"
     if [ "$_mn_oldref" = "$(manifest_get '.source.ref')" ]; then
-        _mn_oldnames="$_mn_incoming"
+        _mn_oldclone="$WORKDIR/devkit" # same ref -> same content; reuse the clone
     else
         _mn_oldclone="$WORKDIR/oldref"
         clone_ref "$_mn_oldref" "$_mn_oldclone" >/dev/null
-        _mn_oldvendor="$WORKDIR/oldvendor"
-        vendor_categories "$_mn_oldclone" "$(prov_list "$_mn_prov" "categories")" "$_mn_oldvendor"
-        _mn_oldnames="$(list_skill_dirs "$_mn_oldvendor")"
     fi
+    _mn_oldvendor="$WORKDIR/oldvendor"
+    vendor_categories "$_mn_oldclone" "$(prov_list "$_mn_prov" "categories")" "$_mn_oldvendor"
+    _mn_oldnames="$(list_skill_dirs "$_mn_oldvendor")"
     # dirs actually present in dest ∩ what the old pin shipped
     while IFS= read -r _mn_name; do
         [ -n "$_mn_name" ] || continue
@@ -200,7 +203,7 @@ cmd_sync() {
     if [ -f "$prov" ] && ! grep -q '^# managed:' "$prov"; then
         echo "sync-skills: legacy provenance stamp — computing the vendored set from the old pin, then upgrading the stamp"
     fi
-    old_managed="$(managed_names "$prov" "$dest" "$incoming")"
+    old_managed="$(managed_names "$prov" "$dest")"
 
     # Collision gate BEFORE any deletion: an existing dir that we do not own
     # and that an incoming skill wants is local work — never overwrite it.
@@ -261,7 +264,7 @@ cmd_verify() {
     clone_ref "$ref" "$WORKDIR/devkit" >/dev/null
     vendor_categories "$WORKDIR/devkit" "$(manifest_get '.categories[]')" "$WORKDIR/vendor"
     incoming="$(list_skill_dirs "$WORKDIR/vendor")"
-    managed="$(managed_names "$prov" "$real" "$incoming")"
+    managed="$(managed_names "$prov" "$real")"
 
     drift=0
     # Every pinned skill must be present and byte-identical.
@@ -296,7 +299,13 @@ EOF
 
 cmd_verify_offline() {
     [ -f "$MANIFEST" ] || die "manifest '$MANIFEST' not found"
-    command -v yq >/dev/null 2>&1 || die "yq is required"
+    # This runs as a pre-push hook on bare hosts too — a missing yq must not
+    # block a push (CI still runs the networked check with yq installed;
+    # `task install` / the Brewfile provide yq locally).
+    if ! command -v yq >/dev/null 2>&1; then
+        echo "verify:skills:offline: yq not installed — skipping (run 'task install'; CI still enforces the drift check)"
+        return 0
+    fi
     dest="$(manifest_get '.dest')"
     prov="$dest/.SKILLS_PROVENANCE"
     # Not synced yet -> skip cleanly (keeps fresh scaffolds green).
@@ -305,7 +314,9 @@ cmd_verify_offline() {
         return 0
     fi
     ref="$(manifest_get '.source.ref')"
-    if grep -q "^# ref: ${ref} " "$prov"; then
+    # Compare extracted values — the ref is data, not a regex ('.' in semver
+    # tags would otherwise match any character).
+    if [ "$(prov_field "$prov" "ref" | sed 's/ (.*//')" = "$ref" ]; then
         echo "✓ vendored ref matches manifest ($ref) — offline check"
     else
         die "manifest ref ($ref) != vendored ref — run 'task sync:skills' and commit"

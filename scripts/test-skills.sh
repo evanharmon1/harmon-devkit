@@ -224,15 +224,16 @@ run_sync_at() {
     shift
     (cd "$dir" && bash "$SCRIPTS/sync-skills.sh" "$@")
 }
-# make_legacy_stamp PROV REF — rewrite PROV in the pre-managed-line (legacy,
-# wholesale-managed) format the old engine wrote.
+# make_legacy_stamp PROV REF CATEGORIES — rewrite PROV in the pre-managed-line
+# (legacy, wholesale-managed) format the old engine wrote. CATEGORIES is the
+# comma-separated list the legacy sync recorded (what it actually vendored).
 make_legacy_stamp() {
     {
         echo "# VENDORED from harmon-devkit — DO NOT EDIT HERE."
         echo "# source: file://$SRC"
         echo "# ref: $2 ($(git -C "$SRC" rev-parse "$2"))"
         echo "# path: ai/skills"
-        echo "# categories: universal, frontend"
+        echo "# categories: $3"
         echo "# update: edit .skills-sync.yaml, then run 'task sync:skills' and commit."
     } >"$1"
 }
@@ -292,7 +293,7 @@ CL="$TMPROOT/consumer-legacy"
 mkdir -p "$CL"
 write_manifest_at "$CL" v0.0.0-test universal frontend
 run_sync_at "$CL" sync >/dev/null
-make_legacy_stamp "$CL/vendored/skills/.SKILLS_PROVENANCE" v0.0.0-test
+make_legacy_stamp "$CL/vendored/skills/.SKILLS_PROVENANCE" v0.0.0-test "universal, frontend"
 mkskill "$CL/vendored/skills/post-legacy" post-legacy "Local skill added AFTER the legacy sync."
 expect_ok "verify with a legacy stamp ignores post-legacy local skills" run_sync_at "$CL" verify
 expect_ok "legacy stamp (same ref): sync upgrades in place" run_sync_at "$CL" sync
@@ -300,6 +301,34 @@ expect_ok "legacy upgrade preserved the post-legacy local skill" test -f "$CL/ve
 expect_ok "legacy upgrade wrote the managed line" \
     grep -q "^# managed: fe-one, uni-one$" "$CL/vendored/skills/.SKILLS_PROVENANCE"
 expect_ok "verify passes after the legacy upgrade" run_sync_at "$CL" verify
+
+# (d, edge) Legacy stamp + SAME ref + categories GROWN in the manifest: the
+# owned set must come from the provenance's recorded categories, never the
+# current manifest — otherwise a local dir matching a skill in the newly-added
+# category would be wrongly claimed and clobbered. It must instead collide.
+CG="$TMPROOT/consumer-legacy-grow"
+mkdir -p "$CG"
+write_manifest_at "$CG" v0.0.0-test universal
+run_sync_at "$CG" sync >/dev/null
+make_legacy_stamp "$CG/vendored/skills/.SKILLS_PROVENANCE" v0.0.0-test "universal"
+mkskill "$CG/vendored/skills/fe-one" fe-one "LOCAL fe-one — predates the frontend category request."
+cp "$CG/vendored/skills/.SKILLS_PROVENANCE" "$TMPROOT/legacy-grow-prov-before"
+write_manifest_at "$CG" v0.0.0-test universal frontend # grow categories, same ref
+if grow_out="$(run_sync_at "$CG" sync 2>&1)"; then
+    bad "legacy + grown categories: colliding local dir fails the sync"
+else
+    ok "legacy + grown categories: colliding local dir fails the sync"
+fi
+if echo "$grow_out" | grep -q "local skill 'fe-one' collides"; then
+    ok "legacy + grown categories: collision names the local skill"
+else
+    bad "legacy + grown categories: collision names the local skill"
+fi
+expect_ok "legacy + grown categories: local dir untouched" \
+    grep -q "predates the frontend category request" "$CG/vendored/skills/fe-one/SKILL.md"
+expect_ok "legacy + grown categories: vendored skill not deleted" test -f "$CG/vendored/skills/uni-one/SKILL.md"
+expect_ok "legacy + grown categories: provenance not rewritten" \
+    cmp -s "$CG/vendored/skills/.SKILLS_PROVENANCE" "$TMPROOT/legacy-grow-prov-before"
 
 # (d+e) Legacy stamp + PIN BUMP: the owned set comes from a clone of the OLD
 # ref; a skill the new pin dropped is cleaned up, the local skill survives.
@@ -311,7 +340,7 @@ CP="$TMPROOT/consumer-legacy-bump"
 mkdir -p "$CP"
 write_manifest_at "$CP" v0.0.0-test universal frontend
 run_sync_at "$CP" sync >/dev/null
-make_legacy_stamp "$CP/vendored/skills/.SKILLS_PROVENANCE" v0.0.0-test
+make_legacy_stamp "$CP/vendored/skills/.SKILLS_PROVENANCE" v0.0.0-test "universal, frontend"
 mkskill "$CP/vendored/skills/post-legacy" post-legacy "Local skill added AFTER the legacy sync."
 write_manifest_at "$CP" v0.0.1-test universal frontend
 expect_ok "legacy stamp + pin bump: sync re-derives the old vendored set" run_sync_at "$CP" sync
