@@ -55,7 +55,8 @@ with the build; user media is runtime data and must never be committed.
   `<link rel="preload" href="/fonts/inter-variable.woff2" as="font" type="font/woff2" crossorigin>`.
 
 ```css
-/* globals.css — mind the @import ORDER rule below */
+/* globals.css — imports FIRST (order rule below), @font-face after them */
+@import "tailwindcss";
 @font-face {
   font-family: "Inter";
   src: url("/fonts/inter-variable.woff2") format("woff2");
@@ -63,7 +64,6 @@ with the build; user media is runtime data and must never be committed.
   font-style: normal;
   font-display: swap;
 }
-@import "tailwindcss";
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
@@ -71,12 +71,18 @@ with the build; user media is runtime data and must never be committed.
 
 ## The `@import` order rule (this _will_ bite you)
 
-If you load a hosted font via a CSS **`@import url(...)`** (e.g. a Google Fonts URL), that `@import`
-**must** sit **above** `@import "tailwindcss";`. Per the CSS spec, a browser ignores any `@import`
-that appears after other rules — and Tailwind's import expands into rules — so a font `@import` placed
-_after_ it is silently dropped and the font never loads. `@font-face` blocks (which are not
-`@import`s) can go anywhere; only `url()`-`@import`s are order-sensitive. Self-hosting with
-`@font-face` sidesteps the trap entirely — one more reason to prefer it.
+Per the CSS spec, an `@import` that appears after **any other rule** is silently ignored — and
+"other rule" includes a `@font-face` block, not just Tailwind's expanded rules. Two consequences:
+
+- **Every `@import` goes at the very top of the stylesheet**, before `@font-face`, `@theme`, or
+  anything else. A `@font-face` placed above `@import "tailwindcss";` kills the Tailwind import —
+  the whole framework silently fails to load.
+- **Order among the imports matters too:** a hosted-font `@import url(...)` (e.g. a Google Fonts
+  URL) or a Fontsource package import must sit **above** `@import "tailwindcss";`, because
+  Tailwind's import expands into rules that would invalidate any `@import` after it.
+
+Self-hosting with `@font-face` avoids the hosted-font `@import` — one more reason to prefer it —
+but the `@font-face` block itself still belongs **after** all the imports.
 
 ## Favicons: generate the whole set from the mark
 
