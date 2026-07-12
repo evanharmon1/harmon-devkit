@@ -2,8 +2,8 @@
 #
 # The design-handoff skill merges these into the TARGET repo's Taskfile.yml when they're
 # missing. They assume:
-#   - check-contrast.mjs and check-off-palette.sh have been copied into the target repo
-#     at scripts/ (chmod +x the .sh)
+#   - check-contrast.mjs, check-off-palette.sh, and ingest-design.sh have been copied
+#     into the target repo at scripts/ (chmod +x the .sh files)
 #   - the canonical tokens live in src/styles/globals.css
 # Adjust the vars below if the repo differs. If the repo already has `verify`/`check`, add
 # `lint:design` to its deps instead of using the aggregator at the bottom (see the comment).
@@ -14,6 +14,7 @@ vars:
   GLOBALS: src/styles/globals.css
   CONTRAST_SCRIPT: scripts/check-contrast.mjs
   OFF_PALETTE_SCRIPT: scripts/check-off-palette.sh
+  INGEST_SCRIPT: scripts/ingest-design.sh
 
 tasks:
   lint:design:
@@ -28,19 +29,19 @@ tasks:
       - ./{{.OFF_PALETTE_SCRIPT}} src
 
   ingest:design:
-    desc: Decompress a Claude Design handoff (.tar.gz or .zip) into specs/
-    vars:
-      DEST: '{{.DEST | default "specs"}}'
+    desc: Safely extract a Claude Design handoff (.tar.gz or .zip) into specs/
     requires:
       vars: [BUNDLE]
+    # BUNDLE/DEST reach the script through the ENVIRONMENT, never spliced into
+    # shell source: an interpolated `tar -xf {{.BUNDLE}}` would execute a crafted
+    # value like `x.tar.gz; rm -rf ~` and break on paths with spaces. The script
+    # picks tar vs unzip by validated extension and rejects unsafe archive
+    # entries (absolute paths, ../ traversal, links) before extracting.
+    env:
+      BUNDLE: "{{.BUNDLE}}"
+      DEST: '{{.DEST | default "specs"}}'
     cmds:
-      - mkdir -p {{.DEST}}
-      # Handle both shapes the export ships as — a .tar.gz (older) or a .zip
-      # (current Claude Design). `tar -xf` auto-detects gzip; unzip is the fallback
-      # for a .zip on systems whose tar can't read it (GNU tar).
-      - tar -xf {{.BUNDLE}} -C {{.DEST}} 2>/dev/null || unzip -q -o {{.BUNDLE}} -d {{.DEST}}
-      - cmd: echo "Extracted to {{.DEST}}/ — open README.md first (the 'CODING AGENTS READ THIS FIRST' file), then chats/, then the HTML."
-        silent: true
+      - ./{{.INGEST_SCRIPT}}
 
   verify:browsers:
     desc: Cross-browser/viewport screenshot sweep (Playwright — Chromium/Firefox/WebKit × devices)

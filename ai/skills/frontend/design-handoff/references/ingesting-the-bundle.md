@@ -17,12 +17,24 @@ the bundle treated as a proposal.
 
 ## What the export actually is
 
-"Handoff to Claude Code" produces a **gzipped tarball** (`.tar.gz`, served as `application/gzip`) —
-**not** a `.zip`. (Claude Design's separate "Download as .zip" menu item is a different raw-assets
-export; the coding handoff is the tarball.) Decompress it into the repo's `specs/` folder:
+"Handoff to Claude Code" has shipped as a **gzipped tarball** (`.tar.gz`, served as
+`application/gzip`) and, in newer exports, as a `.zip` — the format is a moving target, so identify
+the coding handoff by its **contents** (the README + `chats/` + project shape below), never by
+extension alone. Claude Design's separate "Download as .zip" menu item is a different **raw-assets
+export**: it has no README/chats and is _not_ the coding handoff — if what you extracted lacks that
+shape, ask the user for the "Handoff to Claude Code" export.
+
+**Treat the archive as untrusted input.** A crafted bundle entry with an absolute path, a `..`
+component, or a link entry can write outside `specs/` during extraction (zip-slip). List and
+validate the entries before extracting — `task ingest:design` (backed by the skill's
+`ingest-design.sh`, which the skill copies into `scripts/`) does exactly that, and is the
+preferred path:
 
 ```bash
-tar -xzf <bundle>.tar.gz -C specs/        # or: task ingest:design BUNDLE=<bundle>.tar.gz
+task ingest:design BUNDLE=<bundle>.tar.gz   # validates entries (no absolute/.. /link paths), then extracts to specs/
+# manual equivalent — the listing grep MUST come back empty before any tar -xzf:
+tar -tzf <bundle>.tar.gz | grep -E '^/|(^|/)\.\.(/|$)'   # any hit → refuse to extract
+tar -xzf <bundle>.tar.gz -C specs/
 ```
 
 It extracts to a single project directory. Move/rename it to `specs/handoff-<feature>/` — do this
