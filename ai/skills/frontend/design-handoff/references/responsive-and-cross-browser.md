@@ -92,7 +92,8 @@ axis comes from the `projects` above, and the spec adds the route × theme axis,
 PNG per route × theme per project. Fill in three spots and it works:
 
 - **`ROUTES`** — always include `/brand`, plus the feature's pages.
-- **`baseURL` and `webServer`** (in the config above) — point them at the dev server.
+- **`baseURL` and `webServer`** (in the config above) — point them at the production
+  `build && preview` server, as wired above (never the dev server — see the rule under the config).
 - **`setTheme()`** — defaults to shadcn's `.dark` class on `<html>`; change it only if the repo toggles
   dark mode differently (data attribute, cookie).
 
