@@ -295,6 +295,45 @@ the repo was really at `v0.0.22`), and neither `diff-template.sh` (the file is
 release-please-gated) nor `task verify` catches it. On update, reconcile the manifest to the
 repo's actual latest release tag. Recording the baseline does **not** cut a release.
 
+**`.claude/skills` is SHARED — local skills are first-class; upgrade legacy
+provenance stamps once.** The sync-skills engine manages **only** the vendored
+skill dirs listed on the provenance `# managed:` line in
+`.claude/skills/.SKILLS_PROVENANCE`. Any other directory there is a **local
+skill** the repo owns — create/edit/delete it normally; `task sync:skills` and
+both verify modes never touch or report it. Never "clean up" an unlisted skill
+dir during an update: it is not drift, it is the repo's own work. If a local
+dir's name collides with an incoming vendored skill, the sync dies loudly
+*before deleting anything* — rename the local skill or drop its category from
+`.skills-sync.yaml`; don't force it through. After updating a repo past the
+managed-set engine change, run `task sync:skills` **once** to upgrade a legacy
+provenance stamp (one with no `# managed:` line): the engine derives the owned
+set from the OLD pin, so local skills added after the legacy sync are never
+claimed. Bumping the skills pin is always the same manual pair: bump `ref` in
+`.skills-sync.yaml` → `task sync:skills` → commit both together (Renovate can
+bump the ref but cannot run the re-sync half, so never merge a ref bump
+without the accompanying re-sync).
+
+**web repos: the shipped `tests/a11y.spec.ts` requires its deps or the whole
+Playwright run breaks.** The spec imports `@axe-core/playwright` (and needs
+`@playwright/test`); if the repo doesn't have them installed, `astro check` /
+`tsc` fails on the import **and** the entire Playwright run breaks loading the
+spec — not just the a11y test. Pair the spec with the dep install in the same
+update, keep its chromium-only skip guard, and place it under the repo's
+*actual* `testDir` (check `playwright.config.*` — it isn't always `tests/`).
+
+**`scripts/e2e-env-guard.sh` ships fail-closed — configure it during the
+update or `task test:e2e` turns red.** On a repo with a WORKING e2e suite, the
+freshly-adopted guard blocks the run until it's configured (providers + prod
+domains). Configure it as part of the update, or explicitly defer adoption —
+**never delete the guard** to get the suite green.
+
+**Split-workflow repos: graft template CI additions into whichever job
+actually runs `task check`.** Template CI additions (the skills drift check,
+new lint steps) target `build.yml`'s `lint` job. A repo with a split workflow
+layout (e.g. harmon-infra) doesn't have that job — graft the additions into
+the job that actually runs `task check` (harmon-infra: `validate.yml`, feeding
+`validate-verify`), not into a dead copy of `build.yml`.
+
 **web-astro: the `pnpm-workspace.yaml` (#248) requires pnpm 11+.** Its `allowBuilds` approval
 map is a pnpm-11 setting (it replaced pnpm 10's `onlyBuiltDependencies` list); the file
 itself — settings-only, no `packages:` — is invalid on pnpm 9. So adopting it below pnpm 11
