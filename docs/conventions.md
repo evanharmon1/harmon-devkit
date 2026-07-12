@@ -79,6 +79,12 @@ it points here.
 
 - Local env comes from **1Password** (`op run` / `op inject`); CI reads GitHub
   Actions secrets. `gitleaks` runs on pre-push and in CI.
+- When generating or rotating secrets, keep the value **on stdin** and use the
+  destination-only helpers: `task secret:set:1p VAULT=… ITEM=… FIELD=…
+  [SECTION=…]` for existing 1Password fields, `task secret:set:gh NAME=…
+  REPO=owner/repo` for GitHub repo secrets. Never pass secret values as command
+  arguments, `--body` values, exported env vars, or Taskfile vars — they end up
+  in shell history and process listings.
 
 ## Docs & AI steering
 

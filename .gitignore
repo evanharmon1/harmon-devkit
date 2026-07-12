@@ -69,3 +69,5 @@ settings.local.json
 .env.*
 **/.env.*
 .env/
+# ...but keep the committed example (documents required vars; contains no secrets).
+!/.env.example

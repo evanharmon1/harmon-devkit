@@ -35,8 +35,10 @@
       "dockerDashComposeVersion": "v2"
     },
     "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers-extra/features/go-task:1": {},
-    "ghcr.io/itsmechlark/features/1password:1.5.0": {}
+    // No 1Password CLI in the bot profile — this container must hold no path
+    // to production secrets (docs/guides/devcontainers.md). The human dev
+    // profile (.devcontainer/dev/) keeps its own op feature.
+    "ghcr.io/devcontainers-extra/features/go-task:1": {}
   },
   "mounts": [
     "source=claude-code-config-${localWorkspaceFolderBasename},target=/home/vscode/.claude,type=volume",

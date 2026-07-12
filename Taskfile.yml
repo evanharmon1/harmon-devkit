@@ -105,13 +105,20 @@ tasks:
     # lint:shell: CI and the pre-commit hook fail loudly instead of silently
     # mutating the tree (and, in CI, discarding the fix while reporting green).
     # Auto-fix lives in `task format` / `task format:file`.
+    # Prefer the repo-pinned markdownlint-cli2 (node_modules) so hooks/CI match
+    # the lockfile; fall back to npx for non-node repos and fresh scaffolds.
     desc: markdownlint-cli2 (check mode)
     cmds:
       - |
-        if [ -n "{{.CLI_ARGS}}" ]; then
-          npx --yes markdownlint-cli2 {{.CLI_ARGS}}
+        if [ -x node_modules/.bin/markdownlint-cli2 ]; then
+          run="pnpm exec markdownlint-cli2"
         else
-          npx --yes markdownlint-cli2 '**/*.md' '#.claude/**' '#specs/*/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**' '#**/.terraform/**' '#**/.venv/**' '#**/.task/**'
+          run="npx --yes markdownlint-cli2"
+        fi
+        if [ -n "{{.CLI_ARGS}}" ]; then
+          $run {{.CLI_ARGS}}
+        else
+          $run '**/*.md' '#.claude/**' '#specs/*/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**' '#**/.terraform/**' '#**/.venv/**' '#**/.task/**'
         fi
 
   lint:actions:
@@ -168,7 +175,13 @@ tasks:
       # Best-effort: markdownlint --fix auto-fixes what it can but must NOT abort
       # `format` on un-auto-fixable rule violations (e.g. MD024 duplicate heading,
       # MD040 missing fence language) — `lint:markdown` (check-only) is the gate.
-      - npx --yes markdownlint-cli2 --fix '**/*.md' '#.claude/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**' || true
+      - |
+        if [ -x node_modules/.bin/markdownlint-cli2 ]; then
+          run="pnpm exec markdownlint-cli2"
+        else
+          run="npx --yes markdownlint-cli2"
+        fi
+        $run --fix '**/*.md' '#.claude/**' '#**/node_modules/**' '#dist/**' '#.worktrees/**' || true
 
   format:file:
     desc: "Format a single file by extension (usage: task format:file -- <path>)"
@@ -179,7 +192,13 @@ tasks:
         [ -f "$f" ] || exit 0
         case "$f" in
         *.sh | *.bash) shfmt -w "$f" ;;
-        *.md | *.mdx) npx --yes markdownlint-cli2 --fix "$f" || true ;;
+        *.md | *.mdx)
+          if [ -x node_modules/.bin/markdownlint-cli2 ]; then
+            pnpm exec markdownlint-cli2 --fix "$f" || true
+          else
+            npx --yes markdownlint-cli2 --fix "$f" || true
+          fi
+          ;;
         esac
 
   fix:
@@ -260,6 +279,27 @@ tasks:
     cmds:
       - snyk test --severity-threshold=high --show-vulnerable-paths=all
 
+  # ── Secrets ────────────────────────────────────────────────────
+  # Destination-only helpers: the secret value stays on stdin — never in argv,
+  # env vars, Taskfile vars, or shell history (see docs/conventions.md).
+  secret:set:1p:
+    desc: "Set an existing 1Password field from stdin (usage: command | task secret:set:1p VAULT=... ITEM=... FIELD=... [SECTION=...])"
+    env:
+      VAULT: '{{.VAULT | default ""}}'
+      ITEM: '{{.ITEM | default ""}}'
+      FIELD: '{{.FIELD | default ""}}'
+      SECTION: '{{.SECTION | default ""}}'
+    cmds:
+      - ./scripts/secret-set-1p.sh
+
+  secret:set:gh:
+    desc: "Set a GitHub repo secret from stdin (usage: command | task secret:set:gh NAME=... REPO=owner/repo)"
+    env:
+      NAME: '{{.NAME | default ""}}'
+      REPO: '{{.REPO | default ""}}'
+    cmds:
+      - ./scripts/secret-set-gh.sh
+
   # ── Setup ──────────────────────────────────────────────────────
   bootstrap:
     desc: One-time machine setup (Homebrew)
@@ -288,7 +328,10 @@ tasks:
   # credential and stay manual — see docs/CHECKLIST.md (branch ruleset import,
   # Renovate/CodeRabbit app installs, Actions secrets, the CI GitHub App).
   setup:github:
-    desc: Apply idempotent GitHub repo settings via gh (Dependabot alerts, private vulnerability reporting, CodeQL variable)
+    desc: >-
+      Apply idempotent GitHub repo settings via gh (Dependabot alerts, private
+      vulnerability reporting, CodeQL
+      variable)
     vars:
       REPO: "evanharmon1/harmon-devkit"
     cmds:

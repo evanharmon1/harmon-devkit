@@ -21,6 +21,11 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Also auto-review stacked PRs — ones whose base is a feature branch rather
+    # than main — so each slice of a PR stack gets reviewed before the stack
+    # starts merging. Regex list; the default branch is always included.
+    base_branches:
+      - "feat/.*"
     ignore_usernames:
       - renovate[bot]
       - dependabot[bot]

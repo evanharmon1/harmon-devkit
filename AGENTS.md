@@ -107,3 +107,11 @@ Full reference: [docs/conventions.md](docs/conventions.md). Highlights:
   compiles and setup tasks are safe no-ops.
 - Indentation: 2 spaces default, 4 for Python/Terraform/Shell (`.editorconfig`).
 - Secrets never go in git; local env via 1Password (`op run` / `op inject`).
+- When generating or rotating secrets, keep secret values on stdin and use the
+  destination-only helpers:
+  `task secret:set:1p VAULT=... ITEM=... FIELD=... [SECTION=...]` for existing
+  1Password fields and `task secret:set:gh NAME=... REPO=owner/repo` for GitHub
+  repo secrets. Never pass secret values as command arguments, `--body` values,
+  exported env vars, or Taskfile vars. The hard rule above still applies:
+  agents must not run `secret:set:1p` or otherwise write to a password manager
+  without explicit user confirmation for that exact write.
