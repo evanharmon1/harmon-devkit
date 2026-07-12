@@ -153,7 +153,8 @@ expect_ok "categories are flattened (no category dirs)" test ! -e "$CON/vendored
 expect_ok "nested skill assets/ vendored intact" test -f "$CON/vendored/skills/fe-one/assets/helper.sh"
 expect_ok "nested skill references/ vendored intact" test -f "$CON/vendored/skills/fe-one/references/doc.md"
 expect_ok "provenance records the ref" grep -q "^# ref: v0.0.0-test " "$prov"
-expect_ok "provenance carries do-not-edit marker" grep -q "DO NOT EDIT HERE" "$prov"
+expect_ok "provenance carries do-not-edit marker" grep -q "DO NOT EDIT" "$prov"
+expect_ok "provenance lists the managed (vendored) dirs" grep -q "^# managed: fe-one, uni-one$" "$prov"
 
 expect_ok "verify passes right after sync" run_sync verify
 expect_ok "verify-offline passes right after sync" run_sync verify-offline
@@ -199,6 +200,138 @@ categories:
 dest: vendored/skills
 EOF
 expect_fail "sync fails on duplicate skill name across categories" run_sync sync
+
+# ── sync-skills.sh managed-set semantics ───────────────────────────────
+# The dest is SHARED with the repo's own local skills; the sync owns only the
+# dirs on the provenance `# managed:` line and never touches anything else.
+echo "==> sync-skills.sh (managed set / local skills)"
+
+# write_manifest_at DIR REF CATEGORY... — like write_manifest, for any consumer.
+write_manifest_at() {
+    local dir="$1" ref="$2"
+    shift 2
+    {
+        echo "source:"
+        echo "  repo: file://$SRC"
+        echo "  ref: $ref"
+        echo "categories:"
+        for c in "$@"; do echo "  - $c"; done
+        echo "dest: vendored/skills"
+    } >"$dir/.skills-sync.yaml"
+}
+run_sync_at() {
+    local dir="$1"
+    shift
+    (cd "$dir" && bash "$SCRIPTS/sync-skills.sh" "$@")
+}
+# make_legacy_stamp PROV REF — rewrite PROV in the pre-managed-line (legacy,
+# wholesale-managed) format the old engine wrote.
+make_legacy_stamp() {
+    {
+        echo "# VENDORED from harmon-devkit — DO NOT EDIT HERE."
+        echo "# source: file://$SRC"
+        echo "# ref: $2 ($(git -C "$SRC" rev-parse "$2"))"
+        echo "# path: ai/skills"
+        echo "# categories: universal, frontend"
+        echo "# update: edit .skills-sync.yaml, then run 'task sync:skills' and commit."
+    } >"$1"
+}
+
+# (a) A pre-existing local skill in the shared dest survives the sync.
+CM="$TMPROOT/consumer-managed"
+mkdir -p "$CM"
+write_manifest_at "$CM" v0.0.0-test universal frontend
+mkskill "$CM/vendored/skills/local-note" local-note "LOCAL skill — the sync must never touch this."
+expect_ok "sync succeeds alongside a pre-existing local skill" run_sync_at "$CM" sync
+expect_ok "local skill survives the sync" test -f "$CM/vendored/skills/local-note/SKILL.md"
+expect_ok "managed line lists exactly the vendored dirs" \
+    grep -q "^# managed: fe-one, uni-one$" "$CM/vendored/skills/.SKILLS_PROVENANCE"
+
+# (b) verify ignores local-skill edits but still catches vendored drift.
+expect_ok "verify passes with a local skill present" run_sync_at "$CM" verify
+echo "local edit" >>"$CM/vendored/skills/local-note/SKILL.md"
+expect_ok "verify ignores local-skill edits" run_sync_at "$CM" verify
+echo "tampered" >>"$CM/vendored/skills/fe-one/SKILL.md"
+expect_fail "verify still catches vendored drift alongside local skills" run_sync_at "$CM" verify
+expect_ok "re-sync heals the vendored drift" run_sync_at "$CM" sync
+expect_ok "re-sync preserved the local skill's edit" grep -q "local edit" "$CM/vendored/skills/local-note/SKILL.md"
+
+# (e) Orphan cleanup: manifest drops a category -> verify flags the leftover
+# managed dir; re-sync removes it; the local skill is untouched.
+write_manifest_at "$CM" v0.0.0-test universal
+expect_fail "verify flags a managed dir the pin no longer ships" run_sync_at "$CM" verify
+expect_ok "re-sync after a category drop succeeds" run_sync_at "$CM" sync
+expect_ok "dropped category's vendored skill removed" test ! -e "$CM/vendored/skills/fe-one"
+expect_ok "local skill intact after the category drop" test -f "$CM/vendored/skills/local-note/SKILL.md"
+
+# (c) A local dir colliding with an incoming vendored skill is a hard error
+# BEFORE any deletion: nothing removed, no provenance written.
+CC="$TMPROOT/consumer-collide"
+mkdir -p "$CC"
+write_manifest_at "$CC" v0.0.0-test universal frontend
+mkskill "$CC/vendored/skills/uni-one" uni-one "LOCAL original — must not be clobbered."
+mkskill "$CC/vendored/skills/keep-me" keep-me
+if collide_out="$(run_sync_at "$CC" sync 2>&1)"; then
+    bad "collision with a local skill fails the sync"
+else
+    ok "collision with a local skill fails the sync"
+fi
+if echo "$collide_out" | grep -q "local skill 'uni-one' collides"; then
+    ok "collision names the local skill in the error"
+else
+    bad "collision names the local skill in the error"
+fi
+expect_ok "collision deleted nothing (local content intact)" \
+    grep -q "must not be clobbered" "$CC/vendored/skills/uni-one/SKILL.md"
+expect_ok "collision deleted nothing (other local skill intact)" test -f "$CC/vendored/skills/keep-me/SKILL.md"
+expect_ok "no provenance written on collision" test ! -f "$CC/vendored/skills/.SKILLS_PROVENANCE"
+
+# (d) Legacy stamp (no `# managed:` line), SAME ref: sync derives the owned set
+# from the pin and upgrades the stamp; post-legacy local skills are never claimed.
+CL="$TMPROOT/consumer-legacy"
+mkdir -p "$CL"
+write_manifest_at "$CL" v0.0.0-test universal frontend
+run_sync_at "$CL" sync >/dev/null
+make_legacy_stamp "$CL/vendored/skills/.SKILLS_PROVENANCE" v0.0.0-test
+mkskill "$CL/vendored/skills/post-legacy" post-legacy "Local skill added AFTER the legacy sync."
+expect_ok "verify with a legacy stamp ignores post-legacy local skills" run_sync_at "$CL" verify
+expect_ok "legacy stamp (same ref): sync upgrades in place" run_sync_at "$CL" sync
+expect_ok "legacy upgrade preserved the post-legacy local skill" test -f "$CL/vendored/skills/post-legacy/SKILL.md"
+expect_ok "legacy upgrade wrote the managed line" \
+    grep -q "^# managed: fe-one, uni-one$" "$CL/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "verify passes after the legacy upgrade" run_sync_at "$CL" verify
+
+# (d+e) Legacy stamp + PIN BUMP: the owned set comes from a clone of the OLD
+# ref; a skill the new pin dropped is cleaned up, the local skill survives.
+mkskill "$SRC/ai/skills/universal/uni-two" uni-two
+rm -rf "$SRC/ai/skills/frontend/fe-one"
+git_commit_all "$SRC" "drop fe-one, add uni-two"
+git -C "$SRC" tag v0.0.1-test
+CP="$TMPROOT/consumer-legacy-bump"
+mkdir -p "$CP"
+write_manifest_at "$CP" v0.0.0-test universal frontend
+run_sync_at "$CP" sync >/dev/null
+make_legacy_stamp "$CP/vendored/skills/.SKILLS_PROVENANCE" v0.0.0-test
+mkskill "$CP/vendored/skills/post-legacy" post-legacy "Local skill added AFTER the legacy sync."
+write_manifest_at "$CP" v0.0.1-test universal frontend
+expect_ok "legacy stamp + pin bump: sync re-derives the old vendored set" run_sync_at "$CP" sync
+expect_ok "pin bump vendored the newly-shipped skill" test -f "$CP/vendored/skills/uni-two/SKILL.md"
+expect_ok "pin bump cleaned up the skill the pin dropped" test ! -e "$CP/vendored/skills/fe-one"
+expect_ok "pin bump preserved the post-legacy local skill" test -f "$CP/vendored/skills/post-legacy/SKILL.md"
+expect_ok "managed line reflects the new pin" \
+    grep -q "^# managed: uni-one, uni-two$" "$CP/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "verify passes after the pin bump" run_sync_at "$CP" verify
+
+# (f) Empty categories are called out explicitly in the sync summary.
+CE="$TMPROOT/consumer-emptymsg"
+mkdir -p "$CE"
+write_manifest_at "$CE" v0.0.0-test emptycat
+if empty_out="$(run_sync_at "$CE" sync 2>&1)" &&
+    echo "$empty_out" | grep -qF "(0 skills — categories are empty at this ref)"; then
+    ok "empty-category sync logs the 0-skills message"
+else
+    bad "empty-category sync logs the 0-skills message"
+fi
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
