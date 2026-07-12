@@ -109,7 +109,8 @@ Naming & structure conventions:
 - **Parallel deps:** umbrella tasks fan out via `deps:` (which run in parallel),
   e.g. `lint` deps on `lint:yaml`, `lint:shell`, `lint:markdown`,
   `lint:actions`, `lint:hygiene`; `security` deps on `security:secrets` +
-  `security:audit`; `check` deps on `lint` (+ `typecheck`).
+  `security:audit`; `check` deps on `lint` (+ `lint:typescript` on node repos —
+  the old bare `typecheck` name survives as an alias).
 - **`{{.CLI_ARGS | default "."}}` passthrough:** lint tasks accept a file list
   (`task lint:yaml -- file.yml`) and default to the whole tree; lefthook passes
   `{staged_files}` through this so hooks lint only staged files.
@@ -123,10 +124,10 @@ Universal task targets every repo has (from the template):
 `lint:shell`, `lint:markdown`, `lint:actions`, `lint:hygiene`,
 `lint:commit-msg`, `validate`, `guard:no-commit-to-main`, `format`, `fix`,
 `test`, `security`, `security:secrets`, `security:audit`, `security:sast`
-(Snyk), `security:sca` (Snyk), `bootstrap`, `install`, `install:hooks`,
-`release:init`, `release:patch`, `release:minor`, `release:major`, `clean`,
-`status` (+ `status:git|gh|code|env`), `status:setup`, `util:bunch-add`,
-`util:obsidian-add`.
+(Snyk), `security:sca` (Snyk), `secret:set:1p`, `secret:set:gh`, `bootstrap`,
+`install`, `install:hooks`, `release:init`, `release:patch`, `release:minor`,
+`release:major`, `clean`, `status` (+ `status:git|gh|code|env`),
+`status:setup`, `util:bunch-add`, `util:obsidian-add`.
 
 **Lint vs. format discipline (read-only gates).** Every `lint:*` target and the
 `check`/`verify` aggregates are **read-only** — they report and fail, never
@@ -152,10 +153,15 @@ quick first pass when auditing an already-standardized repo.
 Notable command bodies (for an auditor checking they match):
 
 - `lint:shell` → `shellcheck --severity=error` + `shfmt -d`
-- `lint:markdown` → `npx --yes markdownlint-cli2 '**/*.md' '#.claude/**' …`
-  (check-only; **no `--fix`** — auto-fix lives in `format`)
+- `lint:markdown` → markdownlint-cli2 `'**/*.md' '#.claude/**' …` — prefers the
+  repo-pinned `node_modules/.bin` copy via `pnpm exec` when installed, falls
+  back to `npx --yes` (non-node repos, fresh scaffolds); same pattern in
+  `format`/`format:file` for prettier + markdownlint (check-only here; **no
+  `--fix`** — auto-fix lives in `format`)
 - `lint:hygiene` → `./scripts/lint-hygiene.sh`
 - `security:secrets` → `gitleaks detect --no-banner --redact --source .`
+- `secret:set:1p` / `secret:set:gh` → `./scripts/secret-set-{1p,gh}.sh` —
+  destination-only secret writes, value on **stdin** (see §1.8)
 - `install` → `brew bundle --file=Brewfile` (+ `uv sync` / `pnpm install`) →
   `install:hooks`
 - `install:hooks` → `lefthook install`
@@ -248,10 +254,13 @@ Project-type stages (added conditionally): pre-commit `prettier`/`eslint`/
 **[copier]** generates `.devcontainer/` with **two profiles**:
 
 - **BOT profile** (`.devcontainer/devcontainer.json`) — for AI agents (Claude
-  Code, Codex, Gemini). **No Tailscale.** `containerName:
-  devcontainer-<slug>-bot`. `CLAUDE_CODE_EFFORT_LEVEL: max`.
+  Code, Codex, Gemini). **No Tailscale and no 1Password CLI feature** — the bot
+  container must hold no path to the tailnet or a credential store
+  (`devcontainer-assert.sh` enforces both structurally, per profile).
+  `containerName: devcontainer-<slug>-bot`. `CLAUDE_CODE_EFFORT_LEVEL: max`.
 - **DEV profile** (`.devcontainer/dev/devcontainer.json`) — human dev. Adds the
-  Tailscale feature + `--device=/dev/net/tun` + `TS_AUTHKEY`.
+  Tailscale feature + `--device=/dev/net/tun` + `TS_AUTHKEY` + the 1Password
+  CLI feature.
 
 Shared structure:
 
@@ -263,8 +272,8 @@ Shared structure:
   like `@anthropic-ai/claude-code` LAST so frequent bumps don't bust the
   Chromium/Playwright layers).
 - **`devcontainer.json` `features`:** python 3.14, docker-in-docker, github-cli,
-  go-task, 1password; terraform feature when `include_terraform`; tailscale only
-  in dev.
+  go-task; terraform feature when `include_terraform`; 1password and tailscale
+  only in dev.
 - **`devcontainer.json` `hostRequirements`:** a minimum floor (`cpus: 2`,
   `memory: 4gb`) on both profiles — a hard gate (Codespaces won't offer a smaller
   machine; VS Code warns; Coder ignores it), not a comfort target. Recommended
@@ -379,8 +388,17 @@ Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKE
   `dependabot.yml`** — Renovate owns updates. **[manual]** repo settings.
 - **`CODEOWNERS`** = `* @<code_owner>` — an asked question that defaults to `github_org`. **[copier]**
 - **Secrets via 1Password** locally (`op run`/`op inject`); CI reads Actions
-  secrets. **`.env` is fully gitignored** (`.env`, `**/.env`, `.env.*`); commit
-  only `.env.example`-style files. **[copier]** gitignore; **[manual]** wiring.
+  secrets. **`.env` is fully gitignored** (`.env`, `**/.env`, `.env.*`) with a
+  single committed exception, `!/.env.example` (names/placeholders only; node
+  repos ship a stub). **[copier]** gitignore; **[manual]** wiring.
+- **Destination-only secret writes** — `task secret:set:1p VAULT=… ITEM=…
+  FIELD=… [SECTION=…]` (existing 1Password fields) and `task secret:set:gh
+  NAME=… REPO=owner/repo` (GitHub repo secrets), backed by
+  `scripts/secret-set-{1p,gh}.sh`: the value is read from **stdin only** — never
+  argv, `--body`, exported env vars, or Taskfile vars (history/process-listing
+  hygiene). Both fail without destination metadata (`test-tasks.sh` asserts it),
+  and agents still must not write to a password manager without explicit
+  per-write confirmation. **[copier]**
 - **1Password credential naming (source of truth).** Authoritative convention is
   in the generated repo's `docs/architecture/security.md` ("1Password
   conventions"); when creating a repo's credentials, follow it verbatim:
@@ -612,10 +630,14 @@ unless ansible/terraform opted in.
 
 Adds (all [copier] unless noted):
 
-- **Taskfile:** `build` (`pnpm build`), `build:preview`, `dev`, `typecheck`
-  (`astro check`), `lint:prettier`, `lint:eslint`, `test` (vitest if config
-  present), `test:e2e[:screenshot|:pdf]` (Playwright); `verify`/`ci` include
-  `build`.
+- **Taskfile:** `build` (`pnpm build`), `build:preview`, `dev`,
+  `lint:typescript` (`astro check`; `typecheck` alias kept), `lint:prettier`,
+  `lint:eslint`, `test` (vitest if config present),
+  `test:e2e[:screenshot|:pdf]` (Playwright); `verify`/`ci` include `build`.
+  `test:e2e` loads `.env.local` and runs **`scripts/e2e-env-guard.sh` first** —
+  a fail-closed guard against production-capable credentials/targets in the e2e
+  environment that **fails until configured** with the app's providers and prod
+  domains ([manual] at scaffold time; omator's guard is the reference).
 - **prettier.config.cjs**, eslint task. **lefthook** adds prettier/eslint/
   typecheck (pre-commit) + typecheck (pre-push).
 - **`lighthouserc.json`** + a **`lighthouse`** CI job in `build.yml` (Chrome
@@ -626,21 +648,51 @@ Adds (all [copier] unless noted):
 - `codeql.yml` analyzes `javascript-typescript`.
 - **[manual] CHECKLIST:** `pnpm create astro@latest .`; add **Tailwind v4**
   (`@tailwindcss/vite`), **zod**, **vitest**, **lucide**; move lint tooling into
-  `devDependencies`; switch Taskfile `npx --yes` calls to `pnpm exec`; review
-  `lighthouserc.json` URLs; enable **mobile device projects** in
-  `playwright.config.ts` (e.g. Pixel + iPhone — the scaffold ships them
-  commented out, and mobile-first is the stated convention).
+  `devDependencies` (the Taskfile auto-prefers repo-pinned `node_modules` bins
+  over `npx --yes` once installed); review `lighthouserc.json` URLs; enable
+  **mobile device projects** in `playwright.config.ts` (e.g. Pixel + iPhone —
+  the scaffold ships them commented out, and mobile-first is the stated
+  convention).
 
 ### 2.3 web-app (TanStack/React apps) — `use_node: true`
 
 Same node tooling as web-astro **except**:
 
-- `typecheck` uses `tsc --noEmit` (not `astro check`). [copier]
+- `lint:typescript` uses `tsc --noEmit` (not `astro check`) — and when the root
+  `tsconfig.json` is **solution-style** (`files: []` + `references`) it
+  auto-detects that and runs **`tsc -b`** instead (a plain `--noEmit` against a
+  solution file type-checks nothing and reports green). [copier]
+- **Shipped `eslint.config.js` is ESLint 10 with type-aware linting on by
+  default**: `tseslint.configs.recommendedTypeChecked` + `projectService`
+  (catches floating/misused promises against async backend APIs like Convex
+  `ctx`); **no `eslint-plugin-react`** (not v10-ready; ESLint 10 tracks JSX
+  natively) — react-hooks, `@tanstack/eslint-plugin-router`, and
+  `@convex-dev/eslint-plugin` plugins; `eslint-config-prettier` last; typed
+  rules disabled for plain `js/cjs/mjs` config files. Generated files are
+  committed but never linted/formatted: `src/routeTree.gen.ts` +
+  `convex/_generated/` sit in the ESLint `ignores` and `.prettierignore`.
+  Under `projectService` **every linted TS file must belong to a tsconfig
+  project** — `convex/` carries its own runtime-accurate `convex/tsconfig.json`
+  (`"types": []`, excludes `./_generated`). [copier]
+- `pnpm-workspace.yaml`: `sharp: false` (web-astro keeps `true` for Astro's
+  image pipeline); `workerd: true` only when deploying to Cloudflare Workers.
+  pnpm 11's default `minimumReleaseAge` (1 day) is documented in the file —
+  version-pinned `minimumReleaseAgeExclude` entries unblock a freshly published
+  pin and age into no-ops. [copier]
+- `prettier.config.cjs` ships `tailwindStylesheet` **commented** (Tailwind v4
+  has no config file for the plugin to discover; the plugin hard-fails on a
+  missing path) — uncomment once the app's main stylesheet exists. [copier] +
+  [manual] activation.
 - **No** Lighthouse job / `lighthouserc.json` (that's web-astro only). [copier]
 - DESIGN.md / design-language reference **shadcn/ui** as the component set. [copier]
 - **[manual] CHECKLIST:** `pnpm create @tanstack/start@latest` (TanStack Start)
   or vite + react; add **Tailwind v4**, **shadcn/ui**, **zod**, **vitest**,
-  **lucide**; move lint tooling to `devDependencies`; switch to `pnpm exec`.
+  **lucide**; move lint tooling to `devDependencies` (Taskfile auto-prefers the
+  pinned bins); install the ESLint 10 plugin set; configure
+  `scripts/e2e-env-guard.sh` before the first e2e run; document env vars in
+  `.env.example`; split `vitest.config.ts` into **projects** when the backend
+  needs a different runtime (e.g. `react`/jsdom + `convex`/edge-runtime with
+  `convex-test`).
 
 ### 2.4 iac (Terraform/Ansible) — `use_python: true`
 
@@ -752,6 +804,19 @@ them:
 - **Stale `requirements.txt`** alongside `pyproject.toml`/`uv.lock` — the current
   template is uv/pyproject-only. (Removed from harmon-infra 2026-07-03 once its
   last consumer, a legacy Snyk CI step, was dropped.)
+- **Bare `typecheck` task** (no `lint:typescript`): repos rendered before the
+  omator retro (harmon-init ≤ v3.23) predate the rename; the current template
+  names it `lint:typescript` with a `typecheck` alias, so both invocations work
+  after an update. Lefthook hook *names* legitimately stay `typecheck`.
+- **1Password CLI feature in the BOT devcontainer profile:** pre-retro renders
+  ship `ghcr.io/itsmechlark/features/1password` in both profiles; the current
+  standard is **dev-profile only** (the bot container must hold no credential-
+  store path, enforced by `devcontainer-assert.sh`). Unlike most 3.3 lag this
+  one is security-relevant — recommend the update rather than just noting it.
+- **Missing `secret:set:*` tasks / `scripts/secret-set-*.sh`, or a bare
+  `npx --yes`-only `lint:markdown`/`format`:** pre-retro renders lack the
+  destination-only secret helpers and the pinned-bin preference — `copier
+  update` brings both in.
 
 When auditing: distinguish "**legit conditional/stack difference**" (3.1, 3.2 —
 leave alone) from "**template-version lag**" (3.3 — candidate for an update toward
