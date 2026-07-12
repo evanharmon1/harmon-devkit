@@ -22,7 +22,7 @@ clearly *worse* if changed? State the single most important quality (e.g.
 - **Clarity over cleverness.** Optimize for the next reader (often an AI agent).
 - **Consistency is a feature.** Reuse existing patterns before inventing new ones.
 - **Simple by default.** Add structure only when complexity demands it.
-- **Accessible by default.** TODO: state the bar (e.g. WCAG 2.2 AA) where it applies.
+- **Accessible by default (WCAG 2.2 AA where a UI applies).**
 
 ## Non-negotiables
 

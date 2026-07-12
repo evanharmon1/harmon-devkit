@@ -32,4 +32,12 @@ else
     echo "    (skipped: brew not on PATH)"
 fi
 
+echo "==> secret helper tasks reject missing destination metadata"
+if printf '%s' 'dummy-secret' | task secret:set:1p >/dev/null 2>&1; then
+    fail "task secret:set:1p succeeded without destination metadata"
+fi
+if printf '%s' 'dummy-secret' | task secret:set:gh >/dev/null 2>&1; then
+    fail "task secret:set:gh succeeded without destination metadata"
+fi
+
 echo "==> task targets OK (compile + bootstrap idempotency)"

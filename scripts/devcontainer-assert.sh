@@ -116,11 +116,12 @@ assert_unit() {
 }
 
 # assert_config_invariants <repo_root> <config> <profile>
-# bot: NO tailscale feature, NO /dev/net/tun runArg, NO TS_AUTHKEY in
-#      initializeCommand. dev: all three present.
+# bot: NO tailscale feature, NO 1Password CLI feature, NO /dev/net/tun runArg,
+#      NO TS_AUTHKEY in initializeCommand — the bot container must hold no path
+#      to production secrets or the tailnet. dev: all four present.
 assert_config_invariants() {
     local repo_root="$1" config="$2" profile="$3"
-    local cfg has_ts_feature has_tun has_ts_init
+    local cfg has_ts_feature has_op_feature has_tun has_ts_init
 
     cfg="$(npx -y @devcontainers/cli read-configuration \
         --workspace-folder "$repo_root" \
@@ -129,6 +130,8 @@ assert_config_invariants() {
 
     has_ts_feature="$(printf '%s' "$cfg" |
         jq -r '[.configuration.features // {} | keys[] | select(test("tailscale";"i"))] | length')"
+    has_op_feature="$(printf '%s' "$cfg" |
+        jq -r '[.configuration.features // {} | keys[] | select(test("1password";"i"))] | length')"
     has_tun="$(printf '%s' "$cfg" |
         jq -r '[.configuration.runArgs // [] | .[] | select(test("/dev/net/tun"))] | length')"
     has_ts_init="$(printf '%s' "$cfg" |
@@ -136,10 +139,12 @@ assert_config_invariants() {
 
     if [ "$profile" = "bot" ]; then
         [ "$has_ts_feature" = "0" ] || fail "bot config has a tailscale feature"
+        [ "$has_op_feature" = "0" ] || fail "bot config has a 1Password CLI feature (no secret-store path in the bot container)"
         [ "$has_tun" = "0" ] || fail "bot config requests /dev/net/tun"
         [ "$has_ts_init" = "0" ] || fail "bot config references TS_AUTHKEY in initializeCommand"
     else
         [ "$has_ts_feature" != "0" ] || fail "dev config is missing the tailscale feature"
+        [ "$has_op_feature" != "0" ] || fail "dev config is missing the 1Password CLI feature"
         [ "$has_tun" != "0" ] || fail "dev config is missing the /dev/net/tun device"
         [ "$has_ts_init" = "1" ] || fail "dev config does not reference TS_AUTHKEY in initializeCommand"
     fi

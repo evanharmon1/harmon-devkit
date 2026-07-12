@@ -34,5 +34,6 @@
   },
   "search.smartCase": true,
   "terminal.integrated.defaultProfile.linux": "zsh",
-  "npm.packageManager": "npm"
+  "npm.packageManager": "npm",
+  "snyk.advanced.autoSelectOrganization": true
 }

@@ -252,4 +252,9 @@ For an organization with many repos, consider creating an **org-level ruleset** 
 
 - **GitHub App for the devcontainer agent**: CI **workflows** already authenticate as the `evanharmon1-ci` GitHub App (short-lived 1h tokens, no seat cost — see [security.md](security.md)). The remaining machine-user PAT documented above is the **devcontainer agent's** push token; it could likewise move to an App if rotation becomes burdensome. The ruleset protects `main` identically for App tokens, the bot PAT, or any actor.
 - **Terraform management**: The GitHub Terraform provider supports `github_repository_ruleset` resources. Codifying the ruleset in Terraform ensures consistency as repos multiply.
-- **Additional status checks**: As the CI pipeline matures, add checks for E2E tests (Playwright), accessibility (axe-core), and performance (Lighthouse CI) to the required list.
+- **Additional status checks**: For `web-app` and `web-astro`, the `a11y` job
+  (axe-core via Playwright) already ships **non-blocking** — promote it to the
+  required list
+  once real routes pass (add `a11y` to `verify.needs` + a `check a11y` line in
+  `build.yml`, and to `required_status_checks`). As the pipeline matures,
+  likewise add E2E (Playwright) and, where not already gating, Lighthouse CI.
