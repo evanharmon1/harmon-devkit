@@ -1,5 +1,11 @@
 {
   "permissions": {
+    "additionalDirectories": [
+      "../harmon-init",
+      "../harmon-dotfiles",
+      "../harmon-ops",
+      "../evanharmon-site"
+    ],
     "allow": [
       "Bash(task:*)",
       "Bash(git status:*)",
@@ -16,5 +22,15 @@
       "Bash(git push -f:*)",
       "Bash(git push --force:*)"
     ]
+  },
+  "sandbox": {
+    "filesystem": {
+      "allowRead": [
+        "../harmon-init",
+        "../harmon-dotfiles",
+        "../harmon-ops",
+        "../evanharmon-site"
+      ]
+    }
   }
 }
