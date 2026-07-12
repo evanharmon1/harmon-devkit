@@ -441,9 +441,11 @@ install the Renovate GitHub App on the repo. Conventions:
   `bypassPermissions`, e.g. the devcontainer bot profile — the AGENTS.md rule
   is the binding convention there). **[copier]**
 - **`.claude/skills/`** — vendored shared agent skills from harmon-devkit via
-  **skills-sync**: `.skills-sync.yaml` (categories seeded from `project_type` —
-  `general`→`universal`, `web-astro`→`+frontend`, `web-app`→`+frontend,backend`,
-  `iac`→`+infra`), `scripts/sync-skills.sh`, the
+  **skills-sync**, gated on the **`use_skills_sync`** copier answer (default yes;
+  a repo may opt out — its ABSENCE is then deliberate, not drift). When on:
+  `.skills-sync.yaml` (categories from the **`skill_categories`** multiselect,
+  seeded from `project_type` — `general`→`universal`, `web-astro`→`+frontend`,
+  `web-app`→`+frontend,backend`, `iac`→`+infra`), `scripts/sync-skills.sh`, the
   `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
   (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
   until the first `task sync:skills`, so a fresh scaffold stays green. **[copier]**
