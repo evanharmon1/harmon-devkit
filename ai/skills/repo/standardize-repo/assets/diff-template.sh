@@ -19,8 +19,8 @@
 # DRIFT/MISSING, inspect and reconcile — pull template improvements in via
 # `copier update`, keep legit local customizations.
 #
-# Usage: diff-template.sh [TARGET_DIR]            (default: .)
-#        diff-template.sh -v|--show TARGET_DIR    (print the full per-file diff)
+# Usage: diff-template.sh [-v|--show] [TARGET_DIR]   (default target: .)
+#        Flags and the target dir may appear in any order.
 # Env:   HARMON_INIT   template checkout (default: ~/git/harmon-init)
 #
 # Exit: 0 = no drift, 1 = drift found (for callers that want a signal), 2 = setup error.
@@ -28,13 +28,25 @@
 set -euo pipefail
 
 show=0
-case "${1:-}" in
--v | --show)
-    show=1
+target=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -v | --show) show=1 ;;
+    -*)
+        echo "FAIL: unknown argument '$1' (usage: diff-template.sh [-v|--show] [TARGET_DIR])" >&2
+        exit 2
+        ;;
+    *)
+        if [ -n "$target" ]; then
+            echo "FAIL: more than one target dir given ('$target' and '$1')" >&2
+            exit 2
+        fi
+        target="$1"
+        ;;
+    esac
     shift
-    ;;
-esac
-target="${1:-.}"
+done
+[ -n "$target" ] || target="."
 template="${HARMON_INIT:-$HOME/git/harmon-init}"
 here="$(cd "$(dirname "$0")" && pwd)"
 manifest="$here/template-owned-files.txt"
@@ -62,14 +74,21 @@ answers="$target/.copier-answers.yml"
     exit 2
 }
 
-# Reconstruct --data from the recorded answers (skip copier's _ keys and nulls).
-data_args=()
-while IFS= read -r line; do
-    [ -n "$line" ] && data_args+=(--data "$line")
-done < <(yq 'to_entries[] | select(.key | test("^_") | not) | select(.value != null) | .key + "=" + (.value | tostring)' "$answers")
+workdir="$(mktemp -d -t harmon-init-render-XXXXXX)"
+trap 'rm -rf "$workdir"' EXIT
+render="$workdir/render"
 
-# Force every side-effect off in the throwaway render (later --data wins).
-data_args+=(
+# Reconstruct the recorded answers as a --data-file (skip copier's _ keys and
+# nulls). A YAML data file — not per-key `--data k=v` strings — is required to
+# round-trip non-scalar answers: the `skill_categories` multiselect is a LIST,
+# and stringifying it as `--data` emits broken `k=- item` lines that fail the
+# render for every repo whose answers record it (_commit >= v3.23.0).
+datafile="$workdir/answers-data.yml"
+yq 'with_entries(select((.key | test("^_") | not) and (.value != null)))' "$answers" >"$datafile"
+
+# Force every side-effect off in the throwaway render (`--data` wins over
+# `--data-file`).
+data_args=(
     --data git_init=false
     --data github_remote_create=false
     --data github_release_init=false
@@ -86,9 +105,8 @@ data_args+=(
 src_ref="$(yq -r '._commit // "HEAD"' "$answers" 2>/dev/null || echo HEAD)"
 [ -n "$src_ref" ] || src_ref=HEAD
 
-render="$(mktemp -d -t harmon-init-render-XXXXXX)"
-trap 'rm -rf "$render"' EXIT
-copier copy "$template" "$render" --vcs-ref="$src_ref" --trust --defaults "${data_args[@]}" >/dev/null 2>&1 || {
+copier copy "$template" "$render" --vcs-ref="$src_ref" --trust --defaults \
+    --data-file "$datafile" "${data_args[@]}" >/dev/null 2>&1 || {
     echo "FAIL: copier render failed (template ref: $src_ref)" >&2
     exit 2
 }
