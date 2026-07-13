@@ -8,10 +8,11 @@ should this repo have, and where does it come from?"**
 Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 `harmon-init/AGENTS.md`, the `harmon-init/template/` tree. Live reference repos
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
-project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). The platform
-and client repos are kept current via mode-update passes (all six were at
-v3.15.2 as of 2026-07-03), so their remaining divergences are **deliberate
-customizations** (Part 3.2), not lag — but they can drift between passes, so
+project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
+was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13.
+The platform and client repos are kept current via mode-update passes, so their
+remaining divergences are often **deliberate customizations** (Part 3.2), not lag
+— but they can drift between passes, so
 read the repo's actual `_commit` in `.copier-answers.yml` rather than assuming
 either way. Treat the **template** as canonical; treat divergences in a live
 repo as legit project-type/stack specifics (Part 3), deliberate customizations,
@@ -98,12 +99,14 @@ Naming & structure conventions:
 - **Pipeline order:** `check → build → validate → test → security`, with
   `verify` (fast local gate) and `ci` (full CI mirror) as aggregates.
   **`verify`** is tuned to stay well under a minute so editors, git hooks, and AI
-  agents can run it on every change: `check [→ build] → validate → test:tasks
-  [→ test:hooks]`. **`ci`** reproduces the whole CI pipeline on demand (run it
-  locally instead of opening a PR): `verify [→ test:devcontainer:permissions] →
-  test → security`. The rule: a check only belongs in `verify` if it stays fast;
-  heavy or Docker-dependent checks (`test`, `security`, `test:devcontainer:permissions`)
-  live in `ci`. Every `task` target a workflow invokes must still exist (drift
+  agents can run it on every change: `check [→ build] → validate
+  [→ test:devcontainer:permissions] → test:tasks [→ test:hooks]`. The devcontainer
+  permission assertion is a static, daemon-free configuration check. **`ci`**
+  reproduces the whole CI pipeline on demand (run it locally instead of opening a
+  PR): `verify → test → security`. The rule: a check only belongs in `verify` if
+  it stays fast; genuinely heavy or environment-dependent checks (`test`,
+  `security`, container smoke/build tests) live in `ci`. Every `task` target a
+  workflow invokes must still exist (drift
   class L) — but `verify` is intentionally a *subset* of what CI runs, so "`verify`
   is green" is not "CI is green"; use `ci` for that.
 - **Parallel deps:** umbrella tasks fan out via `deps:` (which run in parallel),
@@ -154,8 +157,9 @@ Notable command bodies (for an auditor checking they match):
 
 - `lint:shell` → `shellcheck --severity=error` + `shfmt -d`
 - `lint:markdown` → markdownlint-cli2 `'**/*.md' '#.claude/**' …` — prefers the
-  repo-pinned `node_modules/.bin` copy via `pnpm exec` when installed, falls
-  back to `npx --yes` (non-node repos, fresh scaffolds); same pattern in
+  repo-pinned `node_modules/.bin` copy when installed, then a global
+  `markdownlint-cli2` from the Brewfile, then a version-pinned npx fallback;
+  same pattern in
   `format`/`format:file` for prettier + markdownlint (check-only here; **no
   `--fix`** — auto-fix lives in `format`)
 - `lint:hygiene` → `./scripts/lint-hygiene.sh`
@@ -479,6 +483,18 @@ install the Renovate GitHub App on the repo. Conventions:
   (Renovate can't do the re-sync half). Source-repo exception: **harmon-devkit
   itself sets `use_skills_sync: false`** — it IS the source of the skills;
   self-vendoring a pinned copy of its own `ai/skills/` would be circular.
+  The harmon-devkit **v0.6 series** introduced this managed-set behavior and
+  upgrades a legacy provenance stamp on the first sync; v0.6.2 also rejects an
+  absolute or `..`-traversing destination before deletion. Repos on older pins
+  need an engine update plus one deliberate re-sync, not merely a ref edit.
+  **[copier]**
+- **Foreman** — milestone/issue-driven agent dispatch, gated on the
+  **`use_foreman`** Copier answer. When enabled it adds `.foreman.toml`,
+  `taskfiles/foreman.yml`, `scripts/foreman/`, three `.claude/agents/`, the
+  architecture doc, Taskfile targets, hooks, and Python tooling. The v3.26
+  template introduced it with a default of yes, but update mode requires an
+  explicit per-repo answer because this is a substantial operational subsystem,
+  not a passive lint config. Absence is deliberate when `use_foreman: false`.
   **[copier]**
 - Devcontainer ships richer `config/claude-settings.json` as managed settings (see
   1.6). **[copier]**
@@ -499,12 +515,17 @@ install the Renovate GitHub App on the repo. Conventions:
 > devcontainer exists, also in the `Dockerfile`. Auditing this is a first-class
 > check (see mode-audit drift class **I**).
 
-- **`Brewfile`** — pins the core toolchain (go-task, lefthook, git, gh,
-  shellcheck, shfmt, actionlint, yamllint, gitleaks, snyk, node, jq, fzf, fd,
+- **`Brewfile`** — declares the core toolchain (go-task, lefthook, git, gh,
+  shellcheck, shfmt, actionlint, yamllint, markdownlint-cli2, gitleaks, snyk,
+  node, Python 3.11+, coreutils, jq, fzf, fd,
   ripgrep, bat, tokei, gum, television; conditionally pnpm/lychee, uv, terraform,
-  hadolint). `gum` + `television` (the `tv` binary) power the universal
+  hadolint/devcontainer). `gum` + `television` (the `tv` binary) power the universal
   `status`/`status:*` dashboard and the interactive `task` menu (`menu-tv`), so
   they are required for the dashboard and the bare-`task` menu to work on a host.
+  `scripts/status.sh` resolves GNU `timeout` on Linux or Homebrew `gtimeout` on
+  macOS, falling back to an unbounded command before dependencies are installed.
+  Python is universal because hygiene parses TOML and the secret helpers use
+  `python3`; it is not limited to projects that opt into the Python stack.
   Installed via `task install`. `Brewfile.lock.json` is gitignored. **[copier]**
 - **Python** (when `use_python`): `pyproject.toml` (`requires-python >=3.14`,
   dev group with `black`; ansible adds `ansible-lint`/`ansible-core`),

@@ -67,7 +67,7 @@ TEMPLATE=~/git/harmon-init           # source of truth
    # Renovate/version-pin annotations (drift class C)
    grep -rnE 'GITLEAKS_VERSION|setup-task|# renovate:' "$TARGET/.github/workflows/" 2>/dev/null
 
-   # Required status checks / merge_queue in the ruleset (drift class D)
+   # Required checks and account-appropriate merge_queue policy (drift class D)
    find "$TARGET/.github" -iname '*ruleset*'
    ```
 
@@ -75,7 +75,7 @@ TEMPLATE=~/git/harmon-init           # source of truth
    signal of conformance (they are themselves part of the standard):
 
    ```bash
-   ( cd "$TARGET" && task verify )    # check (lint) -> test:template
+   ( cd "$TARGET" && task verify )    # repo's fast check/build/validate/guard gate
    ( cd "$TARGET" && task security )  # secrets (gitleaks) + audit
    ```
 
@@ -169,11 +169,14 @@ template `build.yml`; do **not** hardcode a version from this doc — read the l
 value from `$TEMPLATE/.github/workflows/build.yml`. Severity: **should** (blocker
 if an unpinned/missing tool breaks the `security` job).
 
-**D. Stale branch ruleset / old job names / missing `merge_queue`.** Canonical
+**D. Stale branch ruleset / old job names / wrong `merge_queue` policy.** Canonical
 ruleset (`template/.github/Branch Protection Ruleset - Protect Main.json`) requires
-exactly two status-check contexts — **`verify`** and **`security`** — plus a
-**`merge_queue`** rule. Old repos reference retired job names (`secrets`,
-`validate`, `build-homepage`) and lack the merge-queue rule. Note this drift can
+exactly two status-check contexts — **`verify`** and **`security`**. The
+**`merge_queue`** rule is conditional: org repos
+(`github_org != author_git_provider_username`) get it; personal-account repos do
+not. Missing it is drift only for an org repo, while adding it to a personal repo
+is itself drift. Old repos may reference retired job names (`secrets`, `validate`,
+`build-homepage`) or carry the wrong account-type variant. Note this drift can
 also live in *prose*: even the harmon-init root `docs/architecture/branch-protection.md`
 still narrates the old `secrets`/`validate`/`build-homepage` contexts while the
 shipped ruleset JSON is already `verify`+`security` — so check the JSON, not just
@@ -182,8 +185,9 @@ devcontainer workflow define a job literally named `verify`, either can satisfy
 the required check — the template renames the devcontainer job to
 **`devcontainer-verify`**. Fix: re-import the ruleset via the GitHub UI
 (Settings → Rules → Rulesets → **Import a ruleset**; avoid `gh api … rulesets`,
-which is non-idempotent and rejects the `merge_queue` rule), rename the
-devcontainer job, and align CI job names to `verify` + `security`.
+which is non-idempotent and rejects the `merge_queue` rule), choose the rendered
+ruleset for the repo's account type, rename the devcontainer job, and align CI job
+names to `verify` + `security`.
 Severity: **blocker** (wrong contexts mean the gate is unenforced or unsatisfiable).
 
 **E. YAML file extensions — NOT drift; do not flag.** `.yml` vs `.yaml` is left
@@ -389,12 +393,13 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
 3. **Verify locally.** Run the same gates the standard requires, from the target:
 
    ```bash
-   ( cd "$TARGET" && task verify )    # check (lint) -> test:template
+   ( cd "$TARGET" && task verify )    # repo's fast check/build/validate/guard gate
    ( cd "$TARGET" && task security )  # gitleaks + dependency audit
    ```
 
-   Fix anything red and re-run until clean. (`task verify` ≙ `task check` +
-   `task test:template`; `task ci` additionally chains `test` and `security`.)
+   Fix anything red and re-run until clean. The exact fast targets are
+   profile/repo-specific; `task ci` additionally chains the heavier `test` and
+   `security` aggregates.
 
 4. **Run the applied-state verifier.** Confirm the audited drift classes are
    actually resolved by running the skill's checker:

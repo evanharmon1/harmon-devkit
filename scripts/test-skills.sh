@@ -10,6 +10,7 @@ set -euo pipefail
 
 repo="$(git rev-parse --show-toplevel)"
 SCRIPTS="$repo/scripts"
+STANDARDIZE_ASSETS="$repo/ai/skills/repo/standardize-repo/assets"
 
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
@@ -377,6 +378,66 @@ for bad in "/tmp/escape" "../../escape" "a/../../escape"; do
     } >"$CD/.skills-sync.yaml"
     expect_fail "sync refuses unsafe dest '$bad'" run_sync_at "$CD" sync
 done
+
+# ── standardize-repo audit assets ─────────────────────────────────────
+echo "==> standardize-repo audit assets"
+
+manifest="$STANDARDIZE_ASSETS/template-owned-files.txt"
+for required in \
+    Brewfile \
+    .skills-sync.yaml \
+    scripts/markdownlint.sh \
+    scripts/secret-set-1p.sh \
+    scripts/secret-set-gh.sh \
+    scripts/sync-skills.sh \
+    .github/workflows/close-milestone-on-release.yml \
+    .foreman.toml \
+    taskfiles/foreman.yml \
+    scripts/foreman/cli.py; do
+    expect_ok "template-owned manifest includes $required" grep -qxF "$required" "$manifest"
+done
+
+# Exercise executable-mode drift end to end with a tiny local Copier template.
+# The real manifest is reused, but only scripts/status.sh exists in this profile,
+# so every other conditional/curated entry is skipped naturally.
+DT_TEMPLATE="$TMPROOT/diff-template-source"
+mkdir -p "$DT_TEMPLATE/template/scripts"
+cat >"$DT_TEMPLATE/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+project_name:
+  type: str
+  default: Test Project
+EOF
+cat >"$DT_TEMPLATE/template/scripts/status.sh" <<'EOF'
+#!/usr/bin/env bash
+echo status
+EOF
+chmod +x "$DT_TEMPLATE/template/scripts/status.sh"
+git_init "$DT_TEMPLATE"
+git_commit_all "$DT_TEMPLATE" "test template"
+git -C "$DT_TEMPLATE" tag v1.0.0
+
+DT_TARGET="$TMPROOT/diff-template-target"
+mkdir -p "$DT_TARGET/scripts"
+cp "$DT_TEMPLATE/template/scripts/status.sh" "$DT_TARGET/scripts/status.sh"
+chmod -x "$DT_TARGET/scripts/status.sh"
+cat >"$DT_TARGET/.copier-answers.yml" <<EOF
+_commit: v1.0.0
+_src_path: file://$DT_TEMPLATE
+project_name: Test Project
+EOF
+
+if mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports executable-mode drift (expected non-zero exit)"
+elif printf '%s\n' "$mode_out" | grep -qF "MODE     scripts/status.sh"; then
+    ok "diff-template reports executable-mode drift"
+else
+    bad "diff-template reports executable-mode drift (MODE diagnostic missing)"
+fi
+chmod +x "$DT_TARGET/scripts/status.sh"
+expect_ok "diff-template passes after executable mode is restored" \
+    env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

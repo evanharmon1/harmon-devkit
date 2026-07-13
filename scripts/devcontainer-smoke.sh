@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# renovate: datasource=npm depName=@devcontainers/cli
+DEVCONTAINER_CLI_VERSION="0.87.0"
+
+devcontainer_cli() {
+    if command -v devcontainer >/dev/null 2>&1; then
+        devcontainer "$@"
+    else
+        npx --yes "@devcontainers/cli@${DEVCONTAINER_CLI_VERSION}" "$@"
+    fi
+}
+
 if ! command -v jq >/dev/null 2>&1; then
     echo "jq is required for devcontainer smoke tests." >&2
     exit 1
@@ -27,7 +38,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> Running devcontainer smoke test for ${CONFIG_PATH}..."
-npx -y @devcontainers/cli up \
+devcontainer_cli up \
     --workspace-folder "${WORKSPACE_ROOT}" \
     --config "${CONFIG_PATH}" \
     --remove-existing-container \

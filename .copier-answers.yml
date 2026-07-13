@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier
-_commit: v3.24.0
+_commit: v3.26.1
 _src_path: https://github.com/evanharmon1/harmon-init
 bunch_add: false
 ci_runner: ubuntu-latest
@@ -20,5 +20,6 @@ project_name: Harmon DevKit
 project_slug: harmon-devkit
 project_type: general
 run_task_install: false
+use_foreman: false
 use_release_please: true
 use_skills_sync: false

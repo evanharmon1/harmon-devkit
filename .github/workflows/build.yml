@@ -32,6 +32,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           # renovate: datasource=node-version
@@ -45,25 +47,35 @@ jobs:
         run: |
           # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
           SHELLCHECK_VERSION=0.10.0
-          curl -sSL -o /tmp/shellcheck.tar.xz \
+          curl -fsSL --retry 3 -o /tmp/shellcheck.tar.xz \
             "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
           sudo install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
           # renovate: datasource=github-releases depName=mvdan/sh extractVersion=^v?(?<version>.+)$
           SHFMT_VERSION=3.13.1
-          sudo curl -sSL -o /usr/local/bin/shfmt \
+          # Raw-binary download: fail closed on a checksum mismatch (a version
+          # bump must update the pinned hash). Archive downloads (shellcheck,
+          # actionlint) already fail loudly at extract time on corruption; a
+          # hash-pinned toolchain image is the follow-on refactor.
+          SHFMT_SHA256=fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1
+          curl -fsSL --retry 3 -o /tmp/shfmt \
             "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
-          sudo chmod +x /usr/local/bin/shfmt
+          echo "${SHFMT_SHA256}  /tmp/shfmt" | sha256sum -c -
+          sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
           # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v?(?<version>.+)$
           ACTIONLINT_VERSION=1.7.12
-          curl -sSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+          curl -fsSL --retry 3 "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
             | tar -xz -C /tmp actionlint
           sudo mv /tmp/actionlint /usr/local/bin/
           # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
           YQ_VERSION=4.44.3
-          sudo curl -sSL -o /usr/local/bin/yq \
+          # Raw-binary download: fail closed on a checksum mismatch (a version
+          # bump must update the pinned hash).
+          YQ_SHA256=a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7
+          curl -fsSL --retry 3 -o /tmp/yq \
             "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
-          sudo chmod +x /usr/local/bin/yq
+          echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           pip install yamllint
       - name: Lint
         run: task check
@@ -84,6 +96,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -98,7 +111,7 @@ jobs:
         run: |
           # renovate: datasource=github-releases depName=gitleaks/gitleaks extractVersion=^v?(?<version>.+)$
           GITLEAKS_VERSION=8.24.3
-          curl -sSL -o /tmp/gitleaks.tgz \
+          curl -fsSL --retry 3 -o /tmp/gitleaks.tgz \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           tar -xzf /tmp/gitleaks.tgz -C /tmp
           sudo mv /tmp/gitleaks /usr/local/bin/gitleaks

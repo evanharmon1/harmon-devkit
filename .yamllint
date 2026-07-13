@@ -8,6 +8,7 @@ ignore:
   - .astro/
   - .task/
   - .worktrees/
+  - .foreman/
   - .venv/
   - .terraform/
   - pnpm-lock.yaml

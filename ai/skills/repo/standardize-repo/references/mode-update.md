@@ -71,6 +71,35 @@ checks (mapping `.yml`↔`.yaml`):
 
 Together these are your reconciliation worklist for §3.
 
+### Preview the release and review new answers
+
+Before accepting `--defaults`, identify both the target release and any Copier
+questions added since the repo's recorded `_commit`:
+
+```bash
+copier check-update --output-format json .
+git -C ~/git/harmon-init diff "$(yq -r '._commit' .copier-answers.yml)"..v<TARGET> -- copier.yml
+```
+
+Every newly introduced question needs an explicit decision. This is especially
+important for a **default-on** feature with a material footprint: for example,
+`use_foreman` adds its supervisor, agents, taskfile, configuration, documentation,
+and tests. Do not treat the new default as consent to adopt it. Pass each reviewed
+answer with `--data`, even when the decision happens to match the default.
+
+Preview the exact answer set before the real update:
+
+```bash
+copier update --trust --defaults --pretend \
+  --data use_foreman=false
+```
+
+`--pretend` confirms rendering succeeds but its output can be terse. For a heavily
+customized or high-impact repo, make a disposable clone under a temporary directory,
+run the same update there without `--pretend`, and inspect its full `git diff` before
+touching the working branch. A preview complements the pinned-baseline drift report;
+neither replaces the post-update reconciliation in §3.
+
 ## 2. Run the update
 
 **Preflight — ensure `_src_path` is a resolvable git source.** `copier update`
@@ -86,14 +115,18 @@ git commit -am "chore: point copier _src_path at the harmon-init GitHub URL"
 ```
 
 ```bash
-copier update --trust --defaults
+copier update --trust --defaults \
+  --data <new-question>=<reviewed-answer>
 ```
 
-**`--defaults` is mandatory when running non-interactively (agents have no TTY).**
-Without it copier tries to prompt for answers and crashes with
+**`--defaults` is mandatory when running non-interactively (agents have no TTY),
+but it is not permission to accept newly introduced behavior.** Review and pass
+new answers explicitly as described above. Without `--defaults`, Copier tries to
+prompt for answers and crashes with
 `OSError: [Errno 22] Invalid argument` (prompt_toolkit can't attach to a missing
 terminal). It reuses the stored answers and accepts defaults for any new questions
-the template added since `_commit`.
+the template added since `_commit`; explicit `--data` values override those
+defaults and are recorded in `.copier-answers.yml`.
 
 **Always do a full update to the latest released version.** Plain `copier update`
 goes to harmon-init's newest **tag** and three-way-merges the *entire* delta from the

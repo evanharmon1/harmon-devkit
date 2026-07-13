@@ -102,7 +102,7 @@ assets/verify-applied.sh <target-repo-dir>
 ```
 
 It confirms the expected files/tooling landed and then runs the repo's own gate
-(`task verify` = lint + template/output checks; `task check` for lint only;
+(`task verify` = the repo's fast check/build/validate/guard set; `task check` for lint only;
 `task install:hooks` to wire lefthook). Report what passed and surface any gaps
 against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
 prohibited); commit on a feature branch and open a PR — no direct commits to `main`.

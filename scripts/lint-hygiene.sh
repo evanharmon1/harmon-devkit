@@ -125,8 +125,12 @@ for f in "${files[@]}"; do
         # Skip JSONC files (devcontainer.json, tsconfig*.json at any depth —
         # TypeScript officially allows comments) and anything jinja-templated.
         # tsc -b validates the tsconfigs loudly, so hygiene needn't parse them.
+        # Match only conventional devcontainer filenames (devcontainer.json or
+        # .devcontainer.json, at the root or in a directory) — a suffix glob
+        # like *devcontainer.json would exempt e.g. mydevcontainer.json too.
         case "$f" in
-        *devcontainer.json | tsconfig*.json | */tsconfig*.json | template/*) ;;
+        devcontainer.json | */devcontainer.json | .devcontainer.json | */.devcontainer.json | \
+            tsconfig*.json | */tsconfig*.json | template/*) ;;
         *)
             if ! python3 -c "import json; json.load(open('$f'))" 2>/dev/null; then
                 warn "$f: invalid JSON"

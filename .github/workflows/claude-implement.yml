@@ -39,12 +39,37 @@ jobs:
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           # Least-privilege token: implement pushes commits (contents), opens
           # PRs (pull-requests), comments (issues), and may touch
-          # .github/workflows/ (workflows, write-only). org-projects gated to
-          # org repos only — an ungranted permission would fail token minting.
+          # .github/workflows/ (workflows, write-only). org-projects (project
+          # Status updates) and members:read (the org-membership sender check)
+          # are gated to org repos only — an ungranted permission would fail
+          # token minting.
           permission-contents: write
           permission-pull-requests: write
           permission-issues: write
           permission-workflows: write
+      # Defense in depth behind the job-level `if:` sender gate: re-verify the
+      # sender server-side (org membership / repo owner) BEFORE the privileged
+      # checkout, so a spoof-shaped gap in the expression can never reach a
+      # push-capable token.
+      - name: Verify sender is authorized
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          if [ "$SENDER" = "evanharmon1-bot" ]; then
+            echo "Bot $SENDER allowed"
+            exit 0
+          fi
+          if [ "$SENDER" = "evanharmon1" ]; then
+            echo "$SENDER is the repo owner"
+          else
+            echo "::error::$SENDER is not authorized"
+            exit 1
+          fi
+      # Exception to the repo-wide `persist-credentials: false` hardening:
+      # this checkout deliberately persists the short-lived CI App token so
+      # Claude's `git push` of the working branch can authenticate. The token
+      # is least-privilege (minted above) and expires with the job.
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0

@@ -9,6 +9,9 @@
 #               legitimately customized it (terraform tasks, a custom status
 #               section) OR because it's missing template improvements (the
 #               recurring status.sh / lint-hygiene / bootstrap class).
+#   • MODE    — executable-bit differences in that same curated set. Copier can
+#               preserve content while a manual copy silently drops `+x`, leaving
+#               a generated script present but unusable.
 #   • MISSING — template files the repo lacks ENTIRELY. This scan is
 #               manifest-INDEPENDENT (it walks the whole render), because the
 #               manifest is hand-maintained and lags the template — a file added
@@ -134,6 +137,7 @@ repo_variant() {
 drift=0
 checked=0
 drift_count=0
+mode_count=0
 missing_count=0
 while IFS= read -r f; do
     case "$f" in '' | \#*) continue ;; esac
@@ -145,6 +149,20 @@ while IFS= read -r f; do
         drift=1
         missing_count=$((missing_count + 1))
         continue
+    fi
+    render_exec=0
+    repo_exec=0
+    [ -x "$render/$f" ] && render_exec=1
+    [ -x "$rv" ] && repo_exec=1
+    if [ "$render_exec" -ne "$repo_exec" ]; then
+        if [ "$render_exec" -eq 1 ]; then
+            mode_note="template is executable; repo is not"
+        else
+            mode_note="repo is executable; template is not"
+        fi
+        echo "MODE     ${rv#"$target"/}  ($mode_note)"
+        drift=1
+        mode_count=$((mode_count + 1))
     fi
     if ! diff -q "$render/$f" "$rv" >/dev/null 2>&1; then
         echo "DRIFT    ${rv#"$target"/}"
@@ -187,7 +205,7 @@ echo ""
 if [ "$drift" -ne 0 ]; then
     # The counts make truncated output self-evident: if you can't see
     # $drift_count DRIFT + $missing_count MISSING lines above, you cut them off.
-    echo "diff-template: ${drift_count} DRIFT + ${missing_count} MISSING across $checked curated files"
+    echo "diff-template: ${drift_count} DRIFT + ${mode_count} MODE + ${missing_count} MISSING across $checked curated files"
     echo "  checked and a whole-render missing-file scan. Findings above. For each,"
     echo "  review the diff (\`diff-template.sh --show\`): pull missed template"
     echo "  improvements in with \`copier update\`, keep legit local customizations."
