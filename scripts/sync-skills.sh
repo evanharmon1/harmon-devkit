@@ -189,8 +189,12 @@ cmd_sync() {
     require_tools
     WORKDIR="$(mktemp -d)"
     dest="$(manifest_get '.dest')"
+    # dest is committed config (.skills-sync.yaml), but sync deletes paths under
+    # it — so refuse anything that could reach outside the repo before any rm.
     case "$dest" in
     "" | "/" | "." | "..") die "refusing to vendor into unsafe dest '$dest'" ;;
+    /*) die "refusing absolute dest '$dest' — .skills-sync.yaml dest must be repo-relative" ;;
+    ../* | */../* | */..) die "refusing dest with a '..' traversal component: '$dest'" ;;
     esac
     ref="$(manifest_get '.source.ref')"
     [ -n "$ref" ] && [ "$ref" != "null" ] || die "manifest: .source.ref is required"

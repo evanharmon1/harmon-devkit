@@ -362,6 +362,22 @@ else
     bad "empty-category sync logs the 0-skills message"
 fi
 
+# (g) Unsafe dest values are refused before any deletion (absolute path or a
+# `..` traversal component that could reach outside the repo).
+CD="$TMPROOT/consumer-dest-guard"
+mkdir -p "$CD"
+for bad in "/tmp/escape" "../../escape" "a/../../escape"; do
+    {
+        echo "source:"
+        echo "  repo: file://$SRC"
+        echo "  ref: v0.0.0-test"
+        echo "categories:"
+        echo "  - universal"
+        echo "dest: $bad"
+    } >"$CD/.skills-sync.yaml"
+    expect_fail "sync refuses unsafe dest '$bad'" run_sync_at "$CD" sync
+done
+
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
