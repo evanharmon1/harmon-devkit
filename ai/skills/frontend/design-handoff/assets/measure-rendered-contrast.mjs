@@ -22,6 +22,13 @@
 // so regex-for-rgb parsers silently fail. This script parses oklch/oklab/rgb/hex itself
 // and composites alpha (both semi-transparent backgrounds and semi-transparent text).
 //
+// WHAT IT CANNOT MODEL (fail-closed): the compositor stacks ancestor background-COLORS only.
+// If the element or any ancestor paints a background-image (gradient, photo) or a painted
+// ::before/::after, the real ground is unknowable here — those samples are reported as
+// UNSUPPORTED and count as failures until verified manually (DevTools eyedropper / pixel
+// sampling). Overlay SIBLINGS (an absolutely-positioned scrim between the text and its
+// ancestor ground) are NOT detectable at all — see accessibility-verification.md.
+//
 // USAGE:   node scripts/measure-rendered-contrast.mjs [baseURL]
 //          (default http://localhost:4321 — start the dev/preview server first;
 //           wire to `task verify:contrast`, see assets/Taskfile.design.yml)
@@ -114,11 +121,14 @@ function ratio(fg, bg) {
 /* ---------- run ---------- */
 
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 
 let failures = 0;
 for (const theme of ["light", "dark"]) {
   console.log(`\n=== ${theme.toUpperCase()} ===`);
+  // FRESH page (and context) per theme: init scripts persist for a page's
+  // lifetime and run in undefined order, so re-adding one per pass on a shared
+  // page would leave BOTH themes' scripts racing on later navigations.
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   await page.emulateMedia({ colorScheme: theme });
   await page.addInitScript(
     ([key, t]) => localStorage.setItem(key, t),
@@ -136,17 +146,45 @@ for (const theme of ["light", "dark"]) {
       if (!el) return { missing: true };
       const fgRaw = getComputedStyle(el).color;
       const bgChain = [];
+      const painted = []; // grounds the solid-color compositor can't model
+      const transparent = "rgba(0, 0, 0, 0)";
       let node = el;
       while (node && node.nodeType === 1) {
-        bgChain.push(getComputedStyle(node).backgroundColor);
+        const cs = getComputedStyle(node);
+        const tag = node.tagName.toLowerCase();
+        if (cs.backgroundImage && cs.backgroundImage !== "none")
+          painted.push(`background-image on <${tag}>`);
+        for (const pseudo of ["::before", "::after"]) {
+          const ps = getComputedStyle(node, pseudo);
+          if (
+            ps.content !== "none" &&
+            ((ps.backgroundImage && ps.backgroundImage !== "none") ||
+              (ps.backgroundColor &&
+                ps.backgroundColor !== transparent &&
+                ps.backgroundColor !== "transparent"))
+          )
+            painted.push(`painted ${pseudo} on <${tag}>`);
+        }
+        bgChain.push(cs.backgroundColor);
         node = node.parentElement;
       }
-      return { fgRaw, bgChain };
+      return { fgRaw, bgChain, painted };
     }, selector);
 
     if (sample.missing) {
       failures++;
       console.log(`  FAIL ${label} — selector not found (${selector})`);
+      continue;
+    }
+
+    // Fail-closed: a gradient/image/pseudo-element ground would make the
+    // solid-color ratio below fiction — never report AA against it.
+    if (sample.painted.length > 0) {
+      failures++;
+      console.log(
+        `  UNSUPPORTED ${label} — ${[...new Set(sample.painted)].join("; ")}; ` +
+          `measure manually (pixel-sample) and record the ratio`,
+      );
       continue;
     }
 
@@ -177,6 +215,7 @@ for (const theme of ["light", "dark"]) {
       `  ${ok ? "PASS" : "FAIL"} ${label.padEnd(38)} ${r.toFixed(2)}:1 (need ${need})`,
     );
   }
+  await page.close();
 }
 
 await browser.close();

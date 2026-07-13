@@ -9,10 +9,15 @@
 # Fails (exit 1) when it finds, under the target dir:
 #   1. a Tailwind arbitrary-color utility — bg-[#…], text-[oklch(…)] — including
 #      a color literal buried inside an arbitrary value (bg-[linear-gradient(…#hex…)]);
-#   2. a literal color in a style value or SVG/HTML presentation attribute —
-#      style={{ color: '#…' }}, fill="#…", stroke="rgb(…)" — anything that isn't
-#      a var(--token).
+#   2. a literal color ANYWHERE in a style value or SVG/HTML presentation
+#      attribute — style={{ color: '#…' }}, fill="#…", stroke="rgb(…)", and a
+#      literal buried mid-value (background: "linear-gradient(#111, #222)") —
+#      anything that isn't a var(--token).
+# Modern color functions count: rgb/rgba, hsl/hsla, hwb, lab/lch, oklab/oklch,
+# and color(display-p3 …) are all flagged.
 # Bracketed SIZES (border-[1.5px], w-[264px]) are fine — only COLORS are flagged.
+# KNOWN false positive: an SVG url(#id) reference whose id happens to be 3+ hex
+# chars (fill="url(#abc)") — rename the id or review the flagged line.
 #
 # BLIND SPOT (a human reviewer must still confirm these are intentional): it does
 # NOT flag raw Tailwind palette utilities — bg-black, text-white, text-red-500.
@@ -26,14 +31,28 @@ set -euo pipefail
 root="${1:-src}"
 exts=(--include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.astro')
 
+# Fail-closed: a typo'd/missing target dir must be an error, not a silent
+# "clean" (grep's stderr is suppressed below, so it can't report this itself).
+if [ ! -d "$root" ]; then
+    echo "check-off-palette: target dir '$root' not found" >&2
+    exit 2
+fi
+
+# The color-function alternation shared by both patterns: legacy + modern CSS
+# color functions (rgba?/hsla?/hwb/lab/lch/oklab/oklch/color(display-p3 …)).
+colorfn="rgba?\(|oklch\(|oklab\(|hsla?\(|hwb\(|lab\(|lch\(|color\("
+
 # 1) A Tailwind arbitrary utility whose value contains a color literal anywhere
 #    inside the brackets (so a gradient with a hex stop is caught, not just bg-[#…]).
-arbitrary="(bg|text|border|fill|stroke|ring|from|via|to|outline|decoration|accent|caret|shadow)-\[[^]]*(#[0-9a-fA-F]{3}|rgb\(|rgba\(|oklch\(|oklab\(|hsl\()"
+arbitrary="(bg|text|border|fill|stroke|ring|from|via|to|outline|decoration|accent|caret|shadow)-\[[^]]*(#[0-9a-fA-F]{3}|$colorfn)"
 
-# 2) A literal color in a style value or SVG/HTML presentation attribute — a
-#    hex/rgb/oklch after color:/fill=/stroke= etc. (never matches var(--token),
-#    which starts with 'v', so token usage passes untouched).
-attribute="(color|background|background-color|backgroundColor|fill|stroke|stop-color|flood-color|border-color|borderColor)[[:space:]]*[:=][[:space:]]*[\"']?(#[0-9a-fA-F]{3}|rgb\(|oklch\(|oklab\(|hsl\()"
+# 2) A literal color ANYWHERE in a style value or SVG/HTML presentation
+#    attribute — not just immediately after the property name, so a hex stop
+#    inside a gradient value (background: "linear-gradient(#111, #222)") is
+#    caught too. The value run stops at quote/semicolon boundaries so a match
+#    can't leak across declarations. Values that only use var(--token) carry
+#    no color literal and pass untouched.
+attribute="(color|background|background-color|backgroundColor|background-image|backgroundImage|fill|stroke|stop-color|flood-color|border-color|borderColor|outline-color|outlineColor|caret-color|caretColor)[[:space:]]*[:=][[:space:]]*[\"']?[^\"';]*(#[0-9a-fA-F]{3}|$colorfn)"
 
 if matches=$(grep -rEn "${exts[@]}" "$arbitrary|$attribute" "$root" 2>/dev/null); then
     echo "Off-palette color literals found — use semantic tokens instead:" >&2

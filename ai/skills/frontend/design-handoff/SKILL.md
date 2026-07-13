@@ -16,9 +16,11 @@ description: >-
 
 Turn a finished design from **Claude Design** (or a similar tool) into working, on-brand code in this
 repo. The export is a **handoff bundle** — a `.tar.gz` or `.zip` from "Handoff to Claude Code" holding a
-README, the design **chat transcript**, prototype HTML/JSX/CSS, a token file, and uploads. But that
-format is an unstable research preview, not a standard, so **parse defensively**: read what's actually
-present rather than assuming exact filenames or folders. That same defensiveness lets the skill absorb
+README, the design **chat transcript**, prototype HTML/JSX/CSS, a token file, and uploads. Identify it
+by that **content shape, not the extension**: Claude Design's separate "Download as .zip" menu item is
+a raw-assets export with no README/chats — if the archive lacks the shape, it's the wrong export
+(`ingesting-the-bundle.md`). The format is an unstable research preview, not a standard, so **parse
+defensively**: read what's actually present rather than assuming exact filenames or folders. That same defensiveness lets the skill absorb
 Claude Design's format changes and adapt to other tools (e.g. Google Stitch). The prototype code is
 **prototype-grade** (it often runs on in-browser Babel + UMD React); your job is to **port** it into
 this repo's stack, not paste it in.
@@ -277,21 +279,30 @@ commits to `main` are blocked) and open a **PR** for human review — never merg
 Bundled assets (the skill installs these into the target repo):
 
 - **`assets/check-contrast.mjs`** — zero-dependency static WCAG-AA token-contrast checker (resolves
-  `var()` chains, merges the `@theme`/`:root`/`.dark` cascade, and **auto-discovers the `*-text` status
-  roles** so the "status text on light" rule is enforced by default); copy to `scripts/`.
+  `var()` chains, merges the `@theme`/`:root`/`.dark` cascade, **auto-discovers the `*-text` status
+  roles** so the "status text on light" rule is enforced by default, and is alpha-aware: translucent
+  foregrounds are composited before scoring, translucent backgrounds are flagged for the rendered
+  check instead of passing on the opaque value); copy to `scripts/`.
 - **`assets/check-off-palette.sh`** — the off-palette half of the static gate: fails on arbitrary color
-  literals (`bg-[#…]`, gradient hex, literal colors in style/SVG attrs); copy to `scripts/` (`chmod +x`).
+  literals (`bg-[#…]`, gradient hex, legacy + modern color functions — rgba/hsla/hwb/lab/lch/oklch/
+  `color()` — anywhere in a style value or SVG attr); copy to `scripts/` (`chmod +x`).
   With check-contrast.mjs it backs `task lint:design`.
 - **`assets/measure-rendered-contrast.mjs`** — the rendered half of the gate: samples computed
   colors on real pages in both themes (parses Chromium's oklch/oklab serialization, composites
-  alpha); copy to `scripts/`, fill `SAMPLES`. Run by `task verify:contrast`.
+  alpha, and fails as UNSUPPORTED any sample over a gradient/image/pseudo-element ground it can't
+  model); copy to `scripts/`, fill `SAMPLES`. Run by `task verify:contrast`.
+- **`assets/ingest-design.sh`** — safe bundle extraction for `task ingest:design`: takes
+  `BUNDLE`/`DEST` from the environment (no shell interpolation), selects tar vs unzip by validated
+  extension, and rejects unsafe archive entries (absolute paths, `..` traversal, links) before
+  extracting; copy to `scripts/` (`chmod +x`).
 - **`assets/Taskfile.design.yml`** — design task snippets (`lint:design`, `ingest:design`,
   `verify:browsers`, `verify:contrast`) to merge into the repo's `Taskfile.yml`.
 - **`assets/playwright.config.ts`** — the cross-browser config (baseURL + `build && preview` webServer +
   the Chromium/Firefox/WebKit + mobile Safari/Chrome matrix); copy to the repo root.
 - **`assets/brand-screenshots.spec.ts`** — a parameterized Playwright sweep (route × theme × the
-  config's engine/device matrix) plus a per-route horizontal-overflow guard; fill in `ROUTES`,
-  `baseURL`/`webServer`, and the theme mechanism. Run by `task verify:browsers`.
+  config's engine/device matrix, chunking pages taller than the browser capture cap) plus a
+  route × theme horizontal-overflow guard; fill in `ROUTES`, `baseURL`/`webServer`, and the theme
+  mechanism. Run by `task verify:browsers`.
 
 ## Complements
 

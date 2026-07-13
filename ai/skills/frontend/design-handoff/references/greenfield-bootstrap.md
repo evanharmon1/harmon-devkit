@@ -25,8 +25,9 @@ existing `globals.css` (`token-reconciliation.md`).
    2 replaces the _values_ with the design's).
 3. A `/brand` route stub (filled in during Phase 3 — see `brand-page.md`).
 4. `DESIGN.md` (root, AI-facing intent) and `docs/architecture/design-language.md` human docs.
-5. The design Taskfile gates: `scripts/check-contrast.mjs` copied in, and `lint:design` /
-   `ingest:design` merged into `Taskfile.yml`.
+5. The design Taskfile gates: `scripts/check-contrast.mjs`, `scripts/check-off-palette.sh`, and
+   `scripts/ingest-design.sh` copied in, and `lint:design` / `ingest:design` merged into
+   `Taskfile.yml`.
 
 Order matters: install + `shadcn init` first (it writes a default `globals.css`), **then** Phase 2
 reconciles the design's tokens into that file. Don't hand-write token _values_ before `shadcn init` —
@@ -34,10 +35,14 @@ let the tool establish the structure, then edit values.
 
 Two `shadcn init` safety rules (learned the hard way):
 
-- **Create an empty `src/styles/globals.css` before running init.** The CLI hunts for an existing
-  stylesheet to update — and it will happily pick a _bundle's_ `globals.css` under `specs/…` (or any
-  stray css file) and rewrite it in place, corrupting the sign-off reference. An empty file at the
-  canonical path gives it the right target.
+- **Make sure `src/styles/globals.css` exists before running init — but never empty an existing
+  one.** The CLI hunts for an existing stylesheet to update — and it will happily pick a _bundle's_
+  `globals.css` under `specs/…` (or any stray css file) and rewrite it in place, corrupting the
+  sign-off reference. If the file is **absent**, create it **empty** so init has the right target.
+  If it already **exists** (the greenfield detection above allows a token-less one), **leave its
+  contents in place** — init updates the file rather than needing a blank slate, and truncating it
+  first would delete the app's existing CSS. If it's untracked, commit or copy it aside first so
+  the pre-init state is recoverable.
 - **Verify `components.json` immediately after init.** Check `tailwind.css` points at
   `src/styles/globals.css`; if init grabbed another file, repoint it and restore the touched file
   (`git checkout`/`git restore` for tracked files; re-extract the bundle if it edited that).
@@ -153,8 +158,9 @@ a `.dark` class on `<html>`. Scaffold that mechanism now, or Phase 5 has nothing
 ## Wire the quality gates
 
 - Copy `assets/check-contrast.mjs` **and** `assets/check-off-palette.sh` into `scripts/` — the two
-  halves of `lint:design` (`chmod +x` the shell one). Both are zero-dependency: Node and `grep`, no
-  install.
+  halves of `lint:design` — plus `assets/ingest-design.sh` (safe bundle extraction for
+  `ingest:design`). `chmod +x` the shell ones. All are zero-dependency: Node, `grep`, `tar`/`unzip`,
+  no install.
 - Copy `assets/playwright.config.ts` to the repo root and `assets/brand-screenshots.spec.ts` to
   `tests/` for the Phase 5 cross-browser sweep.
 - Merge `assets/Taskfile.design.yml`'s tasks into the repo's `Taskfile.yml` (create missing ones):

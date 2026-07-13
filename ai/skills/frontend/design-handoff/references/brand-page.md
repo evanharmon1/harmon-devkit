@@ -202,11 +202,16 @@ selectable buckets:
   (LinkedIn, Instagram, X, Facebook, Bluesky, TikTok, YouTube thumbnails), and podcast cover art;
   OG/share cards (static or dynamically generated); display/banner ads in standard IAB sizes. Export at
   the correct per-platform dimensions.
-- **Email** — transactional and marketing templates, a newsletter layout, and an email signature; built
-  with **React Email**, shipped as HTML/CSS bundles, and tested against major clients (Gmail, Outlook,
-  Apple Mail).
-- **Print** — business cards, letterhead, flyers, posters, brochures, stickers, and signage as
-  **print-ready PDFs** (CMYK, 300dpi, with bleed and crop marks).
+- **Email** — transactional and marketing templates, a newsletter layout, and an email signature;
+  hand-built **table-HTML with inline styles and system font stacks** (the zero-dependency pattern
+  below — email clients can't load brand fonts reliably anyway), shipped as HTML/CSS bundles and
+  tested against major clients (Gmail, Outlook, Apple Mail). React Email is an acceptable
+  alternative only when the repo already carries that dependency — don't add it just for this.
+- **Print** — business cards, letterhead, flyers, posters, brochures, stickers, and signage as PDFs.
+  The zero-dependency recipe below yields **digital-proof PDFs** (RGB, rendered at bleed size);
+  true **print-ready** output (CMYK color, 300dpi, bleed _plus crop marks_) needs a dedicated
+  production export/conversion step and print-vendor validation before packaging — never label the
+  CSS-generated PDFs print-ready.
 - **Presentations & documents** — an **editable** `.pptx` (and/or Google Slides) deck with real text and
   shapes (never a flat, image-based deck), a pitch deck, and a one-pager/sales sheet; plus document
   templates (proposals, reports, case studies, invoices, résumé) for Word / Google Docs / Notion.
@@ -241,8 +246,10 @@ Email…) — the repo's existing Playwright renders everything, driven by one s
 - **PNGs** via `page.screenshot` with an exact-size viewport/clip (OG cards 1200×630, platform
   banners, avatars); **PDFs** via `page.pdf({ printBackground: true, preferCSSPageSize: true })`
   with `@page { size: … }` — print pieces render at **bleed size** (e.g. a 3.5×2in card at
-  3.75×2.25in) with type inside the safe zone, and CMYK values in the spec sheet marked
-  _digital-derived, verify with the print vendor_.
+  3.75×2.25in) with type inside the safe zone. These are **digital proofs**, not print-ready
+  files: they're RGB with no crop marks, and the CMYK values in the spec sheet are
+  digital-derived — a print vendor must convert and validate before production (see the Print
+  bucket above).
 - **Email** stays hand-built table-HTML with inline styles and system font stacks (email clients
   can't load brand fonts reliably); a slide deck works well as an unlisted print-styled route the
   user exports via Print → PDF.

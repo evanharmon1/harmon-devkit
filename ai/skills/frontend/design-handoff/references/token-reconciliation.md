@@ -202,11 +202,15 @@ toast), marketing "always dark" hero slabs, and product-shot specimens. Painting
 theming tokens (`bg-background text-foreground`) makes them flip when the user toggles, which is wrong.
 Three techniques, in order of reach:
 
-1. **Constant chrome → the `sidebar-*` tokens.** shadcn's `--sidebar*` set is, by convention, authored
-   the **same** in `:root` and `.dark` — so it's your ready-made "doesn't theme" surface. Map fixed
-   chrome (an onyx nav bar, a dark tooltip/toast) to `bg-sidebar` / `text-sidebar-foreground` /
-   `border-sidebar-border` / `text-sidebar-primary`; because you never override them in `.dark`, they
-   hold across themes.
+1. **Constant chrome → the `sidebar-*` tokens.** shadcn's `--sidebar*` set is a natural home for
+   fixed chrome — but it is **theme-aware out of the box**: `shadcn init` writes _different_
+   sidebar values under `:root` and `.dark`, so `bg-sidebar` still flips with the theme until you
+   make the blocks agree. To turn it into a "doesn't theme" surface, **delete the `.dark`
+   `sidebar-*` overrides** (the `:root` values then cascade through both themes) — or author
+   identical values in both blocks — and only then map fixed chrome (an onyx nav bar, a dark
+   tooltip/toast) to `bg-sidebar` / `text-sidebar-foreground` / `border-sidebar-border` /
+   `text-sidebar-primary`. If the design needs a real themed sidebar _and_ constant chrome, don't
+   overload `sidebar-*` — mint dedicated fixed-chrome tokens instead.
 2. **An always-dark section → wrap it in `.dark`.** Put `class="dark"` on the section
    (`<section class="dark bg-background text-foreground">`) and its descendants resolve the **dark**
    tokens while the rest of the page follows the active theme. Everything inside stays token-driven — a
