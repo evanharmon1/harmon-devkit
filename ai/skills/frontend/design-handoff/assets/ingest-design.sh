@@ -33,13 +33,16 @@ case "$bundle" in
     ;;
 esac
 
-# List entries without extracting. For tar, the verbose listing also exposes
-# link entries ("->"); unzip -Z1 prints bare member paths (zip links are rare
+# List entries without extracting. For tar, the verbose listing marks the entry
+# type in the first column: 'l' = symlink (shown as "name -> target"), 'h' =
+# hardlink (shown as "name link to target", NO "->"). Match on that type column
+# so BOTH link kinds are rejected — grepping "->" alone misses hardlinks. Portable
+# across GNU tar and bsdtar. unzip -Z1 prints bare member paths (zip links are rare
 # and the path checks below still bound where they can land).
 if [ "$kind" = tar ]; then
-    if tar -tzvf "$bundle" | grep -E ' -> ' >/dev/null; then
-        echo "ingest-design: refusing to extract — archive contains link entries:" >&2
-        tar -tzvf "$bundle" | grep -E ' -> ' >&2
+    if tar -tzvf "$bundle" | grep -E '^[hl]' >/dev/null; then
+        echo "ingest-design: refusing to extract — archive contains link entries (sym/hardlinks):" >&2
+        tar -tzvf "$bundle" | grep -E '^[hl]' >&2
         exit 1
     fi
     paths=$(tar -tzf "$bundle") # non-verbose: one full path per line, spaces intact

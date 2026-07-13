@@ -17,7 +17,7 @@
 //      addInitScript) so a boot-script theme applies with no flash and islands hydrate in the
 //      right theme, plus emulates prefers-color-scheme. If the repo instead toggles a bare class
 //      with no boot script, swap in the post-load classList line noted inside setTheme().
-import { test, type Page } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 const ROUTES = ["/", "/brand"];
 const THEMES = ["light", "dark"] as const;
@@ -86,9 +86,10 @@ for (const route of ROUTES) {
           document.documentElement.scrollWidth -
           document.documentElement.clientWidth,
       );
-      test
-        .expect(overflow, `scrollWidth exceeds viewport by ${overflow}px`)
-        .toBeLessThanOrEqual(0);
+      expect(
+        overflow,
+        `scrollWidth exceeds viewport by ${overflow}px`,
+      ).toBeLessThanOrEqual(0);
     });
   }
 }
