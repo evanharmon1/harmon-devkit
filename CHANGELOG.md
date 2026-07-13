@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.6.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.6.1...v0.6.2) (2026-07-13)
+
+
+### Bug Fixes
+
+* **skills:** harden sync-skills dest against absolute/traversal paths ([#89](https://github.com/evanharmon1/harmon-devkit/issues/89)) ([a81bb40](https://github.com/evanharmon1/harmon-devkit/commit/a81bb4056b12639166a1c7970357461335354297))
+
 ## [0.6.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.6.0...v0.6.1) (2026-07-13)
 
 
