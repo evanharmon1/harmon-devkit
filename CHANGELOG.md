@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.6.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.6.0...v0.6.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **skills:** design-handoff review-finding fixes (CodeRabbit on ponderous-site[#31](https://github.com/evanharmon1/harmon-devkit/issues/31) + lawnomator-site[#14](https://github.com/evanharmon1/harmon-devkit/issues/14)) ([#86](https://github.com/evanharmon1/harmon-devkit/issues/86)) ([61534e2](https://github.com/evanharmon1/harmon-devkit/commit/61534e29459a0bb249eff1e22f25e2ac0ae65e68))
+
 ## [0.6.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.5.0...v0.6.0) (2026-07-12)
 
 
