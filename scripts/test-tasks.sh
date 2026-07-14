@@ -96,6 +96,22 @@ EOF
     esac
 fi
 
+echo "==> required-job aggregates accept only predicate-derived results"
+./scripts/test-required-results.sh
+for aggregate_workflow in .github/workflows/build.yml .github/workflows/devcontainer-build.yml; do
+    [ -f "$aggregate_workflow" ] || continue
+    grep -Fq "IS_FORK:" "$aggregate_workflow" ||
+        fail "$aggregate_workflow does not derive the fork predicate once"
+    grep -Fq "Untrusted fork trust boundary enforced" "$aggregate_workflow" ||
+        fail "$aggregate_workflow does not make fork-only skips explicit"
+    grep -Fq "run: ./scripts/verify-required-results.sh" "$aggregate_workflow" ||
+        fail "$aggregate_workflow does not use the exact-result verifier on trusted events"
+    if grep -Fq '"success" ] || [ "$2" = "skipped"' "$aggregate_workflow" ||
+        grep -Fq '!= "success" ] && [ "$result" != "skipped"' "$aggregate_workflow"; then
+        fail "$aggregate_workflow accepts generic success-or-skipped results"
+    fi
+done
+
 echo "==> hygiene parser preserves quoted paths"
 json_fixture="${shell_tmp}/fixture's data.json"
 toml_fixture="${shell_tmp}/fixture's data.toml"
