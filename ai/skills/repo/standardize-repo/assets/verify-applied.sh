@@ -153,7 +153,7 @@ fi
 # `task verify` above would catch this too, but a broken Taskfile makes that
 # step error out ambiguously; this gives a precise message.
 if { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
-    if ! task --list-all >/dev/null 2>&1; then
+    if ! task --color=false --list-all >/dev/null 2>&1; then
         err "Taskfile does not parse ('task --list-all' failed)"
     fi
 fi
@@ -164,7 +164,7 @@ fi
 # recurring example is status:setup (the setup-completeness audit), which older
 # forks of scripts/status.sh + Taskfile never had.
 if { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
-    tasklist="$(task --list-all 2>/dev/null || true)"
+    tasklist="$(task --color=false --list-all 2>/dev/null || true)"
     for t in verify check security status:setup install:hooks; do
         if ! printf '%s\n' "$tasklist" | grep -qE "^[* ]*${t}:([[:space:]]|\$)"; then
             err "Taskfile missing required target: ${t}"
@@ -185,7 +185,7 @@ fi
 # `&& task <t>` — so prose ("the specific task described"), renovate comments
 # (`go-task/task extractVersion`), and `setup-task@<sha>` never match.
 if [ -d .github/workflows ] && { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
-    tasklist="$(task --list-all 2>/dev/null || true)"
+    tasklist="$(task --color=false --list-all 2>/dev/null || true)"
     called="$(
         grep -rhoE '(run:[[:space:]]*|^[[:space:]]*|&&[[:space:]]*)task +[a-z][a-z0-9:_-]*' .github/workflows/ 2>/dev/null |
             sed -E 's/.*task +//' | sort -u || true
@@ -265,7 +265,7 @@ if [ "$has_terraform" = true ]; then
     fi
 
     if have task && { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; }; then
-        terraform_tasklist="$(task --list-all 2>/dev/null || true)"
+        terraform_tasklist="$(task --color=false --list-all 2>/dev/null || true)"
         for terraform_task in lint:terraform terraform:providers:lock; do
             if ! grep -qE "^[* ]*${terraform_task}:([[:space:]]|\$)" \
                 <<<"$terraform_tasklist"; then
@@ -273,9 +273,9 @@ if [ "$has_terraform" = true ]; then
             fi
         done
 
-        terraform_lint_dry="$(NO_COLOR=1 task --dry lint:terraform 2>&1 || true)"
-        terraform_check_dry="$(NO_COLOR=1 task --dry check 2>&1 || true)"
-        terraform_lock_dry="$(NO_COLOR=1 task --dry terraform:providers:lock 2>&1 || true)"
+        terraform_lint_dry="$(task --color=false --dry lint:terraform 2>&1 || true)"
+        terraform_check_dry="$(task --color=false --dry check 2>&1 || true)"
+        terraform_lock_dry="$(task --color=false --dry terraform:providers:lock 2>&1 || true)"
 
         for dry_contract in \
             'terraform fmt -check' \

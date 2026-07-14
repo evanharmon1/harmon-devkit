@@ -794,6 +794,27 @@ expect_ok "verify-applied accepts private CodeQL with Code Security enabled" \
     env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
     GH_TEST_CODE_SECURITY=enabled \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+COLOR_TASK_BIN="$TMPROOT/codeql-color-task"
+REAL_TASK_BIN="$(command -v task)"
+mkdir -p "$COLOR_TASK_BIN"
+cat >"$COLOR_TASK_BIN/task" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+*" --list-all "* | *" --dry "*)
+    case " $* " in
+    *" --color=false "*) ;;
+    *) exit 42 ;;
+    esac
+    ;;
+esac
+exec "${REAL_TASK_BIN:?}" "$@"
+EOF
+chmod +x "$COLOR_TASK_BIN/task"
+expect_ok "verify-applied explicitly disables colored task introspection" \
+    env PATH="$COLOR_TASK_BIN:$FAKE_GH_BIN:$PATH" \
+    REAL_TASK_BIN="$REAL_TASK_BIN" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
 write_codeql_workflow "" "" $'      - name: Best-effort cleanup\n        if: always()\n        continue-on-error: true\n        run: docker buildx prune -af\n'
 expect_ok "verify-applied allows continue-on-error on unrelated CodeQL cleanup" \
     env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
