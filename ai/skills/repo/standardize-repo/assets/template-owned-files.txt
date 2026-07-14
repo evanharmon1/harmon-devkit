@@ -26,9 +26,13 @@ scripts/markdownlint.sh
 scripts/secret-set-1p.sh
 scripts/secret-set-gh.sh
 scripts/python-audit.sh
+scripts/terraform-provider-locks.sh
 scripts/terraform-changed.sh
 scripts/terraform-ci.sh
+scripts/test-codeql-result.sh
+scripts/test-terraform-provider-locks.sh
 scripts/test-terraform-ci.sh
+scripts/verify-codeql-result.sh
 scripts/sync-skills.sh
 scripts/summarize-gitleaks.mjs
 scripts/test-tasks.sh

@@ -180,14 +180,30 @@ push so the remote exists.
   After the workflow runs, confirm an actual CodeQL analysis and successful SARIF
   upload in **Security → Code scanning**. The workflow's presence,
   `FULL_SECURITY_SCAN=true`, or a green aggregate whose analysis was skipped or
-  tolerated does not establish coverage. The CodeQL analyze step must not use
-  `continue-on-error: true`; its aggregate must fail closed on analysis failure
-  and accept `skipped` only when an explicit runtime/fork predicate allows it.
+  tolerated does not establish coverage. Reconcile the matrix with actual
+  first-party JS/TS/Python source; `use_node` / `use_python` alone are not source
+  evidence. The CodeQL analyze job/action must not use
+  `continue-on-error: true`; unrelated cleanup may remain best-effort. On trusted
+  events the aggregate runs `scripts/verify-codeql-result.sh`; on a fork it must
+  not check out/execute fork-controlled repository code and instead uses the
+  workflow-inline deliberate-skip diagnostic. The hermetic result contract
+  normalizes unset/empty to disabled and accepts only disabled/fork → `skipped`
+  and enabled non-fork → `success`; nonempty malformed values fail.
 
   If a private/internal repo lacks Code Security and it will not be enabled,
   re-render with `use_codeql=false`. Remove the CodeQL workflow and README badge,
   stop setting `FULL_SECURITY_SCAN` (delete a stale repository variable), and make
   `docs/architecture/security.md` explicitly document the first-party SAST gap.
+
+- [ ] **[scriptable]** (Terraform repos) Prove the advertised lint and provider
+      lock contract rather than relying on docs or a pre-existing lock file.
+      `task --dry lint:terraform` and `task --dry check` must both reach fmt,
+      TFLint, pinned Checkov, and `terraform-provider-locks.sh check`; the root
+      Brewfile and build workflow must provision Terraform/TFLint/uv. Run the
+      hermetic provider-lock regression, then use the explicit
+      `task terraform:providers:lock` mutation task when provider requirements
+      exist. Its helper targets both `darwin_arm64` and `linux_amd64`; a fresh
+      provider-free scaffold may skip without creating `.terraform.lock.hcl`.
 
 - [ ] **[human-only]** (devcontainer projects) Ensure the org/user **allows
       GHCR package publishing** so the first `devcontainer-build.yml` prebuild on

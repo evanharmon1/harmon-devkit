@@ -394,7 +394,7 @@ Workflow inventory:
 | `claude-implement.yml` | `@claude implement` / label → opens a PR on a `claude/` branch (`--model sonnet`) | [copier] |
 | `claude-review.yml` | `@claude review` / label → review comment, no writes (sticky comment) | [copier] |
 | `release.yml` | release-please; only when `use_release_please` | [copier] |
-| `codeql.yml` | only for a supported Node/Python stack when explicit `use_codeql=true`; runtime-gated by `FULL_SECURITY_SCAN=true`; private/internal repos also require GitHub Code Security; aggregate `codeql-verify` | [copier] + [manual capability] |
+| `codeql.yml` | only when explicit `use_codeql=true` and the matrix matches first-party JS/TS/Python source; runtime-gated by `FULL_SECURITY_SCAN=true`; private/internal repos also require GitHub Code Security; fail-closed `codeql-verify` helper | [copier] + [manual capability/source audit] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
 
@@ -424,17 +424,38 @@ the repository has the live Code Security capability.
   `summarize-gitleaks.mjs` GH step summary). **[copier]**
 - **Snyk** — `task security:sast` (`snyk code test`) + `security:sca` (`snyk
   test`); needs `SNYK_TOKEN`. **[copier]** for tasks; **[manual]** for the token.
-- **CodeQL** — three gates must align: supported Node/Python code, explicit
-  `use_codeql=true`, and live platform capability. Public repositories have Code
-  Security by default; private/internal repositories require GitHub Code Security
-  or SARIF uploads fail. `FULL_SECURITY_SCAN=true` starts the included workflow,
-  but the workflow and variable prove configuration, not coverage. Confirm a real
-  analysis and successful upload in **Security → Code scanning**. The analyze step
-  must not use `continue-on-error: true`; `codeql-verify` must reject analysis
-  failure/cancellation and accept `skipped` only when the explicit runtime or fork
-  predicate proves it intentional. When capability is unavailable and will not be
-  enabled, use `use_codeql=false`, omit the workflow/badge/setup variable, and
-  document the first-party SAST gap. Inspect capability read-only with
+- **CodeQL** — three gates must align: actual first-party JS/TS/Python source,
+  explicit `use_codeql=true`, and live platform capability. `use_node` and
+  `use_python` describe tooling; neither proves that its corresponding source
+  exists. Reconcile `javascript-typescript` / `python` in the workflow matrix
+  against first-party files, excluding generated dependencies and config-only
+  tooling. **harmon-init source follow-up:** add an explicit
+  `codeql_languages` multiselect/override so rendering no longer infers coverage
+  languages from those tooling flags.
+
+  Public repositories have Code Security by default; private/internal
+  repositories require GitHub Code Security or SARIF uploads fail. Audit the live
+  capability whenever a CodeQL workflow exists, including a legacy repo whose
+  `.copier-answers.yml` predates `use_codeql`; a missing answer is a migration
+  warning, not a capability grandfather clause. `FULL_SECURITY_SCAN=true` starts
+  the included workflow, but the workflow and variable prove configuration, not
+  coverage. Confirm a real analysis and successful upload in **Security → Code
+  scanning**.
+
+  The analyze job/action must not use `continue-on-error: true` (an unrelated
+  best-effort cleanup may). On trusted events, `codeql-verify` conditionally
+  checks out the repo and calls `scripts/verify-codeql-result.sh` with
+  `FULL_SECURITY_SCAN`, the explicit fork decision, and
+  `needs.analyze.result`. A fork PR must **not** check out or execute
+  fork-controlled repository code on the aggregate runner; a workflow-inline
+  fork step validates the exact boolean and deliberate skip instead. The tested
+  allowlist is a truth table: an unset/empty `FULL_SECURITY_SCAN` normalizes to
+  `false`; scan-disabled and fork PRs require `skipped`; enabled non-forks require
+  `success`; unexpected `skipped`, failure, cancellation, nonempty malformed
+  values such as `yes`/`enabled`, and unknown results fail. When capability is
+  unavailable and will not be enabled, use `use_codeql=false`, omit the
+  workflow/badge/setup variable, and document the first-party SAST gap. Inspect
+  capability read-only with
   `gh api repos/<owner>/<repo>` and
   `.security_and_analysis.code_security.status`; an unavailable field requires a
   manual **Settings → Code security** check. See GitHub's
@@ -758,9 +779,10 @@ Adds (all [copier] unless noted):
   ≥0.9.
 - **`docs/architecture/design-language.md`** + DESIGN.md "Visual & UX direction".
 - Devcontainer forwards port **4321** (Astro dev server); `astro-build.astro-vscode` extension.
-- With `use_codeql=true` and live Code Security capability, `codeql.yml` analyzes
-  `javascript-typescript`; otherwise the workflow is intentionally absent and the
-  SAST gap is documented.
+- With first-party JS/TS source, `use_codeql=true`, and live Code Security
+  capability, `codeql.yml` analyzes `javascript-typescript`; otherwise the
+  workflow is intentionally absent and the SAST gap is documented. Do not count
+  an ESLint/Prettier/Astro config file by itself as application source.
 - **[manual] CHECKLIST:** `pnpm create astro@latest .`; add **Tailwind v4**
   (`@tailwindcss/vite`), **zod**, **vitest**, **lucide**; move lint tooling into
   `devDependencies` (the Taskfile auto-prefers repo-pinned `node_modules` bins
@@ -814,12 +836,29 @@ Same node tooling as web-astro **except**:
 Adds (all [copier]):
 
 - **`include_terraform`** → `terraform/` skeleton (`main.tf`, `variables.tf`,
-  `outputs.tf`, `tfvars.env.example`); tasks `lint:terraform` (`fmt -check`),
-  `lint:terraform:validate`, `validate`→validate; lefthook terraform (pre-commit)
-  - terraform-validate (pre-push); terraform devcontainer feature; Renovate
-  Terraform-providers group; hashicorp/terraform extension.
+  `outputs.tf`, `tfvars.env.example`). `lint:terraform`, reached transitively by
+  `check`, aggregates `lint:terraform:fmt` (`terraform fmt -check -recursive`),
+  `lint:terraform:tflint`, `lint:terraform:security` (Renovate-pinned Checkov via
+  `uvx --from "checkov==…"`), and `lint:terraform:locks`.
+  `lint:terraform:validate` remains the separate validation path. The root
+  `Brewfile` supplies Terraform, TFLint, and uv locally; the build workflow
+  provisions Terraform, pinned TFLint, and uv before invoking the shared task
+  gate. A docs claim or a defined-but-unreachable leaf task is not lint coverage.
+  Lefthook runs the lint aggregate pre-commit and validate pre-push; the
+  devcontainer includes Terraform; Renovate groups Terraform providers; VS Code
+  includes hashicorp/terraform.
 - **Terraform CI invariants:** commit `.terraform.lock.hcl` after the explicit
-  first initialization. Once tracked, CI uses
+  first provider-bearing initialization. `task terraform:providers:lock` calls
+  `scripts/terraform-provider-locks.sh update terraform`; the lint aggregate calls
+  the same helper in `check` mode. The helper generates and compares checksums for
+  exactly `darwin_arm64` (developer) and `linux_amd64` (GitHub CI) in a scratch
+  copy, leaving the checkout untouched in check mode. A fresh scaffold with no
+  provider requirements cleanly skips lock creation. The hermetic
+  `scripts/test-terraform-provider-locks.sh` regression must remain reachable
+  through the task tests. A lock file's mere presence does **not** prove platform
+  coverage; require this authoritative update/check process.
+
+  Once a lock is tracked, CI uses
   `terraform init -lockfile=readonly`; only an explicit fresh-scaffold/local
   initialization may create the initial lock, and an intentional local provider
   update may refresh it; ordinary CI must not. The workflow listens to `push`,
@@ -845,8 +884,11 @@ Adds (all [copier]):
   existing); lefthook ansible-syntax (pre-push); `ANSIBLE_CONFIG` remoteEnv;
   Renovate ansible regex managers; redhat.ansible extension.
 - **Python toolchain** active (uv, black, `.python-version`, pyproject).
-- With `use_codeql=true` and live Code Security capability, `codeql.yml` analyzes
-  `python`; `use_python` alone does not include it.
+- Do not infer Python CodeQL coverage from the iac type. The current renderer adds
+  `python` when `use_codeql=true` because iac enables the Python tooling flag, but
+  an infrastructure repo may have no first-party `.py` files. Reconcile the
+  matrix with actual source (and include another real language such as
+  `javascript-typescript` when present) plus live Code Security capability.
 - **[manual] CHECKLIST:** lay out `terraform/` and/or `ansible/site.yml` — lint
   tasks activate automatically once `ansible/site.yml` exists.
 - The live `harmon-infra` shows how deep the namespacing legitimately goes:
@@ -883,10 +925,12 @@ Legitimately repo- or type-specific differences. An auditor should treat these a
   later added its own `.devcontainer/`).
 - **No `release.yml` / release-please manifest** when `use_release_please: no`
   (then releases are purely `task release:*`).
-- **No `codeql.yml`** when neither node nor python **or** when
-  `use_codeql: false` (including a private/internal repo without GitHub Code
+- **No `codeql.yml`** when there is no planned first-party JS/TS/Python source or
+  when `use_codeql: false` (including a private/internal repo without GitHub Code
   Security). The README badge and `FULL_SECURITY_SCAN` setup are absent too, and
-  security docs name the first-party SAST gap.
+  security docs name the first-party SAST gap. Current rendering is gated by
+  `use_node`/`use_python`, so audit the matrix rather than treating those flags as
+  source evidence.
 - **No `project-automation.yml`, no org `merge_queue` rule, no
   `permission-organization-projects`/`permission-members`** for personal-account
   repos (`github_org == author_git_provider_username`). Org repos get all three.

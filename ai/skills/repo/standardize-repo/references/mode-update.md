@@ -92,9 +92,14 @@ important for a feature with a material footprint or an external capability:
   documentation, and tests. It was default-on when introduced in v3.26.1;
   current template source defaults it off. Update mode must still decide whether
   the target should opt in.
-- `use_codeql` includes CodeQL only for a supported Node/Python stack. Public
-  repositories have GitHub Code Security by default. For a private/internal repo,
-  perform a read-only capability check before selecting it:
+- `use_codeql` includes CodeQL only when the matrix corresponds to planned/actual
+  first-party JS/TS/Python source. `use_node` / `use_python` are tooling flags,
+  not source evidence; reconcile the rendered matrix and record an explicit
+  `codeql_languages` multiselect/override as a harmon-init source follow-up.
+  Public repositories have GitHub Code Security by default. For a
+  private/internal repo, perform a read-only capability check before selecting it
+  — and perform the same check whenever a legacy workflow exists without a
+  `use_codeql` answer:
 
   ```bash
   gh api "repos/<owner>/<repo>" \
@@ -107,6 +112,21 @@ important for a feature with a material footprint or an external capability:
   unavailable because the caller lacks permission, verify the capability in
   **Settings → Code security** rather than inferring it. A workflow file or
   `FULL_SECURITY_SCAN=true` proves configuration, not successful SARIF coverage.
+  Require the fail-closed result contract: the helper's hermetic truth table
+  normalizes unset/empty `FULL_SECURITY_SCAN` to disabled, accepts disabled/fork
+  runs only as `skipped`, and accepts enabled non-forks only as `success`. At
+  runtime, trusted events conditionally check out and execute that helper; fork
+  aggregates must not execute repository code and use the workflow-inline
+  deliberate-skip diagnostic. Nonempty malformed/unexpected results fail.
+
+- `include_terraform=true` now carries a reachable four-part lint contract:
+  format, TFLint, pinned Checkov, and a provider-lock check. Reconcile customized
+  Taskfiles by proving both `task --dry lint:terraform` and `task --dry check`
+  reach all four commands, and keep Terraform/TFLint/uv reachable locally and in
+  CI. Adopt `scripts/terraform-provider-locks.sh` plus its hermetic regression;
+  the check/update task paths generate exactly `darwin_arm64` and `linux_amd64`
+  checksums. Do not accept a pre-existing `.terraform.lock.hcl` as proof of that
+  process.
 
 Pass each reviewed answer with `--data`, even when the decision happens to match
 the current default.

@@ -201,11 +201,19 @@ carry duplicates like `claude-review-max.yml` / `claude-implement-max.yml`. Fix:
 delete the `-max` duplicates, keep the three canonical workflows. Severity:
 **should** (blocker if a duplicate fires redundant/conflicting automation).
 
-**G. CodeQL selection/capability mismatch.** CodeQL has three gates: a supported
-Node/Python stack, the explicit `use_codeql` answer, and a live GitHub capability.
+**G. CodeQL source/selection/capability mismatch.** CodeQL has three gates: actual
+first-party JS/TS/Python source, the explicit `use_codeql` answer, and a live
+GitHub capability. `use_node` / `use_python` are tooling flags, not source
+evidence. Compare the workflow's `javascript-typescript` / `python` matrix with
+the tracked first-party source, excluding generated dependencies and config-only
+tooling. Record an explicit `codeql_languages` multiselect/override as a
+harmon-init source follow-up; until it exists, correct the rendered matrix during
+reconciliation.
+
 A `codeql.yml` file and `FULL_SECURITY_SCAN=true` prove configuration, not that an
 analysis ran or GitHub accepted SARIF. Public repositories have Code Security by
-default. For private/internal repositories, inspect it read-only:
+default. Whenever the workflow exists, inspect capability read-only — even when a
+legacy `.copier-answers.yml` has no `use_codeql` field:
 
 ```bash
 gh api "repos/<owner>/<repo>" \
@@ -217,11 +225,19 @@ When Code Security is disabled/unavailable and will not be enabled, set
 `FULL_SECURITY_SCAN` setup, and positive coverage claims must disappear, while
 `docs/architecture/security.md` names the first-party SAST gap. If the capability
 will be enabled, enable it before selecting `use_codeql=true`, then verify a real
-analysis and successful SARIF upload. The analyze step must not use
-`continue-on-error: true`; `codeql-verify` must fail when analysis fails and may
-accept `skipped` only when the runtime gate or fork-PR predicate made that skip
-intentional. If the API hides the field because of caller permissions, record a
-manual **Settings → Code security** check instead of inferring support. Severity:
+analysis and successful SARIF upload. The analyze job/action must not use
+`continue-on-error: true`; unrelated best-effort cleanup does not make analysis
+fail-open. On trusted events, `codeql-verify` conditionally checks out the repo and
+calls `scripts/verify-codeql-result.sh` with `FULL_SECURITY_SCAN`, the explicit
+fork decision, and `needs.analyze.result`. A fork aggregate must not check out or
+execute fork-controlled repository code (especially on a configurable/self-hosted
+runner); require the separate workflow-inline fork diagnostic instead. Exercise
+the helper's hermetic truth table: unset/empty normalizes to disabled;
+disabled/fork → `skipped`; enabled non-fork → `success`; enabled non-fork →
+`skipped`, failure, cancellation, nonempty malformed values, and unknown states
+all fail. If the API hides the field because of caller
+permissions, record a manual **Settings → Code security** check instead of
+inferring support. Severity:
 **blocker** for fail-open result propagation, a predictably red SARIF upload, or a
 false coverage claim; **should/manual residual** for an intentional, documented
 SAST gap.
@@ -400,14 +416,26 @@ groups and clean ephemeral/JIT isolation; otherwise treat it as a blocker. This
 is currently a manual residual: do not assume the template's configurable
 `runs-on` expression mechanically enforces the hosted-only public-PR policy.
 
-For Terraform workflows, trace the entire chain: change detection → validation
-→ saved plan → exact-plan apply → aggregate. A tracked `.terraform.lock.hcl`
-makes CI init use `-lockfile=readonly`; only explicit fresh scaffolding may
-create the first lock, while an intentional local provider update may refresh
-it. Plan/apply must be downstream of validation, guarded/namespaced to the
-trusted run, and apply must refuse to re-plan if the private run-scoped saved
-plan is absent. Confirm the summary displays that same plan, state-lock waits are
-bounded (never `-lock=false`), and cleanup runs under `if: always()`.
+For a Terraform-capable repo (`include_terraform=true` or real first-party `.tf`
+files), prove the local/CI lint chain before reviewing mutation. Both
+`task --dry check` and `task --dry lint:terraform` must reach format check,
+TFLint, Renovate-pinned Checkov through `uvx --from`, and the provider-lock check. The
+root `Brewfile` must provision Terraform/TFLint/uv locally, and the build workflow
+must provision the same capabilities before the shared task runs. Task names or
+documentation without command/tool reachability are not coverage.
+
+Then trace the Terraform workflow chain: change detection → validation → saved
+plan → exact-plan apply → aggregate. A tracked `.terraform.lock.hcl` makes CI init
+use `-lockfile=readonly`, but file presence alone says nothing about platform
+checksums. Require `scripts/terraform-provider-locks.sh`: lint calls `check`, the
+explicit `terraform:providers:lock` mutation task calls `update`, and the helper
+targets exactly `darwin_arm64` + `linux_amd64` in a scratch copy. Run its hermetic
+regression; a fresh no-provider scaffold may skip cleanly. Only explicit fresh
+scaffolding may create the first lock, while an intentional local provider update
+may refresh it. Plan/apply must be downstream of validation, guarded/namespaced
+to the trusted run, and apply must refuse to re-plan if the private run-scoped
+saved plan is absent. Confirm the summary displays that same plan, state-lock
+waits are bounded (never `-lock=false`), and cleanup runs under `if: always()`.
 
 A required `terraform-verify` must always emit on `push`, `pull_request`,
 `merge_group`, and `workflow_dispatch`, including unrelated-path no-ops; use an
