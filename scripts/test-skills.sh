@@ -519,8 +519,14 @@ expect_ok "catalog requires the four-part reachable Terraform lint contract" \
 expect_ok "catalog requires both Terraform provider-lock platforms" \
     grep -qF 'exactly `darwin_arm64` (developer) and `linux_amd64` (GitHub CI)' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog requires update-only Terraform init upgrades" \
+    grep -qF 'passes `-upgrade` only in update mode' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "audit guidance rejects lock presence as platform evidence" \
     grep -qF 'file presence alone says nothing about platform' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit guidance verifies both Terraform init modes" \
+    grep -qF 'update initialization receives `-upgrade` while check' \
     "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "audit guidance orders plan and apply after validation" \
     grep -qF 'Plan/apply must be downstream of validation' \
@@ -940,16 +946,44 @@ EOF
 }
 write_terraform_lock_helper() {
     local include_linux="${1:-true}"
+    local init_mode="${2:-conditional}"
     local linux_platform='    -platform=linux_amd64'
+    local init_upgrade
     if [ "$include_linux" = false ]; then
         linux_platform=""
     fi
+    case "$init_mode" in
+    conditional)
+        init_upgrade='if [ "$mode" = update ]; then
+    init_args+=(-upgrade)
+fi'
+        ;;
+    missing-upgrade)
+        init_upgrade='# Deliberately omit the update-mode upgrade flag.'
+        ;;
+    unconditional-upgrade)
+        init_upgrade='init_args+=(-upgrade)'
+        ;;
+    *)
+        fail "unknown Terraform lock helper fixture mode: $init_mode"
+        ;;
+    esac
     cat >"$TF_TARGET/scripts/terraform-provider-locks.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The production helper implements check/update and a no-provider clean skip.
-terraform -chdir="\${2:-terraform}" providers lock \\
+mode="\${1:-}"
+root="\${2:-terraform}"
+case "\$mode" in
+check | update) ;;
+*) exit 2 ;;
+esac
+
+terraform_bin="\${TERRAFORM_BIN:-terraform}"
+init_args=(-backend=false -input=false)
+$init_upgrade
+"\$terraform_bin" "-chdir=\$root" init "\${init_args[@]}" >/dev/null
+"\$terraform_bin" "-chdir=\$root" providers lock \\
     -platform=darwin_arm64 \\
 $linux_platform
 EOF
@@ -991,6 +1025,13 @@ expect_fail "verify-applied rejects Terraform lint without reachable TFLint in C
 write_terraform_build_workflow
 write_terraform_lock_helper false
 expect_fail "verify-applied requires linux_amd64 provider-lock evidence" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_lock_helper
+write_terraform_lock_helper true missing-upgrade
+expect_fail "verify-applied rejects update init without -upgrade" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_lock_helper true unconditional-upgrade
+expect_fail "verify-applied rejects check init with -upgrade" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
 write_terraform_lock_helper
 write_terraform_lock_regression 1

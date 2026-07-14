@@ -852,8 +852,11 @@ Adds (all [copier]):
   `scripts/terraform-provider-locks.sh update terraform`; the lint aggregate calls
   the same helper in `check` mode. The helper generates and compares checksums for
   exactly `darwin_arm64` (developer) and `linux_amd64` (GitHub CI) in a scratch
-  copy, leaving the checkout untouched in check mode. A fresh scaffold with no
-  provider requirements cleanly skips lock creation. The hermetic
+  copy, leaving the checkout untouched in check mode. Scratch initialization
+  passes `-upgrade` only in update mode, so an intentional provider constraint
+  bump can move beyond the selection in the committed lock; check mode must omit
+  `-upgrade`. A fresh scaffold with no provider requirements cleanly skips lock
+  creation. The hermetic
   `scripts/test-terraform-provider-locks.sh` regression must remain reachable
   through the task tests. A lock file's mere presence does **not** prove platform
   coverage; require this authoritative update/check process.

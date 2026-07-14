@@ -125,8 +125,9 @@ important for a feature with a material footprint or an external capability:
   reach all four commands, and keep Terraform/TFLint/uv reachable locally and in
   CI. Adopt `scripts/terraform-provider-locks.sh` plus its hermetic regression;
   the check/update task paths generate exactly `darwin_arm64` and `linux_amd64`
-  checksums. Do not accept a pre-existing `.terraform.lock.hcl` as proof of that
-  process.
+  checksums. Update-mode scratch initialization must pass `-upgrade`, while
+  check-mode initialization must omit it. Do not accept a pre-existing
+  `.terraform.lock.hcl` as proof of that process.
 
 Pass each reviewed answer with `--data`, even when the decision happens to match
 the current default.

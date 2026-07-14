@@ -202,8 +202,10 @@ push so the remote exists.
       Brewfile and build workflow must provision Terraform/TFLint/uv. Run the
       hermetic provider-lock regression, then use the explicit
       `task terraform:providers:lock` mutation task when provider requirements
-      exist. Its helper targets both `darwin_arm64` and `linux_amd64`; a fresh
-      provider-free scaffold may skip without creating `.terraform.lock.hcl`.
+      exist. Its helper targets both `darwin_arm64` and `linux_amd64`, passes
+      `-upgrade` to scratch init only in update mode, and leaves it off in check
+      mode; a fresh provider-free scaffold may skip without creating
+      `.terraform.lock.hcl`.
 
 - [ ] **[human-only]** (devcontainer projects) Ensure the org/user **allows
       GHCR package publishing** so the first `devcontainer-build.yml` prebuild on

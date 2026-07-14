@@ -430,12 +430,16 @@ use `-lockfile=readonly`, but file presence alone says nothing about platform
 checksums. Require `scripts/terraform-provider-locks.sh`: lint calls `check`, the
 explicit `terraform:providers:lock` mutation task calls `update`, and the helper
 targets exactly `darwin_arm64` + `linux_amd64` in a scratch copy. Run its hermetic
-regression; a fresh no-provider scaffold may skip cleanly. Only explicit fresh
-scaffolding may create the first lock, while an intentional local provider update
-may refresh it. Plan/apply must be downstream of validation, guarded/namespaced
-to the trusted run, and apply must refuse to re-plan if the private run-scoped
-saved plan is absent. Confirm the summary displays that same plan, state-lock
-waits are bounded (never `-lock=false`), and cleanup runs under `if: always()`.
+regression and prove update initialization receives `-upgrade` while check
+initialization does not; otherwise a constraint bump beyond the committed lock
+fails before `providers lock`, or check mode compares against upgraded selections
+instead of the committed-lock semantics. A fresh no-provider scaffold may skip
+cleanly. Only explicit fresh scaffolding may create the first lock, while an
+intentional local provider update may refresh it.
+Plan/apply must be downstream of validation, guarded/namespaced to the trusted
+run, and apply must refuse to re-plan if the private run-scoped saved plan is
+absent. Confirm the summary displays that same plan, state-lock waits are bounded
+(never `-lock=false`), and cleanup runs under `if: always()`.
 
 A required `terraform-verify` must always emit on `push`, `pull_request`,
 `merge_group`, and `workflow_dispatch`, including unrelated-path no-ops; use an

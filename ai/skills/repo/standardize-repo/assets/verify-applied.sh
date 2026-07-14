@@ -222,6 +222,65 @@ terraform_sources="$(
         grep -vE '(^|/)(\.terraform|node_modules|vendor|dist|build)/' || true
 )"
 
+provider_lock_init_modes_are_safe() {
+    local helper="$1"
+    local probe fake_terraform check_root update_root result
+
+    probe="$(mktemp -d "${TMPDIR:-/tmp}/verify-provider-lock-init.XXXXXX")" || return 1
+    fake_terraform="$probe/terraform"
+    check_root="$probe/check"
+    update_root="$probe/update"
+    result=0
+
+    cat >"$fake_terraform" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+-chdir=*) ;;
+*) exit 2 ;;
+esac
+shift
+
+case "${1:-}" in
+init)
+    shift
+    upgrade=false
+    for arg in "$@"; do
+        if [ "$arg" = -upgrade ]; then
+            upgrade=true
+        fi
+    done
+    case "${EXPECT_INIT_UPGRADE:-}:$upgrade" in
+    false:false | true:true) ;;
+    *) exit 90 ;;
+    esac
+    ;;
+providers)
+    shift
+    [ "${1:-}" = lock ] || exit 2
+    ;;
+*) exit 2 ;;
+esac
+EOF
+    chmod +x "$fake_terraform"
+    mkdir "$check_root" "$update_root"
+    printf '%s\n' 'terraform {}' >"$check_root/main.tf"
+    printf '%s\n' 'terraform {}' >"$update_root/main.tf"
+
+    if ! EXPECT_INIT_UPGRADE=false TERRAFORM_BIN="$fake_terraform" \
+        "$helper" check "$check_root" >/dev/null 2>&1; then
+        result=1
+    fi
+    if ! EXPECT_INIT_UPGRADE=true TERRAFORM_BIN="$fake_terraform" \
+        "$helper" update "$update_root" >/dev/null 2>&1; then
+        result=1
+    fi
+
+    rm -rf "$probe"
+    [ "$result" -eq 0 ]
+}
+
 has_terraform=false
 case "$include_terraform_answer" in
 true | yes)
@@ -253,6 +312,10 @@ if [ "$has_terraform" = true ]; then
                 err "$provider_lock_helper does not establish '$lock_contract'"
             fi
         done
+        if [ -x "$provider_lock_helper" ] &&
+            ! provider_lock_init_modes_are_safe "$provider_lock_helper"; then
+            err "$provider_lock_helper must pass -upgrade to init only in update mode"
+        fi
     fi
 
     provider_lock_regression="scripts/test-terraform-provider-locks.sh"
