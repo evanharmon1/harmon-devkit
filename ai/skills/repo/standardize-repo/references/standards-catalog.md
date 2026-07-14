@@ -179,10 +179,14 @@ Notable command bodies (for an auditor checking they match):
 - `lint:hygiene` → `./scripts/lint-hygiene.sh`
 - `security:secrets` → `gitleaks detect --no-banner --redact --source .`
 - Python `security:audit` → fail-closed `scripts/python-audit.sh`: with a
-  `uv.lock`, export the exact graph using
-  `uv export --frozen --all-extras --all-groups`; before the first lock,
+  `uv.lock`, require it to match `pyproject.toml` while exporting the exact graph
+  with `uv export --locked --all-extras --all-groups`; before the first lock,
   compile the project plus `dev` group to a temporary requirements file. Audit
-  it with pinned `pip-audit==2.10.1`; no `|| true` or ignored exit status.
+  it with pinned `pip-audit==2.10.1`; no `|| true` or ignored exit status. Any
+  CI-only command that consumes an existing lock must use `--locked` (for
+  example, `uv sync --locked`) or first run `uv lock --check`; CI must fail on
+  staleness and never silently rewrite the lock. Local install/update workflows
+  may intentionally create or refresh it.
 - `secret:set:1p` / `secret:set:gh` → `./scripts/secret-set-{1p,gh}.sh` —
   destination-only secret writes, value on **stdin** (see §1.8)
 - `install` → `brew bundle --file=Brewfile` (+ `uv sync` / `pnpm install`) →

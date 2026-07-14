@@ -410,8 +410,13 @@ expect_ok "update guidance documents the Foreman default transition" \
     grep -qF 'It was default-on when introduced in v3.26.1' \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "standards catalog documents the fail-closed locked Python audit" \
-    grep -qF '`uv export --frozen --all-extras --all-groups`' \
+    grep -qF '`uv export --locked --all-extras --all-groups`' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "canonical guidance has no freshness-skipping frozen export" \
+    rg -qF 'uv export --frozen' "$STANDARDIZE_REFS"
+expect_ok "audit guidance locks existing-lock syncs in CI" \
+    grep -qF '`uv sync --locked` (or first run `uv lock --check`)' \
+    "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "standards catalog documents bounded devcontainer smoke tests" \
     grep -qF 'lifecycle at `-k 30 1800`' \
     "$STANDARDIZE_REFS/standards-catalog.md"

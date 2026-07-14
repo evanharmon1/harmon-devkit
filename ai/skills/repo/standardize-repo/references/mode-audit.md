@@ -366,6 +366,12 @@ It must allowlist intended `success`/deliberate `skipped` states and reject
 `cancelled`, `timed_out`, and unknown states; testing only `== failure` is
 fail-open.
 
+For Python CI that consumes an existing `uv.lock`, distinguish validation from
+mutation. Exports must use `uv export --locked`; syncs must use
+`uv sync --locked` (or first run `uv lock --check`). `--frozen` skips the
+freshness check. Treat a stale lock or a tracked lock rewrite as a blocker; keep
+lock creation and updates in explicit local/update workflows.
+
 On workflows that may use self-hosted runners, reject shared fixed `/tmp`
 filenames for sensitive or cross-step artifacts (especially saved Terraform
 plans). Use a private per-repo/run directory beneath `${{ runner.temp }}`,
