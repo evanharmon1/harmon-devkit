@@ -61,6 +61,7 @@ copier copy harmon-init <dest> --trust --defaults \
   --data project_type="general" \
   --data include_terraform=false \
   --data include_ansible=false \
+  --data use_codeql=false \
   --data ci_runner="ubuntu-latest" \
   --data license="mit" \
   --data use_release_please=true \
@@ -84,6 +85,7 @@ copier copy harmon-init <dest> --trust --defaults \
 | `project_type` | str | `general` | `general` \| `web-astro` \| `web-app` \| `iac` \| `docs`. Drives Taskfile, CI jobs, devcontainer tooling. |
 | `include_terraform` | bool | `true` iff `project_type == 'iac'` | Adds `terraform/` skeleton + terraform linting. |
 | `include_ansible` | bool | `true` iff `project_type == 'iac'` | Adds `ansible/` skeleton + ansible linting. |
+| `use_codeql` | bool | `true` for a supported web/IaC/Python stack | Includes CodeQL SAST. Public repositories have Code Security by default; for a private/internal repo, enable GitHub Code Security first or answer `false`. |
 | `ci_runner` | str | `ubuntu-latest` | `ubuntu-latest` \| `self-hosted`. |
 | `license` | str | `mit` | `mit` \| `private`. |
 | `use_release_please` | bool | `true` | release-please rolling release PR + auto CHANGELOG. |
@@ -98,6 +100,9 @@ copier copy harmon-init <dest> --trust --defaults \
 Notes:
 - Several defaults are *computed* from earlier answers. Setting `project_type=iac`
   flips `include_terraform`/`include_ansible` to `true` unless you override them.
+- Decide `use_codeql` explicitly for every supported stack. A generated workflow
+  and `FULL_SECURITY_SCAN=true` configure CodeQL but do not prove that SARIF was
+  accepted; private/internal repos also require the live Code Security capability.
 - Hidden, derived flags you do **not** answer but that follow from your choices:
   `use_node` (true for `web-astro`/`web-app`), `use_python` (true for `iac` or
   `include_ansible`), `repo_url`, `devcontainer_image`, `ci_runner_labels`.

@@ -394,7 +394,7 @@ Workflow inventory:
 | `claude-implement.yml` | `@claude implement` / label → opens a PR on a `claude/` branch (`--model sonnet`) | [copier] |
 | `claude-review.yml` | `@claude review` / label → review comment, no writes (sticky comment) | [copier] |
 | `release.yml` | release-please; only when `use_release_please` | [copier] |
-| `codeql.yml` | only when `use_node or use_python`; **opt-in via `FULL_SECURITY_SCAN=true`** variable; aggregate `codeql-verify` | [copier] |
+| `codeql.yml` | only for a supported Node/Python stack when explicit `use_codeql=true`; runtime-gated by `FULL_SECURITY_SCAN=true`; private/internal repos also require GitHub Code Security; aggregate `codeql-verify` | [copier] + [manual capability] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
 
@@ -413,7 +413,8 @@ lacks fails token minting — that's why org-only perms are jinja-gated.
 
 Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKEN`
 (secret), `SNYK_TOKEN` (secret), `CI_APP_CLIENT_ID` (variable) + `CI_APP_PRIVATE_KEY`
-(secret), `FULL_SECURITY_SCAN=true` (variable, to enable CodeQL).
+(secret). `FULL_SECURITY_SCAN=true` is required only when `use_codeql=true` and
+the repository has the live Code Security capability.
 
 ### 1.8 Security
 
@@ -423,8 +424,22 @@ Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKE
   `summarize-gitleaks.mjs` GH step summary). **[copier]**
 - **Snyk** — `task security:sast` (`snyk code test`) + `security:sca` (`snyk
   test`); needs `SNYK_TOKEN`. **[copier]** for tasks; **[manual]** for the token.
-- **CodeQL** — `codeql.yml`, opt-in via `FULL_SECURITY_SCAN`. **[copier]** /
-  **[manual]** to enable.
+- **CodeQL** — three gates must align: supported Node/Python code, explicit
+  `use_codeql=true`, and live platform capability. Public repositories have Code
+  Security by default; private/internal repositories require GitHub Code Security
+  or SARIF uploads fail. `FULL_SECURITY_SCAN=true` starts the included workflow,
+  but the workflow and variable prove configuration, not coverage. Confirm a real
+  analysis and successful upload in **Security → Code scanning**. The analyze step
+  must not use `continue-on-error: true`; `codeql-verify` must reject analysis
+  failure/cancellation and accept `skipped` only when the explicit runtime or fork
+  predicate proves it intentional. When capability is unavailable and will not be
+  enabled, use `use_codeql=false`, omit the workflow/badge/setup variable, and
+  document the first-party SAST gap. Inspect capability read-only with
+  `gh api repos/<owner>/<repo>` and
+  `.security_and_analysis.code_security.status`; an unavailable field requires a
+  manual **Settings → Code security** check. See GitHub's
+  [SARIF capability requirement](https://docs.github.com/en/code-security/code-scanning/troubleshooting-sarif-uploads/repository-is-not-enabled-for-code-security).
+  **[copier]** / **[manual capability + coverage verification]**.
 - **Branch protection ruleset** — `.github/Branch Protection Ruleset - Protect
   Main.json`: blocks deletion/non-ff/creation, requires linear history, PR with 1
   code-owner approval + thread resolution + last-push approval, required status
@@ -743,7 +758,9 @@ Adds (all [copier] unless noted):
   ≥0.9.
 - **`docs/architecture/design-language.md`** + DESIGN.md "Visual & UX direction".
 - Devcontainer forwards port **4321** (Astro dev server); `astro-build.astro-vscode` extension.
-- `codeql.yml` analyzes `javascript-typescript`.
+- With `use_codeql=true` and live Code Security capability, `codeql.yml` analyzes
+  `javascript-typescript`; otherwise the workflow is intentionally absent and the
+  SAST gap is documented.
 - **[manual] CHECKLIST:** `pnpm create astro@latest .`; add **Tailwind v4**
   (`@tailwindcss/vite`), **zod**, **vitest**, **lucide**; move lint tooling into
   `devDependencies` (the Taskfile auto-prefers repo-pinned `node_modules` bins
@@ -828,7 +845,8 @@ Adds (all [copier]):
   existing); lefthook ansible-syntax (pre-push); `ANSIBLE_CONFIG` remoteEnv;
   Renovate ansible regex managers; redhat.ansible extension.
 - **Python toolchain** active (uv, black, `.python-version`, pyproject).
-- `codeql.yml` analyzes `python` (if use_python).
+- With `use_codeql=true` and live Code Security capability, `codeql.yml` analyzes
+  `python`; `use_python` alone does not include it.
 - **[manual] CHECKLIST:** lay out `terraform/` and/or `ansible/site.yml` — lint
   tasks activate automatically once `ansible/site.yml` exists.
 - The live `harmon-infra` shows how deep the namespacing legitimately goes:
@@ -865,7 +883,10 @@ Legitimately repo- or type-specific differences. An auditor should treat these a
   later added its own `.devcontainer/`).
 - **No `release.yml` / release-please manifest** when `use_release_please: no`
   (then releases are purely `task release:*`).
-- **No `codeql.yml`** when neither node nor python.
+- **No `codeql.yml`** when neither node nor python **or** when
+  `use_codeql: false` (including a private/internal repo without GitHub Code
+  Security). The README badge and `FULL_SECURITY_SCAN` setup are absent too, and
+  security docs name the first-party SAST gap.
 - **No `project-automation.yml`, no org `merge_queue` rule, no
   `permission-organization-projects`/`permission-members`** for personal-account
   repos (`github_org == author_git_provider_username`). Org repos get all three.

@@ -158,14 +158,36 @@ push so the remote exists.
 
   See `docs/architecture/security.md` for blast-radius and rotation notes.
 
-- [ ] **[scriptable via gh]** Enable **CodeQL** by setting the Actions variable
-      `FULL_SECURITY_SCAN=true` (the generated `codeql.yml` is gated
-      `if: vars.FULL_SECURITY_SCAN == 'true'`; only present when the project uses
-      Node and/or Python):
+- [ ] **[read-only/manual, then scriptable via gh]** Reconcile **CodeQL** with
+      the live repository capability. This applies only when the supported stack
+      was rendered with `use_codeql=true`; a workflow file is not evidence that
+      GitHub can accept its SARIF.
+
+  ```bash
+  gh api "repos/<org>/<repo>" \
+    --jq '{visibility, code_security: (.security_and_analysis.code_security.status // "unknown")}'
+  ```
+
+  Public repositories have Code Security by default. For a private/internal
+  repository, require `code_security: enabled` before turning on the generated
+  workflow. If the field is `unknown` because the caller lacks permission, check
+  **Settings → Code security** manually. Then set the runtime gate:
 
   ```bash
   gh variable set FULL_SECURITY_SCAN --repo "<org>/<repo>" --body "true"
   ```
+
+  After the workflow runs, confirm an actual CodeQL analysis and successful SARIF
+  upload in **Security → Code scanning**. The workflow's presence,
+  `FULL_SECURITY_SCAN=true`, or a green aggregate whose analysis was skipped or
+  tolerated does not establish coverage. The CodeQL analyze step must not use
+  `continue-on-error: true`; its aggregate must fail closed on analysis failure
+  and accept `skipped` only when an explicit runtime/fork predicate allows it.
+
+  If a private/internal repo lacks Code Security and it will not be enabled,
+  re-render with `use_codeql=false`. Remove the CodeQL workflow and README badge,
+  stop setting `FULL_SECURITY_SCAN` (delete a stale repository variable), and make
+  `docs/architecture/security.md` explicitly document the first-party SAST gap.
 
 - [ ] **[human-only]** (devcontainer projects) Ensure the org/user **allows
       GHCR package publishing** so the first `devcontainer-build.yml` prebuild on

@@ -8,8 +8,8 @@
 #
 # Lines starting with # and blank lines are ignored. Paths use the template's
 # default extension; diff-template.sh maps .yml<->.yaml to whatever the repo uses.
-# Entries not present in a given render (e.g. codeql.yml for a non-node/python
-# repo) are skipped automatically.
+# Entries not present in a given render (e.g. codeql.yml when `use_codeql=false`
+# or the stack has no supported Node/Python language) are skipped automatically.
 
 # ── Task runner + git hooks ──────────────────────────────────────────────────
 Taskfile.yml

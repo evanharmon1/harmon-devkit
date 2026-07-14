@@ -130,11 +130,13 @@ write `.copier-answers.yml` so future runs can use `copier update`:
 
 ```bash
 ls .copier-answers.yml          # absent → adopt fresh
+: "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
 copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD --defaults --overwrite \
   --data project_type="$PROJECT_TYPE" \
   --data project_name="<Formal Project Name>" \
   --data project_slug="$(basename "$(pwd)")" \
   --data github_org="<org-or-user>" \
+  --data use_codeql="$USE_CODEQL" \
   --data git_init=false \
   --data github_remote_create=false --data github_release_init=false \
   --data bunch_add=false --data obsidian_project_add=false --data run_task_install=false
@@ -145,6 +147,12 @@ copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD --defaults --overwrite \
 `--vcs-ref=HEAD` is **mandatory** here when `~/git/harmon-init` is a local path:
 without it copier silently renders the latest git tag and ignores
 committed-but-untagged + uncommitted template work.
+
+Set `USE_CODEQL` deliberately before rendering. Use `true` only for a supported
+Node/Python stack when Code Security is available (public repositories have it by
+default; inspect private/internal repositories with the read-only check in
+[`mode-audit.md`](./mode-audit.md), drift class G). Otherwise use `false`; do not
+render a workflow whose SARIF upload cannot succeed.
 
 `--defaults` is **required non-interactively** (no TTY → `OSError: [Errno 22]`), and
 because copier can't prompt per-file, `--overwrite` makes the run deterministic
@@ -193,8 +201,10 @@ from git rather than hand-merging conflict markers:
      `grep -rhoE '(run:[[:space:]]*|^[[:space:]]*|&&[[:space:]]*)task +[a-z][a-z0-9:_-]*' .github/workflows/ | sed -E 's/.*task +//' | sort -u`.
      `verify-applied.sh` §3c enforces this (see [mode-audit.md](./mode-audit.md)
      drift class L).
-3. **Keep** the template version for uncustomized tooling **and all additive new
-   files** (docs scaffold, codeql/release-please, helper scripts, `.copier-answers.yml`).
+3. **Keep** the template version for uncustomized tooling **and all applicable
+   additive new files** (docs scaffold, release-please, helper scripts,
+   `.copier-answers.yml`; CodeQL only when `use_codeql=true` and the live
+   capability supports it).
 4. **Canonicalize AGENTS.md** — fold the old real guidance (often the pre-existing
    real `CLAUDE.md`) into `AGENTS.md`; leave `CLAUDE.md`/`GEMINI.md`/
    `.github/copilot-instructions.md` as the symlinks copier wrote (§4.1).
@@ -302,9 +312,10 @@ after the copier run:
 
 5. **Other recurring fixes** (apply if present): consolidate duplicate Claude
    workflows (`claude-*-max.yml` → the base `claude-plan/implement/review.yml`);
-   add `codeql.yml` if missing and the repo uses node/python; drop any
-   bump-on-merge `release.yml` in favor of release-please; de-bloat a legacy
-   `Brewfile`; make scripts portable to macOS bash 3.2 (no `mapfile`, no
+   reconcile CodeQL as a capability-aware `use_codeql` decision (mode-audit drift
+   class G), rather than adding its workflow solely because node/python exists;
+   drop any bump-on-merge `release.yml` in favor of release-please; de-bloat a
+   legacy `Brewfile`; make scripts portable to macOS bash 3.2 (no `mapfile`, no
    `grep -P`).
 
 6. **v2→v3 re-adopt cleanup (the v2 question set predates lefthook/gitleaks).**

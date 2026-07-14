@@ -86,18 +86,38 @@ git -C ~/git/harmon-init diff "$(yq -r '._commit' .copier-answers.yml)"..v<TARGE
 ```
 
 Every newly introduced question needs an explicit decision. This is especially
-important for a feature with a material footprint: for example, `use_foreman`
-adds its supervisor, agents, taskfile, configuration, documentation, and tests.
-It was default-on when introduced in v3.26.1; current template source defaults
-it off. Update mode must still decide whether the target should opt in. Pass
-each reviewed answer with `--data`, even when the decision happens to match the
-current default.
+important for a feature with a material footprint or an external capability:
+
+- `use_foreman` adds its supervisor, agents, taskfile, configuration,
+  documentation, and tests. It was default-on when introduced in v3.26.1;
+  current template source defaults it off. Update mode must still decide whether
+  the target should opt in.
+- `use_codeql` includes CodeQL only for a supported Node/Python stack. Public
+  repositories have GitHub Code Security by default. For a private/internal repo,
+  perform a read-only capability check before selecting it:
+
+  ```bash
+  gh api "repos/<owner>/<repo>" \
+    --jq '{visibility, code_security: (.security_and_analysis.code_security.status // "unknown")}'
+  ```
+
+  If Code Security is disabled and will not be enabled, pass
+  `--data use_codeql=false`; the update must remove the workflow, badge,
+  `FULL_SECURITY_SCAN` setup, and CodeQL coverage claims. If the API field is
+  unavailable because the caller lacks permission, verify the capability in
+  **Settings → Code security** rather than inferring it. A workflow file or
+  `FULL_SECURITY_SCAN=true` proves configuration, not successful SARIF coverage.
+
+Pass each reviewed answer with `--data`, even when the decision happens to match
+the current default.
 
 Preview the exact answer set before the real update:
 
 ```bash
+: "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
 copier update --trust --defaults --pretend \
-  --data use_foreman=false
+  --data use_foreman=false \
+  --data use_codeql="$USE_CODEQL"
 ```
 
 `--pretend` confirms rendering succeeds but its output can be terse. For a heavily

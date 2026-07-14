@@ -82,8 +82,11 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
 The asked questions live in `~/git/harmon-init/copier.yml` (e.g. `project_name`,
 `project_slug`, `project_description`, `github_org`, `project_type`
 [general / web-astro / web-app / iac / docs], `include_terraform`, `include_ansible`,
-`ci_runner`, `license`, `use_release_please`, `devcontainer`, `git_init`). Read that
-file to confirm names/choices/defaults before scaffolding — do not invent answers.
+`use_codeql`, `ci_runner`, `license`, `use_release_please`, `devcontainer`,
+`git_init`). Read that file to confirm names/choices/defaults before scaffolding —
+do not invent answers. `use_codeql` is a capability decision, not just a stack
+default: private/internal repositories need GitHub Code Security before CodeQL can
+upload SARIF.
 
 ## Standards catalog
 

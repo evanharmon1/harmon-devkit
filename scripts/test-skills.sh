@@ -409,6 +409,24 @@ expect_ok "standards catalog documents Foreman as deliberate opt-in" \
 expect_ok "update guidance documents the Foreman default transition" \
     grep -qF 'It was default-on when introduced in v3.26.1' \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "new-repo guidance exposes the explicit CodeQL answer" \
+    grep -qF '| `use_codeql` | bool |' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "update guidance audits live Code Security capability read-only" \
+    grep -qF '.security_and_analysis.code_security.status' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "audit guidance rejects fail-open CodeQL analysis" \
+    grep -qF 'The analyze step must not use' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "checklist does not treat CodeQL configuration as coverage" \
+    grep -qF 'does not establish coverage.' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "catalog documents intentional CodeQL omission" \
+    grep -qF 'use `use_codeql=false`, omit the workflow/badge/setup variable' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "applied-state verifier reads live Code Security capability" \
+    grep -qF '.security_and_analysis.code_security.status' \
+    "$STANDARDIZE_ASSETS/verify-applied.sh"
 expect_ok "standards catalog documents the fail-closed locked Python audit" \
     grep -qF '`uv export --locked --all-extras --all-groups`' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -539,6 +557,109 @@ expect_fail "verify-applied rejects a stale CODEOWNERS acknowledgement" \
 expect_ok "verify-applied accepts the exact materialized CODEOWNERS migration" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" \
     --ack-codeowner-change @ponderousdev=@evanharmon1 "$VA_TARGET"
+
+CQ_TARGET="$TMPROOT/verify-applied-codeql"
+mkdir -p "$CQ_TARGET/.github/workflows" "$CQ_TARGET/docs/architecture"
+printf '%s\n' '# Test instructions' >"$CQ_TARGET/AGENTS.md"
+ln -s AGENTS.md "$CQ_TARGET/CLAUDE.md"
+ln -s AGENTS.md "$CQ_TARGET/GEMINI.md"
+git_init "$CQ_TARGET"
+cat >"$CQ_TARGET/.github/workflows/build.yml" <<'EOF'
+name: Build
+on: workflow_dispatch
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: task verify
+EOF
+
+write_codeql_answer() {
+    printf 'use_codeql: %s\n' "$1" >"$CQ_TARGET/.copier-answers.yml"
+}
+write_codeql_taskfile() {
+    cat >"$CQ_TARGET/Taskfile.yml" <<'EOF'
+version: "3"
+tasks:
+  verify:
+    cmds: ["true"]
+  check:
+    cmds: ["true"]
+  security:
+    cmds: ["true"]
+  status:setup:
+    cmds: ["true"]
+  install:hooks:
+    cmds: ["true"]
+EOF
+}
+write_codeql_workflow() {
+    cat >"$CQ_TARGET/.github/workflows/codeql.yml" <<EOF
+name: CodeQL
+on: workflow_dispatch
+jobs:
+  analyze:
+    if: vars.FULL_SECURITY_SCAN == 'true'
+$1    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+EOF
+}
+
+write_codeql_answer false
+write_codeql_taskfile
+printf '%s\n' 'CodeQL is enabled for first-party SAST.' \
+    >"$CQ_TARGET/docs/architecture/security.md"
+write_codeql_workflow ""
+expect_fail "verify-applied rejects a CodeQL workflow when use_codeql=false" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+rm "$CQ_TARGET/.github/workflows/codeql.yml"
+expect_fail "verify-applied requires the CodeQL-off SAST gap in security docs" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+printf '%s\n' 'CodeQL is deliberately omitted; first-party SAST is not configured.' \
+    >"$CQ_TARGET/docs/architecture/security.md"
+expect_ok "verify-applied accepts a clean intentional CodeQL omission" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+
+printf '%s\n' '[![CodeQL](badge)](actions/workflows/codeql.yml)' >"$CQ_TARGET/README.md"
+expect_fail "verify-applied rejects a stale CodeQL badge when disabled" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+rm "$CQ_TARGET/README.md"
+printf '%s\n' '# setup sets FULL_SECURITY_SCAN' >>"$CQ_TARGET/Taskfile.yml"
+expect_fail "verify-applied rejects stale FULL_SECURITY_SCAN setup when disabled" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_taskfile
+
+write_codeql_answer true
+printf '%s\n' 'CodeQL is selected; live SARIF results establish coverage.' \
+    >"$CQ_TARGET/docs/architecture/security.md"
+expect_fail "verify-applied requires a workflow when use_codeql=true" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow $'    continue-on-error: true\n'
+expect_fail "verify-applied rejects fail-open CodeQL analysis" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow ""
+
+git -C "$CQ_TARGET" remote add origin https://github.com/example/codeql-fixture.git
+FAKE_GH_BIN="$TMPROOT/codeql-fake-gh"
+mkdir -p "$FAKE_GH_BIN"
+cat >"$FAKE_GH_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "${GH_TEST_VISIBILITY:-private}" "${GH_TEST_CODE_SECURITY:-unknown}"
+EOF
+chmod +x "$FAKE_GH_BIN/gh"
+expect_fail "verify-applied rejects private CodeQL with Code Security disabled" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=disabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+expect_ok "verify-applied accepts private CodeQL with Code Security enabled" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+expect_ok "verify-applied defers an unreadable Code Security field to manual audit" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=unknown \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
 
 manifest="$STANDARDIZE_ASSETS/template-owned-files.txt"
 for required in \

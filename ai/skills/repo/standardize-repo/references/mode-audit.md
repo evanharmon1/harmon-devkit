@@ -201,11 +201,30 @@ carry duplicates like `claude-review-max.yml` / `claude-implement-max.yml`. Fix:
 delete the `-max` duplicates, keep the three canonical workflows. Severity:
 **should** (blocker if a duplicate fires redundant/conflicting automation).
 
-**G. Missing `codeql.yml`.** The template ships a CodeQL workflow gated on
-`use_node or use_python` (`template/.github/workflows/[% if use_node or use_python %]codeql.yml[% endif %].jinja`).
-Repos with Node/Python code but no `codeql.yml` are missing static analysis. Fix:
-add `codeql.yml` from the template (a re-template with the right answers includes
-it). Severity: **should**.
+**G. CodeQL selection/capability mismatch.** CodeQL has three gates: a supported
+Node/Python stack, the explicit `use_codeql` answer, and a live GitHub capability.
+A `codeql.yml` file and `FULL_SECURITY_SCAN=true` prove configuration, not that an
+analysis ran or GitHub accepted SARIF. Public repositories have Code Security by
+default. For private/internal repositories, inspect it read-only:
+
+```bash
+gh api "repos/<owner>/<repo>" \
+  --jq '{visibility, code_security: (.security_and_analysis.code_security.status // "unknown")}'
+```
+
+When Code Security is disabled/unavailable and will not be enabled, set
+`use_codeql=false` and re-render: the CodeQL workflow, README badge,
+`FULL_SECURITY_SCAN` setup, and positive coverage claims must disappear, while
+`docs/architecture/security.md` names the first-party SAST gap. If the capability
+will be enabled, enable it before selecting `use_codeql=true`, then verify a real
+analysis and successful SARIF upload. The analyze step must not use
+`continue-on-error: true`; `codeql-verify` must fail when analysis fails and may
+accept `skipped` only when the runtime gate or fork-PR predicate made that skip
+intentional. If the API hides the field because of caller permissions, record a
+manual **Settings → Code security** check instead of inferring support. Severity:
+**blocker** for fail-open result propagation, a predictably red SARIF upload, or a
+false coverage claim; **should/manual residual** for an intentional, documented
+SAST gap.
 
 **H. lint-hygiene script portability to macOS bash 3.2.** `scripts/lint-hygiene.sh`
 must be portable: **no `mapfile`, no `grep -P`** (both Linux/bash-4-only), and it

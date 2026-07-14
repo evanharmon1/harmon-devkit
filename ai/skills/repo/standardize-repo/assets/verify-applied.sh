@@ -195,6 +195,130 @@ if [ -d .github/workflows ] && { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } 
     done
 fi
 
+# ── 3d. CodeQL selection, fail-closed workflow, and live capability ──
+# CodeQL is not universal merely because a repo contains Node/Python. The Copier
+# answer selects it, FULL_SECURITY_SCAN starts it, and GitHub must accept SARIF.
+# Public repositories have Code Security by default; private/internal repos need
+# the live feature enabled. The API check below is GET-only. Missing permissions
+# produce a manual-audit warning, never a guessed claim of coverage.
+codeql_workflow=""
+for candidate in .github/workflows/codeql.yml .github/workflows/codeql.yaml; do
+    if [ -f "$candidate" ]; then
+        codeql_workflow="$candidate"
+        break
+    fi
+done
+
+if [ -n "$codeql_workflow" ] &&
+    grep -qE '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$codeql_workflow"; then
+    err "$codeql_workflow lets CodeQL fail via 'continue-on-error: true'"
+fi
+
+if [ -f .copier-answers.yml ]; then
+    use_codeql_answer="$(
+        sed -n -E 's/^[[:space:]]*use_codeql:[[:space:]]*([^#[:space:]]+).*$/\1/p' .copier-answers.yml |
+            tail -n 1 | tr '[:upper:]' '[:lower:]' | tr -d "\"'"
+    )"
+    case "$use_codeql_answer" in
+    true | yes)
+        if [ -z "$codeql_workflow" ]; then
+            err "use_codeql=true but no .github/workflows/codeql.yml or codeql.yaml exists"
+        fi
+        if [ -f docs/architecture/security.md ] &&
+            grep -qF 'CodeQL is deliberately omitted' docs/architecture/security.md; then
+            err "use_codeql=true but security docs still say CodeQL is deliberately omitted"
+        fi
+
+        if [ -n "$codeql_workflow" ]; then
+            echo "INFO: CodeQL workflow presence and FULL_SECURITY_SCAN are configuration only;" >&2
+            echo "      verify a successful analysis/SARIF upload before claiming coverage." >&2
+
+            codeql_nwo=""
+            if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+                remote_url="$(git remote get-url origin 2>/dev/null || true)"
+                case "$remote_url" in
+                https://github.com/*)
+                    codeql_nwo="${remote_url#https://github.com/}"
+                    ;;
+                git@github.com:*)
+                    codeql_nwo="${remote_url#git@github.com:}"
+                    ;;
+                ssh://git@github.com/*)
+                    codeql_nwo="${remote_url#ssh://git@github.com/}"
+                    ;;
+                esac
+                codeql_nwo="${codeql_nwo%.git}"
+                codeql_nwo="${codeql_nwo%/}"
+            fi
+
+            if [ -n "$codeql_nwo" ] && have gh; then
+                if repo_security="$(gh api "repos/$codeql_nwo" \
+                    --jq '[.visibility, (.security_and_analysis.code_security.status // "unknown")] | @tsv' \
+                    2>/dev/null)"; then
+                    IFS=$'\t' read -r visibility code_security <<<"$repo_security"
+                    [ -n "$code_security" ] || code_security="unknown"
+                    case "$visibility" in
+                    public)
+                        echo "INFO: $codeql_nwo is public; GitHub Code Security is available by default." >&2
+                        ;;
+                    private | internal)
+                        case "$code_security" in
+                        enabled)
+                            echo "INFO: $codeql_nwo reports GitHub Code Security enabled." >&2
+                            ;;
+                        disabled)
+                            err "use_codeql=true but $codeql_nwo is $visibility with GitHub Code Security disabled; enable it first or re-render with use_codeql=false"
+                            ;;
+                        *)
+                            echo "WARN: $codeql_nwo is $visibility but Code Security capability is '$code_security' —" >&2
+                            echo "      verify Settings > Code security manually; do not infer CodeQL coverage." >&2
+                            ;;
+                        esac
+                        ;;
+                    *)
+                        echo "WARN: could not classify repository visibility for $codeql_nwo —" >&2
+                        echo "      verify Code Security capability manually; do not infer coverage." >&2
+                        ;;
+                    esac
+                else
+                    echo "WARN: read-only Code Security API audit failed for $codeql_nwo —" >&2
+                    echo "      verify Settings > Code security manually; do not infer CodeQL coverage." >&2
+                fi
+            else
+                echo "WARN: no queryable GitHub origin/gh CLI for the CodeQL capability audit —" >&2
+                echo "      verify Code Security manually; do not infer coverage from workflow files." >&2
+            fi
+        fi
+        ;;
+    false | no)
+        if [ -n "$codeql_workflow" ]; then
+            err "use_codeql=false but $codeql_workflow still exists"
+        fi
+        for taskfile in Taskfile.yml Taskfile.yaml; do
+            if [ -f "$taskfile" ] && grep -qF 'FULL_SECURITY_SCAN' "$taskfile"; then
+                err "use_codeql=false but $taskfile still configures FULL_SECURITY_SCAN"
+            fi
+        done
+        if [ -f README.md ] && grep -qE 'actions/workflows/codeql\.ya?ml' README.md; then
+            err "use_codeql=false but README.md still advertises the CodeQL workflow"
+        fi
+        if [ -f docs/architecture/security.md ] &&
+            ! grep -qF 'CodeQL is deliberately omitted' docs/architecture/security.md; then
+            err "use_codeql=false but security docs do not explicitly document the SAST gap"
+        fi
+        ;;
+    "")
+        if [ -n "$codeql_workflow" ]; then
+            echo "WARN: CodeQL workflow exists but .copier-answers.yml has no explicit use_codeql answer —" >&2
+            echo "      review stack + live capability on the next template update." >&2
+        fi
+        ;;
+    *)
+        err "invalid use_codeql value in .copier-answers.yml: $use_codeql_answer"
+        ;;
+    esac
+fi
+
 # ── 4. No unrendered template markers leaked into the repo ──────────
 # harmon-init uses CUSTOM jinja delimiters ([[ var ]], [% block %]). Legitimate
 # look-alikes must NOT trip this: go-task uses {{.VAR}} (dot, no space), GitHub
