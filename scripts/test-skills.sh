@@ -438,6 +438,54 @@ expect_ok "catalog requires fail-closed aggregate result handling" \
 expect_ok "audit guidance forbids shared fixed temp artifacts" \
     grep -qF 'On workflows that may use self-hosted runners, reject shared fixed `/tmp`' \
     "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog keeps public pull requests on hosted runners" \
+    grep -qF '`pull_request` jobs must stay GitHub-hosted' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog marks public PR runner policy as a manual residual" \
+    grep -qF 'Runner trust boundary [manual residual / audit requirement]' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog does not overclaim public PR runner enforcement" \
+    grep -qF 'does not mechanically enforce hosted-only public PRs' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "audit guidance treats fork guards as defense in depth" \
+    grep -qF 'A same-repository job guard is defense in' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit guidance requires isolated self-hosted runner policy" \
+    grep -qF 'groups and clean ephemeral/JIT isolation' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog makes tracked Terraform locks read-only in CI" \
+    grep -qF '`terraform init -lockfile=readonly`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog preserves intentional local Terraform lock updates" \
+    grep -qF 'intentional local provider' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "audit guidance orders plan and apply after validation" \
+    grep -qF 'Plan/apply must be downstream of validation' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog requires exact saved-plan apply" \
+    grep -qF 'display that exact artifact, and apply' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog requires an always-emitted Terraform aggregate" \
+    grep -qF 'A required `terraform-verify` must always emit on `push`, `pull_request`' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit guidance rejects workflow-level Terraform path filters" \
+    grep -qF 'internal change detector, not workflow-level path filters' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog binds Terraform skips to explicit predicates" \
+    grep -qF 'predicates prove that result deliberate.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog namespaces Terraform CI artifacts per run" \
+    grep -qF 'repository/run/attempt artifact key namespaces each run' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog requires bounded Terraform state locking" \
+    grep -qF 'use bounded state-lock waits (`-lock-timeout`), never' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog always cleans Terraform CI artifacts" \
+    grep -qF '`-lock=false`, and clean up under `if: always()`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog preserves exact approval for Terraform mutation" \
+    grep -qF 'explicit approval for that exact operation' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 
 starter="$repo/templates/scriptTemplates/shellScriptTemplate.sh"
 signal_fixture="$TMPROOT/shell-starter-signals.sh"
@@ -501,6 +549,9 @@ for required in \
     scripts/secret-set-1p.sh \
     scripts/secret-set-gh.sh \
     scripts/python-audit.sh \
+    scripts/terraform-changed.sh \
+    scripts/terraform-ci.sh \
+    scripts/test-terraform-ci.sh \
     scripts/sync-skills.sh \
     .github/workflows/close-milestone-on-release.yml \
     .foreman.toml \

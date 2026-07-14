@@ -372,6 +372,31 @@ mutation. Exports must use `uv export --locked`; syncs must use
 freshness check. Treat a stale lock or a tracked lock rewrite as a blocker; keep
 lock creation and updates in explicit local/update workflows.
 
+When `runs-on` is variable-controlled (for example, `CI_RUNS_ON`), audit both
+repository visibility and event trust. Every public `pull_request` job must
+resolve to a GitHub-hosted runner. A same-repository job guard is defense in
+depth, not a complete trust boundary. Self-hosted use in private/trusted repos or
+on trusted push/dispatch events also needs server-side repository-scoped runner
+groups and clean ephemeral/JIT isolation; otherwise treat it as a blocker. This
+is currently a manual residual: do not assume the template's configurable
+`runs-on` expression mechanically enforces the hosted-only public-PR policy.
+
+For Terraform workflows, trace the entire chain: change detection → validation
+→ saved plan → exact-plan apply → aggregate. A tracked `.terraform.lock.hcl`
+makes CI init use `-lockfile=readonly`; only explicit fresh scaffolding may
+create the first lock, while an intentional local provider update may refresh
+it. Plan/apply must be downstream of validation, guarded/namespaced to the
+trusted run, and apply must refuse to re-plan if the private run-scoped saved
+plan is absent. Confirm the summary displays that same plan, state-lock waits are
+bounded (never `-lock=false`), and cleanup runs under `if: always()`.
+
+A required `terraform-verify` must always emit on `push`, `pull_request`,
+`merge_group`, and `workflow_dispatch`, including unrelated-path no-ops; use an
+internal change detector, not workflow-level path filters. Derive every accepted
+`skipped` result from explicit fork/change/enabled predicates and reject all
+other states. Agents must also retain the exact-operation approval rule for
+Terraform mutation; only the reviewed trusted-main exact-plan CI path is exempt.
+
 On workflows that may use self-hosted runners, reject shared fixed `/tmp`
 filenames for sensitive or cross-step artifacts (especially saved Terraform
 plans). Use a private per-repo/run directory beneath `${{ runner.temp }}`,

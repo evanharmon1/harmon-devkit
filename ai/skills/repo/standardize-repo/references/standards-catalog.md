@@ -368,6 +368,18 @@ Shared structure:
   that rejects only `failure` is fail-open.
 - Fork-PR guard: jobs gate on
   `github.event.pull_request.head.repo.full_name == github.repository`.
+- **Runner trust boundary [manual residual / audit requirement]:** public
+  `pull_request` jobs must stay GitHub-hosted; never let `CI_RUNS_ON` redirect
+  them to persistent self-hosted runners.
+  Self-hosted execution is limited to private/trusted repositories or trusted
+  `push`/`workflow_dispatch` events, with server-side repository-scoped runner
+  groups **and** clean ephemeral/JIT isolation. Keep same-repository guards on
+  configurable-runner jobs as defense in depth, but a job guard alone is not a
+  complete trust boundary. The current template's configurable-runner pattern
+  does not mechanically enforce hosted-only public PRs: audit repository
+  visibility, events, and `CI_RUNS_ON`, then specialize `runs-on` where needed.
+  See [GitHub's self-hosted runner hardening
+  guidance](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners).
 - **Self-hosted-safe temporary artifacts:** never use a shared fixed `/tmp`
   path for sensitive or cross-step state such as a saved Terraform plan. Create
   a private per-repo/run path beneath `${{ runner.temp }}` (include run
@@ -789,6 +801,27 @@ Adds (all [copier]):
   `lint:terraform:validate`, `validate`→validate; lefthook terraform (pre-commit)
   - terraform-validate (pre-push); terraform devcontainer feature; Renovate
   Terraform-providers group; hashicorp/terraform extension.
+- **Terraform CI invariants:** commit `.terraform.lock.hcl` after the explicit
+  first initialization. Once tracked, CI uses
+  `terraform init -lockfile=readonly`; only an explicit fresh-scaffold/local
+  initialization may create the initial lock, and an intentional local provider
+  update may refresh it; ordinary CI must not. The workflow listens to `push`,
+  `pull_request`, `merge_group`, and `workflow_dispatch` with no top-level
+  `paths` filter. Its internal change detector makes unrelated paths a no-op,
+  while the required GitHub-hosted `terraform-verify` aggregate runs under
+  `if: always()` and accepts `skipped` only when the explicit fork/change/enabled
+  predicates prove that result deliberate.
+
+  Credentialed plan/apply is downstream of successful validation and guarded by
+  the change result, an explicit enable flag, same-repository trust, and a
+  trusted-main push/dispatch apply condition. Repository/ref concurrency plus a
+  repository/run/attempt artifact key namespaces each run. Save the binary plan
+  under a private run-scoped directory, display that exact artifact, and apply
+  it without re-planning; use bounded state-lock waits (`-lock-timeout`), never
+  `-lock=false`, and clean up under `if: always()`. Agents never run
+  `terraform apply`, `destroy`, `import`, or state-mutating commands without
+  explicit approval for that exact operation. The reviewed trusted-main CI apply
+  of its own saved plan is the defined automation exception.
 - **`include_ansible`** → `ansible/` skeleton (`ansible.cfg`, `requirements.yaml`,
   `inventory/ playbooks/ roles/` each `.gitkeep`); **`.ansible-lint`**; tasks
   `lint:ansible`, `validate:ansible:syntax` (both guard on `ansible/site.yml`
