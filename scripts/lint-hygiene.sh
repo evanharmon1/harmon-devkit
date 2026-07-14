@@ -27,9 +27,9 @@ files=()
 if [ $# -gt 0 ]; then
     files=("$@")
 else
-    while IFS= read -r f; do
+    while IFS= read -r -d '' f; do
         files+=("$f")
-    done < <(git ls-files --cached --others --exclude-standard 2>/dev/null)
+    done < <(git ls-files -z --cached --others --exclude-standard 2>/dev/null)
 fi
 
 # Load per-file exemption patterns (bash 3.2 compatible)
@@ -132,7 +132,7 @@ for f in "${files[@]}"; do
         devcontainer.json | */devcontainer.json | .devcontainer.json | */.devcontainer.json | \
             tsconfig*.json | */tsconfig*.json | template/*) ;;
         *)
-            if ! python3 -c "import json; json.load(open('$f'))" 2>/dev/null; then
+            if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" 2>/dev/null; then
                 warn "$f: invalid JSON"
             fi
             ;;
@@ -144,7 +144,7 @@ for f in "${files[@]}"; do
     case "$f" in
     template/*.toml) ;;
     *.toml)
-        if ! python3 -c "import tomllib; tomllib.load(open('$f','rb'))" 2>/dev/null; then
+        if ! python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$f" 2>/dev/null; then
             warn "$f: invalid TOML"
         fi
         ;;

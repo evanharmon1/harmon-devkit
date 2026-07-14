@@ -17,11 +17,12 @@ GitHub **UI import** (do this once `build.yml` is on `main`, so the required
 To change the ruleset later, **edit the existing one in the UI** (Settings →
 Rules → Rulesets → Protect Main) — don't re-import.
 
-**Why the UI, not `gh api … rulesets`:** the REST `POST` is **not idempotent**
-(every run creates another "Protect Main" ruleset — silent duplicates), the
-`PUT` form needs the live ruleset id, and both currently reject the
-`merge_queue` rule with `422 Invalid rule 'merge_queue'`. The UI import handles
-every rule type and is the GitHub-native way to apply an exported ruleset.
+**Why the UI for a one-time import:** a blind REST `POST` is **not idempotent**
+(every run creates another "Protect Main" ruleset — silent duplicates). The
+[REST ruleset API](https://docs.github.com/en/rest/repos/rules?apiVersion=2022-11-28)
+now supports `merge_queue`, but safe automation must first discover exactly one
+matching live ruleset and then `PUT` its id. The UI import keeps the initial
+application explicit and reviewable; edit the existing ruleset thereafter.
 
 ## Dependabot and Renovate
 

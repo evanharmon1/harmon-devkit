@@ -21,6 +21,7 @@ Brewfile
 # ── Shared scripts ───────────────────────────────────────────────────────────
 scripts/status.sh
 scripts/lint-hygiene.sh
+scripts/shell-quality.sh
 scripts/markdownlint.sh
 scripts/secret-set-1p.sh
 scripts/secret-set-gh.sh

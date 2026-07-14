@@ -86,19 +86,10 @@ tasks:
 
   lint:shell:
     desc: shellcheck + shfmt
-    vars:
-      SHELL_FILES:
-        # Shell templates are executable source assets too, so validate them with
-        # the operational scripts. Snippets remain excluded because they may be
-        # deliberately incomplete fragments rather than standalone programs.
-        sh: git ls-files '*.sh' '*.bash' ':!:snippets/' 2>/dev/null | tr '\n' ' '
     cmds:
-      - |
-        files="{{.CLI_ARGS}}"
-        [ -z "$files" ] && files="{{.SHELL_FILES}}"
-        [ -z "$files" ] && exit 0
-        shellcheck --severity=error $files
-        shfmt -d $files
+      # Shell templates are executable source assets too. Snippets remain
+      # excluded because they may be deliberately incomplete fragments.
+      - ./scripts/shell-quality.sh check --exclude-snippets {{.CLI_ARGS}}
 
   lint:markdown:
     # Check-only (no --fix) so this is a read-only gate like lint:prettier /
@@ -158,9 +149,7 @@ tasks:
   format:
     desc: Auto-format code
     cmds:
-      - |
-        files=$(git ls-files '*.sh' '*.bash')
-        [ -n "$files" ] && shfmt -w $files || true
+      - ./scripts/shell-quality.sh format --exclude-snippets
       # Best-effort markdown auto-fix (bin-vs-npx dispatch in the helper); must
       # NOT abort `format` on un-auto-fixable rule violations — `lint:markdown`
       # (check-only) is the gate.

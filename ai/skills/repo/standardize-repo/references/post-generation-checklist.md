@@ -50,9 +50,10 @@ push so the remote exists.
       `.github/Branch Protection Ruleset - Protect Main.json`. To change an
       existing ruleset, edit it in the UI — don't re-import.
 
-  > Avoid `gh api … rulesets`: `POST` is **not idempotent** (re-running creates a
-  > duplicate ruleset) and both `POST`/`PUT` currently reject the `merge_queue`
-  > rule (`422 Invalid rule 'merge_queue'`). The UI import handles every rule type.
+  > REST supports `merge_queue`, but a blind `POST` is **not idempotent**
+  > (re-running can create a duplicate ruleset). Safe automation must first
+  > discover exactly one matching live ruleset and then `PUT` that ruleset's id.
+  > Keep the initial import explicit in the UI.
 
 - [ ] **[scriptable via gh]** Enable **Dependabot alerts**. Do NOT add a
       `dependabot.yml` — Renovate owns version updates; Dependabot is alerts-only.

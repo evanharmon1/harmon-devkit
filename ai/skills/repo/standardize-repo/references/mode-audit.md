@@ -127,9 +127,8 @@ hand-edit, and the verification command set from §4.
 ## 3. Common drift classes to check
 
 These are the recurring divergences observed when porting real repos onto the
-template (seeded from `~/git/harmon-init/docs/sourceRepoFollowUps.md`). Treat the
-list as a checklist of likely findings — confirm each against the target before
-reporting, and map each to its catalog area.
+template. Treat the list as a checklist of likely findings — confirm each
+against the target before reporting, and map each to its catalog area.
 
 **A. AGENTS.md symlink direction.** Canonical layout: `AGENTS.md` is the real
 file; `CLAUDE.md`, `GEMINI.md`, **and `.github/copilot-instructions.md`** are
@@ -184,10 +183,11 @@ the doc. Relatedly, ambiguous `verify` contexts: if both `build.yml` and the
 devcontainer workflow define a job literally named `verify`, either can satisfy
 the required check — the template renames the devcontainer job to
 **`devcontainer-verify`**. Fix: re-import the ruleset via the GitHub UI
-(Settings → Rules → Rulesets → **Import a ruleset**; avoid `gh api … rulesets`,
-which is non-idempotent and rejects the `merge_queue` rule), choose the rendered
-ruleset for the repo's account type, rename the devcontainer job, and align CI job
-names to `verify` + `security`.
+(Settings → Rules → Rulesets → **Import a ruleset**) and choose the rendered
+ruleset for the repo's account type. REST supports `merge_queue`, but a blind
+`POST` is non-idempotent and can create duplicate rulesets; automation must
+discover exactly one matching live ruleset and `PUT` that ruleset's id. Rename
+the devcontainer job and align CI job names to `verify` + `security`.
 Severity: **blocker** (wrong contexts mean the gate is unenforced or unsatisfiable).
 
 **E. YAML file extensions — NOT drift; do not flag.** `.yml` vs `.yaml` is left
@@ -244,7 +244,7 @@ devcontainer `Dockerfile` if one exists. Severity: **blocker** if the missing
 tool makes a routine `task` target fail on a host (e.g. bare `task` → `tv`);
 **should** if the task degrades gracefully (e.g. `status` without `gum`).
 
-**Also seeded from sourceRepoFollowUps (verify per repo):** legacy-bloated
+**Additional recurring findings (verify per repo):** legacy-bloated
 `Brewfile` (deprecated formulae, missing gitleaks/yamllint/actionlint); CI that
 reinstalls lint tools inline every run instead of using the prebuilt devcontainer
 image / a composite action; auto-release-on-merge `release.yml` (standard is
@@ -286,6 +286,11 @@ It renders harmon-init **at the repo's own `_commit`** (from its
 `MISSING` scan walks the whole render and is **manifest-independent**, so a file the
 template added after the curated list was last edited — or one a hand-reconciled
 update dropped — is still caught (`.gitkeep` dir-stubs show as benign `ABSENT`).
+An absent tracked path that still exists in the index is compared from an index
+snapshot, so a transient, unstaged working-tree deletion does not create false
+drift; once the deletion is staged it is real `MISSING`. Mature nested Terraform
+roots and an established or renumbered ADR log are reported as benign `EQUIV`
+instead of false `MISSING` and do not affect the exit status.
 Because the render is at `_commit`, each **`DRIFT`** is the repo's **local
 customization** relative to its own baseline — or a **regression** where a past
 hand-reconcile dropped a same-baseline improvement (the status.sh / lint-hygiene /
@@ -296,20 +301,21 @@ reconciling **in place** (keep it in its normal file — do not extract it elsew
 required gate, e.g. a non-portable `lint-hygiene.sh`). Run this as a standard step of
 every audit.
 
-**Known false-`MISSING` categories — verify before "fixing".** Some `MISSING`
-findings are legitimate divergences, not gaps; re-adding the template's version is
-wrong. The recurring ones (nearly every iac/dotfiles repo hit ≥1):
+**Recognized equivalents and remaining false-`MISSING` categories — verify
+before "fixing".** Some apparent gaps are legitimate divergences, not missing
+standards; re-adding the template's seed is wrong. The recurring ones:
 
 - **chezmoi `private_`/`dot_` prefix** — a dotfiles repo names the template's root
   `Brewfile` `private_Brewfile` (→ `~/Brewfile`), so `Brewfile` reads `MISSING`. Add
   a root `Brewfile` per [mode-adopt-existing.md](./mode-adopt-existing.md) §4.7, not
   a "restored" copy.
 - **ADR renumbering** — the seed `docs/decisions/0001-record-architecture-decisions.md`
-  shows `MISSING` when the repo renumbered it (its `0001`/`0002` are real decisions).
-  Don't re-add — it would duplicate.
+  is `EQUIV` when the repo carries a renumbered record-decisions ADR or already
+  has a README-backed numbered ADR log. Don't re-add — it would duplicate.
 - **Replaced terraform skeleton** — an iac repo with real infra (e.g.
   `terraform/environments/…`) deleted the template's flat
-  `terraform/{main,variables,outputs}.tf` skeleton. `MISSING`, but correct — leave it.
+  `terraform/{main,variables,outputs}.tf` skeleton. Nested `*.tf` roots make
+  these seed paths `EQUIV`; leave the real layout in place.
 - **Gitignored `.envrc`** — a repo that resolves `.envrc`/`.envrc.local` from an
   `.envrc.tpl` via `op inject` gitignores the resolved file, so it reads `MISSING`.
   Leave it (it's the secure pattern the template now ships).

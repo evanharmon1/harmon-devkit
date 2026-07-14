@@ -47,8 +47,8 @@ assets/diff-template.sh .
 # add --show to print the full per-file diff
 ```
 
-This renders harmon-init from the repo's own `.copier-answers.yml` and runs two
-checks (mapping `.yml`↔`.yaml`):
+This renders harmon-init from the repo's own `.copier-answers.yml` and reports
+the following result classes (mapping `.yml`↔`.yaml`):
 
 - **`DRIFT`** — a curated file differs from a render at the repo's **own recorded
   `_commit`** (diff-template.sh renders at `_commit`, not the template's HEAD). So
@@ -62,12 +62,16 @@ checks (mapping `.yml`↔`.yaml`):
 - **`MISSING`** — a template file the repo lacks entirely. This scan walks the
   whole render (it does **not** depend on the curated list), so a file the
   template added later, or one a previous hand-reconciled update dropped, can't
-  slip through silently. (`.gitkeep` dir-stubs show as benign `ABSENT`.) Some
+  slip through silently. A tracked path deleted only from the working tree is
+  compared from the index; staging that deletion makes it real `MISSING`.
+  (`.gitkeep` dir-stubs show as benign `ABSENT`.) Some
   `MISSING` findings are **intentional divergences, not gaps** — see the
   known-false-`MISSING` list in [`mode-audit.md`](./mode-audit.md) §3 (drift
   class K) before "restoring" any of them (e.g. a repo using `.prettierrc.cjs`
-  instead of the template's `prettier.config.cjs`, a replaced terraform
-  skeleton, or a renumbered seed ADR).
+  instead of the template's `prettier.config.cjs`).
+- **`EQUIV`** — a mature nested Terraform layout or established/renumbered ADR
+  log intentionally replaces a generated seed path. This is informational and
+  does not fail the comparison.
 
 Together these are your reconciliation worklist for §3.
 
@@ -388,6 +392,13 @@ assets/diff-template.sh .   # should now show only legit customizations
 task verify
 assets/verify-applied.sh .
 ```
+
+Current harmon-init renders a hermetic `test:tasks`: fake `brew`, `npm`, and
+`curl` commands exercise bootstrap without installing or updating shared
+machine tooling. If a target still carries the older live-tool version, port the
+current test before parallel fleet verification; until then, run those repo gates
+serially so concurrent audits cannot contend on or mutate shared package-manager
+state.
 
 **A green `task verify` does NOT cover the Lighthouse gates on web repos.** For
 web-astro repos the a11y/perf/SEO assertions (`lighthouserc.json`) run in the

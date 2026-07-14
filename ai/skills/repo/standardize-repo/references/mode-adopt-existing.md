@@ -177,6 +177,12 @@ from git rather than hand-merging conflict markers:
      security regression, not a tooling sync. (harmon-init ≥ the CODEOWNERS-freeze
      change keeps it via `_skip_if_exists`, and `verify-applied.sh` FAILS if an
      owner present on `main` is missing post-adopt — but check it by hand too.)
+     For a user-confirmed replacement, pass
+     `--ack-codeowner-change @old=@new` to `verify-applied.sh`, repeating the
+     exact mapping for each dropped owner. The verifier checks that `@old`
+     existed on `main` and is now absent, that `@new` is present now, and
+     rejects stale, extra, malformed, or non-materialized mappings. There is no
+     blanket access-control bypass.
    - **If you restore a customized `Taskfile.yml` but keep the template's
      workflows, reconcile the contract.** The template's `.github/workflows/*`
      delegate to `task` targets (e.g. `test:tasks`, `test:hooks`,
@@ -233,8 +239,8 @@ When in genuine doubt about a specific file, keep the existing version and leave
 
 ## 4. Reconciliation steps specific to existing repos
 
-These are the recurring drifts harmon-init exists to fix (source:
-`harmon-init/docs/sourceRepoFollowUps.md`). Walk each one after the copier run:
+These are the recurring drifts observed across existing repos. Walk each one
+after the copier run:
 
 1. **AGENTS.md is canonical; everything else symlinks to it.** The template ships
    `AGENTS.md` as the real file with `CLAUDE.md`, `GEMINI.md`, and

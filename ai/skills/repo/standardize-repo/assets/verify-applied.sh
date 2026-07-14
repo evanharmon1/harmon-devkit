@@ -3,7 +3,9 @@
 # verify-applied.sh — validate a repo AFTER harmon-init conventions were applied.
 #
 # Usage:
-#   verify-applied.sh [TARGET_DIR]   # TARGET_DIR defaults to "."
+#   verify-applied.sh [--ack-codeowner-change @old=@new]... [TARGET_DIR]
+#   TARGET_DIR defaults to ".". Each acknowledgement must name one owner that
+#   was actually dropped from main and one replacement present in the new file.
 #
 # Mirrors the validation philosophy of harmon-init's scripts/test-template.sh,
 # but runs against an ALREADY-RENDERED, real repo (the result of `copier copy`
@@ -21,7 +23,65 @@
 
 set -euo pipefail
 
-target="${1:-.}"
+usage() {
+    cat >&2 <<'USAGE'
+Usage:
+  verify-applied.sh [--ack-codeowner-change @old=@new]... [TARGET_DIR]
+
+The CODEOWNERS acknowledgement is intentionally exact: repeat it for each
+intentional owner migration. The verifier rejects stale, extra, malformed, or
+non-materialized mappings; there is no blanket access-control bypass.
+USAGE
+}
+
+target=""
+codeowner_ack_count=0
+codeowner_acks=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --ack-codeowner-change)
+        [ $# -ge 2 ] || {
+            usage
+            echo "FAIL: --ack-codeowner-change requires @old=@new" >&2
+            exit 2
+        }
+        ack="$2"
+        if ! printf '%s\n' "$ack" | grep -qE '^@[A-Za-z0-9_/-]+=@[A-Za-z0-9_/-]+$'; then
+            usage
+            echo "FAIL: malformed CODEOWNERS acknowledgement: $ack" >&2
+            exit 2
+        fi
+        old="${ack%%=*}"
+        new="${ack#*=}"
+        if [ "$old" = "$new" ]; then
+            echo "FAIL: CODEOWNERS acknowledgement must name a real migration: $ack" >&2
+            exit 2
+        fi
+        codeowner_acks+=("$ack")
+        codeowner_ack_count=$((codeowner_ack_count + 1))
+        shift 2
+        ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    -*)
+        usage
+        echo "FAIL: unknown argument: $1" >&2
+        exit 2
+        ;;
+    *)
+        if [ -n "$target" ]; then
+            usage
+            echo "FAIL: more than one target directory given" >&2
+            exit 2
+        fi
+        target="$1"
+        shift
+        ;;
+    esac
+done
+[ -n "$target" ] || target="."
 
 if [ ! -d "$target" ]; then
     echo "FAIL: target directory not found: $target" >&2
@@ -214,17 +274,63 @@ fi
 # access-control change that must be surfaced and confirmed, never auto-applied.
 # harmon-init also freezes CODEOWNERS via _skip_if_exists; this is the belt to
 # that suspenders (and catches a hand-overwritten CODEOWNERS too). Compare the
-# @owners in the pre-adopt CODEOWNERS (on `main`) against the current one; skip
-# cleanly when there is no main, no CODEOWNERS, or not a git tree.
+# @owners in the pre-adopt CODEOWNERS (on `main`) against the current one. An
+# intentional migration is acknowledged only with an exact
+# `--ack-codeowner-change @old=@new` mapping: @old must truly be dropped and
+# @new must be present now. Extra/stale mappings fail, so this cannot become a
+# blanket bypass. Skip cleanly only when there is no main or not a git tree.
 co=".github/CODEOWNERS"
-if [ -f "$co" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+codeowners_compared=0
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
     git cat-file -e "main:$co" 2>/dev/null; then
+    codeowners_compared=1
     before="$(git show "main:$co" 2>/dev/null | grep -oE '@[A-Za-z0-9_/-]+' | sort -u)"
-    after="$(grep -oE '@[A-Za-z0-9_/-]+' "$co" 2>/dev/null | sort -u)"
-    dropped="$(comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -v '^$' || true)"
-    if [ -n "$dropped" ]; then
-        err "CODEOWNERS dropped owner(s) present on main: $(printf '%s ' $dropped)— adopting must NOT silently reduce access. The template's single code_owner answer can't hold multiple owners/teams; restore the dropped owner(s) and confirm the change with the user."
+    if [ -f "$co" ]; then
+        after="$(grep -oE '@[A-Za-z0-9_/-]+' "$co" 2>/dev/null | sort -u)"
+    else
+        after=""
     fi
+    dropped="$(comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -v '^$' || true)"
+    acknowledged_old=""
+    if [ "$codeowner_ack_count" -gt 0 ]; then
+        for ack in "${codeowner_acks[@]}"; do
+            old="${ack%%=*}"
+            new="${ack#*=}"
+            if ! printf '%s\n' "$before" | grep -qxF "$old"; then
+                err "CODEOWNERS acknowledgement is stale: $old was not present on main"
+                continue
+            fi
+            if ! printf '%s\n' "$dropped" | grep -qxF "$old"; then
+                err "CODEOWNERS acknowledgement is extra: $old was not actually dropped"
+                continue
+            fi
+            if ! printf '%s\n' "$after" | grep -qxF "$new"; then
+                err "CODEOWNERS acknowledgement is not materialized: replacement $new is absent"
+                continue
+            fi
+            if printf '%s' "$acknowledged_old" | grep -qxF "$old"; then
+                err "CODEOWNERS owner acknowledged more than once: $old"
+                continue
+            fi
+            acknowledged_old="${acknowledged_old}${old}
+"
+            echo "ACK: intentional CODEOWNERS migration $old -> $new"
+        done
+    fi
+
+    unacknowledged=""
+    for owner in $dropped; do
+        if ! printf '%s' "$acknowledged_old" | grep -qxF "$owner"; then
+            unacknowledged="${unacknowledged}${owner}
+"
+        fi
+    done
+    if [ -n "$unacknowledged" ]; then
+        err "CODEOWNERS dropped owner(s) present on main without an exact migration acknowledgement: $(printf '%s ' $unacknowledged)— restore them, or repeat --ack-codeowner-change @old=@new for each intentional migration after confirming it with the user."
+    fi
+fi
+if [ "$codeowner_ack_count" -gt 0 ] && [ "$codeowners_compared" -eq 0 ]; then
+    err "CODEOWNERS acknowledgement supplied, but main has no comparable .github/CODEOWNERS"
 fi
 
 # ── Result ──────────────────────────────────────────────────────────

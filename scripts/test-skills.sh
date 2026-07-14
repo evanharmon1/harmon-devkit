@@ -382,10 +382,83 @@ done
 # ── standardize-repo audit assets ─────────────────────────────────────
 echo "==> standardize-repo audit assets"
 
+STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
+    grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
+
+for rest_doc in \
+    "$STANDARDIZE_REFS/mode-audit.md" \
+    "$STANDARDIZE_REFS/post-generation-checklist.md" \
+    "$STANDARDIZE_REFS/standards-catalog.md"; do
+    rest_name="${rest_doc##*/}"
+    expect_ok "$rest_name documents REST merge_queue support" \
+        grep -qF 'supports `merge_queue`' "$rest_doc"
+    expect_fail "$rest_name has no stale merge_queue rejection claim" \
+        grep -Eiq '(rejects?|reject).{0,80}merge_queue|merge_queue.{0,80}(rejects?|reject)' "$rest_doc"
+done
+
+expect_ok "standards catalog documents the valid CODEOWNERS account default" \
+    grep -qF '`author_git_provider_username` (a bare organization is not a valid CODEOWNERS' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+
+starter="$repo/templates/scriptTemplates/shellScriptTemplate.sh"
+signal_fixture="$TMPROOT/shell-starter-signals.sh"
+sed '$d' "$starter" >"$signal_fixture"
+for signal_case in "INT 130" "TERM 143"; do
+    signal="${signal_case% *}"
+    expected="${signal_case#* }"
+    cleanup_marker="$TMPROOT/cleanup-$signal"
+    if CLEANUP_MARKER="$cleanup_marker" bash -c '
+        . "$1"
+        cleanup() { : >"${CLEANUP_MARKER:?}"; }
+        kill "-$2" "$$"
+        exit 99
+    ' _ "$signal_fixture" "$signal" >/dev/null 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$rc" -eq "$expected" ]; then
+        ok "shell starter exits $expected on SIG$signal"
+    else
+        bad "shell starter exits $expected on SIG$signal (got $rc)"
+    fi
+    if [ -e "$cleanup_marker" ]; then
+        ok "shell starter runs EXIT cleanup after SIG$signal"
+    else
+        bad "shell starter runs EXIT cleanup after SIG$signal"
+    fi
+done
+
+VA_TARGET="$TMPROOT/verify-applied-codeowners"
+mkdir -p "$VA_TARGET/.github"
+printf '%s\n' '# Test instructions' >"$VA_TARGET/AGENTS.md"
+ln -s AGENTS.md "$VA_TARGET/CLAUDE.md"
+ln -s AGENTS.md "$VA_TARGET/GEMINI.md"
+printf '%s\n' '* @ponderousdev' >"$VA_TARGET/.github/CODEOWNERS"
+git_init "$VA_TARGET"
+git_commit_all "$VA_TARGET" "record original code owner"
+git -C "$VA_TARGET" branch -M main
+git -C "$VA_TARGET" switch -q -c codeowner-migration
+printf '%s\n' '* @evanharmon1' >"$VA_TARGET/.github/CODEOWNERS"
+
+expect_fail "verify-applied rejects an unacknowledged CODEOWNERS migration" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$VA_TARGET"
+expect_fail "verify-applied rejects an absent replacement owner" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" \
+    --ack-codeowner-change @ponderousdev=@missing-owner "$VA_TARGET"
+expect_fail "verify-applied rejects a stale CODEOWNERS acknowledgement" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" \
+    --ack-codeowner-change @not-on-main=@evanharmon1 "$VA_TARGET"
+expect_ok "verify-applied accepts the exact materialized CODEOWNERS migration" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" \
+    --ack-codeowner-change @ponderousdev=@evanharmon1 "$VA_TARGET"
+
 manifest="$STANDARDIZE_ASSETS/template-owned-files.txt"
 for required in \
     Brewfile \
     .skills-sync.yaml \
+    scripts/shell-quality.sh \
     scripts/markdownlint.sh \
     scripts/secret-set-1p.sh \
     scripts/secret-set-gh.sh \
@@ -397,11 +470,14 @@ for required in \
     expect_ok "template-owned manifest includes $required" grep -qxF "$required" "$manifest"
 done
 
-# Exercise executable-mode drift end to end with a tiny local Copier template.
-# The real manifest is reused, but only scripts/status.sh exists in this profile,
-# so every other conditional/curated entry is skipped naturally.
+# Exercise executable-mode drift, equivalent mature layouts, and index-backed
+# transient deletions end to end with a tiny local Copier template. The real
+# manifest is reused, but only scripts/status.sh exists in its curated set.
 DT_TEMPLATE="$TMPROOT/diff-template-source"
-mkdir -p "$DT_TEMPLATE/template/scripts"
+mkdir -p \
+    "$DT_TEMPLATE/template/scripts" \
+    "$DT_TEMPLATE/template/terraform" \
+    "$DT_TEMPLATE/template/docs/decisions"
 cat >"$DT_TEMPLATE/copier.yml" <<'EOF'
 _min_copier_version: "9.4.0"
 _subdirectory: template
@@ -414,14 +490,27 @@ cat >"$DT_TEMPLATE/template/scripts/status.sh" <<'EOF'
 echo status
 EOF
 chmod +x "$DT_TEMPLATE/template/scripts/status.sh"
+for terraform_file in main.tf variables.tf outputs.tf; do
+    printf '%s\n' '# starter' >"$DT_TEMPLATE/template/terraform/$terraform_file"
+done
+printf '%s\n' '# Example values' >"$DT_TEMPLATE/template/terraform/tfvars.env.example"
+printf '%s\n' '# Record architecture decisions' \
+    >"$DT_TEMPLATE/template/docs/decisions/0001-record-architecture-decisions.md"
 git_init "$DT_TEMPLATE"
 git_commit_all "$DT_TEMPLATE" "test template"
 git -C "$DT_TEMPLATE" tag v1.0.0
 
 DT_TARGET="$TMPROOT/diff-template-target"
-mkdir -p "$DT_TARGET/scripts"
+mkdir -p \
+    "$DT_TARGET/scripts" \
+    "$DT_TARGET/terraform/environments/production" \
+    "$DT_TARGET/docs/decisions"
 cp "$DT_TEMPLATE/template/scripts/status.sh" "$DT_TARGET/scripts/status.sh"
 chmod -x "$DT_TARGET/scripts/status.sh"
+printf '%s\n' '# production root' \
+    >"$DT_TARGET/terraform/environments/production/main.tf"
+printf '%s\n' '# Record architecture decisions' \
+    >"$DT_TARGET/docs/decisions/0007-record-architecture-decisions.md"
 cat >"$DT_TARGET/.copier-answers.yml" <<EOF
 _commit: v1.0.0
 _src_path: file://$DT_TEMPLATE
@@ -436,8 +525,37 @@ else
     bad "diff-template reports executable-mode drift (MODE diagnostic missing)"
 fi
 chmod +x "$DT_TARGET/scripts/status.sh"
-expect_ok "diff-template passes after executable mode is restored" \
+git_init "$DT_TARGET"
+git_commit_all "$DT_TARGET" "record mature target layout"
+
+if equivalent_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template passes after executable mode is restored"
+else
+    bad "diff-template passes after executable mode is restored: $equivalent_out"
+fi
+if printf '%s\n' "$equivalent_out" | grep -qF "EQUIV    terraform/main.tf"; then
+    ok "diff-template recognizes nested Terraform roots as equivalent"
+else
+    bad "diff-template recognizes nested Terraform roots as equivalent"
+fi
+if printf '%s\n' "$equivalent_out" |
+    grep -qF "EQUIV    docs/decisions/0001-record-architecture-decisions.md"; then
+    ok "diff-template recognizes a renumbered seed ADR as equivalent"
+else
+    bad "diff-template recognizes a renumbered seed ADR as equivalent"
+fi
+
+rm "$DT_TARGET/scripts/status.sh"
+expect_ok "diff-template compares an unstaged tracked deletion from the index" \
     env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
+git -C "$DT_TARGET" add -u -- scripts/status.sh
+if staged_delete_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports a staged deletion (expected non-zero exit)"
+elif printf '%s\n' "$staged_delete_out" | grep -qF "MISSING  scripts/status.sh"; then
+    ok "diff-template reports a staged deletion as MISSING"
+else
+    bad "diff-template reports a staged deletion (MISSING diagnostic absent)"
+fi
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

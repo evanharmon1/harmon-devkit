@@ -86,9 +86,11 @@ refreshed by `copier update`'s three-way merge, which preserves a repo's own edi
 Customize them **normally, in place** — there is no extension-file convention a
 repo's developers need to learn. `assets/diff-template.sh` reports both content
 `DRIFT` in the curated set and `MISSING` template files the repo lacks entirely
-(a whole-render, manifest-independent scan), so an audit/update pulls in missed
-improvements (the recurring status.sh / lint-hygiene / bootstrap class) and missed
-whole files without losing local customizations — see mode-audit drift class **K**.
+(a whole-render, manifest-independent scan). It compares an unstaged tracked
+deletion from the index and reports mature nested Terraform/ADR replacements as
+benign `EQUIV`, so an audit/update pulls in missed improvements (the recurring
+status.sh / lint-hygiene / bootstrap class) and missed whole files without losing
+local customizations — see mode-audit drift class **K**.
 
 Naming & structure conventions:
 
@@ -109,6 +111,10 @@ Naming & structure conventions:
   workflow invokes must still exist (drift
   class L) — but `verify` is intentionally a *subset* of what CI runs, so "`verify`
   is green" is not "CI is green"; use `ci` for that.
+- **Hermetic task regression tests:** current `test:tasks` uses temporary fake
+  `brew`, `npm`, and `curl` commands; it must not install or update shared
+  machine tools. When auditing multiple repos, run older live-tool variants
+  serially until the current hermetic script is ported.
 - **Parallel deps:** umbrella tasks fan out via `deps:` (which run in parallel),
   e.g. `lint` deps on `lint:yaml`, `lint:shell`, `lint:markdown`,
   `lint:actions`, `lint:hygiene`; `security` deps on `security:secrets` +
@@ -155,7 +161,10 @@ quick first pass when auditing an already-standardized repo.
 
 Notable command bodies (for an auditor checking they match):
 
-- `lint:shell` → `shellcheck --severity=error` + `shfmt -d`
+- `lint:shell` → `scripts/shell-quality.sh check`, which passes NUL-delimited
+  tracked `*.sh`/`*.bash` paths (or explicit argv paths) intact to
+  `shellcheck --severity=error` + `shfmt -d`; `format` calls the same helper
+  in write mode
 - `lint:markdown` → markdownlint-cli2 `'**/*.md' '#.claude/**' …` — prefers the
   repo-pinned `node_modules/.bin` copy when installed, then a global
   `markdownlint-cli2` from the Brewfile, then a version-pinned npx fallback;
@@ -381,16 +390,22 @@ Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKE
   code-owner approval + thread resolution + last-push approval, required status
   checks `verify` + `security`, merge methods squash/rebase; org repos add a
   `merge_queue` rule. **[copier]** ships the file; **[manual]** import via the
-  GitHub UI (Settings → Rules → Rulesets → **Import a ruleset**) — not
-  `gh api … rulesets`, whose `POST` is non-idempotent (duplicates the ruleset)
-  and rejects the `merge_queue` rule (422); edit the existing ruleset in the UI
-  to change it later.
+  GitHub UI (Settings → Rules → Rulesets → **Import a ruleset**). The REST API
+  supports `merge_queue`, but a blind `POST` is non-idempotent and can duplicate
+  the ruleset. Automation must discover exactly one matching live ruleset and
+  `PUT` that ruleset's id; edit the existing ruleset in the UI for manual changes.
 - **`SECURITY.md`** lives in **`.github/`** (Private Vulnerability Reporting).
   **[copier]**
 - **Renovate, NOT Dependabot** for version updates. CHECKLIST explicitly says
   enable Dependabot *alerts* + Private vulnerability reporting but **do NOT add
   `dependabot.yml`** — Renovate owns updates. **[manual]** repo settings.
-- **`CODEOWNERS`** = `* @<code_owner>` — an asked question that defaults to `github_org`. **[copier]**
+- **`CODEOWNERS`** = `* @<code_owner>` — an asked question that defaults to
+  `author_git_provider_username` (a bare organization is not a valid CODEOWNERS
+  principal; org repos can deliberately choose `org/team`). **[copier]**
+  Existing owners are access control: an intentional replacement must be
+  user-confirmed and acknowledged to `verify-applied.sh` as the exact
+  `--ack-codeowner-change @old=@new` mapping. Old must exist on `main` and be
+  dropped, new must be present, and extra/stale mappings fail.
 - **Secrets via 1Password** locally (`op run`/`op inject`); CI reads Actions
   secrets. **`.env` is fully gitignored** (`.env`, `**/.env`, `.env.*`) with a
   single committed exception, `!/.env.example` (names/placeholders only; node

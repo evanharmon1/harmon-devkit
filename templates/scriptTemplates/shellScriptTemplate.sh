@@ -17,8 +17,8 @@ USAGE
 }
 
 cleanup() {
-    trap - SIGINT SIGTERM ERR EXIT
     # Remove temporary resources here.
+    :
 }
 
 die() {
@@ -73,5 +73,7 @@ main() {
     printf 'arguments=%s\n' "${args[*]}"
 }
 
-trap cleanup SIGINT SIGTERM ERR EXIT
+trap cleanup EXIT
+trap 'exit 130' SIGINT
+trap 'exit 143' SIGTERM
 main "$@"
