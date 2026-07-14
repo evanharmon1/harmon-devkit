@@ -173,6 +173,11 @@ Notable command bodies (for an auditor checking they match):
   `--fix`** — auto-fix lives in `format`)
 - `lint:hygiene` → `./scripts/lint-hygiene.sh`
 - `security:secrets` → `gitleaks detect --no-banner --redact --source .`
+- Python `security:audit` → fail-closed `scripts/python-audit.sh`: with a
+  `uv.lock`, export the exact graph using
+  `uv export --frozen --all-extras --all-groups`; before the first lock,
+  compile the project plus `dev` group to a temporary requirements file. Audit
+  it with pinned `pip-audit==2.10.1`; no `|| true` or ignored exit status.
 - `secret:set:1p` / `secret:set:gh` → `./scripts/secret-set-{1p,gh}.sh` —
   destination-only secret writes, value on **stdin** (see §1.8)
 - `install` → `brew bundle --file=Brewfile` (+ `uv sync` / `pnpm install`) →
@@ -327,7 +332,14 @@ Shared structure:
   generated repo's `docs/guides/devcontainers.md` has the full walkthrough.
 - **`devcontainer.env`** is gitignored; only `devcontainer.env.example` is
   committed. **[manual]** to populate real secrets.
-- Smoke tests: `task test:devcontainer:root` / `test:devcontainer:dev`.
+- **Static permission test:** `test:devcontainer:permissions` calls
+  `read-configuration` with `--docker-path /usr/bin/true`, so the fast
+  configuration/permission assertion remains Docker-daemon-independent.
+- **Smoke tests:** `task test:devcontainer:root` /
+  `test:devcontainer:dev` require Docker and GNU `timeout`. They hard-bound
+  daemon preflight and cleanup at `-k 5 20`, and the full `devcontainer up`
+  lifecycle at `-k 30 1800`, so a wedged daemon or build cannot hang fleet
+  verification indefinitely.
 
 ### 1.7 CI/CD (GitHub Actions)
 
@@ -415,9 +427,13 @@ Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKE
   NAME=… REPO=owner/repo` (GitHub repo secrets), backed by
   `scripts/secret-set-{1p,gh}.sh`: the value is read from **stdin only** — never
   argv, `--body`, exported env vars, or Taskfile vars (history/process-listing
-  hygiene). Both fail without destination metadata (`test-tasks.sh` asserts it),
-  and agents still must not write to a password manager without explicit
-  per-write confirmation. **[copier]**
+  hygiene). The 1Password helper fully materializes and validates the item JSON
+  before `op item edit` can start; it requires one matching `CONCEALED` field
+  and rejects `SSH_KEY`/`PASSKEY` categories, `SSHKEY` fields, and structured
+  values because a full-item edit can clobber those credentials. Both helpers
+  fail without destination metadata (`test-tasks.sh` asserts it), and agents
+  still must not write to a password manager without explicit per-write
+  confirmation. **[copier]**
 - **1Password credential naming (source of truth).** Authoritative convention is
   in the generated repo's `docs/architecture/security.md` ("1Password
   conventions"); when creating a repo's credentials, follow it verbatim:
@@ -478,12 +494,13 @@ install the Renovate GitHub App on the repo. Conventions:
   `bypassPermissions`, e.g. the devcontainer bot profile — the AGENTS.md rule
   is the binding convention there). **[copier]**
 - **`.claude/skills/`** — vendored shared agent skills from harmon-devkit via
-  **skills-sync**, gated on the **`use_skills_sync`** copier answer (default yes;
-  a repo may opt out — its ABSENCE of vendoring is then deliberate, not drift).
-  When on: `.skills-sync.yaml` (categories from the **`skill_categories`**
-  multiselect, seeded from `project_type` — `general`→`universal`,
-  `web-astro`→`+frontend`, `web-app`→`+frontend,backend`, `iac`→`+infra`),
-  `scripts/sync-skills.sh`, the
+  **skills-sync**, gated on the **`use_skills_sync`** copier answer. It defaults
+  on only for `web-astro` and `web-app`: the profile-seeded `universal` and
+  `infra` categories are currently empty, so general/iac repos default off
+  instead of managing an empty set. When enabled, `skill_categories` starts with
+  `universal`, adds `frontend` for both web types, `backend` for `web-app`,
+  and `infra` when Terraform/Ansible or the iac type applies. The generated
+  machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
   `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
   (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
   until the first `task sync:skills`, so a fresh scaffold stays green. **[copier]**
@@ -507,8 +524,8 @@ install the Renovate GitHub App on the repo. Conventions:
   **`use_foreman`** Copier answer. When enabled it adds `.foreman.toml`,
   `taskfiles/foreman.yml`, `scripts/foreman/`, three `.claude/agents/`, the
   architecture doc, Taskfile targets, hooks, and Python tooling. The v3.26
-  template introduced it with a default of yes, but update mode requires an
-  explicit per-repo answer because this is a substantial operational subsystem,
+  template introduced it and now deliberately defaults to `no`: it is an
+  explicit per-repo opt-in because this is a substantial operational subsystem,
   not a passive lint config. Absence is deliberate when `use_foreman: false`.
   **[copier]**
 - Devcontainer ships richer `config/claude-settings.json` as managed settings (see

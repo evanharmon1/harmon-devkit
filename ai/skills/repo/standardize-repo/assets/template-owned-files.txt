@@ -25,6 +25,7 @@ scripts/shell-quality.sh
 scripts/markdownlint.sh
 scripts/secret-set-1p.sh
 scripts/secret-set-gh.sh
+scripts/python-audit.sh
 scripts/sync-skills.sh
 scripts/summarize-gitleaks.mjs
 scripts/test-tasks.sh

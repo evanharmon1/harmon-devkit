@@ -86,10 +86,11 @@ git -C ~/git/harmon-init diff "$(yq -r '._commit' .copier-answers.yml)"..v<TARGE
 ```
 
 Every newly introduced question needs an explicit decision. This is especially
-important for a **default-on** feature with a material footprint: for example,
-`use_foreman` adds its supervisor, agents, taskfile, configuration, documentation,
-and tests. Do not treat the new default as consent to adopt it. Pass each reviewed
-answer with `--data`, even when the decision happens to match the default.
+important for a feature with a material footprint: for example, `use_foreman`
+adds its supervisor, agents, taskfile, configuration, documentation, and tests.
+It deliberately defaults off, but update mode must still decide whether the
+target should opt in. Pass each reviewed answer with `--data`, even when the
+decision happens to match the default.
 
 Preview the exact answer set before the real update:
 

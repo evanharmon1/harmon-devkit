@@ -400,6 +400,23 @@ done
 expect_ok "standards catalog documents the valid CODEOWNERS account default" \
     grep -qF '`author_git_provider_username` (a bare organization is not a valid CODEOWNERS' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents the web-only skills-sync default" \
+    grep -qF 'on only for `web-astro` and `web-app`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents Foreman as deliberate opt-in" \
+    grep -qF 'now deliberately defaults to `no`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "update guidance has no stale default-on Foreman claim" \
+    grep -qF '**default-on**' "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "standards catalog documents the fail-closed locked Python audit" \
+    grep -qF '`uv export --frozen --all-extras --all-groups`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents bounded devcontainer smoke tests" \
+    grep -qF 'lifecycle at `-k 30 1800`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents 1Password pre-validation" \
+    grep -qF 'fully materializes and validates the item JSON' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 
 starter="$repo/templates/scriptTemplates/shellScriptTemplate.sh"
 signal_fixture="$TMPROOT/shell-starter-signals.sh"
@@ -462,6 +479,7 @@ for required in \
     scripts/markdownlint.sh \
     scripts/secret-set-1p.sh \
     scripts/secret-set-gh.sh \
+    scripts/python-audit.sh \
     scripts/sync-skills.sh \
     .github/workflows/close-milestone-on-release.yml \
     .foreman.toml \
