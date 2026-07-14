@@ -361,6 +361,17 @@ against the pre-update workflow. In particular, preserve intentional
 `workflow_dispatch` deploy/apply paths and their guards; YAML/actionlint can be
 green while a Terraform apply path has silently disappeared.
 
+For every aggregate job under `if: always()`, inspect its result reduction.
+It must allowlist intended `success`/deliberate `skipped` states and reject
+`cancelled`, `timed_out`, and unknown states; testing only `== failure` is
+fail-open.
+
+On workflows that may use self-hosted runners, reject shared fixed `/tmp`
+filenames for sensitive or cross-step artifacts (especially saved Terraform
+plans). Use a private per-repo/run directory beneath `${{ runner.temp }}`,
+propagate the exact path, and clean it up so concurrent or later jobs cannot
+read, replace, or collide with it.
+
 ---
 
 ## 4. Fix flow

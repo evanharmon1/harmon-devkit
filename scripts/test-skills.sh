@@ -427,6 +427,12 @@ expect_ok "audit guidance checks repo-specific test gate reachability" \
 expect_ok "update guidance checks workflow trigger semantics" \
     grep -qF 'run proves syntax, not trigger semantics.' \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "catalog requires fail-closed aggregate result handling" \
+    grep -qF 'that rejects only `failure` is fail-open.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "audit guidance forbids shared fixed temp artifacts" \
+    grep -qF 'On workflows that may use self-hosted runners, reject shared fixed `/tmp`' \
+    "$STANDARDIZE_REFS/mode-audit.md"
 
 starter="$repo/templates/scriptTemplates/shellScriptTemplate.sh"
 signal_fixture="$TMPROOT/shell-starter-signals.sh"

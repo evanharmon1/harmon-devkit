@@ -358,9 +358,16 @@ Shared structure:
 - **`merge_group`** trigger on `build.yml` (merge-queue support).
 - **Aggregate gate:** a final `verify` job (`if: always()`, `needs: [lint,
   security, …]`) reports one rollup status. Branch protection requires the
-  **`verify`** and **`security`** checks.
+  **`verify`** and **`security`** checks. It must fail closed: allowlist
+  `success` and only deliberately acceptable `skipped` results; reject
+  `failure`, `cancelled`, `timed_out`, and every unexpected state. A check
+  that rejects only `failure` is fail-open.
 - Fork-PR guard: jobs gate on
   `github.event.pull_request.head.repo.full_name == github.repository`.
+- **Self-hosted-safe temporary artifacts:** never use a shared fixed `/tmp`
+  path for sensitive or cross-step state such as a saved Terraform plan. Create
+  a private per-repo/run path beneath `${{ runner.temp }}` (include run
+  id/attempt), pass that exact path between steps, and clean it up.
 
 Workflow inventory:
 
