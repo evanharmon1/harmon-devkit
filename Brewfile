@@ -32,8 +32,9 @@ brew "python"
 brew "hadolint"
 brew "devcontainer"
 
-# Skills tooling tests parse the vendoring manifest even though this source repo
-# intentionally does not vendor its own skills.
+# Skills tooling tests parse manifests and render tiny local Copier templates
+# even though this source repo intentionally does not vendor its own skills.
+brew "copier"
 brew "yq"
 
 # Utilities
