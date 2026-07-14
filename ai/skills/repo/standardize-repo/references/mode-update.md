@@ -149,17 +149,21 @@ neither replaces the post-update reconciliation in §3.
 
 ## 2. Run the update
 
-**Preflight — ensure `_src_path` is a resolvable git source.** `copier update`
-reuses the `_src_path` recorded in `.copier-answers.yml`; if it's a relative or
-machine-local path (e.g. `harmon-init`), the update aborts with `Updating is only
-supported in git-tracked templates` (see [copier-gotchas.md](./copier-gotchas.md)
-gotcha 8). Normalize it to the GitHub URL first — once, committed:
+**Preflight — ensure the recorded lineage tuple is resolvable.** `copier update`
+reuses both `_src_path` and `_commit` from `.copier-answers.yml`. A relative or
+machine-local path may abort with `Updating is only supported in git-tracked
+templates`; changing that path alone is safe only when the recorded commit is
+reachable from the canonical remote (see [copier-gotchas.md](./copier-gotchas.md)
+gotcha 8). Inspect both fields:
 
 ```bash
-grep '^_src_path:' .copier-answers.yml   # is it a URL? if relative/local, fix it:
-yq -i '._src_path = "https://github.com/evanharmon1/harmon-init"' .copier-answers.yml
-git commit -am "chore: point copier _src_path at the harmon-init GitHub URL"
+grep -E '^(_src_path|_commit):' .copier-answers.yml
 ```
+
+If `_src_path` is local, first prove `_commit` exists on the canonical remote.
+Then update and commit the tuple together. If it is a dirty-render throwaway or
+otherwise unreachable, do not fabricate lineage by swapping only the path or
+commit; re-adopt from the canonical GitHub URL at a reviewed released ref.
 
 ```bash
 copier update --trust --defaults \

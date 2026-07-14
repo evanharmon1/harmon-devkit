@@ -44,7 +44,8 @@ push so the remote exists.
 ## 2. GitHub repo settings
 
 - [ ] **[manual — GitHub UI]** Import the branch ruleset that protects `main`
-      (required reviews + the `verify`/`security` status checks). The JSON is
+      (required reviews + `verify`/`security`, plus `terraform-verify` when the
+      generated repo includes Terraform). The JSON is
       generated into the repo's `.github/`. Import it via the UI:
       **Settings → Rules → Rulesets → New ruleset ▸ Import a ruleset** → select
       `.github/Branch Protection Ruleset - Protect Main.json`. To change an

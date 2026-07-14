@@ -403,7 +403,318 @@ if [ "$has_terraform" = true ]; then
     fi
 fi
 
-# ── 3e. CodeQL selection, result truth table, and live capability ──
+# ── 3e. Build/devcontainer aggregate result contracts ──────────────
+# A generic "success or skipped" aggregate is not fail-closed: on a trusted
+# event it can disguise a job that never ran, and on a fork it can disguise a
+# repository-controlled job that unexpectedly ran. The standard has two exact
+# branches. Fork PRs validate every suppressed leaf as `skipped` in workflow-
+# inline shell without checkout/repo code; trusted events check out only after
+# the fork branch and require every leaf to be `success` through the tested
+# helper.
+aggregate_job_contract_is_safe() {
+    local workflow="$1"
+    local aggregate_job="$2"
+
+    awk -v target="$aggregate_job" '
+        function clear_step_refs(key) {
+            for (key in step_refs) {
+                delete step_refs[key]
+            }
+        }
+        function reset_step() {
+            clear_step_refs()
+            in_step = 0
+            is_boundary = 0
+            fork_condition = 0
+            trusted_condition = 0
+            is_checkout = 0
+            is_helper = 0
+            has_run = 0
+            checks_skipped = 0
+            boundary_message = 0
+            expected_success = 0
+            uses_any = 0
+            repo_code = 0
+        }
+        function finish_step(key) {
+            if (!in_step) {
+                return
+            }
+            if (is_boundary) {
+                if (fork_condition && has_run && checks_skipped &&
+                    boundary_message && !uses_any && !repo_code) {
+                    safe_boundary = 1
+                }
+                for (key in step_refs) {
+                    fork_refs[key] = 1
+                }
+            }
+            if (is_checkout) {
+                if (trusted_condition) {
+                    safe_checkout = 1
+                } else {
+                    unsafe_checkout = 1
+                }
+            }
+            if (is_helper) {
+                if (trusted_condition && expected_success) {
+                    safe_helper = 1
+                } else {
+                    unsafe_helper = 1
+                }
+                for (key in step_refs) {
+                    trusted_refs[key] = 1
+                }
+            }
+            reset_step()
+        }
+        function collect_refs(value, token) {
+            value = $0
+            while (match(value, /needs\.[A-Za-z0-9_-]+\.result/)) {
+                token = substr(value, RSTART, RLENGTH)
+                step_refs[token] = 1
+                value = substr(value, RSTART + RLENGTH)
+            }
+        }
+        BEGIN {
+            in_job = 0
+            found_job = 0
+            always_job = 0
+            fork_expression = 0
+            safe_boundary = 0
+            safe_checkout = 0
+            safe_helper = 0
+            unsafe_checkout = 0
+            unsafe_helper = 0
+            generic_allowlist = 0
+            reset_step()
+        }
+        {
+            line = $0
+            if (!in_job) {
+                if (line ~ ("^  " target ":[ ]*(#.*)?$")) {
+                    in_job = 1
+                    found_job = 1
+                }
+                next
+            }
+            if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) {
+                finish_step()
+                in_job = 0
+                next
+            }
+            if (line ~ /^[[:space:]]*if:[[:space:]]*always\(\)/) {
+                always_job = 1
+            }
+            if (index(line, "IS_FORK:") &&
+                index(line, "github.event_name ==") && index(line, "pull_request") &&
+                index(line, "head.repo.full_name != github.repository")) {
+                fork_expression = 1
+            }
+            if (index(line, "success") && index(line, "skipped") &&
+                index(line, "||")) {
+                generic_allowlist = 1
+            }
+            if (line ~ /^      - /) {
+                finish_step()
+                in_step = 1
+            }
+            if (!in_step || line ~ /^[[:space:]]*#/) {
+                next
+            }
+            if (index(line, "name:") && index(line, "untrusted-fork boundary")) {
+                is_boundary = 1
+            }
+            if (index(line, "if:") && index(line, "env.IS_FORK ==") &&
+                index(line, "true")) {
+                fork_condition = 1
+            }
+            if (index(line, "if:") && index(line, "env.IS_FORK !=") &&
+                index(line, "true")) {
+                trusted_condition = 1
+            }
+            if (line ~ /uses:[ ]*actions\/checkout@/) {
+                is_checkout = 1
+            }
+            if (line ~ /run:[ ]*\.\/scripts\/verify-required-results\.sh/) {
+                is_helper = 1
+            }
+            if (line ~ /^[[:space:]]*run:/) {
+                has_run = 1
+            }
+            if (index(line, "EXPECTED_RESULT:") && index(line, "success")) {
+                expected_success = 1
+            }
+            if (index(line, "!=") && index(line, "skipped")) {
+                checks_skipped = 1
+            }
+            if (index(line, "Untrusted fork trust boundary enforced:")) {
+                boundary_message = 1
+            }
+            if (line ~ /uses:/) {
+                uses_any = 1
+            }
+            if (is_boundary &&
+                (line ~ /scripts\// || line ~ /run:[ ]*(\.\/|bash |sh )/)) {
+                repo_code = 1
+            }
+            collect_refs()
+        }
+        END {
+            finish_step()
+            ref_count = 0
+            refs_match = 1
+            for (key in fork_refs) {
+                ref_count++
+                if (!(key in trusted_refs)) {
+                    refs_match = 0
+                }
+            }
+            for (key in trusted_refs) {
+                if (!(key in fork_refs)) {
+                    refs_match = 0
+                }
+            }
+            exit(found_job && always_job && fork_expression && safe_boundary &&
+                 safe_checkout && safe_helper && !unsafe_checkout &&
+                 !unsafe_helper && !generic_allowlist && ref_count > 0 &&
+                 refs_match ? 0 : 1)
+        }
+    ' "$workflow"
+}
+
+workflow_job_has_fork_guard() {
+    local workflow="$1"
+    local leaf_job="$2"
+
+    awk -v target="$leaf_job" '
+        BEGIN { in_job = 0; found = 0; event_guard = 0; repo_guard = 0 }
+        {
+            line = $0
+            if (!in_job) {
+                if (line ~ ("^  " target ":[ ]*(#.*)?$")) {
+                    in_job = 1
+                    found = 1
+                }
+                next
+            }
+            if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) {
+                in_job = 0
+                next
+            }
+            if (index(line, "github.event_name !=") && index(line, "pull_request")) {
+                event_guard = 1
+            }
+            if (index(line, "head.repo.full_name == github.repository")) {
+                repo_guard = 1
+            }
+        }
+        END { exit(found && event_guard && repo_guard ? 0 : 1) }
+    ' "$workflow"
+}
+
+required_results_helper="scripts/verify-required-results.sh"
+aggregate_workflows=""
+for aggregate_spec in \
+    '.github/workflows/build.yml:verify' \
+    '.github/workflows/build.yaml:verify' \
+    '.github/workflows/devcontainer-build.yml:devcontainer-verify' \
+    '.github/workflows/devcontainer-build.yaml:devcontainer-verify'; do
+    aggregate_workflow="${aggregate_spec%:*}"
+    aggregate_job="${aggregate_spec##*:}"
+    [ -f "$aggregate_workflow" ] || continue
+    aggregate_workflows="${aggregate_workflows}${aggregate_workflow}:${aggregate_job}
+"
+done
+
+if [ -n "$aggregate_workflows" ]; then
+    if [ ! -f "$required_results_helper" ]; then
+        err "aggregate workflows exist but $required_results_helper is missing"
+    elif [ ! -x "$required_results_helper" ]; then
+        err "$required_results_helper must be executable because trusted aggregates run it directly"
+    else
+        required_results_contract_ok=true
+        if ! EXPECTED_RESULT=success "$required_results_helper" \
+            lint=success security=success >/dev/null 2>&1; then
+            required_results_contract_ok=false
+        fi
+        if ! EXPECTED_RESULT=skipped "$required_results_helper" \
+            lint=skipped security=skipped >/dev/null 2>&1; then
+            required_results_contract_ok=false
+        fi
+        for rejected_contract in \
+            'success lint=success security=skipped' \
+            'skipped lint=skipped security=success' \
+            'success lint=success security=failure' \
+            'success lint=success security=cancelled' \
+            'success lint=success security=unknown'; do
+            rejected_expected="${rejected_contract%% *}"
+            rejected_pairs="${rejected_contract#* }"
+            # Intentional word splitting: each fixture token is one name=result pair.
+            # shellcheck disable=SC2086
+            if EXPECTED_RESULT="$rejected_expected" "$required_results_helper" \
+                $rejected_pairs >/dev/null 2>&1; then
+                required_results_contract_ok=false
+            fi
+        done
+        if [ "$required_results_contract_ok" != true ]; then
+            err "$required_results_helper does not enforce one exact expected result for every leaf"
+        fi
+    fi
+
+    while IFS=: read -r aggregate_workflow aggregate_job; do
+        [ -n "$aggregate_workflow" ] || continue
+        if ! aggregate_job_contract_is_safe "$aggregate_workflow" "$aggregate_job"; then
+            err "$aggregate_workflow job '$aggregate_job' must enforce exact fork-skipped/trusted-success results without fork checkout or repository code"
+            continue
+        fi
+        aggregate_leaves="$(
+            awk -v target="$aggregate_job" '
+                BEGIN { in_job = 0 }
+                {
+                    if (!in_job) {
+                        if ($0 ~ ("^  " target ":[ ]*(#.*)?$")) in_job = 1
+                        next
+                    }
+                    if ($0 ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) exit
+                    print
+                }
+            ' "$aggregate_workflow" |
+                grep -oE 'needs\.[A-Za-z0-9_-]+\.result' |
+                sed -E 's/^needs\.//; s/\.result$//' | sort -u || true
+        )"
+        for aggregate_leaf in $aggregate_leaves; do
+            if ! workflow_job_has_fork_guard "$aggregate_workflow" "$aggregate_leaf"; then
+                err "$aggregate_workflow leaf '$aggregate_leaf' is aggregated as fork-skipped but lacks the same-repository PR guard"
+            fi
+        done
+    done <<<"$aggregate_workflows"
+fi
+
+# The shipped ruleset has an exact profile-derived required-check set. CodeQL is
+# fail-closed inside its workflow today, but is not merge-gating until its
+# workflow also supports merge_group and the ruleset requires codeql-verify.
+ruleset_file=".github/Branch Protection Ruleset - Protect Main.json"
+if [ -f "$ruleset_file" ]; then
+    ruleset_contexts="$(
+        sed -n -E 's/.*"context"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' \
+            "$ruleset_file" | sort -u
+    )"
+    expected_contexts="security
+verify"
+    if [ "$has_terraform" = true ]; then
+        expected_contexts="security
+terraform-verify
+verify"
+    fi
+    if [ "$ruleset_contexts" != "$expected_contexts" ]; then
+        err "$ruleset_file required checks must be verify + security$(
+            if [ "$has_terraform" = true ]; then printf '%s' ' + terraform-verify'; fi
+        ); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
+    fi
+fi
+
+# ── 3f. CodeQL selection, result truth table, and live capability ──
 # CodeQL is not universal merely because a repo contains Node/Python. The Copier
 # answer selects it, FULL_SECURITY_SCAN starts it, and GitHub must accept SARIF.
 # Public repositories have Code Security by default; private/internal repos need

@@ -361,11 +361,19 @@ Shared structure:
 - **Least-privilege `permissions:`** per job (top-level `contents: read`).
 - **`merge_group`** trigger on `build.yml` (merge-queue support).
 - **Aggregate gate:** a final `verify` job (`if: always()`, `needs: [lint,
-  security, …]`) reports one rollup status. Branch protection requires the
-  **`verify`** and **`security`** checks. It must fail closed: allowlist
-  `success` and only deliberately acceptable `skipped` results; reject
-  `failure`, `cancelled`, `timed_out`, and every unexpected state. A check
-  that rejects only `failure` is fail-open.
+  security, …]`) reports one rollup status. Branch protection requires
+  **`verify`** and **`security`**, plus **`terraform-verify`** for a
+  Terraform-capable repo. Result acceptance is predicate-exact, never a generic
+  `success || skipped` allowlist. On a fork PR, every fork-suppressed leaf must be
+  exactly `skipped`; the diagnostic is workflow-inline, states the untrusted-fork
+  boundary explicitly, and neither checks out nor executes repository-controlled
+  code. On a same-repository PR or non-PR event, every required leaf must be
+  exactly `success`; a conditionally disabled leaf may be `skipped` only when its
+  explicit change/enabled predicate proves that exact result. Reject `failure`,
+  `cancelled`, `timed_out`, unexpected `skipped`, unexpected `success`, and every
+  unknown state. A check that rejects only `failure` is fail-open. The
+  `devcontainer-verify` aggregate follows the identical fork-skipped/trusted-
+  success contract for its build leaf.
 - Fork-PR guard: jobs gate on
   `github.event.pull_request.head.repo.full_name == github.repository`.
 - **Runner trust boundary [manual residual / audit requirement]:** public
@@ -394,7 +402,7 @@ Workflow inventory:
 | `claude-implement.yml` | `@claude implement` / label → opens a PR on a `claude/` branch (`--model sonnet`) | [copier] |
 | `claude-review.yml` | `@claude review` / label → review comment, no writes (sticky comment) | [copier] |
 | `release.yml` | release-please; only when `use_release_please` | [copier] |
-| `codeql.yml` | only when explicit `use_codeql=true` and the matrix matches first-party JS/TS/Python source; runtime-gated by `FULL_SECURITY_SCAN=true`; private/internal repos also require GitHub Code Security; fail-closed `codeql-verify` helper | [copier] + [manual capability/source audit] |
+| `codeql.yml` | only when explicit `use_codeql=true` and the matrix matches first-party JS/TS/Python source; currently runtime-gated by `FULL_SECURITY_SCAN=true`; private/internal repos also require GitHub Code Security; fail-closed workflow-local `codeql-verify`, but not currently a branch-required check | [copier] + [manual capability/source audit] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
 
@@ -461,11 +469,19 @@ the repository has the live Code Security capability.
   manual **Settings → Code security** check. See GitHub's
   [SARIF capability requirement](https://docs.github.com/en/code-security/code-scanning/troubleshooting-sarif-uploads/repository-is-not-enabled-for-code-security).
   **[copier]** / **[manual capability + coverage verification]**.
+
+  **High-priority next harmon-init release:** make selected CodeQL unconditional
+  instead of retaining the second `FULL_SECURITY_SCAN` runtime gate, add
+  `merge_group` to `codeql.yml`, and conditionally add `codeql-verify` to the
+  generated ruleset. Until all three land together, CodeQL fails closed inside
+  its own workflow but is not a merge-gating SAST control.
 - **Branch protection ruleset** — `.github/Branch Protection Ruleset - Protect
   Main.json`: blocks deletion/non-ff/creation, requires linear history, PR with 1
   code-owner approval + thread resolution + last-push approval, required status
-  checks `verify` + `security`, merge methods squash/rebase; org repos add a
-  `merge_queue` rule. **[copier]** ships the file; **[manual]** import via the
+  checks `verify` + `security` and, when `include_terraform=true`,
+  `terraform-verify`; merge methods squash/rebase; org repos add a `merge_queue`
+  rule. `codeql-verify` is not currently required. **[copier]** ships the file;
+  **[manual]** import via the
   GitHub UI (Settings → Rules → Rulesets → **Import a ruleset**). The REST API
   supports `merge_queue`, but a blind `POST` is non-idempotent and can duplicate
   the ruleset. Automation must discover exactly one matching live ruleset and

@@ -208,16 +208,17 @@ This is the core rule that prevents the AI agent from pushing directly to `main`
 
 All specified CI checks must pass before the PR can merge. The `strict_required_status_checks_policy: true` setting means the PR branch must be up-to-date with `main` before merging — if `main` advances after the checks ran, the checks must re-run. The `do_not_enforce_on_create: true` setting skips enforcement when the branch is first created (before any CI has had a chance to run).
 
-The required checks are the two aggregate jobs from `build.yml` (see
-[ci-cd.md](ci-cd.md)):
+The required check contexts come from `build.yml` (see [ci-cd.md](ci-cd.md)):
+`verify` is the aggregate gate, while `security` is the security leaf required
+directly as a redundant, visible control.
 
 | Check      | Purpose                                                                                          |
 | ---------- | ----------------------------------------------------------------------------------------------- |
-| `verify`   | Aggregate gate — rolls up `lint`, and `security` so one check reports overall pass/fail |
+| `verify`   | Aggregate gate — rolls up `lint` and `security` so one check reports overall pass/fail |
 | `security` | Secret scanning (gitleaks) + dependency audit                                                    |
 
-Requiring the aggregate `verify` (rather than each leaf job) keeps the required-check
-list stable as jobs are added inside `build.yml`.
+Requiring the stable `verify` aggregate alongside the direct `security` context
+keeps the required-check list small while preserving explicit security visibility.
 
 ## What the AI Agent Can and Cannot Do
 

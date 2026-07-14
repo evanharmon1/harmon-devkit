@@ -31,14 +31,17 @@ TEMPLATE=~/git/harmon-init           # source of truth
    template: look for `.copier-answers.yml` at the target root.
    - Present → it can be reconciled with `copier update --trust` (it records
      `_commit` / `_src_path`). Note the recorded commit; drift is "template moved
-     ahead since then." **Also check `_src_path` is a resolvable git URL** — if it's
-     a relative/machine-local path (e.g. `harmon-init`), `copier update` aborts with
-     `Updating is only supported in git-tracked templates`; normalize it to
-     `https://github.com/evanharmon1/harmon-init` first (a real finding — see
+     ahead since then." **Also check `_src_path` and `_commit` form a resolvable
+     lineage tuple.** A relative/machine-local path can make `copier update` abort
+     with `Updating is only supported in git-tracked templates`, but do not
+     rewrite the path alone unless the recorded commit is reachable from the
+     canonical remote (a real finding — see
      [copier-gotchas.md](./copier-gotchas.md) gotcha 8 / [mode-update.md](./mode-update.md) §2).
    - Absent → it was never templated (or was adopted by a raw `copier copy`).
      Reconciling the templated bits means a fresh adopt:
-     `copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD` (see §4). Treat
+     `copier copy --trust --vcs-ref=v3.26.1
+     https://github.com/evanharmon1/harmon-init.git .` (substitute the reviewed
+     current release; see §4). Treat
      every catalog area as hand-verifiable rather than diff-against-answers.
 
 2. **Walk each catalog area against the target.** For every area in
@@ -170,7 +173,9 @@ if an unpinned/missing tool breaks the `security` job).
 
 **D. Stale branch ruleset / old job names / wrong `merge_queue` policy.** Canonical
 ruleset (`template/.github/Branch Protection Ruleset - Protect Main.json`) requires
-exactly two status-check contexts — **`verify`** and **`security`**. The
+the baseline contexts **`verify`** and **`security`**, plus
+**`terraform-verify`** exactly when `include_terraform=true`. It does not currently
+require `codeql-verify`. The
 **`merge_queue`** rule is conditional: org repos
 (`github_org != author_git_provider_username`) get it; personal-account repos do
 not. Missing it is drift only for an org repo, while adding it to a personal repo
@@ -178,8 +183,9 @@ is itself drift. Old repos may reference retired job names (`secrets`, `validate
 `build-homepage`) or carry the wrong account-type variant. Note this drift can
 also live in *prose*: even the harmon-init root `docs/architecture/branch-protection.md`
 still narrates the old `secrets`/`validate`/`build-homepage` contexts while the
-shipped ruleset JSON is already `verify`+`security` — so check the JSON, not just
-the doc. Relatedly, ambiguous `verify` contexts: if both `build.yml` and the
+shipped non-Terraform ruleset JSON is already `verify`+`security` — so check the
+rendered JSON, not just the doc. Relatedly, ambiguous `verify` contexts: if both
+`build.yml` and the
 devcontainer workflow define a job literally named `verify`, either can satisfy
 the required check — the template renames the devcontainer job to
 **`devcontainer-verify`**. Fix: re-import the ruleset via the GitHub UI
@@ -187,7 +193,7 @@ the required check — the template renames the devcontainer job to
 ruleset for the repo's account type. REST supports `merge_queue`, but a blind
 `POST` is non-idempotent and can create duplicate rulesets; automation must
 discover exactly one matching live ruleset and `PUT` that ruleset's id. Rename
-the devcontainer job and align CI job names to `verify` + `security`.
+the devcontainer job and align CI job names to the rendered required-check set.
 Severity: **blocker** (wrong contexts mean the gate is unenforced or unsatisfiable).
 
 **E. YAML file extensions — NOT drift; do not flag.** `.yml` vs `.yaml` is left
@@ -241,6 +247,13 @@ inferring support. Severity:
 **blocker** for fail-open result propagation, a predictably red SARIF upload, or a
 false coverage claim; **should/manual residual** for an intentional, documented
 SAST gap.
+
+The current generated CodeQL workflow is fail-closed internally, but it lacks a
+`merge_group` trigger and the generated ruleset does not require
+`codeql-verify`; therefore it is not a merge-gating SAST control. Record this as a
+high-priority harmon-init follow-up: remove the redundant `FULL_SECURITY_SCAN`
+runtime gate when `use_codeql=true`, add `merge_group`, and conditionally require
+`codeql-verify` in the ruleset in the same release.
 
 **H. lint-hygiene script portability to macOS bash 3.2.** `scripts/lint-hygiene.sh`
 must be portable: **no `mapfile`, no `grep -P`** (both Linux/bash-4-only), and it
@@ -397,9 +410,14 @@ against the pre-update workflow. In particular, preserve intentional
 green while a Terraform apply path has silently disappeared.
 
 For every aggregate job under `if: always()`, inspect its result reduction.
-It must allowlist intended `success`/deliberate `skipped` states and reject
-`cancelled`, `timed_out`, and unknown states; testing only `== failure` is
-fail-open.
+Generic `success || skipped` acceptance is fail-open. A fork PR must require every
+fork-suppressed leaf to be exactly `skipped` in a workflow-inline diagnostic that
+does not check out or execute repository-controlled code. Same-repository and
+non-PR events must require every required leaf to be exactly `success`.
+Conditionally disabled leaves may skip only when the aggregate derives that exact
+expectation from the same explicit change/enabled predicates. Apply this contract
+to both build `verify` and `devcontainer-verify`; reject cancellation, timeout,
+unexpected skip/success, and unknown states.
 
 For Python CI that consumes an existing `uv.lock`, distinguish validation from
 mutation. Exports must use `uv export --locked`; syncs must use
@@ -482,14 +500,15 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
      - Never templated / adopting fresh:
 
        ```bash
-       ( cd "$TARGET" && copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD )
+       ( cd "$TARGET" && copier copy --trust --vcs-ref=v3.26.1 \
+           https://github.com/evanharmon1/harmon-init.git . )
        ```
 
-     `--vcs-ref=HEAD` is **load-bearing**: from a local path copier otherwise
-     renders the latest git tag and silently ignores committed-but-untagged work;
-     with it, copier includes dirty/untracked template changes via a throwaway
-     commit in a temp clone (your template working tree is untouched). Answer the
-     questions to match the repo, and keep all side-effectful answers
+     Replace `v3.26.1` only with a deliberately selected newer release. A local
+     `--vcs-ref=HEAD` render is appropriate for a disposable pre-release preview,
+     not the production adoption, because dirty work can record an unreachable
+     throwaway commit. Answer the questions to match the repo, and keep all
+     side-effectful answers
      (`github_remote_create`, `github_release_init`, `bunch_add`,
      `obsidian_project_add`, `run_task_install`) at their **no** defaults so the
      adopt has no side effects. Review the resulting diff carefully and discard

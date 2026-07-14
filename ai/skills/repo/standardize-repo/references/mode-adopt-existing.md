@@ -6,8 +6,8 @@ Copier template to a repo that **already has app code**. The hard rule: this is 
 **never blind-clobber existing app code.** Read each conflict, prefer merging, and
 work on a feature branch the whole time.
 
-For Copier mechanics (custom `[[ ]]`/`[% %]` jinja delimiters, the load-bearing
-`--vcs-ref=HEAD`, `--trust`, side-effect answers) see
+For Copier mechanics (custom `[[ ]]`/`[% %]` jinja delimiters, released production
+refs versus local-preview `--vcs-ref=HEAD`, `--trust`, side-effect answers) see
 [`copier-gotchas.md`](./copier-gotchas.md). For the GitHub-side wiring after the
 files land (branch ruleset import, Renovate/CodeRabbit apps, Actions secrets, etc.)
 see [`post-generation-checklist.md`](./post-generation-checklist.md).
@@ -109,9 +109,10 @@ copier update --trust --defaults
 to prompt (`OSError: [Errno 22]`). See [`mode-update.md`](./mode-update.md) §2.
 
 `copier update` takes no source argument — it reuses the `_src_path` recorded in
-`.copier-answers.yml`, which must be a **resolvable git URL** (see
-[copier-gotchas.md](./copier-gotchas.md) gotcha 8; normalize it first if it's a
-relative/local path). **Always do a full update to the latest released version** —
+`.copier-answers.yml`, whose `_src_path` and `_commit` must form a resolvable
+lineage tuple (see [copier-gotchas.md](./copier-gotchas.md) gotcha 8; never
+normalize only a local path unless the recorded commit is reachable from the
+canonical remote). **Always do a full update to the latest released version** —
 plain `copier update` goes to harmon-init's newest tag and three-way-merges the whole
 delta into your files; don't scope it to a specific intermediate version. Override
 stale answers with `--data key=value` as needed (e.g. a changed `github_org`).
@@ -131,7 +132,8 @@ write `.copier-answers.yml` so future runs can use `copier update`:
 ```bash
 ls .copier-answers.yml          # absent → adopt fresh
 : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
-copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD --defaults --overwrite \
+copier copy --trust https://github.com/evanharmon1/harmon-init.git . \
+  --vcs-ref=v3.26.1 --defaults --overwrite \
   --data project_type="$PROJECT_TYPE" \
   --data project_name="<Formal Project Name>" \
   --data project_slug="$(basename "$(pwd)")" \
@@ -144,9 +146,10 @@ copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD --defaults --overwrite \
   #   defaults from the stale .copier-answers.yml, so they do NOT "default to no".
 ```
 
-`--vcs-ref=HEAD` is **mandatory** here when `~/git/harmon-init` is a local path:
-without it copier silently renders the latest git tag and ignores
-committed-but-untagged + uncommitted template work.
+`v3.26.1` is the current reviewed release example; deliberately select a newer
+released ref when appropriate. Local `--vcs-ref=HEAD` adoption is for a disposable
+preview only, never the production apply: dirty local renders can record a
+throwaway `_commit` that no later remote update can resolve.
 
 Set `USE_CODEQL` deliberately before rendering. Use `true` only for a supported
 Node/Python stack when Code Security is available (public repositories have it by
@@ -347,14 +350,14 @@ after the copier run:
    `diff-template.sh` to report those files as DRIFT + `prettier.config.cjs`
    as MISSING — both intentional.
 
-   **Normalize `.copier-answers.yml` after a local-path render.** Rendering
-   with `--vcs-ref=HEAD` from a *dirty* local template checkout records a
-   throwaway `_commit` describe-string (e.g. `v3.16.0-3-g<sha>` — a commit
-   that exists in no clone), which breaks the next `copier update` (the
-   three-way-merge base ref is unresolvable). Post-adopt, reset both keys:
-   `_commit` → the real released tag the render corresponds to (e.g.
-   `v3.16.0`), `_src_path` → the GitHub URL (gotcha 8). If the render
-   included commits past that tag, the next update harmlessly re-offers them.
+   **Preserve a truthful `.copier-answers.yml` lineage tuple.** A dirty local
+   `--vcs-ref=HEAD` preview can record a throwaway `_commit` that exists in no
+   clone. Do not relabel that output by changing `_src_path` or substituting a
+   nearby release tag: either action makes the recorded base differ from what
+   was rendered. Re-run the production adoption from the canonical URL at the
+   reviewed release. Only a deliberately pushed pre-release commit is eligible
+   for promotion, after proving `_commit` is reachable from the canonical remote
+   and verifying both lineage fields together.
 
    **Four traps that block the first commit/push after a v2→v3 render:**
    (a) **Stale pre-commit.com hook** — deleting `.pre-commit-config.yaml` leaves the

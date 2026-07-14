@@ -433,6 +433,21 @@ expect_ok "update guidance documents the Foreman default transition" \
 expect_ok "new-repo guidance exposes the explicit CodeQL answer" \
     grep -qF '| `use_codeql` | bool |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "production scaffolding uses the canonical released template" \
+    grep -qF 'https://github.com/evanharmon1/harmon-init.git <dest>' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "production scaffolding pins a released ref" \
+    grep -qF -- '--trust --vcs-ref=v3.26.1' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo guidance forbids path-only lineage repair" \
+    grep -qF 'do not rewrite only `_src_path`' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "update guidance requires a remotely reachable recorded commit" \
+    grep -qF 'only when the recorded commit is' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "new-repo production commands do not use a local template path" \
+    grep -Eq '^copier copy .*harmon-init.*--vcs-ref=HEAD' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "update guidance audits live Code Security capability read-only" \
     grep -qF '.security_and_analysis.code_security.status' \
     "$STANDARDIZE_REFS/mode-update.md"
@@ -488,6 +503,20 @@ expect_ok "update guidance checks workflow trigger semantics" \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "catalog requires fail-closed aggregate result handling" \
     grep -qF 'that rejects only `failure` is fail-open.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog rejects generic success-or-skipped aggregates" \
+    grep -qF 'never a generic' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog applies the exact contract to devcontainer aggregates" \
+    grep -qF '`devcontainer-verify` aggregate follows the identical' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog documents conditional Terraform required checks" \
+    grep -qF 'when `include_terraform=true`,' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog does not claim CodeQL is merge-gating today" \
+    grep -qF 'is not a merge-gating SAST control.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog records the three-part CodeQL next-release fix" \
+    grep -qF 'conditionally add `codeql-verify` to the' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "audit guidance forbids shared fixed temp artifacts" \
     grep -qF 'On workflows that may use self-hosted runners, reject shared fixed `/tmp`' \
@@ -585,6 +614,208 @@ for signal_case in "INT 130" "TERM 143"; do
     fi
 done
 
+# Exercise the build and devcontainer aggregate contract without any repository
+# runtime. Fork diagnostics are workflow-inline, while trusted paths use the
+# exact-result helper. The fixture proves both accepted branches and the two
+# recurring false-green regressions.
+AGG_TARGET="$TMPROOT/verify-applied-aggregates"
+mkdir -p "$AGG_TARGET/.github/workflows" "$AGG_TARGET/scripts"
+printf '%s\n' '# Test instructions' >"$AGG_TARGET/AGENTS.md"
+ln -s AGENTS.md "$AGG_TARGET/CLAUDE.md"
+ln -s AGENTS.md "$AGG_TARGET/GEMINI.md"
+
+write_required_results_helper() {
+    local mode="${1:-exact}"
+    if [ "$mode" = generic ]; then
+        cat >"$AGG_TARGET/scripts/verify-required-results.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+for pair in "$@"; do
+    case "${pair#*=}" in success | skipped) ;; *) exit 1 ;; esac
+done
+EOF
+    else
+        cat >"$AGG_TARGET/scripts/verify-required-results.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+expected="${EXPECTED_RESULT:-success}"
+case "$expected" in success | skipped) ;; *) exit 2 ;; esac
+[ "$#" -gt 0 ] || exit 2
+for pair in "$@"; do
+    case "$pair" in *=*) ;; *) exit 2 ;; esac
+    name="${pair%%=*}"
+    result="${pair#*=}"
+    [ -n "$name" ] && [ "$result" = "$expected" ] || exit 1
+done
+EOF
+    fi
+    chmod +x "$AGG_TARGET/scripts/verify-required-results.sh"
+}
+
+write_aggregate_workflows() {
+    local mode="${1:-safe}"
+    cat >"$AGG_TARGET/.github/workflows/build.yml" <<'EOF'
+name: Build
+on: [push, pull_request]
+jobs:
+  lint:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo lint
+  security:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo security
+  verify:
+    if: always()
+    needs: [lint, security]
+    runs-on: ubuntu-latest
+    env:
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - name: Verify deliberate skips at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: |
+          if [ "$LINT_RESULT" != "skipped" ] || [ "$SECURITY_RESULT" != "skipped" ]; then
+            exit 1
+          fi
+          echo "Untrusted fork trust boundary enforced: all repository-controlled jobs were deliberately skipped."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@1111111111111111111111111111111111111111
+      - name: Verify required jobs succeeded
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+          LINT_RESULT: ${{ needs.lint.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: ./scripts/verify-required-results.sh "lint=${LINT_RESULT}" "security=${SECURITY_RESULT}"
+EOF
+    cat >"$AGG_TARGET/.github/workflows/devcontainer-build.yml" <<'EOF'
+name: Devcontainer
+on: [push, pull_request]
+jobs:
+  build:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+  devcontainer-verify:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    env:
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - name: Verify deliberate skip at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          if [ "$BUILD_RESULT" != "skipped" ]; then
+            exit 1
+          fi
+          echo "Untrusted fork trust boundary enforced: the repository-controlled devcontainer build was deliberately skipped."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@1111111111111111111111111111111111111111
+      - name: Verify devcontainer build succeeded
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: ./scripts/verify-required-results.sh "build=${BUILD_RESULT}"
+EOF
+
+    case "$mode" in
+    safe) ;;
+    unsafe-build-fork-code)
+        sed -i.bak '/all repository-controlled jobs were deliberately skipped/i\
+          ./scripts/fork-controlled.sh' \
+            "$AGG_TARGET/.github/workflows/build.yml"
+        rm "$AGG_TARGET/.github/workflows/build.yml.bak"
+        ;;
+    unsafe-devcontainer-fork-code)
+        sed -i.bak '/repository-controlled devcontainer build was deliberately skipped/i\
+          ./scripts/fork-controlled.sh' \
+            "$AGG_TARGET/.github/workflows/devcontainer-build.yml"
+        rm "$AGG_TARGET/.github/workflows/devcontainer-build.yml.bak"
+        ;;
+    missing-leaf-guard)
+        sed -i.bak '/head.repo.full_name == github.repository/d' \
+            "$AGG_TARGET/.github/workflows/build.yml"
+        rm "$AGG_TARGET/.github/workflows/build.yml.bak"
+        ;;
+    *) fail "unknown aggregate fixture mode: $mode" ;;
+    esac
+}
+
+write_required_check_ruleset() {
+    local target="$1"
+    local mode="${2:-baseline}"
+    local extra_context=""
+    case "$mode" in
+    baseline) ;;
+    terraform) extra_context=$',\n          {"context": "terraform-verify"}' ;;
+    codeql) extra_context=$',\n          {"context": "codeql-verify"}' ;;
+    *) fail "unknown ruleset fixture mode: $mode" ;;
+    esac
+    mkdir -p "$target/.github"
+    cat >"$target/.github/Branch Protection Ruleset - Protect Main.json" <<EOF
+{
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "required_status_checks": [
+          {"context": "verify"},
+          {"context": "security"}$extra_context
+        ]
+      }
+    }
+  ]
+}
+EOF
+}
+
+write_required_results_helper
+write_aggregate_workflows
+write_required_check_ruleset "$AGG_TARGET"
+git_init "$AGG_TARGET"
+git_commit_all "$AGG_TARGET" "record aggregate fixture"
+expect_ok "verify-applied accepts exact build and devcontainer result contracts" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_required_results_helper generic
+expect_fail "verify-applied rejects a generic success-or-skipped result helper" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_required_results_helper
+write_aggregate_workflows unsafe-build-fork-code
+expect_fail "verify-applied rejects build fork diagnostics that run repository code" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_aggregate_workflows unsafe-devcontainer-fork-code
+expect_fail "verify-applied rejects devcontainer fork diagnostics that run repository code" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_aggregate_workflows missing-leaf-guard
+expect_fail "verify-applied rejects aggregated leaves without same-repo guards" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_aggregate_workflows
+write_required_check_ruleset "$AGG_TARGET" terraform
+expect_fail "verify-applied rejects terraform-verify for a non-Terraform repo" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_required_check_ruleset "$AGG_TARGET" codeql
+expect_fail "verify-applied does not claim CodeQL is branch-required yet" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_required_check_ruleset "$AGG_TARGET"
+
 VA_TARGET="$TMPROOT/verify-applied-codeowners"
 mkdir -p "$VA_TARGET/.github"
 printf '%s\n' '# Test instructions' >"$VA_TARGET/AGENTS.md"
@@ -618,15 +849,10 @@ printf '%s\n' '# Test instructions' >"$CQ_TARGET/AGENTS.md"
 ln -s AGENTS.md "$CQ_TARGET/CLAUDE.md"
 ln -s AGENTS.md "$CQ_TARGET/GEMINI.md"
 git_init "$CQ_TARGET"
-cat >"$CQ_TARGET/.github/workflows/build.yml" <<'EOF'
-name: Build
-on: workflow_dispatch
-jobs:
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - run: task verify
-EOF
+cp "$AGG_TARGET/.github/workflows/build.yml" \
+    "$CQ_TARGET/.github/workflows/build.yml"
+cp "$AGG_TARGET/scripts/verify-required-results.sh" \
+    "$CQ_TARGET/scripts/verify-required-results.sh"
 # Some CI runner images provide gitleaks in the lint job. Give its repository
 # scan a real HEAD so an unrelated empty-history error cannot make every
 # verify-applied assertion look like an expected CodeQL failure.
@@ -937,11 +1163,38 @@ name: Build
 on: workflow_dispatch
 jobs:
   lint:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: hashicorp/setup-terraform@1111111111111111111111111111111111111111
 $tflint_step
       - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111
+  verify:
+    if: always()
+    needs: [lint]
+    runs-on: ubuntu-latest
+    env:
+      IS_FORK: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - name: Verify deliberate skips at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        env:
+          LINT_RESULT: \${{ needs.lint.result }}
+        run: |
+          if [ "\$LINT_RESULT" != "skipped" ]; then
+            exit 1
+          fi
+          echo "Untrusted fork trust boundary enforced: all repository-controlled jobs were deliberately skipped."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@1111111111111111111111111111111111111111
+      - name: Verify required jobs succeeded
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+          LINT_RESULT: \${{ needs.lint.result }}
+        run: ./scripts/verify-required-results.sh "lint=\${LINT_RESULT}"
 EOF
 }
 write_terraform_lock_helper() {
@@ -1001,12 +1254,19 @@ EOF
 
 write_terraform_taskfile
 write_terraform_build_workflow
+cp "$AGG_TARGET/scripts/verify-required-results.sh" \
+    "$TF_TARGET/scripts/verify-required-results.sh"
+write_required_check_ruleset "$TF_TARGET" terraform
 write_terraform_lock_helper
 write_terraform_lock_regression
 git_init "$TF_TARGET"
 git_commit_all "$TF_TARGET" "record Terraform verifier fixture"
 expect_ok "verify-applied accepts reachable fmt, TFLint, Checkov, and lock checks" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_required_check_ruleset "$TF_TARGET"
+expect_fail "verify-applied requires terraform-verify for a Terraform repo" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_required_check_ruleset "$TF_TARGET" terraform
 
 write_terraform_taskfile missing-security
 expect_fail "verify-applied rejects unreachable Checkov despite a defined leaf task" \
@@ -1052,9 +1312,11 @@ for required in \
     scripts/terraform-changed.sh \
     scripts/terraform-ci.sh \
     scripts/test-codeql-result.sh \
+    scripts/test-required-results.sh \
     scripts/test-terraform-provider-locks.sh \
     scripts/test-terraform-ci.sh \
     scripts/verify-codeql-result.sh \
+    scripts/verify-required-results.sh \
     scripts/sync-skills.sh \
     .github/workflows/close-milestone-on-release.yml \
     .foreman.toml \
