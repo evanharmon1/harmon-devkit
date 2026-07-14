@@ -88,9 +88,10 @@ git -C ~/git/harmon-init diff "$(yq -r '._commit' .copier-answers.yml)"..v<TARGE
 Every newly introduced question needs an explicit decision. This is especially
 important for a feature with a material footprint: for example, `use_foreman`
 adds its supervisor, agents, taskfile, configuration, documentation, and tests.
-It deliberately defaults off, but update mode must still decide whether the
-target should opt in. Pass each reviewed answer with `--data`, even when the
-decision happens to match the default.
+It was default-on when introduced in v3.26.1; current template source defaults
+it off. Update mode must still decide whether the target should opt in. Pass
+each reviewed answer with `--data`, even when the decision happens to match the
+current default.
 
 Preview the exact answer set before the real update:
 
@@ -400,6 +401,12 @@ machine tooling. If a target still carries the older live-tool version, port the
 current test before parallel fleet verification; until then, run those repo gates
 serially so concurrent audits cannot contend on or mutate shared package-manager
 state.
+
+Review reconciled workflows semantically, not only syntactically: compare
+`push`/`pull_request`/`merge_group`/`workflow_dispatch` events and inputs,
+then each deploy/apply job's `if`, `needs`, permissions, and side effects.
+Preserve deliberate manual Terraform apply or deploy paths. A green actionlint
+run proves syntax, not trigger semantics.
 
 **A green `task verify` does NOT cover the Lighthouse gates on web repos.** For
 web-astro repos the a11y/perf/SEO assertions (`lighthouserc.json`) run in the

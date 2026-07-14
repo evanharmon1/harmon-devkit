@@ -111,6 +111,11 @@ Naming & structure conventions:
   workflow invokes must still exist (drift
   class L) — but `verify` is intentionally a *subset* of what CI runs, so "`verify`
   is green" is not "CI is green"; use `ci` for that.
+- **Repo-specific test reachability:** a test is a real local/CI gate only when
+  `task install` (the root `Brewfile`) supplies its local runtime, CI
+  provisions the same runtime, and the workflow invokes `task test` or that
+  specific target. Merely adding it beneath the Taskfile's `test` aggregate is
+  not enough when the workflow still calls only `test:tasks`.
 - **Hermetic task regression tests:** current `test:tasks` uses temporary fake
   `brew`, `npm`, and `curl` commands; it must not install or update shared
   machine tools. When auditing multiple repos, run older live-tool variants
@@ -434,6 +439,11 @@ Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKE
   fail without destination metadata (`test-tasks.sh` asserts it), and agents
   still must not write to a password manager without explicit per-write
   confirmation. **[copier]**
+- **`op` is a deliberate human-only toolchain exception.** Root `Brewfile` /
+  `task install` does not provision 1Password CLI: install and authenticate it
+  explicitly on a human host, or use the human DEV devcontainer profile that
+  supplies the feature. The BOT profile must continue to omit every credential-
+  store path; never satisfy parity by adding `op` there.
 - **1Password credential naming (source of truth).** Authoritative convention is
   in the generated repo's `docs/architecture/security.md` ("1Password
   conventions"); when creating a repo's credentials, follow it verbatim:
@@ -494,10 +504,12 @@ install the Renovate GitHub App on the repo. Conventions:
   `bypassPermissions`, e.g. the devcontainer bot profile — the AGENTS.md rule
   is the binding convention there). **[copier]**
 - **`.claude/skills/`** — vendored shared agent skills from harmon-devkit via
-  **skills-sync**, gated on the **`use_skills_sync`** copier answer. It defaults
-  on only for `web-astro` and `web-app`: the profile-seeded `universal` and
-  `infra` categories are currently empty, so general/iac repos default off
-  instead of managing an empty set. When enabled, `skill_categories` starts with
+  **skills-sync**, gated on the **`use_skills_sync`** copier answer. v3.26.1
+  defaulted it on universally; current template source defaults it on only for
+  `web-astro` and `web-app`. The profile-seeded `universal` and `infra`
+  categories are currently empty, so new general/iac repos default off instead
+  of managing an empty set; repos updated through v3.26.1 may already record
+  `true` and need an explicit review. When enabled, `skill_categories` starts with
   `universal`, adds `frontend` for both web types, `backend` for `web-app`,
   and `infra` when Terraform/Ansible or the iac type applies. The generated
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
@@ -524,10 +536,10 @@ install the Renovate GitHub App on the repo. Conventions:
   **`use_foreman`** Copier answer. When enabled it adds `.foreman.toml`,
   `taskfiles/foreman.yml`, `scripts/foreman/`, three `.claude/agents/`, the
   architecture doc, Taskfile targets, hooks, and Python tooling. The v3.26
-  template introduced it and now deliberately defaults to `no`: it is an
-  explicit per-repo opt-in because this is a substantial operational subsystem,
-  not a passive lint config. Absence is deliberate when `use_foreman: false`.
-  **[copier]**
+  release introduced it default-on; current template source now deliberately
+  defaults to `no`. Always pass an explicit per-repo answer on update because
+  this is a substantial operational subsystem, not a passive lint config.
+  Absence is deliberate when `use_foreman: false`. **[copier]**
 - Devcontainer ships richer `config/claude-settings.json` as managed settings (see
   1.6). **[copier]**
 - **`DESIGN.md`** — AI-facing statement of design intent (the *why*/prose rules);

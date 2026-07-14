@@ -401,13 +401,14 @@ expect_ok "standards catalog documents the valid CODEOWNERS account default" \
     grep -qF '`author_git_provider_username` (a bare organization is not a valid CODEOWNERS' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog documents the web-only skills-sync default" \
-    grep -qF 'on only for `web-astro` and `web-app`' \
+    grep -qF 'current template source defaults it on only for' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog documents Foreman as deliberate opt-in" \
-    grep -qF 'now deliberately defaults to `no`' \
+    grep -qF 'current template source now deliberately' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_fail "update guidance has no stale default-on Foreman claim" \
-    grep -qF '**default-on**' "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance documents the Foreman default transition" \
+    grep -qF 'It was default-on when introduced in v3.26.1' \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "standards catalog documents the fail-closed locked Python audit" \
     grep -qF '`uv export --frozen --all-extras --all-groups`' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -417,6 +418,15 @@ expect_ok "standards catalog documents bounded devcontainer smoke tests" \
 expect_ok "standards catalog documents 1Password pre-validation" \
     grep -qF 'fully materializes and validates the item JSON' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents the human-only op prerequisite" \
+    grep -qF '`op` is a deliberate human-only toolchain exception' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "audit guidance checks repo-specific test gate reachability" \
+    grep -qF 'A repo-specific test is a gate only when all three links exist' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "update guidance checks workflow trigger semantics" \
+    grep -qF 'run proves syntax, not trigger semantics.' \
+    "$STANDARDIZE_REFS/mode-update.md"
 
 starter="$repo/templates/scriptTemplates/shellScriptTemplate.sh"
 signal_fixture="$TMPROOT/shell-starter-signals.sh"

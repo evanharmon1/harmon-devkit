@@ -327,7 +327,7 @@ standards; re-adding the template's seed is wrong. The recurring ones:
   versions, so nothing is added and no dead second config results. Confirm the repo
   actually has a `.prettierrc*`/`prettier` package.json key, then leave it.
 
-**L. Workflow ↔ Taskfile contract.** Every `task <target>` referenced in
+**L. Workflow ↔ Taskfile/runtime contract.** Every `task <target>` referenced in
 `.github/workflows/*.yml` must exist in `Taskfile.yml`. CI's `lint`/`build` jobs
 call targets `task verify` never runs (e.g. `test:tasks`, `test:hooks`,
 `test:devcontainer:permissions`), so a Taskfile that drifted from the template —
@@ -347,6 +347,19 @@ grep -rhoE '(run:[[:space:]]*|^[[:space:]]*|&&[[:space:]]*)task +[a-z][a-z0-9:_-
 their `scripts/*.sh` helpers from the template (or reconcile the preserved Taskfile
 against the adopted workflows). Severity: **blocker** (the gate is unenforced and CI
 is unsatisfiable until the targets exist).
+
+A repo-specific test is a gate only when all three links exist: the root
+`Brewfile`/`task install` provides its runtime locally, the workflow provisions
+that runtime in CI, and the workflow invokes `task test` (or the specific target)
+rather than a narrower `test:tasks`. Check this manually for every added test;
+this audit found both Copier-backed skill tests and a chezmoi render test that
+passed locally but were initially unreachable or unprovisioned in CI.
+
+Target names are also insufficient to prove workflow semantics. Compare the
+`on` events/inputs and each job's `if`, `needs`, permissions, and side effects
+against the pre-update workflow. In particular, preserve intentional
+`workflow_dispatch` deploy/apply paths and their guards; YAML/actionlint can be
+green while a Terraform apply path has silently disappeared.
 
 ---
 
