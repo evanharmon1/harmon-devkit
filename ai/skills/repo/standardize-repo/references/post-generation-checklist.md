@@ -201,6 +201,34 @@ push so the remote exists.
     --method PUT -f permission=push
   ```
 
+  > The grant is only half of it — see the PAT step below. Skipping that leaves
+  > the bot with access it cannot use.
+
+- [ ] **[manual — GitHub UI]** Add this repo to the bot's **fine-grained PAT**,
+      under *Repository access → Only select repositories*. There is no API for
+      creating or editing a PAT. Signed in **as the bot**: **Settings → Developer
+      settings → Personal access tokens → Fine-grained tokens**.
+
+  > **Effective access = min(collaborator grant, PAT permissions).** A PAT
+  > delegates its owner's access and can never exceed it, and its permission set
+  > is *uniform across every selected repo* — there is no per-repo matrix. So
+  > per-repo granularity lives in the **collaborator grant**, not the token: to
+  > narrow the bot on a repo, change the grant. Both layers are required, in
+  > order — a repo missing from the list fails even though the grant exists.
+  >
+  > **A PAT is scoped to one resource owner.** A token for
+  > `<author_git_provider_username>` cannot reach `<org>/…`, so a **new org needs
+  > a new PAT**, not a new entry. Pick the org as *Resource owner*, or its repos
+  > are unreachable regardless of permissions.
+  >
+  > **Organization permissions are org-scoped — the selected-repo list does not
+  > bound them.** Grant read, never write.
+  >
+  > Permissions table and rationale: the generated repo's
+  > `docs/architecture/branch-protection.md`. Full procedure (creating the
+  > account, storing the value, verifying, rotating):
+  > `docs/guides/bot-account.md`.
+
 ---
 
 ## 3. Framework scaffolding (conventions-only template)
