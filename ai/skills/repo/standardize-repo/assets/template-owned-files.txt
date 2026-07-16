@@ -19,6 +19,7 @@ lefthook.yml
 scripts/status.sh
 scripts/lint-hygiene.sh
 scripts/summarize-gitleaks.mjs
+scripts/run-semgrep.sh
 scripts/test-tasks.sh
 scripts/test-hooks.sh
 scripts/devcontainer-assert.sh
@@ -40,9 +41,11 @@ commitlint.config.mjs
 .github/workflows/claude-implement.yml
 .github/workflows/claude-review.yml
 .github/workflows/codeql.yml
+.github/workflows/snyk-scheduled.yml
 .github/workflows/release.yml
 .github/workflows/devcontainer-build.yml
 .github/workflows/project-automation.yml
+.github/actions/setup/action.yml
 
 # ── Devcontainer (template-owned lifecycle + tooling) ─────────────────────────
 .devcontainer/Dockerfile

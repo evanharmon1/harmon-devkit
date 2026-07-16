@@ -16,6 +16,7 @@ Throughout, substitute the copier answers:
   **org** repo is one where `github_org != author_git_provider_username`).
 - `<repo>` — the `project_slug` answer.
 - `<project_type>` — one of `general`, `web-astro`, `web-app`, `iac`, `docs`.
+- `<snyk_scan_schedule>` — one of `off` (default), `weekly`, or `daily`.
 
 Run from the generated repo's root, on the default branch, after the first
 push so the remote exists.
@@ -44,8 +45,9 @@ push so the remote exists.
 ## 2. GitHub repo settings
 
 - [ ] **[manual — GitHub UI]** Import the branch ruleset that protects `main`
-      (required reviews + the `verify`/`security` status checks). The JSON is
-      generated into the repo's `.github/`. Import it via the UI:
+      (required reviews + the `verify`/`security` status checks, plus
+      `codeql-verify` for Node/Python profiles). The JSON is generated into the
+      repo's `.github/`. Import it via the UI:
       **Settings → Rules → Rulesets → New ruleset ▸ Import a ruleset** → select
       `.github/Branch Protection Ruleset - Protect Main.json`. To change an
       existing ruleset, edit it in the UI — don't re-import.
@@ -88,14 +90,36 @@ push so the remote exists.
   gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo "<org>/<repo>"
   ```
 
-- [ ] **[human-only; optional]** Keep Snyk **local-only by default**.
-      `task security:sast` / `task security:sca` are opt-in and are not part of
-      CI or `task security`; run them manually with `SNYK_TOKEN` in the local
-      environment or 1Password. Do **not** create an Actions secret or retain a
-      Snyk GitHub integration for a normal repo. Put Snyk in CI only after
-      deliberately selecting a **paid Snyk tier for a high-consequence repo**;
-      then add the Actions secret and decide explicitly whether its PR checks
-      should be required.
+- [ ] **[human-only decision; optional]** Choose the Snyk posture recorded by
+      `<snyk_scan_schedule>`:
+
+  - `off` (default): keep Snyk manual/local through
+    `task security:sast:snyk` and `task security:sca:snyk`, with `SNYK_TOKEN`
+    in the local environment or 1Password. Do not create an Actions secret.
+  - `weekly` or `daily`: the generated advisory `snyk-scheduled.yml` runs SAST
+    and SCA only on its schedule or manual dispatch—never PR/push and never as a
+    required branch check. Set the secret, run it once manually, and inspect the
+    Snyk Organization Usage page:
+
+    ```bash
+    # human supplies the existing Snyk token value
+    gh secret set SNYK_TOKEN --repo "<org>/<repo>"
+    gh workflow run snyk-scheduled.yml --repo "<org>/<repo>"
+    ```
+
+  Prefer `weekly` as the conservative cadence. `daily` is intended for public
+  repositories or projects accepted into Snyk's
+  [unlimited open-source program](https://snyk.io/open-source/).
+  Confirm Snyk classifies a public Git remote correctly and does not debit the
+  private-test allocation; if it does, follow Snyk's
+  [documented remedy](https://docs.snyk.io/developer-tools/snyk-cli/getting-started-with-the-snyk-cli#running-out-of-tests):
+  run `snyk monitor` once and set the Project's Git remote URL in Snyk. Free
+  private repositories keep Semgrep CE in CI and normally use Snyk only for
+  occasional local scans because local and
+  scheduled private tests share the Organization-wide quota. Leave the Snyk
+  GitHub App off unless deliberately adopting its PR integration; its checks are
+  not required by the default ruleset. Important private repositories may
+  instead evaluate paid GitHub Code Security/private CodeQL and/or paid Snyk.
 
 - [ ] **[human-only]** Create or reuse the CI **GitHub App** `<org>-ci`, then
       set `CI_APP_CLIENT_ID` (Actions **variable**) + `CI_APP_PRIVATE_KEY` (Actions
@@ -158,14 +182,21 @@ push so the remote exists.
 
   See `docs/architecture/security.md` for blast-radius and rotation notes.
 
-- [ ] **[scriptable via gh]** Enable **CodeQL** by setting the Actions variable
-      `FULL_SECURITY_SCAN=true` (the generated `codeql.yml` is gated
-      `if: vars.FULL_SECURITY_SCAN == 'true'`; only present when the project uses
-      Node and/or Python):
+- [ ] **[human-only entitlement decision; scriptable via gh]** Confirm the
+      visibility-appropriate SAST route. Node/Python **public** repositories run
+      the generated CodeQL workflow automatically and for free—confirm a
+      successful Security-tab upload; do not set a variable. Free **private**
+      repositories use Semgrep CE in `build.yml`. Profiles without a generated
+      CodeQL workflow use Semgrep CE at either visibility. Only after enabling
+      paid GitHub Code Security for a private/internal repository, opt it into
+      private CodeQL and confirm the upload:
 
   ```bash
   gh variable set FULL_SECURITY_SCAN --repo "<org>/<repo>" --body "true"
   ```
+
+  The variable is a run switch, not an entitlement, and cannot disable public
+  CodeQL.
 
 - [ ] **[human-only]** (devcontainer projects) Ensure the org/user **allows
       GHCR package publishing** so the first `devcontainer-build.yml` prebuild on
