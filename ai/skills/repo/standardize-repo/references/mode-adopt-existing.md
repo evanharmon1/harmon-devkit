@@ -296,7 +296,9 @@ These are the recurring drifts harmon-init exists to fix (source:
 
 5. **Other recurring fixes** (apply if present): consolidate duplicate Claude
    workflows (`claude-*-max.yml` → the base `claude-plan/implement/review.yml`);
-   add `codeql.yml` if missing and the repo uses node/python; drop any
+   add the CodeQL + Semgrep visibility route if the repo uses Node/Python (or
+   Semgrep CE alone for other profiles); replace legacy Snyk PR CI with the
+   manual/local default or the explicit weekly/daily advisory schedule; drop any
    bump-on-merge `release.yml` in favor of release-please; de-bloat a legacy
    `Brewfile`; make scripts portable to macOS bash 3.2 (no `mapfile`, no
    `grep -P`).

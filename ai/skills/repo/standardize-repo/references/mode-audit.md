@@ -199,9 +199,23 @@ delete the `-max` duplicates, keep the three canonical workflows. Severity:
 
 **G. Missing `codeql.yml`.** The template ships a CodeQL workflow gated on
 `use_node or use_python` (`template/.github/workflows/[% if use_node or use_python %]codeql.yml[% endif %].jinja`).
-Repos with Node/Python code but no `codeql.yml` are missing static analysis. Fix:
-add `codeql.yml` from the template (a re-template with the right answers includes
-it). Severity: **should**.
+Repos with Node/Python code but no `codeql.yml` are missing the standard SAST
+route. Public repositories run it automatically and for free; free private
+repositories skip CodeQL and run Semgrep CE from `build.yml`; paid private
+GitHub Code Security is an explicit `FULL_SECURITY_SCAN=true` opt-in. Fix: add
+`codeql.yml`, `scripts/run-semgrep.sh`, and the visibility-aware `build.yml` /
+Taskfile targets from the template (a re-template with the right answers includes
+them). Severity: **should**.
+
+**G2. Snyk policy drift.** Snyk is not required PR CI. The default Copier answer
+is `snyk_scan_schedule=off`, with manual/local second-opinion targets named
+`security:sast:snyk` and `security:sca:snyk`. A generated
+`snyk-scheduled.yml` is valid only when the recorded answer is `weekly` or
+`daily`; it must have schedule/manual triggers only and remain outside branch
+protection. Flag an Actions `SNYK_TOKEN` when no scheduled or deliberately paid
+Snyk workflow consumes it, and flag legacy Snyk PR/push jobs as policy drift.
+Severity: **should** (blocker if an unintended required check makes PRs
+unsatisfiable).
 
 **H. lint-hygiene script portability to macOS bash 3.2.** `scripts/lint-hygiene.sh`
 must be portable: **no `mapfile`, no `grep -P`** (both Linux/bash-4-only), and it
@@ -212,10 +226,13 @@ template version (`$TEMPLATE/scripts/lint-hygiene.sh`). Severity: **blocker** if
 `task lint:hygiene` errors on macOS; otherwise **should**.
 
 **I. Brewfile ↔ local-tooling parity (run-locally goal).** The repo must be able
-to run its tooling on a **bare host**, not only in the devcontainer (catalog 1.11
-"Local ↔ devcontainer parity"). Every binary the `Taskfile`, lefthook hooks, and
-`scripts/` invoke must be installable via the `Brewfile`; when a devcontainer
-exists, the same toolset must also be in the devcontainer `Dockerfile`. The
+to run its baseline tooling on a **bare host**, not only in the devcontainer
+(catalog 1.11 "Local ↔ devcontainer parity"). Every binary the routine gates,
+lefthook hooks, and `scripts/` invoke must be installable via the `Brewfile`;
+when a devcontainer exists, the same toolset must also be in the devcontainer
+`Dockerfile`. Explicit optional integration targets are the exception: the
+`*:snyk` targets require a separately installed CLI locally, while the generated
+scheduled workflow installs its own pinned CLI. The
 recurring miss: a binary added to the `Dockerfile` (so it works in-container) but
 never added to the `Brewfile`, so the matching `task` fails on a fresh host
 (observed with `gum` — the `status` dashboard renderer — and `television`/`tv` —
@@ -224,7 +241,7 @@ against the `Brewfile`:
 
 ```bash
 # Tools the repo invokes (tasks + hooks + scripts), then what Brewfile installs
-grep -rhoE '\b(gum|tv|television|tokei|jq|yq|fzf|fd|ripgrep|bat|shfmt|shellcheck|actionlint|yamllint|gitleaks|snyk|hadolint|lychee|direnv|terraform|terraform-docs|tflint|black|ansible-lint|pip-audit|uv|uvx|pnpm|node|npx|gh|lefthook|delta)\b' \
+grep -rhoE '\b(gum|tv|television|tokei|jq|yq|fzf|fd|ripgrep|bat|shfmt|shellcheck|actionlint|yamllint|gitleaks|hadolint|lychee|direnv|terraform|terraform-docs|tflint|black|ansible-lint|pip-audit|uv|uvx|pnpm|node|npx|gh|lefthook|delta)\b' \
   "$TARGET/Taskfile.yml" "$TARGET/lefthook.yml" "$TARGET"/scripts/*.sh 2>/dev/null | sort -u
 grep -oE 'brew "[^"]+"' "$TARGET/Brewfile" | sort -u
 # If a devcontainer exists, the Dockerfile should cover the same set:
@@ -233,8 +250,9 @@ grep -rnE 'ARG .*_VERSION|apt-get install' "$TARGET"/.devcontainer/*ockerfile* 2
 
 Map invoked binaries to their brew formula (note the names differ: `tv` →
 `television`, `rg` → `ripgrep`, npx/pnpm-run tools resolve through `node`/`pnpm`,
-`black`/`ansible-lint`/`pip-audit` through `uv`). Anything invoked but not
-installable is a gap. Fix: add the missing `brew "<formula>"` to the `Brewfile`
+Semgrep/`black`/`ansible-lint`/`pip-audit` through `uv`/`uvx`). Anything invoked
+by a routine gate but not installable is a gap. Fix: add the missing
+`brew "<formula>"` to the `Brewfile`
 (template owns it — prefer `copier update`, else hand-add), and to the
 devcontainer `Dockerfile` if one exists. Severity: **blocker** if the missing
 tool makes a routine `task` target fail on a host (e.g. bare `task` → `tv`);
