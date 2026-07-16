@@ -359,8 +359,9 @@ lacks fails token minting — that's why org-only perms are jinja-gated.
 **[manual]:** create the App, install it on the repo, set the variable + secret.
 
 Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKEN`
-(secret), `SNYK_TOKEN` (secret), `CI_APP_CLIENT_ID` (variable) + `CI_APP_PRIVATE_KEY`
-(secret), `FULL_SECURITY_SCAN=true` (variable, to enable CodeQL).
+(secret), `CI_APP_CLIENT_ID` (variable) + `CI_APP_PRIVATE_KEY` (secret), and
+`FULL_SECURITY_SCAN=true` (variable, to enable CodeQL when eligible/licensed).
+`SNYK_TOKEN` is optional and local-only by default — it is not an Actions secret.
 
 ### 1.8 Security
 
@@ -368,8 +369,12 @@ Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKE
   `[allowlist] paths` of build/cache dirs). Runs at pre-push (`task
   security:secrets`) and in the `build.yml` `security` job (with the
   `summarize-gitleaks.mjs` GH step summary). **[copier]**
-- **Snyk** — `task security:sast` (`snyk code test`) + `security:sca` (`snyk
-  test`); needs `SNYK_TOKEN`. **[copier]** for tasks; **[manual]** for the token.
+- **Snyk** — optional `task security:sast` (`snyk code test`) + `security:sca`
+  (`snyk test`); opt-in, local-only, and outside `task security`/CI by default.
+  Use `SNYK_TOKEN` from the local environment or 1Password, not an Actions
+  secret. Enable Snyk CI/App checks only after deliberately selecting a paid
+  Snyk tier for a high-consequence repo. **[copier]** for tasks; **[manual]**
+  for optional local use or the paid exception.
 - **CodeQL** — `codeql.yml`, opt-in via `FULL_SECURITY_SCAN`. **[copier]** /
   **[manual]** to enable.
 - **Branch protection ruleset** — `.github/Branch Protection Ruleset - Protect

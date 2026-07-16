@@ -88,13 +88,14 @@ push so the remote exists.
   gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo "<org>/<repo>"
   ```
 
-- [ ] **[human-only]** Set Actions **secret** `SNYK_TOKEN` (consumed by
-      `task security:sast` / `task security:sca`). Real credential — human
-      supplies it:
-
-  ```bash
-  gh secret set SNYK_TOKEN --repo "<org>/<repo>"
-  ```
+- [ ] **[human-only; optional]** Keep Snyk **local-only by default**.
+      `task security:sast` / `task security:sca` are opt-in and are not part of
+      CI or `task security`; run them manually with `SNYK_TOKEN` in the local
+      environment or 1Password. Do **not** create an Actions secret or retain a
+      Snyk GitHub integration for a normal repo. Put Snyk in CI only after
+      deliberately selecting a **paid Snyk tier for a high-consequence repo**;
+      then add the Actions secret and decide explicitly whether its PR checks
+      should be required.
 
 - [ ] **[human-only]** Create or reuse the CI **GitHub App** `<org>-ci`, then
       set `CI_APP_CLIENT_ID` (Actions **variable**) + `CI_APP_PRIVATE_KEY` (Actions
