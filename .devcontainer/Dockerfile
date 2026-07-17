@@ -125,6 +125,7 @@ RUN apt-get update \
         unzip \
         vim \
         w3m \
+        yamllint \
         zip \
         zoxide \
         zsh \

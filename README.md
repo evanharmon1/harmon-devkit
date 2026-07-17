@@ -109,8 +109,9 @@ Templates are meant to be copied into your project and adapted — there is no s
 
 ### Verify
 
-`task verify` runs the fast local gate (lint + Taskfile/hook guards); `task ci`
-mirrors the full pipeline (verify + tests + security + devcontainer assert).
+`task check` runs the fast lint gate. `task verify` is the definition-of-done
+gate (check + validation + Taskfile/hook/skills guards + tests); `task ci` adds
+security.
 
 #### Security
 

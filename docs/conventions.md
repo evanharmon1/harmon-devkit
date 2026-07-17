@@ -31,7 +31,9 @@ it points here.
   `install:hooks`, `status:git`. **Never action-first** (`typescript:lint`,
   `yaml:lint`).
 - Pipeline order is **`check → build → validate → test → security`**, with
-  `verify` (local gate) and `ci` (full) as the aggregates.
+  `verify` (the definition-of-done gate — check + validate + test) and
+  `ci` (full — verify + security) as the aggregates. `check` is the fast
+  inner-loop/hook gate.
 - **`lint:*` and `check` are read-only gates** — they report and fail, never
   modify files. All auto-fixing lives in **`task format`**, **`task format:file
   -- <path>`**, and **`task fix`** (= format then lint). Pre-commit hooks run the

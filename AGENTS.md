@@ -64,19 +64,21 @@ All commands go through the Taskfile (single source of truth — CI, git hooks,
 and humans run the same targets):
 
 ```bash
-task verify      # FAST local gate (<~1 min) — run constantly; safe for hooks/agents
+task check       # FAST gate (<~1 min) — run constantly; safe for hooks/agents
+task verify      # definition-of-done gate — check + validate + test; run before finishing
 task ci          # FULL CI mirror — run before/instead of opening a PR
-task check       # all linters
 task fix         # auto-format then lint
 task test        # tests
 task security    # Semgrep CE + gitleaks + dependency audit
 ```
 
-`verify` is deliberately kept fast (lint + the quick
-Taskfile/hook guards) so editors, git hooks, and AI agents can run it on every
-change without getting bogged down. `ci` is the full pipeline — everything CI
-runs (`verify` + `test` + `security` + the devcontainer permission assert) — so you
-can reproduce a CI run locally on demand instead of waiting on a PR.
+`check` is deliberately kept fast (lint) so editors, git hooks, and
+AI agents can run it on every change without getting bogged down. `verify` is
+the definition-of-done gate — check + validate + test plus the quick
+Taskfile/hook guards (the Foreman v2 vocabulary: verify = check + build +
+test). `ci` is the full pipeline — everything CI runs (`verify` +
+`security` + the devcontainer permission assert) — so you can reproduce a CI
+run locally on demand instead of waiting on a PR.
 
 ## Definition of Done
 

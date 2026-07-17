@@ -42,31 +42,30 @@ tasks:
   ci:
     # Full local mirror of the CI pipeline — run before (or instead of) opening
     # a PR to catch everything CI would, on demand, without waiting on a PR run.
-    # Builds on `verify` and adds the heavier / environment-dependent checks.
-    desc: Full CI mirror (verify → test → security)
+    # Builds on `verify` and adds the heavier security checks. The daemon-free
+    # devcontainer permission assertion remains in `verify` for this repo.
+    desc: Full CI mirror (verify → security)
     cmds:
       - task: verify
-      - task: test
       - task: security
 
   verify:
-    # Fast local gate (target: well under a minute) — safe for editors, git
-    # hooks, and AI agents to run on every change without getting bogged down.
-    # Add a check here ONLY if it stays fast; heavier or environment-dependent
-    # checks (test and security) live in `ci`. The devcontainer permission
-    # assertion is daemon-free and subsecond, so it belongs in this gate.
-    desc: Fast local gate (check → validate → devcontainer + guards)
+    # The definition-of-done gate — everything that must pass before a change
+    # is done. For the fast inner loop use `check`; heavier security checks stay
+    # in `ci`. The devcontainer permission assertion is daemon-free and
+    # subsecond, so it remains in this gate.
+    desc: Definition-of-done gate (check → validate → devcontainer → test)
     cmds:
       - task: check
       - task: validate
       - task: test:devcontainer:permissions
-      - task: test:tasks
-      - task: test:hooks
-      - task: test:skills
+      - task: test
 
   # ── Quality Checks ────────────────────────────────────────────
   check:
-    desc: Run all linters (parallel)
+    # Fast local gate (target: well under a minute) — safe for editors, git
+    # hooks, and AI agents to run on every change without getting bogged down.
+    desc: Fast local gate — all linters (parallel)
     deps:
       - lint
 
