@@ -207,53 +207,25 @@ carry duplicates like `claude-review-max.yml` / `claude-implement-max.yml`. Fix:
 delete the `-max` duplicates, keep the three canonical workflows. Severity:
 **should** (blocker if a duplicate fires redundant/conflicting automation).
 
-**G. CodeQL source/selection/capability mismatch.** CodeQL has three gates: actual
-first-party JS/TS/Python source, the explicit `use_codeql` answer, and a live
-GitHub capability. `use_node` / `use_python` are tooling flags, not source
-evidence. Compare the workflow's `javascript-typescript` / `python` matrix with
-the tracked first-party source, excluding generated dependencies and config-only
-tooling. Record an explicit `codeql_languages` multiselect/override as a
-harmon-init source follow-up; until it exists, correct the rendered matrix during
-reconciliation.
+**G. Missing `codeql.yml`.** The template ships a CodeQL workflow gated on
+`use_node or use_python` (`template/.github/workflows/[% if use_node or use_python %]codeql.yml[% endif %].jinja`).
+Repos with Node/Python code but no `codeql.yml` are missing the standard SAST
+route. Public repositories run it automatically and for free; free private
+repositories skip CodeQL and run Semgrep CE from `build.yml`; paid private
+GitHub Code Security is an explicit `FULL_SECURITY_SCAN=true` opt-in. Fix: add
+`codeql.yml`, `scripts/run-semgrep.sh`, and the visibility-aware `build.yml` /
+Taskfile targets from the template (a re-template with the right answers includes
+them). Severity: **should**.
 
-A `codeql.yml` file and `FULL_SECURITY_SCAN=true` prove configuration, not that an
-analysis ran or GitHub accepted SARIF. Public repositories have Code Security by
-default. Whenever the workflow exists, inspect capability read-only — even when a
-legacy `.copier-answers.yml` has no `use_codeql` field:
-
-```bash
-gh api "repos/<owner>/<repo>" \
-  --jq '{visibility, code_security: (.security_and_analysis.code_security.status // "unknown")}'
-```
-
-When Code Security is disabled/unavailable and will not be enabled, set
-`use_codeql=false` and re-render: the CodeQL workflow, README badge,
-`FULL_SECURITY_SCAN` setup, and positive coverage claims must disappear, while
-`docs/architecture/security.md` names the first-party SAST gap. If the capability
-will be enabled, enable it before selecting `use_codeql=true`, then verify a real
-analysis and successful SARIF upload. The analyze job/action must not use
-`continue-on-error: true`; unrelated best-effort cleanup does not make analysis
-fail-open. On trusted events, `codeql-verify` conditionally checks out the repo and
-calls `scripts/verify-codeql-result.sh` with `FULL_SECURITY_SCAN`, the explicit
-fork decision, and `needs.analyze.result`. A fork aggregate must not check out or
-execute fork-controlled repository code (especially on a configurable/self-hosted
-runner); require the separate workflow-inline fork diagnostic instead. Exercise
-the helper's hermetic truth table: unset/empty normalizes to disabled;
-disabled/fork → `skipped`; enabled non-fork → `success`; enabled non-fork →
-`skipped`, failure, cancellation, nonempty malformed values, and unknown states
-all fail. If the API hides the field because of caller
-permissions, record a manual **Settings → Code security** check instead of
-inferring support. Severity:
-**blocker** for fail-open result propagation, a predictably red SARIF upload, or a
-false coverage claim; **should/manual residual** for an intentional, documented
-SAST gap.
-
-The current generated CodeQL workflow is fail-closed internally, but it lacks a
-`merge_group` trigger and the generated ruleset does not require
-`codeql-verify`; therefore it is not a merge-gating SAST control. Record this as a
-high-priority harmon-init follow-up: remove the redundant `FULL_SECURITY_SCAN`
-runtime gate when `use_codeql=true`, add `merge_group`, and conditionally require
-`codeql-verify` in the ruleset in the same release.
+**G2. Snyk policy drift.** Snyk is not required PR CI. The default Copier answer
+is `snyk_scan_schedule=off`, with manual/local second-opinion targets named
+`security:sast:snyk` and `security:sca:snyk`. A generated
+`snyk-scheduled.yml` is valid only when the recorded answer is `weekly` or
+`daily`; it must have schedule/manual triggers only and remain outside branch
+protection. Flag an Actions `SNYK_TOKEN` when no scheduled or deliberately paid
+Snyk workflow consumes it, and flag legacy Snyk PR/push jobs as policy drift.
+Severity: **should** (blocker if an unintended required check makes PRs
+unsatisfiable).
 
 **H. lint-hygiene script portability to macOS bash 3.2.** `scripts/lint-hygiene.sh`
 must be portable: **no `mapfile`, no `grep -P`** (both Linux/bash-4-only), and it
@@ -264,10 +236,13 @@ template version (`$TEMPLATE/scripts/lint-hygiene.sh`). Severity: **blocker** if
 `task lint:hygiene` errors on macOS; otherwise **should**.
 
 **I. Brewfile ↔ local-tooling parity (run-locally goal).** The repo must be able
-to run its tooling on a **bare host**, not only in the devcontainer (catalog 1.11
-"Local ↔ devcontainer parity"). Every binary the `Taskfile`, lefthook hooks, and
-`scripts/` invoke must be installable via the `Brewfile`; when a devcontainer
-exists, the same toolset must also be in the devcontainer `Dockerfile`. The
+to run its baseline tooling on a **bare host**, not only in the devcontainer
+(catalog 1.11 "Local ↔ devcontainer parity"). Every binary the routine gates,
+lefthook hooks, and `scripts/` invoke must be installable via the `Brewfile`;
+when a devcontainer exists, the same toolset must also be in the devcontainer
+`Dockerfile`. Explicit optional integration targets are the exception: the
+`*:snyk` targets require a separately installed CLI locally, while the generated
+scheduled workflow installs its own pinned CLI. The
 recurring miss: a binary added to the `Dockerfile` (so it works in-container) but
 never added to the `Brewfile`, so the matching `task` fails on a fresh host
 (observed with `gum` — the `status` dashboard renderer — and `television`/`tv` —
@@ -276,7 +251,7 @@ against the `Brewfile`:
 
 ```bash
 # Tools the repo invokes (tasks + hooks + scripts), then what Brewfile installs
-grep -rhoE '\b(gum|tv|television|tokei|jq|yq|fzf|fd|ripgrep|bat|shfmt|shellcheck|actionlint|yamllint|gitleaks|snyk|hadolint|lychee|direnv|terraform|terraform-docs|tflint|black|ansible-lint|pip-audit|uv|uvx|pnpm|node|npx|gh|lefthook|delta)\b' \
+grep -rhoE '\b(gum|tv|television|tokei|jq|yq|fzf|fd|ripgrep|bat|shfmt|shellcheck|actionlint|yamllint|gitleaks|hadolint|lychee|direnv|terraform|terraform-docs|tflint|black|ansible-lint|pip-audit|uv|uvx|pnpm|node|npx|gh|lefthook|delta)\b' \
   "$TARGET/Taskfile.yml" "$TARGET/lefthook.yml" "$TARGET"/scripts/*.sh 2>/dev/null | sort -u
 grep -oE 'brew "[^"]+"' "$TARGET/Brewfile" | sort -u
 # If a devcontainer exists, the Dockerfile should cover the same set:
@@ -285,8 +260,9 @@ grep -rnE 'ARG .*_VERSION|apt-get install' "$TARGET"/.devcontainer/*ockerfile* 2
 
 Map invoked binaries to their brew formula (note the names differ: `tv` →
 `television`, `rg` → `ripgrep`, npx/pnpm-run tools resolve through `node`/`pnpm`,
-`black`/`ansible-lint`/`pip-audit` through `uv`). Anything invoked but not
-installable is a gap. Fix: add the missing `brew "<formula>"` to the `Brewfile`
+Semgrep/`black`/`ansible-lint`/`pip-audit` through `uv`/`uvx`). Anything invoked
+by a routine gate but not installable is a gap. Fix: add the missing
+`brew "<formula>"` to the `Brewfile`
 (template owns it — prefer `copier update`, else hand-add), and to the
 devcontainer `Dockerfile` if one exists. Severity: **blocker** if the missing
 tool makes a routine `task` target fail on a host (e.g. bare `task` → `tv`);

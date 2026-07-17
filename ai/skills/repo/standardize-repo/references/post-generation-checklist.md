@@ -16,6 +16,7 @@ Throughout, substitute the copier answers:
   **org** repo is one where `github_org != author_git_provider_username`).
 - `<repo>` — the `project_slug` answer.
 - `<project_type>` — one of `general`, `web-astro`, `web-app`, `iac`, `docs`.
+- `<snyk_scan_schedule>` — one of `off` (default), `weekly`, or `daily`.
 
 Run from the generated repo's root, on the default branch, after the first
 push so the remote exists.
@@ -44,9 +45,9 @@ push so the remote exists.
 ## 2. GitHub repo settings
 
 - [ ] **[manual — GitHub UI]** Import the branch ruleset that protects `main`
-      (required reviews + `verify`/`security`, plus `terraform-verify` when the
-      generated repo includes Terraform). The JSON is
-      generated into the repo's `.github/`. Import it via the UI:
+      (required reviews + the `verify`/`security` status checks, plus
+      `codeql-verify` for Node/Python profiles). The JSON is generated into the
+      repo's `.github/`. Import it via the UI:
       **Settings → Rules → Rulesets → New ruleset ▸ Import a ruleset** → select
       `.github/Branch Protection Ruleset - Protect Main.json`. To change an
       existing ruleset, edit it in the UI — don't re-import.
@@ -90,13 +91,36 @@ push so the remote exists.
   gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo "<org>/<repo>"
   ```
 
-- [ ] **[human-only]** Set Actions **secret** `SNYK_TOKEN` (consumed by
-      `task security:sast` / `task security:sca`). Real credential — human
-      supplies it:
+- [ ] **[human-only decision; optional]** Choose the Snyk posture recorded by
+      `<snyk_scan_schedule>`:
 
-  ```bash
-  gh secret set SNYK_TOKEN --repo "<org>/<repo>"
-  ```
+  - `off` (default): keep Snyk manual/local through
+    `task security:sast:snyk` and `task security:sca:snyk`, with `SNYK_TOKEN`
+    in the local environment or 1Password. Do not create an Actions secret.
+  - `weekly` or `daily`: the generated advisory `snyk-scheduled.yml` runs SAST
+    and SCA only on its schedule or manual dispatch—never PR/push and never as a
+    required branch check. Set the secret, run it once manually, and inspect the
+    Snyk Organization Usage page:
+
+    ```bash
+    # human supplies the existing Snyk token value
+    gh secret set SNYK_TOKEN --repo "<org>/<repo>"
+    gh workflow run snyk-scheduled.yml --repo "<org>/<repo>"
+    ```
+
+  Prefer `weekly` as the conservative cadence. `daily` is intended for public
+  repositories or projects accepted into Snyk's
+  [unlimited open-source program](https://snyk.io/open-source/).
+  Confirm Snyk classifies a public Git remote correctly and does not debit the
+  private-test allocation; if it does, follow Snyk's
+  [documented remedy](https://docs.snyk.io/developer-tools/snyk-cli/getting-started-with-the-snyk-cli#running-out-of-tests):
+  run `snyk monitor` once and set the Project's Git remote URL in Snyk. Free
+  private repositories keep Semgrep CE in CI and normally use Snyk only for
+  occasional local scans because local and
+  scheduled private tests share the Organization-wide quota. Leave the Snyk
+  GitHub App off unless deliberately adopting its PR integration; its checks are
+  not required by the default ruleset. Important private repositories may
+  instead evaluate paid GitHub Code Security/private CodeQL and/or paid Snyk.
 
 - [ ] **[human-only]** Create or reuse the CI **GitHub App** `<org>-ci`, then
       set `CI_APP_CLIENT_ID` (Actions **variable**) + `CI_APP_PRIVATE_KEY` (Actions
@@ -159,42 +183,21 @@ push so the remote exists.
 
   See `docs/architecture/security.md` for blast-radius and rotation notes.
 
-- [ ] **[read-only/manual, then scriptable via gh]** Reconcile **CodeQL** with
-      the live repository capability. This applies only when the supported stack
-      was rendered with `use_codeql=true`; a workflow file is not evidence that
-      GitHub can accept its SARIF.
-
-  ```bash
-  gh api "repos/<org>/<repo>" \
-    --jq '{visibility, code_security: (.security_and_analysis.code_security.status // "unknown")}'
-  ```
-
-  Public repositories have Code Security by default. For a private/internal
-  repository, require `code_security: enabled` before turning on the generated
-  workflow. If the field is `unknown` because the caller lacks permission, check
-  **Settings → Code security** manually. Then set the runtime gate:
+- [ ] **[human-only entitlement decision; scriptable via gh]** Confirm the
+      visibility-appropriate SAST route. Node/Python **public** repositories run
+      the generated CodeQL workflow automatically and for free—confirm a
+      successful Security-tab upload; do not set a variable. Free **private**
+      repositories use Semgrep CE in `build.yml`. Profiles without a generated
+      CodeQL workflow use Semgrep CE at either visibility. Only after enabling
+      paid GitHub Code Security for a private/internal repository, opt it into
+      private CodeQL and confirm the upload:
 
   ```bash
   gh variable set FULL_SECURITY_SCAN --repo "<org>/<repo>" --body "true"
   ```
 
-  After the workflow runs, confirm an actual CodeQL analysis and successful SARIF
-  upload in **Security → Code scanning**. The workflow's presence,
-  `FULL_SECURITY_SCAN=true`, or a green aggregate whose analysis was skipped or
-  tolerated does not establish coverage. Reconcile the matrix with actual
-  first-party JS/TS/Python source; `use_node` / `use_python` alone are not source
-  evidence. The CodeQL analyze job/action must not use
-  `continue-on-error: true`; unrelated cleanup may remain best-effort. On trusted
-  events the aggregate runs `scripts/verify-codeql-result.sh`; on a fork it must
-  not check out/execute fork-controlled repository code and instead uses the
-  workflow-inline deliberate-skip diagnostic. The hermetic result contract
-  normalizes unset/empty to disabled and accepts only disabled/fork → `skipped`
-  and enabled non-fork → `success`; nonempty malformed values fail.
-
-  If a private/internal repo lacks Code Security and it will not be enabled,
-  re-render with `use_codeql=false`. Remove the CodeQL workflow and README badge,
-  stop setting `FULL_SECURITY_SCAN` (delete a stale repository variable), and make
-  `docs/architecture/security.md` explicitly document the first-party SAST gap.
+  The variable is a run switch, not an entitlement, and cannot disable public
+  CodeQL.
 
 - [ ] **[scriptable]** (Terraform repos) Prove the advertised lint and provider
       lock contract rather than relying on docs or a pre-existing lock file.
@@ -242,6 +245,34 @@ push so the remote exists.
   gh api "repos/<org>/<repo>/collaborators/<author_git_provider_username>-bot" \
     --method PUT -f permission=push
   ```
+
+  > The grant is only half of it — see the PAT step below. Skipping that leaves
+  > the bot with access it cannot use.
+
+- [ ] **[manual — GitHub UI]** Add this repo to the bot's **fine-grained PAT**,
+      under *Repository access → Only select repositories*. There is no API for
+      creating or editing a PAT. Signed in **as the bot**: **Settings → Developer
+      settings → Personal access tokens → Fine-grained tokens**.
+
+  > **Effective access = min(collaborator grant, PAT permissions).** A PAT
+  > delegates its owner's access and can never exceed it, and its permission set
+  > is *uniform across every selected repo* — there is no per-repo matrix. So
+  > per-repo granularity lives in the **collaborator grant**, not the token: to
+  > narrow the bot on a repo, change the grant. Both layers are required, in
+  > order — a repo missing from the list fails even though the grant exists.
+  >
+  > **A PAT is scoped to one resource owner.** A token for
+  > `<author_git_provider_username>` cannot reach `<org>/…`, so a **new org needs
+  > a new PAT**, not a new entry. Pick the org as *Resource owner*, or its repos
+  > are unreachable regardless of permissions.
+  >
+  > **Organization permissions are org-scoped — the selected-repo list does not
+  > bound them.** Grant read, never write.
+  >
+  > Permissions table and rationale: the generated repo's
+  > `docs/architecture/branch-protection.md`. Full procedure (creating the
+  > account, storing the value, verifying, rotating):
+  > `docs/guides/bot-account.md`.
 
 ---
 

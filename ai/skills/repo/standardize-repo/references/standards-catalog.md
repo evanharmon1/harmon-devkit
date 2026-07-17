@@ -122,9 +122,10 @@ Naming & structure conventions:
   serially until the current hermetic script is ported.
 - **Parallel deps:** umbrella tasks fan out via `deps:` (which run in parallel),
   e.g. `lint` deps on `lint:yaml`, `lint:shell`, `lint:markdown`,
-  `lint:actions`, `lint:hygiene`; `security` deps on `security:secrets` +
-  `security:audit`; `check` deps on `lint` (+ `lint:typescript` on node repos —
-  the old bare `typecheck` name survives as an alias).
+  `lint:actions`, `lint:hygiene`; `security` deps on `security:sast` +
+  `security:secrets` + `security:audit`; `check` deps on `lint` (+
+  `lint:typescript` on node repos — the old bare `typecheck` name survives as an
+  alias).
 - **`{{.CLI_ARGS | default "."}}` passthrough:** lint tasks accept a file list
   (`task lint:yaml -- file.yml`) and default to the whole tree; lefthook passes
   `{staged_files}` through this so hooks lint only staged files.
@@ -138,10 +139,12 @@ Universal task targets every repo has (from the template):
 `lint:shell`, `lint:markdown`, `lint:actions`, `lint:hygiene`,
 `lint:commit-msg`, `validate`, `guard:no-commit-to-main`, `format`, `fix`,
 `test`, `security`, `security:secrets`, `security:audit`, `security:sast`
-(Snyk), `security:sca` (Snyk), `secret:set:1p`, `secret:set:gh`, `bootstrap`,
-`install`, `install:hooks`, `release:init`, `release:patch`, `release:minor`,
-`release:major`, `clean`, `status` (+ `status:git|gh|code|env`),
-`status:setup`, `util:bunch-add`, `util:obsidian-add`.
+(Semgrep CE), `security:sca` (free package-audit alias),
+`security:sast:snyk`, `security:sca:snyk`, `secret:set:1p`, `secret:set:gh`,
+`bootstrap`, `install`, `install:hooks`, `release:init`, `release:patch`,
+`release:minor`, `release:major`, `clean`, `status` (+
+`status:git|gh|code|env`), `status:setup`, `util:bunch-add`,
+`util:obsidian-add`.
 
 **Lint vs. format discipline (read-only gates).** Every `lint:*` target and the
 `check`/`verify` aggregates are **read-only** — they report and fail, never
@@ -159,10 +162,11 @@ are check-only by design.
 `status:setup` is a **setup-completeness audit** (run by hand, not part of the
 default dashboard): it checks the repo against `docs/CHECKLIST.md` and reports
 ✓/✗/?/– per item across GitHub config (ruleset, Dependabot alerts, private vuln
-reporting, Renovate/CodeRabbit apps, Actions secrets/variables by name only,
-GHCR image, linked Project, release), toolchain (`brew bundle check`),
-devcontainer profiles, and dev environment (1Password CLI, direnv). Useful as a
-quick first pass when auditing an already-standardized repo.
+reporting, visibility-appropriate SAST route, Renovate/CodeRabbit apps, Actions
+secrets/variables by name only, GHCR image, linked Project, release), toolchain
+(`brew bundle check`), devcontainer profiles, and dev environment (1Password
+CLI, direnv). Useful as a quick first pass when auditing an already-standardized
+repo.
 
 Notable command bodies (for an auditor checking they match):
 
@@ -187,6 +191,11 @@ Notable command bodies (for an auditor checking they match):
   example, `uv sync --locked`) or first run `uv lock --check`; CI must fail on
   staleness and never silently rewrite the lock. Local install/update workflows
   may intentionally create or refresh it.
+- `security:sast` → `./scripts/run-semgrep.sh` (Semgrep CE; no account/token)
+- `security:sca` → the same free package-manager audit as `security:audit`
+- `security:sast:snyk` / `security:sca:snyk` → explicit optional Snyk Code /
+  Open Source second-opinion scans; the latter uses `--all-projects`; both accept
+  CLI args so the scheduled workflow can pass the repository URL
 - `secret:set:1p` / `secret:set:gh` → `./scripts/secret-set-{1p,gh}.sh` —
   destination-only secret writes, value on **stdin** (see §1.8)
 - `install` → `brew bundle --file=Brewfile` (+ `uv sync` / `pnpm install`) →
@@ -362,8 +371,9 @@ Shared structure:
 - **`merge_group`** trigger on `build.yml` (merge-queue support).
 - **Aggregate gate:** a final `verify` job (`if: always()`, `needs: [lint,
   security, …]`) reports one rollup status. Branch protection requires
-  **`verify`** and **`security`**, plus **`terraform-verify`** for a
-  Terraform-capable repo. Result acceptance is predicate-exact, never a generic
+  **`verify`** and **`security`**, plus **`codeql-verify`** when a Node/Python
+  profile generates CodeQL and **`terraform-verify`** for a Terraform-capable
+  repo. Result acceptance is predicate-exact, never a generic
   `success || skipped` allowlist. On a fork PR, every fork-suppressed leaf must be
   exactly `skipped`; the diagnostic is workflow-inline, states the untrusted-fork
   boundary explicitly, and neither checks out nor executes repository-controlled
@@ -397,12 +407,13 @@ Workflow inventory:
 
 | Workflow | Triggers / role | Source |
 |---|---|---|
-| `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; jobs `lint`, `security` (+ `build-test` node, `lighthouse` web-astro), aggregate `verify` | [copier] |
+| `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; jobs `lint`, `security` (+ `build-test` node, `lighthouse` web-astro); Semgrep runs for free private repos or profiles without CodeQL; aggregate `verify` | [copier] |
 | `claude-plan.yml` | `@claude plan` / `claude-plan` label → posts a plan, no writes (`--disallowedTools Edit Write Bash`, `--model opus`) | [copier] |
 | `claude-implement.yml` | `@claude implement` / label → opens a PR on a `claude/` branch (`--model sonnet`) | [copier] |
 | `claude-review.yml` | `@claude review` / label → review comment, no writes (sticky comment) | [copier] |
 | `release.yml` | release-please; only when `use_release_please` | [copier] |
-| `codeql.yml` | only when explicit `use_codeql=true` and the matrix matches first-party JS/TS/Python source; currently runtime-gated by `FULL_SECURITY_SCAN=true`; private/internal repos also require GitHub Code Security; fail-closed workflow-local `codeql-verify`, but not currently a branch-required check | [copier] + [manual capability/source audit] |
+| `codeql.yml` | only when `use_node or use_python`; automatic/free for public repos; private/internal requires paid GitHub Code Security + `FULL_SECURITY_SCAN=true`; aggregate `codeql-verify` always reports | [copier] |
+| `snyk-scheduled.yml` | only when `snyk_scan_schedule` is `weekly` or `daily`; schedule/manual advisory SAST + SCA, no PR/push trigger or required check | [copier] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
 
@@ -420,72 +431,61 @@ lacks fails token minting — that's why org-only perms are jinja-gated.
 **[manual]:** create the App, install it on the repo, set the variable + secret.
 
 Required secrets/variables (**[manual]**, in CHECKLIST): `CLAUDE_CODE_OAUTH_TOKEN`
-(secret), `SNYK_TOKEN` (secret), `CI_APP_CLIENT_ID` (variable) + `CI_APP_PRIVATE_KEY`
-(secret). `FULL_SECURITY_SCAN=true` is required only when `use_codeql=true` and
-the repository has the live Code Security capability.
+(secret), `CI_APP_CLIENT_ID` (variable) + `CI_APP_PRIVATE_KEY` (secret).
+`FULL_SECURITY_SCAN=true` is optional and only means a private/internal owner has
+enabled paid GitHub Code Security. `SNYK_TOKEN` remains local when
+`snyk_scan_schedule=off`; it becomes an Actions secret only when the optional
+scheduled workflow is generated (or a paid Snyk CI posture is deliberately
+adopted).
 
 ### 1.8 Security
+
+The repository-class policy is:
+
+| Repository class | Standard |
+|---|---|
+| Public, CodeQL-supported | CodeQL + Dependabot alerts/Renovate + gitleaks; no Snyk by default |
+| Selected important public | Optionally add Snyk Free as a scheduled SAST/SCA second opinion |
+| Private | Semgrep CE is the dependable free CI SAST baseline; keep Snyk Free manual/local by default because Organization-wide quotas can stop scans mid-month |
+| Important private | Consider paid GitHub Code Security/private CodeQL and/or paid Snyk, then decide whether per-PR scans should be merge-gating |
+| Qualifying public OSS | Consider Snyk's [unlimited open-source program](https://snyk.io/open-source/) |
 
 - **gitleaks** — `.gitleaks.toml` (`[extend] useDefault = true` + an
   `[allowlist] paths` of build/cache dirs). Runs at pre-push (`task
   security:secrets`) and in the `build.yml` `security` job (with the
   `summarize-gitleaks.mjs` GH step summary). **[copier]**
-- **Snyk** — `task security:sast` (`snyk code test`) + `security:sca` (`snyk
-  test`); needs `SNYK_TOKEN`. **[copier]** for tasks; **[manual]** for the token.
-- **CodeQL** — three gates must align: actual first-party JS/TS/Python source,
-  explicit `use_codeql=true`, and live platform capability. `use_node` and
-  `use_python` describe tooling; neither proves that its corresponding source
-  exists. Reconcile `javascript-typescript` / `python` in the workflow matrix
-  against first-party files, excluding generated dependencies and config-only
-  tooling. **harmon-init source follow-up:** add an explicit
-  `codeql_languages` multiselect/override so rendering no longer infers coverage
-  languages from those tooling flags.
-
-  Public repositories have Code Security by default; private/internal
-  repositories require GitHub Code Security or SARIF uploads fail. Audit the live
-  capability whenever a CodeQL workflow exists, including a legacy repo whose
-  `.copier-answers.yml` predates `use_codeql`; a missing answer is a migration
-  warning, not a capability grandfather clause. `FULL_SECURITY_SCAN=true` starts
-  the included workflow, but the workflow and variable prove configuration, not
-  coverage. Confirm a real analysis and successful upload in **Security → Code
-  scanning**.
-
-  The analyze job/action must not use `continue-on-error: true` (an unrelated
-  best-effort cleanup may). On trusted events, `codeql-verify` conditionally
-  checks out the repo and calls `scripts/verify-codeql-result.sh` with
-  `FULL_SECURITY_SCAN`, the explicit fork decision, and
-  `needs.analyze.result`. A fork PR must **not** check out or execute
-  fork-controlled repository code on the aggregate runner; a workflow-inline
-  fork step validates the exact boolean and deliberate skip instead. The tested
-  allowlist is a truth table: an unset/empty `FULL_SECURITY_SCAN` normalizes to
-  `false`; scan-disabled and fork PRs require `skipped`; enabled non-forks require
-  `success`; unexpected `skipped`, failure, cancellation, nonempty malformed
-  values such as `yes`/`enabled`, and unknown results fail. When capability is
-  unavailable and will not be enabled, use `use_codeql=false`, omit the
-  workflow/badge/setup variable, and document the first-party SAST gap. Inspect
-  capability read-only with
-  `gh api repos/<owner>/<repo>` and
-  `.security_and_analysis.code_security.status`; an unavailable field requires a
-  manual **Settings → Code security** check. See GitHub's
-  [SARIF capability requirement](https://docs.github.com/en/code-security/code-scanning/troubleshooting-sarif-uploads/repository-is-not-enabled-for-code-security).
-  **[copier]** / **[manual capability + coverage verification]**.
-
-  **High-priority next harmon-init release:** make selected CodeQL unconditional
-  instead of retaining the second `FULL_SECURITY_SCAN` runtime gate, add
-  `merge_group` to `codeql.yml`, and conditionally add `codeql-verify` to the
-  generated ruleset. Until all three land together, CodeQL fails closed inside
-  its own workflow but is not a merge-gating SAST control.
+- **Semgrep CE** — `task security:sast` via `scripts/run-semgrep.sh`; part of the
+  free local `task security` baseline. `build.yml` uses it for free private
+  repositories and profiles without generated CodeQL. **[copier]**
+- **Dependabot alerts + package audit** — Dependabot supplies continuous advisory
+  monitoring for public and private repositories; `task security:audit` /
+  `security:sca` runs the package-manager audit. **[manual]** to enable alerts;
+  **[copier]** for tasks.
+- **CodeQL** — `codeql.yml` is generated for Node/Python. It runs automatically
+  on public repositories; private/internal repositories run it only with paid
+  GitHub Code Security + `FULL_SECURITY_SCAN=true`, otherwise `build.yml` uses
+  Semgrep CE. **[copier]**; **[manual]** only for the paid private opt-in.
+- **Snyk** — optional `security:sast:snyk` (`snyk code test`) +
+  `security:sca:snyk` (`snyk test --all-projects`) second opinions. The default
+  `snyk_scan_schedule=off` keeps `SNYK_TOKEN` local and Snyk outside required PR
+  CI. `weekly`/`daily` generates an advisory schedule/manual-only matrix workflow;
+  daily is intended for public or accepted unlimited OSS projects. Public repos
+  must be classified with their public Git remote so private tests are not
+  debited. Free private repos normally stay manual/local; weekly is a deliberate
+  quota-budgeted exception. A daily Snyk Code schedule is about 30 tests/month
+  before manual runs, and SCA can consume one test per detected manifest. No Snyk
+  GitHub App is required. **[copier]** for tasks/workflow; **[manual]** for the
+  token and posture decision.
 - **Branch protection ruleset** — `.github/Branch Protection Ruleset - Protect
   Main.json`: blocks deletion/non-ff/creation, requires linear history, PR with 1
   code-owner approval + thread resolution + last-push approval, required status
-  checks `verify` + `security` and, when `include_terraform=true`,
-  `terraform-verify`; merge methods squash/rebase; org repos add a `merge_queue`
-  rule. `codeql-verify` is not currently required. **[copier]** ships the file;
-  **[manual]** import via the
-  GitHub UI (Settings → Rules → Rulesets → **Import a ruleset**). The REST API
-  supports `merge_queue`, but a blind `POST` is non-idempotent and can duplicate
-  the ruleset. Automation must discover exactly one matching live ruleset and
-  `PUT` that ruleset's id; edit the existing ruleset in the UI for manual changes.
+  checks `verify` + `security` (+ `codeql-verify` for Node/Python), merge methods
+  squash/rebase; org repos add a `merge_queue` rule. Scheduled Snyk and Snyk App
+  checks are never required by default. **[copier]** ships the file; **[manual]**
+  import via the GitHub UI (Settings → Rules → Rulesets → **Import a ruleset**) — not
+  `gh api … rulesets`, whose `POST` is non-idempotent (duplicates the ruleset)
+  and rejects the `merge_queue` rule (422); edit the existing ruleset in the UI
+  to change it later.
 - **`SECURITY.md`** lives in **`.github/`** (Private Vulnerability Reporting).
   **[copier]**
 - **Renovate, NOT Dependabot** for version updates. CHECKLIST explicitly says
@@ -623,22 +623,26 @@ install the Renovate GitHub App on the repo. Conventions:
 
 ### 1.11 Package / tool management
 
-> **Local ↔ devcontainer parity (a hard goal).** Every tool the repo's
-> `Taskfile` targets, lefthook hooks, and `scripts/` invoke must be installable
-> **locally via the `Brewfile`** — the repo's tooling has to run on a bare host,
-> not only inside the devcontainer. When the repo ships a devcontainer, the
-> `Brewfile` (host) and the devcontainer `Dockerfile` (container) must cover the
+> **Local ↔ devcontainer parity (a hard goal).** Every binary that the repo's
+> routine `Taskfile` gates, lefthook hooks, and `scripts/` invoke must be
+> installable **locally via the `Brewfile`** — the repo's baseline tooling has
+> to run on a bare host, not only inside the devcontainer. Explicit optional
+> integrations are exempt: local `*:snyk` use requires a separately installed
+> CLI, and the optional scheduled workflow installs its own pinned CLI. When the
+> repo ships a devcontainer, the `Brewfile` (host) and the devcontainer
+> `Dockerfile` (container) must cover the
 > **same toolset** so `task <anything>` behaves identically in both. Concretely:
 > if a task/script/hook calls a binary (e.g. `gum`, `tv`/television, `tokei`,
 > `jq`, `gitleaks`, `shfmt`), that binary belongs in the `Brewfile` — and, if a
 > devcontainer exists, also in the `Dockerfile`. Auditing this is a first-class
 > check (see mode-audit drift class **I**).
 
-- **`Brewfile`** — declares the core toolchain (go-task, lefthook, git, gh,
-  shellcheck, shfmt, actionlint, yamllint, markdownlint-cli2, gitleaks, snyk,
-  node, Python 3.11+, coreutils, jq, fzf, fd,
-  ripgrep, bat, tokei, gum, television; conditionally pnpm/lychee, uv, terraform,
-  hadolint/devcontainer). `gum` + `television` (the `tv` binary) power the universal
+- **`Brewfile`** — pins the core toolchain (go-task, lefthook, git, gh,
+  shellcheck, shfmt, actionlint, yamllint, gitleaks, uv, node, jq, fzf, fd,
+  ripgrep, bat, tokei, gum, television; conditionally pnpm/lychee, terraform,
+  hadolint). Semgrep CE is pinned by `scripts/run-semgrep.sh` and executed through
+  `uvx`, so the same version runs on a host and in CI. `gum` + `television` (the
+  `tv` binary) power the universal
   `status`/`status:*` dashboard and the interactive `task` menu (`menu-tv`), so
   they are required for the dashboard and the bare-`task` menu to work on a host.
   `scripts/status.sh` resolves GNU `timeout` on Linux or Homebrew `gtimeout` on

@@ -315,10 +315,11 @@ after the copier run:
 
 5. **Other recurring fixes** (apply if present): consolidate duplicate Claude
    workflows (`claude-*-max.yml` → the base `claude-plan/implement/review.yml`);
-   reconcile CodeQL as a capability-aware `use_codeql` decision (mode-audit drift
-   class G), rather than adding its workflow solely because node/python exists;
-   drop any bump-on-merge `release.yml` in favor of release-please; de-bloat a
-   legacy `Brewfile`; make scripts portable to macOS bash 3.2 (no `mapfile`, no
+   add the CodeQL + Semgrep visibility route if the repo uses Node/Python (or
+   Semgrep CE alone for other profiles); replace legacy Snyk PR CI with the
+   manual/local default or the explicit weekly/daily advisory schedule; drop any
+   bump-on-merge `release.yml` in favor of release-please; de-bloat a legacy
+   `Brewfile`; make scripts portable to macOS bash 3.2 (no `mapfile`, no
    `grep -P`).
 
 6. **v2→v3 re-adopt cleanup (the v2 question set predates lefthook/gitleaks).**
