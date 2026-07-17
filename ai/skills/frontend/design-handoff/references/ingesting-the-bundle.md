@@ -32,10 +32,11 @@ preferred path:
 
 ```bash
 task ingest:design BUNDLE=<bundle>.tar.gz   # validates entries (no absolute/.. /link paths), then extracts to specs/
-# manual equivalent — the listing grep MUST come back empty before any tar -xzf:
-tar -tzf <bundle>.tar.gz | grep -E '^/|(^|/)\.\.(/|$)'   # any hit → refuse to extract
-tar -xzf <bundle>.tar.gz -C specs/
 ```
+
+Do not replace this task with raw `tar` or `unzip` commands. If the target repo does not yet have
+the task, first copy `assets/ingest-design.sh` to `scripts/ingest-design.sh` and merge
+`assets/Taskfile.design.yml` into its Taskfile, as described in the skill setup, then run the task.
 
 It extracts to a single project directory. Move/rename it to `specs/handoff-<feature>/` — do this
 **even when the user pre-placed it under another name**: consistent naming is what the repo's ignore
