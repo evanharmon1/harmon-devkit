@@ -19,11 +19,11 @@ brew "markdownlint-cli2"
 
 # Security
 brew "gitleaks"
-tap "snyk/tap"
-brew "snyk/tap/snyk"
 
 # Runtime for commitlint and pinned npx fallbacks
 brew "node"
+# Python tool runner (Semgrep CE use uv/uvx)
+brew "uv"
 
 # Universal scripts parse JSON/TOML and require Python 3.11+
 brew "python"

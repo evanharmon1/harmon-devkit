@@ -69,7 +69,7 @@ task ci          # FULL CI mirror — run before/instead of opening a PR
 task check       # all linters
 task fix         # auto-format then lint
 task test        # tests
-task security    # gitleaks + dependency audit
+task security    # Semgrep CE + gitleaks + dependency audit
 ```
 
 `verify` is deliberately kept fast (lint + the quick

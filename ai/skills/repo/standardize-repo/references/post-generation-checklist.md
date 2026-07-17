@@ -197,7 +197,9 @@ push so the remote exists.
   ```
 
   The variable is a run switch, not an entitlement, and cannot disable public
-  CodeQL.
+  CodeQL. A generated workflow or a true variable by itself does not establish
+  coverage; require a successful analysis/upload on every route where CodeQL is
+  required.
 
 - [ ] **[scriptable]** (Terraform repos) Prove the advertised lint and provider
       lock contract rather than relying on docs or a pre-existing lock file.

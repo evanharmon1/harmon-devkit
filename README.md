@@ -87,6 +87,7 @@ If there isn't an existing template in this repo, start with looking at the <htt
 - Homebrew (installs the toolchain via `Brewfile`)
 - [Taskfile](https://taskfile.dev/) (task runner)
 - Node (for npx-based tools: markdownlint-cli2, commitlint)
+- [uv](https://docs.astral.sh/uv/) (runs the pinned Semgrep CE baseline)
 
 ### Bootstrap
 
@@ -113,7 +114,7 @@ mirrors the full pipeline (verify + tests + security + devcontainer assert).
 
 #### Security
 
-`task security` — gitleaks secret scan + dependency audit.
+`task security` — Semgrep CE SAST + gitleaks secret scan + dependency audit.
 
 #### Linting, formatting & conventions
 

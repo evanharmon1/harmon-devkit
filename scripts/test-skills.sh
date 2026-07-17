@@ -455,22 +455,22 @@ expect_ok "audit guidance rejects fail-open CodeQL analysis" \
     grep -qF 'The analyze job/action must not use' \
     "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "checklist does not treat CodeQL configuration as coverage" \
-    grep -qF 'does not establish coverage.' \
+    grep -qF 'does not establish' \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
-expect_ok "catalog documents intentional CodeQL omission" \
-    grep -qF 'use `use_codeql=false`, omit the' \
+expect_ok "catalog documents profile-driven CodeQL omission" \
+    grep -qF 'No `codeql.yml`** when there is no Node/Python tooling profile' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "catalog distinguishes CodeQL source from tooling flags" \
-    grep -qF '`use_python` describe tooling; neither proves that its corresponding source' \
+    grep -qF '`use_node` and `use_python` describe tooling;' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "catalog records the explicit CodeQL language follow-up" \
-    grep -qF '`codeql_languages` multiselect/override' \
+expect_ok "catalog requires the CodeQL matrix to match real source" \
+    grep -qF 'generated matrix with real first-party source' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "audit guidance checks legacy CodeQL capability" \
-    grep -qF 'legacy `.copier-answers.yml` has no `use_codeql` field' \
+    grep -qF '`.copier-answers.yml` has no `use_codeql` field' \
     "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "catalog keeps fork aggregates from executing repository code" \
-    grep -qF 'fork-controlled repository code on the aggregate runner' \
+    grep -qF 'code on the aggregate runner' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "catalog normalizes an unset CodeQL scan opt-in" \
     grep -qF 'unset/empty `FULL_SECURITY_SCAN` normalizes to' \
@@ -512,11 +512,11 @@ expect_ok "catalog applies the exact contract to devcontainer aggregates" \
 expect_ok "catalog documents conditional Terraform required checks" \
     grep -qF 'when `include_terraform=true`,' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "catalog does not claim CodeQL is merge-gating today" \
-    grep -qF 'is not a merge-gating SAST control.' \
+expect_ok "catalog records CodeQL as a conditional required check" \
+    grep -qF 'plus **`codeql-verify`** when a Node/Python' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "catalog records the three-part CodeQL next-release fix" \
-    grep -qF 'conditionally add `codeql-verify` to the' \
+expect_ok "catalog records the three-route CodeQL result contract" \
+    grep -qF 'successful not-applicable result only for free-private' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "audit guidance forbids shared fixed temp artifacts" \
     grep -qF 'On workflows that may use self-hosted runners, reject shared fixed `/tmp`' \

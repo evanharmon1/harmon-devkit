@@ -491,6 +491,10 @@ if [[ "${SECTION}" == "setup" ]]; then
         has_release_wf=0
         find .github/workflows -maxdepth 1 \( -name 'release.yml' -o -name 'release.yaml' \) 2>/dev/null | grep -q . && has_release_wf=1
         uses_ci_app=$((has_claude_wf || has_release_wf))
+        has_codeql_wf=0
+        find .github/workflows -maxdepth 1 \( -name 'codeql.yml' -o -name 'codeql.yaml' \) 2>/dev/null | grep -q . && has_codeql_wf=1
+        has_semgrep_ci=0
+        grep -rq 'task security:sast' .github/workflows >/dev/null 2>&1 && has_semgrep_ci=1
         uses_full_scan=0
         grep -rq 'FULL_SECURITY_SCAN' .github/workflows >/dev/null 2>&1 && uses_full_scan=1
 
@@ -593,6 +597,21 @@ if [[ "${SECTION}" == "setup" ]]; then
                     checkline ok "Dependabot alerts"
                 else
                     checkline no "Dependabot alerts" "Settings → Advanced Security"
+                fi
+                if [ "${IS_PRIVATE}" = "true" ]; then
+                    if [ "${has_semgrep_ci}" = 1 ] && [ "${has_codeql_wf}" = 1 ]; then
+                        checkline ok "SAST route" "Semgrep CE default; paid CodeQL opt-in supported"
+                    elif [ "${has_semgrep_ci}" = 1 ]; then
+                        checkline ok "SAST route" "Semgrep CE (private)"
+                    else
+                        checkline no "SAST route" "add Semgrep CE or licensed private CodeQL"
+                    fi
+                elif [ "${has_codeql_wf}" = 1 ]; then
+                    checkline ok "SAST route" "CodeQL (public/free)"
+                elif [ "${has_semgrep_ci}" = 1 ]; then
+                    checkline ok "SAST route" "Semgrep CE"
+                else
+                    checkline no "SAST route" "add CodeQL or Semgrep CE"
                 fi
                 if [ "${IS_PRIVATE}" = "true" ]; then
                     checkline na "Private vuln reporting" "private repo"
@@ -700,13 +719,15 @@ if [[ "${SECTION}" == "setup" ]]; then
                     checkline na "CI App credentials" "not used by this repo"
                 fi
                 if [ "${uses_full_scan}" = 1 ]; then
-                    if has_cred "${d}/vars.json" "FULL_SECURITY_SCAN"; then
-                        checkline ok "FULL_SECURITY_SCAN (variable)"
+                    if [ "${IS_PRIVATE}" != "true" ]; then
+                        checkline na "Paid CodeQL opt-in" "CodeQL is public/free"
+                    elif has_cred "${d}/vars.json" "FULL_SECURITY_SCAN"; then
+                        checkline unknown "Paid CodeQL opt-in" "variable present; verify =true + entitlement"
                     else
-                        checkline no "FULL_SECURITY_SCAN (variable)" "set =true to enable CodeQL"
+                        checkline na "Paid CodeQL opt-in" "Semgrep CE free default"
                     fi
                 else
-                    checkline na "FULL_SECURITY_SCAN (variable)" "not referenced"
+                    checkline na "Paid CodeQL opt-in" "not supported by this profile"
                 fi
             fi
 

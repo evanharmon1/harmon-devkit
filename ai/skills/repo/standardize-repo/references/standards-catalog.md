@@ -373,7 +373,8 @@ Shared structure:
   security, …]`) reports one rollup status. Branch protection requires
   **`verify`** and **`security`**, plus **`codeql-verify`** when a Node/Python
   profile generates CodeQL and **`terraform-verify`** for a Terraform-capable
-  repo. Result acceptance is predicate-exact, never a generic
+  repo (when `include_terraform=true`, the Terraform aggregate is required).
+  Result acceptance is predicate-exact, never a generic
   `success || skipped` allowlist. On a fork PR, every fork-suppressed leaf must be
   exactly `skipped`; the diagnostic is workflow-inline, states the untrusted-fork
   boundary explicitly, and neither checks out nor executes repository-controlled
@@ -464,7 +465,15 @@ The repository-class policy is:
 - **CodeQL** — `codeql.yml` is generated for Node/Python. It runs automatically
   on public repositories; private/internal repositories run it only with paid
   GitHub Code Security + `FULL_SECURITY_SCAN=true`, otherwise `build.yml` uses
-  Semgrep CE. **[copier]**; **[manual]** only for the paid private opt-in.
+  Semgrep CE. An unset/empty `FULL_SECURITY_SCAN` normalizes to the free-private
+  route. The analyze job/action never uses `continue-on-error`; its stable
+  aggregate requires success for public/paid-private analysis and reports a
+  successful not-applicable result only for free-private or untrusted-fork
+  routes. The fork path does not check out or execute fork-controlled repository
+  code on the aggregate runner. `use_node` and `use_python` describe tooling;
+  neither proves that its corresponding source language exists, so reconcile the
+  generated matrix with real first-party source. **[copier]**; **[manual]** only
+  for the paid private opt-in.
 - **Snyk** — optional `security:sast:snyk` (`snyk code test`) +
   `security:sca:snyk` (`snyk test --all-projects`) second opinions. The default
   `snyk_scan_schedule=off` keeps `SNYK_TOKEN` local and Snyk outside required PR
@@ -483,9 +492,10 @@ The repository-class policy is:
   squash/rebase; org repos add a `merge_queue` rule. Scheduled Snyk and Snyk App
   checks are never required by default. **[copier]** ships the file; **[manual]**
   import via the GitHub UI (Settings → Rules → Rulesets → **Import a ruleset**) — not
-  `gh api … rulesets`, whose `POST` is non-idempotent (duplicates the ruleset)
-  and rejects the `merge_queue` rule (422); edit the existing ruleset in the UI
-  to change it later.
+  a blind `gh api … rulesets` `POST`, which is non-idempotent and can duplicate
+  the ruleset. REST supports `merge_queue`; safe automation must discover
+  exactly one matching ruleset and `PUT` its id. Edit the existing ruleset in
+  the UI to change it later.
 - **`SECURITY.md`** lives in **`.github/`** (Private Vulnerability Reporting).
   **[copier]**
 - **Renovate, NOT Dependabot** for version updates. CHECKLIST explicitly says
@@ -948,12 +958,11 @@ Legitimately repo- or type-specific differences. An auditor should treat these a
   later added its own `.devcontainer/`).
 - **No `release.yml` / release-please manifest** when `use_release_please: no`
   (then releases are purely `task release:*`).
-- **No `codeql.yml`** when there is no planned first-party JS/TS/Python source or
-  when `use_codeql: false` (including a private/internal repo without GitHub Code
-  Security). The README badge and `FULL_SECURITY_SCAN` setup are absent too, and
-  security docs name the first-party SAST gap. Current rendering is gated by
-  `use_node`/`use_python`, so audit the matrix rather than treating those flags as
-  source evidence.
+- **No `codeql.yml`** when there is no Node/Python tooling profile. A
+  private/internal repo without paid GitHub Code Security still keeps the
+  generated workflow's stable not-applicable aggregate and uses Semgrep CE.
+  Current rendering is gated by `use_node`/`use_python`, so audit the matrix
+  against real source rather than treating those tooling flags as coverage.
 - **No `project-automation.yml`, no org `merge_queue` rule, no
   `permission-organization-projects`/`permission-members`** for personal-account
   repos (`github_org == author_git_provider_username`). Org repos get all three.

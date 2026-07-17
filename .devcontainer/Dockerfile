@@ -36,8 +36,8 @@ ARG AGENT_DECK_VERSION=1.9.47
 ARG SESH_VERSION=2.26.2
 # renovate: datasource=npm depName=dmux
 ARG DMUX_VERSION=5.9.0
-# renovate: datasource=npm depName=snyk
-ARG SNYK_VERSION=1.1305.1
+# renovate: datasource=pypi depName=semgrep
+ARG SEMGREP_VERSION=1.170.0
 # renovate: datasource=npm depName=@playwright/test
 ARG PLAYWRIGHT_VERSION=1.60.0
 # renovate: datasource=npm depName=@playwright/cli
@@ -353,6 +353,13 @@ RUN npm install -g \
 # ---------- Python packages for agent-deck Telegram bridge ----------
 RUN uv pip install --system --break-system-packages --no-cache toml aiogram
 
+# ---------- Semgrep Community Edition ----------
+# Install the free SAST baseline independently of the project Python environment.
+RUN UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_TOOL_DIR=/opt/uv-tools \
+    uv tool install "semgrep==${SEMGREP_VERSION}" \
+    && rm -rf /root/.cache/uv
+
 # ---------- dotfile config ----------
 # /usr/local/share/devcontainer-config/ is kept (not cleaned up) so that
 # post-create scripts can seed persistent volumes that shadow the baked-in
@@ -403,7 +410,6 @@ RUN npm install -g \
         "@google/gemini-cli@${GEMINI_CLI_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
         "dmux@${DMUX_VERSION}" \
-        "snyk@${SNYK_VERSION}" \
     && npm cache clean --force
 
 USER vscode

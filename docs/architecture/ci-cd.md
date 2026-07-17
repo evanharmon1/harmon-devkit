@@ -13,7 +13,7 @@ plus an aggregate **`verify`** job; branch protection requires `verify` +
 
 ## Workflows
 
-- `build.yml` — on push/PR to `main`: lint, security, then the aggregate **`verify`** job.
+- `build.yml` — on push/PR to `main`: lint, security, then the aggregate **`verify`** job. Security always runs gitleaks + dependency audit + Semgrep CE SAST.
 - `claude-plan` / `claude-implement` / `claude-review` — `@claude …` on issues and PRs.
 - `devcontainer-build.yml` — prebuilds the devcontainer images to GHCR on `.devcontainer/**` changes.
 - `release.yml` — release-please maintains the rolling release PR.

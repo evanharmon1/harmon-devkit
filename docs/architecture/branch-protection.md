@@ -26,14 +26,12 @@ application explicit and reviewable; edit the existing ruleset thereafter.
 
 ## Dependabot and Renovate
 
-Version updates are owned by **Renovate** (`renovate.json`) — do not add a
-`dependabot.yml`, it would duplicate Renovate's PRs. Dependabot still has a
-role as a GitHub-native security layer; enable these in
-Settings → Advanced Security:
+Routine updates and vulnerability-remediation PRs are owned by **Renovate**
+(`renovate.json`, with `vulnerabilityAlerts.enabled=true`) — do not add a
+`dependabot.yml`, which would create competing update PRs. Dependabot still owns
+the GitHub-native advisory feed; enable these in Settings → Advanced Security:
 
 - Dependabot alerts
-- Dependabot security updates (optional — alerts may be enough since Renovate
-  proposes the same bumps)
 - Private vulnerability reporting (used by `.github/SECURITY.md`)
 
 ## Security Model Overview
@@ -67,16 +65,48 @@ Replace `@evanharmon1` with the GitHub username of the human who should approve 
 > [security.md](security.md) for that App and its permissions. The ruleset below
 > protects `main` from every actor (App, bot PAT, or human) equally.
 
-The machine user account's fine-grained PAT should have these permissions and nothing more:
+The machine user account's fine-grained PAT should have these **repository**
+permissions and nothing more:
 
-| Permission      | Level          | Purpose                              |
-| --------------- | -------------- | ------------------------------------ |
-| Contents        | Read and write | Clone, push, create branches, commit |
-| Pull requests   | Read and write | Open PRs, update PRs, comment        |
-| Metadata        | Read-only      | Required by all tokens               |
-| Actions         | Read-only      | View CI workflow run status          |
-| Checks          | Read-only      | View check runs on PRs               |
-| Commit statuses | Read-only      | View status checks on commits        |
+| Permission      | Level          | Purpose                                               |
+| --------------- | -------------- | ----------------------------------------------------- |
+| Contents        | Read and write | Clone, push, create branches, commit                  |
+| Issues          | Read and write | Read the issue graph; apply labels; post comments     |
+| Pull requests   | Read and write | Open PRs, update PRs, comment                         |
+| Metadata        | Read-only      | Mandatory — granted to every fine-grained PAT         |
+| Actions         | Read-only      | Read workflow run status (red-CI triage)              |
+| Commit statuses | Read-only      | Read the PR status rollup                             |
+| Variables       | Read-only      | Read CI configuration when reasoning about a workflow |
+
+> **There is no `Checks` permission for fine-grained PATs.** Only GitHub Apps can
+> hold it — it was briefly offered, then withdrawn. Don't go looking for it: CI
+> state comes from **Actions** (workflow runs) and **Commit statuses** (the PR
+> rollup), which is what the tooling actually reads.
+**Read is cheap; write is the line.** Variables and Projects are read-only above
+for a reason that is not squeamishness — see the exclusions below.
+
+**Deliberately excluded.** This list is _what the bot needs_, and the distinction
+is load-bearing, because the bot's PAT is the **agent's own credential**:
+anything running in the bot devcontainer can read it out of the environment.
+Every permission here is one a prompt-injected agent has.
+
+| Not granted | Why |
+| --- | --- |
+| **Workflows** | The agent could rewrite `.github/workflows/`, then let CI run it with every Actions secret. The classic escalation. |
+| **Administration** | Rulesets, settings, bypass lists. The bot must not be able to unlock the door it is locked behind. |
+| **Variables — write** | Read is granted; write is not. Write could opt a private repo into paid CodeQL or mutate another security/deploy switch without a PR diff. Public CodeQL cannot be disabled with `FULL_SECURITY_SCAN`. |
+| **Deployments** | Write lets the agent create deployments, colliding with release-gated deploys. Read buys nothing the agent's loop uses. |
+| **Secrets**, **Environments**, **Webhooks**, … | Never needed; each is one more thing a leaked token reaches. |
+
+Variables are **non-secret by design** — GitHub separates Secrets from Variables
+precisely so config can be read without exposing credentials. That makes the read
+grant above safe, and it depends on the separation being honoured: if a variable
+ever holds something sensitive, read becomes exfiltration. Check once, when
+adding a variable — not forever.
+
+Grant on demand, with a reason. You can edit a fine-grained PAT's permissions
+later without regenerating the token, so there is no cost to waiting until
+something is genuinely blocked.
 
 ## Ruleset Configuration
 
@@ -208,17 +238,20 @@ This is the core rule that prevents the AI agent from pushing directly to `main`
 
 All specified CI checks must pass before the PR can merge. The `strict_required_status_checks_policy: true` setting means the PR branch must be up-to-date with `main` before merging — if `main` advances after the checks ran, the checks must re-run. The `do_not_enforce_on_create: true` setting skips enforcement when the branch is first created (before any CI has had a chance to run).
 
-The required check contexts come from `build.yml` (see [ci-cd.md](ci-cd.md)):
-`verify` is the aggregate gate, while `security` is the security leaf required
-directly as a redundant, visible control.
+The required checks are the build gates (see
+[ci-cd.md](ci-cd.md)):
 
 | Check      | Purpose                                                                                          |
 | ---------- | ----------------------------------------------------------------------------------------------- |
-| `verify`   | Aggregate gate — rolls up `lint` and `security` so one check reports overall pass/fail |
-| `security` | Secret scanning (gitleaks) + dependency audit                                                    |
+| `verify`   | Aggregate gate — rolls up `lint`, and `security` so one check reports overall pass/fail |
+| `security` | gitleaks + dependency audit; Semgrep CE when this job owns the visibility/profile SAST route |
 
 Requiring the stable `verify` aggregate alongside the direct `security` context
 keeps the required-check list small while preserving explicit security visibility.
+
+Snyk PR/App checks are absent by default. Only a high-consequence repository that deliberately adopts
+paid Snyk should consider per-PR scans and whether to make them merge
+requirements. See [security.md](security.md) for the scanner policy.
 
 ## What the AI Agent Can and Cannot Do
 

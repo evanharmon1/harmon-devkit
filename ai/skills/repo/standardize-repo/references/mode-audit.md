@@ -174,8 +174,8 @@ if an unpinned/missing tool breaks the `security` job).
 **D. Stale branch ruleset / old job names / wrong `merge_queue` policy.** Canonical
 ruleset (`template/.github/Branch Protection Ruleset - Protect Main.json`) requires
 the baseline contexts **`verify`** and **`security`**, plus
-**`terraform-verify`** exactly when `include_terraform=true`. It does not currently
-require `codeql-verify`. The
+**`terraform-verify`** exactly when `include_terraform=true`, and
+**`codeql-verify`** when `use_node or use_python` generates CodeQL. The
 **`merge_queue`** rule is conditional: org repos
 (`github_org != author_git_provider_username`) get it; personal-account repos do
 not. Missing it is drift only for an org repo, while adding it to a personal repo
@@ -216,6 +216,17 @@ GitHub Code Security is an explicit `FULL_SECURITY_SCAN=true` opt-in. Fix: add
 `codeql.yml`, `scripts/run-semgrep.sh`, and the visibility-aware `build.yml` /
 Taskfile targets from the template (a re-template with the right answers includes
 them). Severity: **should**.
+
+Presence of the workflow alone is not coverage. The analyze job/action must not use
+`continue-on-error`; public and paid-private analyses must succeed, while the
+stable `codeql-verify` aggregate may accept `skipped` only for a free-private
+route or an untrusted fork. That fork aggregate must not check out or execute
+fork-controlled repository code on the aggregate runner. Treat unset/empty
+`FULL_SECURITY_SCAN` as the free-private opt-out, and verify the language matrix
+against real first-party source rather than tooling flags. When a legacy
+`.copier-answers.yml` has no `use_codeql` field, infer the intended route from
+the workflow, repository visibility, live Code Security capability, and actual
+source before changing it.
 
 **G2. Snyk policy drift.** Snyk is not required PR CI. The default Copier answer
 is `snyk_scan_schedule=off`, with manual/local second-opinion targets named
