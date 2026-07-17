@@ -22,8 +22,11 @@ state with zero warning.
 the **latest git tag**, not your working tree. All uncommitted AND committed-but-
 untagged work is silently ignored.
 
-**Rule:** Always pass `--vcs-ref=HEAD` when rendering from a local checkout for
-testing. With it, copier auto-includes dirty **and** untracked changes via a
+**Rule:** Production scaffolds use the canonical URL and a released ref, for
+example `copier copy --trust --vcs-ref=v3.26.1
+https://github.com/evanharmon1/harmon-init.git <dest>`. Pass `--vcs-ref=HEAD`
+only when rendering from a local checkout into a disposable preview/test. With
+it, copier auto-includes dirty **and** untracked changes via a
 throwaway `wip` commit in a temporary clone (you'll see a `DirtyLocalWarning`). Your
 real working tree is never touched. `scripts/test-template.sh` always passes
 `--vcs-ref=HEAD` — mirror that for any manual render of work-in-progress.
@@ -189,15 +192,15 @@ copy`. If the repo was scaffolded with a **relative or machine-local path** (e.g
 harmon-init`), that string doesn't resolve to a git repo from the target's directory
 later, so copier can't find a git-tracked template to diff against.
 
-**Rule:** Record a **globally resolvable** `_src_path` — the GitHub URL
-`https://github.com/evanharmon1/harmon-init` (works on any machine and in CI). When
-adopting/auditing an existing repo whose `_src_path` is relative or local-absolute,
-normalize it **before** running `copier update`:
-
-```bash
-# one-time fix, committed; copier overwrites _src_path on its next run anyway
-yq -i '._src_path = "https://github.com/evanharmon1/harmon-init"' .copier-answers.yml
-```
+**Rule:** Record a durable lineage tuple: a globally resolvable `_src_path`
+(`https://github.com/evanharmon1/harmon-init.git`) **and** an `_commit` reachable
+from that source. Never normalize only `_src_path` without first proving the
+recorded commit exists on the canonical remote. A dirty local `--vcs-ref=HEAD`
+render may record a Copier-created throwaway commit that no remote clone can
+resolve; changing the path disguises rather than repairs that broken base. Use the
+local render only as a preview, then re-render/re-adopt from the canonical URL at
+a released ref. If a deliberately pushed pre-release commit is used, verify its
+remote reachability and commit both lineage fields together.
 
 This is independent of `--vcs-ref` (gotcha 1): `--vcs-ref` picks *which ref* of the
 source to render; `_src_path` is *where the source is*. A local checkout is fine for
@@ -209,8 +212,8 @@ updatable everywhere.
 ## Quick checklist when touching the template
 
 - Rendering local WIP to test? → `--vcs-ref=HEAD`.
-- Generated repo must stay updatable? → committed `_src_path` is the GitHub URL, not
-  a relative/local path (gotcha 8).
+- Generated repo must stay updatable? → `_src_path` is canonical **and** `_commit`
+  is reachable from it; never rewrite the path alone (gotcha 8).
 - New templating? → `[[ ]]` / `[% %]` / `[# #]`; POSIX `[ ]` in shell; `[% endif +%]`
   inline.
 - New side-effect question? → default `no`.

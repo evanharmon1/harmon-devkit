@@ -8,7 +8,10 @@ How testing works in Harmon DevKit.
 |---|---|---|
 | Lint / static analysis | shellcheck, yamllint, markdownlint, actionlint | `task check` |
 | Tests | TODO: pick a test runner | `task test` |
+| Application security | Semgrep CE locally | `task security:sast` |
+| Optional second opinion | Snyk Code + Open Source, manual | `task security:sast:snyk` / `task security:sca:snyk` |
 | Secrets | gitleaks | `task security:secrets` |
+| Dependencies | package-manager audit | `task security:audit` |
 
 ## Conventions
 

@@ -14,6 +14,26 @@ trap 'rm -rf "${TMPDIR_STATUS}"' EXIT
 
 NETWORK_TIMEOUT=5
 
+# GNU coreutils installs this as `timeout` on Linux and `gtimeout` on macOS.
+# Keep status usable before `task install`; without either binary, run the
+# command unbounded rather than failing every network-backed section.
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_BIN="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_BIN="gtimeout"
+fi
+
+with_timeout() {
+    local seconds="$1"
+    shift
+    if [ -n "$TIMEOUT_BIN" ]; then
+        "$TIMEOUT_BIN" "$seconds" "$@"
+    else
+        "$@"
+    fi
+}
+
 # ── Tool detection ──────────────────────────────────────────────────────────
 
 HAS_GUM=false
@@ -145,12 +165,12 @@ PID_TOKEI=""
 CURRENT_BRANCH="$(git branch --show-current 2>/dev/null || echo "detached")"
 
 if should_show "gh" && gh auth status &>/dev/null 2>&1; then
-    timeout "${NETWORK_TIMEOUT}" gh pr list --limit 10 \
+    with_timeout "${NETWORK_TIMEOUT}" gh pr list --limit 10 \
         --json number,title,headRefName \
         >"${TMPDIR_STATUS}/prs.json" 2>/dev/null &
     PID_PRS=$!
 
-    timeout "${NETWORK_TIMEOUT}" gh run list --branch "${CURRENT_BRANCH}" \
+    with_timeout "${NETWORK_TIMEOUT}" gh run list --branch "${CURRENT_BRANCH}" \
         --limit 5 --json status,conclusion,name,createdAt \
         >"${TMPDIR_STATUS}/checks.json" 2>/dev/null &
     PID_CHECKS=$!
@@ -370,7 +390,7 @@ if [[ "${SECTION}" == "setup" ]]; then
 
         # Repo identity — every API call below needs owner/repo, so resolve it
         # synchronously first.
-        timeout "${NETWORK_TIMEOUT}" gh repo view \
+        with_timeout "${NETWORK_TIMEOUT}" gh repo view \
             --json nameWithOwner,visibility,isPrivate,defaultBranchRef \
             >"${d}/repo.json" 2>/dev/null || echo '{}' >"${d}/repo.json"
 
@@ -396,7 +416,7 @@ if [[ "${SECTION}" == "setup" ]]; then
             VISIBILITY="$(jq -r '.visibility // "?"' "${d}/repo.json" | tr '[:upper:]' '[:lower:]')"
             IS_PRIVATE="$(jq -r '.isPrivate // false' "${d}/repo.json")"
             DEFAULT_BRANCH="$(jq -r '.defaultBranchRef.name // "?"' "${d}/repo.json")"
-            OWNER_TYPE="$(timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}" \
+            OWNER_TYPE="$(with_timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}" \
                 --jq '.owner.type' 2>/dev/null || echo "User")"
             if [[ "${OWNER_TYPE}" == "Organization" ]]; then
                 PKG_NS="orgs"
@@ -407,51 +427,51 @@ if [[ "${SECTION}" == "setup" ]]; then
             fi
 
             # ── Fire independent lookups in parallel ──
-            (timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}/rulesets" \
+            (with_timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}/rulesets" \
                 >"${d}/rulesets.json" 2>/dev/null || echo '[]' >"${d}/rulesets.json") &
-            (timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}/vulnerability-alerts" \
+            (with_timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}/vulnerability-alerts" \
                 >/dev/null 2>&1 && echo yes >"${d}/depalerts" || echo no >"${d}/depalerts") &
-            (timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}/private-vulnerability-reporting" \
+            (with_timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}/private-vulnerability-reporting" \
                 >"${d}/pvr.json" 2>/dev/null || echo '{}' >"${d}/pvr.json") &
             # --json name fetches ONLY names, never secret/variable values.
-            (timeout "${NETWORK_TIMEOUT}" gh secret list --json name \
+            (with_timeout "${NETWORK_TIMEOUT}" gh secret list --json name \
                 >"${d}/secrets.json" 2>/dev/null || echo '[]' >"${d}/secrets.json") &
-            (timeout "${NETWORK_TIMEOUT}" gh variable list --json name \
+            (with_timeout "${NETWORK_TIMEOUT}" gh variable list --json name \
                 >"${d}/vars.json" 2>/dev/null || echo '[]' >"${d}/vars.json") &
-            (timeout "${NETWORK_TIMEOUT}" gh release list --limit 1 >"${d}/release.txt" 2>/dev/null || :) &
+            (with_timeout "${NETWORK_TIMEOUT}" gh release list --limit 1 >"${d}/release.txt" 2>/dev/null || :) &
             # shellcheck disable=SC2016 # $o/$r are GraphQL variables, not shell
-            (timeout "${NETWORK_TIMEOUT}" gh api graphql \
+            (with_timeout "${NETWORK_TIMEOUT}" gh api graphql \
                 -f query='query($o:String!,$r:String!){repository(owner:$o,name:$r){projectsV2(first:10){nodes{title number}}}}' \
                 -F o="${OWNER}" -F r="${REPO}" \
                 >"${d}/projects.json" 2>/dev/null || echo '{}' >"${d}/projects.json") &
             # PM setup surface — audit the results of the setup:github-* tasks the
             # repo actually ships (each script is the marker it opted in).
             if [ -f scripts/setup-github-labels.sh ]; then
-                (timeout "${NETWORK_TIMEOUT}" gh label list -R "${OWNER}/${REPO}" --json name \
+                (with_timeout "${NETWORK_TIMEOUT}" gh label list -R "${OWNER}/${REPO}" --json name \
                     >"${d}/labels.json" 2>/dev/null || echo '[]' >"${d}/labels.json") &
             fi
             if [ -f scripts/setup-github-issue-types.sh ]; then
-                (timeout "${NETWORK_TIMEOUT}" gh api "orgs/${OWNER}/issue-types" --paginate \
+                (with_timeout "${NETWORK_TIMEOUT}" gh api "orgs/${OWNER}/issue-types" --paginate \
                     >"${d}/issue-types.json" 2>/dev/null || echo 'null' >"${d}/issue-types.json") &
             fi
             if [ -f scripts/setup-github-issue-fields.sh ]; then
-                (timeout "${NETWORK_TIMEOUT}" gh api "orgs/${OWNER}/issue-fields" \
+                (with_timeout "${NETWORK_TIMEOUT}" gh api "orgs/${OWNER}/issue-fields" \
                     -H "X-GitHub-Api-Version: 2026-03-10" --paginate \
                     >"${d}/issue-fields.json" 2>/dev/null || echo 'null' >"${d}/issue-fields.json") &
             fi
             # App installs — definitive when we hold admin scope, else 'null'.
-            (timeout "${NETWORK_TIMEOUT}" gh api "${APPS_PATH}" \
+            (with_timeout "${NETWORK_TIMEOUT}" gh api "${APPS_PATH}" \
                 --jq '[.installations[].app_slug]' \
                 >"${d}/apps.json" 2>/dev/null || echo 'null' >"${d}/apps.json") &
             # Heuristic fallback signals for the two apps.
-            (timeout "${NETWORK_TIMEOUT}" gh pr list --state all --author "app/renovate" \
+            (with_timeout "${NETWORK_TIMEOUT}" gh pr list --state all --author "app/renovate" \
                 --limit 1 --json number >"${d}/renovate-pr.json" 2>/dev/null ||
                 echo '[]' >"${d}/renovate-pr.json") &
-            (timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}/pulls/comments?per_page=100" \
+            (with_timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}/pulls/comments?per_page=100" \
                 --jq '[.[].user.login] | map(select(test("coderabbit";"i"))) | length' \
                 >"${d}/coderabbit.txt" 2>/dev/null || echo 0 >"${d}/coderabbit.txt") &
             (
-                if out="$(timeout "${NETWORK_TIMEOUT}" gh api \
+                if out="$(with_timeout "${NETWORK_TIMEOUT}" gh api \
                     "/${PKG_NS}/${OWNER}/packages/container/${REPO}-devcontainer" 2>&1)"; then
                     echo yes >"${d}/ghcr"
                 elif printf '%s' "${out}" | grep -q '404'; then
@@ -471,6 +491,10 @@ if [[ "${SECTION}" == "setup" ]]; then
         has_release_wf=0
         find .github/workflows -maxdepth 1 \( -name 'release.yml' -o -name 'release.yaml' \) 2>/dev/null | grep -q . && has_release_wf=1
         uses_ci_app=$((has_claude_wf || has_release_wf))
+        has_codeql_wf=0
+        find .github/workflows -maxdepth 1 \( -name 'codeql.yml' -o -name 'codeql.yaml' \) 2>/dev/null | grep -q . && has_codeql_wf=1
+        has_semgrep_ci=0
+        grep -rq 'task security:sast' .github/workflows >/dev/null 2>&1 && has_semgrep_ci=1
         uses_full_scan=0
         grep -rq 'FULL_SECURITY_SCAN' .github/workflows >/dev/null 2>&1 && uses_full_scan=1
 
@@ -506,7 +530,7 @@ if [[ "${SECTION}" == "setup" ]]; then
             # ── Dev environment ──
             subhead "Dev environment"
             if command -v op >/dev/null 2>&1; then
-                if [ -n "$(timeout 3 op account list 2>/dev/null)" ]; then
+                if [ -n "$(with_timeout 3 op account list 2>/dev/null)" ]; then
                     checkline ok "1Password CLI" "account configured"
                 else
                     checkline unknown "1Password CLI" "installed; no account"
@@ -573,6 +597,21 @@ if [[ "${SECTION}" == "setup" ]]; then
                     checkline ok "Dependabot alerts"
                 else
                     checkline no "Dependabot alerts" "Settings → Advanced Security"
+                fi
+                if [ "${IS_PRIVATE}" = "true" ]; then
+                    if [ "${has_semgrep_ci}" = 1 ] && [ "${has_codeql_wf}" = 1 ]; then
+                        checkline ok "SAST route" "Semgrep CE default; paid CodeQL opt-in supported"
+                    elif [ "${has_semgrep_ci}" = 1 ]; then
+                        checkline ok "SAST route" "Semgrep CE (private)"
+                    else
+                        checkline no "SAST route" "add Semgrep CE or licensed private CodeQL"
+                    fi
+                elif [ "${has_codeql_wf}" = 1 ]; then
+                    checkline ok "SAST route" "CodeQL (public/free)"
+                elif [ "${has_semgrep_ci}" = 1 ]; then
+                    checkline ok "SAST route" "Semgrep CE"
+                else
+                    checkline no "SAST route" "add CodeQL or Semgrep CE"
                 fi
                 if [ "${IS_PRIVATE}" = "true" ]; then
                     checkline na "Private vuln reporting" "private repo"
@@ -680,13 +719,15 @@ if [[ "${SECTION}" == "setup" ]]; then
                     checkline na "CI App credentials" "not used by this repo"
                 fi
                 if [ "${uses_full_scan}" = 1 ]; then
-                    if has_cred "${d}/vars.json" "FULL_SECURITY_SCAN"; then
-                        checkline ok "FULL_SECURITY_SCAN (variable)"
+                    if [ "${IS_PRIVATE}" != "true" ]; then
+                        checkline na "Paid CodeQL opt-in" "CodeQL is public/free"
+                    elif has_cred "${d}/vars.json" "FULL_SECURITY_SCAN"; then
+                        checkline unknown "Paid CodeQL opt-in" "variable present; verify =true + entitlement"
                     else
-                        checkline no "FULL_SECURITY_SCAN (variable)" "set =true to enable CodeQL"
+                        checkline na "Paid CodeQL opt-in" "Semgrep CE free default"
                     fi
                 else
-                    checkline na "FULL_SECURITY_SCAN (variable)" "not referenced"
+                    checkline na "Paid CodeQL opt-in" "not supported by this profile"
                 fi
             fi
 

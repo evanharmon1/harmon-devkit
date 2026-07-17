@@ -10,6 +10,7 @@ set -euo pipefail
 
 repo="$(git rev-parse --show-toplevel)"
 SCRIPTS="$repo/scripts"
+STANDARDIZE_ASSETS="$repo/ai/skills/repo/standardize-repo/assets"
 
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
@@ -28,14 +29,35 @@ bad() {
 # Run a command, succeed the assertion iff it exits 0.
 expect_ok() {
     local desc="$1"
+    local output
     shift
-    if "$@" >/dev/null 2>&1; then ok "$desc"; else bad "$desc (expected exit 0)"; fi
+    if output="$("$@" 2>&1)"; then
+        ok "$desc"
+    else
+        bad "$desc (expected exit 0)"
+        [ -z "$output" ] || printf '%s\n' "$output" | sed 's/^/      /' >&2
+    fi
 }
 # Run a command, succeed the assertion iff it exits non-zero.
 expect_fail() {
     local desc="$1"
     shift
     if "$@" >/dev/null 2>&1; then bad "$desc (expected non-zero exit)"; else ok "$desc"; fi
+}
+expect_ok_contains() {
+    local desc="$1"
+    local needle="$2"
+    local output
+    shift 2
+    if ! output="$("$@" 2>&1)"; then
+        bad "$desc (expected exit 0)"
+        [ -z "$output" ] || printf '%s\n' "$output" | sed 's/^/      /' >&2
+    elif printf '%s\n' "$output" | grep -qF "$needle"; then
+        ok "$desc"
+    else
+        bad "$desc (missing output: $needle)"
+        [ -z "$output" ] || printf '%s\n' "$output" | sed 's/^/      /' >&2
+    fi
 }
 
 git_init() { git init -q "$1"; }
@@ -377,6 +399,1018 @@ for bad in "/tmp/escape" "../../escape" "a/../../escape"; do
     } >"$CD/.skills-sync.yaml"
     expect_fail "sync refuses unsafe dest '$bad'" run_sync_at "$CD" sync
 done
+
+# ── standardize-repo audit assets ─────────────────────────────────────
+echo "==> standardize-repo audit assets"
+
+STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
+    grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
+
+for rest_doc in \
+    "$STANDARDIZE_REFS/mode-audit.md" \
+    "$STANDARDIZE_REFS/post-generation-checklist.md" \
+    "$STANDARDIZE_REFS/standards-catalog.md"; do
+    rest_name="${rest_doc##*/}"
+    expect_ok "$rest_name documents REST merge_queue support" \
+        grep -qF 'supports `merge_queue`' "$rest_doc"
+    expect_fail "$rest_name has no stale merge_queue rejection claim" \
+        grep -Eiq '(rejects?|reject).{0,80}merge_queue|merge_queue.{0,80}(rejects?|reject)' "$rest_doc"
+done
+
+expect_ok "standards catalog documents the valid CODEOWNERS account default" \
+    grep -qF '`author_git_provider_username` (a bare organization is not a valid CODEOWNERS' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents the web-only skills-sync default" \
+    grep -qF 'current template source defaults it on only for' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents Foreman as deliberate opt-in" \
+    grep -qF 'current template source now deliberately' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "update guidance documents the Foreman default transition" \
+    grep -qF 'It was default-on when introduced in v3.26.1' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "new-repo guidance exposes the explicit CodeQL answer" \
+    grep -qF '| `use_codeql` | bool |' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "production scaffolding uses the canonical released template" \
+    grep -qF 'https://github.com/evanharmon1/harmon-init.git <dest>' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "production scaffolding pins a released ref" \
+    grep -qF -- '--trust --vcs-ref=v3.26.1' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo guidance forbids path-only lineage repair" \
+    grep -qF 'do not rewrite only `_src_path`' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "update guidance requires a remotely reachable recorded commit" \
+    grep -qF 'only when the recorded commit is' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "new-repo production commands do not use a local template path" \
+    grep -Eq '^copier copy .*harmon-init.*--vcs-ref=HEAD' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "update guidance audits live Code Security capability read-only" \
+    grep -qF '.security_and_analysis.code_security.status' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "audit guidance rejects fail-open CodeQL analysis" \
+    grep -qF 'The analyze job/action must not use' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "checklist does not treat CodeQL configuration as coverage" \
+    grep -qF 'does not establish' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "catalog documents profile-driven CodeQL omission" \
+    grep -qF 'No `codeql.yml`** when there is no Node/Python tooling profile' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog distinguishes CodeQL source from tooling flags" \
+    grep -qF '`use_node` and `use_python` describe tooling;' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog requires the CodeQL matrix to match real source" \
+    grep -qF 'generated matrix with real first-party source' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "audit guidance checks legacy CodeQL capability" \
+    grep -qF '`.copier-answers.yml` has no `use_codeql` field' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog keeps fork aggregates from executing repository code" \
+    grep -qF 'code on the aggregate runner' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog normalizes an unset CodeQL scan opt-in" \
+    grep -qF 'unset/empty `FULL_SECURITY_SCAN` normalizes to' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "applied-state verifier reads live Code Security capability" \
+    grep -qF '.security_and_analysis.code_security.status' \
+    "$STANDARDIZE_ASSETS/verify-applied.sh"
+expect_ok "standards catalog documents the fail-closed locked Python audit" \
+    grep -qF '`uv export --locked --all-extras --all-groups`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "canonical guidance has no freshness-skipping frozen export" \
+    rg -qF 'uv export --frozen' "$STANDARDIZE_REFS"
+expect_ok "audit guidance locks existing-lock syncs in CI" \
+    grep -qF '`uv sync --locked` (or first run `uv lock --check`)' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "standards catalog documents bounded devcontainer smoke tests" \
+    grep -qF 'lifecycle at `-k 30 1800`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents 1Password pre-validation" \
+    grep -qF 'fully materializes and validates the item JSON' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents the human-only op prerequisite" \
+    grep -qF '`op` is a deliberate human-only toolchain exception' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "audit guidance checks repo-specific test gate reachability" \
+    grep -qF 'A repo-specific test is a gate only when all three links exist' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "update guidance checks workflow trigger semantics" \
+    grep -qF 'run proves syntax, not trigger semantics.' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "catalog requires fail-closed aggregate result handling" \
+    grep -qF 'that rejects only `failure` is fail-open.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog rejects generic success-or-skipped aggregates" \
+    grep -qF 'never a generic' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog applies the exact contract to devcontainer aggregates" \
+    grep -qF '`devcontainer-verify` aggregate follows the identical' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog documents conditional Terraform required checks" \
+    grep -qF 'when `include_terraform=true`,' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog records CodeQL as a conditional required check" \
+    grep -qF 'plus **`codeql-verify`** when a Node/Python' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog records the three-route CodeQL result contract" \
+    grep -qF 'successful not-applicable result only for free-private' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "audit guidance forbids shared fixed temp artifacts" \
+    grep -qF 'On workflows that may use self-hosted runners, reject shared fixed `/tmp`' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog keeps public pull requests on hosted runners" \
+    grep -qF '`pull_request` jobs must stay GitHub-hosted' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog marks public PR runner policy as a manual residual" \
+    grep -qF 'Runner trust boundary [manual residual / audit requirement]' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog does not overclaim public PR runner enforcement" \
+    grep -qF 'does not mechanically enforce hosted-only public PRs' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "audit guidance treats fork guards as defense in depth" \
+    grep -qF 'A same-repository job guard is defense in' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit guidance requires isolated self-hosted runner policy" \
+    grep -qF 'groups and clean ephemeral/JIT isolation' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog makes tracked Terraform locks read-only in CI" \
+    grep -qF '`terraform init -lockfile=readonly`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog preserves intentional local Terraform lock updates" \
+    grep -qF 'intentional local provider' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog requires the four-part reachable Terraform lint contract" \
+    grep -qF '`lint:terraform:security` (Renovate-pinned Checkov via' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog requires both Terraform provider-lock platforms" \
+    grep -qF 'exactly `darwin_arm64` (developer) and `linux_amd64` (GitHub CI)' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog requires update-only Terraform init upgrades" \
+    grep -qF 'passes `-upgrade` only in update mode' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "audit guidance rejects lock presence as platform evidence" \
+    grep -qF 'file presence alone says nothing about platform' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit guidance verifies both Terraform init modes" \
+    grep -qF 'update initialization receives `-upgrade` while check' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit guidance orders plan and apply after validation" \
+    grep -qF 'Plan/apply must be downstream of validation' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog requires exact saved-plan apply" \
+    grep -qF 'display that exact artifact, and apply' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog requires an always-emitted Terraform aggregate" \
+    grep -qF 'A required `terraform-verify` must always emit on `push`, `pull_request`' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit guidance rejects workflow-level Terraform path filters" \
+    grep -qF 'internal change detector, not workflow-level path filters' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog binds Terraform skips to explicit predicates" \
+    grep -qF 'predicates prove that result deliberate.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog namespaces Terraform CI artifacts per run" \
+    grep -qF 'repository/run/attempt artifact key namespaces each run' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog requires bounded Terraform state locking" \
+    grep -qF 'use bounded state-lock waits (`-lock-timeout`), never' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog always cleans Terraform CI artifacts" \
+    grep -qF '`-lock=false`, and clean up under `if: always()`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog preserves exact approval for Terraform mutation" \
+    grep -qF 'explicit approval for that exact operation' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+
+starter="$repo/templates/scriptTemplates/shellScriptTemplate.sh"
+signal_fixture="$TMPROOT/shell-starter-signals.sh"
+sed '$d' "$starter" >"$signal_fixture"
+for signal_case in "INT 130" "TERM 143"; do
+    signal="${signal_case% *}"
+    expected="${signal_case#* }"
+    cleanup_marker="$TMPROOT/cleanup-$signal"
+    if CLEANUP_MARKER="$cleanup_marker" bash -c '
+        . "$1"
+        cleanup() { : >"${CLEANUP_MARKER:?}"; }
+        kill "-$2" "$$"
+        exit 99
+    ' _ "$signal_fixture" "$signal" >/dev/null 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$rc" -eq "$expected" ]; then
+        ok "shell starter exits $expected on SIG$signal"
+    else
+        bad "shell starter exits $expected on SIG$signal (got $rc)"
+    fi
+    if [ -e "$cleanup_marker" ]; then
+        ok "shell starter runs EXIT cleanup after SIG$signal"
+    else
+        bad "shell starter runs EXIT cleanup after SIG$signal"
+    fi
+done
+
+# Exercise the build and devcontainer aggregate contract without any repository
+# runtime. Fork diagnostics are workflow-inline, while trusted paths use the
+# exact-result helper. The fixture proves both accepted branches and the two
+# recurring false-green regressions.
+AGG_TARGET="$TMPROOT/verify-applied-aggregates"
+mkdir -p "$AGG_TARGET/.github/workflows" "$AGG_TARGET/scripts"
+printf '%s\n' '# Test instructions' >"$AGG_TARGET/AGENTS.md"
+ln -s AGENTS.md "$AGG_TARGET/CLAUDE.md"
+ln -s AGENTS.md "$AGG_TARGET/GEMINI.md"
+
+write_required_results_helper() {
+    local mode="${1:-exact}"
+    if [ "$mode" = generic ]; then
+        cat >"$AGG_TARGET/scripts/verify-required-results.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+for pair in "$@"; do
+    case "${pair#*=}" in success | skipped) ;; *) exit 1 ;; esac
+done
+EOF
+    else
+        cat >"$AGG_TARGET/scripts/verify-required-results.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+expected="${EXPECTED_RESULT:-success}"
+case "$expected" in success | skipped) ;; *) exit 2 ;; esac
+[ "$#" -gt 0 ] || exit 2
+for pair in "$@"; do
+    case "$pair" in *=*) ;; *) exit 2 ;; esac
+    name="${pair%%=*}"
+    result="${pair#*=}"
+    [ -n "$name" ] && [ "$result" = "$expected" ] || exit 1
+done
+EOF
+    fi
+    chmod +x "$AGG_TARGET/scripts/verify-required-results.sh"
+}
+
+write_aggregate_workflows() {
+    local mode="${1:-safe}"
+    cat >"$AGG_TARGET/.github/workflows/build.yml" <<'EOF'
+name: Build
+on: [push, pull_request]
+jobs:
+  lint:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo lint
+  security:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo security
+  verify:
+    if: always()
+    needs: [lint, security]
+    runs-on: ubuntu-latest
+    env:
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - name: Verify deliberate skips at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: |
+          if [ "$LINT_RESULT" != "skipped" ] || [ "$SECURITY_RESULT" != "skipped" ]; then
+            exit 1
+          fi
+          echo "Untrusted fork trust boundary enforced: all repository-controlled jobs were deliberately skipped."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@1111111111111111111111111111111111111111
+      - name: Verify required jobs succeeded
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+          LINT_RESULT: ${{ needs.lint.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: ./scripts/verify-required-results.sh "lint=${LINT_RESULT}" "security=${SECURITY_RESULT}"
+EOF
+    cat >"$AGG_TARGET/.github/workflows/devcontainer-build.yml" <<'EOF'
+name: Devcontainer
+on: [push, pull_request]
+jobs:
+  build:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+  devcontainer-verify:
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    env:
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - name: Verify deliberate skip at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          if [ "$BUILD_RESULT" != "skipped" ]; then
+            exit 1
+          fi
+          echo "Untrusted fork trust boundary enforced: the repository-controlled devcontainer build was deliberately skipped."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@1111111111111111111111111111111111111111
+      - name: Verify devcontainer build succeeded
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: ./scripts/verify-required-results.sh "build=${BUILD_RESULT}"
+EOF
+
+    case "$mode" in
+    safe) ;;
+    unsafe-build-fork-code)
+        sed -i.bak '/all repository-controlled jobs were deliberately skipped/i\
+          ./scripts/fork-controlled.sh' \
+            "$AGG_TARGET/.github/workflows/build.yml"
+        rm "$AGG_TARGET/.github/workflows/build.yml.bak"
+        ;;
+    unsafe-devcontainer-fork-code)
+        sed -i.bak '/repository-controlled devcontainer build was deliberately skipped/i\
+          ./scripts/fork-controlled.sh' \
+            "$AGG_TARGET/.github/workflows/devcontainer-build.yml"
+        rm "$AGG_TARGET/.github/workflows/devcontainer-build.yml.bak"
+        ;;
+    missing-leaf-guard)
+        sed -i.bak '/head.repo.full_name == github.repository/d' \
+            "$AGG_TARGET/.github/workflows/build.yml"
+        rm "$AGG_TARGET/.github/workflows/build.yml.bak"
+        ;;
+    *) fail "unknown aggregate fixture mode: $mode" ;;
+    esac
+}
+
+write_required_check_ruleset() {
+    local target="$1"
+    local mode="${2:-baseline}"
+    local extra_context=""
+    case "$mode" in
+    baseline) ;;
+    terraform) extra_context=$',\n          {"context": "terraform-verify"}' ;;
+    codeql) extra_context=$',\n          {"context": "codeql-verify"}' ;;
+    *) fail "unknown ruleset fixture mode: $mode" ;;
+    esac
+    mkdir -p "$target/.github"
+    cat >"$target/.github/Branch Protection Ruleset - Protect Main.json" <<EOF
+{
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "required_status_checks": [
+          {"context": "verify"},
+          {"context": "security"}$extra_context
+        ]
+      }
+    }
+  ]
+}
+EOF
+}
+
+write_required_results_helper
+write_aggregate_workflows
+write_required_check_ruleset "$AGG_TARGET"
+git_init "$AGG_TARGET"
+git_commit_all "$AGG_TARGET" "record aggregate fixture"
+expect_ok "verify-applied accepts exact build and devcontainer result contracts" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_required_results_helper generic
+expect_fail "verify-applied rejects a generic success-or-skipped result helper" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_required_results_helper
+write_aggregate_workflows unsafe-build-fork-code
+expect_fail "verify-applied rejects build fork diagnostics that run repository code" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_aggregate_workflows unsafe-devcontainer-fork-code
+expect_fail "verify-applied rejects devcontainer fork diagnostics that run repository code" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_aggregate_workflows missing-leaf-guard
+expect_fail "verify-applied rejects aggregated leaves without same-repo guards" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_aggregate_workflows
+write_required_check_ruleset "$AGG_TARGET" terraform
+expect_fail "verify-applied rejects terraform-verify for a non-Terraform repo" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_required_check_ruleset "$AGG_TARGET" codeql
+expect_fail "verify-applied does not claim CodeQL is branch-required yet" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+write_required_check_ruleset "$AGG_TARGET"
+
+VA_TARGET="$TMPROOT/verify-applied-codeowners"
+mkdir -p "$VA_TARGET/.github"
+printf '%s\n' '# Test instructions' >"$VA_TARGET/AGENTS.md"
+ln -s AGENTS.md "$VA_TARGET/CLAUDE.md"
+ln -s AGENTS.md "$VA_TARGET/GEMINI.md"
+printf '%s\n' '* @ponderousdev' >"$VA_TARGET/.github/CODEOWNERS"
+git_init "$VA_TARGET"
+git_commit_all "$VA_TARGET" "record original code owner"
+git -C "$VA_TARGET" branch -M main
+git -C "$VA_TARGET" switch -q -c codeowner-migration
+printf '%s\n' '* @evanharmon1' >"$VA_TARGET/.github/CODEOWNERS"
+
+expect_fail "verify-applied rejects an unacknowledged CODEOWNERS migration" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$VA_TARGET"
+expect_fail "verify-applied rejects an absent replacement owner" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" \
+    --ack-codeowner-change @ponderousdev=@missing-owner "$VA_TARGET"
+expect_fail "verify-applied rejects a stale CODEOWNERS acknowledgement" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" \
+    --ack-codeowner-change @not-on-main=@evanharmon1 "$VA_TARGET"
+expect_ok "verify-applied accepts the exact materialized CODEOWNERS migration" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" \
+    --ack-codeowner-change @ponderousdev=@evanharmon1 "$VA_TARGET"
+
+CQ_TARGET="$TMPROOT/verify-applied-codeql"
+mkdir -p \
+    "$CQ_TARGET/.github/workflows" \
+    "$CQ_TARGET/docs/architecture" \
+    "$CQ_TARGET/scripts"
+printf '%s\n' '# Test instructions' >"$CQ_TARGET/AGENTS.md"
+ln -s AGENTS.md "$CQ_TARGET/CLAUDE.md"
+ln -s AGENTS.md "$CQ_TARGET/GEMINI.md"
+git_init "$CQ_TARGET"
+cp "$AGG_TARGET/.github/workflows/build.yml" \
+    "$CQ_TARGET/.github/workflows/build.yml"
+cp "$AGG_TARGET/scripts/verify-required-results.sh" \
+    "$CQ_TARGET/scripts/verify-required-results.sh"
+# Some CI runner images provide gitleaks in the lint job. Give its repository
+# scan a real HEAD so an unrelated empty-history error cannot make every
+# verify-applied assertion look like an expected CodeQL failure.
+git_commit_all "$CQ_TARGET" "record CodeQL fixture baseline"
+expect_ok "CodeQL fixture has a committed baseline for repository scanners" \
+    git -C "$CQ_TARGET" rev-parse --verify HEAD
+
+write_codeql_answer() {
+    printf 'use_codeql: %s\n' "$1" >"$CQ_TARGET/.copier-answers.yml"
+}
+write_legacy_codeql_answer() {
+    printf '%s\n' '_commit: v3.26.1' >"$CQ_TARGET/.copier-answers.yml"
+}
+write_codeql_taskfile() {
+    cat >"$CQ_TARGET/Taskfile.yml" <<'EOF'
+version: "3"
+tasks:
+  verify:
+    cmds: ["true"]
+  check:
+    cmds: ["true"]
+  security:
+    cmds: ["true"]
+  status:setup:
+    cmds: ["true"]
+  install:hooks:
+    cmds: ["true"]
+EOF
+}
+write_codeql_result_helper() {
+    cat >"$CQ_TARGET/scripts/verify-codeql-result.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+scan="${FULL_SECURITY_SCAN:-false}"
+case "$scan" in true | false) ;; *) exit 1 ;; esac
+case "${IS_FORK:-}" in true | false) ;; *) exit 1 ;; esac
+case "${ANALYZE_RESULT:-}" in success | failure | cancelled | skipped) ;; *) exit 1 ;; esac
+
+expected=success
+if [ "$scan" = false ] || [ "$IS_FORK" = true ]; then
+    expected=skipped
+fi
+[ "$ANALYZE_RESULT" = "$expected" ]
+EOF
+    chmod +x "$CQ_TARGET/scripts/verify-codeql-result.sh"
+}
+write_codeql_workflow() {
+    local job_continue="$1"
+    local analyze_continue="${2:-}"
+    local extra_steps="${3:-}"
+    local language_matrix="${4:-}"
+    local aggregate_mode="${5:-safe}"
+    local checkout_guard=$'        if: >-\n          github.event_name != '\''pull_request'\'' ||\n          github.event.pull_request.head.repo.full_name == github.repository\n'
+    if [ "$aggregate_mode" = unsafe-checkout ]; then
+        checkout_guard=""
+    fi
+    cat >"$CQ_TARGET/.github/workflows/codeql.yml" <<EOF
+name: CodeQL
+on: workflow_dispatch
+jobs:
+  analyze:
+    if: >-
+      vars.FULL_SECURITY_SCAN == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+$job_continue    runs-on: ubuntu-latest
+$language_matrix
+    steps:
+      - name: Perform CodeQL Analysis
+$analyze_continue        uses: github/codeql-action/analyze@v4
+$extra_steps
+  codeql-verify:
+    if: always()
+    needs: [analyze]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+$checkout_guard        with:
+          persist-credentials: false
+      - name: Verify CodeQL result
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          FULL_SECURITY_SCAN: \${{ vars.FULL_SECURITY_SCAN }}
+          IS_FORK: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          ANALYZE_RESULT: \${{ needs.analyze.result }}
+        run: ./scripts/verify-codeql-result.sh
+      - name: Check deliberate fork skip
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name != github.repository
+        env:
+          FULL_SECURITY_SCAN: \${{ vars.FULL_SECURITY_SCAN }}
+          ANALYZE_RESULT: \${{ needs.analyze.result }}
+        run: |
+          scan="\${FULL_SECURITY_SCAN:-false}"
+          case "\$scan" in
+            true | false) ;;
+            *) exit 1 ;;
+          esac
+          if [ "\$ANALYZE_RESULT" != "skipped" ]; then
+            exit 1
+          fi
+EOF
+}
+
+write_codeql_result_helper
+
+write_codeql_answer false
+write_codeql_taskfile
+printf '%s\n' 'CodeQL is enabled for first-party SAST.' \
+    >"$CQ_TARGET/docs/architecture/security.md"
+write_codeql_workflow ""
+expect_fail "verify-applied rejects a CodeQL workflow when use_codeql=false" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+rm "$CQ_TARGET/.github/workflows/codeql.yml"
+expect_fail "verify-applied requires the CodeQL-off SAST gap in security docs" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+printf '%s\n' 'CodeQL is deliberately omitted; first-party SAST is not configured.' \
+    >"$CQ_TARGET/docs/architecture/security.md"
+expect_ok "verify-applied accepts a clean intentional CodeQL omission" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+
+printf '%s\n' '[![CodeQL](badge)](actions/workflows/codeql.yml)' >"$CQ_TARGET/README.md"
+expect_fail "verify-applied rejects a stale CodeQL badge when disabled" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+rm "$CQ_TARGET/README.md"
+printf '%s\n' '# setup sets FULL_SECURITY_SCAN' >>"$CQ_TARGET/Taskfile.yml"
+expect_fail "verify-applied rejects stale FULL_SECURITY_SCAN setup when disabled" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_taskfile
+
+write_codeql_answer true
+printf '%s\n' 'CodeQL is selected; live SARIF results establish coverage.' \
+    >"$CQ_TARGET/docs/architecture/security.md"
+expect_fail "verify-applied requires a workflow when use_codeql=true" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow $'    continue-on-error: true\n'
+expect_fail "verify-applied rejects a fail-open CodeQL analyze job" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow "" $'        continue-on-error: true\n'
+expect_fail "verify-applied rejects a fail-open CodeQL analyze action" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow ""
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' \
+    >"$CQ_TARGET/scripts/verify-codeql-result.sh"
+chmod +x "$CQ_TARGET/scripts/verify-codeql-result.sh"
+expect_fail "verify-applied rejects a CodeQL aggregate that accepts every result" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_result_helper
+write_codeql_workflow "" "" "" "" unsafe-checkout
+expect_fail "verify-applied rejects fork-unsafe aggregate checkout" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow ""
+
+git -C "$CQ_TARGET" remote add origin https://github.com/example/codeql-fixture.git
+FAKE_GH_BIN="$TMPROOT/codeql-fake-gh"
+mkdir -p "$FAKE_GH_BIN"
+cat >"$FAKE_GH_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "${GH_TEST_VISIBILITY:-private}" "${GH_TEST_CODE_SECURITY:-unknown}"
+EOF
+chmod +x "$FAKE_GH_BIN/gh"
+expect_fail "verify-applied rejects private CodeQL with Code Security disabled" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=disabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+expect_ok "verify-applied accepts private CodeQL with Code Security enabled" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+COLOR_TASK_BIN="$TMPROOT/codeql-color-task"
+REAL_TASK_BIN="$(command -v task)"
+mkdir -p "$COLOR_TASK_BIN"
+cat >"$COLOR_TASK_BIN/task" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+*" --list-all "* | *" --dry "*)
+    case " $* " in
+    *" --color=false "*) ;;
+    *) exit 42 ;;
+    esac
+    ;;
+esac
+exec "${REAL_TASK_BIN:?}" "$@"
+EOF
+chmod +x "$COLOR_TASK_BIN/task"
+expect_ok "verify-applied explicitly disables colored task introspection" \
+    env PATH="$COLOR_TASK_BIN:$FAKE_GH_BIN:$PATH" \
+    REAL_TASK_BIN="$REAL_TASK_BIN" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow "" "" $'      - name: Best-effort cleanup\n        if: always()\n        continue-on-error: true\n        run: docker buildx prune -af\n'
+expect_ok "verify-applied allows continue-on-error on unrelated CodeQL cleanup" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow ""
+mkdir -p "$CQ_TARGET/src"
+printf '%s\n' 'print("first-party source")' >"$CQ_TARGET/src/app.py"
+write_codeql_workflow "" "" "" \
+    $'    strategy:\n      matrix:\n        language: [javascript-typescript]\n'
+expect_ok_contains "verify-applied warns when CodeQL scans tooling-only JavaScript" \
+    'CodeQL matrix includes javascript-typescript but no first-party JS/TS source was found.' \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+expect_ok_contains "verify-applied warns when CodeQL omits first-party Python" \
+    'first-party Python source exists but CodeQL omits python.' \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+rm -rf "$CQ_TARGET/src"
+write_codeql_workflow ""
+expect_ok "verify-applied defers an unreadable Code Security field to manual audit" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=unknown \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_legacy_codeql_answer
+expect_fail "verify-applied rejects legacy private CodeQL when Code Security is disabled" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=disabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+expect_ok "verify-applied audits enabled capability for legacy CodeQL" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+expect_ok "verify-applied defers unknown legacy CodeQL capability to manual audit" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=unknown \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+
+TF_TARGET="$TMPROOT/verify-applied-terraform"
+mkdir -p \
+    "$TF_TARGET/.github/workflows" \
+    "$TF_TARGET/scripts" \
+    "$TF_TARGET/terraform"
+printf '%s\n' '# Test instructions' >"$TF_TARGET/AGENTS.md"
+ln -s AGENTS.md "$TF_TARGET/CLAUDE.md"
+ln -s AGENTS.md "$TF_TARGET/GEMINI.md"
+printf '%s\n' 'include_terraform: true' 'use_codeql: false' \
+    >"$TF_TARGET/.copier-answers.yml"
+printf '%s\n' 'terraform {}' >"$TF_TARGET/terraform/main.tf"
+cat >"$TF_TARGET/Brewfile" <<'EOF'
+brew "terraform"
+brew "tflint"
+brew "uv"
+EOF
+
+write_terraform_taskfile() {
+    local mode="${1:-complete}"
+    local security_dep='      - lint:terraform:security'
+    local lock_dep='      - lint:terraform:locks'
+    local lock_update='./scripts/terraform-provider-locks.sh update terraform'
+    if [ "$mode" = missing-security ]; then
+        security_dep=""
+    elif [ "$mode" = missing-lock ]; then
+        lock_dep=""
+    elif [ "$mode" = wrong-lock-update ]; then
+        lock_update='./scripts/terraform-provider-locks.sh check terraform'
+    fi
+    cat >"$TF_TARGET/Taskfile.yml" <<EOF
+version: "3"
+tasks:
+  verify:
+    cmds: ["true"]
+  check:
+    deps: [lint:terraform]
+  security:
+    cmds: ["true"]
+  status:setup:
+    cmds: ["true"]
+  install:hooks:
+    cmds: ["true"]
+  lint:terraform:
+    deps:
+      - lint:terraform:fmt
+      - lint:terraform:tflint
+$security_dep
+$lock_dep
+  lint:terraform:fmt:
+    cmds:
+      - terraform fmt -check -recursive terraform/
+  lint:terraform:tflint:
+    cmds:
+      - tflint --recursive --chdir=terraform/
+  lint:terraform:security:
+    cmds:
+      - 'uvx --from "checkov==3.3.8" checkov -d terraform/ --framework terraform --quiet'
+  lint:terraform:locks:
+    cmds:
+      - ./scripts/terraform-provider-locks.sh check terraform
+  terraform:providers:lock:
+    cmds:
+      - $lock_update
+EOF
+}
+write_terraform_build_workflow() {
+    local include_tflint="${1:-true}"
+    local tflint_step='      - uses: terraform-linters/setup-tflint@1111111111111111111111111111111111111111'
+    if [ "$include_tflint" = false ]; then
+        tflint_step=""
+    fi
+    cat >"$TF_TARGET/.github/workflows/build.yml" <<EOF
+name: Build
+on: workflow_dispatch
+jobs:
+  lint:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: hashicorp/setup-terraform@1111111111111111111111111111111111111111
+$tflint_step
+      - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111
+  verify:
+    if: always()
+    needs: [lint]
+    runs-on: ubuntu-latest
+    env:
+      IS_FORK: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - name: Verify deliberate skips at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        env:
+          LINT_RESULT: \${{ needs.lint.result }}
+        run: |
+          if [ "\$LINT_RESULT" != "skipped" ]; then
+            exit 1
+          fi
+          echo "Untrusted fork trust boundary enforced: all repository-controlled jobs were deliberately skipped."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@1111111111111111111111111111111111111111
+      - name: Verify required jobs succeeded
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+          LINT_RESULT: \${{ needs.lint.result }}
+        run: ./scripts/verify-required-results.sh "lint=\${LINT_RESULT}"
+EOF
+}
+write_terraform_lock_helper() {
+    local include_linux="${1:-true}"
+    local init_mode="${2:-conditional}"
+    local linux_platform='    -platform=linux_amd64'
+    local init_upgrade
+    if [ "$include_linux" = false ]; then
+        linux_platform=""
+    fi
+    case "$init_mode" in
+    conditional)
+        init_upgrade='if [ "$mode" = update ]; then
+    init_args+=(-upgrade)
+fi'
+        ;;
+    missing-upgrade)
+        init_upgrade='# Deliberately omit the update-mode upgrade flag.'
+        ;;
+    unconditional-upgrade)
+        init_upgrade='init_args+=(-upgrade)'
+        ;;
+    *)
+        fail "unknown Terraform lock helper fixture mode: $init_mode"
+        ;;
+    esac
+    cat >"$TF_TARGET/scripts/terraform-provider-locks.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode="\${1:-}"
+root="\${2:-terraform}"
+case "\$mode" in
+check | update) ;;
+*) exit 2 ;;
+esac
+
+terraform_bin="\${TERRAFORM_BIN:-terraform}"
+init_args=(-backend=false -input=false)
+$init_upgrade
+"\$terraform_bin" "-chdir=\$root" init "\${init_args[@]}" >/dev/null
+"\$terraform_bin" "-chdir=\$root" providers lock \\
+    -platform=darwin_arm64 \\
+$linux_platform
+EOF
+    chmod +x "$TF_TARGET/scripts/terraform-provider-locks.sh"
+}
+write_terraform_lock_regression() {
+    local result="${1:-0}"
+    cat >"$TF_TARGET/scripts/test-terraform-provider-locks.sh" <<EOF
+#!/usr/bin/env bash
+# The canonical regression drives the helper with a fake Terraform executable.
+exit $result
+EOF
+    chmod +x "$TF_TARGET/scripts/test-terraform-provider-locks.sh"
+}
+
+write_terraform_taskfile
+write_terraform_build_workflow
+cp "$AGG_TARGET/scripts/verify-required-results.sh" \
+    "$TF_TARGET/scripts/verify-required-results.sh"
+write_required_check_ruleset "$TF_TARGET" terraform
+write_terraform_lock_helper
+write_terraform_lock_regression
+git_init "$TF_TARGET"
+git_commit_all "$TF_TARGET" "record Terraform verifier fixture"
+expect_ok "verify-applied accepts reachable fmt, TFLint, Checkov, and lock checks" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_required_check_ruleset "$TF_TARGET"
+expect_fail "verify-applied requires terraform-verify for a Terraform repo" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_required_check_ruleset "$TF_TARGET" terraform
+
+write_terraform_taskfile missing-security
+expect_fail "verify-applied rejects unreachable Checkov despite a defined leaf task" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_taskfile missing-lock
+expect_fail "verify-applied rejects an unreachable provider-lock check" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_taskfile wrong-lock-update
+expect_fail "verify-applied rejects a provider-lock mutation task that cannot update" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_taskfile
+
+write_terraform_build_workflow false
+expect_fail "verify-applied rejects Terraform lint without reachable TFLint in CI" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_build_workflow
+write_terraform_lock_helper false
+expect_fail "verify-applied requires linux_amd64 provider-lock evidence" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_lock_helper
+write_terraform_lock_helper true missing-upgrade
+expect_fail "verify-applied rejects update init without -upgrade" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_lock_helper true unconditional-upgrade
+expect_fail "verify-applied rejects check init with -upgrade" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_lock_helper
+write_terraform_lock_regression 1
+expect_fail "verify-applied runs the hermetic provider-lock regression" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_lock_regression
+
+manifest="$STANDARDIZE_ASSETS/template-owned-files.txt"
+for required in \
+    Brewfile \
+    .skills-sync.yaml \
+    scripts/shell-quality.sh \
+    scripts/markdownlint.sh \
+    scripts/secret-set-1p.sh \
+    scripts/secret-set-gh.sh \
+    scripts/python-audit.sh \
+    scripts/terraform-provider-locks.sh \
+    scripts/terraform-changed.sh \
+    scripts/terraform-ci.sh \
+    scripts/test-codeql-result.sh \
+    scripts/test-required-results.sh \
+    scripts/test-terraform-provider-locks.sh \
+    scripts/test-terraform-ci.sh \
+    scripts/verify-codeql-result.sh \
+    scripts/verify-required-results.sh \
+    scripts/sync-skills.sh \
+    .github/workflows/close-milestone-on-release.yml \
+    .foreman.toml \
+    taskfiles/foreman.yml \
+    scripts/foreman/cli.py; do
+    expect_ok "template-owned manifest includes $required" grep -qxF "$required" "$manifest"
+done
+
+# Exercise executable-mode drift, equivalent mature layouts, and index-backed
+# transient deletions end to end with a tiny local Copier template. The real
+# manifest is reused, but only scripts/status.sh exists in its curated set.
+DT_TEMPLATE="$TMPROOT/diff-template-source"
+mkdir -p \
+    "$DT_TEMPLATE/template/scripts" \
+    "$DT_TEMPLATE/template/terraform" \
+    "$DT_TEMPLATE/template/docs/decisions"
+cat >"$DT_TEMPLATE/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+project_name:
+  type: str
+  default: Test Project
+EOF
+cat >"$DT_TEMPLATE/template/scripts/status.sh" <<'EOF'
+#!/usr/bin/env bash
+echo status
+EOF
+chmod +x "$DT_TEMPLATE/template/scripts/status.sh"
+for terraform_file in main.tf variables.tf outputs.tf; do
+    printf '%s\n' '# starter' >"$DT_TEMPLATE/template/terraform/$terraform_file"
+done
+printf '%s\n' '# Example values' >"$DT_TEMPLATE/template/terraform/tfvars.env.example"
+printf '%s\n' '# Record architecture decisions' \
+    >"$DT_TEMPLATE/template/docs/decisions/0001-record-architecture-decisions.md"
+git_init "$DT_TEMPLATE"
+git_commit_all "$DT_TEMPLATE" "test template"
+git -C "$DT_TEMPLATE" tag v1.0.0
+
+DT_TARGET="$TMPROOT/diff-template-target"
+mkdir -p \
+    "$DT_TARGET/scripts" \
+    "$DT_TARGET/terraform/environments/production" \
+    "$DT_TARGET/docs/decisions"
+cp "$DT_TEMPLATE/template/scripts/status.sh" "$DT_TARGET/scripts/status.sh"
+chmod -x "$DT_TARGET/scripts/status.sh"
+printf '%s\n' '# production root' \
+    >"$DT_TARGET/terraform/environments/production/main.tf"
+printf '%s\n' '# Record architecture decisions' \
+    >"$DT_TARGET/docs/decisions/0007-record-architecture-decisions.md"
+cat >"$DT_TARGET/.copier-answers.yml" <<EOF
+_commit: v1.0.0
+_src_path: file://$DT_TEMPLATE
+project_name: Test Project
+EOF
+
+if mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports executable-mode drift (expected non-zero exit)"
+elif printf '%s\n' "$mode_out" | grep -qF "MODE     scripts/status.sh"; then
+    ok "diff-template reports executable-mode drift"
+else
+    bad "diff-template reports executable-mode drift (MODE diagnostic missing)"
+fi
+chmod +x "$DT_TARGET/scripts/status.sh"
+git_init "$DT_TARGET"
+git_commit_all "$DT_TARGET" "record mature target layout"
+
+if equivalent_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template passes after executable mode is restored"
+else
+    bad "diff-template passes after executable mode is restored: $equivalent_out"
+fi
+if printf '%s\n' "$equivalent_out" | grep -qF "EQUIV    terraform/main.tf"; then
+    ok "diff-template recognizes nested Terraform roots as equivalent"
+else
+    bad "diff-template recognizes nested Terraform roots as equivalent"
+fi
+if printf '%s\n' "$equivalent_out" |
+    grep -qF "EQUIV    docs/decisions/0001-record-architecture-decisions.md"; then
+    ok "diff-template recognizes a renumbered seed ADR as equivalent"
+else
+    bad "diff-template recognizes a renumbered seed ADR as equivalent"
+fi
+
+rm "$DT_TARGET/scripts/status.sh"
+expect_ok "diff-template compares an unstaged tracked deletion from the index" \
+    env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
+git -C "$DT_TARGET" add -u -- scripts/status.sh
+if staged_delete_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports a staged deletion (expected non-zero exit)"
+elif printf '%s\n' "$staged_delete_out" | grep -qF "MISSING  scripts/status.sh"; then
+    ok "diff-template reports a staged deletion as MISSING"
+else
+    bad "diff-template reports a staged deletion (MISSING diagnostic absent)"
+fi
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

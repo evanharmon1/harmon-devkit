@@ -1,13 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# renovate: datasource=npm depName=@devcontainers/cli
+DEVCONTAINER_CLI_VERSION="0.87.0"
+
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <devcontainer-config-path>" >&2
+    exit 1
+fi
+
+if command -v devcontainer >/dev/null 2>&1; then
+    DEVCONTAINER_CMD=(devcontainer)
+else
+    DEVCONTAINER_CMD=(npx --yes "@devcontainers/cli@${DEVCONTAINER_CLI_VERSION}")
+fi
+
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_BIN="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_BIN="gtimeout"
+else
+    echo "GNU timeout is required (install coreutils on macOS)." >&2
+    exit 1
+fi
+
 if ! command -v jq >/dev/null 2>&1; then
     echo "jq is required for devcontainer smoke tests." >&2
     exit 1
 fi
 
-if [ "$#" -ne 1 ]; then
-    echo "Usage: $0 <devcontainer-config-path>" >&2
+if ! command -v docker >/dev/null 2>&1; then
+    echo "docker is required for devcontainer smoke tests." >&2
+    exit 1
+fi
+
+# Fail before the devcontainer CLI when the daemon is absent or wedged. The
+# CLI can otherwise block indefinitely while probing Docker, which makes a
+# fleet verification hang rather than produce an actionable failure.
+if ! "$TIMEOUT_BIN" -k 5 20 docker info >/dev/null 2>&1; then
+    echo "Docker daemon is unavailable or did not answer within 20 seconds." >&2
     exit 1
 fi
 
@@ -20,14 +51,14 @@ CONTAINER_ID=""
 
 cleanup() {
     if [ -n "${CONTAINER_ID}" ]; then
-        docker rm -f "${CONTAINER_ID}" >/dev/null 2>&1 || true
+        "$TIMEOUT_BIN" -k 5 20 docker rm -f "${CONTAINER_ID}" >/dev/null 2>&1 || true
     fi
     rm -rf "${USER_DATA_DIR}" "${SESSION_DATA_DIR}" "${LOG_FILE}"
 }
 trap cleanup EXIT
 
 echo "==> Running devcontainer smoke test for ${CONFIG_PATH}..."
-npx -y @devcontainers/cli up \
+"$TIMEOUT_BIN" -k 30 1800 "${DEVCONTAINER_CMD[@]}" up \
     --workspace-folder "${WORKSPACE_ROOT}" \
     --config "${CONFIG_PATH}" \
     --remove-existing-container \

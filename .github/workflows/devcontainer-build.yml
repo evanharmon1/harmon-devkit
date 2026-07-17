@@ -42,6 +42,8 @@ jobs:
             image_name: ghcr.io/evanharmon1/harmon-devkit-devcontainer-dev
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           # renovate: datasource=node-version
@@ -100,12 +102,27 @@ jobs:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    env:
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
-      - name: Check job results
+      # Never check out or run fork-controlled repository code on this path.
+      - name: Verify deliberate skip at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
         run: |
-          result="${{ needs.build.result }}"
-          if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
-            echo "Devcontainer build failed."
+          if [ "$BUILD_RESULT" != "skipped" ]; then
+            echo "Job build result: $BUILD_RESULT (expected skipped for an untrusted fork)"
             exit 1
           fi
-          echo "Devcontainer build passed."
+          echo "Untrusted fork trust boundary enforced: the repository-controlled devcontainer build was deliberately skipped."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Verify devcontainer build succeeded
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: ./scripts/verify-required-results.sh "build=${BUILD_RESULT}"

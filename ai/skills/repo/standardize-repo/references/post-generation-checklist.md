@@ -52,9 +52,10 @@ push so the remote exists.
       `.github/Branch Protection Ruleset - Protect Main.json`. To change an
       existing ruleset, edit it in the UI — don't re-import.
 
-  > Avoid `gh api … rulesets`: `POST` is **not idempotent** (re-running creates a
-  > duplicate ruleset) and both `POST`/`PUT` currently reject the `merge_queue`
-  > rule (`422 Invalid rule 'merge_queue'`). The UI import handles every rule type.
+  > REST supports `merge_queue`, but a blind `POST` is **not idempotent**
+  > (re-running can create a duplicate ruleset). Safe automation must first
+  > discover exactly one matching live ruleset and then `PUT` that ruleset's id.
+  > Keep the initial import explicit in the UI.
 
 - [ ] **[scriptable via gh]** Enable **Dependabot alerts**. Do NOT add a
       `dependabot.yml` — Renovate owns version updates; Dependabot is alerts-only.
@@ -196,7 +197,21 @@ push so the remote exists.
   ```
 
   The variable is a run switch, not an entitlement, and cannot disable public
-  CodeQL.
+  CodeQL. A generated workflow or a true variable by itself does not establish
+  coverage; require a successful analysis/upload on every route where CodeQL is
+  required.
+
+- [ ] **[scriptable]** (Terraform repos) Prove the advertised lint and provider
+      lock contract rather than relying on docs or a pre-existing lock file.
+      `task --dry lint:terraform` and `task --dry check` must both reach fmt,
+      TFLint, pinned Checkov, and `terraform-provider-locks.sh check`; the root
+      Brewfile and build workflow must provision Terraform/TFLint/uv. Run the
+      hermetic provider-lock regression, then use the explicit
+      `task terraform:providers:lock` mutation task when provider requirements
+      exist. Its helper targets both `darwin_arm64` and `linux_amd64`, passes
+      `-upgrade` to scratch init only in update mode, and leaves it off in check
+      mode; a fresh provider-free scaffold may skip without creating
+      `.terraform.lock.hcl`.
 
 - [ ] **[human-only]** (devcontainer projects) Ensure the org/user **allows
       GHCR package publishing** so the first `devcontainer-build.yml` prebuild on

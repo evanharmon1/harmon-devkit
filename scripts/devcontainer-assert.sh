@@ -20,6 +20,17 @@ fail() {
     exit 1
 }
 
+# renovate: datasource=npm depName=@devcontainers/cli
+DEVCONTAINER_CLI_VERSION="0.87.0"
+
+devcontainer_cli() {
+    if command -v devcontainer >/dev/null 2>&1; then
+        devcontainer "$@"
+    else
+        npx --yes "@devcontainers/cli@${DEVCONTAINER_CLI_VERSION}" "$@"
+    fi
+}
+
 # ── unit mode ─────────────────────────────────────────────────────────
 assert_unit() {
     # Resolve the repo root from the script's own location BEFORE we cd away,
@@ -123,7 +134,11 @@ assert_config_invariants() {
     local repo_root="$1" config="$2" profile="$3"
     local cfg has_ts_feature has_op_feature has_tun has_ts_init
 
-    cfg="$(npx -y @devcontainers/cli read-configuration \
+    # read-configuration 0.87+ probes Docker for an existing container even
+    # though this assertion only needs the static JSONC. A no-op docker path
+    # keeps this unit check daemon-independent as documented.
+    cfg="$(devcontainer_cli read-configuration \
+        --docker-path /usr/bin/true \
         --workspace-folder "$repo_root" \
         --config "$config")" ||
         fail "read-configuration failed for ${config}"

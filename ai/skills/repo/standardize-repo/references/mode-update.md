@@ -47,8 +47,8 @@ assets/diff-template.sh .
 # add --show to print the full per-file diff
 ```
 
-This renders harmon-init from the repo's own `.copier-answers.yml` and runs two
-checks (mapping `.yml`↔`.yaml`):
+This renders harmon-init from the repo's own `.copier-answers.yml` and reports
+the following result classes (mapping `.yml`↔`.yaml`):
 
 - **`DRIFT`** — a curated file differs from a render at the repo's **own recorded
   `_commit`** (diff-template.sh renders at `_commit`, not the template's HEAD). So
@@ -62,38 +62,122 @@ checks (mapping `.yml`↔`.yaml`):
 - **`MISSING`** — a template file the repo lacks entirely. This scan walks the
   whole render (it does **not** depend on the curated list), so a file the
   template added later, or one a previous hand-reconciled update dropped, can't
-  slip through silently. (`.gitkeep` dir-stubs show as benign `ABSENT`.) Some
+  slip through silently. A tracked path deleted only from the working tree is
+  compared from the index; staging that deletion makes it real `MISSING`.
+  (`.gitkeep` dir-stubs show as benign `ABSENT`.) Some
   `MISSING` findings are **intentional divergences, not gaps** — see the
   known-false-`MISSING` list in [`mode-audit.md`](./mode-audit.md) §3 (drift
   class K) before "restoring" any of them (e.g. a repo using `.prettierrc.cjs`
-  instead of the template's `prettier.config.cjs`, a replaced terraform
-  skeleton, or a renumbered seed ADR).
+  instead of the template's `prettier.config.cjs`).
+- **`EQUIV`** — a mature nested Terraform layout or established/renumbered ADR
+  log intentionally replaces a generated seed path. This is informational and
+  does not fail the comparison.
 
 Together these are your reconciliation worklist for §3.
 
+### Preview the release and review new answers
+
+Before accepting `--defaults`, identify both the target release and any Copier
+questions added since the repo's recorded `_commit`:
+
+```bash
+copier check-update --output-format json .
+git -C ~/git/harmon-init diff "$(yq -r '._commit' .copier-answers.yml)"..v<TARGET> -- copier.yml
+```
+
+Every newly introduced question needs an explicit decision. This is especially
+important for a feature with a material footprint or an external capability:
+
+- `use_foreman` adds its supervisor, agents, taskfile, configuration,
+  documentation, and tests. It was default-on when introduced in v3.26.1;
+  current template source defaults it off. Update mode must still decide whether
+  the target should opt in.
+- `use_codeql` includes CodeQL only when the matrix corresponds to planned/actual
+  first-party JS/TS/Python source. `use_node` / `use_python` are tooling flags,
+  not source evidence; reconcile the rendered matrix and record an explicit
+  `codeql_languages` multiselect/override as a harmon-init source follow-up.
+  Public repositories have GitHub Code Security by default. For a
+  private/internal repo, perform a read-only capability check before selecting it
+  — and perform the same check whenever a legacy workflow exists without a
+  `use_codeql` answer:
+
+  ```bash
+  gh api "repos/<owner>/<repo>" \
+    --jq '{visibility, code_security: (.security_and_analysis.code_security.status // "unknown")}'
+  ```
+
+  If Code Security is disabled and will not be enabled, pass
+  `--data use_codeql=false`; the update must remove the workflow, badge,
+  `FULL_SECURITY_SCAN` setup, and CodeQL coverage claims. If the API field is
+  unavailable because the caller lacks permission, verify the capability in
+  **Settings → Code security** rather than inferring it. A workflow file or
+  `FULL_SECURITY_SCAN=true` proves configuration, not successful SARIF coverage.
+  Require the fail-closed result contract: the helper's hermetic truth table
+  normalizes unset/empty `FULL_SECURITY_SCAN` to disabled, accepts disabled/fork
+  runs only as `skipped`, and accepts enabled non-forks only as `success`. At
+  runtime, trusted events conditionally check out and execute that helper; fork
+  aggregates must not execute repository code and use the workflow-inline
+  deliberate-skip diagnostic. Nonempty malformed/unexpected results fail.
+
+- `include_terraform=true` now carries a reachable four-part lint contract:
+  format, TFLint, pinned Checkov, and a provider-lock check. Reconcile customized
+  Taskfiles by proving both `task --dry lint:terraform` and `task --dry check`
+  reach all four commands, and keep Terraform/TFLint/uv reachable locally and in
+  CI. Adopt `scripts/terraform-provider-locks.sh` plus its hermetic regression;
+  the check/update task paths generate exactly `darwin_arm64` and `linux_amd64`
+  checksums. Update-mode scratch initialization must pass `-upgrade`, while
+  check-mode initialization must omit it. Do not accept a pre-existing
+  `.terraform.lock.hcl` as proof of that process.
+
+Pass each reviewed answer with `--data`, even when the decision happens to match
+the current default.
+
+Preview the exact answer set before the real update:
+
+```bash
+: "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
+copier update --trust --defaults --pretend \
+  --data use_foreman=false \
+  --data use_codeql="$USE_CODEQL"
+```
+
+`--pretend` confirms rendering succeeds but its output can be terse. For a heavily
+customized or high-impact repo, make a disposable clone under a temporary directory,
+run the same update there without `--pretend`, and inspect its full `git diff` before
+touching the working branch. A preview complements the pinned-baseline drift report;
+neither replaces the post-update reconciliation in §3.
+
 ## 2. Run the update
 
-**Preflight — ensure `_src_path` is a resolvable git source.** `copier update`
-reuses the `_src_path` recorded in `.copier-answers.yml`; if it's a relative or
-machine-local path (e.g. `harmon-init`), the update aborts with `Updating is only
-supported in git-tracked templates` (see [copier-gotchas.md](./copier-gotchas.md)
-gotcha 8). Normalize it to the GitHub URL first — once, committed:
+**Preflight — ensure the recorded lineage tuple is resolvable.** `copier update`
+reuses both `_src_path` and `_commit` from `.copier-answers.yml`. A relative or
+machine-local path may abort with `Updating is only supported in git-tracked
+templates`; changing that path alone is safe only when the recorded commit is
+reachable from the canonical remote (see [copier-gotchas.md](./copier-gotchas.md)
+gotcha 8). Inspect both fields:
 
 ```bash
-grep '^_src_path:' .copier-answers.yml   # is it a URL? if relative/local, fix it:
-yq -i '._src_path = "https://github.com/evanharmon1/harmon-init"' .copier-answers.yml
-git commit -am "chore: point copier _src_path at the harmon-init GitHub URL"
+grep -E '^(_src_path|_commit):' .copier-answers.yml
 ```
+
+If `_src_path` is local, first prove `_commit` exists on the canonical remote.
+Then update and commit the tuple together. If it is a dirty-render throwaway or
+otherwise unreachable, do not fabricate lineage by swapping only the path or
+commit; re-adopt from the canonical GitHub URL at a reviewed released ref.
 
 ```bash
-copier update --trust --defaults
+copier update --trust --defaults \
+  --data <new-question>=<reviewed-answer>
 ```
 
-**`--defaults` is mandatory when running non-interactively (agents have no TTY).**
-Without it copier tries to prompt for answers and crashes with
+**`--defaults` is mandatory when running non-interactively (agents have no TTY),
+but it is not permission to accept newly introduced behavior.** Review and pass
+new answers explicitly as described above. Without `--defaults`, Copier tries to
+prompt for answers and crashes with
 `OSError: [Errno 22] Invalid argument` (prompt_toolkit can't attach to a missing
 terminal). It reuses the stored answers and accepts defaults for any new questions
-the template added since `_commit`.
+the template added since `_commit`; explicit `--data` values override those
+defaults and are recorded in `.copier-answers.yml`.
 
 **Always do a full update to the latest released version.** Plain `copier update`
 goes to harmon-init's newest **tag** and three-way-merges the *entire* delta from the
@@ -355,6 +439,19 @@ assets/diff-template.sh .   # should now show only legit customizations
 task verify
 assets/verify-applied.sh .
 ```
+
+Current harmon-init renders a hermetic `test:tasks`: fake `brew`, `npm`, and
+`curl` commands exercise bootstrap without installing or updating shared
+machine tooling. If a target still carries the older live-tool version, port the
+current test before parallel fleet verification; until then, run those repo gates
+serially so concurrent audits cannot contend on or mutate shared package-manager
+state.
+
+Review reconciled workflows semantically, not only syntactically: compare
+`push`/`pull_request`/`merge_group`/`workflow_dispatch` events and inputs,
+then each deploy/apply job's `if`, `needs`, permissions, and side effects.
+Preserve deliberate manual Terraform apply or deploy paths. A green actionlint
+run proves syntax, not trigger semantics.
 
 **A green `task verify` does NOT cover the Lighthouse gates on web repos.** For
 web-astro repos the a11y/perf/SEO assertions (`lighthouserc.json`) run in the

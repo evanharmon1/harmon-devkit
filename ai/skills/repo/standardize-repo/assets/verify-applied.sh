@@ -3,7 +3,9 @@
 # verify-applied.sh — validate a repo AFTER harmon-init conventions were applied.
 #
 # Usage:
-#   verify-applied.sh [TARGET_DIR]   # TARGET_DIR defaults to "."
+#   verify-applied.sh [--ack-codeowner-change @old=@new]... [TARGET_DIR]
+#   TARGET_DIR defaults to ".". Each acknowledgement must name one owner that
+#   was actually dropped from main and one replacement present in the new file.
 #
 # Mirrors the validation philosophy of harmon-init's scripts/test-template.sh,
 # but runs against an ALREADY-RENDERED, real repo (the result of `copier copy`
@@ -21,7 +23,65 @@
 
 set -euo pipefail
 
-target="${1:-.}"
+usage() {
+    cat >&2 <<'USAGE'
+Usage:
+  verify-applied.sh [--ack-codeowner-change @old=@new]... [TARGET_DIR]
+
+The CODEOWNERS acknowledgement is intentionally exact: repeat it for each
+intentional owner migration. The verifier rejects stale, extra, malformed, or
+non-materialized mappings; there is no blanket access-control bypass.
+USAGE
+}
+
+target=""
+codeowner_ack_count=0
+codeowner_acks=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --ack-codeowner-change)
+        [ $# -ge 2 ] || {
+            usage
+            echo "FAIL: --ack-codeowner-change requires @old=@new" >&2
+            exit 2
+        }
+        ack="$2"
+        if ! printf '%s\n' "$ack" | grep -qE '^@[A-Za-z0-9_/-]+=@[A-Za-z0-9_/-]+$'; then
+            usage
+            echo "FAIL: malformed CODEOWNERS acknowledgement: $ack" >&2
+            exit 2
+        fi
+        old="${ack%%=*}"
+        new="${ack#*=}"
+        if [ "$old" = "$new" ]; then
+            echo "FAIL: CODEOWNERS acknowledgement must name a real migration: $ack" >&2
+            exit 2
+        fi
+        codeowner_acks+=("$ack")
+        codeowner_ack_count=$((codeowner_ack_count + 1))
+        shift 2
+        ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    -*)
+        usage
+        echo "FAIL: unknown argument: $1" >&2
+        exit 2
+        ;;
+    *)
+        if [ -n "$target" ]; then
+            usage
+            echo "FAIL: more than one target directory given" >&2
+            exit 2
+        fi
+        target="$1"
+        shift
+        ;;
+    esac
+done
+[ -n "$target" ] || target="."
 
 if [ ! -d "$target" ]; then
     echo "FAIL: target directory not found: $target" >&2
@@ -93,7 +153,7 @@ fi
 # `task verify` above would catch this too, but a broken Taskfile makes that
 # step error out ambiguously; this gives a precise message.
 if { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
-    if ! task --list-all >/dev/null 2>&1; then
+    if ! task --color=false --list-all >/dev/null 2>&1; then
         err "Taskfile does not parse ('task --list-all' failed)"
     fi
 fi
@@ -104,7 +164,7 @@ fi
 # recurring example is status:setup (the setup-completeness audit), which older
 # forks of scripts/status.sh + Taskfile never had.
 if { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
-    tasklist="$(task --list-all 2>/dev/null || true)"
+    tasklist="$(task --color=false --list-all 2>/dev/null || true)"
     for t in verify check security status:setup install:hooks; do
         if ! printf '%s\n' "$tasklist" | grep -qE "^[* ]*${t}:([[:space:]]|\$)"; then
             err "Taskfile missing required target: ${t}"
@@ -125,15 +185,974 @@ fi
 # `&& task <t>` — so prose ("the specific task described"), renovate comments
 # (`go-task/task extractVersion`), and `setup-task@<sha>` never match.
 if [ -d .github/workflows ] && { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
-    tasklist="$(task --list-all 2>/dev/null || true)"
-    called="$(grep -rhoE '(run:[[:space:]]*|^[[:space:]]*|&&[[:space:]]*)task +[a-z][a-z0-9:_-]*' .github/workflows/ 2>/dev/null |
-        sed -E 's/.*task +//' | sort -u)"
+    tasklist="$(task --color=false --list-all 2>/dev/null || true)"
+    called="$(
+        grep -rhoE '(run:[[:space:]]*|^[[:space:]]*|&&[[:space:]]*)task +[a-z][a-z0-9:_-]*' .github/workflows/ 2>/dev/null |
+            sed -E 's/.*task +//' | sort -u || true
+    )"
     for t in $called; do
         if ! printf '%s\n' "$tasklist" | grep -qE "^[* ]*${t}:([[:space:]]|\$)"; then
             err "workflow calls 'task ${t}' but the Taskfile has no such target"
         fi
     done
 fi
+
+# ── 3d. Terraform lint + provider-lock contract ──────────────────────
+# Terraform coverage is capability-gated, not universal. When a repo selected
+# include_terraform OR contains first-party .tf files, `task check` must actually
+# reach fmt, TFLint, Checkov, and the cross-platform provider-lock check. Merely
+# naming those tools in docs (or committing one host's lock file) is not proof.
+include_terraform_answer=""
+if [ -f .copier-answers.yml ]; then
+    include_terraform_answer="$(
+        sed -n -E 's/^[[:space:]]*include_terraform:[[:space:]]*([^#[:space:]]+).*$/\1/p' .copier-answers.yml |
+            tail -n 1 | tr '[:upper:]' '[:lower:]' | tr -d "\"'"
+    )"
+fi
+
+repo_files=""
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    repo_files="$(git ls-files --cached --others --exclude-standard 2>/dev/null || true)"
+else
+    repo_files="$(find . -type f 2>/dev/null | sed 's#^\./##' || true)"
+fi
+terraform_sources="$(
+    printf '%s\n' "$repo_files" |
+        grep -E '\.tf$' |
+        grep -vE '(^|/)(\.terraform|node_modules|vendor|dist|build)/' || true
+)"
+
+provider_lock_init_modes_are_safe() {
+    local helper="$1"
+    local probe fake_terraform check_root update_root result
+
+    probe="$(mktemp -d "${TMPDIR:-/tmp}/verify-provider-lock-init.XXXXXX")" || return 1
+    fake_terraform="$probe/terraform"
+    check_root="$probe/check"
+    update_root="$probe/update"
+    result=0
+
+    cat >"$fake_terraform" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+-chdir=*) ;;
+*) exit 2 ;;
+esac
+shift
+
+case "${1:-}" in
+init)
+    shift
+    upgrade=false
+    for arg in "$@"; do
+        if [ "$arg" = -upgrade ]; then
+            upgrade=true
+        fi
+    done
+    case "${EXPECT_INIT_UPGRADE:-}:$upgrade" in
+    false:false | true:true) ;;
+    *) exit 90 ;;
+    esac
+    ;;
+providers)
+    shift
+    [ "${1:-}" = lock ] || exit 2
+    ;;
+*) exit 2 ;;
+esac
+EOF
+    chmod +x "$fake_terraform"
+    mkdir "$check_root" "$update_root"
+    printf '%s\n' 'terraform {}' >"$check_root/main.tf"
+    printf '%s\n' 'terraform {}' >"$update_root/main.tf"
+
+    if ! EXPECT_INIT_UPGRADE=false TERRAFORM_BIN="$fake_terraform" \
+        "$helper" check "$check_root" >/dev/null 2>&1; then
+        result=1
+    fi
+    if ! EXPECT_INIT_UPGRADE=true TERRAFORM_BIN="$fake_terraform" \
+        "$helper" update "$update_root" >/dev/null 2>&1; then
+        result=1
+    fi
+
+    rm -rf "$probe"
+    [ "$result" -eq 0 ]
+}
+
+has_terraform=false
+case "$include_terraform_answer" in
+true | yes)
+    has_terraform=true
+    ;;
+false | no | "") ;;
+*)
+    err "invalid include_terraform value in .copier-answers.yml: $include_terraform_answer"
+    ;;
+esac
+if [ -n "$terraform_sources" ]; then
+    has_terraform=true
+fi
+
+if [ "$has_terraform" = true ]; then
+    provider_lock_helper="scripts/terraform-provider-locks.sh"
+    if [ ! -f "$provider_lock_helper" ]; then
+        err "Terraform is present but $provider_lock_helper is missing"
+    else
+        if [ ! -x "$provider_lock_helper" ]; then
+            err "$provider_lock_helper must be executable"
+        fi
+        provider_lock_program="$(sed -E 's/[[:space:]]*#.*$//' "$provider_lock_helper")"
+        for lock_contract in \
+            'providers lock' \
+            '-platform=darwin_arm64' \
+            '-platform=linux_amd64'; do
+            if ! grep -qF -- "$lock_contract" <<<"$provider_lock_program"; then
+                err "$provider_lock_helper does not establish '$lock_contract'"
+            fi
+        done
+        if [ -x "$provider_lock_helper" ] &&
+            ! provider_lock_init_modes_are_safe "$provider_lock_helper"; then
+            err "$provider_lock_helper must pass -upgrade to init only in update mode"
+        fi
+    fi
+
+    provider_lock_regression="scripts/test-terraform-provider-locks.sh"
+    if [ ! -f "$provider_lock_regression" ]; then
+        err "Terraform is present but $provider_lock_regression is missing"
+    elif [ ! -x "$provider_lock_regression" ]; then
+        err "$provider_lock_regression must be executable"
+    elif ! "$provider_lock_regression" >/dev/null 2>&1; then
+        err "$provider_lock_regression failed its hermetic lock-process checks"
+    fi
+
+    if have task && { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; }; then
+        terraform_tasklist="$(task --color=false --list-all 2>/dev/null || true)"
+        for terraform_task in lint:terraform terraform:providers:lock; do
+            if ! grep -qE "^[* ]*${terraform_task}:([[:space:]]|\$)" \
+                <<<"$terraform_tasklist"; then
+                err "Terraform Taskfile contract is missing target: $terraform_task"
+            fi
+        done
+
+        terraform_lint_dry="$(task --color=false --dry lint:terraform 2>&1 || true)"
+        terraform_check_dry="$(task --color=false --dry check 2>&1 || true)"
+        terraform_lock_dry="$(task --color=false --dry terraform:providers:lock 2>&1 || true)"
+
+        for dry_contract in \
+            'terraform fmt -check' \
+            'tflint --recursive' \
+            'checkov==' \
+            'checkov -d'; do
+            if ! grep -qF -- "$dry_contract" <<<"$terraform_lint_dry"; then
+                err "task lint:terraform does not reach '$dry_contract'"
+            fi
+            if ! grep -qF -- "$dry_contract" <<<"$terraform_check_dry"; then
+                err "task check does not reach Terraform contract '$dry_contract'"
+            fi
+        done
+        if ! grep -qE 'terraform-provider-locks\.sh[[:space:]]+check[[:space:]]+[^[:space:]]' \
+            <<<"$terraform_lint_dry"; then
+            err "task lint:terraform does not reach the provider-lock check helper"
+        fi
+        if ! grep -qE 'terraform-provider-locks\.sh[[:space:]]+check[[:space:]]+[^[:space:]]' \
+            <<<"$terraform_check_dry"; then
+            err "task check does not reach the Terraform provider-lock check helper"
+        fi
+        if ! grep -qE 'uvx .*--from .*checkov==' <<<"$terraform_lint_dry"; then
+            err "task lint:terraform must run pinned Checkov through uvx --from"
+        fi
+        if ! grep -qE 'terraform-provider-locks\.sh[[:space:]]+update[[:space:]]+[^[:space:]]' \
+            <<<"$terraform_lock_dry"; then
+            err "task terraform:providers:lock does not reach the explicit lock update helper"
+        fi
+    else
+        echo "WARN: task is unavailable; Terraform lint/lock task reachability needs manual audit." >&2
+    fi
+
+    if [ ! -f Brewfile ]; then
+        err "Terraform is present but Brewfile is missing its local tool contract"
+    else
+        for formula in terraform tflint uv; do
+            if ! grep -qE "^[[:space:]]*brew[[:space:]]+['\"]${formula}['\"]" Brewfile; then
+                err "Terraform local lint contract is missing brew formula: $formula"
+            fi
+        done
+    fi
+
+    build_workflow=""
+    for candidate in .github/workflows/build.yml .github/workflows/build.yaml; do
+        if [ -f "$candidate" ]; then
+            build_workflow="$candidate"
+            break
+        fi
+    done
+    if [ -z "$build_workflow" ]; then
+        err "Terraform is present but no build workflow provisions its lint tools"
+    else
+        for setup_action in \
+            'hashicorp/setup-terraform@' \
+            'terraform-linters/setup-tflint@' \
+            'astral-sh/setup-uv@'; do
+            if ! grep -qE "^[[:space:]]*-[[:space:]]+uses:[[:space:]]+${setup_action}" \
+                "$build_workflow"; then
+                err "$build_workflow does not provision Terraform lint dependency: $setup_action"
+            fi
+        done
+    fi
+fi
+
+# ── 3e. Build/devcontainer aggregate result contracts ──────────────
+# A generic "success or skipped" aggregate is not fail-closed: on a trusted
+# event it can disguise a job that never ran, and on a fork it can disguise a
+# repository-controlled job that unexpectedly ran. The standard has two exact
+# branches. Fork PRs validate every suppressed leaf as `skipped` in workflow-
+# inline shell without checkout/repo code; trusted events check out only after
+# the fork branch and require every leaf to be `success` through the tested
+# helper.
+aggregate_job_contract_is_safe() {
+    local workflow="$1"
+    local aggregate_job="$2"
+
+    awk -v target="$aggregate_job" '
+        function clear_step_refs(key) {
+            for (key in step_refs) {
+                delete step_refs[key]
+            }
+        }
+        function reset_step() {
+            clear_step_refs()
+            in_step = 0
+            is_boundary = 0
+            fork_condition = 0
+            trusted_condition = 0
+            is_checkout = 0
+            is_helper = 0
+            has_run = 0
+            checks_skipped = 0
+            boundary_message = 0
+            expected_success = 0
+            uses_any = 0
+            repo_code = 0
+        }
+        function finish_step(key) {
+            if (!in_step) {
+                return
+            }
+            if (is_boundary) {
+                if (fork_condition && has_run && checks_skipped &&
+                    boundary_message && !uses_any && !repo_code) {
+                    safe_boundary = 1
+                }
+                for (key in step_refs) {
+                    fork_refs[key] = 1
+                }
+            }
+            if (is_checkout) {
+                if (trusted_condition) {
+                    safe_checkout = 1
+                } else {
+                    unsafe_checkout = 1
+                }
+            }
+            if (is_helper) {
+                if (trusted_condition && expected_success) {
+                    safe_helper = 1
+                } else {
+                    unsafe_helper = 1
+                }
+                for (key in step_refs) {
+                    trusted_refs[key] = 1
+                }
+            }
+            reset_step()
+        }
+        function collect_refs(value, token) {
+            value = $0
+            while (match(value, /needs\.[A-Za-z0-9_-]+\.result/)) {
+                token = substr(value, RSTART, RLENGTH)
+                step_refs[token] = 1
+                value = substr(value, RSTART + RLENGTH)
+            }
+        }
+        BEGIN {
+            in_job = 0
+            found_job = 0
+            always_job = 0
+            fork_expression = 0
+            safe_boundary = 0
+            safe_checkout = 0
+            safe_helper = 0
+            unsafe_checkout = 0
+            unsafe_helper = 0
+            generic_allowlist = 0
+            reset_step()
+        }
+        {
+            line = $0
+            if (!in_job) {
+                if (line ~ ("^  " target ":[ ]*(#.*)?$")) {
+                    in_job = 1
+                    found_job = 1
+                }
+                next
+            }
+            if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) {
+                finish_step()
+                in_job = 0
+                next
+            }
+            if (line ~ /^[[:space:]]*if:[[:space:]]*always\(\)/) {
+                always_job = 1
+            }
+            if (index(line, "IS_FORK:") &&
+                index(line, "github.event_name ==") && index(line, "pull_request") &&
+                index(line, "head.repo.full_name != github.repository")) {
+                fork_expression = 1
+            }
+            if (index(line, "success") && index(line, "skipped") &&
+                index(line, "||")) {
+                generic_allowlist = 1
+            }
+            if (line ~ /^      - /) {
+                finish_step()
+                in_step = 1
+            }
+            if (!in_step || line ~ /^[[:space:]]*#/) {
+                next
+            }
+            if (index(line, "name:") && index(line, "untrusted-fork boundary")) {
+                is_boundary = 1
+            }
+            if (index(line, "if:") && index(line, "env.IS_FORK ==") &&
+                index(line, "true")) {
+                fork_condition = 1
+            }
+            if (index(line, "if:") && index(line, "env.IS_FORK !=") &&
+                index(line, "true")) {
+                trusted_condition = 1
+            }
+            if (line ~ /uses:[ ]*actions\/checkout@/) {
+                is_checkout = 1
+            }
+            if (line ~ /run:[ ]*\.\/scripts\/verify-required-results\.sh/) {
+                is_helper = 1
+            }
+            if (line ~ /^[[:space:]]*run:/) {
+                has_run = 1
+            }
+            if (index(line, "EXPECTED_RESULT:") && index(line, "success")) {
+                expected_success = 1
+            }
+            if (index(line, "!=") && index(line, "skipped")) {
+                checks_skipped = 1
+            }
+            if (index(line, "Untrusted fork trust boundary enforced:")) {
+                boundary_message = 1
+            }
+            if (line ~ /uses:/) {
+                uses_any = 1
+            }
+            if (is_boundary &&
+                (line ~ /scripts\// || line ~ /run:[ ]*(\.\/|bash |sh )/)) {
+                repo_code = 1
+            }
+            collect_refs()
+        }
+        END {
+            finish_step()
+            ref_count = 0
+            refs_match = 1
+            for (key in fork_refs) {
+                ref_count++
+                if (!(key in trusted_refs)) {
+                    refs_match = 0
+                }
+            }
+            for (key in trusted_refs) {
+                if (!(key in fork_refs)) {
+                    refs_match = 0
+                }
+            }
+            exit(found_job && always_job && fork_expression && safe_boundary &&
+                 safe_checkout && safe_helper && !unsafe_checkout &&
+                 !unsafe_helper && !generic_allowlist && ref_count > 0 &&
+                 refs_match ? 0 : 1)
+        }
+    ' "$workflow"
+}
+
+workflow_job_has_fork_guard() {
+    local workflow="$1"
+    local leaf_job="$2"
+
+    awk -v target="$leaf_job" '
+        BEGIN { in_job = 0; found = 0; event_guard = 0; repo_guard = 0 }
+        {
+            line = $0
+            if (!in_job) {
+                if (line ~ ("^  " target ":[ ]*(#.*)?$")) {
+                    in_job = 1
+                    found = 1
+                }
+                next
+            }
+            if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) {
+                in_job = 0
+                next
+            }
+            if (index(line, "github.event_name !=") && index(line, "pull_request")) {
+                event_guard = 1
+            }
+            if (index(line, "head.repo.full_name == github.repository")) {
+                repo_guard = 1
+            }
+        }
+        END { exit(found && event_guard && repo_guard ? 0 : 1) }
+    ' "$workflow"
+}
+
+required_results_helper="scripts/verify-required-results.sh"
+aggregate_workflows=""
+for aggregate_spec in \
+    '.github/workflows/build.yml:verify' \
+    '.github/workflows/build.yaml:verify' \
+    '.github/workflows/devcontainer-build.yml:devcontainer-verify' \
+    '.github/workflows/devcontainer-build.yaml:devcontainer-verify'; do
+    aggregate_workflow="${aggregate_spec%:*}"
+    aggregate_job="${aggregate_spec##*:}"
+    [ -f "$aggregate_workflow" ] || continue
+    aggregate_workflows="${aggregate_workflows}${aggregate_workflow}:${aggregate_job}
+"
+done
+
+if [ -n "$aggregate_workflows" ]; then
+    if [ ! -f "$required_results_helper" ]; then
+        err "aggregate workflows exist but $required_results_helper is missing"
+    elif [ ! -x "$required_results_helper" ]; then
+        err "$required_results_helper must be executable because trusted aggregates run it directly"
+    else
+        required_results_contract_ok=true
+        if ! EXPECTED_RESULT=success "$required_results_helper" \
+            lint=success security=success >/dev/null 2>&1; then
+            required_results_contract_ok=false
+        fi
+        if ! EXPECTED_RESULT=skipped "$required_results_helper" \
+            lint=skipped security=skipped >/dev/null 2>&1; then
+            required_results_contract_ok=false
+        fi
+        for rejected_contract in \
+            'success lint=success security=skipped' \
+            'skipped lint=skipped security=success' \
+            'success lint=success security=failure' \
+            'success lint=success security=cancelled' \
+            'success lint=success security=unknown'; do
+            rejected_expected="${rejected_contract%% *}"
+            rejected_pairs="${rejected_contract#* }"
+            # Intentional word splitting: each fixture token is one name=result pair.
+            # shellcheck disable=SC2086
+            if EXPECTED_RESULT="$rejected_expected" "$required_results_helper" \
+                $rejected_pairs >/dev/null 2>&1; then
+                required_results_contract_ok=false
+            fi
+        done
+        if [ "$required_results_contract_ok" != true ]; then
+            err "$required_results_helper does not enforce one exact expected result for every leaf"
+        fi
+    fi
+
+    while IFS=: read -r aggregate_workflow aggregate_job; do
+        [ -n "$aggregate_workflow" ] || continue
+        if ! aggregate_job_contract_is_safe "$aggregate_workflow" "$aggregate_job"; then
+            err "$aggregate_workflow job '$aggregate_job' must enforce exact fork-skipped/trusted-success results without fork checkout or repository code"
+            continue
+        fi
+        aggregate_leaves="$(
+            awk -v target="$aggregate_job" '
+                BEGIN { in_job = 0 }
+                {
+                    if (!in_job) {
+                        if ($0 ~ ("^  " target ":[ ]*(#.*)?$")) in_job = 1
+                        next
+                    }
+                    if ($0 ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) exit
+                    print
+                }
+            ' "$aggregate_workflow" |
+                grep -oE 'needs\.[A-Za-z0-9_-]+\.result' |
+                sed -E 's/^needs\.//; s/\.result$//' | sort -u || true
+        )"
+        for aggregate_leaf in $aggregate_leaves; do
+            if ! workflow_job_has_fork_guard "$aggregate_workflow" "$aggregate_leaf"; then
+                err "$aggregate_workflow leaf '$aggregate_leaf' is aggregated as fork-skipped but lacks the same-repository PR guard"
+            fi
+        done
+    done <<<"$aggregate_workflows"
+fi
+
+# The shipped ruleset has an exact profile-derived required-check set. CodeQL is
+# fail-closed inside its workflow today, but is not merge-gating until its
+# workflow also supports merge_group and the ruleset requires codeql-verify.
+ruleset_file=".github/Branch Protection Ruleset - Protect Main.json"
+if [ -f "$ruleset_file" ]; then
+    ruleset_contexts="$(
+        sed -n -E 's/.*"context"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' \
+            "$ruleset_file" | sort -u
+    )"
+    expected_contexts="security
+verify"
+    if [ "$has_terraform" = true ]; then
+        expected_contexts="security
+terraform-verify
+verify"
+    fi
+    if [ "$ruleset_contexts" != "$expected_contexts" ]; then
+        err "$ruleset_file required checks must be verify + security$(
+            if [ "$has_terraform" = true ]; then printf '%s' ' + terraform-verify'; fi
+        ); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
+    fi
+fi
+
+# ── 3f. CodeQL selection, result truth table, and live capability ──
+# CodeQL is not universal merely because a repo contains Node/Python. The Copier
+# answer selects it, FULL_SECURITY_SCAN starts it, and GitHub must accept SARIF.
+# Public repositories have Code Security by default; private/internal repos need
+# the live feature enabled. The API check below is GET-only. Missing permissions
+# produce a manual-audit warning, never a guessed claim of coverage.
+codeql_workflow=""
+for candidate in .github/workflows/codeql.yml .github/workflows/codeql.yaml; do
+    if [ -f "$candidate" ]; then
+        codeql_workflow="$candidate"
+        break
+    fi
+done
+
+if [ -n "$codeql_workflow" ] && awk '
+    function indentation(value) {
+        match(value, /^[ ]*/)
+        return RLENGTH
+    }
+    function finish_step() {
+        if (step_is_analyze && step_continues) {
+            fail_open = 1
+        }
+        step_is_analyze = 0
+        step_continues = 0
+    }
+    BEGIN {
+        in_analyze_job = 0
+        job_indent = -1
+        steps_indent = -1
+        step_indent = -1
+        fail_open = 0
+    }
+    {
+        line = $0
+        normalized = tolower(line)
+        if (line ~ /^[[:space:]]*(#|$)/) {
+            next
+        }
+        indent = indentation(line)
+        if (!in_analyze_job) {
+            if (line ~ /^[ ]*analyze:[ ]*(#.*)?$/) {
+                in_analyze_job = 1
+                job_indent = indent
+            }
+            next
+        }
+        if (indent <= job_indent) {
+            finish_step()
+            in_analyze_job = 0
+            next
+        }
+        if (indent == job_indent + 2 &&
+            normalized ~ /^[ ]*continue-on-error:[ ]*true([ ]|$)/) {
+            fail_open = 1
+        }
+        if (indent == job_indent + 2 && line ~ /^[ ]*steps:[ ]*$/) {
+            steps_indent = indent
+            next
+        }
+        if (steps_indent >= 0) {
+            if (indent == steps_indent + 2 && line ~ /^[ ]*-[ ]/) {
+                finish_step()
+                step_indent = indent
+            }
+            if (step_indent >= 0) {
+                if (normalized ~ /uses:[ ]*github\/codeql-action\/analyze@/) {
+                    step_is_analyze = 1
+                }
+                if (normalized ~ /^[ ]*continue-on-error:[ ]*true([ ]|$)/) {
+                    step_continues = 1
+                }
+            }
+        }
+    }
+    END {
+        finish_step()
+        exit(fail_open ? 0 : 1)
+    }
+' "$codeql_workflow"; then
+    err "$codeql_workflow lets the CodeQL analyze job/action fail via 'continue-on-error: true'"
+fi
+
+if [ -n "$codeql_workflow" ] && ! awk '
+    BEGIN {
+        in_analyze = 0
+        scan_gate = 0
+        trusted_event = 0
+        trusted_repo = 0
+    }
+    {
+        line = $0
+        if (!in_analyze) {
+            if (line ~ /^  analyze:[ ]*(#.*)?$/) {
+                in_analyze = 1
+            }
+            next
+        }
+        if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) {
+            in_analyze = 0
+            next
+        }
+        if (index(line, "vars.FULL_SECURITY_SCAN ==") && index(line, "true")) {
+            scan_gate = 1
+        }
+        if (index(line, "github.event_name !=") && index(line, "pull_request")) {
+            trusted_event = 1
+        }
+        if (index(line, "head.repo.full_name == github.repository")) {
+            trusted_repo = 1
+        }
+    }
+    END {
+        exit(scan_gate && trusted_event && trusted_repo ? 0 : 1)
+    }
+' "$codeql_workflow"; then
+    err "$codeql_workflow analyze job must require FULL_SECURITY_SCAN=true and a trusted same-repository event"
+fi
+
+if [ -n "$codeql_workflow" ]; then
+    codeql_result_helper="scripts/verify-codeql-result.sh"
+    if [ ! -f "$codeql_result_helper" ]; then
+        err "$codeql_workflow has no $codeql_result_helper fail-closed aggregate helper"
+    else
+        if [ ! -x "$codeql_result_helper" ]; then
+            err "$codeql_result_helper must be executable because the workflow runs it directly"
+        fi
+
+        codeql_result_contract_ok=true
+        if ! env -u FULL_SECURITY_SCAN IS_FORK=false ANALYZE_RESULT=skipped \
+            "$codeql_result_helper" >/dev/null 2>&1; then
+            codeql_result_contract_ok=false
+        fi
+        if ! env FULL_SECURITY_SCAN= IS_FORK=false ANALYZE_RESULT=skipped \
+            "$codeql_result_helper" >/dev/null 2>&1; then
+            codeql_result_contract_ok=false
+        fi
+        if ! env FULL_SECURITY_SCAN=false IS_FORK=false ANALYZE_RESULT=skipped \
+            "$codeql_result_helper" >/dev/null 2>&1; then
+            codeql_result_contract_ok=false
+        fi
+        if ! env FULL_SECURITY_SCAN=true IS_FORK=true ANALYZE_RESULT=skipped \
+            "$codeql_result_helper" >/dev/null 2>&1; then
+            codeql_result_contract_ok=false
+        fi
+        if ! env FULL_SECURITY_SCAN=true IS_FORK=false ANALYZE_RESULT=success \
+            "$codeql_result_helper" >/dev/null 2>&1; then
+            codeql_result_contract_ok=false
+        fi
+        for rejected_contract in \
+            'true false skipped' \
+            'true false failure' \
+            'true false cancelled' \
+            'false false success' \
+            'yes false skipped' \
+            'TRUE false skipped' \
+            'true false unknown'; do
+            rejected_scan="${rejected_contract%% *}"
+            rejected_rest="${rejected_contract#* }"
+            rejected_fork="${rejected_rest%% *}"
+            rejected_result="${rejected_rest#* }"
+            if env FULL_SECURITY_SCAN="$rejected_scan" IS_FORK="$rejected_fork" \
+                ANALYZE_RESULT="$rejected_result" \
+                "$codeql_result_helper" >/dev/null 2>&1; then
+                codeql_result_contract_ok=false
+            fi
+        done
+        if [ "$codeql_result_contract_ok" != true ]; then
+            err "$codeql_result_helper does not enforce the disabled/fork/enabled CodeQL result truth table"
+        fi
+    fi
+
+    for workflow_contract in \
+        'FULL_SECURITY_SCAN:' \
+        'vars.FULL_SECURITY_SCAN' \
+        'IS_FORK:' \
+        'github.event.pull_request.head.repo.full_name != github.repository' \
+        'ANALYZE_RESULT:' \
+        'needs.analyze.result' \
+        'run: ./scripts/verify-codeql-result.sh'; do
+        if ! grep -qF "$workflow_contract" "$codeql_workflow"; then
+            err "$codeql_workflow does not wire the aggregate result contract: $workflow_contract"
+        fi
+    done
+
+    # A fork PR must not make a potentially self-hosted aggregate runner check
+    # out and execute fork-controlled repository code. Trusted events may run the
+    # tested helper; forks use a tiny workflow-defined diagnostic instead.
+    if ! awk '
+        function reset_step() {
+            is_checkout = 0
+            is_helper = 0
+            is_fork_check = 0
+            trusted_event = 0
+            trusted_repo = 0
+            fork_event = 0
+            fork_repo = 0
+            defaults_scan = 0
+            validates_scan = 0
+            validates_skip = 0
+            executes_repo_code = 0
+        }
+        function finish_step() {
+            if (is_checkout && trusted_event && trusted_repo) {
+                safe_checkout = 1
+            }
+            if (is_helper && trusted_event && trusted_repo) {
+                safe_helper = 1
+            }
+            if (is_fork_check && fork_event && fork_repo && defaults_scan &&
+                validates_scan && validates_skip && !executes_repo_code) {
+                safe_fork_check = 1
+            }
+            reset_step()
+        }
+        BEGIN {
+            in_verify = 0
+            in_step = 0
+            safe_checkout = 0
+            safe_helper = 0
+            safe_fork_check = 0
+            reset_step()
+        }
+        {
+            line = $0
+            if (!in_verify) {
+                if (line ~ /^  codeql-verify:[ ]*(#.*)?$/) {
+                    in_verify = 1
+                }
+                next
+            }
+            if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) {
+                finish_step()
+                in_verify = 0
+                next
+            }
+            if (line ~ /^      - /) {
+                if (in_step) {
+                    finish_step()
+                }
+                in_step = 1
+            }
+            if (!in_step || line ~ /^[[:space:]]*#/) {
+                next
+            }
+            if (line ~ /uses:[ ]*actions\/checkout@/) {
+                is_checkout = 1
+            }
+            if (line ~ /run:[ ]*\.\/scripts\/verify-codeql-result\.sh/) {
+                is_helper = 1
+            }
+            if (line ~ /name:[ ]*Check deliberate fork skip/) {
+                is_fork_check = 1
+            }
+            if (index(line, "github.event_name !=") && index(line, "pull_request")) {
+                trusted_event = 1
+            }
+            if (index(line, "head.repo.full_name == github.repository")) {
+                trusted_repo = 1
+            }
+            if (index(line, "github.event_name ==") && index(line, "pull_request")) {
+                fork_event = 1
+            }
+            if (index(line, "head.repo.full_name != github.repository")) {
+                fork_repo = 1
+            }
+            if (index(line, "scan=\"${FULL_SECURITY_SCAN:-false}\"")) {
+                defaults_scan = 1
+            }
+            if (index(line, "case \"$scan\" in")) {
+                validates_scan = 1
+            }
+            if (index(line, "ANALYZE_RESULT") && index(line, "!=") &&
+                index(line, "skipped")) {
+                validates_skip = 1
+            }
+            if (is_fork_check &&
+                (line ~ /uses:/ || line ~ /run:[ ]*(\.\/|bash |sh ).*scripts\// ||
+                 line ~ /(^|[ ])\.\/scripts\//)) {
+                executes_repo_code = 1
+            }
+        }
+        END {
+            if (in_step) {
+                finish_step()
+            }
+            exit(safe_checkout && safe_helper && safe_fork_check ? 0 : 1)
+        }
+    ' "$codeql_workflow"; then
+        err "$codeql_workflow must guard aggregate checkout/helper execution to trusted events and validate fork skips without repository code"
+    fi
+
+    # The Copier stack flags decide which languages can be rendered, but they do
+    # not prove that a repository actually contains that first-party language.
+    # Warn on source/matrix drift so an audit can choose the explicit language
+    # set rather than silently scanning only tooling or missing real code.
+    first_party_source_files="$(
+        printf '%s\n' "$repo_files" |
+            grep -vE '(^|/)(\.git|\.github|\.claude|\.codex|\.agents|node_modules|\.venv|\.terraform|vendor|dist|build|coverage|generated|_generated)/' |
+            grep -vE '(^|/)(astro|commitlint|eslint|knip|playwright|postcss|prettier|tailwind|vite|vitest|webpack)\.config\.(cjs|mjs|js|jsx|ts|tsx)$' |
+            grep -vE '(^|/)scripts/summarize-gitleaks\.mjs$' || true
+    )"
+    has_javascript_source=false
+    has_python_source=false
+    if printf '%s\n' "$first_party_source_files" |
+        grep -qE '\.(cjs|mjs|js|jsx|cts|mts|ts|tsx)$'; then
+        has_javascript_source=true
+    fi
+    if printf '%s\n' "$first_party_source_files" | grep -qE '\.py$'; then
+        has_python_source=true
+    fi
+
+    matrix_has_javascript=false
+    matrix_has_python=false
+    if grep -qF 'javascript-typescript' "$codeql_workflow"; then
+        matrix_has_javascript=true
+    fi
+    if grep -qE '(^|[^[:alnum:]_-])python([^[:alnum:]_-]|$)' "$codeql_workflow"; then
+        matrix_has_python=true
+    fi
+
+    if [ "$matrix_has_javascript" = true ] && [ "$has_javascript_source" = false ]; then
+        echo "WARN: CodeQL matrix includes javascript-typescript but no first-party JS/TS source was found." >&2
+    elif [ "$matrix_has_javascript" = false ] && [ "$has_javascript_source" = true ]; then
+        echo "WARN: first-party JS/TS source exists but CodeQL omits javascript-typescript." >&2
+    fi
+    if [ "$matrix_has_python" = true ] && [ "$has_python_source" = false ]; then
+        echo "WARN: CodeQL matrix includes python but no first-party Python source was found." >&2
+    elif [ "$matrix_has_python" = false ] && [ "$has_python_source" = true ]; then
+        echo "WARN: first-party Python source exists but CodeQL omits python." >&2
+    fi
+fi
+
+use_codeql_answer=""
+if [ -f .copier-answers.yml ]; then
+    use_codeql_answer="$(
+        sed -n -E 's/^[[:space:]]*use_codeql:[[:space:]]*([^#[:space:]]+).*$/\1/p' .copier-answers.yml |
+            tail -n 1 | tr '[:upper:]' '[:lower:]' | tr -d "\"'"
+    )"
+fi
+
+if [ -n "$codeql_workflow" ]; then
+    echo "INFO: CodeQL workflow presence and FULL_SECURITY_SCAN are configuration only;" >&2
+    echo "      verify a successful analysis/SARIF upload before claiming coverage." >&2
+
+    codeql_nwo=""
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        remote_url="$(git remote get-url origin 2>/dev/null || true)"
+        case "$remote_url" in
+        https://github.com/*)
+            codeql_nwo="${remote_url#https://github.com/}"
+            ;;
+        git@github.com:*)
+            codeql_nwo="${remote_url#git@github.com:}"
+            ;;
+        ssh://git@github.com/*)
+            codeql_nwo="${remote_url#ssh://git@github.com/}"
+            ;;
+        esac
+        codeql_nwo="${codeql_nwo%.git}"
+        codeql_nwo="${codeql_nwo%/}"
+    fi
+
+    if [ -n "$codeql_nwo" ] && have gh; then
+        if repo_security="$(gh api "repos/$codeql_nwo" \
+            --jq '[.visibility, (.security_and_analysis.code_security.status // "unknown")] | @tsv' \
+            2>/dev/null)"; then
+            IFS=$'\t' read -r visibility code_security <<<"$repo_security"
+            [ -n "$code_security" ] || code_security="unknown"
+            case "$visibility" in
+            public)
+                echo "INFO: $codeql_nwo is public; GitHub Code Security is available by default." >&2
+                ;;
+            private | internal)
+                case "$code_security" in
+                enabled)
+                    echo "INFO: $codeql_nwo reports GitHub Code Security enabled." >&2
+                    ;;
+                disabled)
+                    err "CodeQL workflow exists but $codeql_nwo is $visibility with GitHub Code Security disabled; enable it first or select use_codeql=false and remove the workflow/coverage claims"
+                    ;;
+                *)
+                    echo "WARN: $codeql_nwo is $visibility but Code Security capability is '$code_security' —" >&2
+                    echo "      verify Settings > Code security manually; do not infer CodeQL coverage." >&2
+                    ;;
+                esac
+                ;;
+            *)
+                echo "WARN: could not classify repository visibility for $codeql_nwo —" >&2
+                echo "      verify Code Security capability manually; do not infer coverage." >&2
+                ;;
+            esac
+        else
+            echo "WARN: read-only Code Security API audit failed for $codeql_nwo —" >&2
+            echo "      verify Settings > Code security manually; do not infer CodeQL coverage." >&2
+        fi
+    else
+        echo "WARN: no queryable GitHub origin/gh CLI for the CodeQL capability audit —" >&2
+        echo "      verify Code Security manually; do not infer coverage from workflow files." >&2
+    fi
+fi
+
+case "$use_codeql_answer" in
+true | yes)
+    if [ -z "$codeql_workflow" ]; then
+        err "use_codeql=true but no .github/workflows/codeql.yml or codeql.yaml exists"
+    fi
+    if [ -f docs/architecture/security.md ] &&
+        grep -qF 'CodeQL is deliberately omitted' docs/architecture/security.md; then
+        err "use_codeql=true but security docs still say CodeQL is deliberately omitted"
+    fi
+    ;;
+false | no)
+    if [ -n "$codeql_workflow" ]; then
+        err "use_codeql=false but $codeql_workflow still exists"
+    fi
+    for taskfile in Taskfile.yml Taskfile.yaml; do
+        if [ -f "$taskfile" ] && grep -qF 'FULL_SECURITY_SCAN' "$taskfile"; then
+            err "use_codeql=false but $taskfile still configures FULL_SECURITY_SCAN"
+        fi
+    done
+    if [ -f README.md ] && grep -qE 'actions/workflows/codeql\.ya?ml' README.md; then
+        err "use_codeql=false but README.md still advertises the CodeQL workflow"
+    fi
+    if [ -f docs/architecture/security.md ] &&
+        ! grep -qF 'CodeQL is deliberately omitted' docs/architecture/security.md; then
+        err "use_codeql=false but security docs do not explicitly document the SAST gap"
+    fi
+    ;;
+"")
+    if [ -n "$codeql_workflow" ]; then
+        echo "WARN: CodeQL workflow exists but .copier-answers.yml has no explicit use_codeql answer —" >&2
+        echo "      review stack + live capability on the next template update." >&2
+    fi
+    ;;
+*)
+    err "invalid use_codeql value in .copier-answers.yml: $use_codeql_answer"
+    ;;
+esac
 
 # ── 4. No unrendered template markers leaked into the repo ──────────
 # harmon-init uses CUSTOM jinja delimiters ([[ var ]], [% block %]). Legitimate
@@ -214,17 +1233,63 @@ fi
 # access-control change that must be surfaced and confirmed, never auto-applied.
 # harmon-init also freezes CODEOWNERS via _skip_if_exists; this is the belt to
 # that suspenders (and catches a hand-overwritten CODEOWNERS too). Compare the
-# @owners in the pre-adopt CODEOWNERS (on `main`) against the current one; skip
-# cleanly when there is no main, no CODEOWNERS, or not a git tree.
+# @owners in the pre-adopt CODEOWNERS (on `main`) against the current one. An
+# intentional migration is acknowledged only with an exact
+# `--ack-codeowner-change @old=@new` mapping: @old must truly be dropped and
+# @new must be present now. Extra/stale mappings fail, so this cannot become a
+# blanket bypass. Skip cleanly only when there is no main or not a git tree.
 co=".github/CODEOWNERS"
-if [ -f "$co" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+codeowners_compared=0
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
     git cat-file -e "main:$co" 2>/dev/null; then
+    codeowners_compared=1
     before="$(git show "main:$co" 2>/dev/null | grep -oE '@[A-Za-z0-9_/-]+' | sort -u)"
-    after="$(grep -oE '@[A-Za-z0-9_/-]+' "$co" 2>/dev/null | sort -u)"
-    dropped="$(comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -v '^$' || true)"
-    if [ -n "$dropped" ]; then
-        err "CODEOWNERS dropped owner(s) present on main: $(printf '%s ' $dropped)— adopting must NOT silently reduce access. The template's single code_owner answer can't hold multiple owners/teams; restore the dropped owner(s) and confirm the change with the user."
+    if [ -f "$co" ]; then
+        after="$(grep -oE '@[A-Za-z0-9_/-]+' "$co" 2>/dev/null | sort -u)"
+    else
+        after=""
     fi
+    dropped="$(comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -v '^$' || true)"
+    acknowledged_old=""
+    if [ "$codeowner_ack_count" -gt 0 ]; then
+        for ack in "${codeowner_acks[@]}"; do
+            old="${ack%%=*}"
+            new="${ack#*=}"
+            if ! printf '%s\n' "$before" | grep -qxF "$old"; then
+                err "CODEOWNERS acknowledgement is stale: $old was not present on main"
+                continue
+            fi
+            if ! printf '%s\n' "$dropped" | grep -qxF "$old"; then
+                err "CODEOWNERS acknowledgement is extra: $old was not actually dropped"
+                continue
+            fi
+            if ! printf '%s\n' "$after" | grep -qxF "$new"; then
+                err "CODEOWNERS acknowledgement is not materialized: replacement $new is absent"
+                continue
+            fi
+            if printf '%s' "$acknowledged_old" | grep -qxF "$old"; then
+                err "CODEOWNERS owner acknowledged more than once: $old"
+                continue
+            fi
+            acknowledged_old="${acknowledged_old}${old}
+"
+            echo "ACK: intentional CODEOWNERS migration $old -> $new"
+        done
+    fi
+
+    unacknowledged=""
+    for owner in $dropped; do
+        if ! printf '%s' "$acknowledged_old" | grep -qxF "$owner"; then
+            unacknowledged="${unacknowledged}${owner}
+"
+        fi
+    done
+    if [ -n "$unacknowledged" ]; then
+        err "CODEOWNERS dropped owner(s) present on main without an exact migration acknowledgement: $(printf '%s ' $unacknowledged)— restore them, or repeat --ack-codeowner-change @old=@new for each intentional migration after confirming it with the user."
+    fi
+fi
+if [ "$codeowner_ack_count" -gt 0 ] && [ "$codeowners_compared" -eq 0 ]; then
+    err "CODEOWNERS acknowledgement supplied, but main has no comparable .github/CODEOWNERS"
 fi
 
 # ── Result ──────────────────────────────────────────────────────────

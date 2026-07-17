@@ -31,14 +31,17 @@ TEMPLATE=~/git/harmon-init           # source of truth
    template: look for `.copier-answers.yml` at the target root.
    - Present → it can be reconciled with `copier update --trust` (it records
      `_commit` / `_src_path`). Note the recorded commit; drift is "template moved
-     ahead since then." **Also check `_src_path` is a resolvable git URL** — if it's
-     a relative/machine-local path (e.g. `harmon-init`), `copier update` aborts with
-     `Updating is only supported in git-tracked templates`; normalize it to
-     `https://github.com/evanharmon1/harmon-init` first (a real finding — see
+     ahead since then." **Also check `_src_path` and `_commit` form a resolvable
+     lineage tuple.** A relative/machine-local path can make `copier update` abort
+     with `Updating is only supported in git-tracked templates`, but do not
+     rewrite the path alone unless the recorded commit is reachable from the
+     canonical remote (a real finding — see
      [copier-gotchas.md](./copier-gotchas.md) gotcha 8 / [mode-update.md](./mode-update.md) §2).
    - Absent → it was never templated (or was adopted by a raw `copier copy`).
      Reconciling the templated bits means a fresh adopt:
-     `copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD` (see §4). Treat
+     `copier copy --trust --vcs-ref=v3.26.1
+     https://github.com/evanharmon1/harmon-init.git .` (substitute the reviewed
+     current release; see §4). Treat
      every catalog area as hand-verifiable rather than diff-against-answers.
 
 2. **Walk each catalog area against the target.** For every area in
@@ -67,7 +70,7 @@ TEMPLATE=~/git/harmon-init           # source of truth
    # Renovate/version-pin annotations (drift class C)
    grep -rnE 'GITLEAKS_VERSION|setup-task|# renovate:' "$TARGET/.github/workflows/" 2>/dev/null
 
-   # Required status checks / merge_queue in the ruleset (drift class D)
+   # Required checks and account-appropriate merge_queue policy (drift class D)
    find "$TARGET/.github" -iname '*ruleset*'
    ```
 
@@ -75,7 +78,7 @@ TEMPLATE=~/git/harmon-init           # source of truth
    signal of conformance (they are themselves part of the standard):
 
    ```bash
-   ( cd "$TARGET" && task verify )    # check (lint) -> test:template
+   ( cd "$TARGET" && task verify )    # repo's fast check/build/validate/guard gate
    ( cd "$TARGET" && task security )  # secrets (gitleaks) + audit
    ```
 
@@ -127,9 +130,8 @@ hand-edit, and the verification command set from §4.
 ## 3. Common drift classes to check
 
 These are the recurring divergences observed when porting real repos onto the
-template (seeded from `~/git/harmon-init/docs/sourceRepoFollowUps.md`). Treat the
-list as a checklist of likely findings — confirm each against the target before
-reporting, and map each to its catalog area.
+template. Treat the list as a checklist of likely findings — confirm each
+against the target before reporting, and map each to its catalog area.
 
 **A. AGENTS.md symlink direction.** Canonical layout: `AGENTS.md` is the real
 file; `CLAUDE.md`, `GEMINI.md`, **and `.github/copilot-instructions.md`** are
@@ -169,21 +171,29 @@ template `build.yml`; do **not** hardcode a version from this doc — read the l
 value from `$TEMPLATE/.github/workflows/build.yml`. Severity: **should** (blocker
 if an unpinned/missing tool breaks the `security` job).
 
-**D. Stale branch ruleset / old job names / missing `merge_queue`.** Canonical
+**D. Stale branch ruleset / old job names / wrong `merge_queue` policy.** Canonical
 ruleset (`template/.github/Branch Protection Ruleset - Protect Main.json`) requires
-exactly two status-check contexts — **`verify`** and **`security`** — plus a
-**`merge_queue`** rule. Old repos reference retired job names (`secrets`,
-`validate`, `build-homepage`) and lack the merge-queue rule. Note this drift can
+the baseline contexts **`verify`** and **`security`**, plus
+**`terraform-verify`** exactly when `include_terraform=true`, and
+**`codeql-verify`** when `use_node or use_python` generates CodeQL. The
+**`merge_queue`** rule is conditional: org repos
+(`github_org != author_git_provider_username`) get it; personal-account repos do
+not. Missing it is drift only for an org repo, while adding it to a personal repo
+is itself drift. Old repos may reference retired job names (`secrets`, `validate`,
+`build-homepage`) or carry the wrong account-type variant. Note this drift can
 also live in *prose*: even the harmon-init root `docs/architecture/branch-protection.md`
 still narrates the old `secrets`/`validate`/`build-homepage` contexts while the
-shipped ruleset JSON is already `verify`+`security` — so check the JSON, not just
-the doc. Relatedly, ambiguous `verify` contexts: if both `build.yml` and the
+shipped non-Terraform ruleset JSON is already `verify`+`security` — so check the
+rendered JSON, not just the doc. Relatedly, ambiguous `verify` contexts: if both
+`build.yml` and the
 devcontainer workflow define a job literally named `verify`, either can satisfy
 the required check — the template renames the devcontainer job to
 **`devcontainer-verify`**. Fix: re-import the ruleset via the GitHub UI
-(Settings → Rules → Rulesets → **Import a ruleset**; avoid `gh api … rulesets`,
-which is non-idempotent and rejects the `merge_queue` rule), rename the
-devcontainer job, and align CI job names to `verify` + `security`.
+(Settings → Rules → Rulesets → **Import a ruleset**) and choose the rendered
+ruleset for the repo's account type. REST supports `merge_queue`, but a blind
+`POST` is non-idempotent and can create duplicate rulesets; automation must
+discover exactly one matching live ruleset and `PUT` that ruleset's id. Rename
+the devcontainer job and align CI job names to the rendered required-check set.
 Severity: **blocker** (wrong contexts mean the gate is unenforced or unsatisfiable).
 
 **E. YAML file extensions — NOT drift; do not flag.** `.yml` vs `.yaml` is left
@@ -206,6 +216,17 @@ GitHub Code Security is an explicit `FULL_SECURITY_SCAN=true` opt-in. Fix: add
 `codeql.yml`, `scripts/run-semgrep.sh`, and the visibility-aware `build.yml` /
 Taskfile targets from the template (a re-template with the right answers includes
 them). Severity: **should**.
+
+Presence of the workflow alone is not coverage. The analyze job/action must not use
+`continue-on-error`; public and paid-private analyses must succeed, while the
+stable `codeql-verify` aggregate may accept `skipped` only for a free-private
+route or an untrusted fork. That fork aggregate must not check out or execute
+fork-controlled repository code on the aggregate runner. Treat unset/empty
+`FULL_SECURITY_SCAN` as the free-private opt-out, and verify the language matrix
+against real first-party source rather than tooling flags. When a legacy
+`.copier-answers.yml` has no `use_codeql` field, infer the intended route from
+the workflow, repository visibility, live Code Security capability, and actual
+source before changing it.
 
 **G2. Snyk policy drift.** Snyk is not required PR CI. The default Copier answer
 is `snyk_scan_schedule=off`, with manual/local second-opinion targets named
@@ -258,7 +279,7 @@ devcontainer `Dockerfile` if one exists. Severity: **blocker** if the missing
 tool makes a routine `task` target fail on a host (e.g. bare `task` → `tv`);
 **should** if the task degrades gracefully (e.g. `status` without `gum`).
 
-**Also seeded from sourceRepoFollowUps (verify per repo):** legacy-bloated
+**Additional recurring findings (verify per repo):** legacy-bloated
 `Brewfile` (deprecated formulae, missing gitleaks/yamllint/actionlint); CI that
 reinstalls lint tools inline every run instead of using the prebuilt devcontainer
 image / a composite action; auto-release-on-merge `release.yml` (standard is
@@ -300,6 +321,11 @@ It renders harmon-init **at the repo's own `_commit`** (from its
 `MISSING` scan walks the whole render and is **manifest-independent**, so a file the
 template added after the curated list was last edited — or one a hand-reconciled
 update dropped — is still caught (`.gitkeep` dir-stubs show as benign `ABSENT`).
+An absent tracked path that still exists in the index is compared from an index
+snapshot, so a transient, unstaged working-tree deletion does not create false
+drift; once the deletion is staged it is real `MISSING`. Mature nested Terraform
+roots and an established or renumbered ADR log are reported as benign `EQUIV`
+instead of false `MISSING` and do not affect the exit status.
 Because the render is at `_commit`, each **`DRIFT`** is the repo's **local
 customization** relative to its own baseline — or a **regression** where a past
 hand-reconcile dropped a same-baseline improvement (the status.sh / lint-hygiene /
@@ -310,20 +336,21 @@ reconciling **in place** (keep it in its normal file — do not extract it elsew
 required gate, e.g. a non-portable `lint-hygiene.sh`). Run this as a standard step of
 every audit.
 
-**Known false-`MISSING` categories — verify before "fixing".** Some `MISSING`
-findings are legitimate divergences, not gaps; re-adding the template's version is
-wrong. The recurring ones (nearly every iac/dotfiles repo hit ≥1):
+**Recognized equivalents and remaining false-`MISSING` categories — verify
+before "fixing".** Some apparent gaps are legitimate divergences, not missing
+standards; re-adding the template's seed is wrong. The recurring ones:
 
 - **chezmoi `private_`/`dot_` prefix** — a dotfiles repo names the template's root
   `Brewfile` `private_Brewfile` (→ `~/Brewfile`), so `Brewfile` reads `MISSING`. Add
   a root `Brewfile` per [mode-adopt-existing.md](./mode-adopt-existing.md) §4.7, not
   a "restored" copy.
 - **ADR renumbering** — the seed `docs/decisions/0001-record-architecture-decisions.md`
-  shows `MISSING` when the repo renumbered it (its `0001`/`0002` are real decisions).
-  Don't re-add — it would duplicate.
+  is `EQUIV` when the repo carries a renumbered record-decisions ADR or already
+  has a README-backed numbered ADR log. Don't re-add — it would duplicate.
 - **Replaced terraform skeleton** — an iac repo with real infra (e.g.
   `terraform/environments/…`) deleted the template's flat
-  `terraform/{main,variables,outputs}.tf` skeleton. `MISSING`, but correct — leave it.
+  `terraform/{main,variables,outputs}.tf` skeleton. Nested `*.tf` roots make
+  these seed paths `EQUIV`; leave the real layout in place.
 - **Gitignored `.envrc`** — a repo that resolves `.envrc`/`.envrc.local` from an
   `.envrc.tpl` via `op inject` gitignores the resolved file, so it reads `MISSING`.
   Leave it (it's the secure pattern the template now ships).
@@ -335,7 +362,7 @@ wrong. The recurring ones (nearly every iac/dotfiles repo hit ≥1):
   versions, so nothing is added and no dead second config results. Confirm the repo
   actually has a `.prettierrc*`/`prettier` package.json key, then leave it.
 
-**L. Workflow ↔ Taskfile contract.** Every `task <target>` referenced in
+**L. Workflow ↔ Taskfile/runtime contract.** Every `task <target>` referenced in
 `.github/workflows/*.yml` must exist in `Taskfile.yml`. CI's `lint`/`build` jobs
 call targets `task verify` never runs (e.g. `test:tasks`, `test:hooks`,
 `test:devcontainer:permissions`), so a Taskfile that drifted from the template —
@@ -355,6 +382,82 @@ grep -rhoE '(run:[[:space:]]*|^[[:space:]]*|&&[[:space:]]*)task +[a-z][a-z0-9:_-
 their `scripts/*.sh` helpers from the template (or reconcile the preserved Taskfile
 against the adopted workflows). Severity: **blocker** (the gate is unenforced and CI
 is unsatisfiable until the targets exist).
+
+A repo-specific test is a gate only when all three links exist: the root
+`Brewfile`/`task install` provides its runtime locally, the workflow provisions
+that runtime in CI, and the workflow invokes `task test` (or the specific target)
+rather than a narrower `test:tasks`. Check this manually for every added test;
+this audit found both Copier-backed skill tests and a chezmoi render test that
+passed locally but were initially unreachable or unprovisioned in CI.
+
+Target names are also insufficient to prove workflow semantics. Compare the
+`on` events/inputs and each job's `if`, `needs`, permissions, and side effects
+against the pre-update workflow. In particular, preserve intentional
+`workflow_dispatch` deploy/apply paths and their guards; YAML/actionlint can be
+green while a Terraform apply path has silently disappeared.
+
+For every aggregate job under `if: always()`, inspect its result reduction.
+Generic `success || skipped` acceptance is fail-open. A fork PR must require every
+fork-suppressed leaf to be exactly `skipped` in a workflow-inline diagnostic that
+does not check out or execute repository-controlled code. Same-repository and
+non-PR events must require every required leaf to be exactly `success`.
+Conditionally disabled leaves may skip only when the aggregate derives that exact
+expectation from the same explicit change/enabled predicates. Apply this contract
+to both build `verify` and `devcontainer-verify`; reject cancellation, timeout,
+unexpected skip/success, and unknown states.
+
+For Python CI that consumes an existing `uv.lock`, distinguish validation from
+mutation. Exports must use `uv export --locked`; syncs must use
+`uv sync --locked` (or first run `uv lock --check`). `--frozen` skips the
+freshness check. Treat a stale lock or a tracked lock rewrite as a blocker; keep
+lock creation and updates in explicit local/update workflows.
+
+When `runs-on` is variable-controlled (for example, `CI_RUNS_ON`), audit both
+repository visibility and event trust. Every public `pull_request` job must
+resolve to a GitHub-hosted runner. A same-repository job guard is defense in
+depth, not a complete trust boundary. Self-hosted use in private/trusted repos or
+on trusted push/dispatch events also needs server-side repository-scoped runner
+groups and clean ephemeral/JIT isolation; otherwise treat it as a blocker. This
+is currently a manual residual: do not assume the template's configurable
+`runs-on` expression mechanically enforces the hosted-only public-PR policy.
+
+For a Terraform-capable repo (`include_terraform=true` or real first-party `.tf`
+files), prove the local/CI lint chain before reviewing mutation. Both
+`task --dry check` and `task --dry lint:terraform` must reach format check,
+TFLint, Renovate-pinned Checkov through `uvx --from`, and the provider-lock check. The
+root `Brewfile` must provision Terraform/TFLint/uv locally, and the build workflow
+must provision the same capabilities before the shared task runs. Task names or
+documentation without command/tool reachability are not coverage.
+
+Then trace the Terraform workflow chain: change detection → validation → saved
+plan → exact-plan apply → aggregate. A tracked `.terraform.lock.hcl` makes CI init
+use `-lockfile=readonly`, but file presence alone says nothing about platform
+checksums. Require `scripts/terraform-provider-locks.sh`: lint calls `check`, the
+explicit `terraform:providers:lock` mutation task calls `update`, and the helper
+targets exactly `darwin_arm64` + `linux_amd64` in a scratch copy. Run its hermetic
+regression and prove update initialization receives `-upgrade` while check
+initialization does not; otherwise a constraint bump beyond the committed lock
+fails before `providers lock`, or check mode compares against upgraded selections
+instead of the committed-lock semantics. A fresh no-provider scaffold may skip
+cleanly. Only explicit fresh scaffolding may create the first lock, while an
+intentional local provider update may refresh it.
+Plan/apply must be downstream of validation, guarded/namespaced to the trusted
+run, and apply must refuse to re-plan if the private run-scoped saved plan is
+absent. Confirm the summary displays that same plan, state-lock waits are bounded
+(never `-lock=false`), and cleanup runs under `if: always()`.
+
+A required `terraform-verify` must always emit on `push`, `pull_request`,
+`merge_group`, and `workflow_dispatch`, including unrelated-path no-ops; use an
+internal change detector, not workflow-level path filters. Derive every accepted
+`skipped` result from explicit fork/change/enabled predicates and reject all
+other states. Agents must also retain the exact-operation approval rule for
+Terraform mutation; only the reviewed trusted-main exact-plan CI path is exempt.
+
+On workflows that may use self-hosted runners, reject shared fixed `/tmp`
+filenames for sensitive or cross-step artifacts (especially saved Terraform
+plans). Use a private per-repo/run directory beneath `${{ runner.temp }}`,
+propagate the exact path, and clean it up so concurrent or later jobs cannot
+read, replace, or collide with it.
 
 ---
 
@@ -384,14 +487,15 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
      - Never templated / adopting fresh:
 
        ```bash
-       ( cd "$TARGET" && copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD )
+       ( cd "$TARGET" && copier copy --trust --vcs-ref=v3.26.1 \
+           https://github.com/evanharmon1/harmon-init.git . )
        ```
 
-     `--vcs-ref=HEAD` is **load-bearing**: from a local path copier otherwise
-     renders the latest git tag and silently ignores committed-but-untagged work;
-     with it, copier includes dirty/untracked template changes via a throwaway
-     commit in a temp clone (your template working tree is untouched). Answer the
-     questions to match the repo, and keep all side-effectful answers
+     Replace `v3.26.1` only with a deliberately selected newer release. A local
+     `--vcs-ref=HEAD` render is appropriate for a disposable pre-release preview,
+     not the production adoption, because dirty work can record an unreachable
+     throwaway commit. Answer the questions to match the repo, and keep all
+     side-effectful answers
      (`github_remote_create`, `github_release_init`, `bunch_add`,
      `obsidian_project_add`, `run_task_install`) at their **no** defaults so the
      adopt has no side effects. Review the resulting diff carefully and discard
@@ -407,12 +511,13 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
 3. **Verify locally.** Run the same gates the standard requires, from the target:
 
    ```bash
-   ( cd "$TARGET" && task verify )    # check (lint) -> test:template
+   ( cd "$TARGET" && task verify )    # repo's fast check/build/validate/guard gate
    ( cd "$TARGET" && task security )  # gitleaks + dependency audit
    ```
 
-   Fix anything red and re-run until clean. (`task verify` ≙ `task check` +
-   `task test:template`; `task ci` additionally chains `test` and `security`.)
+   Fix anything red and re-run until clean. The exact fast targets are
+   profile/repo-specific; `task ci` additionally chains the heavier `test` and
+   `security` aggregates.
 
 4. **Run the applied-state verifier.** Confirm the audited drift classes are
    actually resolved by running the skill's checker:

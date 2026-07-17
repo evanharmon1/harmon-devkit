@@ -87,6 +87,7 @@ If there isn't an existing template in this repo, start with looking at the <htt
 - Homebrew (installs the toolchain via `Brewfile`)
 - [Taskfile](https://taskfile.dev/) (task runner)
 - Node (for npx-based tools: markdownlint-cli2, commitlint)
+- [uv](https://docs.astral.sh/uv/) (runs the pinned Semgrep CE baseline)
 
 ### Bootstrap
 
@@ -108,12 +109,13 @@ Templates are meant to be copied into your project and adapted — there is no s
 
 ### Verify
 
-`task verify` runs the fast local gate (lint + Taskfile/hook guards); `task ci`
-mirrors the full pipeline (verify + tests + security + devcontainer assert).
+`task check` runs the fast lint gate. `task verify` is the definition-of-done
+gate (check + validation + Taskfile/hook/skills guards + tests); `task ci` adds
+security.
 
 #### Security
 
-`task security` — gitleaks secret scan + dependency audit.
+`task security` — Semgrep CE SAST + gitleaks secret scan + dependency audit.
 
 #### Linting, formatting & conventions
 

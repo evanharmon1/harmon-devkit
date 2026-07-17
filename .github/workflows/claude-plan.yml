@@ -14,9 +14,11 @@ on:
     types: [opened, assigned, labeled]
 jobs:
   plan:
+    # Authorized senders — an explicit allowlist (claude_authorized_members),
+    # not org membership. The `if:` gate and the Verify step below both derive
+    # from this list, so they stay in sync.
     if: >-
-      (github.event.sender.login == 'evanharmon1' ||
-       github.event.sender.login == 'evanharmon1-bot') &&
+      (github.event.sender.login == 'evanharmon1') &&
       (contains(github.event.comment.body, '@claude plan') ||
        contains(github.event.review.body, '@claude plan') ||
        contains(github.event.issue.body, '@claude plan') ||
@@ -32,18 +34,32 @@ jobs:
       pull-requests: write
       id-token: write
     steps:
+      # Defense in depth behind the job-level `if:` sender gate: an explicit
+      # step that re-asserts the authorized-sender allowlist BEFORE minting any
+      # token, so a spoof-shaped gap in the `if:` expression can never mint
+      # credentials. Token-free — mirrors the `if:` gate.
+      - name: Verify sender is authorized
+        env:
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          case "$(printf '%s' "$SENDER" | tr '[:upper:]' '[:lower:]')" in
+            "evanharmon1") echo "$SENDER is authorized"; exit 0 ;;
+          esac
+          echo "::error::$SENDER is not an authorized sender"
+          exit 1
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
           client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           # Least-privilege token: plan only comments (issues/pull-requests) and
-          # reads the repo (no push). org-projects gated to org repos only —
-          # requesting a permission the installation lacks makes this step fail.
+          # reads the repo (no push).
           permission-contents: read
           permission-issues: write
           permission-pull-requests: write
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1.0.148
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

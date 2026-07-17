@@ -27,9 +27,9 @@ files=()
 if [ $# -gt 0 ]; then
     files=("$@")
 else
-    while IFS= read -r f; do
+    while IFS= read -r -d '' f; do
         files+=("$f")
-    done < <(git ls-files --cached --others --exclude-standard 2>/dev/null)
+    done < <(git ls-files -z --cached --others --exclude-standard 2>/dev/null)
 fi
 
 # Load per-file exemption patterns (bash 3.2 compatible)
@@ -125,10 +125,14 @@ for f in "${files[@]}"; do
         # Skip JSONC files (devcontainer.json, tsconfig*.json at any depth —
         # TypeScript officially allows comments) and anything jinja-templated.
         # tsc -b validates the tsconfigs loudly, so hygiene needn't parse them.
+        # Match only conventional devcontainer filenames (devcontainer.json or
+        # .devcontainer.json, at the root or in a directory) — a suffix glob
+        # like *devcontainer.json would exempt e.g. mydevcontainer.json too.
         case "$f" in
-        *devcontainer.json | tsconfig*.json | */tsconfig*.json | template/*) ;;
+        devcontainer.json | */devcontainer.json | .devcontainer.json | */.devcontainer.json | \
+            tsconfig*.json | */tsconfig*.json | template/*) ;;
         *)
-            if ! python3 -c "import json; json.load(open('$f'))" 2>/dev/null; then
+            if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" 2>/dev/null; then
                 warn "$f: invalid JSON"
             fi
             ;;
@@ -140,7 +144,7 @@ for f in "${files[@]}"; do
     case "$f" in
     template/*.toml) ;;
     *.toml)
-        if ! python3 -c "import tomllib; tomllib.load(open('$f','rb'))" 2>/dev/null; then
+        if ! python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$f" 2>/dev/null; then
             warn "$f: invalid TOML"
         fi
         ;;

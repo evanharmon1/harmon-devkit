@@ -15,8 +15,9 @@ Verify before running anything:
 - [ ] **Tools installed:** `copier` (>= 9.4.0, per `_min_copier_version`),
       `git`, and — if you will create the remote or release — `gh` (GitHub CLI,
       authenticated: `gh auth status`).
-- [ ] **Template available locally.** Default location is `~/git/harmon-init`.
-      If absent, clone it: `git clone https://github.com/evanharmon1/harmon-init ~/git/harmon-init`.
+- [ ] **Released template ref chosen.** Production scaffolds use the canonical
+      GitHub source and a reviewed release such as `v3.26.1`. A local checkout is
+      needed only to inspect source or preview unreleased work.
 - [ ] **Destination does not already exist / is empty.** Copier writes into
       `<dest>`; pick a path that is free.
 - [ ] **Hidden author/org defaults are correct for you.** Identity, org info,
@@ -33,15 +34,15 @@ The `--trust` flag is required: it allows copier to run the `_tasks` (git init,
 commit, etc.) defined in `copier.yml`.
 
 ```bash
-copier copy ~/git/harmon-init <dest> --trust --vcs-ref=HEAD
+copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
+  --trust --vcs-ref=v3.26.1
 ```
 
-(`harmon-init` here is the template source — usually a local checkout like
-`~/git/harmon-init`. **From a local path, always pass `--vcs-ref=HEAD`** — without
-it copier renders the **latest git tag** and silently ignores any
-committed-but-untagged *and* uncommitted template work, the trap detailed in
-`copier-gotchas.md`. Omit `--vcs-ref=HEAD` only when you deliberately want the last
-tagged release, or when sourcing the template by its GitHub URL/a pinned tag.)
+`v3.26.1` is the current reviewed example; replace it when a newer release has
+been deliberately selected. Do not use a moving branch for production lineage.
+For an unreleased template preview only, a developer may render a local checkout
+with `--vcs-ref=HEAD` into a disposable destination. That preview can contain a
+Copier-created throwaway commit and must not be promoted as a production scaffold.
 
 Copier prompts for each asked question. Answer them; everything else falls back
 to the hidden defaults.
@@ -53,7 +54,8 @@ questions all default to `no`, so omitting them is safe in CI. Add `--defaults`
 to accept the default for any key you do not pass.
 
 ```bash
-copier copy harmon-init <dest> --trust --defaults \
+copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
+  --trust --vcs-ref=v3.26.1 --defaults \
   --data project_name="My Project" \
   --data project_slug="my-project" \
   --data project_description="One-line description of the project" \
@@ -61,6 +63,7 @@ copier copy harmon-init <dest> --trust --defaults \
   --data project_type="general" \
   --data include_terraform=false \
   --data include_ansible=false \
+  --data use_codeql=false \
   --data ci_runner="ubuntu-latest" \
   --data license="mit" \
   --data use_release_please=true \
@@ -84,6 +87,7 @@ copier copy harmon-init <dest> --trust --defaults \
 | `project_type` | str | `general` | `general` \| `web-astro` \| `web-app` \| `iac` \| `docs`. Drives Taskfile, CI jobs, devcontainer tooling. |
 | `include_terraform` | bool | `true` iff `project_type == 'iac'` | Adds `terraform/` skeleton + terraform linting. |
 | `include_ansible` | bool | `true` iff `project_type == 'iac'` | Adds `ansible/` skeleton + ansible linting. |
+| `use_codeql` | bool | `true` iff derived `use_node` or `use_python` | Includes CodeQL SAST; explicitly override the tooling-derived default when planned source or capability does not support it. Public repositories have Code Security by default; for a private/internal repo, enable GitHub Code Security first or answer `false`. |
 | `ci_runner` | str | `ubuntu-latest` | `ubuntu-latest` \| `self-hosted`. |
 | `license` | str | `mit` | `mit` \| `private`. |
 | `use_release_please` | bool | `true` | release-please rolling release PR + auto CHANGELOG. |
@@ -98,6 +102,13 @@ copier copy harmon-init <dest> --trust --defaults \
 Notes:
 - Several defaults are *computed* from earlier answers. Setting `project_type=iac`
   flips `include_terraform`/`include_ansible` to `true` unless you override them.
+- Decide `use_codeql` explicitly whenever first-party JS/TS/Python is planned. A
+  generated workflow and `FULL_SECURITY_SCAN=true` configure CodeQL but do not
+  prove that SARIF was accepted; private/internal repos also require the live Code
+  Security capability. The current template derives the matrix from `use_node` /
+  `use_python`, which are tooling flags rather than source evidence, so reconcile
+  the rendered languages with the real source until harmon-init exposes an
+  explicit `codeql_languages` multiselect/override.
 - Hidden, derived flags you do **not** answer but that follow from your choices:
   `use_node` (true for `web-astro`/`web-app`), `use_python` (true for `iac` or
   `include_ansible`), `repo_url`, `devcontainer_image`, `ci_runner_labels`.
@@ -128,27 +139,23 @@ If you left the side-effectful answers at their `no` defaults (the CI-safe,
 recommended path for unattended generation), only steps 1–2 run and you finish
 setup manually in the next section.
 
-## 4a. Normalize `_src_path` (local-path renders) — REQUIRED for updatability
+## 4a. Verify durable Copier lineage
 
-When you rendered from a **local checkout** (`copier copy ~/git/harmon-init …`),
-copier records that machine-local path as `_src_path` in the generated
-`.copier-answers.yml`, and the auto-run genesis commit (§4, task 2) captures it.
-A relative/local `_src_path` makes a later `copier update` abort with *"Updating
-is only supported in git-tracked templates"* (`copier-gotchas.md` §8) — the repo
-can pass every gate yet never accept a template update. Rewrite it to the
-canonical GitHub URL and fold the fix into the genesis commit **before the first
-push**:
+The production command above records both the canonical `_src_path` and the
+released `_commit` in `.copier-answers.yml`. Treat those fields as one lineage
+tuple and verify both before the first push:
 
 ```bash
-cd <dest>
-yq -i '._src_path = "https://github.com/evanharmon1/harmon-init"' .copier-answers.yml
-git add .copier-answers.yml && git commit --amend --no-edit   # fold into the genesis scaffold commit
+grep -E '^(_src_path|_commit):' .copier-answers.yml
 ```
 
-Skip this only if you rendered from the GitHub URL directly (then `_src_path` is
-already the URL). If the remote was **already** created/pushed (you set
-`github_remote_create=true`), don't amend — make it a normal follow-up commit
-instead. Always verify: `grep _src_path .copier-answers.yml` should show the URL.
+If a repo was rendered from a local checkout, **do not rewrite only `_src_path`**.
+A dirty `--vcs-ref=HEAD` render may record a temporary commit that is not reachable
+from the canonical remote, leaving the next `copier update` unable to reconstruct
+its base. Use that render only as a preview, then re-render/re-adopt production
+from the canonical URL and a released ref. The narrow exception is a deliberately
+pushed pre-release commit: first prove the recorded `_commit` is reachable from
+the canonical remote, then verify and commit both lineage fields together.
 
 ## 5. After generation — local setup & self-check
 

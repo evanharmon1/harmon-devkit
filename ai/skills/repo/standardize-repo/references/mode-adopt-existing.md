@@ -6,8 +6,8 @@ Copier template to a repo that **already has app code**. The hard rule: this is 
 **never blind-clobber existing app code.** Read each conflict, prefer merging, and
 work on a feature branch the whole time.
 
-For Copier mechanics (custom `[[ ]]`/`[% %]` jinja delimiters, the load-bearing
-`--vcs-ref=HEAD`, `--trust`, side-effect answers) see
+For Copier mechanics (custom `[[ ]]`/`[% %]` jinja delimiters, released production
+refs versus local-preview `--vcs-ref=HEAD`, `--trust`, side-effect answers) see
 [`copier-gotchas.md`](./copier-gotchas.md). For the GitHub-side wiring after the
 files land (branch ruleset import, Renovate/CodeRabbit apps, Actions secrets, etc.)
 see [`post-generation-checklist.md`](./post-generation-checklist.md).
@@ -109,9 +109,10 @@ copier update --trust --defaults
 to prompt (`OSError: [Errno 22]`). See [`mode-update.md`](./mode-update.md) §2.
 
 `copier update` takes no source argument — it reuses the `_src_path` recorded in
-`.copier-answers.yml`, which must be a **resolvable git URL** (see
-[copier-gotchas.md](./copier-gotchas.md) gotcha 8; normalize it first if it's a
-relative/local path). **Always do a full update to the latest released version** —
+`.copier-answers.yml`, whose `_src_path` and `_commit` must form a resolvable
+lineage tuple (see [copier-gotchas.md](./copier-gotchas.md) gotcha 8; never
+normalize only a local path unless the recorded commit is reachable from the
+canonical remote). **Always do a full update to the latest released version** —
 plain `copier update` goes to harmon-init's newest tag and three-way-merges the whole
 delta into your files; don't scope it to a specific intermediate version. Override
 stale answers with `--data key=value` as needed (e.g. a changed `github_org`).
@@ -130,11 +131,14 @@ write `.copier-answers.yml` so future runs can use `copier update`:
 
 ```bash
 ls .copier-answers.yml          # absent → adopt fresh
-copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD --defaults --overwrite \
+: "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
+copier copy --trust https://github.com/evanharmon1/harmon-init.git . \
+  --vcs-ref=v3.26.1 --defaults --overwrite \
   --data project_type="$PROJECT_TYPE" \
   --data project_name="<Formal Project Name>" \
   --data project_slug="$(basename "$(pwd)")" \
   --data github_org="<org-or-user>" \
+  --data use_codeql="$USE_CODEQL" \
   --data git_init=false \
   --data github_remote_create=false --data github_release_init=false \
   --data bunch_add=false --data obsidian_project_add=false --data run_task_install=false
@@ -142,9 +146,16 @@ copier copy --trust ~/git/harmon-init . --vcs-ref=HEAD --defaults --overwrite \
   #   defaults from the stale .copier-answers.yml, so they do NOT "default to no".
 ```
 
-`--vcs-ref=HEAD` is **mandatory** here when `~/git/harmon-init` is a local path:
-without it copier silently renders the latest git tag and ignores
-committed-but-untagged + uncommitted template work.
+`v3.26.1` is the current reviewed release example; deliberately select a newer
+released ref when appropriate. Local `--vcs-ref=HEAD` adoption is for a disposable
+preview only, never the production apply: dirty local renders can record a
+throwaway `_commit` that no later remote update can resolve.
+
+Set `USE_CODEQL` deliberately before rendering. Use `true` only for a supported
+Node/Python stack when Code Security is available (public repositories have it by
+default; inspect private/internal repositories with the read-only check in
+[`mode-audit.md`](./mode-audit.md), drift class G). Otherwise use `false`; do not
+render a workflow whose SARIF upload cannot succeed.
 
 `--defaults` is **required non-interactively** (no TTY → `OSError: [Errno 22]`), and
 because copier can't prompt per-file, `--overwrite` makes the run deterministic
@@ -177,6 +188,12 @@ from git rather than hand-merging conflict markers:
      security regression, not a tooling sync. (harmon-init ≥ the CODEOWNERS-freeze
      change keeps it via `_skip_if_exists`, and `verify-applied.sh` FAILS if an
      owner present on `main` is missing post-adopt — but check it by hand too.)
+     For a user-confirmed replacement, pass
+     `--ack-codeowner-change @old=@new` to `verify-applied.sh`, repeating the
+     exact mapping for each dropped owner. The verifier checks that `@old`
+     existed on `main` and is now absent, that `@new` is present now, and
+     rejects stale, extra, malformed, or non-materialized mappings. There is no
+     blanket access-control bypass.
    - **If you restore a customized `Taskfile.yml` but keep the template's
      workflows, reconcile the contract.** The template's `.github/workflows/*`
      delegate to `task` targets (e.g. `test:tasks`, `test:hooks`,
@@ -187,8 +204,10 @@ from git rather than hand-merging conflict markers:
      `grep -rhoE '(run:[[:space:]]*|^[[:space:]]*|&&[[:space:]]*)task +[a-z][a-z0-9:_-]*' .github/workflows/ | sed -E 's/.*task +//' | sort -u`.
      `verify-applied.sh` §3c enforces this (see [mode-audit.md](./mode-audit.md)
      drift class L).
-3. **Keep** the template version for uncustomized tooling **and all additive new
-   files** (docs scaffold, codeql/release-please, helper scripts, `.copier-answers.yml`).
+3. **Keep** the template version for uncustomized tooling **and all applicable
+   additive new files** (docs scaffold, release-please, helper scripts,
+   `.copier-answers.yml`; CodeQL only when `use_codeql=true` and the live
+   capability supports it).
 4. **Canonicalize AGENTS.md** — fold the old real guidance (often the pre-existing
    real `CLAUDE.md`) into `AGENTS.md`; leave `CLAUDE.md`/`GEMINI.md`/
    `.github/copilot-instructions.md` as the symlinks copier wrote (§4.1).
@@ -233,8 +252,8 @@ When in genuine doubt about a specific file, keep the existing version and leave
 
 ## 4. Reconciliation steps specific to existing repos
 
-These are the recurring drifts harmon-init exists to fix (source:
-`harmon-init/docs/sourceRepoFollowUps.md`). Walk each one after the copier run:
+These are the recurring drifts observed across existing repos. Walk each one
+after the copier run:
 
 1. **AGENTS.md is canonical; everything else symlinks to it.** The template ships
    `AGENTS.md` as the real file with `CLAUDE.md`, `GEMINI.md`, and
@@ -332,14 +351,14 @@ These are the recurring drifts harmon-init exists to fix (source:
    `diff-template.sh` to report those files as DRIFT + `prettier.config.cjs`
    as MISSING — both intentional.
 
-   **Normalize `.copier-answers.yml` after a local-path render.** Rendering
-   with `--vcs-ref=HEAD` from a *dirty* local template checkout records a
-   throwaway `_commit` describe-string (e.g. `v3.16.0-3-g<sha>` — a commit
-   that exists in no clone), which breaks the next `copier update` (the
-   three-way-merge base ref is unresolvable). Post-adopt, reset both keys:
-   `_commit` → the real released tag the render corresponds to (e.g.
-   `v3.16.0`), `_src_path` → the GitHub URL (gotcha 8). If the render
-   included commits past that tag, the next update harmlessly re-offers them.
+   **Preserve a truthful `.copier-answers.yml` lineage tuple.** A dirty local
+   `--vcs-ref=HEAD` preview can record a throwaway `_commit` that exists in no
+   clone. Do not relabel that output by changing `_src_path` or substituting a
+   nearby release tag: either action makes the recorded base differ from what
+   was rendered. Re-run the production adoption from the canonical URL at the
+   reviewed release. Only a deliberately pushed pre-release commit is eligible
+   for promotion, after proving `_commit` is reachable from the canonical remote
+   and verifying both lineage fields together.
 
    **Four traps that block the first commit/push after a v2→v3 render:**
    (a) **Stale pre-commit.com hook** — deleting `.pre-commit-config.yaml` leaves the

@@ -53,16 +53,18 @@ differently.
 
 These are load-bearing. Full rationale and edge cases in `references/copier-gotchas.md`.
 
-- **When *rendering* from a local path (`copier copy`), always pass `--vcs-ref=HEAD`.**
-  Without it, copier renders the **latest git tag** of harmon-init and silently
-  ignores all uncommitted *and* committed-but-untagged work. With it, copier
-  auto-includes dirty/untracked changes via a throwaway commit in a temp clone
-  (`DirtyLocalWarning`) — the working tree is never touched. This rule is about
-  *which ref* to render, not *where* the template lives — and it applies to
-  `copier copy`, **not** `copier update`. An update reuses the recorded `_src_path`
-  and tracks released **tags**: a generated repo's committed `_src_path` should be
-  the GitHub URL (not a machine-local path), and a normal `copier update` takes
-  **no** `--vcs-ref`. See `copier-gotchas.md` gotchas 1 (render ref) & 8 (`_src_path`).
+- **Production scaffolds use the canonical GitHub URL at a released ref.** Run
+  `copier copy --trust --vcs-ref=v3.26.1
+  https://github.com/evanharmon1/harmon-init.git <dest> ...` (substitute the
+  reviewed current release). This records durable lineage that another machine
+  can resolve. A local-path `--vcs-ref=HEAD` render is only for a disposable
+  preview/test of unreleased template work. Copier may represent dirty local work
+  with a throwaway commit that does not exist on GitHub; never promote that render
+  by rewriting only `_src_path`. The recorded `_src_path` and `_commit` are one
+  lineage tuple: before changing a local path to the canonical URL, prove the
+  recorded commit is reachable from that remote, or re-render/re-adopt from a
+  released remote ref. A normal `copier update` reuses that tuple and takes no
+  `--vcs-ref`. See `copier-gotchas.md` gotchas 1 and 8.
 - **Side-effectful answers default to `no`** in `copier.yml` (`github_remote_create`,
   `github_release_init`, `bunch_add`, `obsidian_project_add`, `run_task_install`).
   Leave them off unless the user explicitly asks; only flip them on with confirmation.
@@ -71,8 +73,8 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
   (the template has `_tasks`). Example shape:
 
   ```bash
-  copier copy ~/git/harmon-init ./new-project \
-    --vcs-ref=HEAD --trust \
+  copier copy https://github.com/evanharmon1/harmon-init.git ./new-project \
+    --vcs-ref=v3.26.1 --trust \
     --data project_name="My Project" --data project_type=general --defaults
   ```
 
@@ -103,7 +105,7 @@ assets/verify-applied.sh <target-repo-dir>
 ```
 
 It confirms the expected files/tooling landed and then runs the repo's own gate
-(`task verify` = lint + template/output checks; `task check` for lint only;
+(`task verify` = the repo's fast check/build/validate/guard set; `task check` for lint only;
 `task install:hooks` to wire lefthook). Report what passed and surface any gaps
 against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
 prohibited); commit on a feature branch and open a PR — no direct commits to `main`.

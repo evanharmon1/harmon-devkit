@@ -8,21 +8,40 @@
 #
 # Lines starting with # and blank lines are ignored. Paths use the template's
 # default extension; diff-template.sh maps .yml<->.yaml to whatever the repo uses.
-# Entries not present in a given render (e.g. codeql.yml for a non-node/python
-# repo) are skipped automatically.
+# Entries not present in a given render (e.g. codeql.yml when `use_codeql=false`
+# or the stack has no supported Node/Python language) are skipped automatically.
 
 # ── Task runner + git hooks ──────────────────────────────────────────────────
 Taskfile.yml
 lefthook.yml
+Brewfile
+.claude/settings.json
+.skills-sync.yaml
 
 # ── Shared scripts ───────────────────────────────────────────────────────────
 scripts/status.sh
 scripts/lint-hygiene.sh
+scripts/shell-quality.sh
+scripts/markdownlint.sh
+scripts/secret-set-1p.sh
+scripts/secret-set-gh.sh
+scripts/python-audit.sh
+scripts/terraform-provider-locks.sh
+scripts/terraform-changed.sh
+scripts/terraform-ci.sh
+scripts/test-codeql-result.sh
+scripts/test-required-results.sh
+scripts/test-terraform-provider-locks.sh
+scripts/test-terraform-ci.sh
+scripts/verify-codeql-result.sh
+scripts/verify-required-results.sh
+scripts/sync-skills.sh
 scripts/summarize-gitleaks.mjs
 scripts/run-semgrep.sh
 scripts/test-tasks.sh
 scripts/test-hooks.sh
 scripts/devcontainer-assert.sh
+scripts/devcontainer-smoke.sh
 
 # ── Lint / format / security config ──────────────────────────────────────────
 .editorconfig
@@ -43,8 +62,45 @@ commitlint.config.mjs
 .github/workflows/codeql.yml
 .github/workflows/snyk-scheduled.yml
 .github/workflows/release.yml
+.github/workflows/close-milestone-on-release.yml
 .github/workflows/devcontainer-build.yml
+.github/workflows/deploy-preview.yml
 .github/workflows/project-automation.yml
+.github/workflows/terraform.yml
+
+# ── Foreman (conditional on use_foreman) ─────────────────────────────────────
+.foreman.toml
+taskfiles/foreman.yml
+docs/architecture/foreman.md
+.claude/agents/foreman-implementer.md
+.claude/agents/foreman-preflight.md
+.claude/agents/foreman-shepherd.md
+scripts/foreman/__init__.py
+scripts/foreman/__main__.py
+scripts/foreman/backend.py
+scripts/foreman/backends/claude.sh
+scripts/foreman/backends/mock.sh
+scripts/foreman/cli.py
+scripts/foreman/config.py
+scripts/foreman/dispatch.py
+scripts/foreman/github.py
+scripts/foreman/graph.py
+scripts/foreman/inputs.py
+scripts/foreman/pr.py
+scripts/foreman/prompts/implementer-preamble.md
+scripts/foreman/prompts/preflight.md
+scripts/foreman/prompts/shepherd-adjudicate.md
+scripts/foreman/prompts/shepherd-ci-fix.md
+scripts/foreman/prompts/shepherd-rebase.md
+scripts/foreman/report.py
+scripts/foreman/shepherd.py
+scripts/foreman/signatures.py
+scripts/foreman/signatures.toml
+scripts/foreman/spec.py
+scripts/foreman/util.py
+scripts/foreman/verify.py
+scripts/foreman/watch.py
+scripts/foreman/worktree.py
 .github/actions/setup/action.yml
 
 # ── Devcontainer (template-owned lifecycle + tooling) ─────────────────────────

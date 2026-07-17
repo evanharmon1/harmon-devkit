@@ -12,7 +12,8 @@ on:
 
 # Parallel jobs that all call into the Taskfile so local + CI run identical commands.
 # A final `verify` job aggregates statuses for branch protection
-# (required checks: verify + security).
+# (required checks: verify + security). Every job's toolchain setup goes through
+# the shared ./.github/actions/setup composite action.
 
 concurrency:
   group: build-${{ github.ref }}
@@ -32,39 +33,23 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          # renovate: datasource=node-version
-          node-version: "24"
-      - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
         with:
-          # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
-          version: 3.51.1
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Install lint tools (shellcheck, shfmt, actionlint, yamllint, yq)
+          lint-tools: "true"
+      - name: Install devkit test tools
         run: |
-          # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
-          SHELLCHECK_VERSION=0.10.0
-          curl -sSL -o /tmp/shellcheck.tar.xz \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
-          sudo install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
-          # renovate: datasource=github-releases depName=mvdan/sh extractVersion=^v?(?<version>.+)$
-          SHFMT_VERSION=3.13.1
-          sudo curl -sSL -o /usr/local/bin/shfmt \
-            "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
-          sudo chmod +x /usr/local/bin/shfmt
-          # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v?(?<version>.+)$
-          ACTIONLINT_VERSION=1.7.12
-          curl -sSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
-            | tar -xz -C /tmp actionlint
-          sudo mv /tmp/actionlint /usr/local/bin/
           # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
           YQ_VERSION=4.44.3
-          sudo curl -sSL -o /usr/local/bin/yq \
+          YQ_SHA256=a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7
+          curl -fsSL --retry 3 -o /tmp/yq \
             "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
-          sudo chmod +x /usr/local/bin/yq
-          pip install yamllint
+          echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          # renovate: datasource=pypi depName=copier
+          COPIER_VERSION=9.16.0
+          python -m pip install "copier==${COPIER_VERSION}"
       - name: Lint
         run: task check
       - run: task validate
@@ -84,26 +69,17 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: ./.github/actions/setup
         with:
-          # renovate: datasource=node-version
-          node-version: "24"
-      - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
-        with:
-          # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
-          version: 3.51.1
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Install gitleaks
-        run: |
-          # renovate: datasource=github-releases depName=gitleaks/gitleaks extractVersion=^v?(?<version>.+)$
-          GITLEAKS_VERSION=8.24.3
-          curl -sSL -o /tmp/gitleaks.tgz \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          tar -xzf /tmp/gitleaks.tgz -C /tmp
-          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
-      - name: Security scan
-        run: task security
+          gitleaks: "true"
+      - name: Secrets scan
+        run: task security:secrets
+      - name: Dependency audit
+        run: task security:audit
+      - name: SAST (Semgrep Community Edition)
+        run: task security:sast
 
   verify:
     if: always()
@@ -111,17 +87,37 @@ jobs:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    env:
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
-      - name: Check job results
+      # Never check out or run fork-controlled repository code on this path.
+      - name: Verify deliberate skips at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
         run: |
           fail=0
-          check() {
-            [ "$2" = "success" ] || [ "$2" = "skipped" ] || { echo "Job $1 result: $2"; fail=1; }
+          check_skipped() {
+            if [ "$2" != "skipped" ]; then
+              echo "Job $1 result: $2 (expected skipped for an untrusted fork)"
+              fail=1
+            fi
           }
-          check lint "${{ needs.lint.result }}"
-          check security "${{ needs.security.result }}"
+          check_skipped lint "$LINT_RESULT"
+          check_skipped security "$SECURITY_RESULT"
           if [ "$fail" -ne 0 ]; then
-            echo "One or more required jobs failed."
             exit 1
           fi
-          echo "All required jobs passed."
+          echo "Untrusted fork trust boundary enforced: all repository-controlled jobs were deliberately skipped."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Verify required jobs succeeded
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+          LINT_RESULT: ${{ needs.lint.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: ./scripts/verify-required-results.sh "lint=${LINT_RESULT}" "security=${SECURITY_RESULT}"

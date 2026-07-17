@@ -10,6 +10,10 @@ Calm, repeatable how-tos read *in advance* (the crisis counterpart is
 - [troubleshooting.md](troubleshooting.md) — symptom → cause → fix for **dev**
   problems (broken build, failing local setup). Distinct from runbooks, which
   cover prod incidents.
+- [bot-account.md](bot-account.md) — the `evanharmon1-bot`
+  machine account: how it gets repo access, how to mint and rotate its
+  fine-grained PAT, and why the collaborator grant — not the token — is where
+  per-repo granularity lives.
 - [devcontainers.md](devcontainers.md) — the dual-profile devcontainer (bot vs
   dev), local secrets via **1Password Environments**, GHCR prebuilds, and
   **Coder** setup.

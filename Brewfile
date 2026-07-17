@@ -15,19 +15,30 @@ brew "shellcheck"
 brew "shfmt"
 brew "actionlint"
 brew "yamllint"
+brew "markdownlint-cli2"
 
 # Security
 brew "gitleaks"
-tap "snyk/tap"
-brew "snyk/tap/snyk"
 
-# Runtime for npx-based tools (commitlint, markdownlint-cli2)
+# Runtime for commitlint and pinned npx fallbacks
 brew "node"
+# Python tool runner (Semgrep CE use uv/uvx)
+brew "uv"
+
+# Universal scripts parse JSON/TOML and require Python 3.11+
+brew "python"
 
 # Devcontainer
 brew "hadolint"
+brew "devcontainer"
+
+# Skills tooling tests parse manifests and render tiny local Copier templates
+# even though this source repo intentionally does not vendor its own skills.
+brew "copier"
+brew "yq"
 
 # Utilities
+brew "coreutils"    # `timeout` portability (`gtimeout` on macOS)
 brew "direnv"
 brew "jq"
 brew "fzf"

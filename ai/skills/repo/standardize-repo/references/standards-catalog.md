@@ -8,10 +8,11 @@ should this repo have, and where does it come from?"**
 Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 `harmon-init/AGENTS.md`, the `harmon-init/template/` tree. Live reference repos
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
-project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). The platform
-and client repos are kept current via mode-update passes (all six were at
-v3.15.2 as of 2026-07-03), so their remaining divergences are **deliberate
-customizations** (Part 3.2), not lag — but they can drift between passes, so
+project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
+was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13.
+The platform and client repos are kept current via mode-update passes, so their
+remaining divergences are often **deliberate customizations** (Part 3.2), not lag
+— but they can drift between passes, so
 read the repo's actual `_commit` in `.copier-answers.yml` rather than assuming
 either way. Treat the **template** as canonical; treat divergences in a live
 repo as legit project-type/stack specifics (Part 3), deliberate customizations,
@@ -85,9 +86,11 @@ refreshed by `copier update`'s three-way merge, which preserves a repo's own edi
 Customize them **normally, in place** — there is no extension-file convention a
 repo's developers need to learn. `assets/diff-template.sh` reports both content
 `DRIFT` in the curated set and `MISSING` template files the repo lacks entirely
-(a whole-render, manifest-independent scan), so an audit/update pulls in missed
-improvements (the recurring status.sh / lint-hygiene / bootstrap class) and missed
-whole files without losing local customizations — see mode-audit drift class **K**.
+(a whole-render, manifest-independent scan). It compares an unstaged tracked
+deletion from the index and reports mature nested Terraform/ADR replacements as
+benign `EQUIV`, so an audit/update pulls in missed improvements (the recurring
+status.sh / lint-hygiene / bootstrap class) and missed whole files without losing
+local customizations — see mode-audit drift class **K**.
 
 Naming & structure conventions:
 
@@ -98,14 +101,25 @@ Naming & structure conventions:
 - **Pipeline order:** `check → build → validate → test → security`, with
   `verify` (fast local gate) and `ci` (full CI mirror) as aggregates.
   **`verify`** is tuned to stay well under a minute so editors, git hooks, and AI
-  agents can run it on every change: `check [→ build] → validate → test:tasks
-  [→ test:hooks]`. **`ci`** reproduces the whole CI pipeline on demand (run it
-  locally instead of opening a PR): `verify [→ test:devcontainer:permissions] →
-  test → security`. The rule: a check only belongs in `verify` if it stays fast;
-  heavy or Docker-dependent checks (`test`, `security`, `test:devcontainer:permissions`)
-  live in `ci`. Every `task` target a workflow invokes must still exist (drift
+  agents can run it on every change: `check [→ build] → validate
+  [→ test:devcontainer:permissions] → test:tasks [→ test:hooks]`. The devcontainer
+  permission assertion is a static, daemon-free configuration check. **`ci`**
+  reproduces the whole CI pipeline on demand (run it locally instead of opening a
+  PR): `verify → test → security`. The rule: a check only belongs in `verify` if
+  it stays fast; genuinely heavy or environment-dependent checks (`test`,
+  `security`, container smoke/build tests) live in `ci`. Every `task` target a
+  workflow invokes must still exist (drift
   class L) — but `verify` is intentionally a *subset* of what CI runs, so "`verify`
   is green" is not "CI is green"; use `ci` for that.
+- **Repo-specific test reachability:** a test is a real local/CI gate only when
+  `task install` (the root `Brewfile`) supplies its local runtime, CI
+  provisions the same runtime, and the workflow invokes `task test` or that
+  specific target. Merely adding it beneath the Taskfile's `test` aggregate is
+  not enough when the workflow still calls only `test:tasks`.
+- **Hermetic task regression tests:** current `test:tasks` uses temporary fake
+  `brew`, `npm`, and `curl` commands; it must not install or update shared
+  machine tools. When auditing multiple repos, run older live-tool variants
+  serially until the current hermetic script is ported.
 - **Parallel deps:** umbrella tasks fan out via `deps:` (which run in parallel),
   e.g. `lint` deps on `lint:yaml`, `lint:shell`, `lint:markdown`,
   `lint:actions`, `lint:hygiene`; `security` deps on `security:sast` +
@@ -156,14 +170,27 @@ repo.
 
 Notable command bodies (for an auditor checking they match):
 
-- `lint:shell` → `shellcheck --severity=error` + `shfmt -d`
+- `lint:shell` → `scripts/shell-quality.sh check`, which passes NUL-delimited
+  tracked `*.sh`/`*.bash` paths (or explicit argv paths) intact to
+  `shellcheck --severity=error` + `shfmt -d`; `format` calls the same helper
+  in write mode
 - `lint:markdown` → markdownlint-cli2 `'**/*.md' '#.claude/**' …` — prefers the
-  repo-pinned `node_modules/.bin` copy via `pnpm exec` when installed, falls
-  back to `npx --yes` (non-node repos, fresh scaffolds); same pattern in
+  repo-pinned `node_modules/.bin` copy when installed, then a global
+  `markdownlint-cli2` from the Brewfile, then a version-pinned npx fallback;
+  same pattern in
   `format`/`format:file` for prettier + markdownlint (check-only here; **no
   `--fix`** — auto-fix lives in `format`)
 - `lint:hygiene` → `./scripts/lint-hygiene.sh`
 - `security:secrets` → `gitleaks detect --no-banner --redact --source .`
+- Python `security:audit` → fail-closed `scripts/python-audit.sh`: with a
+  `uv.lock`, require it to match `pyproject.toml` while exporting the exact graph
+  with `uv export --locked --all-extras --all-groups`; before the first lock,
+  compile the project plus `dev` group to a temporary requirements file. Audit
+  it with pinned `pip-audit==2.10.1`; no `|| true` or ignored exit status. Any
+  CI-only command that consumes an existing lock must use `--locked` (for
+  example, `uv sync --locked`) or first run `uv lock --check`; CI must fail on
+  staleness and never silently rewrite the lock. Local install/update workflows
+  may intentionally create or refresh it.
 - `security:sast` → `./scripts/run-semgrep.sh` (Semgrep CE; no account/token)
 - `security:sca` → the same free package-manager audit as `security:audit`
 - `security:sast:snyk` / `security:sca:snyk` → explicit optional Snyk Code /
@@ -323,7 +350,14 @@ Shared structure:
   generated repo's `docs/guides/devcontainers.md` has the full walkthrough.
 - **`devcontainer.env`** is gitignored; only `devcontainer.env.example` is
   committed. **[manual]** to populate real secrets.
-- Smoke tests: `task test:devcontainer:root` / `test:devcontainer:dev`.
+- **Static permission test:** `test:devcontainer:permissions` calls
+  `read-configuration` with `--docker-path /usr/bin/true`, so the fast
+  configuration/permission assertion remains Docker-daemon-independent.
+- **Smoke tests:** `task test:devcontainer:root` /
+  `test:devcontainer:dev` require Docker and GNU `timeout`. They hard-bound
+  daemon preflight and cleanup at `-k 5 20`, and the full `devcontainer up`
+  lifecycle at `-k 30 1800`, so a wedged daemon or build cannot hang fleet
+  verification indefinitely.
 
 ### 1.7 CI/CD (GitHub Actions)
 
@@ -336,11 +370,39 @@ Shared structure:
 - **Least-privilege `permissions:`** per job (top-level `contents: read`).
 - **`merge_group`** trigger on `build.yml` (merge-queue support).
 - **Aggregate gate:** a final `verify` job (`if: always()`, `needs: [lint,
-  security, …]`) reports one rollup status. Branch protection requires the
-  **`verify`** and **`security`** checks, plus **`codeql-verify`** when a
-  Node/Python profile generates CodeQL.
+  security, …]`) reports one rollup status. Branch protection requires
+  **`verify`** and **`security`**, plus **`codeql-verify`** when a Node/Python
+  profile generates CodeQL and **`terraform-verify`** for a Terraform-capable
+  repo (when `include_terraform=true`, the Terraform aggregate is required).
+  Result acceptance is predicate-exact, never a generic
+  `success || skipped` allowlist. On a fork PR, every fork-suppressed leaf must be
+  exactly `skipped`; the diagnostic is workflow-inline, states the untrusted-fork
+  boundary explicitly, and neither checks out nor executes repository-controlled
+  code. On a same-repository PR or non-PR event, every required leaf must be
+  exactly `success`; a conditionally disabled leaf may be `skipped` only when its
+  explicit change/enabled predicate proves that exact result. Reject `failure`,
+  `cancelled`, `timed_out`, unexpected `skipped`, unexpected `success`, and every
+  unknown state. A check that rejects only `failure` is fail-open. The
+  `devcontainer-verify` aggregate follows the identical fork-skipped/trusted-
+  success contract for its build leaf.
 - Fork-PR guard: jobs gate on
   `github.event.pull_request.head.repo.full_name == github.repository`.
+- **Runner trust boundary [manual residual / audit requirement]:** public
+  `pull_request` jobs must stay GitHub-hosted; never let `CI_RUNS_ON` redirect
+  them to persistent self-hosted runners.
+  Self-hosted execution is limited to private/trusted repositories or trusted
+  `push`/`workflow_dispatch` events, with server-side repository-scoped runner
+  groups **and** clean ephemeral/JIT isolation. Keep same-repository guards on
+  configurable-runner jobs as defense in depth, but a job guard alone is not a
+  complete trust boundary. The current template's configurable-runner pattern
+  does not mechanically enforce hosted-only public PRs: audit repository
+  visibility, events, and `CI_RUNS_ON`, then specialize `runs-on` where needed.
+  See [GitHub's self-hosted runner hardening
+  guidance](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners).
+- **Self-hosted-safe temporary artifacts:** never use a shared fixed `/tmp`
+  path for sensitive or cross-step state such as a saved Terraform plan. Create
+  a private per-repo/run path beneath `${{ runner.temp }}` (include run
+  id/attempt), pass that exact path between steps, and clean it up.
 
 Workflow inventory:
 
@@ -403,7 +465,15 @@ The repository-class policy is:
 - **CodeQL** — `codeql.yml` is generated for Node/Python. It runs automatically
   on public repositories; private/internal repositories run it only with paid
   GitHub Code Security + `FULL_SECURITY_SCAN=true`, otherwise `build.yml` uses
-  Semgrep CE. **[copier]**; **[manual]** only for the paid private opt-in.
+  Semgrep CE. An unset/empty `FULL_SECURITY_SCAN` normalizes to the free-private
+  route. The analyze job/action never uses `continue-on-error`; its stable
+  aggregate requires success for public/paid-private analysis and reports a
+  successful not-applicable result only for free-private or untrusted-fork
+  routes. The fork path does not check out or execute fork-controlled repository
+  code on the aggregate runner. `use_node` and `use_python` describe tooling;
+  neither proves that its corresponding source language exists, so reconcile the
+  generated matrix with real first-party source. **[copier]**; **[manual]** only
+  for the paid private opt-in.
 - **Snyk** — optional `security:sast:snyk` (`snyk code test`) +
   `security:sca:snyk` (`snyk test --all-projects`) second opinions. The default
   `snyk_scan_schedule=off` keeps `SNYK_TOKEN` local and Snyk outside required PR
@@ -422,15 +492,22 @@ The repository-class policy is:
   squash/rebase; org repos add a `merge_queue` rule. Scheduled Snyk and Snyk App
   checks are never required by default. **[copier]** ships the file; **[manual]**
   import via the GitHub UI (Settings → Rules → Rulesets → **Import a ruleset**) — not
-  `gh api … rulesets`, whose `POST` is non-idempotent (duplicates the ruleset)
-  and rejects the `merge_queue` rule (422); edit the existing ruleset in the UI
-  to change it later.
+  a blind `gh api … rulesets` `POST`, which is non-idempotent and can duplicate
+  the ruleset. REST supports `merge_queue`; safe automation must discover
+  exactly one matching ruleset and `PUT` its id. Edit the existing ruleset in
+  the UI to change it later.
 - **`SECURITY.md`** lives in **`.github/`** (Private Vulnerability Reporting).
   **[copier]**
 - **Renovate, NOT Dependabot** for version updates. CHECKLIST explicitly says
   enable Dependabot *alerts* + Private vulnerability reporting but **do NOT add
   `dependabot.yml`** — Renovate owns updates. **[manual]** repo settings.
-- **`CODEOWNERS`** = `* @<code_owner>` — an asked question that defaults to `github_org`. **[copier]**
+- **`CODEOWNERS`** = `* @<code_owner>` — an asked question that defaults to
+  `author_git_provider_username` (a bare organization is not a valid CODEOWNERS
+  principal; org repos can deliberately choose `org/team`). **[copier]**
+  Existing owners are access control: an intentional replacement must be
+  user-confirmed and acknowledged to `verify-applied.sh` as the exact
+  `--ack-codeowner-change @old=@new` mapping. Old must exist on `main` and be
+  dropped, new must be present, and extra/stale mappings fail.
 - **Secrets via 1Password** locally (`op run`/`op inject`); CI reads Actions
   secrets. **`.env` is fully gitignored** (`.env`, `**/.env`, `.env.*`) with a
   single committed exception, `!/.env.example` (names/placeholders only; node
@@ -440,9 +517,18 @@ The repository-class policy is:
   NAME=… REPO=owner/repo` (GitHub repo secrets), backed by
   `scripts/secret-set-{1p,gh}.sh`: the value is read from **stdin only** — never
   argv, `--body`, exported env vars, or Taskfile vars (history/process-listing
-  hygiene). Both fail without destination metadata (`test-tasks.sh` asserts it),
-  and agents still must not write to a password manager without explicit
-  per-write confirmation. **[copier]**
+  hygiene). The 1Password helper fully materializes and validates the item JSON
+  before `op item edit` can start; it requires one matching `CONCEALED` field
+  and rejects `SSH_KEY`/`PASSKEY` categories, `SSHKEY` fields, and structured
+  values because a full-item edit can clobber those credentials. Both helpers
+  fail without destination metadata (`test-tasks.sh` asserts it), and agents
+  still must not write to a password manager without explicit per-write
+  confirmation. **[copier]**
+- **`op` is a deliberate human-only toolchain exception.** Root `Brewfile` /
+  `task install` does not provision 1Password CLI: install and authenticate it
+  explicitly on a human host, or use the human DEV devcontainer profile that
+  supplies the feature. The BOT profile must continue to omit every credential-
+  store path; never satisfy parity by adding `op` there.
 - **1Password credential naming (source of truth).** Authoritative convention is
   in the generated repo's `docs/architecture/security.md` ("1Password
   conventions"); when creating a repo's credentials, follow it verbatim:
@@ -503,12 +589,15 @@ install the Renovate GitHub App on the repo. Conventions:
   `bypassPermissions`, e.g. the devcontainer bot profile — the AGENTS.md rule
   is the binding convention there). **[copier]**
 - **`.claude/skills/`** — vendored shared agent skills from harmon-devkit via
-  **skills-sync**, gated on the **`use_skills_sync`** copier answer (default yes;
-  a repo may opt out — its ABSENCE of vendoring is then deliberate, not drift).
-  When on: `.skills-sync.yaml` (categories from the **`skill_categories`**
-  multiselect, seeded from `project_type` — `general`→`universal`,
-  `web-astro`→`+frontend`, `web-app`→`+frontend,backend`, `iac`→`+infra`),
-  `scripts/sync-skills.sh`, the
+  **skills-sync**, gated on the **`use_skills_sync`** copier answer. v3.26.1
+  defaulted it on universally; current template source defaults it on only for
+  `web-astro` and `web-app`. The profile-seeded `universal` and `infra`
+  categories are currently empty, so new general/iac repos default off instead
+  of managing an empty set; repos updated through v3.26.1 may already record
+  `true` and need an explicit review. When enabled, `skill_categories` starts with
+  `universal`, adds `frontend` for both web types, `backend` for `web-app`,
+  and `infra` when Terraform/Ansible or the iac type applies. The generated
+  machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
   `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
   (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
   until the first `task sync:skills`, so a fresh scaffold stays green. **[copier]**
@@ -523,7 +612,19 @@ install the Renovate GitHub App on the repo. Conventions:
   (Renovate can't do the re-sync half). Source-repo exception: **harmon-devkit
   itself sets `use_skills_sync: false`** — it IS the source of the skills;
   self-vendoring a pinned copy of its own `ai/skills/` would be circular.
+  The harmon-devkit **v0.6 series** introduced this managed-set behavior and
+  upgrades a legacy provenance stamp on the first sync; v0.6.2 also rejects an
+  absolute or `..`-traversing destination before deletion. Repos on older pins
+  need an engine update plus one deliberate re-sync, not merely a ref edit.
   **[copier]**
+- **Foreman** — milestone/issue-driven agent dispatch, gated on the
+  **`use_foreman`** Copier answer. When enabled it adds `.foreman.toml`,
+  `taskfiles/foreman.yml`, `scripts/foreman/`, three `.claude/agents/`, the
+  architecture doc, Taskfile targets, hooks, and Python tooling. The v3.26
+  release introduced it default-on; current template source now deliberately
+  defaults to `no`. Always pass an explicit per-repo answer on update because
+  this is a substantial operational subsystem, not a passive lint config.
+  Absence is deliberate when `use_foreman: false`. **[copier]**
 - Devcontainer ships richer `config/claude-settings.json` as managed settings (see
   1.6). **[copier]**
 - **`DESIGN.md`** — AI-facing statement of design intent (the *why*/prose rules);
@@ -554,6 +655,10 @@ install the Renovate GitHub App on the repo. Conventions:
   `tv` binary) power the universal
   `status`/`status:*` dashboard and the interactive `task` menu (`menu-tv`), so
   they are required for the dashboard and the bare-`task` menu to work on a host.
+  `scripts/status.sh` resolves GNU `timeout` on Linux or Homebrew `gtimeout` on
+  macOS, falling back to an unbounded command before dependencies are installed.
+  Python is universal because hygiene parses TOML and the secret helpers use
+  `python3`; it is not limited to projects that opt into the Python stack.
   Installed via `task install`. `Brewfile.lock.json` is gitignored. **[copier]**
 - **Python** (when `use_python`): `pyproject.toml` (`requires-python >=3.14`,
   dev group with `black`; ansible adds `ansible-lint`/`ansible-core`),
@@ -704,7 +809,10 @@ Adds (all [copier] unless noted):
   ≥0.9.
 - **`docs/architecture/design-language.md`** + DESIGN.md "Visual & UX direction".
 - Devcontainer forwards port **4321** (Astro dev server); `astro-build.astro-vscode` extension.
-- `codeql.yml` analyzes `javascript-typescript`.
+- With first-party JS/TS source, `use_codeql=true`, and live Code Security
+  capability, `codeql.yml` analyzes `javascript-typescript`; otherwise the
+  workflow is intentionally absent and the SAST gap is documented. Do not count
+  an ESLint/Prettier/Astro config file by itself as application source.
 - **[manual] CHECKLIST:** `pnpm create astro@latest .`; add **Tailwind v4**
   (`@tailwindcss/vite`), **zod**, **vitest**, **lucide**; move lint tooling into
   `devDependencies` (the Taskfile auto-prefers repo-pinned `node_modules` bins
@@ -758,17 +866,62 @@ Same node tooling as web-astro **except**:
 Adds (all [copier]):
 
 - **`include_terraform`** → `terraform/` skeleton (`main.tf`, `variables.tf`,
-  `outputs.tf`, `tfvars.env.example`); tasks `lint:terraform` (`fmt -check`),
-  `lint:terraform:validate`, `validate`→validate; lefthook terraform (pre-commit)
-  - terraform-validate (pre-push); terraform devcontainer feature; Renovate
-  Terraform-providers group; hashicorp/terraform extension.
+  `outputs.tf`, `tfvars.env.example`). `lint:terraform`, reached transitively by
+  `check`, aggregates `lint:terraform:fmt` (`terraform fmt -check -recursive`),
+  `lint:terraform:tflint`, `lint:terraform:security` (Renovate-pinned Checkov via
+  `uvx --from "checkov==…"`), and `lint:terraform:locks`.
+  `lint:terraform:validate` remains the separate validation path. The root
+  `Brewfile` supplies Terraform, TFLint, and uv locally; the build workflow
+  provisions Terraform, pinned TFLint, and uv before invoking the shared task
+  gate. A docs claim or a defined-but-unreachable leaf task is not lint coverage.
+  Lefthook runs the lint aggregate pre-commit and validate pre-push; the
+  devcontainer includes Terraform; Renovate groups Terraform providers; VS Code
+  includes hashicorp/terraform.
+- **Terraform CI invariants:** commit `.terraform.lock.hcl` after the explicit
+  first provider-bearing initialization. `task terraform:providers:lock` calls
+  `scripts/terraform-provider-locks.sh update terraform`; the lint aggregate calls
+  the same helper in `check` mode. The helper generates and compares checksums for
+  exactly `darwin_arm64` (developer) and `linux_amd64` (GitHub CI) in a scratch
+  copy, leaving the checkout untouched in check mode. Scratch initialization
+  passes `-upgrade` only in update mode, so an intentional provider constraint
+  bump can move beyond the selection in the committed lock; check mode must omit
+  `-upgrade`. A fresh scaffold with no provider requirements cleanly skips lock
+  creation. The hermetic
+  `scripts/test-terraform-provider-locks.sh` regression must remain reachable
+  through the task tests. A lock file's mere presence does **not** prove platform
+  coverage; require this authoritative update/check process.
+
+  Once a lock is tracked, CI uses
+  `terraform init -lockfile=readonly`; only an explicit fresh-scaffold/local
+  initialization may create the initial lock, and an intentional local provider
+  update may refresh it; ordinary CI must not. The workflow listens to `push`,
+  `pull_request`, `merge_group`, and `workflow_dispatch` with no top-level
+  `paths` filter. Its internal change detector makes unrelated paths a no-op,
+  while the required GitHub-hosted `terraform-verify` aggregate runs under
+  `if: always()` and accepts `skipped` only when the explicit fork/change/enabled
+  predicates prove that result deliberate.
+
+  Credentialed plan/apply is downstream of successful validation and guarded by
+  the change result, an explicit enable flag, same-repository trust, and a
+  trusted-main push/dispatch apply condition. Repository/ref concurrency plus a
+  repository/run/attempt artifact key namespaces each run. Save the binary plan
+  under a private run-scoped directory, display that exact artifact, and apply
+  it without re-planning; use bounded state-lock waits (`-lock-timeout`), never
+  `-lock=false`, and clean up under `if: always()`. Agents never run
+  `terraform apply`, `destroy`, `import`, or state-mutating commands without
+  explicit approval for that exact operation. The reviewed trusted-main CI apply
+  of its own saved plan is the defined automation exception.
 - **`include_ansible`** → `ansible/` skeleton (`ansible.cfg`, `requirements.yaml`,
   `inventory/ playbooks/ roles/` each `.gitkeep`); **`.ansible-lint`**; tasks
   `lint:ansible`, `validate:ansible:syntax` (both guard on `ansible/site.yml`
   existing); lefthook ansible-syntax (pre-push); `ANSIBLE_CONFIG` remoteEnv;
   Renovate ansible regex managers; redhat.ansible extension.
 - **Python toolchain** active (uv, black, `.python-version`, pyproject).
-- `codeql.yml` analyzes `python` (if use_python).
+- Do not infer Python CodeQL coverage from the iac type. The current renderer adds
+  `python` when `use_codeql=true` because iac enables the Python tooling flag, but
+  an infrastructure repo may have no first-party `.py` files. Reconcile the
+  matrix with actual source (and include another real language such as
+  `javascript-typescript` when present) plus live Code Security capability.
 - **[manual] CHECKLIST:** lay out `terraform/` and/or `ansible/site.yml` — lint
   tasks activate automatically once `ansible/site.yml` exists.
 - The live `harmon-infra` shows how deep the namespacing legitimately goes:
@@ -805,7 +958,11 @@ Legitimately repo- or type-specific differences. An auditor should treat these a
   later added its own `.devcontainer/`).
 - **No `release.yml` / release-please manifest** when `use_release_please: no`
   (then releases are purely `task release:*`).
-- **No `codeql.yml`** when neither node nor python.
+- **No `codeql.yml`** when there is no Node/Python tooling profile. A
+  private/internal repo without paid GitHub Code Security still keeps the
+  generated workflow's stable not-applicable aggregate and uses Semgrep CE.
+  Current rendering is gated by `use_node`/`use_python`, so audit the matrix
+  against real source rather than treating those tooling flags as coverage.
 - **No `project-automation.yml`, no org `merge_queue` rule, no
   `permission-organization-projects`/`permission-members`** for personal-account
   repos (`github_org == author_git_provider_username`). Org repos get all three.
