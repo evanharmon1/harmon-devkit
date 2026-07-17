@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.7.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.6.2...v0.7.0) (2026-07-16)
+
+
+### Features
+
+* **security:** align standardize-repo with the tiered repository scanning policy ([#94](https://github.com/evanharmon1/harmon-devkit/issues/94)) ([e243875](https://github.com/evanharmon1/harmon-devkit/commit/e243875c33edb4aa5b2cbbae57c4dff507f3de56))
+* **standardize-repo:** add bot PAT setup guidance to the post-generation checklist ([#93](https://github.com/evanharmon1/harmon-devkit/issues/93)) ([338f89b](https://github.com/evanharmon1/harmon-devkit/commit/338f89b0e6191ceb87cd422c372d0c147fe38936))
+
 ## [0.6.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.6.1...v0.6.2) (2026-07-13)
 
 
