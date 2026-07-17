@@ -17,7 +17,7 @@ it points here.
   major bump.
 - **Feature branches only.** Direct commits to `main` are blocked by the
   `guard:no-commit-to-main` pre-commit hook and the branch ruleset. Land changes
-  via a PR; code-owner review and the `verify` + `security`  checks are required.
+via a PR; code-owner review and the `verify` + `security` checks are required.
 - **Never bypass hooks** (`--no-verify` is forbidden) — fix the underlying issue.
   In the devcontainer a Claude Code hook actively blocks `--no-verify` and
   validates commit messages.
