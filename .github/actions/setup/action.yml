@@ -8,7 +8,7 @@ description: >-
 
 inputs:
   install-deps:
-    description: Install project dependencies () when present.
+    description: Install project dependencies (when supported manifests are present).
     default: "true"
   lint-tools:
     description: >-
