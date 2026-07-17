@@ -1,15 +1,11 @@
 name: Setup toolchain
 description: >-
-  Install the shared toolchain (Node, Python/uv, Task), project
-  dependencies, and — behind inputs — the lint + security CLIs. Single source of
-  truth for the CI jobs and the Claude automation workflows so local, CI, and
-  agent runs all execute the same Taskfile targets. Callers must run
-  actions/checkout first.
+  Install the shared toolchain (Node, Python/uv, Task) and — behind inputs — the
+  lint + security CLIs. Single source of truth for the CI jobs and the Claude
+  automation workflows so local, CI, and agent runs all execute the same
+  Taskfile targets. Callers must run actions/checkout first.
 
 inputs:
-  install-deps:
-    description: Install project dependencies (when supported manifests are present).
-    default: "true"
   lint-tools:
     description: >-
       Install shellcheck, shfmt, actionlint, yamllint — required by
