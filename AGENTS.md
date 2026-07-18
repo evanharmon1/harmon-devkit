@@ -94,6 +94,14 @@ run locally on demand instead of waiting on a PR.
 - Releases are intentional: release-please keeps a rolling release PR from
   conventional commits; merging it cuts the tag/release. Nothing bumps on a
   normal merge. `task release:*` remains as a manual override.
+- **A PR that changes `ai/skills templates scripts` must use a `fix:`/`feat:`
+  (or breaking) PR title.** Squash-merge feeds the PR title to release-please,
+  which tags only feat/fix/breaking — so a `chore:`/`docs:` title over these
+  paths would merge without cutting a release, and consumers pinning a released
+  tag would never receive the change. The `release-content-guard.yml` check
+  enforces this; retitle rather than bypass. Other changes keep their normal type.
+  Pre-flight it locally with your intended title:
+  `PR_TITLE="<title>" BASE_SHA=main task guard:release-title`.
 
 ## Conventions
 

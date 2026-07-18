@@ -115,3 +115,12 @@ it points here.
   Fixes** (patch), `feat!` / `BREAKING CHANGE:` → major. The rest (`build`,
   `chore`, `ci`, `docs`, `perf`, `refactor`, `revert`, `style`, `test`) don't cut
   a release on their own — they ride along in the next one.
+- **On a squash-merge repo the PR title _is_ the release type.** GitHub sets the
+  squash commit subject from the PR title, and release-please reads only that
+  subject — so a `chore:`/`docs:`-titled PR merges with **no release** even when it
+  carries releasable content. The **release-content guard**
+  (`release-content-guard.yml` → `scripts/require-release-title.sh`, unit-tested by
+  `task test:release-title`) fails a PR that changes `ai/skills templates scripts`
+  under a non-releasing title, so consumers pinning a released tag actually receive
+  the change. Retitle with `fix:`/`feat:` rather than bypass. Automated dependency
+  PRs (Renovate/Dependabot) are skipped.

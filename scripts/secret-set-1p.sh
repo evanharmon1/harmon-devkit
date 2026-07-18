@@ -38,13 +38,11 @@ fi
 command -v op >/dev/null 2>&1 || fail "op CLI is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
-# Keep the caller's stdin available to jq as a raw file while jq validates the
-# 1Password item JSON. Complete validation before starting `op item edit`: a
-# streaming pipeline would launch the writer even when jq later rejects the
-# item (the same empty/invalid-input race the GitHub helper avoids).
+# Keep the caller's stdin available to jq as a raw file while jq reads the
+# 1Password item JSON from the pipeline.
 exec 3<&0
 
-if ! validated_item="$(
+updated_item="$(
     op item get "$item" --vault "$vault" --format json --reveal |
         jq \
             --arg field "$field" \
@@ -74,8 +72,8 @@ if ! validated_item="$(
         # field carrying a structured (object) value — plain STRING/CONCEALED
         # fields are scalars, so an object value marks a passkey/SSH-key/document
         # credential we must not touch.
-        | if (.category == "SSH_KEY" or .category == "PASSKEY")
-             or (([.fields[] | select(.type == "SSHKEY" or ((.value | type) == "object"))] | length) > 0) then
+        | if (.category == "SSH_KEY" or .category == "SSHKEY" or .category == "PASSKEY")
+             or (([.fields[] | select((.value | type) == "object")] | length) > 0) then
             error("item holds a passkey or SSH key; refusing full-item edit (op would clobber it)")
           else
             .
@@ -94,10 +92,9 @@ if ! validated_item="$(
             (.fields[] |= if field_matches then .value = $value else . end)
           end
         '
-)"; then
-    fail "1Password item validation failed"
-fi
-
-printf '%s' "$validated_item" | op item edit "$item" --vault "$vault" >/dev/null
+)"
+printf '%s\n' "$updated_item" |
+    op item edit "$item" --vault "$vault" >/dev/null
+unset updated_item
 
 echo "Updated 1Password item '$item' field '$field'."
