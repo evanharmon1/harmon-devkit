@@ -38,10 +38,8 @@ fi
 command -v op >/dev/null 2>&1 || fail "op CLI is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
-# Keep the caller's stdin available to jq as a raw file while jq validates the
-# 1Password item JSON. Complete validation before starting `op item edit`: a
-# streaming pipeline would launch the writer even when jq later rejects the
-# item (the same empty/invalid-input race the GitHub helper avoids).
+# Keep the caller's stdin available to jq as a raw file while jq reads the
+# 1Password item JSON from the pipeline.
 exec 3<&0
 
 updated_item="$(
