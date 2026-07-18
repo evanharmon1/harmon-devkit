@@ -421,23 +421,23 @@ done
 expect_ok "standards catalog documents the valid CODEOWNERS account default" \
     grep -qF '`author_git_provider_username` (a bare organization is not a valid CODEOWNERS' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog documents the web-only skills-sync default" \
-    grep -qF 'current template source defaults it on only for' \
+expect_ok "standards catalog documents the universal skills-sync default" \
+    grep -qF 'currently defaults on for every project type' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog documents Foreman as deliberate opt-in" \
-    grep -qF 'current template source now deliberately' \
+expect_ok "standards catalog documents the current Foreman default" \
+    grep -qF 'It currently' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "update guidance documents the Foreman default transition" \
-    grep -qF 'It was default-on when introduced in v3.26.1' \
+expect_ok "update guidance requires an explicit Foreman decision" \
+    grep -qF 'make an explicit per-repo decision' \
     "$STANDARDIZE_REFS/mode-update.md"
-expect_ok "new-repo guidance exposes the explicit CodeQL answer" \
-    grep -qF '| `use_codeql` | bool |' \
+expect_ok "new-repo guidance derives CodeQL from stack flags" \
+    grep -qF 'rather than a user-selectable Copier answer' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "production scaffolding uses the canonical released template" \
     grep -qF 'https://github.com/evanharmon1/harmon-init.git <dest>' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "production scaffolding pins a released ref" \
-    grep -qF -- '--trust --vcs-ref=v3.26.1' \
+    grep -qF -- '--trust --vcs-ref=v4.1.1' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "new-repo guidance forbids path-only lineage repair" \
     grep -qF 'do not rewrite only `_src_path`' \
@@ -466,9 +466,21 @@ expect_ok "catalog distinguishes CodeQL source from tooling flags" \
 expect_ok "catalog requires the CodeQL matrix to match real source" \
     grep -qF 'generated matrix with real first-party source' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "audit guidance checks legacy CodeQL capability" \
-    grep -qF '`.copier-answers.yml` has no `use_codeql` field' \
+expect_ok "audit guidance checks rendered CodeQL capability" \
+    grep -qF 'CodeQL is not' \
     "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "update guidance requires a deletion audit" \
+    grep -qF 'Deletion audit — justify every removed pre-existing path.' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance always refreshes enabled skills sync" \
+    grep -qF 'After **every** harmon-init update' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "skill makes credential failures human-only" \
+    grep -qF 'Every credential step is human-only' \
+    "$repo/ai/skills/repo/standardize-repo/SKILL.md"
+expect_ok "skill completion requires green CI and review adjudication" \
+    grep -qF 'every required PR check is green and every' \
+    "$repo/ai/skills/repo/standardize-repo/SKILL.md"
 expect_ok "catalog keeps fork aggregates from executing repository code" \
     grep -qF 'code on the aggregate runner' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -860,12 +872,6 @@ git_commit_all "$CQ_TARGET" "record CodeQL fixture baseline"
 expect_ok "CodeQL fixture has a committed baseline for repository scanners" \
     git -C "$CQ_TARGET" rev-parse --verify HEAD
 
-write_codeql_answer() {
-    printf 'use_codeql: %s\n' "$1" >"$CQ_TARGET/.copier-answers.yml"
-}
-write_legacy_codeql_answer() {
-    printf '%s\n' '_commit: v3.26.1' >"$CQ_TARGET/.copier-answers.yml"
-}
 write_codeql_taskfile() {
     cat >"$CQ_TARGET/Taskfile.yml" <<'EOF'
 version: "3"
@@ -963,35 +969,10 @@ EOF
 
 write_codeql_result_helper
 
-write_codeql_answer false
 write_codeql_taskfile
-printf '%s\n' 'CodeQL is enabled for first-party SAST.' \
+printf '%s\n' '_commit: v4.1.1' >"$CQ_TARGET/.copier-answers.yml"
+printf '%s\n' 'CodeQL coverage requires a successful SARIF upload.' \
     >"$CQ_TARGET/docs/architecture/security.md"
-write_codeql_workflow ""
-expect_fail "verify-applied rejects a CodeQL workflow when use_codeql=false" \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-rm "$CQ_TARGET/.github/workflows/codeql.yml"
-expect_fail "verify-applied requires the CodeQL-off SAST gap in security docs" \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-printf '%s\n' 'CodeQL is deliberately omitted; first-party SAST is not configured.' \
-    >"$CQ_TARGET/docs/architecture/security.md"
-expect_ok "verify-applied accepts a clean intentional CodeQL omission" \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-
-printf '%s\n' '[![CodeQL](badge)](actions/workflows/codeql.yml)' >"$CQ_TARGET/README.md"
-expect_fail "verify-applied rejects a stale CodeQL badge when disabled" \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-rm "$CQ_TARGET/README.md"
-printf '%s\n' '# setup sets FULL_SECURITY_SCAN' >>"$CQ_TARGET/Taskfile.yml"
-expect_fail "verify-applied rejects stale FULL_SECURITY_SCAN setup when disabled" \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-write_codeql_taskfile
-
-write_codeql_answer true
-printf '%s\n' 'CodeQL is selected; live SARIF results establish coverage.' \
-    >"$CQ_TARGET/docs/architecture/security.md"
-expect_fail "verify-applied requires a workflow when use_codeql=true" \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
 write_codeql_workflow $'    continue-on-error: true\n'
 expect_fail "verify-applied rejects a fail-open CodeQL analyze job" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
@@ -1073,20 +1054,6 @@ expect_ok "verify-applied defers an unreadable Code Security field to manual aud
     env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
     GH_TEST_CODE_SECURITY=unknown \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-write_legacy_codeql_answer
-expect_fail "verify-applied rejects legacy private CodeQL when Code Security is disabled" \
-    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
-    GH_TEST_CODE_SECURITY=disabled \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-expect_ok "verify-applied audits enabled capability for legacy CodeQL" \
-    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
-    GH_TEST_CODE_SECURITY=enabled \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-expect_ok "verify-applied defers unknown legacy CodeQL capability to manual audit" \
-    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
-    GH_TEST_CODE_SECURITY=unknown \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-
 TF_TARGET="$TMPROOT/verify-applied-terraform"
 mkdir -p \
     "$TF_TARGET/.github/workflows" \
@@ -1095,7 +1062,7 @@ mkdir -p \
 printf '%s\n' '# Test instructions' >"$TF_TARGET/AGENTS.md"
 ln -s AGENTS.md "$TF_TARGET/CLAUDE.md"
 ln -s AGENTS.md "$TF_TARGET/GEMINI.md"
-printf '%s\n' 'include_terraform: true' 'use_codeql: false' \
+printf '%s\n' 'include_terraform: true' \
     >"$TF_TARGET/.copier-answers.yml"
 printf '%s\n' 'terraform {}' >"$TF_TARGET/terraform/main.tf"
 cat >"$TF_TARGET/Brewfile" <<'EOF'

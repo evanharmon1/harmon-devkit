@@ -74,7 +74,9 @@ Defaults worth knowing so you only override what's wrong (from `copier.yml`):
   non-iac repo nonetheless has (or wants) a `terraform/` or `ansible/` skeleton.
 - `ci_runner` defaults to `ubuntu-latest` (alt: `self-hosted`).
 - `license` defaults to `mit` (alt: `private`).
-- `use_release_please` and `devcontainer` default to **yes**.
+- `use_release_please`, `use_skills_sync`, `use_foreman`, and `devcontainer`
+  default to **yes**. These are material features; still decide and pass their
+  answers explicitly for the target repo.
 - **All side-effect answers must stay `no`** when adopting: `git_init`,
   `github_remote_create`, `github_release_init`, `bunch_add`,
   `obsidian_project_add`, `run_task_install`. The repo already exists and has a
@@ -131,14 +133,14 @@ write `.copier-answers.yml` so future runs can use `copier update`:
 
 ```bash
 ls .copier-answers.yml          # absent → adopt fresh
-: "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
 copier copy --trust https://github.com/evanharmon1/harmon-init.git . \
-  --vcs-ref=v3.26.1 --defaults --overwrite \
+  --vcs-ref=v4.1.1 --defaults --overwrite \
   --data project_type="$PROJECT_TYPE" \
   --data project_name="<Formal Project Name>" \
   --data project_slug="$(basename "$(pwd)")" \
   --data github_org="<org-or-user>" \
-  --data use_codeql="$USE_CODEQL" \
+  --data use_skills_sync=<true-or-false> \
+  --data use_foreman=<true-or-false> \
   --data git_init=false \
   --data github_remote_create=false --data github_release_init=false \
   --data bunch_add=false --data obsidian_project_add=false --data run_task_install=false
@@ -146,16 +148,17 @@ copier copy --trust https://github.com/evanharmon1/harmon-init.git . \
   #   defaults from the stale .copier-answers.yml, so they do NOT "default to no".
 ```
 
-`v3.26.1` is the current reviewed release example; deliberately select a newer
+`v4.1.1` is the current reviewed release example; deliberately select a newer
 released ref when appropriate. Local `--vcs-ref=HEAD` adoption is for a disposable
 preview only, never the production apply: dirty local renders can record a
 throwaway `_commit` that no later remote update can resolve.
 
-Set `USE_CODEQL` deliberately before rendering. Use `true` only for a supported
-Node/Python stack when Code Security is available (public repositories have it by
-default; inspect private/internal repositories with the read-only check in
-[`mode-audit.md`](./mode-audit.md), drift class G). Otherwise use `false`; do not
-render a workflow whose SARIF upload cannot succeed.
+CodeQL rendering is derived from the hidden `use_node` / `use_python` tooling
+flags rather than a user-selectable Copier answer. Public repos
+run the generated workflow automatically. Free private repos keep its stable
+not-applicable aggregate and use Semgrep CE, while paid private CodeQL is a later
+`FULL_SECURITY_SCAN` runtime opt-in. Inspect the rendered matrix against actual
+first-party source and report a mismatch rather than passing an invented answer.
 
 `--defaults` is **required non-interactively** (no TTY → `OSError: [Errno 22]`), and
 because copier can't prompt per-file, `--overwrite` makes the run deterministic
@@ -206,8 +209,8 @@ from git rather than hand-merging conflict markers:
      drift class L).
 3. **Keep** the template version for uncustomized tooling **and all applicable
    additive new files** (docs scaffold, release-please, helper scripts,
-   `.copier-answers.yml`; CodeQL only when `use_codeql=true` and the live
-   capability supports it).
+   `.copier-answers.yml`; CodeQL when the rendered Node/Python tooling profile
+   applies, with its visibility-aware runtime behavior intact).
 4. **Canonicalize AGENTS.md** — fold the old real guidance (often the pre-existing
    real `CLAUDE.md`) into `AGENTS.md`; leave `CLAUDE.md`/`GEMINI.md`/
    `.github/copilot-instructions.md` as the symlinks copier wrote (§4.1).

@@ -39,7 +39,7 @@ TEMPLATE=~/git/harmon-init           # source of truth
      [copier-gotchas.md](./copier-gotchas.md) gotcha 8 / [mode-update.md](./mode-update.md) §2).
    - Absent → it was never templated (or was adopted by a raw `copier copy`).
      Reconciling the templated bits means a fresh adopt:
-     `copier copy --trust --vcs-ref=v3.26.1
+     `copier copy --trust --vcs-ref=v4.1.1
      https://github.com/evanharmon1/harmon-init.git .` (substitute the reviewed
      current release; see §4). Treat
      every catalog area as hand-verifiable rather than diff-against-answers.
@@ -223,10 +223,11 @@ stable `codeql-verify` aggregate may accept `skipped` only for a free-private
 route or an untrusted fork. That fork aggregate must not check out or execute
 fork-controlled repository code on the aggregate runner. Treat unset/empty
 `FULL_SECURITY_SCAN` as the free-private opt-out, and verify the language matrix
-against real first-party source rather than tooling flags. When a legacy
-`.copier-answers.yml` has no `use_codeql` field, infer the intended route from
-the workflow, repository visibility, live Code Security capability, and actual
-source before changing it.
+against real first-party source rather than tooling flags. CodeQL is not
+user-selectable through Copier. Infer whether the generated
+matrix is meaningful from the workflow, repository visibility, live Code
+Security capability, and actual source; report a mismatch rather than inventing
+an answer.
 
 **G2. Snyk policy drift.** Snyk is not required PR CI. The default Copier answer
 is `snyk_scan_schedule=off`, with manual/local second-opinion targets named
@@ -487,11 +488,11 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
      - Never templated / adopting fresh:
 
        ```bash
-       ( cd "$TARGET" && copier copy --trust --vcs-ref=v3.26.1 \
+       ( cd "$TARGET" && copier copy --trust --vcs-ref=v4.1.1 \
            https://github.com/evanharmon1/harmon-init.git . )
        ```
 
-     Replace `v3.26.1` only with a deliberately selected newer release. A local
+     Replace `v4.1.1` only with a deliberately selected newer release. A local
      `--vcs-ref=HEAD` render is appropriate for a disposable pre-release preview,
      not the production adoption, because dirty work can record an unreachable
      throwaway commit. Answer the questions to match the repo, and keep all
@@ -519,6 +520,15 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
    profile/repo-specific; `task ci` additionally chains the heavier `test` and
    `security` aggregates.
 
+   When `.skills-sync.yaml` is present, the update is not reconciled until the
+   managed skills have been refreshed and both drift checks pass:
+
+   ```bash
+   ( cd "$TARGET" && task sync:skills )
+   ( cd "$TARGET" && task verify:skills )
+   ( cd "$TARGET" && task verify:skills:offline )
+   ```
+
 4. **Run the applied-state verifier.** Confirm the audited drift classes are
    actually resolved by running the skill's checker:
 
@@ -533,5 +543,8 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
 
 5. **Hand back.** Leave the changes committed on the feature branch with a
    Conventional-Commits message (e.g. `chore: standardize against harmon-init`)
-   and open a PR for human + code-owner review — releases and merges stay
-   intentional; do not merge or tag.
+   and open a PR for human + code-owner review. Watch every required check to a
+   terminal green result, then inspect general comments and inline review
+   threads. Apply feedback you agree with; reply with a concrete rationale where
+   you do not. Repeat after every push until CI is green and no review finding is
+   left unaddressed. Releases and merges stay intentional; do not merge or tag.

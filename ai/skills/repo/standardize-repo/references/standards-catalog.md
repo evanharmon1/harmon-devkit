@@ -9,7 +9,7 @@ Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 `harmon-init/AGENTS.md`, the `harmon-init/template/` tree. Live reference repos
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
 project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
-was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13.
+was refreshed against harmon-init v4.1.1 and harmon-devkit v0.7.2 on 2026-07-18.
 The platform and client repos are kept current via mode-update passes, so their
 remaining divergences are often **deliberate customizations** (Part 3.2), not lag
 — but they can drift between passes, so
@@ -589,14 +589,11 @@ install the Renovate GitHub App on the repo. Conventions:
   `bypassPermissions`, e.g. the devcontainer bot profile — the AGENTS.md rule
   is the binding convention there). **[copier]**
 - **`.claude/skills/`** — vendored shared agent skills from harmon-devkit via
-  **skills-sync**, gated on the **`use_skills_sync`** copier answer. v3.26.1
-  defaulted it on universally; current template source defaults it on only for
-  `web-astro` and `web-app`. The profile-seeded `universal` and `infra`
-  categories are currently empty, so new general/iac repos default off instead
-  of managing an empty set; repos updated through v3.26.1 may already record
-  `true` and need an explicit review. When enabled, `skill_categories` starts with
-  `universal`, adds `frontend` for both web types, `backend` for `web-app`,
-  and `infra` when Terraform/Ansible or the iac type applies. The generated
+  **skills-sync**, gated on the **`use_skills_sync`** copier answer, which
+  currently defaults on for every project type. Update mode still makes this an
+  explicit per-repo decision. When enabled, `skill_categories` starts with
+  `universal`, adds `frontend` for both web types, `backend` for `web-app`, and
+  `infra` when Terraform/Ansible or the iac type applies. The generated
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
   `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
   (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
@@ -620,9 +617,8 @@ install the Renovate GitHub App on the repo. Conventions:
 - **Foreman** — milestone/issue-driven agent dispatch, gated on the
   **`use_foreman`** Copier answer. When enabled it adds `.foreman.toml`,
   `taskfiles/foreman.yml`, `scripts/foreman/`, three `.claude/agents/`, the
-  architecture doc, Taskfile targets, hooks, and Python tooling. The v3.26
-  release introduced it default-on; current template source now deliberately
-  defaults to `no`. Always pass an explicit per-repo answer on update because
+  architecture doc, Taskfile targets, hooks, and Python tooling. It currently
+  defaults to `yes`. Always pass an explicit per-repo answer on update because
   this is a substantial operational subsystem, not a passive lint config.
   Absence is deliberate when `use_foreman: false`. **[copier]**
 - Devcontainer ships richer `config/claude-settings.json` as managed settings (see
@@ -809,10 +805,11 @@ Adds (all [copier] unless noted):
   ≥0.9.
 - **`docs/architecture/design-language.md`** + DESIGN.md "Visual & UX direction".
 - Devcontainer forwards port **4321** (Astro dev server); `astro-build.astro-vscode` extension.
-- With first-party JS/TS source, `use_codeql=true`, and live Code Security
-  capability, `codeql.yml` analyzes `javascript-typescript`; otherwise the
-  workflow is intentionally absent and the SAST gap is documented. Do not count
-  an ESLint/Prettier/Astro config file by itself as application source.
+- With first-party JS/TS source and live Code Security capability, the rendered
+  `codeql.yml` analyzes `javascript-typescript` because `use_node` is true. There
+  is no separate CodeQL Copier answer. Do not count an ESLint/Prettier/Astro
+  config file by itself as application source; report a source/capability mismatch
+  rather than inventing an answer.
 - **[manual] CHECKLIST:** `pnpm create astro@latest .`; add **Tailwind v4**
   (`@tailwindcss/vite`), **zod**, **vitest**, **lucide**; move lint tooling into
   `devDependencies` (the Taskfile auto-prefers repo-pinned `node_modules` bins
@@ -918,10 +915,10 @@ Adds (all [copier]):
   Renovate ansible regex managers; redhat.ansible extension.
 - **Python toolchain** active (uv, black, `.python-version`, pyproject).
 - Do not infer Python CodeQL coverage from the iac type. The current renderer adds
-  `python` when `use_codeql=true` because iac enables the Python tooling flag, but
-  an infrastructure repo may have no first-party `.py` files. Reconcile the
-  matrix with actual source (and include another real language such as
-  `javascript-typescript` when present) plus live Code Security capability.
+  `python` because iac enables the hidden Python tooling flag, but an infrastructure
+  repo may have no first-party `.py` files. There is no separate CodeQL Copier
+  answer; reconcile the matrix with actual source and live Code Security
+  capability, and report any mismatch as a harmon-init follow-up.
 - **[manual] CHECKLIST:** lay out `terraform/` and/or `ansible/site.yml` — lint
   tasks activate automatically once `ansible/site.yml` exists.
 - The live `harmon-infra` shows how deep the namespacing legitimately goes:

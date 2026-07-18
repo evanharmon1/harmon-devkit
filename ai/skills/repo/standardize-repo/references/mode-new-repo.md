@@ -16,7 +16,7 @@ Verify before running anything:
       `git`, and — if you will create the remote or release — `gh` (GitHub CLI,
       authenticated: `gh auth status`).
 - [ ] **Released template ref chosen.** Production scaffolds use the canonical
-      GitHub source and a reviewed release such as `v3.26.1`. A local checkout is
+      GitHub source and a reviewed release such as `v4.1.1`. A local checkout is
       needed only to inspect source or preview unreleased work.
 - [ ] **Destination does not already exist / is empty.** Copier writes into
       `<dest>`; pick a path that is free.
@@ -35,10 +35,10 @@ commit, etc.) defined in `copier.yml`.
 
 ```bash
 copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
-  --trust --vcs-ref=v3.26.1
+  --trust --vcs-ref=v4.1.1
 ```
 
-`v3.26.1` is the current reviewed example; replace it when a newer release has
+`v4.1.1` is the current reviewed example; replace it when a newer release has
 been deliberately selected. Do not use a moving branch for production lineage.
 For an unreleased template preview only, a developer may render a local checkout
 with `--vcs-ref=HEAD` into a disposable destination. That preview can contain a
@@ -55,7 +55,7 @@ to accept the default for any key you do not pass.
 
 ```bash
 copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
-  --trust --vcs-ref=v3.26.1 --defaults \
+  --trust --vcs-ref=v4.1.1 --defaults \
   --data project_name="My Project" \
   --data project_slug="my-project" \
   --data project_description="One-line description of the project" \
@@ -63,11 +63,13 @@ copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
   --data project_type="general" \
   --data include_terraform=false \
   --data include_ansible=false \
-  --data use_codeql=false \
   --data ci_runner="ubuntu-latest" \
   --data license="mit" \
   --data use_release_please=true \
+  --data use_skills_sync=true \
+  --data use_foreman=true \
   --data devcontainer=true \
+  --data project_management="none" \
   --data git_init=true \
   --data github_remote_create=false \
   --data github_release_init=false \
@@ -87,11 +89,14 @@ copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
 | `project_type` | str | `general` | `general` \| `web-astro` \| `web-app` \| `iac` \| `docs`. Drives Taskfile, CI jobs, devcontainer tooling. |
 | `include_terraform` | bool | `true` iff `project_type == 'iac'` | Adds `terraform/` skeleton + terraform linting. |
 | `include_ansible` | bool | `true` iff `project_type == 'iac'` | Adds `ansible/` skeleton + ansible linting. |
-| `use_codeql` | bool | `true` iff derived `use_node` or `use_python` | Includes CodeQL SAST; explicitly override the tooling-derived default when planned source or capability does not support it. Public repositories have Code Security by default; for a private/internal repo, enable GitHub Code Security first or answer `false`. |
 | `ci_runner` | str | `ubuntu-latest` | `ubuntu-latest` \| `self-hosted`. |
 | `license` | str | `mit` | `mit` \| `private`. |
 | `use_release_please` | bool | `true` | release-please rolling release PR + auto CHANGELOG. |
+| `use_skills_sync` | bool | `true` | Vendor pinned harmon-devkit skills and verify drift. |
+| `skill_categories` | multiselect | profile-seeded | Starts with `universal`; adds frontend/backend/infra categories from the selected stack. |
+| `use_foreman` | bool | `true` | Include the Foreman supervisor, agents, tasks, docs, and tests. |
 | `devcontainer` | bool | `true` | Dual-profile `.devcontainer` (AI bot + human dev). |
+| `project_management` | str | `none` | `none` \| `github` \| `linear`; controls the project-management playbook. |
 | `git_init` | bool | `true` | Initialize the git repo (see `_tasks`). |
 | `github_remote_create` | bool | `false` | `gh repo create` (private, pushes initial state). |
 | `github_release_init` | bool | `false` | Runs `task release:init` (initial release). |
@@ -102,13 +107,13 @@ copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
 Notes:
 - Several defaults are *computed* from earlier answers. Setting `project_type=iac`
   flips `include_terraform`/`include_ansible` to `true` unless you override them.
-- Decide `use_codeql` explicitly whenever first-party JS/TS/Python is planned. A
-  generated workflow and `FULL_SECURITY_SCAN=true` configure CodeQL but do not
-  prove that SARIF was accepted; private/internal repos also require the live Code
-  Security capability. The current template derives the matrix from `use_node` /
-  `use_python`, which are tooling flags rather than source evidence, so reconcile
-  the rendered languages with the real source until harmon-init exposes an
-  explicit `codeql_languages` multiselect/override.
+- CodeQL rendering is derived from the hidden `use_node` / `use_python` tooling
+  flags rather than a user-selectable Copier answer. Public
+  repositories run the generated workflow automatically. Free private repos keep
+  the workflow's not-applicable aggregate and use Semgrep CE; paid private CodeQL
+  is enabled later with the `FULL_SECURITY_SCAN` runtime variable. Reconcile the
+  rendered language matrix with real first-party source and report any mismatch as
+  a harmon-init limitation rather than inventing a Copier answer.
 - Hidden, derived flags you do **not** answer but that follow from your choices:
   `use_node` (true for `web-astro`/`web-app`), `use_python` (true for `iac` or
   `include_ansible`), `repo_url`, `devcontainer_image`, `ci_runner_labels`.

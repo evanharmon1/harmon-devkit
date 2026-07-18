@@ -23,6 +23,16 @@ ones. harmon-init is NOT an application — it is used via
 [Copier](https://copier.readthedocs.io/en/stable/), so the heavy lifting is
 `copier copy` / `copier update`, not hand-copying files.
 
+## Credential boundary
+
+This skill **never creates, modifies, deletes, copies, or changes the visibility
+of secrets or credential-store data**. Every credential step is human-only and
+report-only, even when a reference includes an example command. Read-only checks
+may confirm whether a credential name is configured, but must never reveal its
+value. If CI fails because a secret is absent or unavailable, report that blocker
+to the user; do not change the secret, widen its access, or delete/disable the
+workflow to make CI green.
+
 ## Preconditions
 
 Verify these before doing anything; stop and tell the user if one is unmet.
@@ -54,7 +64,7 @@ differently.
 These are load-bearing. Full rationale and edge cases in `references/copier-gotchas.md`.
 
 - **Production scaffolds use the canonical GitHub URL at a released ref.** Run
-  `copier copy --trust --vcs-ref=v3.26.1
+  `copier copy --trust --vcs-ref=v4.1.1
   https://github.com/evanharmon1/harmon-init.git <dest> ...` (substitute the
   reviewed current release). This records durable lineage that another machine
   can resolve. A local-path `--vcs-ref=HEAD` render is only for a disposable
@@ -74,7 +84,7 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
 
   ```bash
   copier copy https://github.com/evanharmon1/harmon-init.git ./new-project \
-    --vcs-ref=v3.26.1 --trust \
+    --vcs-ref=v4.1.1 --trust \
     --data project_name="My Project" --data project_type=general --defaults
   ```
 
@@ -85,8 +95,9 @@ The asked questions live in `~/git/harmon-init/copier.yml` (e.g. `project_name`,
 `project_slug`, `project_description`, `github_org`, `project_type`
 [general / web-astro / web-app / iac / docs], `snyk_scan_schedule`
 [off / weekly / daily], `include_terraform`, `include_ansible`, `ci_runner`,
-`license`, `use_release_please`, `devcontainer`, `git_init`). Read that file to
-confirm names/choices/defaults before scaffolding — do not invent answers.
+`license`, `use_release_please`, `use_skills_sync`, `skill_categories`,
+`use_foreman`, `devcontainer`, `project_management`, `git_init`). Read that file
+to confirm names/choices/defaults before scaffolding — do not invent answers.
 
 ## Standards catalog
 
@@ -109,3 +120,7 @@ It confirms the expected files/tooling landed and then runs the repo's own gate
 `task install:hooks` to wire lefthook). Report what passed and surface any gaps
 against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
 prohibited); commit on a feature branch and open a PR — no direct commits to `main`.
+An apply/update is complete only when every required PR check is green and every
+review thread has been inspected: apply feedback you agree with, and reply with a
+concrete rationale where you do not. Never merge the PR; report the green,
+reviewed handoff to the user.

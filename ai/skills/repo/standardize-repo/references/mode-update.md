@@ -28,7 +28,7 @@ conflicts. For copier mechanics see [`copier-gotchas.md`](./copier-gotchas.md).
 cd <repo>
 git switch main && git pull
 git status --porcelain   # MUST be empty
-git switch -c chore/update-harmon-init-v<X.Y.Z>   # e.g. chore/update-harmon-init-v3.20.0
+git switch -c chore/update-harmon-init-v<X.Y.Z>   # e.g. chore/update-harmon-init-v4.1.1
 ```
 
 **Use a version-suffixed branch name.** A bare `chore/update-harmon-init` often
@@ -36,7 +36,7 @@ already exists locally as a leftover from a prior run whose PR was
 *squash-merged* — the local branch is never deleted, and its commits look
 "unmerged" by SHA, so `git switch -c chore/update-harmon-init` aborts with
 `a branch named '…' already exists`. Suffixing the target version
-(`chore/update-harmon-init-v3.20.0`) sidesteps the collision and self-documents
+(`chore/update-harmon-init-v4.1.1`) sidesteps the collision and self-documents
 the PR. (Deleting the stale local branch also works, but is destructive — prefer
 the versioned name.)
 
@@ -89,29 +89,32 @@ Every newly introduced question needs an explicit decision. This is especially
 important for a feature with a material footprint or an external capability:
 
 - `use_foreman` adds its supervisor, agents, taskfile, configuration,
-  documentation, and tests. It was default-on when introduced in v3.26.1;
-  current template source defaults it off. Update mode must still decide whether
-  the target should opt in.
-- `use_codeql` includes CodeQL only when the matrix corresponds to planned/actual
-  first-party JS/TS/Python source. `use_node` / `use_python` are tooling flags,
-  not source evidence; reconcile the rendered matrix and record an explicit
-  `codeql_languages` multiselect/override as a harmon-init source follow-up.
+  documentation, and tests. It currently defaults on. Update mode must still
+  make an explicit per-repo decision because this is a substantial operational
+  subsystem, not a passive lint setting.
+- `use_skills_sync` currently defaults on and vendors the selected harmon-devkit
+  skill categories. Decide explicitly whether the repo should participate. When
+  enabled, preserve any local, unmanaged skills and complete the required sync
+  sequence in §3.
+- CodeQL is not user-selectable through Copier. Its rendered
+  language matrix is derived from hidden `use_node` / `use_python` tooling flags,
+  which are not sufficient evidence of first-party source. Reconcile the workflow
+  with the repository's actual languages and GitHub Code Security capability.
   Public repositories have GitHub Code Security by default. For a
-  private/internal repo, perform a read-only capability check before selecting it
-  — and perform the same check whenever a legacy workflow exists without a
-  `use_codeql` answer:
+  private/internal repo, perform a read-only capability check whenever a CodeQL
+  workflow is present:
 
   ```bash
   gh api "repos/<owner>/<repo>" \
     --jq '{visibility, code_security: (.security_and_analysis.code_security.status // "unknown")}'
   ```
 
-  If Code Security is disabled and will not be enabled, pass
-  `--data use_codeql=false`; the update must remove the workflow, badge,
-  `FULL_SECURITY_SCAN` setup, and CodeQL coverage claims. If the API field is
-  unavailable because the caller lacks permission, verify the capability in
-  **Settings → Code security** rather than inferring it. A workflow file or
-  `FULL_SECURITY_SCAN=true` proves configuration, not successful SARIF coverage.
+  If Code Security is disabled and will not be enabled, document the capability
+  gap and propose an upstream Copier design change; do not invent an answer or
+  delete a pre-existing workflow merely to make CI green. If the API field is
+  unavailable because the caller lacks permission, ask a human to verify the
+  capability in **Settings → Code security** rather than inferring it. A workflow
+  file or `FULL_SECURITY_SCAN=true` proves configuration, not successful SARIF coverage.
   Require the fail-closed result contract: the helper's hermetic truth table
   normalizes unset/empty `FULL_SECURITY_SCAN` to disabled, accepts disabled/fork
   runs only as `skipped`, and accepts enabled non-forks only as `success`. At
@@ -135,10 +138,9 @@ the current default.
 Preview the exact answer set before the real update:
 
 ```bash
-: "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
 copier update --trust --defaults --pretend \
-  --data use_foreman=false \
-  --data use_codeql="$USE_CODEQL"
+  --data use_foreman=<true-or-false> \
+  --data use_skills_sync=<true-or-false>
 ```
 
 `--pretend` confirms rendering succeeds but its output can be terse. For a heavily
@@ -244,6 +246,24 @@ app content was clobbered and no copier marker leaked (`[[`, `[%`,
 resolves some conflicts with a delete-then-add, which a bare `git diff` renders as a
 misleading whole-file rewrite (`DA` in `git status`, every line shown as removed +
 re-added); staging first and diffing against `HEAD` shows the true, small delta.
+
+**Deletion audit — justify every removed pre-existing path.** After staging the
+reconciled result, list deletions explicitly:
+
+```bash
+git diff --name-status --diff-filter=D HEAD
+```
+
+For every path that existed before the update, inspect the pre-update file, the
+repo's recorded Copier answers, and the harmon-init conditional that controls the
+rendered path. Record why deletion is correct for this repository's context. A
+Copier condition becoming false is evidence to review, not permission by itself:
+custom workflows and other established automation are co-owned repository behavior.
+Never delete a workflow merely to clear CI. If a credentialed workflow fails
+because a secret or external capability is missing, treat it as a human-only
+blocker, leave the workflow and all secrets untouched, and report exactly what a
+maintainer must configure. When the deletion cannot be justified confidently,
+restore the file and ask the maintainer.
 
 **Silent reverts have NO conflict marker.** copier only emits markers / `.rej`
 where edits *overlap*. A file the repo customized **outside copier's tracked
@@ -397,6 +417,19 @@ claimed. Bumping the skills pin is always the same manual pair: bump `ref` in
 bump the ref but cannot run the re-sync half, so never merge a ref bump
 without the accompanying re-sync).
 
+After **every** harmon-init update in a repo where skills sync is enabled
+(`.skills-sync.yaml` exists), refresh the vendored skills and verify both the live
+and offline drift contracts, even when the pin itself did not change:
+
+```bash
+task sync:skills
+task verify:skills
+task verify:skills:offline
+```
+
+A sync failure is part of the update work; an enabled repo is not complete with
+stale or unverifiable vendored skills.
+
 **web repos: the shipped `tests/a11y.spec.ts` requires its deps or the whole
 Playwright run breaks.** The spec imports `@axe-core/playwright` (and needs
 `@playwright/test`); if the repo doesn't have them installed, `astro check` /
@@ -497,3 +530,11 @@ Commit on the branch with a Conventional-Commits message
 (`chore: update to harmon-init <version>`) and open a PR. Never bypass hooks; never
 merge to `main` directly. Re-import the branch ruleset via the GitHub UI only if the
 ruleset JSON changed (see [`post-generation-checklist.md`](./post-generation-checklist.md)).
+
+The update is complete only when all required PR checks are green **and** every
+review thread has been adjudicated. Watch CI through completion; fix failures caused
+by the update and push the corrections. Inspect both general and inline review
+comments after each push. Apply feedback you agree with; when you disagree, reply in
+the PR with a concrete repository-specific reason instead of silently dismissing it.
+Repeat until the latest commit is green and no review feedback remains unanswered,
+then report the PR for human merge.

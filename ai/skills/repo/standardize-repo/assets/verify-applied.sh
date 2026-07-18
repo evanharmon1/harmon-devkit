@@ -714,9 +714,9 @@ verify"
     fi
 fi
 
-# ── 3f. CodeQL selection, result truth table, and live capability ──
-# CodeQL is not universal merely because a repo contains Node/Python. The Copier
-# answer selects it, FULL_SECURITY_SCAN starts it, and GitHub must accept SARIF.
+# ── 3f. CodeQL result truth table and live capability ──────────────
+# CodeQL is rendered from the stack's hidden Node/Python tooling flags;
+# FULL_SECURITY_SCAN starts it, and GitHub must accept SARIF.
 # Public repositories have Code Security by default; private/internal repos need
 # the live feature enabled. The API check below is GET-only. Missing permissions
 # produce a manual-audit warning, never a guessed claim of coverage.
@@ -1047,14 +1047,6 @@ if [ -n "$codeql_workflow" ]; then
     fi
 fi
 
-use_codeql_answer=""
-if [ -f .copier-answers.yml ]; then
-    use_codeql_answer="$(
-        sed -n -E 's/^[[:space:]]*use_codeql:[[:space:]]*([^#[:space:]]+).*$/\1/p' .copier-answers.yml |
-            tail -n 1 | tr '[:upper:]' '[:lower:]' | tr -d "\"'"
-    )"
-fi
-
 if [ -n "$codeql_workflow" ]; then
     echo "INFO: CodeQL workflow presence and FULL_SECURITY_SCAN are configuration only;" >&2
     echo "      verify a successful analysis/SARIF upload before claiming coverage." >&2
@@ -1093,7 +1085,7 @@ if [ -n "$codeql_workflow" ]; then
                     echo "INFO: $codeql_nwo reports GitHub Code Security enabled." >&2
                     ;;
                 disabled)
-                    err "CodeQL workflow exists but $codeql_nwo is $visibility with GitHub Code Security disabled; enable it first or select use_codeql=false and remove the workflow/coverage claims"
+                    err "CodeQL workflow exists but $codeql_nwo is $visibility with GitHub Code Security disabled; a maintainer must enable the capability or coordinate a template design change — never modify secrets or delete the workflow merely to clear CI"
                     ;;
                 *)
                     echo "WARN: $codeql_nwo is $visibility but Code Security capability is '$code_security' —" >&2
@@ -1115,44 +1107,6 @@ if [ -n "$codeql_workflow" ]; then
         echo "      verify Code Security manually; do not infer coverage from workflow files." >&2
     fi
 fi
-
-case "$use_codeql_answer" in
-true | yes)
-    if [ -z "$codeql_workflow" ]; then
-        err "use_codeql=true but no .github/workflows/codeql.yml or codeql.yaml exists"
-    fi
-    if [ -f docs/architecture/security.md ] &&
-        grep -qF 'CodeQL is deliberately omitted' docs/architecture/security.md; then
-        err "use_codeql=true but security docs still say CodeQL is deliberately omitted"
-    fi
-    ;;
-false | no)
-    if [ -n "$codeql_workflow" ]; then
-        err "use_codeql=false but $codeql_workflow still exists"
-    fi
-    for taskfile in Taskfile.yml Taskfile.yaml; do
-        if [ -f "$taskfile" ] && grep -qF 'FULL_SECURITY_SCAN' "$taskfile"; then
-            err "use_codeql=false but $taskfile still configures FULL_SECURITY_SCAN"
-        fi
-    done
-    if [ -f README.md ] && grep -qE 'actions/workflows/codeql\.ya?ml' README.md; then
-        err "use_codeql=false but README.md still advertises the CodeQL workflow"
-    fi
-    if [ -f docs/architecture/security.md ] &&
-        ! grep -qF 'CodeQL is deliberately omitted' docs/architecture/security.md; then
-        err "use_codeql=false but security docs do not explicitly document the SAST gap"
-    fi
-    ;;
-"")
-    if [ -n "$codeql_workflow" ]; then
-        echo "WARN: CodeQL workflow exists but .copier-answers.yml has no explicit use_codeql answer —" >&2
-        echo "      review stack + live capability on the next template update." >&2
-    fi
-    ;;
-*)
-    err "invalid use_codeql value in .copier-answers.yml: $use_codeql_answer"
-    ;;
-esac
 
 # ── 4. No unrendered template markers leaked into the repo ──────────
 # harmon-init uses CUSTOM jinja delimiters ([[ var ]], [% block %]). Legitimate

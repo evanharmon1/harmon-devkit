@@ -23,7 +23,7 @@ the **latest git tag**, not your working tree. All uncommitted AND committed-but
 untagged work is silently ignored.
 
 **Rule:** Production scaffolds use the canonical URL and a released ref, for
-example `copier copy --trust --vcs-ref=v3.26.1
+example `copier copy --trust --vcs-ref=v4.1.1
 https://github.com/evanharmon1/harmon-init.git <dest>`. Pass `--vcs-ref=HEAD`
 only when rendering from a local checkout into a disposable preview/test. With
 it, copier auto-includes dirty **and** untracked changes via a
