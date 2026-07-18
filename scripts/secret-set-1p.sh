@@ -44,7 +44,7 @@ command -v jq >/dev/null 2>&1 || fail "jq is required"
 # item (the same empty/invalid-input race the GitHub helper avoids).
 exec 3<&0
 
-if ! validated_item="$(
+updated_item="$(
     op item get "$item" --vault "$vault" --format json --reveal |
         jq \
             --arg field "$field" \
@@ -74,8 +74,8 @@ if ! validated_item="$(
         # field carrying a structured (object) value — plain STRING/CONCEALED
         # fields are scalars, so an object value marks a passkey/SSH-key/document
         # credential we must not touch.
-        | if (.category == "SSH_KEY" or .category == "PASSKEY")
-             or (([.fields[] | select(.type == "SSHKEY" or ((.value | type) == "object"))] | length) > 0) then
+        | if (.category == "SSH_KEY" or .category == "SSHKEY" or .category == "PASSKEY")
+             or (([.fields[] | select((.value | type) == "object")] | length) > 0) then
             error("item holds a passkey or SSH key; refusing full-item edit (op would clobber it)")
           else
             .
@@ -94,10 +94,9 @@ if ! validated_item="$(
             (.fields[] |= if field_matches then .value = $value else . end)
           end
         '
-)"; then
-    fail "1Password item validation failed"
-fi
-
-printf '%s' "$validated_item" | op item edit "$item" --vault "$vault" >/dev/null
+)"
+printf '%s\n' "$updated_item" |
+    op item edit "$item" --vault "$vault" >/dev/null
+unset updated_item
 
 echo "Updated 1Password item '$item' field '$field'."

@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier
-_commit: v4.0.0
+_commit: v4.1.0
 _src_path: https://github.com/evanharmon1/harmon-init
 bunch_add: false
 ci_runner: ubuntu-latest
@@ -20,6 +20,7 @@ project_management: none
 project_name: Harmon DevKit
 project_slug: harmon-devkit
 project_type: general
+release_content_paths: ai/skills templates scripts
 run_task_install: false
 snyk_scan_schedule: 'off'
 use_foreman: false
