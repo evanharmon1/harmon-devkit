@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.8.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.7.2...v0.8.0) (2026-07-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **skills:** the skill directory and name change from `design-handoff` to `implement-design`. Repos that vendor it via skills-sync keep a stale `design-handoff/` directory until it is removed; re-sync and delete the old directory. Invoke as `/implement-design`.
+
+### Features
+
+* **design-handoff:** always ship downloadable logos on /brand ([#106](https://github.com/evanharmon1/harmon-devkit/issues/106)) ([e1bd734](https://github.com/evanharmon1/harmon-devkit/commit/e1bd73483efea46312e41dea1d0a61c310c55f4b))
+* **skills:** rename design-handoff to implement-design ([#108](https://github.com/evanharmon1/harmon-devkit/issues/108)) ([65edbb1](https://github.com/evanharmon1/harmon-devkit/commit/65edbb111c147e2c80029e0643234c5fd629db62))
+
 ## [0.7.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.7.1...v0.7.2) (2026-07-18)
 
 
