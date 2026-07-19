@@ -17,7 +17,7 @@ against. (Specs cover *what* and *why*; `docs/architecture/` covers *how*, and
 
 ## Design-handoff bundles
 
-Claude Design exports (the `design-handoff` skill's input) are unpacked into
+Claude Design exports (the `implement-design` skill's input) are unpacked into
 **subdirectories** here — `specs/handoff-<feature>/`. They are vendored,
 temporary reference material: ignored by git and every linter (`specs/*/` in
 the ignore configs) and **deleted at sign-off**, never committed. Top-level

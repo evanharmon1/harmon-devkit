@@ -3,7 +3,7 @@
 # with check-contrast.mjs). Components must style with semantic design tokens,
 # never raw color literals: a hardcoded color skips dark mode AND the contrast
 # gate, so it silently breaks theming and accessibility the moment someone
-# toggles the theme. The design-handoff skill copies this to scripts/ and wires
+# toggles the theme. The implement-design skill copies this to scripts/ and wires
 # it into `task lint:design` (see Taskfile.design.yml).
 #
 # Fails (exit 1) when it finds, under the target dir:

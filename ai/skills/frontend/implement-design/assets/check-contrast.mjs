@@ -10,7 +10,7 @@
 // the Tailwind Typography `.prose` plugin can still override a token). Always pair it with the
 // rendered-page measurement in Phase 5. See references/accessibility-verification.md.
 //
-// WHY zero-dependency: this script is bundled by the design-handoff skill and dropped into
+// WHY zero-dependency: this script is bundled by the implement-design skill and dropped into
 // arbitrary target repos to back `task lint:design`. Keeping it dependency-free (pure Node,
 // no culori/style-dictionary) means it runs anywhere with just `node` and never needs an
 // install step or a lockfile change in the repo being set up.

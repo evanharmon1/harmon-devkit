@@ -1,5 +1,5 @@
 ---
-name: design-handoff
+name: implement-design
 description: >-
   Implement a finished Claude Design in this code repo — the Claude Design → code handoff. Use
   whenever the user has a design from Claude Design (Anthropic's design canvas) to turn into real
@@ -12,7 +12,7 @@ description: >-
   even if the user doesn't say the word "skill".
 ---
 
-# Design Handoff (Claude Design → repo)
+# Implement Design (Claude Design → repo)
 
 Turn a finished design from **Claude Design** (or a similar tool) into working, on-brand code in this
 repo. The export is a **handoff bundle** — a `.tar.gz` or `.zip` from "Handoff to Claude Code" holding a
