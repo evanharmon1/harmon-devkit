@@ -96,6 +96,23 @@ at build time:
 - Add the `<link>`/manifest tags the generator prints to the document head. Include a **maskable** icon
   (with safe-zone padding) so Android doesn't crop the logo.
 
+## Logo exports: generate them too, not just favicons
+
+Favicons are wired into the app so they always get made; **logos are the ones that get forgotten** —
+they end up as inline JSX or one loose SVG, and there's no file to hand Stripe, Polar, GitHub,
+LinkedIn, or a README. Generate them in the same pass, from the source SVGs and the live tokens:
+
+- **Source of truth:** clean SVGs in `public/brand/logo/` — square mark, horizontal lockup, wordmark.
+- **Render the ladder** into `public/brand/logo/`: square mark PNG at **64/128/256/512/1024**, lockup
+  and wordmark PNG at **400/800/1600 wide**, each in full-color, reversed/white, and single-color
+  black — plus a **padded solid-background square** for circular-crop avatars (GitHub, LinkedIn,
+  Slack) and a `logos.zip`.
+- **How:** the zero-dependency Playwright renderer (`scripts/build-brand-assets.mjs` behind
+  `task brand:assets`) described in `brand-page.md` — `page.setContent()` with the SVG inlined and a
+  `file://` `@font-face`, then `page.screenshot` at an exact viewport. This also makes the PNGs
+  **font-true** (see the SVG `<text>` caveat below).
+- Surface every file as a labeled download on `/brand` — see the download matrix in `brand-page.md`.
+
 ## Raster images: format + loading
 
 - **Format priority:** AVIF → WebP → PNG/JPEG fallback (AVIF/WebP are dramatically smaller). Serve via
