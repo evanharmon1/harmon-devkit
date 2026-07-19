@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.8.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.0...v0.8.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* **skills:** call them design handoff bundles, not implement-design bundles ([#109](https://github.com/evanharmon1/harmon-devkit/issues/109)) ([bd667b5](https://github.com/evanharmon1/harmon-devkit/commit/bd667b5cbb3f76abbd34edab0698aa3ed4b112b6))
+
 ## [0.8.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.7.2...v0.8.0) (2026-07-19)
 
 
