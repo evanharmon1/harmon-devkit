@@ -148,7 +148,7 @@ Rules that make the files actually usable:
   brand font, outline it or render the PNGs in headless Chromium with the repo's woff2 loaded — see
   `assets-fonts-favicons.md`.
 - **Generate, never hand-place.** Even at Tier 1, produce these with the zero-dependency
-  Playwright renderer described under Tier 3 ("Zero-dependency collateral rendering"), wired to
+  Playwright renderer described below under Tier 3 ("Zero-dependency asset rendering"), wired to
   `task brand:assets`, driven from the live tokens and the source SVGs. Regenerate after any brand
   change; never hand-edit an output. Tier 2/3 then add stages to the _same_ script rather than
   inventing a second pipeline.
