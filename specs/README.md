@@ -15,9 +15,9 @@ against. (Specs cover *what* and *why*; `docs/architecture/` covers *how*, and
 3. Keep one spec per feature/change; link it from the implementing PR, and
    update or supersede it as the work evolves.
 
-## Design-handoff bundles
+## Design handoff bundles
 
-Claude Design exports (the `design-handoff` skill's input) are unpacked into
+Claude Design exports (the `implement-design` skill's input) are unpacked into
 **subdirectories** here — `specs/handoff-<feature>/`. They are vendored,
 temporary reference material: ignored by git and every linter (`specs/*/` in
 the ignore configs) and **deleted at sign-off**, never committed. Top-level

@@ -4,7 +4,7 @@
 # Called by `task ingest:design` (Taskfile.design.yml), which passes BUNDLE and
 # DEST through the ENVIRONMENT — never spliced into shell source — so a path
 # like "x.tar.gz; rm -rf ~" stays an (invalid) filename and paths with spaces
-# survive. The design-handoff skill copies this to scripts/ (chmod +x).
+# survive. The implement-design skill copies this to scripts/ (chmod +x).
 #
 # The archive is UNTRUSTED input: entries are listed and validated before
 # extraction. Absolute paths, ../ traversal, and link entries (symlink/hardlink,

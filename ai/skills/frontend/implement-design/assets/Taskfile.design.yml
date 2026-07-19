@@ -1,6 +1,6 @@
-# Taskfile.design.yml — design-handoff tasks (go-task / https://taskfile.dev)
+# Taskfile.design.yml — implement-design tasks (go-task / https://taskfile.dev)
 #
-# The design-handoff skill merges these into the TARGET repo's Taskfile.yml when they're
+# The implement-design skill merges these into the TARGET repo's Taskfile.yml when they're
 # missing. They assume:
 #   - check-contrast.mjs, check-off-palette.sh, and ingest-design.sh have been copied
 #     into the target repo at scripts/ (chmod +x the .sh files)

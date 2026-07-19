@@ -260,7 +260,7 @@ Conditional formatters/linters (see Part 2 for which project types):
 - **ansible-lint** — `.ansible-lint` (ansible only).
 
 **Design-bundle shield (`specs/*/`)** — spec *subdirectories* hold vendored
-design-handoff bundles (Claude Design exports; deleted at sign-off, never
+implement-design bundles (Claude Design exports; deleted at sign-off, never
 committed) and are excluded from git and every linter, while top-level
 `specs/*.md` stay tracked and linted. Audit that all surfaces agree:
 `.gitignore` + `.prettierignore` (`specs/*/`), `.yamllint` ignores

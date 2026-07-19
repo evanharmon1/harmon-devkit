@@ -1,4 +1,4 @@
-// playwright.config.ts — bundled TEMPLATE for the design-handoff cross-browser gate.
+// playwright.config.ts — bundled TEMPLATE for the implement-design cross-browser gate.
 //
 // Serves the built site and runs assets/brand-screenshots.spec.ts across the three
 // engines + mobile, for `task verify:browsers`. Copy to the repo root and adjust

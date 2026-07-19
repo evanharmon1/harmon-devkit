@@ -1,4 +1,4 @@
-// brand-screenshots.spec.ts — bundled TEMPLATE for the design-handoff cross-browser sweep.
+// brand-screenshots.spec.ts — bundled TEMPLATE for the implement-design cross-browser sweep.
 //
 // Runs under `task verify:browsers` (i.e. `npx playwright test tests/brand-screenshots.spec.ts`).
 // The engine × device axis comes from playwright.config.ts `projects` (chromium / firefox / webkit
