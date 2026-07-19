@@ -433,6 +433,9 @@ expect_ok "update guidance documents the Foreman default transition" \
 expect_ok "new-repo guidance exposes the explicit CodeQL answer" \
     grep -qF '| `use_codeql` | bool |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo guidance exposes the explicit CodeQL language matrix" \
+    grep -qF '| `codeql_languages` | multiselect |' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "production scaffolding uses the canonical released template" \
     grep -qF 'https://github.com/evanharmon1/harmon-init.git <dest>' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
@@ -457,14 +460,14 @@ expect_ok "audit guidance rejects fail-open CodeQL analysis" \
 expect_ok "checklist does not treat CodeQL configuration as coverage" \
     grep -qF 'does not establish' \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
-expect_ok "catalog documents profile-driven CodeQL omission" \
-    grep -qF 'No `codeql.yml`** when there is no Node/Python tooling profile' \
+expect_ok "catalog documents answer-driven CodeQL omission" \
+    grep -qF 'No `codeql.yml`** when `use_codeql=false`' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "catalog distinguishes CodeQL source from tooling flags" \
     grep -qF '`use_node` and `use_python` describe tooling;' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "catalog requires the CodeQL matrix to match real source" \
-    grep -qF 'generated matrix with real first-party source' \
+    grep -qF 'persisted matrix with real first-party source' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "audit guidance checks legacy CodeQL capability" \
     grep -qF '`.copier-answers.yml` has no `use_codeql` field' \
@@ -513,7 +516,7 @@ expect_ok "catalog documents conditional Terraform required checks" \
     grep -qF 'when `include_terraform=true`,' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "catalog records CodeQL as a conditional required check" \
-    grep -qF 'plus **`codeql-verify`** when a Node/Python' \
+    grep -qF 'plus **`codeql-verify`** exactly when' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "catalog records the three-route CodeQL result contract" \
     grep -qF 'successful not-applicable result only for free-private' \
@@ -812,7 +815,7 @@ write_required_check_ruleset "$AGG_TARGET" terraform
 expect_fail "verify-applied rejects terraform-verify for a non-Terraform repo" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 write_required_check_ruleset "$AGG_TARGET" codeql
-expect_fail "verify-applied does not claim CodeQL is branch-required yet" \
+expect_fail "verify-applied rejects codeql-verify without CodeQL intent" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 write_required_check_ruleset "$AGG_TARGET"
 
@@ -853,6 +856,7 @@ cp "$AGG_TARGET/.github/workflows/build.yml" \
     "$CQ_TARGET/.github/workflows/build.yml"
 cp "$AGG_TARGET/scripts/verify-required-results.sh" \
     "$CQ_TARGET/scripts/verify-required-results.sh"
+write_required_check_ruleset "$CQ_TARGET"
 # Some CI runner images provide gitleaks in the lint job. Give its repository
 # scan a real HEAD so an unrelated empty-history error cannot make every
 # verify-applied assertion look like an expected CodeQL failure.
@@ -977,6 +981,10 @@ printf '%s\n' 'CodeQL is deliberately omitted; first-party SAST is not configure
     >"$CQ_TARGET/docs/architecture/security.md"
 expect_ok "verify-applied accepts a clean intentional CodeQL omission" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_required_check_ruleset "$CQ_TARGET" codeql
+expect_fail "verify-applied rejects codeql-verify when CodeQL is disabled" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_required_check_ruleset "$CQ_TARGET"
 
 printf '%s\n' '[![CodeQL](badge)](actions/workflows/codeql.yml)' >"$CQ_TARGET/README.md"
 expect_fail "verify-applied rejects a stale CodeQL badge when disabled" \
@@ -1022,6 +1030,11 @@ expect_fail "verify-applied rejects private CodeQL with Code Security disabled" 
     env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
     GH_TEST_CODE_SECURITY=disabled \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+expect_fail "verify-applied requires codeql-verify when CodeQL is enabled" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_required_check_ruleset "$CQ_TARGET" codeql
 expect_ok "verify-applied accepts private CodeQL with Code Security enabled" \
     env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
     GH_TEST_CODE_SECURITY=enabled \

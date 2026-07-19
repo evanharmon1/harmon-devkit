@@ -691,9 +691,29 @@ if [ -n "$aggregate_workflows" ]; then
     done <<<"$aggregate_workflows"
 fi
 
-# The shipped ruleset has an exact profile-derived required-check set. CodeQL is
-# fail-closed inside its workflow today, but is not merge-gating until its
-# workflow also supports merge_group and the ruleset requires codeql-verify.
+# The shipped ruleset has an exact answer-derived required-check set. Updated
+# repositories persist use_codeql explicitly; for legacy answers, preserve the
+# established intent when a CodeQL workflow is already present.
+use_codeql_answer=""
+if [ -f .copier-answers.yml ]; then
+    use_codeql_answer="$(
+        sed -n -E 's/^[[:space:]]*use_codeql:[[:space:]]*([^#[:space:]]+).*$/\1/p' .copier-answers.yml |
+            tail -n 1 | tr '[:upper:]' '[:lower:]' | tr -d "\"'"
+    )"
+fi
+
+codeql_required=false
+case "$use_codeql_answer" in
+true | yes)
+    codeql_required=true
+    ;;
+"")
+    if [ -f .github/workflows/codeql.yml ] || [ -f .github/workflows/codeql.yaml ]; then
+        codeql_required=true
+    fi
+    ;;
+esac
+
 ruleset_file=".github/Branch Protection Ruleset - Protect Main.json"
 if [ -f "$ruleset_file" ]; then
     ruleset_contexts="$(
@@ -702,15 +722,20 @@ if [ -f "$ruleset_file" ]; then
     )"
     expected_contexts="security
 verify"
+    expected_contexts_label="verify + security"
     if [ "$has_terraform" = true ]; then
-        expected_contexts="security
-terraform-verify
-verify"
+        expected_contexts="$expected_contexts
+terraform-verify"
+        expected_contexts_label="$expected_contexts_label + terraform-verify"
     fi
+    if [ "$codeql_required" = true ]; then
+        expected_contexts="$expected_contexts
+codeql-verify"
+        expected_contexts_label="$expected_contexts_label + codeql-verify"
+    fi
+    expected_contexts="$(printf '%s\n' "$expected_contexts" | sort -u)"
     if [ "$ruleset_contexts" != "$expected_contexts" ]; then
-        err "$ruleset_file required checks must be verify + security$(
-            if [ "$has_terraform" = true ]; then printf '%s' ' + terraform-verify'; fi
-        ); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
+        err "$ruleset_file required checks must be $expected_contexts_label; found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
     fi
 fi
 
@@ -1045,14 +1070,6 @@ if [ -n "$codeql_workflow" ]; then
     elif [ "$matrix_has_python" = false ] && [ "$has_python_source" = true ]; then
         echo "WARN: first-party Python source exists but CodeQL omits python." >&2
     fi
-fi
-
-use_codeql_answer=""
-if [ -f .copier-answers.yml ]; then
-    use_codeql_answer="$(
-        sed -n -E 's/^[[:space:]]*use_codeql:[[:space:]]*([^#[:space:]]+).*$/\1/p' .copier-answers.yml |
-            tail -n 1 | tr '[:upper:]' '[:lower:]' | tr -d "\"'"
-    )"
 fi
 
 if [ -n "$codeql_workflow" ]; then

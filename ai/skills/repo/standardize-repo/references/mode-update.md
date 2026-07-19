@@ -94,8 +94,9 @@ important for a feature with a material footprint or an external capability:
   the target should opt in.
 - `use_codeql` includes CodeQL only when the matrix corresponds to planned/actual
   first-party JS/TS/Python source. `use_node` / `use_python` are tooling flags,
-  not source evidence; reconcile the rendered matrix and record an explicit
-  `codeql_languages` multiselect/override as a harmon-init source follow-up.
+  not source evidence; review and persist the explicit `codeql_languages`
+  multiselect alongside the selection. The template's pre-update migration
+  preserves a legacy repository's existing CodeQL workflow intent and matrix.
   Public repositories have GitHub Code Security by default. For a
   private/internal repo, perform a read-only capability check before selecting it
   — and perform the same check whenever a legacy workflow exists without a

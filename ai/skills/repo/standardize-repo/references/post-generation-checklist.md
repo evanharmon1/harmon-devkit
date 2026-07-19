@@ -46,7 +46,7 @@ push so the remote exists.
 
 - [ ] **[manual — GitHub UI]** Import the branch ruleset that protects `main`
       (required reviews + the `verify`/`security` status checks, plus
-      `codeql-verify` for Node/Python profiles). The JSON is generated into the
+      `codeql-verify` when `use_codeql=true`). The JSON is generated into the
       repo's `.github/`. Import it via the UI:
       **Settings → Rules → Rulesets → New ruleset ▸ Import a ruleset** → select
       `.github/Branch Protection Ruleset - Protect Main.json`. To change an
@@ -184,13 +184,13 @@ push so the remote exists.
   See `docs/architecture/security.md` for blast-radius and rotation notes.
 
 - [ ] **[human-only entitlement decision; scriptable via gh]** Confirm the
-      visibility-appropriate SAST route. Node/Python **public** repositories run
-      the generated CodeQL workflow automatically and for free—confirm a
-      successful Security-tab upload; do not set a variable. Free **private**
-      repositories use Semgrep CE in `build.yml`. Profiles without a generated
-      CodeQL workflow use Semgrep CE at either visibility. Only after enabling
-      paid GitHub Code Security for a private/internal repository, opt it into
-      private CodeQL and confirm the upload:
+      visibility-appropriate SAST route. Repositories with `use_codeql=true`
+      analyze exactly `codeql_languages`; public repositories run that workflow
+      automatically and for free—confirm a successful Security-tab upload; do
+      not set a variable. Private repositories with CodeQL disabled use Semgrep
+      CE in `build.yml`, as do all repositories with `use_codeql=false`. Only
+      after enabling GitHub Code Security for a private/internal repository, opt
+      it into private CodeQL and confirm the upload:
 
   ```bash
   gh variable set FULL_SECURITY_SCAN --repo "<org>/<repo>" --body "true"

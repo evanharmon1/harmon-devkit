@@ -85,7 +85,8 @@ The asked questions live in `~/git/harmon-init/copier.yml` (e.g. `project_name`,
 `project_slug`, `project_description`, `github_org`, `project_type`
 [general / web-astro / web-app / iac / docs], `snyk_scan_schedule`
 [off / weekly / daily], `include_terraform`, `include_ansible`, `ci_runner`,
-`license`, `use_release_please`, `devcontainer`, `git_init`). Read that file to
+`license`, `use_codeql`, `codeql_languages`, `use_release_please`, `devcontainer`,
+`git_init`). Read that file to
 confirm names/choices/defaults before scaffolding — do not invent answers.
 
 ## Standards catalog

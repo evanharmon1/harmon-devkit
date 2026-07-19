@@ -139,6 +139,7 @@ copier copy --trust https://github.com/evanharmon1/harmon-init.git . \
   --data project_slug="$(basename "$(pwd)")" \
   --data github_org="<org-or-user>" \
   --data use_codeql="$USE_CODEQL" \
+  --data codeql_languages="$CODEQL_LANGUAGES" \
   --data git_init=false \
   --data github_remote_create=false --data github_release_init=false \
   --data bunch_add=false --data obsidian_project_add=false --data run_task_install=false
@@ -151,11 +152,13 @@ released ref when appropriate. Local `--vcs-ref=HEAD` adoption is for a disposab
 preview only, never the production apply: dirty local renders can record a
 throwaway `_commit` that no later remote update can resolve.
 
-Set `USE_CODEQL` deliberately before rendering. Use `true` only for a supported
-Node/Python stack when Code Security is available (public repositories have it by
-default; inspect private/internal repositories with the read-only check in
+Set `USE_CODEQL` and `CODEQL_LANGUAGES` deliberately before rendering. Use
+`true` only when supported first-party JS/TS or Python source is present and Code
+Security is available (public repositories have it by default; inspect
+private/internal repositories with the read-only check in
 [`mode-audit.md`](./mode-audit.md), drift class G). Otherwise use `false`; do not
-render a workflow whose SARIF upload cannot succeed.
+render a workflow whose SARIF upload cannot succeed. The language selection must
+be nonempty when enabled and match the real source.
 
 `--defaults` is **required non-interactively** (no TTY → `OSError: [Errno 22]`), and
 because copier can't prompt per-file, `--overwrite` makes the run deterministic
@@ -315,8 +318,8 @@ after the copier run:
 
 5. **Other recurring fixes** (apply if present): consolidate duplicate Claude
    workflows (`claude-*-max.yml` → the base `claude-plan/implement/review.yml`);
-   add the CodeQL + Semgrep visibility route if the repo uses Node/Python (or
-   Semgrep CE alone for other profiles); replace legacy Snyk PR CI with the
+   align the explicit CodeQL selection/languages with real supported source and
+   live capability (or use Semgrep CE alone); replace legacy Snyk PR CI with the
    manual/local default or the explicit weekly/daily advisory schedule; drop any
    bump-on-merge `release.yml` in favor of release-please; de-bloat a legacy
    `Brewfile`; make scripts portable to macOS bash 3.2 (no `mapfile`, no
