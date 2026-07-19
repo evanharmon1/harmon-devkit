@@ -101,13 +101,59 @@ include it; this is the one place where more is better.
 - **Patterns/compositions** the design defines — page header, form layout, empty state, card grid — as
   small live examples.
 
-### Brand assets (previewed here; downloadable bundles are Tier 2)
+### Brand assets — logos and icons, previewed **and downloadable** (always)
+
+Tier 1 ships **real, downloadable logo and icon files**, not just previews. This is the common failure
+mode: favicons get generated (they're wired into the app) while logos stay as inline JSX or a single
+SVG nobody can grab — so the first time the user has to upload a logo to Stripe, Polar, GitHub,
+LinkedIn, or a README, there's no file to give. A core-only `/brand` must still answer "where do I
+download the logo?" Tier 2 extends this into a full press kit; it does not own the basics.
 
 - **Logo system** — full lockup, monogram/mark, and wordmark in light, dark, and single-color variants;
   clear-space and minimum-size rules; and a **misuse** row (don't stretch, recolor, rotate, or add
   effects).
-- **Favicon & app icons** previewed at real sizes.
+- **Favicon & app icons** previewed at real sizes, with the generated set downloadable too.
 - **Imagery & illustration** direction, and background patterns/textures if the design uses them.
+
+**No logo in the bundle? Say so — don't silently skip the section.** If the design never produced a
+mark, surface it in the chat and offer the options (derive a monogram/wordmark from the brand font and
+tokens, or leave a placeholder and flag it). Silently shipping a `/brand` page with no logo section is
+how this gap goes unnoticed until launch day.
+
+#### The download matrix (always generated)
+
+Every variant ships as **SVG** (primary, scalable, `currentColor` where apt) plus **transparent PNG** at
+a fixed size ladder, so any upload target is covered without re-exporting. Ship each file with a visible
+**download button** next to its preview, the **exact pixel dimensions labeled**, and a
+`logos.zip` (mark + lockup + wordmark, all variants and sizes) for grabbing everything at once.
+
+| Asset                        | Formats           | Sizes                                | Covers                                                                                      |
+| ---------------------------- | ----------------- | ------------------------------------ | ------------------------------------------------------------------------------------------- |
+| **Square mark** (icon/avatar) | SVG + PNG         | 64, 128, 256, 512, 1024 px           | Stripe/Polar brand icon (≥128), GitHub org avatar (≥500), LinkedIn logo (300), X (400), Instagram (320+), YouTube channel icon (800), Slack/Discord (512), npm/docs favicons |
+| **Horizontal lockup**        | SVG + PNG         | 400, 800, 1600 px wide               | READMEs (~600–800 @2x), docs headers, partner/vendor "send us your logo" asks, email signatures |
+| **Wordmark**                 | SVG + PNG         | 400, 800, 1600 px wide               | Text-only contexts, footers, press mentions                                                   |
+| **Favicon / app icons**      | ICO, SVG, PNG     | the generated set (16–512 + maskable) | Browsers, iOS/Android home screens, PWA                                                       |
+
+Rules that make the files actually usable:
+
+- **Three color variants** per asset: full-color, **reversed/white** (for dark backgrounds), and
+  **single-color black** — platforms and print vendors ask for all three, and a full-color-only kit
+  gets recolored badly by someone else.
+- **Both transparent and solid-background** square marks. Some platforms (payment dashboards, app
+  directories) composite an avatar onto an unpredictable background; a solid-bg variant with the brand
+  color and correct internal padding is what you want there.
+- **Padding/safe zone** — square avatars need the mark inset (roughly 10–15%) so circular crops
+  (GitHub, LinkedIn, Slack) don't clip it. Export a padded square variant, not just a tight crop.
+- **PNGs are font-true renders**, not browser-dependent SVG. If the wordmark uses live `<text>` in the
+  brand font, outline it or render the PNGs in headless Chromium with the repo's woff2 loaded — see
+  `assets-fonts-favicons.md`.
+- **Generate, never hand-place.** Even at Tier 1, produce these with the zero-dependency
+  Playwright renderer described under Tier 3 ("Zero-dependency collateral rendering"), wired to
+  `task brand:assets`, driven from the live tokens and the source SVGs. Regenerate after any brand
+  change; never hand-edit an output. Tier 2/3 then add stages to the _same_ script rather than
+  inventing a second pipeline.
+- Serve them from **stable paths** (`public/brand/logo/…`) so a README, a partner, or an automation can
+  hotlink without the URL moving.
 
 ### Make it automation-friendly (well-specced for tooling)
 
@@ -145,10 +191,10 @@ source as `globals.css`/`DESIGN.md` so it never drifts.
 
 ### Contents
 
-- **Logo suite** — primary lockup, monogram/mark, and wordmark; horizontal and stacked variants; in
-  full-color, single-color (black, white), and reversed (for dark backgrounds). Each as **SVG**
-  (primary) and transparent **PNG** at several resolutions; add PDF/EPS when print vendors need them.
-  Include the clear-space rule, minimum size, and a misuse row.
+- **Logo suite** — the Tier 1 download matrix (above) is the baseline; Tier 2 adds the rest: **stacked**
+  in addition to horizontal variants, **PDF/EPS** for print vendors, and larger/print-resolution
+  renders. Same generator, more stages — don't rebuild the pipeline. Include the clear-space rule,
+  minimum size, and a misuse row.
 - **Favicon & app-icon set** — `favicon.ico`, `favicon.svg`, `apple-touch-icon.png` (180), PWA icons
   (192/512 plus a maskable), and `site.webmanifest` (the set generated in `assets-fonts-favicons.md`).
 - **Color** — the palette as swatches with **hex, oklch, RGB, and CMYK** (add Pantone/spot for print),
@@ -230,9 +276,12 @@ These groups map onto the design suite's artifact taxonomy in `ai/skills/README.
 Components / Pages & Templates / Assets / Collateral), so `/brand` stays aligned with the broader
 design-suite roadmap.
 
-### Zero-dependency collateral rendering (the proven pattern)
+### Zero-dependency asset rendering (the proven pattern)
 
-Collateral does **not** need image/PDF libraries (`satori`, `astro-og-canvas`, `sharp`, React
+Used at **every tier** — Tier 1's logo/icon downloads, Tier 2's kit, and Tier 3's collateral all come
+out of this one script; later tiers add stages rather than a second pipeline.
+
+Rendering does **not** need image/PDF libraries (`satori`, `astro-og-canvas`, `sharp`, React
 Email…) — the repo's existing Playwright renders everything, driven by one script (e.g.
 `scripts/build-brand-assets.mjs`, wired to a `task brand:assets`):
 
