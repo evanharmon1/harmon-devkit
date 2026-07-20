@@ -23,6 +23,13 @@ ones. harmon-init is NOT an application — it is used via
 [Copier](https://copier.readthedocs.io/en/stable/), so the heavy lifting is
 `copier copy` / `copier update`, not hand-copying files.
 
+## Credential boundary
+
+Keep secret and credential-store writes human-only. Use read-only checks to confirm
+that a credential is configured without revealing its value. If CI is blocked by a
+missing credential, report the exact maintainer action; never create, rotate, delete,
+or widen access to credentials, or weaken a workflow merely to make CI green.
+
 ## Preconditions
 
 Verify these before doing anything; stop and tell the user if one is unmet.
@@ -104,6 +111,15 @@ catalog) as the source of truth, not memory.
 
 ## Verification
 
+After a template apply or update, if `.skills-sync.yaml` exists, refresh and verify
+the managed skills before running the repository gate:
+
+```bash
+task sync:skills
+task verify:skills
+task verify:skills:offline
+```
+
 After applying any mode, run the bundled check:
 
 ```bash
@@ -115,3 +131,7 @@ It confirms the expected files/tooling landed and then runs the repo's own gate
 `task install:hooks` to wire lefthook). Report what passed and surface any gaps
 against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
 prohibited); commit on a feature branch and open a PR — no direct commits to `main`.
+When the work includes a PR, watch every required check to a terminal green result
+and inspect every review thread after each push. Apply feedback you agree with and
+reply with a concrete repository-specific rationale when you disagree. Never merge;
+report the reviewed, green PR for human handoff.

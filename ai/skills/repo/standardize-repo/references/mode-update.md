@@ -245,6 +245,19 @@ resolves some conflicts with a delete-then-add, which a bare `git diff` renders 
 misleading whole-file rewrite (`DA` in `git status`, every line shown as removed +
 re-added); staging first and diffing against `HEAD` shows the true, small delta.
 
+**Deletion audit — justify every removed pre-existing path.** Inspect staged
+deletions before proceeding:
+
+```bash
+git diff --name-status --diff-filter=D HEAD
+```
+
+For each path, compare the pre-update file, the recorded Copier answers, and the
+template condition that controls it. A condition becoming false is evidence to
+review, not permission to discard repo-owned behavior. Restore and ask when the
+deletion is uncertain. Never delete or weaken a workflow to clear a credential or
+external-capability failure; report the human-only blocker instead.
+
 **Silent reverts have NO conflict marker.** copier only emits markers / `.rej`
 where edits *overlap*. A file the repo customized **outside copier's tracked
 answers** — anything restored wholesale from `main` during a Path-B adopt
