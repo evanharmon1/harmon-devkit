@@ -476,6 +476,18 @@ expect_ok "catalog requires protected-event CodeQL triggers" \
 expect_ok "skill favors rolling updates over permanent version migrations" \
     grep -qF 'regular rolling updates' \
     "$STANDARDIZE_SKILL"
+expect_ok "skill keeps credential writes human-only" \
+    grep -qF 'Keep secret and credential-store writes human-only.' \
+    "$STANDARDIZE_SKILL"
+expect_ok "update guidance requires a deletion audit" \
+    grep -qF 'Deletion audit — justify every removed pre-existing path.' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "skill always refreshes enabled skills sync" \
+    grep -qF 'After a template apply or update, if `.skills-sync.yaml` exists' \
+    "$STANDARDIZE_SKILL"
+expect_ok "skill completion requires green CI and review adjudication" \
+    grep -qF 'watch every required check to a terminal green result' \
+    "$STANDARDIZE_SKILL"
 expect_ok "catalog keeps fork aggregates from executing repository code" \
     grep -qF 'code on the aggregate runner' \
     "$STANDARDIZE_REFS/standards-catalog.md"
