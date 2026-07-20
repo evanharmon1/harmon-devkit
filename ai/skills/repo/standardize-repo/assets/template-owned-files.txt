@@ -9,7 +9,7 @@
 # Lines starting with # and blank lines are ignored. Paths use the template's
 # default extension; diff-template.sh maps .yml<->.yaml to whatever the repo uses.
 # Entries not present in a given render (e.g. codeql.yml when `use_codeql=false`
-# or the stack has no supported Node/Python language) are skipped automatically.
+# or use_codeql=false) are skipped automatically.
 
 # ── Task runner + git hooks ──────────────────────────────────────────────────
 Taskfile.yml
@@ -29,12 +29,9 @@ scripts/python-audit.sh
 scripts/terraform-provider-locks.sh
 scripts/terraform-changed.sh
 scripts/terraform-ci.sh
-scripts/test-codeql-result.sh
-scripts/test-required-results.sh
 scripts/test-terraform-provider-locks.sh
 scripts/test-terraform-ci.sh
-scripts/verify-codeql-result.sh
-scripts/verify-required-results.sh
+scripts/verify-ci-results.sh
 scripts/sync-skills.sh
 scripts/summarize-gitleaks.mjs
 scripts/run-semgrep.sh

@@ -175,7 +175,7 @@ if an unpinned/missing tool breaks the `security` job).
 ruleset (`template/.github/Branch Protection Ruleset - Protect Main.json`) requires
 the baseline contexts **`verify`** and **`security`**, plus
 **`terraform-verify`** exactly when `include_terraform=true`, and
-**`codeql-verify`** when `use_node or use_python` generates CodeQL. The
+**`codeql-verify`** exactly when `use_codeql=true`. The
 **`merge_queue`** rule is conditional: org repos
 (`github_org != author_git_provider_username`) get it; personal-account repos do
 not. Missing it is drift only for an org repo, while adding it to a personal repo
@@ -207,15 +207,15 @@ carry duplicates like `claude-review-max.yml` / `claude-implement-max.yml`. Fix:
 delete the `-max` duplicates, keep the three canonical workflows. Severity:
 **should** (blocker if a duplicate fires redundant/conflicting automation).
 
-**G. Missing `codeql.yml`.** The template ships a CodeQL workflow gated on
-`use_node or use_python` (`template/.github/workflows/[% if use_node or use_python %]codeql.yml[% endif %].jinja`).
-Repos with Node/Python code but no `codeql.yml` are missing the standard SAST
-route. Public repositories run it automatically and for free; free private
-repositories skip CodeQL and run Semgrep CE from `build.yml`; paid private
-GitHub Code Security is an explicit `FULL_SECURITY_SCAN=true` opt-in. Fix: add
-`codeql.yml`, `scripts/run-semgrep.sh`, and the visibility-aware `build.yml` /
-Taskfile targets from the template (a re-template with the right answers includes
-them). Severity: **should**.
+**G. CodeQL selection drift.** The template ships a CodeQL workflow only when
+`use_codeql=true`, using exactly the persisted `codeql_languages` matrix.
+Repositories with supported first-party source and live Code Security capability
+should make that intent explicit; tooling flags alone are not evidence. Public
+repositories run it automatically and for free; private/internal repositories
+require GitHub Code Security plus the explicit `FULL_SECURITY_SCAN=true` opt-in.
+When `use_codeql=false`, CodeQL artifacts and claims must be absent and Semgrep CE
+provides the baseline SAST route. Fix by re-templating with reviewed answers.
+Severity: **should**.
 
 Presence of the workflow alone is not coverage. The analyze job/action must not use
 `continue-on-error`; public and paid-private analyses must succeed, while the

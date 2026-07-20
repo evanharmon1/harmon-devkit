@@ -371,8 +371,8 @@ Shared structure:
 - **`merge_group`** trigger on `build.yml` (merge-queue support).
 - **Aggregate gate:** a final `verify` job (`if: always()`, `needs: [lint,
   security, …]`) reports one rollup status. Branch protection requires
-  **`verify`** and **`security`**, plus **`codeql-verify`** when a Node/Python
-  profile generates CodeQL and **`terraform-verify`** for a Terraform-capable
+  **`verify`** and **`security`**, plus **`codeql-verify`** exactly when
+  `use_codeql=true` and **`terraform-verify`** for a Terraform-capable
   repo (when `include_terraform=true`, the Terraform aggregate is required).
   Result acceptance is predicate-exact, never a generic
   `success || skipped` allowlist. On a fork PR, every fork-suppressed leaf must be
@@ -413,7 +413,7 @@ Workflow inventory:
 | `claude-implement.yml` | `@claude implement` / label → opens a PR on a `claude/` branch (`--model sonnet`) | [copier] |
 | `claude-review.yml` | `@claude review` / label → review comment, no writes (sticky comment) | [copier] |
 | `release.yml` | release-please; only when `use_release_please` | [copier] |
-| `codeql.yml` | only when `use_node or use_python`; automatic/free for public repos; private/internal requires paid GitHub Code Security + `FULL_SECURITY_SCAN=true`; aggregate `codeql-verify` always reports | [copier] |
+| `codeql.yml` | only when `use_codeql=true`; triggers on PR and `merge_group` so required `codeql-verify` reports; matrix is exactly `codeql_languages`; automatic/free for public repos; private/internal requires GitHub Code Security + `FULL_SECURITY_SCAN=true` | [copier] |
 | `snyk-scheduled.yml` | only when `snyk_scan_schedule` is `weekly` or `daily`; schedule/manual advisory SAST + SCA, no PR/push trigger or required check | [copier] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
@@ -462,8 +462,9 @@ The repository-class policy is:
   monitoring for public and private repositories; `task security:audit` /
   `security:sca` runs the package-manager audit. **[manual]** to enable alerts;
   **[copier]** for tasks.
-- **CodeQL** — `codeql.yml` is generated for Node/Python. It runs automatically
-  on public repositories; private/internal repositories run it only with paid
+- **CodeQL** — `codeql.yml` is generated only when `use_codeql=true`, with the
+  exact persisted `codeql_languages` matrix. It runs automatically on public
+  repositories; private/internal repositories run it only with
   GitHub Code Security + `FULL_SECURITY_SCAN=true`, otherwise `build.yml` uses
   Semgrep CE. An unset/empty `FULL_SECURITY_SCAN` normalizes to the free-private
   route. The analyze job/action never uses `continue-on-error`; its stable
@@ -472,7 +473,7 @@ The repository-class policy is:
   routes. The fork path does not check out or execute fork-controlled repository
   code on the aggregate runner. `use_node` and `use_python` describe tooling;
   neither proves that its corresponding source language exists, so reconcile the
-  generated matrix with real first-party source. **[copier]**; **[manual]** only
+  persisted matrix with real first-party source. **[copier]**; **[manual]** only
   for the paid private opt-in.
 - **Snyk** — optional `security:sast:snyk` (`snyk code test`) +
   `security:sca:snyk` (`snyk test --all-projects`) second opinions. The default
@@ -488,7 +489,8 @@ The repository-class policy is:
 - **Branch protection ruleset** — `.github/Branch Protection Ruleset - Protect
   Main.json`: blocks deletion/non-ff/creation, requires linear history, PR with 1
   code-owner approval + thread resolution + last-push approval, required status
-  checks `verify` + `security` (+ `codeql-verify` for Node/Python), merge methods
+  checks `verify` + `security` (+ `codeql-verify` exactly when
+  `use_codeql=true`), merge methods
   squash/rebase; org repos add a `merge_queue` rule. Scheduled Snyk and Snyk App
   checks are never required by default. **[copier]** ships the file; **[manual]**
   import via the GitHub UI (Settings → Rules → Rulesets → **Import a ruleset**) — not
@@ -917,11 +919,11 @@ Adds (all [copier]):
   existing); lefthook ansible-syntax (pre-push); `ANSIBLE_CONFIG` remoteEnv;
   Renovate ansible regex managers; redhat.ansible extension.
 - **Python toolchain** active (uv, black, `.python-version`, pyproject).
-- Do not infer Python CodeQL coverage from the iac type. The current renderer adds
-  `python` when `use_codeql=true` because iac enables the Python tooling flag, but
-  an infrastructure repo may have no first-party `.py` files. Reconcile the
-  matrix with actual source (and include another real language such as
-  `javascript-typescript` when present) plus live Code Security capability.
+- Do not infer Python CodeQL coverage from the iac type. An infrastructure repo
+  may have no first-party `.py` files. Select `use_codeql` deliberately and
+  reconcile `codeql_languages` with actual source (including another supported
+  language such as `javascript-typescript` when present) plus live Code Security
+  capability.
 - **[manual] CHECKLIST:** lay out `terraform/` and/or `ansible/site.yml` — lint
   tasks activate automatically once `ansible/site.yml` exists.
 - The live `harmon-infra` shows how deep the namespacing legitimately goes:
@@ -958,11 +960,11 @@ Legitimately repo- or type-specific differences. An auditor should treat these a
   later added its own `.devcontainer/`).
 - **No `release.yml` / release-please manifest** when `use_release_please: no`
   (then releases are purely `task release:*`).
-- **No `codeql.yml`** when there is no Node/Python tooling profile. A
-  private/internal repo without paid GitHub Code Security still keeps the
-  generated workflow's stable not-applicable aggregate and uses Semgrep CE.
-  Current rendering is gated by `use_node`/`use_python`, so audit the matrix
-  against real source rather than treating those tooling flags as coverage.
+- **No `codeql.yml`** when `use_codeql=false`. When enabled, the workflow matrix
+  is exactly the persisted `codeql_languages`; audit that selection against real
+  first-party source rather than treating tooling flags as coverage. A
+  private/internal repository should select CodeQL only when GitHub Code Security
+  is enabled; otherwise it uses Semgrep CE and documents the deliberate omission.
 - **No `project-automation.yml`, no org `merge_queue` rule, no
   `permission-organization-projects`/`permission-members`** for personal-account
   repos (`github_org == author_git_provider_username`). Org repos get all three.

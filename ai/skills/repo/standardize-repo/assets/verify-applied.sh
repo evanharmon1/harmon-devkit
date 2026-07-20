@@ -536,7 +536,7 @@ aggregate_job_contract_is_safe() {
             if (line ~ /uses:[ ]*actions\/checkout@/) {
                 is_checkout = 1
             }
-            if (line ~ /run:[ ]*\.\/scripts\/verify-required-results\.sh/) {
+            if (line ~ /run:[ ]*\.\/scripts\/verify-ci-results\.sh/) {
                 is_helper = 1
             }
             if (line ~ /^[[:space:]]*run:/) {
@@ -613,7 +613,7 @@ workflow_job_has_fork_guard() {
     ' "$workflow"
 }
 
-required_results_helper="scripts/verify-required-results.sh"
+required_results_helper="scripts/verify-ci-results.sh"
 aggregate_workflows=""
 for aggregate_spec in \
     '.github/workflows/build.yml:verify' \
@@ -691,9 +691,22 @@ if [ -n "$aggregate_workflows" ]; then
     done <<<"$aggregate_workflows"
 fi
 
-# The shipped ruleset has an exact profile-derived required-check set. CodeQL is
-# fail-closed inside its workflow today, but is not merge-gating until its
-# workflow also supports merge_group and the ruleset requires codeql-verify.
+# The shipped ruleset has an exact answer-derived required-check set.
+use_codeql_answer=""
+if [ -f .copier-answers.yml ]; then
+    use_codeql_answer="$(
+        sed -n -E 's/^[[:space:]]*use_codeql:[[:space:]]*([^#[:space:]]+).*$/\1/p' .copier-answers.yml |
+            tail -n 1 | tr '[:upper:]' '[:lower:]' | tr -d "\"'"
+    )"
+fi
+
+codeql_required=false
+case "$use_codeql_answer" in
+true | yes)
+    codeql_required=true
+    ;;
+esac
+
 ruleset_file=".github/Branch Protection Ruleset - Protect Main.json"
 if [ -f "$ruleset_file" ]; then
     ruleset_contexts="$(
@@ -702,15 +715,20 @@ if [ -f "$ruleset_file" ]; then
     )"
     expected_contexts="security
 verify"
+    expected_contexts_label="verify + security"
     if [ "$has_terraform" = true ]; then
-        expected_contexts="security
-terraform-verify
-verify"
+        expected_contexts="$expected_contexts
+terraform-verify"
+        expected_contexts_label="$expected_contexts_label + terraform-verify"
     fi
+    if [ "$codeql_required" = true ]; then
+        expected_contexts="$expected_contexts
+codeql-verify"
+        expected_contexts_label="$expected_contexts_label + codeql-verify"
+    fi
+    expected_contexts="$(printf '%s\n' "$expected_contexts" | sort -u)"
     if [ "$ruleset_contexts" != "$expected_contexts" ]; then
-        err "$ruleset_file required checks must be verify + security$(
-            if [ "$has_terraform" = true ]; then printf '%s' ' + terraform-verify'; fi
-        ); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
+        err "$ruleset_file required checks must be $expected_contexts_label; found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
     fi
 fi
 
@@ -727,6 +745,60 @@ for candidate in .github/workflows/codeql.yml .github/workflows/codeql.yaml; do
         break
     fi
 done
+
+if [ -n "$codeql_workflow" ] && ! awk '
+    function record_event(value) {
+        gsub(/^[[:space:]]+/, "", value)
+        gsub(/[[:space:]]+$/, "", value)
+        if (value == "pull_request") {
+            has_pull_request = 1
+        } else if (value == "merge_group") {
+            has_merge_group = 1
+        }
+    }
+    function record_inline_events(value, count, events, i) {
+        sub(/^on:[ ]*\[/, "", value)
+        sub(/\].*$/, "", value)
+        count = split(value, events, /[ ]*,[ ]*/)
+        for (i = 1; i <= count; i++) {
+            record_event(events[i])
+        }
+    }
+    BEGIN {
+        in_events = 0
+        has_pull_request = 0
+        has_merge_group = 0
+    }
+    /^on:[ ]*\[/ {
+        record_inline_events($0)
+        in_events = 0
+        next
+    }
+    /^on:[ ]*(#.*)?$/ {
+        in_events = 1
+        next
+    }
+    in_events && /^[^[:space:]#]/ {
+        in_events = 0
+    }
+    in_events && /^  pull_request:/ {
+        has_pull_request = 1
+    }
+    in_events && /^  merge_group:/ {
+        has_merge_group = 1
+    }
+    in_events && /^  -[ ]*(pull_request|merge_group)([ ]*(#.*)?)?$/ {
+        event = $0
+        sub(/^  -[ ]*/, "", event)
+        sub(/[ ]*#.*/, "", event)
+        record_event(event)
+    }
+    END {
+        exit(has_pull_request && has_merge_group ? 0 : 1)
+    }
+' "$codeql_workflow"; then
+    err "$codeql_workflow must trigger on pull_request and merge_group so required codeql-verify checks are reported"
+fi
 
 if [ -n "$codeql_workflow" ] && awk '
     function indentation(value) {
@@ -834,66 +906,13 @@ if [ -n "$codeql_workflow" ] && ! awk '
 fi
 
 if [ -n "$codeql_workflow" ]; then
-    codeql_result_helper="scripts/verify-codeql-result.sh"
-    if [ ! -f "$codeql_result_helper" ]; then
-        err "$codeql_workflow has no $codeql_result_helper fail-closed aggregate helper"
-    else
-        if [ ! -x "$codeql_result_helper" ]; then
-            err "$codeql_result_helper must be executable because the workflow runs it directly"
-        fi
-
-        codeql_result_contract_ok=true
-        if ! env -u FULL_SECURITY_SCAN IS_FORK=false ANALYZE_RESULT=skipped \
-            "$codeql_result_helper" >/dev/null 2>&1; then
-            codeql_result_contract_ok=false
-        fi
-        if ! env FULL_SECURITY_SCAN= IS_FORK=false ANALYZE_RESULT=skipped \
-            "$codeql_result_helper" >/dev/null 2>&1; then
-            codeql_result_contract_ok=false
-        fi
-        if ! env FULL_SECURITY_SCAN=false IS_FORK=false ANALYZE_RESULT=skipped \
-            "$codeql_result_helper" >/dev/null 2>&1; then
-            codeql_result_contract_ok=false
-        fi
-        if ! env FULL_SECURITY_SCAN=true IS_FORK=true ANALYZE_RESULT=skipped \
-            "$codeql_result_helper" >/dev/null 2>&1; then
-            codeql_result_contract_ok=false
-        fi
-        if ! env FULL_SECURITY_SCAN=true IS_FORK=false ANALYZE_RESULT=success \
-            "$codeql_result_helper" >/dev/null 2>&1; then
-            codeql_result_contract_ok=false
-        fi
-        for rejected_contract in \
-            'true false skipped' \
-            'true false failure' \
-            'true false cancelled' \
-            'false false success' \
-            'yes false skipped' \
-            'TRUE false skipped' \
-            'true false unknown'; do
-            rejected_scan="${rejected_contract%% *}"
-            rejected_rest="${rejected_contract#* }"
-            rejected_fork="${rejected_rest%% *}"
-            rejected_result="${rejected_rest#* }"
-            if env FULL_SECURITY_SCAN="$rejected_scan" IS_FORK="$rejected_fork" \
-                ANALYZE_RESULT="$rejected_result" \
-                "$codeql_result_helper" >/dev/null 2>&1; then
-                codeql_result_contract_ok=false
-            fi
-        done
-        if [ "$codeql_result_contract_ok" != true ]; then
-            err "$codeql_result_helper does not enforce the disabled/fork/enabled CodeQL result truth table"
-        fi
-    fi
-
     for workflow_contract in \
-        'FULL_SECURITY_SCAN:' \
+        'EXPECTED_RESULT:' \
         'vars.FULL_SECURITY_SCAN' \
-        'IS_FORK:' \
         'github.event.pull_request.head.repo.full_name != github.repository' \
         'ANALYZE_RESULT:' \
         'needs.analyze.result' \
-        'run: ./scripts/verify-codeql-result.sh'; do
+        'run: ./scripts/verify-ci-results.sh'; do
         if ! grep -qF "$workflow_contract" "$codeql_workflow"; then
             err "$codeql_workflow does not wire the aggregate result contract: $workflow_contract"
         fi
@@ -911,8 +930,6 @@ if [ -n "$codeql_workflow" ]; then
             trusted_repo = 0
             fork_event = 0
             fork_repo = 0
-            defaults_scan = 0
-            validates_scan = 0
             validates_skip = 0
             executes_repo_code = 0
         }
@@ -923,8 +940,8 @@ if [ -n "$codeql_workflow" ]; then
             if (is_helper && trusted_event && trusted_repo) {
                 safe_helper = 1
             }
-            if (is_fork_check && fork_event && fork_repo && defaults_scan &&
-                validates_scan && validates_skip && !executes_repo_code) {
+            if (is_fork_check && fork_event && fork_repo && validates_skip &&
+                !executes_repo_code) {
                 safe_fork_check = 1
             }
             reset_step()
@@ -962,7 +979,7 @@ if [ -n "$codeql_workflow" ]; then
             if (line ~ /uses:[ ]*actions\/checkout@/) {
                 is_checkout = 1
             }
-            if (line ~ /run:[ ]*\.\/scripts\/verify-codeql-result\.sh/) {
+            if (line ~ /run:[ ]*\.\/scripts\/verify-ci-results\.sh/) {
                 is_helper = 1
             }
             if (line ~ /name:[ ]*Check deliberate fork skip/) {
@@ -979,12 +996,6 @@ if [ -n "$codeql_workflow" ]; then
             }
             if (index(line, "head.repo.full_name != github.repository")) {
                 fork_repo = 1
-            }
-            if (index(line, "scan=\"${FULL_SECURITY_SCAN:-false}\"")) {
-                defaults_scan = 1
-            }
-            if (index(line, "case \"$scan\" in")) {
-                validates_scan = 1
             }
             if (index(line, "ANALYZE_RESULT") && index(line, "!=") &&
                 index(line, "skipped")) {
@@ -1045,14 +1056,6 @@ if [ -n "$codeql_workflow" ]; then
     elif [ "$matrix_has_python" = false ] && [ "$has_python_source" = true ]; then
         echo "WARN: first-party Python source exists but CodeQL omits python." >&2
     fi
-fi
-
-use_codeql_answer=""
-if [ -f .copier-answers.yml ]; then
-    use_codeql_answer="$(
-        sed -n -E 's/^[[:space:]]*use_codeql:[[:space:]]*([^#[:space:]]+).*$/\1/p' .copier-answers.yml |
-            tail -n 1 | tr '[:upper:]' '[:lower:]' | tr -d "\"'"
-    )"
 fi
 
 if [ -n "$codeql_workflow" ]; then

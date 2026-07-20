@@ -94,12 +94,13 @@ important for a feature with a material footprint or an external capability:
   the target should opt in.
 - `use_codeql` includes CodeQL only when the matrix corresponds to planned/actual
   first-party JS/TS/Python source. `use_node` / `use_python` are tooling flags,
-  not source evidence; reconcile the rendered matrix and record an explicit
-  `codeql_languages` multiselect/override as a harmon-init source follow-up.
+  not source evidence; review and persist the explicit `codeql_languages`
+  multiselect alongside the selection. When these answers are new to the target,
+  make that repository-aware decision in this PR instead of assuming an existing
+  workflow must be preserved forever.
   Public repositories have GitHub Code Security by default. For a
   private/internal repo, perform a read-only capability check before selecting it
-  — and perform the same check whenever a legacy workflow exists without a
-  `use_codeql` answer:
+  — including when an older answer file has no `use_codeql` field:
 
   ```bash
   gh api "repos/<owner>/<repo>" \
@@ -112,12 +113,11 @@ important for a feature with a material footprint or an external capability:
   unavailable because the caller lacks permission, verify the capability in
   **Settings → Code security** rather than inferring it. A workflow file or
   `FULL_SECURITY_SCAN=true` proves configuration, not successful SARIF coverage.
-  Require the fail-closed result contract: the helper's hermetic truth table
-  normalizes unset/empty `FULL_SECURITY_SCAN` to disabled, accepts disabled/fork
-  runs only as `skipped`, and accepts enabled non-forks only as `success`. At
-  runtime, trusted events conditionally check out and execute that helper; fork
-  aggregates must not execute repository code and use the workflow-inline
-  deliberate-skip diagnostic. Nonempty malformed/unexpected results fail.
+  Require the fail-closed result contract: the workflow maps the scan decision
+  to one expected result, and the shared helper accepts only that exact result.
+  Trusted events conditionally check out and execute the helper; fork aggregates
+  must not execute repository code and use the workflow-inline deliberate-skip
+  diagnostic.
 
 - `include_terraform=true` now carries a reachable four-part lint contract:
   format, TFLint, pinned Checkov, and a provider-lock check. Reconcile customized

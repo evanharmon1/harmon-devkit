@@ -87,7 +87,8 @@ copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
 | `project_type` | str | `general` | `general` \| `web-astro` \| `web-app` \| `iac` \| `docs`. Drives Taskfile, CI jobs, devcontainer tooling. |
 | `include_terraform` | bool | `true` iff `project_type == 'iac'` | Adds `terraform/` skeleton + terraform linting. |
 | `include_ansible` | bool | `true` iff `project_type == 'iac'` | Adds `ansible/` skeleton + ansible linting. |
-| `use_codeql` | bool | `true` iff derived `use_node` or `use_python` | Includes CodeQL SAST; explicitly override the tooling-derived default when planned source or capability does not support it. Public repositories have Code Security by default; for a private/internal repo, enable GitHub Code Security first or answer `false`. |
+| `use_codeql` | bool | `true` for `web-astro` / `web-app`; otherwise `false` | Includes CodeQL SAST. Public repositories have Code Security by default; for a private/internal repo, enable GitHub Code Security first or answer `false`. |
+| `codeql_languages` | multiselect | JS/TS for web; Python for supported Python/IaC selections when CodeQL is enabled | Exact CodeQL matrix; must be nonempty when `use_codeql=true` and should match real first-party source. |
 | `ci_runner` | str | `ubuntu-latest` | `ubuntu-latest` \| `self-hosted`. |
 | `license` | str | `mit` | `mit` \| `private`. |
 | `use_release_please` | bool | `true` | release-please rolling release PR + auto CHANGELOG. |
@@ -105,10 +106,8 @@ Notes:
 - Decide `use_codeql` explicitly whenever first-party JS/TS/Python is planned. A
   generated workflow and `FULL_SECURITY_SCAN=true` configure CodeQL but do not
   prove that SARIF was accepted; private/internal repos also require the live Code
-  Security capability. The current template derives the matrix from `use_node` /
-  `use_python`, which are tooling flags rather than source evidence, so reconcile
-  the rendered languages with the real source until harmon-init exposes an
-  explicit `codeql_languages` multiselect/override.
+  Security capability. Review `codeql_languages` against real first-party source;
+  `use_node` / `use_python` remain tooling flags rather than source evidence.
 - Hidden, derived flags you do **not** answer but that follow from your choices:
   `use_node` (true for `web-astro`/`web-app`), `use_python` (true for `iac` or
   `include_ansible`), `repo_url`, `devcontainer_image`, `ci_runner_labels`.
