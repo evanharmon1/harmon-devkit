@@ -893,15 +893,20 @@ write_codeql_workflow() {
     local extra_steps="${3:-}"
     local language_matrix="${4:-}"
     local aggregate_mode="${5:-safe}"
+    local event_style="${6:-mapping}"
+    local workflow_events=$'on:\n  pull_request:\n  merge_group:'
     local checkout_guard=$'        if: >-\n          github.event_name != '\''pull_request'\'' ||\n          github.event.pull_request.head.repo.full_name == github.repository\n'
     if [ "$aggregate_mode" = unsafe-checkout ]; then
         checkout_guard=""
     fi
+    if [ "$event_style" = inline ]; then
+        workflow_events='on: [pull_request, merge_group]'
+    elif [ "$event_style" = list ]; then
+        workflow_events=$'on:\n  - pull_request\n  - merge_group'
+    fi
     cat >"$CQ_TARGET/.github/workflows/codeql.yml" <<EOF
 name: CodeQL
-on:
-  pull_request:
-  merge_group:
+$workflow_events
 jobs:
   analyze:
     if: >-
@@ -1026,6 +1031,17 @@ expect_fail "verify-applied requires codeql-verify when CodeQL is enabled" \
     GH_TEST_CODE_SECURITY=enabled \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
 write_required_check_ruleset "$CQ_TARGET" codeql
+write_codeql_workflow "" "" "" "" safe inline
+expect_ok "verify-applied accepts inline CodeQL protected-event triggers" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow "" "" "" "" safe list
+expect_ok "verify-applied accepts block-list CodeQL protected-event triggers" \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow ""
 expect_ok "verify-applied accepts private CodeQL with Code Security enabled" \
     env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
     GH_TEST_CODE_SECURITY=enabled \

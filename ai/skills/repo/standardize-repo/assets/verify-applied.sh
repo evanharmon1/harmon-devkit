@@ -747,10 +747,32 @@ for candidate in .github/workflows/codeql.yml .github/workflows/codeql.yaml; do
 done
 
 if [ -n "$codeql_workflow" ] && ! awk '
+    function record_event(value) {
+        gsub(/^[[:space:]]+/, "", value)
+        gsub(/[[:space:]]+$/, "", value)
+        if (value == "pull_request") {
+            has_pull_request = 1
+        } else if (value == "merge_group") {
+            has_merge_group = 1
+        }
+    }
+    function record_inline_events(value, count, events, i) {
+        sub(/^on:[ ]*\[/, "", value)
+        sub(/\].*$/, "", value)
+        count = split(value, events, /[ ]*,[ ]*/)
+        for (i = 1; i <= count; i++) {
+            record_event(events[i])
+        }
+    }
     BEGIN {
         in_events = 0
         has_pull_request = 0
         has_merge_group = 0
+    }
+    /^on:[ ]*\[/ {
+        record_inline_events($0)
+        in_events = 0
+        next
     }
     /^on:[ ]*(#.*)?$/ {
         in_events = 1
@@ -764,6 +786,12 @@ if [ -n "$codeql_workflow" ] && ! awk '
     }
     in_events && /^  merge_group:/ {
         has_merge_group = 1
+    }
+    in_events && /^  -[ ]*(pull_request|merge_group)([ ]*(#.*)?)?$/ {
+        event = $0
+        sub(/^  -[ ]*/, "", event)
+        sub(/[ ]*#.*/, "", event)
+        record_event(event)
     }
     END {
         exit(has_pull_request && has_merge_group ? 0 : 1)
