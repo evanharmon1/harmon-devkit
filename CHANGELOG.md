@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.8.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.1...v0.8.2) (2026-07-20)
+
+
+### Bug Fixes
+
+* align standardize-repo with explicit CodeQL intent ([#104](https://github.com/evanharmon1/harmon-devkit/issues/104)) ([a0e063a](https://github.com/evanharmon1/harmon-devkit/commit/a0e063aa2e0757ee7744a1d92b8c434214a28eff))
+* **standardize-repo:** add focused update safeguards ([#112](https://github.com/evanharmon1/harmon-devkit/issues/112)) ([9f6a2d1](https://github.com/evanharmon1/harmon-devkit/commit/9f6a2d14d8b67bb2dc5125eace8c978abe0394f8))
+
 ## [0.8.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.0...v0.8.1) (2026-07-19)
 
 
