@@ -746,6 +746,32 @@ for candidate in .github/workflows/codeql.yml .github/workflows/codeql.yaml; do
     fi
 done
 
+if [ -n "$codeql_workflow" ] && ! awk '
+    BEGIN {
+        in_events = 0
+        has_pull_request = 0
+        has_merge_group = 0
+    }
+    /^on:[ ]*(#.*)?$/ {
+        in_events = 1
+        next
+    }
+    in_events && /^[^[:space:]#]/ {
+        in_events = 0
+    }
+    in_events && /^  pull_request:/ {
+        has_pull_request = 1
+    }
+    in_events && /^  merge_group:/ {
+        has_merge_group = 1
+    }
+    END {
+        exit(has_pull_request && has_merge_group ? 0 : 1)
+    }
+' "$codeql_workflow"; then
+    err "$codeql_workflow must trigger on pull_request and merge_group so required codeql-verify checks are reported"
+fi
+
 if [ -n "$codeql_workflow" ] && awk '
     function indentation(value) {
         match(value, /^[ ]*/)

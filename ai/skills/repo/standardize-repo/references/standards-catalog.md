@@ -413,7 +413,7 @@ Workflow inventory:
 | `claude-implement.yml` | `@claude implement` / label → opens a PR on a `claude/` branch (`--model sonnet`) | [copier] |
 | `claude-review.yml` | `@claude review` / label → review comment, no writes (sticky comment) | [copier] |
 | `release.yml` | release-please; only when `use_release_please` | [copier] |
-| `codeql.yml` | only when `use_codeql=true`; matrix is exactly `codeql_languages`; automatic/free for public repos; private/internal requires GitHub Code Security + `FULL_SECURITY_SCAN=true`; aggregate `codeql-verify` always reports | [copier] |
+| `codeql.yml` | only when `use_codeql=true`; triggers on PR and `merge_group` so required `codeql-verify` reports; matrix is exactly `codeql_languages`; automatic/free for public repos; private/internal requires GitHub Code Security + `FULL_SECURITY_SCAN=true` | [copier] |
 | `snyk-scheduled.yml` | only when `snyk_scan_schedule` is `weekly` or `daily`; schedule/manual advisory SAST + SCA, no PR/push trigger or required check | [copier] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |

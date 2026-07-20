@@ -470,6 +470,9 @@ expect_ok "catalog distinguishes CodeQL source from tooling flags" \
 expect_ok "catalog requires the CodeQL matrix to match real source" \
     grep -qF 'persisted matrix with real first-party source' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog requires protected-event CodeQL triggers" \
+    grep -qF 'triggers on PR and `merge_group`' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "skill favors rolling updates over permanent version migrations" \
     grep -qF 'regular rolling updates' \
     "$STANDARDIZE_SKILL"
@@ -896,7 +899,9 @@ write_codeql_workflow() {
     fi
     cat >"$CQ_TARGET/.github/workflows/codeql.yml" <<EOF
 name: CodeQL
-on: workflow_dispatch
+on:
+  pull_request:
+  merge_group:
 jobs:
   analyze:
     if: >-
@@ -937,6 +942,12 @@ $checkout_guard        with:
           fi
 EOF
 }
+remove_codeql_event() {
+    grep -v "^  $1:" "$CQ_TARGET/.github/workflows/codeql.yml" \
+        >"$CQ_TARGET/.github/workflows/codeql.yml.tmp"
+    mv "$CQ_TARGET/.github/workflows/codeql.yml.tmp" \
+        "$CQ_TARGET/.github/workflows/codeql.yml"
+}
 
 write_codeql_answer false
 write_codeql_taskfile
@@ -970,6 +981,14 @@ write_codeql_answer true
 printf '%s\n' 'CodeQL is selected; live SARIF results establish coverage.' \
     >"$CQ_TARGET/docs/architecture/security.md"
 expect_fail "verify-applied requires a workflow when use_codeql=true" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow ""
+remove_codeql_event pull_request
+expect_fail "verify-applied requires the CodeQL pull_request trigger" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+write_codeql_workflow ""
+remove_codeql_event merge_group
+expect_fail "verify-applied requires the CodeQL merge_group trigger" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
 write_codeql_workflow $'    continue-on-error: true\n'
 expect_fail "verify-applied rejects a fail-open CodeQL analyze job" \
