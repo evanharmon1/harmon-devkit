@@ -80,6 +80,11 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
 
 - **Validate after every apply.** Re-running `copier` or changing answers can churn
   files — confirm the result with the verification step below before committing.
+- **Optimize for regular rolling updates, not every historical migration path.**
+  harmon-init-managed repositories are expected to stay near the current release.
+  Review new answers against the target repository and pass the decisions
+  explicitly. Do not add or expect permanent version-pair migrations for unusual
+  gaps or customizations; reconcile those case by case in the downstream PR.
 
 The asked questions live in `~/git/harmon-init/copier.yml` (e.g. `project_name`,
 `project_slug`, `project_description`, `github_org`, `project_type`

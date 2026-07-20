@@ -536,7 +536,7 @@ aggregate_job_contract_is_safe() {
             if (line ~ /uses:[ ]*actions\/checkout@/) {
                 is_checkout = 1
             }
-            if (line ~ /run:[ ]*\.\/scripts\/verify-required-results\.sh/) {
+            if (line ~ /run:[ ]*\.\/scripts\/verify-ci-results\.sh/) {
                 is_helper = 1
             }
             if (line ~ /^[[:space:]]*run:/) {
@@ -613,7 +613,7 @@ workflow_job_has_fork_guard() {
     ' "$workflow"
 }
 
-required_results_helper="scripts/verify-required-results.sh"
+required_results_helper="scripts/verify-ci-results.sh"
 aggregate_workflows=""
 for aggregate_spec in \
     '.github/workflows/build.yml:verify' \
@@ -691,9 +691,7 @@ if [ -n "$aggregate_workflows" ]; then
     done <<<"$aggregate_workflows"
 fi
 
-# The shipped ruleset has an exact answer-derived required-check set. Updated
-# repositories persist use_codeql explicitly; for legacy answers, preserve the
-# established intent when a CodeQL workflow is already present.
+# The shipped ruleset has an exact answer-derived required-check set.
 use_codeql_answer=""
 if [ -f .copier-answers.yml ]; then
     use_codeql_answer="$(
@@ -706,11 +704,6 @@ codeql_required=false
 case "$use_codeql_answer" in
 true | yes)
     codeql_required=true
-    ;;
-"")
-    if [ -f .github/workflows/codeql.yml ] || [ -f .github/workflows/codeql.yaml ]; then
-        codeql_required=true
-    fi
     ;;
 esac
 
@@ -859,66 +852,13 @@ if [ -n "$codeql_workflow" ] && ! awk '
 fi
 
 if [ -n "$codeql_workflow" ]; then
-    codeql_result_helper="scripts/verify-codeql-result.sh"
-    if [ ! -f "$codeql_result_helper" ]; then
-        err "$codeql_workflow has no $codeql_result_helper fail-closed aggregate helper"
-    else
-        if [ ! -x "$codeql_result_helper" ]; then
-            err "$codeql_result_helper must be executable because the workflow runs it directly"
-        fi
-
-        codeql_result_contract_ok=true
-        if ! env -u FULL_SECURITY_SCAN IS_FORK=false ANALYZE_RESULT=skipped \
-            "$codeql_result_helper" >/dev/null 2>&1; then
-            codeql_result_contract_ok=false
-        fi
-        if ! env FULL_SECURITY_SCAN= IS_FORK=false ANALYZE_RESULT=skipped \
-            "$codeql_result_helper" >/dev/null 2>&1; then
-            codeql_result_contract_ok=false
-        fi
-        if ! env FULL_SECURITY_SCAN=false IS_FORK=false ANALYZE_RESULT=skipped \
-            "$codeql_result_helper" >/dev/null 2>&1; then
-            codeql_result_contract_ok=false
-        fi
-        if ! env FULL_SECURITY_SCAN=true IS_FORK=true ANALYZE_RESULT=skipped \
-            "$codeql_result_helper" >/dev/null 2>&1; then
-            codeql_result_contract_ok=false
-        fi
-        if ! env FULL_SECURITY_SCAN=true IS_FORK=false ANALYZE_RESULT=success \
-            "$codeql_result_helper" >/dev/null 2>&1; then
-            codeql_result_contract_ok=false
-        fi
-        for rejected_contract in \
-            'true false skipped' \
-            'true false failure' \
-            'true false cancelled' \
-            'false false success' \
-            'yes false skipped' \
-            'TRUE false skipped' \
-            'true false unknown'; do
-            rejected_scan="${rejected_contract%% *}"
-            rejected_rest="${rejected_contract#* }"
-            rejected_fork="${rejected_rest%% *}"
-            rejected_result="${rejected_rest#* }"
-            if env FULL_SECURITY_SCAN="$rejected_scan" IS_FORK="$rejected_fork" \
-                ANALYZE_RESULT="$rejected_result" \
-                "$codeql_result_helper" >/dev/null 2>&1; then
-                codeql_result_contract_ok=false
-            fi
-        done
-        if [ "$codeql_result_contract_ok" != true ]; then
-            err "$codeql_result_helper does not enforce the disabled/fork/enabled CodeQL result truth table"
-        fi
-    fi
-
     for workflow_contract in \
-        'FULL_SECURITY_SCAN:' \
+        'EXPECTED_RESULT:' \
         'vars.FULL_SECURITY_SCAN' \
-        'IS_FORK:' \
         'github.event.pull_request.head.repo.full_name != github.repository' \
         'ANALYZE_RESULT:' \
         'needs.analyze.result' \
-        'run: ./scripts/verify-codeql-result.sh'; do
+        'run: ./scripts/verify-ci-results.sh'; do
         if ! grep -qF "$workflow_contract" "$codeql_workflow"; then
             err "$codeql_workflow does not wire the aggregate result contract: $workflow_contract"
         fi
@@ -936,8 +876,6 @@ if [ -n "$codeql_workflow" ]; then
             trusted_repo = 0
             fork_event = 0
             fork_repo = 0
-            defaults_scan = 0
-            validates_scan = 0
             validates_skip = 0
             executes_repo_code = 0
         }
@@ -948,8 +886,8 @@ if [ -n "$codeql_workflow" ]; then
             if (is_helper && trusted_event && trusted_repo) {
                 safe_helper = 1
             }
-            if (is_fork_check && fork_event && fork_repo && defaults_scan &&
-                validates_scan && validates_skip && !executes_repo_code) {
+            if (is_fork_check && fork_event && fork_repo && validates_skip &&
+                !executes_repo_code) {
                 safe_fork_check = 1
             }
             reset_step()
@@ -987,7 +925,7 @@ if [ -n "$codeql_workflow" ]; then
             if (line ~ /uses:[ ]*actions\/checkout@/) {
                 is_checkout = 1
             }
-            if (line ~ /run:[ ]*\.\/scripts\/verify-codeql-result\.sh/) {
+            if (line ~ /run:[ ]*\.\/scripts\/verify-ci-results\.sh/) {
                 is_helper = 1
             }
             if (line ~ /name:[ ]*Check deliberate fork skip/) {
@@ -1004,12 +942,6 @@ if [ -n "$codeql_workflow" ]; then
             }
             if (index(line, "head.repo.full_name != github.repository")) {
                 fork_repo = 1
-            }
-            if (index(line, "scan=\"${FULL_SECURITY_SCAN:-false}\"")) {
-                defaults_scan = 1
-            }
-            if (index(line, "case \"$scan\" in")) {
-                validates_scan = 1
             }
             if (index(line, "ANALYZE_RESULT") && index(line, "!=") &&
                 index(line, "skipped")) {

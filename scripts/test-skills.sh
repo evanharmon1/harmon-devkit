@@ -404,6 +404,7 @@ done
 echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
     grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
 
@@ -469,9 +470,9 @@ expect_ok "catalog distinguishes CodeQL source from tooling flags" \
 expect_ok "catalog requires the CodeQL matrix to match real source" \
     grep -qF 'persisted matrix with real first-party source' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "audit guidance checks legacy CodeQL capability" \
-    grep -qF '`.copier-answers.yml` has no `use_codeql` field' \
-    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "skill favors rolling updates over permanent version migrations" \
+    grep -qF 'regular rolling updates' \
+    "$STANDARDIZE_SKILL"
 expect_ok "catalog keeps fork aggregates from executing repository code" \
     grep -qF 'code on the aggregate runner' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -630,7 +631,7 @@ ln -s AGENTS.md "$AGG_TARGET/GEMINI.md"
 write_required_results_helper() {
     local mode="${1:-exact}"
     if [ "$mode" = generic ]; then
-        cat >"$AGG_TARGET/scripts/verify-required-results.sh" <<'EOF'
+        cat >"$AGG_TARGET/scripts/verify-ci-results.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 for pair in "$@"; do
@@ -638,7 +639,7 @@ for pair in "$@"; do
 done
 EOF
     else
-        cat >"$AGG_TARGET/scripts/verify-required-results.sh" <<'EOF'
+        cat >"$AGG_TARGET/scripts/verify-ci-results.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 expected="${EXPECTED_RESULT:-success}"
@@ -652,7 +653,7 @@ for pair in "$@"; do
 done
 EOF
     fi
-    chmod +x "$AGG_TARGET/scripts/verify-required-results.sh"
+    chmod +x "$AGG_TARGET/scripts/verify-ci-results.sh"
 }
 
 write_aggregate_workflows() {
@@ -700,7 +701,7 @@ jobs:
           EXPECTED_RESULT: success
           LINT_RESULT: ${{ needs.lint.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
-        run: ./scripts/verify-required-results.sh "lint=${LINT_RESULT}" "security=${SECURITY_RESULT}"
+        run: ./scripts/verify-ci-results.sh "lint=${LINT_RESULT}" "security=${SECURITY_RESULT}"
 EOF
     cat >"$AGG_TARGET/.github/workflows/devcontainer-build.yml" <<'EOF'
 name: Devcontainer
@@ -736,7 +737,7 @@ jobs:
         env:
           EXPECTED_RESULT: success
           BUILD_RESULT: ${{ needs.build.result }}
-        run: ./scripts/verify-required-results.sh "build=${BUILD_RESULT}"
+        run: ./scripts/verify-ci-results.sh "build=${BUILD_RESULT}"
 EOF
 
     case "$mode" in
@@ -854,8 +855,8 @@ ln -s AGENTS.md "$CQ_TARGET/GEMINI.md"
 git_init "$CQ_TARGET"
 cp "$AGG_TARGET/.github/workflows/build.yml" \
     "$CQ_TARGET/.github/workflows/build.yml"
-cp "$AGG_TARGET/scripts/verify-required-results.sh" \
-    "$CQ_TARGET/scripts/verify-required-results.sh"
+cp "$AGG_TARGET/scripts/verify-ci-results.sh" \
+    "$CQ_TARGET/scripts/verify-ci-results.sh"
 write_required_check_ruleset "$CQ_TARGET"
 # Some CI runner images provide gitleaks in the lint job. Give its repository
 # scan a real HEAD so an unrelated empty-history error cannot make every
@@ -866,9 +867,6 @@ expect_ok "CodeQL fixture has a committed baseline for repository scanners" \
 
 write_codeql_answer() {
     printf 'use_codeql: %s\n' "$1" >"$CQ_TARGET/.copier-answers.yml"
-}
-write_legacy_codeql_answer() {
-    printf '%s\n' '_commit: v3.26.1' >"$CQ_TARGET/.copier-answers.yml"
 }
 write_codeql_taskfile() {
     cat >"$CQ_TARGET/Taskfile.yml" <<'EOF'
@@ -885,24 +883,6 @@ tasks:
   install:hooks:
     cmds: ["true"]
 EOF
-}
-write_codeql_result_helper() {
-    cat >"$CQ_TARGET/scripts/verify-codeql-result.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-scan="${FULL_SECURITY_SCAN:-false}"
-case "$scan" in true | false) ;; *) exit 1 ;; esac
-case "${IS_FORK:-}" in true | false) ;; *) exit 1 ;; esac
-case "${ANALYZE_RESULT:-}" in success | failure | cancelled | skipped) ;; *) exit 1 ;; esac
-
-expected=success
-if [ "$scan" = false ] || [ "$IS_FORK" = true ]; then
-    expected=skipped
-fi
-[ "$ANALYZE_RESULT" = "$expected" ]
-EOF
-    chmod +x "$CQ_TARGET/scripts/verify-codeql-result.sh"
 }
 write_codeql_workflow() {
     local job_continue="$1"
@@ -942,30 +922,21 @@ $checkout_guard        with:
           github.event_name != 'pull_request' ||
           github.event.pull_request.head.repo.full_name == github.repository
         env:
-          FULL_SECURITY_SCAN: \${{ vars.FULL_SECURITY_SCAN }}
-          IS_FORK: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          EXPECTED_RESULT: \${{ vars.FULL_SECURITY_SCAN == 'true' && 'success' || 'skipped' }}
           ANALYZE_RESULT: \${{ needs.analyze.result }}
-        run: ./scripts/verify-codeql-result.sh
+        run: ./scripts/verify-ci-results.sh "analyze=\${ANALYZE_RESULT}"
       - name: Check deliberate fork skip
         if: >-
           github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name != github.repository
         env:
-          FULL_SECURITY_SCAN: \${{ vars.FULL_SECURITY_SCAN }}
           ANALYZE_RESULT: \${{ needs.analyze.result }}
         run: |
-          scan="\${FULL_SECURITY_SCAN:-false}"
-          case "\$scan" in
-            true | false) ;;
-            *) exit 1 ;;
-          esac
           if [ "\$ANALYZE_RESULT" != "skipped" ]; then
             exit 1
           fi
 EOF
 }
-
-write_codeql_result_helper
 
 write_codeql_answer false
 write_codeql_taskfile
@@ -1008,11 +979,12 @@ expect_fail "verify-applied rejects a fail-open CodeQL analyze action" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
 write_codeql_workflow ""
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' \
-    >"$CQ_TARGET/scripts/verify-codeql-result.sh"
-chmod +x "$CQ_TARGET/scripts/verify-codeql-result.sh"
+    >"$CQ_TARGET/scripts/verify-ci-results.sh"
+chmod +x "$CQ_TARGET/scripts/verify-ci-results.sh"
 expect_fail "verify-applied rejects a CodeQL aggregate that accepts every result" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-write_codeql_result_helper
+cp "$AGG_TARGET/scripts/verify-ci-results.sh" \
+    "$CQ_TARGET/scripts/verify-ci-results.sh"
 write_codeql_workflow "" "" "" "" unsafe-checkout
 expect_fail "verify-applied rejects fork-unsafe aggregate checkout" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
@@ -1086,20 +1058,6 @@ expect_ok "verify-applied defers an unreadable Code Security field to manual aud
     env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
     GH_TEST_CODE_SECURITY=unknown \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-write_legacy_codeql_answer
-expect_fail "verify-applied rejects legacy private CodeQL when Code Security is disabled" \
-    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
-    GH_TEST_CODE_SECURITY=disabled \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-expect_ok "verify-applied audits enabled capability for legacy CodeQL" \
-    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
-    GH_TEST_CODE_SECURITY=enabled \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-expect_ok "verify-applied defers unknown legacy CodeQL capability to manual audit" \
-    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
-    GH_TEST_CODE_SECURITY=unknown \
-    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
-
 TF_TARGET="$TMPROOT/verify-applied-terraform"
 mkdir -p \
     "$TF_TARGET/.github/workflows" \
@@ -1207,7 +1165,7 @@ $tflint_step
         env:
           EXPECTED_RESULT: success
           LINT_RESULT: \${{ needs.lint.result }}
-        run: ./scripts/verify-required-results.sh "lint=\${LINT_RESULT}"
+        run: ./scripts/verify-ci-results.sh "lint=\${LINT_RESULT}"
 EOF
 }
 write_terraform_lock_helper() {
@@ -1267,8 +1225,8 @@ EOF
 
 write_terraform_taskfile
 write_terraform_build_workflow
-cp "$AGG_TARGET/scripts/verify-required-results.sh" \
-    "$TF_TARGET/scripts/verify-required-results.sh"
+cp "$AGG_TARGET/scripts/verify-ci-results.sh" \
+    "$TF_TARGET/scripts/verify-ci-results.sh"
 write_required_check_ruleset "$TF_TARGET" terraform
 write_terraform_lock_helper
 write_terraform_lock_regression
@@ -1324,12 +1282,9 @@ for required in \
     scripts/terraform-provider-locks.sh \
     scripts/terraform-changed.sh \
     scripts/terraform-ci.sh \
-    scripts/test-codeql-result.sh \
-    scripts/test-required-results.sh \
     scripts/test-terraform-provider-locks.sh \
     scripts/test-terraform-ci.sh \
-    scripts/verify-codeql-result.sh \
-    scripts/verify-required-results.sh \
+    scripts/verify-ci-results.sh \
     scripts/sync-skills.sh \
     .github/workflows/close-milestone-on-release.yml \
     .foreman.toml \
