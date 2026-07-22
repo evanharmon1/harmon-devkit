@@ -231,13 +231,20 @@ copier never deletes.** The three-way merge is path-keyed, so when the template
 workflow/Taskfile reference to it keeps "working" against stale code:
 
 ```bash
-diff <(git -C ~/git/harmon-init ls-tree --name-only <old> template/scripts/) \
-     <(git -C ~/git/harmon-init ls-tree --name-only <new> template/scripts/)
+# -r: recurse — shipped subtrees (scripts/foreman/…) hide renames from a
+# top-level listing
+diff <(git -C ~/git/harmon-init ls-tree -r --name-only <old> template/scripts/) \
+     <(git -C ~/git/harmon-init ls-tree -r --name-only <new> template/scripts/)
 ```
 
 For each file that disappeared or was renamed: `grep -rn` the repo for
 references, repoint them at the canonical successor, and delete the orphan —
-an intentional repo-owned keeper is the exception, not the default. Real case
+an intentional repo-owned keeper is the exception, not the default. **Before
+deleting, diff the repo's copy against its own template baseline**
+(`git -C ~/git/harmon-init show <old>:template/<path>` vs the repo file): a
+locally-modified orphan carries repo-specific behavior the canonical
+successor lacks — port that intentional delta to the successor first, the
+same judgment call as any DRIFT. Real case
 (harmon-infra v4.0.0→v4.3.1): five orphans — `shell-quality.sh` (→
 `format-shell.sh` + `lint-shell.sh`), `verify-required-results.sh` (→
 `verify-ci-results.sh`), its truth-table test, and two CodeQL helpers — with
