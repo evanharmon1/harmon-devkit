@@ -830,13 +830,17 @@ if [ -f "$ruleset_file" ]; then
     # and `security` with `security-verify`. Extra required contexts are fine
     # only when a workflow actually defines that aggregate job — a context no
     # workflow reports wedges every PR.
-    if ! has_ruleset_context verify; then
-        if has_ruleset_context build-verify && has_ruleset_context validate-verify; then
-            require_result_gated_substitute build-verify
-            require_result_gated_substitute validate-verify
-        else
-            err "$ruleset_file must require 'verify' (or the split 'build-verify' + 'validate-verify'); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
-        fi
+    if has_ruleset_context verify; then
+        # The canonical verify context is an aggregate by design — an
+        # echo-only job named verify outside the audited build workflow must
+        # not satisfy it. (Canonical security is deliberately NOT gated: the
+        # template's security job is a working leaf, not a rollup.)
+        require_result_gated_substitute verify
+    elif has_ruleset_context build-verify && has_ruleset_context validate-verify; then
+        require_result_gated_substitute build-verify
+        require_result_gated_substitute validate-verify
+    else
+        err "$ruleset_file must require 'verify' (or the split 'build-verify' + 'validate-verify'); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
     fi
     if ! has_ruleset_context security; then
         if has_ruleset_context security-verify; then
@@ -861,9 +865,11 @@ if [ -f "$ruleset_file" ]; then
         for workflow_file in .github/workflows/*.y*ml; do
             [ -f "$workflow_file" ] || continue
             # GitHub reports a check under the job-level name: when present,
-            # falling back to the job key — accept either as the context.
+            # falling back to the job key — accept either. The name: match is
+            # anchored to the job level (exactly 4-space indent, no list dash)
+            # so a step's `- name:` cannot masquerade as a defined context.
             if ! grep -qE "^  ${ruleset_context}:[ ]*(#.*)?$" "$workflow_file" &&
-                ! grep -qE "^[[:space:]]+name:[[:space:]]*[\"']?${ruleset_context}[\"']?[[:space:]]*(#.*)?$" "$workflow_file"; then
+                ! grep -qE "^    name:[[:space:]]*[\"']?${ruleset_context}[\"']?[[:space:]]*(#.*)?$" "$workflow_file"; then
                 continue
             fi
             context_defined=true
