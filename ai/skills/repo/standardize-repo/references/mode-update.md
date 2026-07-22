@@ -244,7 +244,23 @@ deleting, diff the repo's copy against its own template baseline**
 (`git -C ~/git/harmon-init show <old>:template/<path>` vs the repo file): a
 locally-modified orphan carries repo-specific behavior the canonical
 successor lacks — port that intentional delta to the successor first, the
-same judgment call as any DRIFT. Real case
+same judgment call as any DRIFT.
+
+**The template-side diff cannot see hand-copied ancestors — sweep the
+repo's own inventory too.** A helper the repo adopted by hand (e.g. copied
+from harmon-init's root layer before the template shipped it) was never in
+the `<old>` template tree, so its rename shows up only as the successor's
+*addition* — nothing tells you the old file exists. The five harmon-infra
+orphans were exactly this shape. So, for every script the inventory diff
+ADDS, grep the repo for a predecessor under a different name; and list the
+repo's template-extra scripts outright and judge each one (local keeper vs
+orphan of a new successor):
+
+```bash
+comm -23 <(git ls-files 'scripts/*' | sort) \
+    <(git -C ~/git/harmon-init ls-tree -r --name-only <new> template/scripts/ |
+        sed 's|^template/||' | sort)
+``` Real case
 (harmon-infra v4.0.0→v4.3.1): five orphans — `shell-quality.sh` (→
 `format-shell.sh` + `lint-shell.sh`), `verify-required-results.sh` (→
 `verify-ci-results.sh`), its truth-table test, and two CodeQL helpers — with
