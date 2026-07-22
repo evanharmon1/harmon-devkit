@@ -260,8 +260,9 @@ orphan of a new successor):
 comm -23 <(git ls-files 'scripts/*' | sort) \
     <(git -C ~/git/harmon-init ls-tree -r --name-only <new> template/scripts/ |
         sed 's|^template/||' | sort)
-``` Real case
-(harmon-infra v4.0.0→v4.3.1): five orphans — `shell-quality.sh` (→
+```
+
+Real case (harmon-infra v4.0.0→v4.3.1): five orphans — `shell-quality.sh` (→
 `format-shell.sh` + `lint-shell.sh`), `verify-required-results.sh` (→
 `verify-ci-results.sh`), its truth-table test, and two CodeQL helpers — with
 stale references in two workflows, the Taskfile, and `test-tasks.sh`.
