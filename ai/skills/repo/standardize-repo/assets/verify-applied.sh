@@ -381,24 +381,45 @@ if [ "$has_terraform" = true ]; then
         done
     fi
 
-    # Split-workflow repos provision the terraform lint toolchain in whichever
-    # workflow runs `task check` (e.g. harmon-infra's validate.yml), not
-    # necessarily build.yml — and freshly rendered repos provision it through
-    # the local composite action (.github/actions/setup), which workflow-step
-    # greps cannot see. Scan both. (A toolchain "provisioned" only in a dead
-    # workflow is not silently fine either way: `task check` then fails
-    # loudly in the gate job itself.)
-    if ! ls .github/workflows/*.y*ml >/dev/null 2>&1; then
-        err "Terraform is present but no CI workflow provisions its lint tools"
+    # The toolchain must be reachable from the workflow that actually runs the
+    # shared gate (`task check`) — split repos provision it there directly
+    # (harmon-infra's validate.yml), while freshly rendered repos provision it
+    # through a local composite action the gate workflow invokes
+    # (.github/actions/setup). Scan the gate workflows plus the composite
+    # actions they reference, so a dead workflow carrying the setup actions
+    # cannot satisfy the contract.
+    gate_provision_files=""
+    for workflow_file in .github/workflows/*.y*ml; do
+        [ -f "$workflow_file" ] || continue
+        grep -q 'task check' "$workflow_file" || continue
+        gate_provision_files="$gate_provision_files$workflow_file
+"
+        while IFS= read -r composite_ref; do
+            [ -n "$composite_ref" ] || continue
+            for composite_file in "$composite_ref"/action.yml "$composite_ref"/action.yaml; do
+                [ -f "$composite_file" ] || continue
+                gate_provision_files="$gate_provision_files$composite_file
+"
+            done
+        done <<<"$(sed -n -E 's|^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*(\./\.github/actions/[A-Za-z0-9_./-]+).*|\1|p' "$workflow_file")"
+    done
+    if [ -z "$gate_provision_files" ]; then
+        err "Terraform is present but no CI workflow runs 'task check' to reach its lint contract"
     else
         for setup_action in \
             'hashicorp/setup-terraform@' \
             'terraform-linters/setup-tflint@' \
             'astral-sh/setup-uv@'; do
-            if ! find .github -type f -name '*.y*ml' \
-                \( -path '.github/workflows/*' -o -path '.github/actions/*' \) 2>/dev/null |
-                xargs grep -qE "^[[:space:]]*-[[:space:]]+uses:[[:space:]]+${setup_action}" 2>/dev/null; then
-                err "no workflow or local composite action provisions Terraform lint dependency: $setup_action"
+            found_setup=false
+            while IFS= read -r provision_file; do
+                [ -n "$provision_file" ] || continue
+                if grep -qE "^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+${setup_action}" "$provision_file"; then
+                    found_setup=true
+                    break
+                fi
+            done <<<"$gate_provision_files"
+            if [ "$found_setup" = false ]; then
+                err "no 'task check' workflow (or composite action it invokes) provisions Terraform lint dependency: $setup_action"
             fi
         done
     fi
@@ -748,17 +769,24 @@ if [ -f "$ruleset_file" ]; then
     # result-gated — it needs `needs:` and must inspect `needs.<leaf>.result`
     # (or run the trusted-results helper). A job that exists but just echoes
     # success would launder a failing leaf into a green required check.
+    # The shipped ruleset stacks a merge_queue rule on the required checks, so
+    # a required context must report on BOTH pull_request and merge_group — a
+    # PR-only workflow wedges the merge queue exactly like a dispatch-only one.
     workflow_reports_on_protected_events() {
         awk '
-            BEGIN { in_on = 0; found = 0 }
+            BEGIN { in_on = 0; pr = 0; mg = 0 }
             /^on:/ {
                 in_on = 1
-                if (index($0, "pull_request") || index($0, "merge_group")) found = 1
+                if (index($0, "pull_request")) pr = 1
+                if (index($0, "merge_group")) mg = 1
                 next
             }
             in_on && /^[A-Za-z_-]+:/ { in_on = 0 }
-            in_on && /pull_request|merge_group/ { found = 1 }
-            END { exit(found ? 0 : 1) }
+            in_on {
+                if (/pull_request/) pr = 1
+                if (/merge_group/) mg = 1
+            }
+            END { exit(pr && mg ? 0 : 1) }
         ' "$1"
     }
     ruleset_job_is_result_gated() {
@@ -817,9 +845,6 @@ if [ -f "$ruleset_file" ]; then
     fi
     while IFS= read -r ruleset_context; do
         [ -n "$ruleset_context" ] || continue
-        case "$ruleset_context" in
-        verify | security) continue ;;
-        esac
         context_defined=false
         context_reports=false
         for workflow_file in .github/workflows/*.y*ml; do

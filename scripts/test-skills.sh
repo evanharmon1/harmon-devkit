@@ -675,7 +675,7 @@ write_aggregate_workflows() {
     local mode="${1:-safe}"
     cat >"$AGG_TARGET/.github/workflows/build.yml" <<'EOF'
 name: Build
-on: [push, pull_request]
+on: [push, pull_request, merge_group]
 jobs:
   lint:
     if: >-
@@ -720,7 +720,7 @@ jobs:
 EOF
     cat >"$AGG_TARGET/.github/workflows/devcontainer-build.yml" <<'EOF'
 name: Devcontainer
-on: [push, pull_request]
+on: [push, pull_request, merge_group]
 jobs:
   build:
     if: >-
@@ -1200,6 +1200,14 @@ jobs:
       - uses: hashicorp/setup-terraform@1111111111111111111111111111111111111111
 $tflint_step
       - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111
+      - run: task check
+  security:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo security
   verify:
     if: always()
     needs: [lint]
@@ -1398,6 +1406,7 @@ jobs:
       - uses: hashicorp/setup-terraform@1111111111111111111111111111111111111111
       - uses: terraform-linters/setup-tflint@1111111111111111111111111111111111111111
       - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111
+      - run: task check
   validate-verify:
     if: always()
     needs: [lint]
