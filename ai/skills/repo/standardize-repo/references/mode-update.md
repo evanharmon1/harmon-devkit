@@ -241,9 +241,17 @@ an intentional repo-owned keeper is the exception, not the default. Real case
 (harmon-infra v4.0.0→v4.3.1): five orphans — `shell-quality.sh` (→
 `format-shell.sh` + `lint-shell.sh`), `verify-required-results.sh` (→
 `verify-ci-results.sh`), its truth-table test, and two CodeQL helpers — with
-stale references in two workflows, the Taskfile, and `test-tasks.sh`. An
-answer flipping a feature off (e.g. `use_codeql=false`) orphans that feature's
-helpers the same way; sweep them in the same pass.
+stale references in two workflows, the Taskfile, and `test-tasks.sh`.
+
+**Answer flips do NOT show in this diff — sweep them explicitly.** A file
+gated on a copier answer (`[% if use_codeql %]…`) exists in the raw template
+tree at *both* refs, so flipping the answer off (e.g. `use_codeql=false`)
+produces an empty inventory diff while still orphaning that feature's
+helpers. Copier deletes the cleanly-tracked rendered copies on the flip, but
+hand-copied or locally-modified ones survive — when an update turns a
+feature answer off, separately `grep -rn` the repo for the disabled
+feature's scripts, workflow steps, Taskfile targets, and doc claims, and
+remove them with the same reference-repoint-then-delete discipline.
 
 ## 3. Reconcile conflicts (in place — no special files)
 
