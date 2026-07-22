@@ -1296,13 +1296,24 @@ write_terraform_build_workflow
 cat >"$TF_TARGET/.github/workflows/terraform.yml" <<'EOF'
 name: Terraform
 on:
+  push:
   pull_request:
   merge_group:
+  workflow_dispatch:
 jobs:
-  terraform-verify:
+  changes:
     runs-on: ubuntu-latest
     steps:
-      - run: echo terraform-verify
+      - run: echo changes
+  terraform-verify:
+    if: always()
+    needs: [changes]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          [ "$CHANGES_RESULT" = "success" ] || exit 1
 EOF
 cp "$AGG_TARGET/scripts/verify-ci-results.sh" \
     "$TF_TARGET/scripts/verify-ci-results.sh"
@@ -1485,13 +1496,24 @@ expect_fail "verify-applied rejects a required check whose workflow never runs o
 cat >"$TF_TARGET/.github/workflows/terraform.yml" <<'EOF'
 name: Terraform
 on:
+  push:
   pull_request:
   merge_group:
+  workflow_dispatch:
 jobs:
-  terraform-verify:
+  changes:
     runs-on: ubuntu-latest
     steps:
-      - run: echo terraform-verify
+      - run: echo changes
+  terraform-verify:
+    if: always()
+    needs: [changes]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          [ "$CHANGES_RESULT" = "success" ] || exit 1
 EOF
 
 manifest="$STANDARDIZE_ASSETS/template-owned-files.txt"
