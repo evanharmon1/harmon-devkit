@@ -225,6 +225,26 @@ that range even though the file was skipped. Don't assume every renamed file
 needs porting on every update; confirm the delta is non-empty *for this repo's
 answers* before hand-editing.
 
+**Diff the template's script inventory across the range — renames leave orphans
+copier never deletes.** The three-way merge is path-keyed, so when the template
+*renames* a shipped helper the repo keeps the old file silently, and every
+workflow/Taskfile reference to it keeps "working" against stale code:
+
+```bash
+diff <(git -C ~/git/harmon-init ls-tree --name-only <old> template/scripts/) \
+     <(git -C ~/git/harmon-init ls-tree --name-only <new> template/scripts/)
+```
+
+For each file that disappeared or was renamed: `grep -rn` the repo for
+references, repoint them at the canonical successor, and delete the orphan —
+an intentional repo-owned keeper is the exception, not the default. Real case
+(harmon-infra v4.0.0→v4.3.1): five orphans — `shell-quality.sh` (→
+`format-shell.sh` + `lint-shell.sh`), `verify-required-results.sh` (→
+`verify-ci-results.sh`), its truth-table test, and two CodeQL helpers — with
+stale references in two workflows, the Taskfile, and `test-tasks.sh`. An
+answer flipping a feature off (e.g. `use_codeql=false`) orphans that feature's
+helpers the same way; sweep them in the same pass.
+
 ## 3. Reconcile conflicts (in place — no special files)
 
 The three-way merge applies template improvements and keeps the repo's edits when
@@ -302,6 +322,20 @@ git checkout main -- Taskfile.yml   # restore the repo's clean pre-update file
 > `git checkout main -- <file>` + re-applying only the genuinely-new targets is the
 > reliable path (prefer it over `git checkout --ours`, which needs a real merge
 > state a copier conflict may not have).
+
+**Verify the after-side is the same task as the before-side — copier pairs
+hunks positionally, not semantically.** In a heavily-forked file the
+positional neighbor is often a *different* task entirely, so "take the
+template side" — safe-looking for a mechanical hunk — silently swaps or
+deletes repo behavior. Two real cases from one harmon-infra update: a
+conflict paired `security:audit:node` (`npm audit` for the repo's homepage)
+against `./scripts/python-audit.sh` (taking "after" would have replaced the
+Node audit with a duplicate Python audit), and a spanning hunk paired the
+repo's **entire e2e/build/validate task tree** as "before" against one new
+template task block as "after" (taking "after" would have deleted every
+build/validate task in the repo). When the two sides are unrelated, the
+resolution is keep-before **and separately graft** the after-side content at
+its correct location — never a straight take.
 
 **Many near-identical blocks? Rule-resolve them, then hand-do the rest.** A
 heavily-forked repo can surface *dozens* of conflict blocks (harmon-infra: 13
