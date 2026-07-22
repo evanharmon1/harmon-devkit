@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.8.4](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.3...v0.8.4) (2026-07-22)
+
+
+### Bug Fixes
+
+* **standardize-repo:** document script-inventory diff step + unrelated-hunk pairing ([#121](https://github.com/evanharmon1/harmon-devkit/issues/121)) ([014ff1a](https://github.com/evanharmon1/harmon-devkit/commit/014ff1a2293ccac11c780d03f153a5ddb27197be))
+* **standardize-repo:** teach verify-applied split-workflow CI layouts ([#122](https://github.com/evanharmon1/harmon-devkit/issues/122)) ([4d9e2c2](https://github.com/evanharmon1/harmon-devkit/commit/4d9e2c2cc8530e81717762a7d529ae3237c58408))
+
 ## [0.8.3](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.2...v0.8.3) (2026-07-22)
 
 
