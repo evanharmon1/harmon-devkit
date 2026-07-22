@@ -8,10 +8,12 @@ on:
     paths:
       - ".devcontainer/**"
       - ".github/workflows/devcontainer-build.yml"
+      - "scripts/verify-ci-results.sh"
   pull_request:
     paths:
       - ".devcontainer/**"
       - ".github/workflows/devcontainer-build.yml"
+      - "scripts/verify-ci-results.sh"
   workflow_dispatch:
 
 concurrency:
@@ -125,4 +127,4 @@ jobs:
         env:
           EXPECTED_RESULT: success
           BUILD_RESULT: ${{ needs.build.result }}
-        run: ./scripts/verify-required-results.sh "build=${BUILD_RESULT}"
+        run: ./scripts/verify-ci-results.sh "build=${BUILD_RESULT}"

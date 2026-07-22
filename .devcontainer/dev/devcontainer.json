@@ -40,12 +40,12 @@
     "ghcr.io/itsmechlark/features/1password:1.5.0": {}
   },
   "mounts": [
-    "source=claude-code-config-${devcontainerId},target=/home/vscode/.claude,type=volume",
-    "source=codex-config-${devcontainerId},target=/home/vscode/.codex,type=volume",
-    "source=gemini-config-${devcontainerId},target=/home/vscode/.gemini,type=volume",
-    "source=agent-deck-config-${devcontainerId},target=/home/vscode/.agent-deck,type=volume",
-    "source=shell-history-${devcontainerId},target=/home/vscode/.shell-history,type=volume",
-    "source=zoxide-data-${devcontainerId},target=/home/vscode/.local/share/zoxide,type=volume"
+    "source=claude-code-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.claude,type=volume",
+    "source=codex-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.codex,type=volume",
+    "source=gemini-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.gemini,type=volume",
+    "source=agent-deck-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.agent-deck,type=volume",
+    "source=shell-history-evanharmon1-harmon-devkit-dev,target=/home/vscode/.shell-history,type=volume",
+    "source=zoxide-data-evanharmon1-harmon-devkit-dev,target=/home/vscode/.local/share/zoxide,type=volume"
   ],
   // CLAUDE_CODE_EFFORT_LEVEL: default Claude Code thinking effort. Set here
   // (not in settings.json) because Claude Code's settings schema only accepts

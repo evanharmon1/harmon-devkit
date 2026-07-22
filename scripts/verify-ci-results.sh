@@ -2,7 +2,7 @@
 # Verify that every named CI leaf has the one result the caller expects.
 #
 # Usage:
-#   EXPECTED_RESULT=success ./scripts/verify-required-results.sh lint=success security=success
+#   EXPECTED_RESULT=success ./scripts/verify-ci-results.sh lint=success security=success
 #
 # Fork aggregates deliberately do not invoke this repository-controlled file;
 # they perform the equivalent skipped-only check inline in the trusted workflow.

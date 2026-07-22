@@ -32,3 +32,21 @@ merge.
 
 TODO: document deployment targets/environments here once they exist; the deploy
 how-to lives at [../guides/deploying.md](../guides/deploying.md).
+
+## Runners
+
+Jobs use `runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}`,
+so the `CI_RUNS_ON` repository variable can move CI to different runners without
+a commit.
+
+That convenience is also the risk: it is a runtime change with no diff and no
+review. **Do not point a public repository at a persistent self-hosted runner.**
+The generated workflows already refuse to check out fork-controlled code on the
+trusted aggregate job, but that contract bounds one specific job — it does not
+make a long-lived runner safe for untrusted contributions generally. A fork PR
+that can execute anything on a persistent runner can read its filesystem, its
+credentials, and whatever the previous job left behind.
+
+Before setting `CI_RUNS_ON` to a self-hosted value, audit every workflow for
+`pull_request_target` and for any step that runs code from the PR head. Keep
+untrusted-contribution workflows on GitHub-hosted runners.

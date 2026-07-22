@@ -54,6 +54,7 @@ jobs:
         run: task check
       - run: task validate
       - run: task test:tasks
+      - run: task test:codex-review
       - run: task test:release-title
       - run: task test:hooks
       - run: task test:skills
@@ -121,4 +122,6 @@ jobs:
           EXPECTED_RESULT: success
           LINT_RESULT: ${{ needs.lint.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
-        run: ./scripts/verify-required-results.sh "lint=${LINT_RESULT}" "security=${SECURITY_RESULT}"
+        run: ./scripts/verify-ci-results.sh "lint=${LINT_RESULT}" "security=${SECURITY_RESULT}"
+# Keep a literal final line after the inline Jinja conditionals above; with
+# trim_blocks enabled, ending on a block tag would strip the workflow's EOF newline.

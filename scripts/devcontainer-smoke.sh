@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # renovate: datasource=npm depName=@devcontainers/cli
-DEVCONTAINER_CLI_VERSION="0.87.0"
+DEVCONTAINER_CLI_VERSION=0.87.0
 
 if [ "$#" -ne 1 ]; then
     echo "Usage: $0 <devcontainer-config-path>" >&2

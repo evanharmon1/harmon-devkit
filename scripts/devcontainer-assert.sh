@@ -21,7 +21,7 @@ fail() {
 }
 
 # renovate: datasource=npm depName=@devcontainers/cli
-DEVCONTAINER_CLI_VERSION="0.87.0"
+DEVCONTAINER_CLI_VERSION=0.87.0
 
 devcontainer_cli() {
     if command -v devcontainer >/dev/null 2>&1; then
@@ -189,10 +189,16 @@ assert_container() {
         *) fail "bot git name '${git_name}' does not end with '-bot'" ;;
         esac
 
-        if docker exec -u vscode "$container_id" command -v tailscale >/dev/null 2>&1; then
+        # `command` is a shell BUILTIN, so it must run inside a shell: bare
+        # `docker exec <id> command -v x` execs a binary that does not exist
+        # and always fails, which silently made this check vacuous.
+        if docker exec -u vscode "$container_id" sh -c 'command -v tailscale' >/dev/null 2>&1; then
             fail "tailscale CLI is present in the bot container"
         fi
 
+        # Captured, never echoed: the failure message reports only that a key
+        # is set, never its value. Do NOT run this script under `set -x` — the
+        # trace would expand the real key into stderr and CI logs.
         local ts_authkey
         ts_authkey="$(docker exec -u vscode "$container_id" printenv TS_AUTHKEY 2>/dev/null || true)"
         [ -z "$ts_authkey" ] || fail "TS_AUTHKEY is set in the bot container"
@@ -204,7 +210,9 @@ assert_container() {
         *-bot) fail "dev git name '${git_name}' unexpectedly ends with '-bot'" ;;
         esac
 
-        if ! docker exec -u vscode "$container_id" command -v tailscale >/dev/null 2>&1; then
+        # Same builtin caveat as the bot branch above — without `sh -c` this
+        # never passes, regardless of whether tailscale is installed.
+        if ! docker exec -u vscode "$container_id" sh -c 'command -v tailscale' >/dev/null 2>&1; then
             fail "tailscale CLI is missing from the dev container"
         fi
     fi
