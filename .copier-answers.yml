@@ -1,10 +1,11 @@
 # Changes here will be overwritten by Copier
-_commit: v4.1.1
+_commit: v4.3.0
 _src_path: https://github.com/evanharmon1/harmon-init
 bunch_add: false
 ci_runner: ubuntu-latest
 claude_authorized_members: evanharmon1
 code_owner: evanharmon1
+codeql_languages: []
 devcontainer: true
 git_init: false
 github_org: evanharmon1
@@ -23,6 +24,8 @@ project_type: general
 release_content_paths: ai/skills templates scripts
 run_task_install: false
 snyk_scan_schedule: 'off'
+use_codeql: false
+use_codex_review: true
 use_foreman: false
 use_release_please: true
 use_skills_sync: false

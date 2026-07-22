@@ -23,7 +23,7 @@ config, toolchain, devcontainer, and dev environment — against the items below
       reporting** when public. Do not add `dependabot.yml`: Renovate owns routine
       and vulnerability-remediation PRs; Dependabot owns advisory alerts.
 - [ ] **Bot PAT** — the agent's `GH_TOKEN`. If a fine-grained PAT already covers
-      `evanharmon1`,
+`evanharmon1`,
       just add this repo to its **selected repositories**; a token is scoped to one
       resource owner, so a **new owner needs a new PAT**. Both layers are required —
       the collaborator grant above sets the ceiling, the PAT's repo list reaches it.
@@ -38,8 +38,9 @@ config, toolchain, devcontainer, and dev environment — against the items below
       key, billed at pay-as-you-go API rates). Then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`
 - [ ] **SAST coverage** — this profile has no CodeQL workflow, so Semgrep CE runs
       in `build.yml` for public and private repositories. Add CodeQL later if the
-      repo gains a supported application stack and is public (free) or has paid
-      GitHub Code Security (private/internal).
+      repo gains supported first-party source: set `use_codeql=true`, select its
+      `codeql_languages`, and ensure it is public (free) or has paid GitHub Code
+      Security (private/internal).
 - [ ] **Choose the Snyk posture** — the default is manual/local only via
       `task security:sast:snyk` and `task security:sca:snyk`; it is not part of
       `task security` or required PR CI. Free private-repository tests share the

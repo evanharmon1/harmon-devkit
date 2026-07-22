@@ -111,7 +111,9 @@ Templates are meant to be copied into your project and adapted — there is no s
 
 `task check` runs the fast lint gate. `task verify` is the definition-of-done
 gate (check + validation + Taskfile/hook/skills guards + tests); `task ci` adds
-security.
+security. `task challenge` / `task review` run optional Codex second-model
+reviews (adversarial / verification checkpoint — advisory, local-only; see
+[docs/guides/codex-review.md](docs/guides/codex-review.md)).
 
 #### Security
 

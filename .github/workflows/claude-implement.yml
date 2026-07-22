@@ -115,9 +115,12 @@ jobs:
           # shell can compose, so this is defense-in-depth, not a hard sandbox —
           # the real boundaries are the narrow token, branch protection, and the
           # ephemeral runner. Widen if a real run stalls on a denied command.
+          # The single allowedTools token cannot be wrapped without changing it.
+          # yamllint disable rule:line-length
           claude_args: >-
             --model opus --effort high --max-budget-usd 25 --max-turns 200
             --allowedTools "Edit,MultiEdit,Write,Read,NotebookEdit,Glob,Grep,LS,TodoWrite,Bash(task *),Bash(pnpm *),Bash(npx *),Bash(node *),Bash(git *),Bash(gh *),Bash(cd *),Bash(ls *),Bash(cat *),Bash(head *),Bash(tail *),Bash(grep *),Bash(rg *),Bash(find *),Bash(sed *),Bash(awk *),Bash(jq *),Bash(wc *),Bash(sort *),Bash(diff *),Bash(echo *),Bash(mkdir *),Bash(cp *),Bash(mv *),Bash(which *),Bash(pwd)"
+          # yamllint enable rule:line-length
           prompt: |
             Implement the change requested in this issue or comment.
 

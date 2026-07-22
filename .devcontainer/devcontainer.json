@@ -41,12 +41,12 @@
     "ghcr.io/devcontainers-extra/features/go-task:1": {}
   },
   "mounts": [
-    "source=claude-code-config-${localWorkspaceFolderBasename},target=/home/vscode/.claude,type=volume",
-    "source=codex-config-${localWorkspaceFolderBasename},target=/home/vscode/.codex,type=volume",
-    "source=gemini-config-${localWorkspaceFolderBasename},target=/home/vscode/.gemini,type=volume",
-    "source=agent-deck-config-${localWorkspaceFolderBasename},target=/home/vscode/.agent-deck,type=volume",
-    "source=shell-history-${localWorkspaceFolderBasename},target=/home/vscode/.shell-history,type=volume",
-    "source=zoxide-data-${localWorkspaceFolderBasename},target=/home/vscode/.local/share/zoxide,type=volume"
+    "source=claude-code-config-evanharmon1-harmon-devkit,target=/home/vscode/.claude,type=volume",
+    "source=codex-config-evanharmon1-harmon-devkit,target=/home/vscode/.codex,type=volume",
+    "source=gemini-config-evanharmon1-harmon-devkit,target=/home/vscode/.gemini,type=volume",
+    "source=agent-deck-config-evanharmon1-harmon-devkit,target=/home/vscode/.agent-deck,type=volume",
+    "source=shell-history-evanharmon1-harmon-devkit,target=/home/vscode/.shell-history,type=volume",
+    "source=zoxide-data-evanharmon1-harmon-devkit,target=/home/vscode/.local/share/zoxide,type=volume"
   ],
   // Secrets (GH_TOKEN) are populated into the --env-file by init-env.sh
   // (from 1Password locally, or from host env on Coder/Codespaces).

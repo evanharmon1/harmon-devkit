@@ -38,7 +38,9 @@ brew "copier"
 brew "yq"
 
 # Utilities
-brew "coreutils"    # `timeout` portability (`gtimeout` on macOS)
+# coreutils provides `timeout`, which stock macOS lacks — scripts/status.sh
+# bounds its network probes with it.
+brew "coreutils"
 brew "direnv"
 brew "jq"
 brew "fzf"
@@ -48,6 +50,12 @@ brew "bat"
 brew "tokei"
 brew "gum"          # status dashboard rendering (scripts/status.sh)
 brew "television"   # interactive task menu (`task` / task menu-tv → tv)
+
+# Second-model review (task challenge / task review drive the Codex CLI).
+# Cask = macOS only; on Linux/devcontainers install with
+# `npm install -g @openai/codex` (a bare cask line would abort `brew bundle`
+# on Linux before any of the remaining deps install).
+cask "codex" if OS.mac?
 
 # macOS apps
 cask "bunch"

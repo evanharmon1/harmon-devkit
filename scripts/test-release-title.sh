@@ -18,13 +18,19 @@ run() {
     _c="$2"
     shift 2
     _rc=0
-    PR_TITLE="$_t" CHANGED_FILES="$_c" "$guard" "$@" >/dev/null 2>&1 || _rc=$?
+    PR_TITLE="$_t" PR_BODY="" CHANGED_FILES="$_c" "$guard" "$@" >/dev/null 2>&1 || _rc=$?
     echo "$_rc"
 }
 
 echo "==> content change under a chore title fails"
 [ "$(run 'chore: update to harmon-init v4.0.0' "$(printf 'ai/skills/repo/x.md\nREADME.md')" ai/skills templates scripts)" = 1 ] ||
     fail "chore + skill change should fail"
+
+echo "==> ambient PR_BODY cannot make an unrelated case pass"
+PR_BODY='BREAKING CHANGE: inherited from the caller'
+[ "$(run 'chore: update to harmon-init v4.0.0' 'ai/skills/repo/x.md' ai/skills)" = 1 ] ||
+    fail "run helper leaked the caller's PR_BODY into an isolated test case"
+unset PR_BODY
 
 echo "==> the same content change under a fix title passes"
 [ "$(run 'fix(standardize-repo): publish skill updates' 'ai/skills/repo/x.md' ai/skills templates scripts)" = 0 ] ||

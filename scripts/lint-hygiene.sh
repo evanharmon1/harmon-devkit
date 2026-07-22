@@ -132,6 +132,9 @@ for f in "${files[@]}"; do
         devcontainer.json | */devcontainer.json | .devcontainer.json | */.devcontainer.json | \
             tsconfig*.json | */tsconfig*.json | template/*) ;;
         *)
+            # Pass the path as argv, never interpolated into the Python source:
+            # an apostrophe in a filename would otherwise be a SyntaxError
+            # reported as invalid JSON, and a crafted name would execute.
             if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" 2>/dev/null; then
                 warn "$f: invalid JSON"
             fi
@@ -144,7 +147,7 @@ for f in "${files[@]}"; do
     case "$f" in
     template/*.toml) ;;
     *.toml)
-        if ! python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$f" 2>/dev/null; then
+        if ! python3 -c 'import tomllib,sys; tomllib.load(open(sys.argv[1],"rb"))' "$f" 2>/dev/null; then
             warn "$f: invalid TOML"
         fi
         ;;

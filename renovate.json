@@ -34,6 +34,17 @@
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[A-Z_]+_VERSION=(?<currentValue>\\S+)"
       ]
+    },
+    {
+      "customType": "regex",
+      "description": "Taskfile tool pins (root Taskfile + included taskfiles/), `FOO_VERSION: x.y.z` var style",
+      "managerFilePatterns": [
+        "/(^|\\/)Taskfile\\.ya?ml$/",
+        "/taskfiles\\/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[A-Z_]+_VERSION: \"?(?<currentValue>[^\"\\s]+)\"?"
+      ]
     }  ],
   "packageRules": [
     {

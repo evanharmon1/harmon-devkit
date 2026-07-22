@@ -70,6 +70,8 @@ task ci          # FULL CI mirror — run before/instead of opening a PR
 task fix         # auto-format then lint
 task test        # tests
 task security    # Semgrep CE + gitleaks + dependency audit
+task challenge   # adversarial Codex second-model review — advisory, not in verify/ci
+task review      # Codex verification checkpoint before task ci
 ```
 
 `check` is deliberately kept fast (lint) so editors, git hooks, and
@@ -79,6 +81,42 @@ Taskfile/hook guards (the Foreman v2 vocabulary: verify = check + build +
 test). `ci` is the full pipeline — everything CI runs (`verify` +
 `security` + the devcontainer permission assert) — so you can reproduce a CI
 run locally on demand instead of waiting on a PR.
+
+## Dev Loop
+
+Bias toward shipping: drive every change to an open PR instead of stopping at
+a green local diff. Work in small, PR-sized units, and move to the next stage
+on your own — an open PR with green checks is the default deliverable, not
+something to ask permission for.
+
+- **Branch** — feature branch off `main`; never commit directly to `main`.
+- **Edit + `task check`** — the fast inner loop; run it constantly and fix
+  lint immediately.
+- **`task verify`** — when the change feels done, loop edit → verify until
+  green; verify is the definition-of-done gate.
+- **`task challenge`** — adversarial second-model review. Adjudicate per
+  "Second-Model Review" below, fix confirmed findings, re-run `task verify`,
+  then **re-run `task challenge`**. The stage passes only when a re-run comes
+  back with **no material findings** — fixing the findings is not the exit
+  condition, a clean pass is. Max **5** challenge → fix → re-challenge
+  rounds; if findings persist, stop and escalate to the maintainer.
+- **`task review`** — verification-checkpoint review; same adjudication and
+  same clean-pass exit condition, with its own max **4** rounds.
+- **`task ci`** — the full CI mirror; fix anything it catches.
+- **Open the PR** — conventional commit, push the branch, `gh pr create` with
+  a clear what/why/verification summary.
+- **Shepherd the PR (max 4 rounds).** Opening the PR is not the end. Watch CI
+  (`gh pr checks <n> --watch`) and incoming bot/human reviews. When a check
+  fails or a review lands findings, treat the findings as hypotheses: verify
+  them against the code, fix only what's confirmed, explain rejections in a
+  PR comment, push the fix commit, and watch again. Shepherd-round fixes
+  must pass `task verify` before each push; the local challenge/review loops
+  are not re-entered — the post-push cloud/bot review is the second-model
+  check at this stage. This cap is independent of the other loop caps. If
+  checks still fail or material findings remain after 4 rounds, stop and
+  summarize what's unresolved on the PR for the maintainer.
+- **Stop at green.** Report that checks pass, then stop — merging is always a
+  human decision.
 
 ## Definition of Done
 
@@ -102,6 +140,53 @@ run locally on demand instead of waiting on a PR.
   enforces this; retitle rather than bypass. Other changes keep their normal type.
   Pre-flight it locally with your intended title:
   `PR_TITLE="<title>" BASE_SHA=main task guard:release-title`.
+
+## Second-Model Review (Codex)
+
+A second AI model (the OpenAI Codex CLI) reviews changes on demand. Local and
+advisory only: nothing runs in CI, and no `verify`/`ci` step depends on Codex.
+Setup and mechanics: [docs/guides/codex-review.md](docs/guides/codex-review.md).
+
+- `task challenge` (→ `challenge:codex`) — adversarial review: challenges the
+  architecture and approach; hunts authorization bypasses, data-loss paths,
+  unsafe rollback, races, hidden coupling, operational failure modes, and
+  needless complexity. Steer it with e.g.
+  `task challenge -- --base main focus on the migration path`.
+- `task review` (→ `review:codex`) — verification checkpoint: double-checks
+  the implementation, consistency, and test coverage before `task ci`.
+- `task codex:gate:enable` / `:disable` / `:status` — the automatic
+  Claude Code → Codex stop-gate (the codex plugin's Stop hook reviews each
+  editing turn and blocks completion on material findings). Per-repo,
+  per-machine state; defaults off. Inside Claude Code the equivalents are
+  `/codex:review`, `/codex:adversarial-review`, and `/codex:setup`. The
+  toggles are approval-gated (`permissions.ask`), `disable` refuses
+  non-interactive shells, and agents must **never disable the gate to get
+  past a BLOCK** — adjudicate the finding or escalate to the maintainer instead.
+
+These tasks slot into the **Dev Loop** above: after `task verify` goes green,
+before `task ci`. If Codex cloud review is also connected to the repo, it
+reviews PRs too — it posts inline comments only for high-priority findings;
+a bare 👍 reaction from the Codex bot is its clean pass, and a lone 👀 that
+never resolves means the cloud run failed.
+
+**Treat Codex findings as hypotheses, not authority.** For every finding:
+
+1. Verify it against the actual implementation, surrounding code,
+   requirements, and tests.
+2. Classify it: confirmed, plausible but unproven, or false positive.
+3. Fix only confirmed findings; add or improve regression tests where
+   appropriate.
+4. Explain why any rejected finding is incorrect or irrelevant.
+5. Re-run `task verify` (and the other relevant gates) after fixes.
+6. Finish with a concise adjudication table: finding → classification →
+   evidence → action taken.
+
+**Loop cap and exit:** a stage exits only on a **clean re-run** (no material
+findings) — never on "findings fixed" alone — with at most **5** challenge
+iterations and **4** review iterations (challenge → fix → re-challenge, and
+likewise for review). If material disagreement persists at the cap, stop and
+surface it to the
+maintainer instead of iterating further.
 
 ## Conventions
 

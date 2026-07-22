@@ -17,4 +17,12 @@ Common issues in Harmon DevKit and how to fix them.
 - **Required check missing on a PR** — ensure Build & Validate ran;
   required checks are `verify`, `security`.
 
+## Deeper devcontainer failures
+
+The above are the everyday cases. For failures already hit and diagnosed in
+this devcontainer — a `postCreateCommand` abort silently cancelling every
+later lifecycle command, Claude Code re-prompting for login after each
+rebuild, a recreated Coder workspace reusing stale volumes — see
+[devcontainer-incidents.md](devcontainer-incidents.md).
+
 TODO: add project-specific issues as they come up.

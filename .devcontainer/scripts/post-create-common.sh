@@ -158,6 +158,12 @@ fi
 
 if [ -f pyproject.toml ]; then
     echo "==> Setting up Python virtualenv and dependencies..."
+    # .venv is a named volume (see devcontainer.json mounts), which docker
+    # creates root-owned on first use — hand it to the container user before
+    # uv sync writes into it.
+    if [ -d .venv ] && [ ! -w .venv ]; then
+        sudo chown "$(id -un):$(id -gn)" .venv
+    fi
     uv sync
 else
     echo "==> No pyproject.toml found; skipping Python setup."
@@ -173,11 +179,6 @@ fi
 if [ -d services/harmon-lab-proxy/homepage ]; then
     echo "==> Installing Node.js dependencies for homepage..."
     (cd services/harmon-lab-proxy/homepage && npm ci)
-fi
-
-if command -v uv &>/dev/null; then
-    echo "==> Installing checkov..."
-    uv tool install checkov || true
 fi
 
 if [ -f lefthook.yml ] && command -v lefthook &>/dev/null; then

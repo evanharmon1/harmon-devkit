@@ -22,7 +22,10 @@ jobs:
        github.event_name == 'pull_request_review_comment' ||
        github.event_name == 'pull_request_review' ||
        github.event_name == 'pull_request') &&
-      (github.event.sender.login == 'evanharmon1' || github.event.sender.login == 'renovate[bot]' || github.event.sender.login == 'coderabbitai[bot]' || github.event.sender.login == 'dependabot[bot]') &&
+      (github.event.sender.login == 'evanharmon1' ||
+       github.event.sender.login == 'renovate[bot]' ||
+       github.event.sender.login == 'coderabbitai[bot]' ||
+       github.event.sender.login == 'dependabot[bot]') &&
       (contains(github.event.comment.body, '@claude review') ||
        contains(github.event.review.body, '@claude review') ||
        (github.event.action == 'labeled' &&

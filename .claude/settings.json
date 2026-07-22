@@ -1,4 +1,15 @@
 {
+  "extraKnownMarketplaces": {
+    "openai-codex": {
+      "source": {
+        "source": "github",
+        "repo": "openai/codex-plugin-cc"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "codex@openai-codex": true
+  },
   "permissions": {
     "additionalDirectories": [
       "../harmon-init",
@@ -13,6 +24,12 @@
       "Bash(git log:*)"
     ],
     "ask": [
+      "Bash(task codex:gate:enable)",
+      "Bash(task codex:gate:enable:*)",
+      "Bash(task codex:gate:disable)",
+      "Bash(task codex:gate:disable:*)",
+      "Bash(./scripts/codex-gate.sh:*)",
+      "Bash(scripts/codex-gate.sh:*)",
       "Bash(gh pr merge)",
       "Bash(gh pr merge:*)",
       "Bash(git merge)",
