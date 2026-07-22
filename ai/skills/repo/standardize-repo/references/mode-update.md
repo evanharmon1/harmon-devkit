@@ -262,6 +262,15 @@ comm -23 <(git ls-files 'scripts/*' | sort) \
         sed 's|^template/||' | sort)
 ```
 
+Read the output with the gating rule: answer-gated template files appear
+jinja-wrapped in the raw listing (`[% if use_codeql %]…`), so their rendered
+names always show as "repo-extra" here. For each such match, judge by the
+repo's answer — answer ON means the file is canonical (not extra); answer
+OFF (or a feature the template newly gated) means the repo copy is an orphan
+of a disabled feature, exactly the kind this sweep exists to catch. For
+fully repo-local names, decide local keeper vs orphan-of-a-successor as
+above.
+
 Real case (harmon-infra v4.0.0→v4.3.1): five orphans — `shell-quality.sh` (→
 `format-shell.sh` + `lint-shell.sh`), `verify-required-results.sh` (→
 `verify-ci-results.sh`), its truth-table test, and two CodeQL helpers — with
