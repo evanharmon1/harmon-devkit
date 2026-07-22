@@ -225,6 +225,71 @@ that range even though the file was skipped. Don't assume every renamed file
 needs porting on every update; confirm the delta is non-empty *for this repo's
 answers* before hand-editing.
 
+**Diff the template's script inventory across the range — audit what
+survived the update.** Copier does delete a cleanly-tracked old file when
+the template renames it (delete + add in the re-rendered diff). The orphans
+are the *survivors*: an old copy the repo modified locally, adopted by hand
+(so copier never tracked it), or renamed out of path-match. Any of those
+stays behind silently while every workflow/Taskfile reference to it keeps
+"working" against stale code — so after the update, check each old-side
+inventory entry against the tree and clean up the ones still present:
+
+```bash
+# -r: recurse — shipped subtrees (scripts/foreman/…) hide renames from a
+# top-level listing
+diff <(git -C ~/git/harmon-init ls-tree -r --name-only <old> template/scripts/) \
+     <(git -C ~/git/harmon-init ls-tree -r --name-only <new> template/scripts/)
+```
+
+For each file that disappeared or was renamed: `grep -rn` the repo for
+references, repoint them at the canonical successor, and delete the orphan —
+an intentional repo-owned keeper is the exception, not the default. **Before
+deleting, diff the repo's copy against its own template baseline**
+(`git -C ~/git/harmon-init show <old>:template/<path>` vs the repo file): a
+locally-modified orphan carries repo-specific behavior the canonical
+successor lacks — port that intentional delta to the successor first, the
+same judgment call as any DRIFT.
+
+**The template-side diff cannot see hand-copied ancestors — sweep the
+repo's own inventory too.** A helper the repo adopted by hand (e.g. copied
+from harmon-init's root layer before the template shipped it) was never in
+the `<old>` template tree, so its rename shows up only as the successor's
+*addition* — nothing tells you the old file exists. The five harmon-infra
+orphans were exactly this shape. So, for every script the inventory diff
+ADDS, grep the repo for a predecessor under a different name; and list the
+repo's template-extra scripts outright and judge each one (local keeper vs
+orphan of a new successor):
+
+```bash
+comm -23 <(git ls-files 'scripts/*' | sort) \
+    <(git -C ~/git/harmon-init ls-tree -r --name-only <new> template/scripts/ |
+        sed 's|^template/||' | sort)
+```
+
+Read the output with the gating rule: answer-gated template files appear
+jinja-wrapped in the raw listing (`[% if use_codeql %]…`), so their rendered
+names always show as "repo-extra" here. For each such match, judge by the
+repo's answer — answer ON means the file is canonical (not extra); answer
+OFF (or a feature the template newly gated) means the repo copy is an orphan
+of a disabled feature, exactly the kind this sweep exists to catch. For
+fully repo-local names, decide local keeper vs orphan-of-a-successor as
+above.
+
+Real case (harmon-infra v4.0.0→v4.3.1): five orphans — `shell-quality.sh` (→
+`format-shell.sh` + `lint-shell.sh`), `verify-required-results.sh` (→
+`verify-ci-results.sh`), its truth-table test, and two CodeQL helpers — with
+stale references in two workflows, the Taskfile, and `test-tasks.sh`.
+
+**Answer flips do NOT show in this diff — sweep them explicitly.** A file
+gated on a copier answer (`[% if use_codeql %]…`) exists in the raw template
+tree at *both* refs, so flipping the answer off (e.g. `use_codeql=false`)
+produces an empty inventory diff while still orphaning that feature's
+helpers. Copier deletes the cleanly-tracked rendered copies on the flip, but
+hand-copied or locally-modified ones survive — when an update turns a
+feature answer off, separately `grep -rn` the repo for the disabled
+feature's scripts, workflow steps, Taskfile targets, and doc claims, and
+remove them with the same reference-repoint-then-delete discipline.
+
 ## 3. Reconcile conflicts (in place — no special files)
 
 The three-way merge applies template improvements and keeps the repo's edits when
@@ -302,6 +367,20 @@ git checkout main -- Taskfile.yml   # restore the repo's clean pre-update file
 > `git checkout main -- <file>` + re-applying only the genuinely-new targets is the
 > reliable path (prefer it over `git checkout --ours`, which needs a real merge
 > state a copier conflict may not have).
+
+**Verify the after-side is the same task as the before-side — copier pairs
+hunks positionally, not semantically.** In a heavily-forked file the
+positional neighbor is often a *different* task entirely, so "take the
+template side" — safe-looking for a mechanical hunk — silently swaps or
+deletes repo behavior. Two real cases from one harmon-infra update: a
+conflict paired `security:audit:node` (`npm audit` for the repo's homepage)
+against `./scripts/python-audit.sh` (taking "after" would have replaced the
+Node audit with a duplicate Python audit), and a spanning hunk paired the
+repo's **entire e2e/build/validate task tree** as "before" against one new
+template task block as "after" (taking "after" would have deleted every
+build/validate task in the repo). When the two sides are unrelated, the
+resolution is keep-before **and separately graft** the after-side content at
+its correct location — never a straight take.
 
 **Many near-identical blocks? Rule-resolve them, then hand-do the rest.** A
 heavily-forked repo can surface *dozens* of conflict blocks (harmon-infra: 13
