@@ -769,22 +769,33 @@ if [ -f "$ruleset_file" ]; then
     # result-gated — it needs `needs:` and must inspect `needs.<leaf>.result`
     # (or run the trusted-results helper). A job that exists but just echoes
     # success would launder a failing leaf into a green required check.
+    # DELIBERATE BOUNDARY: this is a drift auditor, not a proof system — it
+    # rejects the launderable shapes (no needs:, or no result inspection at
+    # all) but does not statically prove the shell enforces exact outcomes;
+    # without `if: always()` branch protection is already fail-closed (a
+    # failing leaf skips the rollup and blocks the merge), and exact-contract
+    # verification belongs to the repo's own regression (e.g. harmon-infra's
+    # test-tasks.sh aggregate assertions).
     # The shipped ruleset stacks a merge_queue rule on the required checks, so
     # a required context must report on BOTH pull_request and merge_group — a
     # PR-only workflow wedges the merge queue exactly like a dispatch-only one.
     workflow_reports_on_protected_events() {
         awk '
             BEGIN { in_on = 0; pr = 0; mg = 0 }
-            /^on:/ {
+            {
+                line = $0
+                sub(/#.*$/, "", line)
+            }
+            line ~ /^on:/ {
                 in_on = 1
-                if (index($0, "pull_request")) pr = 1
-                if (index($0, "merge_group")) mg = 1
+                if (line ~ /pull_request([^_a-z]|$)/) pr = 1
+                if (line ~ /merge_group([^_a-z]|$)/) mg = 1
                 next
             }
-            in_on && /^[A-Za-z_-]+:/ { in_on = 0 }
+            in_on && line ~ /^[A-Za-z_-]+:/ { in_on = 0 }
             in_on {
-                if (/pull_request/) pr = 1
-                if (/merge_group/) mg = 1
+                if (line ~ /pull_request([^_a-z]|$)/) pr = 1
+                if (line ~ /merge_group([^_a-z]|$)/) mg = 1
             }
             END { exit(pr && mg ? 0 : 1) }
         ' "$1"
@@ -849,7 +860,12 @@ if [ -f "$ruleset_file" ]; then
         context_reports=false
         for workflow_file in .github/workflows/*.y*ml; do
             [ -f "$workflow_file" ] || continue
-            grep -qE "^  ${ruleset_context}:[ ]*(#.*)?$" "$workflow_file" || continue
+            # GitHub reports a check under the job-level name: when present,
+            # falling back to the job key — accept either as the context.
+            if ! grep -qE "^  ${ruleset_context}:[ ]*(#.*)?$" "$workflow_file" &&
+                ! grep -qE "^[[:space:]]+name:[[:space:]]*[\"']?${ruleset_context}[\"']?[[:space:]]*(#.*)?$" "$workflow_file"; then
+                continue
+            fi
             context_defined=true
             if workflow_reports_on_protected_events "$workflow_file"; then
                 context_reports=true
