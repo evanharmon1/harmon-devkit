@@ -381,23 +381,45 @@ if [ "$has_terraform" = true ]; then
         done
     fi
 
-    build_workflow=""
-    for candidate in .github/workflows/build.yml .github/workflows/build.yaml; do
-        if [ -f "$candidate" ]; then
-            build_workflow="$candidate"
-            break
-        fi
+    # The toolchain must be reachable from the workflow that actually runs the
+    # shared gate (`task check`) — split repos provision it there directly
+    # (harmon-infra's validate.yml), while freshly rendered repos provision it
+    # through a local composite action the gate workflow invokes
+    # (.github/actions/setup). Scan the gate workflows plus the composite
+    # actions they reference, so a dead workflow carrying the setup actions
+    # cannot satisfy the contract.
+    gate_provision_files=""
+    for workflow_file in .github/workflows/*.y*ml; do
+        [ -f "$workflow_file" ] || continue
+        grep -q 'task check' "$workflow_file" || continue
+        gate_provision_files="$gate_provision_files$workflow_file
+"
+        while IFS= read -r composite_ref; do
+            [ -n "$composite_ref" ] || continue
+            for composite_file in "$composite_ref"/action.yml "$composite_ref"/action.yaml; do
+                [ -f "$composite_file" ] || continue
+                gate_provision_files="$gate_provision_files$composite_file
+"
+            done
+        done <<<"$(sed -n -E 's|^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*(\./\.github/actions/[A-Za-z0-9_./-]+).*|\1|p' "$workflow_file")"
     done
-    if [ -z "$build_workflow" ]; then
-        err "Terraform is present but no build workflow provisions its lint tools"
+    if [ -z "$gate_provision_files" ]; then
+        err "Terraform is present but no CI workflow runs 'task check' to reach its lint contract"
     else
         for setup_action in \
             'hashicorp/setup-terraform@' \
             'terraform-linters/setup-tflint@' \
             'astral-sh/setup-uv@'; do
-            if ! grep -qE "^[[:space:]]*-[[:space:]]+uses:[[:space:]]+${setup_action}" \
-                "$build_workflow"; then
-                err "$build_workflow does not provision Terraform lint dependency: $setup_action"
+            found_setup=false
+            while IFS= read -r provision_file; do
+                [ -n "$provision_file" ] || continue
+                if grep -qE "^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+${setup_action}" "$provision_file"; then
+                    found_setup=true
+                    break
+                fi
+            done <<<"$gate_provision_files"
+            if [ "$found_setup" = false ]; then
+                err "no 'task check' workflow (or composite action it invokes) provisions Terraform lint dependency: $setup_action"
             fi
         done
     fi
@@ -614,15 +636,42 @@ workflow_job_has_fork_guard() {
 }
 
 required_results_helper="scripts/verify-ci-results.sh"
+# The aggregate job is discovered, not hardcoded: split-workflow repos name
+# their rollups per workflow (`build-verify`, `validate-verify`, …) instead of
+# the template's `verify`. The job that runs the trusted-results helper IS the
+# trusted aggregate for that workflow.
+find_aggregate_job() {
+    # Only 2-space keys inside the jobs: block are job headers — the same
+    # indent appears under on:/permissions:, and a paths: trigger can name
+    # verify-ci-results.sh without being an aggregate job.
+    awk '
+        /^jobs:[ ]*(#.*)?$/ {
+            in_jobs = 1
+            next
+        }
+        in_jobs && /^[A-Za-z0-9_-]+:/ {
+            in_jobs = 0
+        }
+        in_jobs && /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/ {
+            job = $1
+            sub(/:$/, "", job)
+        }
+        in_jobs && /verify-ci-results\.sh/ && job != "" {
+            print job
+            exit
+        }
+    ' "$1"
+}
 aggregate_workflows=""
-for aggregate_spec in \
-    '.github/workflows/build.yml:verify' \
-    '.github/workflows/build.yaml:verify' \
-    '.github/workflows/devcontainer-build.yml:devcontainer-verify' \
-    '.github/workflows/devcontainer-build.yaml:devcontainer-verify'; do
-    aggregate_workflow="${aggregate_spec%:*}"
-    aggregate_job="${aggregate_spec##*:}"
+for aggregate_workflow in \
+    .github/workflows/build.yml .github/workflows/build.yaml \
+    .github/workflows/devcontainer-build.yml .github/workflows/devcontainer-build.yaml; do
     [ -f "$aggregate_workflow" ] || continue
+    aggregate_job="$(find_aggregate_job "$aggregate_workflow")"
+    if [ -z "$aggregate_job" ]; then
+        err "$aggregate_workflow has no job running $required_results_helper — the trusted aggregate is missing"
+        continue
+    fi
     aggregate_workflows="${aggregate_workflows}${aggregate_workflow}:${aggregate_job}
 "
 done
@@ -713,23 +762,194 @@ if [ -f "$ruleset_file" ]; then
         sed -n -E 's/.*"context"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' \
             "$ruleset_file" | sort -u
     )"
-    expected_contexts="security
-verify"
-    expected_contexts_label="verify + security"
-    if [ "$has_terraform" = true ]; then
-        expected_contexts="$expected_contexts
-terraform-verify"
-        expected_contexts_label="$expected_contexts_label + terraform-verify"
+    has_ruleset_context() {
+        printf '%s\n' "$ruleset_contexts" | grep -qxF "$1"
+    }
+    # A split rollup standing in for the template's verify/security must be
+    # result-gated — it needs `needs:` and must inspect `needs.<leaf>.result`
+    # (or run the trusted-results helper). A job that exists but just echoes
+    # success would launder a failing leaf into a green required check.
+    # DELIBERATE BOUNDARY: this is a drift auditor, not a proof system — it
+    # rejects the launderable shapes (no needs:, or no result inspection at
+    # all) but does not statically prove the shell enforces exact outcomes;
+    # without `if: always()` branch protection is already fail-closed (a
+    # failing leaf skips the rollup and blocks the merge), and exact-contract
+    # verification belongs to the repo's own regression (e.g. harmon-infra's
+    # test-tasks.sh aggregate assertions).
+    # The shipped ruleset stacks a merge_queue rule on the required checks, so
+    # a required context must report on BOTH pull_request and merge_group — a
+    # PR-only workflow wedges the merge queue exactly like a dispatch-only one.
+    workflow_reports_on_protected_events() {
+        awk '
+            BEGIN { in_on = 0; pr = 0; mg = 0 }
+            {
+                line = $0
+                sub(/#.*$/, "", line)
+            }
+            line ~ /^on:/ {
+                in_on = 1
+                if (line ~ /pull_request([^_a-z]|$)/) pr = 1
+                if (line ~ /merge_group([^_a-z]|$)/) mg = 1
+                next
+            }
+            in_on && line ~ /^[A-Za-z_-]+:/ { in_on = 0 }
+            in_on {
+                if (line ~ /pull_request([^_a-z]|$)/) pr = 1
+                if (line ~ /merge_group([^_a-z]|$)/) mg = 1
+            }
+            END { exit(pr && mg ? 0 : 1) }
+        ' "$1"
+    }
+    ruleset_job_is_result_gated() {
+        local context="$1" workflow_file
+        for workflow_file in .github/workflows/*.y*ml; do
+            [ -f "$workflow_file" ] || continue
+            # Bind gating to a workflow that actually reports on protected
+            # events — a stale dispatch-only file containing a gated job must
+            # not vouch for an echo-only job in the reporting workflow.
+            workflow_reports_on_protected_events "$workflow_file" || continue
+            if awk -v target="$context" '
+                function finalize() {
+                    if ((key_match || name_match) && has_needs && gated && always) ok = 1
+                }
+                BEGIN { in_jobs = 0; ok = 0 }
+                {
+                    line = $0
+                    sub(/#.*$/, "", line)
+                }
+                line ~ /^jobs:[ ]*$/ { in_jobs = 1; next }
+                in_jobs && line ~ /^[A-Za-z_-]+:/ { finalize(); in_jobs = 0 }
+                in_jobs && line ~ /^  [A-Za-z0-9_-]+:[ ]*$/ {
+                    finalize()
+                    key_match = (line ~ ("^  " target ":[ ]*$"))
+                    name_match = 0
+                    has_needs = 0
+                    gated = 0
+                    always = 0
+                    next
+                }
+                in_jobs && line ~ ("^    name:[ ]*[\"\047]?" target "[\"\047]?[ ]*$") { name_match = 1 }
+                in_jobs && line ~ /^    needs:/ { has_needs = 1 }
+                in_jobs && line ~ /always\(\)/ { always = 1 }
+                in_jobs && (line ~ /needs\.[A-Za-z0-9_-]+\.result/ || line ~ /verify-ci-results\.sh/) { gated = 1 }
+                END {
+                    finalize()
+                    exit(ok ? 0 : 1)
+                }
+            ' "$workflow_file"; then
+                return 0
+            fi
+        done
+        return 1
+    }
+    require_result_gated_substitute() {
+        local context="$1"
+        if ! ruleset_job_is_result_gated "$context"; then
+            err "$ruleset_file accepts '$context' in place of a template aggregate, but that job is not result-gated (if: always() + needs: + needs.<leaf>.result or verify-ci-results.sh) — GitHub counts a skipped required check as successful, so a non-always() or echo-only rollup launders failing leaves"
+        fi
+    }
+    # Coverage, not exact match: a split-workflow repo satisfies the template's
+    # `verify` with its per-workflow rollups (`build-verify` + `validate-verify`)
+    # and `security` with `security-verify`. Extra required contexts are fine
+    # only when a workflow actually defines that aggregate job — a context no
+    # workflow reports wedges every PR.
+    if has_ruleset_context verify; then
+        # The canonical verify context is an aggregate by design — an
+        # echo-only job named verify outside the audited build workflow must
+        # not satisfy it. (Canonical security is deliberately NOT gated: the
+        # template's security job is a working leaf, not a rollup.)
+        require_result_gated_substitute verify
+    elif has_ruleset_context build-verify && has_ruleset_context validate-verify; then
+        require_result_gated_substitute build-verify
+        require_result_gated_substitute validate-verify
+    else
+        err "$ruleset_file must require 'verify' (or the split 'build-verify' + 'validate-verify'); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
     fi
-    if [ "$codeql_required" = true ]; then
-        expected_contexts="$expected_contexts
-codeql-verify"
-        expected_contexts_label="$expected_contexts_label + codeql-verify"
+    if ! has_ruleset_context security; then
+        if has_ruleset_context security-verify; then
+            require_result_gated_substitute security-verify
+        else
+            err "$ruleset_file must require 'security' (or the split 'security-verify'); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
+        fi
     fi
-    expected_contexts="$(printf '%s\n' "$expected_contexts" | sort -u)"
-    if [ "$ruleset_contexts" != "$expected_contexts" ]; then
-        err "$ruleset_file required checks must be $expected_contexts_label; found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
+    if [ "$has_terraform" = true ] && ! has_ruleset_context terraform-verify; then
+        err "$ruleset_file must require 'terraform-verify' when Terraform is present"
     fi
+    if [ "$has_terraform" = false ] && has_ruleset_context terraform-verify; then
+        err "$ruleset_file requires 'terraform-verify' but the repo has no Terraform — the stale check can stop reporting and wedge every PR"
+    fi
+    if [ "$has_terraform" = true ] && has_ruleset_context terraform-verify; then
+        # terraform-verify is an aggregate in the standard (mode-audit: emits
+        # on push/pull_request/merge_group/workflow_dispatch for the trusted
+        # main-apply and manual paths) — existence is not enough.
+        require_result_gated_substitute terraform-verify
+        terraform_events_ok=false
+        for workflow_file in .github/workflows/*.y*ml; do
+            [ -f "$workflow_file" ] || continue
+            grep -qE "^  terraform-verify:[ ]*(#.*)?$" "$workflow_file" || continue
+            if awk '
+                BEGIN { in_on = 0; pr = 0; mg = 0; pu = 0; wd = 0 }
+                {
+                    line = $0
+                    sub(/#.*$/, "", line)
+                }
+                line ~ /^on:/ {
+                    in_on = 1
+                    if (line ~ /pull_request([^_a-z]|$)/) pr = 1
+                    if (line ~ /merge_group([^_a-z]|$)/) mg = 1
+                    if (line ~ /push([^_a-z]|$)/) pu = 1
+                    if (line ~ /workflow_dispatch([^_a-z]|$)/) wd = 1
+                    next
+                }
+                in_on && line ~ /^[A-Za-z_-]+:/ { in_on = 0 }
+                in_on {
+                    if (line ~ /pull_request([^_a-z]|$)/) pr = 1
+                    if (line ~ /merge_group([^_a-z]|$)/) mg = 1
+                    if (line ~ /push([^_a-z]|$)/) pu = 1
+                    if (line ~ /workflow_dispatch([^_a-z]|$)/) wd = 1
+                }
+                END { exit(pr && mg && pu && wd ? 0 : 1) }
+            ' "$workflow_file"; then
+                terraform_events_ok=true
+                break
+            fi
+        done
+        if [ "$terraform_events_ok" = false ]; then
+            err "terraform-verify must emit on push, pull_request, merge_group, and workflow_dispatch (trusted main apply + manual paths) — its workflow is missing one of those triggers"
+        fi
+    fi
+    if [ "$codeql_required" = false ] && has_ruleset_context codeql-verify; then
+        err "$ruleset_file requires 'codeql-verify' but use_codeql is off — the check would never report and wedge every PR"
+    fi
+    if [ "$codeql_required" = true ] && ! has_ruleset_context codeql-verify; then
+        err "$ruleset_file must require 'codeql-verify' when use_codeql is on"
+    fi
+    while IFS= read -r ruleset_context; do
+        [ -n "$ruleset_context" ] || continue
+        context_defined=false
+        context_reports=false
+        for workflow_file in .github/workflows/*.y*ml; do
+            [ -f "$workflow_file" ] || continue
+            # GitHub reports a check under the job-level name: when present,
+            # falling back to the job key — accept either. The name: match is
+            # anchored to the job level (exactly 4-space indent, no list dash)
+            # so a step's `- name:` cannot masquerade as a defined context.
+            if ! grep -qE "^  ${ruleset_context}:[ ]*(#.*)?$" "$workflow_file" &&
+                ! grep -qE "^    name:[[:space:]]*[\"']?${ruleset_context}[\"']?[[:space:]]*(#.*)?$" "$workflow_file"; then
+                continue
+            fi
+            context_defined=true
+            if workflow_reports_on_protected_events "$workflow_file"; then
+                context_reports=true
+                break
+            fi
+        done
+        if [ "$context_defined" = false ]; then
+            err "$ruleset_file requires check '$ruleset_context' but no workflow defines that job — it would never report and wedge every PR"
+        elif [ "$context_reports" = false ]; then
+            err "$ruleset_file requires check '$ruleset_context' but its workflow never triggers on pull_request/merge_group — it would never report and wedge every protected merge"
+        fi
+    done <<<"$ruleset_contexts"
 fi
 
 # ── 3f. CodeQL selection, result truth table, and live capability ──
