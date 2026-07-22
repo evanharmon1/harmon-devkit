@@ -782,10 +782,20 @@ write_required_check_ruleset() {
     local target="$1"
     local mode="${2:-baseline}"
     local extra_context=""
+    local base_contexts=$'{"context": "verify"},\n          {"context": "security"}'
     case "$mode" in
     baseline) ;;
     terraform) extra_context=$',\n          {"context": "terraform-verify"}' ;;
     codeql) extra_context=$',\n          {"context": "codeql-verify"}' ;;
+    split-terraform | split-terraform-ghost)
+        # Split-workflow repos require per-workflow aggregate rollups instead
+        # of the template's verify/security pair (e.g. harmon-infra).
+        base_contexts=$'{"context": "build-verify"},\n          {"context": "validate-verify"},\n          {"context": "security-verify"}'
+        extra_context=$',\n          {"context": "terraform-verify"}'
+        if [ "$mode" = split-terraform-ghost ]; then
+            extra_context="$extra_context"$',\n          {"context": "ghost-verify"}'
+        fi
+        ;;
     *) fail "unknown ruleset fixture mode: $mode" ;;
     esac
     mkdir -p "$target/.github"
@@ -796,8 +806,7 @@ write_required_check_ruleset() {
       "type": "required_status_checks",
       "parameters": {
         "required_status_checks": [
-          {"context": "verify"},
-          {"context": "security"}$extra_context
+          $base_contexts$extra_context
         ]
       }
     }
@@ -1272,6 +1281,17 @@ EOF
 
 write_terraform_taskfile
 write_terraform_build_workflow
+# The ruleset requires terraform-verify, so a workflow must define that job —
+# a required check no workflow reports would wedge every PR.
+cat >"$TF_TARGET/.github/workflows/terraform.yml" <<'EOF'
+name: Terraform
+on: workflow_dispatch
+jobs:
+  terraform-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo terraform-verify
+EOF
 cp "$AGG_TARGET/scripts/verify-ci-results.sh" \
     "$TF_TARGET/scripts/verify-ci-results.sh"
 write_required_check_ruleset "$TF_TARGET" terraform
@@ -1316,6 +1336,82 @@ write_terraform_lock_regression 1
 expect_fail "verify-applied runs the hermetic provider-lock regression" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
 write_terraform_lock_regression
+
+# Split-workflow layout (harmon-infra shape): per-workflow aggregates named
+# build-verify/validate-verify/security-verify, lint toolchain provisioned in
+# validate.yml instead of build.yml, and the ruleset requiring the rollup set.
+write_split_terraform_workflows() {
+    cat >"$TF_TARGET/.github/workflows/build.yml" <<EOF
+name: Build
+on: workflow_dispatch
+jobs:
+  build-homepage:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+  build-verify:
+    if: always()
+    needs: [build-homepage]
+    runs-on: ubuntu-latest
+    env:
+      IS_FORK: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - name: Verify deliberate skips at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        env:
+          BUILD_HOMEPAGE_RESULT: \${{ needs.build-homepage.result }}
+        run: |
+          if [ "\$BUILD_HOMEPAGE_RESULT" != "skipped" ]; then
+            exit 1
+          fi
+          echo "Untrusted fork trust boundary enforced: all repository-controlled jobs were deliberately skipped."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@1111111111111111111111111111111111111111
+      - name: Verify required jobs succeeded
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+          BUILD_HOMEPAGE_RESULT: \${{ needs.build-homepage.result }}
+        run: ./scripts/verify-ci-results.sh "build-homepage=\${BUILD_HOMEPAGE_RESULT}"
+EOF
+    cat >"$TF_TARGET/.github/workflows/validate.yml" <<'EOF'
+name: Validate
+on: workflow_dispatch
+jobs:
+  lint:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: hashicorp/setup-terraform@1111111111111111111111111111111111111111
+      - uses: terraform-linters/setup-tflint@1111111111111111111111111111111111111111
+      - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111
+  validate-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo validate-verify
+EOF
+    cat >"$TF_TARGET/.github/workflows/security.yml" <<'EOF'
+name: Security
+on: workflow_dispatch
+jobs:
+  security-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo security-verify
+EOF
+}
+write_split_terraform_workflows
+write_required_check_ruleset "$TF_TARGET" split-terraform
+expect_ok "verify-applied accepts a split-workflow layout (per-workflow aggregates)" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_required_check_ruleset "$TF_TARGET" split-terraform-ghost
+expect_fail "verify-applied rejects a required check no workflow defines" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
 
 manifest="$STANDARDIZE_ASSETS/template-owned-files.txt"
 for required in \
