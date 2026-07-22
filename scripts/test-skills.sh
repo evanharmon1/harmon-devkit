@@ -1391,10 +1391,37 @@ jobs:
       - uses: terraform-linters/setup-tflint@1111111111111111111111111111111111111111
       - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111
   validate-verify:
+    if: always()
+    needs: [lint]
     runs-on: ubuntu-latest
     steps:
-      - run: echo validate-verify
+      - env:
+          LINT_RESULT: ${{ needs.lint.result }}
+        run: |
+          [ "$LINT_RESULT" = "success" ] || [ "$LINT_RESULT" = "skipped" ] || exit 1
 EOF
+    cat >"$TF_TARGET/.github/workflows/security.yml" <<'EOF'
+name: Security
+on: workflow_dispatch
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo secrets
+  security-verify:
+    if: always()
+    needs: [secrets]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          SECRETS_RESULT: ${{ needs.secrets.result }}
+        run: |
+          [ "$SECRETS_RESULT" = "success" ] || exit 1
+EOF
+}
+# Echo-only substitute rollup: exists as a job but is not result-gated, so it
+# must NOT satisfy the ruleset in place of the template aggregates.
+write_ungated_security_workflow() {
     cat >"$TF_TARGET/.github/workflows/security.yml" <<'EOF'
 name: Security
 on: workflow_dispatch
@@ -1412,6 +1439,11 @@ expect_ok "verify-applied accepts a split-workflow layout (per-workflow aggregat
 write_required_check_ruleset "$TF_TARGET" split-terraform-ghost
 expect_fail "verify-applied rejects a required check no workflow defines" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_required_check_ruleset "$TF_TARGET" split-terraform
+write_ungated_security_workflow
+expect_fail "verify-applied rejects an echo-only substitute rollup" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_split_terraform_workflows
 
 manifest="$STANDARDIZE_ASSETS/template-owned-files.txt"
 for required in \

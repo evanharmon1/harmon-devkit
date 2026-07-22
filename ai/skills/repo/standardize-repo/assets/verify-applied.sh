@@ -383,7 +383,11 @@ if [ "$has_terraform" = true ]; then
 
     # Split-workflow repos provision the terraform lint toolchain in whichever
     # workflow runs `task check` (e.g. harmon-infra's validate.yml), not
-    # necessarily build.yml — any workflow satisfying the contract counts.
+    # necessarily build.yml — and freshly rendered repos provision it through
+    # the local composite action (.github/actions/setup), which workflow-step
+    # greps cannot see. Scan both. (A toolchain "provisioned" only in a dead
+    # workflow is not silently fine either way: `task check` then fails
+    # loudly in the gate job itself.)
     if ! ls .github/workflows/*.y*ml >/dev/null 2>&1; then
         err "Terraform is present but no CI workflow provisions its lint tools"
     else
@@ -391,9 +395,10 @@ if [ "$has_terraform" = true ]; then
             'hashicorp/setup-terraform@' \
             'terraform-linters/setup-tflint@' \
             'astral-sh/setup-uv@'; do
-            if ! grep -qE "^[[:space:]]*-[[:space:]]+uses:[[:space:]]+${setup_action}" \
-                .github/workflows/*.y*ml 2>/dev/null; then
-                err "no workflow under .github/workflows provisions Terraform lint dependency: $setup_action"
+            if ! find .github -type f -name '*.y*ml' \
+                \( -path '.github/workflows/*' -o -path '.github/actions/*' \) 2>/dev/null |
+                xargs grep -qE "^[[:space:]]*-[[:space:]]+uses:[[:space:]]+${setup_action}" 2>/dev/null; then
+                err "no workflow or local composite action provisions Terraform lint dependency: $setup_action"
             fi
         done
     fi
@@ -739,17 +744,54 @@ if [ -f "$ruleset_file" ]; then
     has_ruleset_context() {
         printf '%s\n' "$ruleset_contexts" | grep -qxF "$1"
     }
+    # A split rollup standing in for the template's verify/security must be
+    # result-gated — it needs `needs:` and must inspect `needs.<leaf>.result`
+    # (or run the trusted-results helper). A job that exists but just echoes
+    # success would launder a failing leaf into a green required check.
+    ruleset_job_is_result_gated() {
+        local context="$1" workflow_file
+        for workflow_file in .github/workflows/*.y*ml; do
+            [ -f "$workflow_file" ] || continue
+            if awk -v target="$context" '
+                BEGIN { in_jobs = 0; in_job = 0; has_needs = 0; gated = 0 }
+                /^jobs:[ ]*(#.*)?$/ { in_jobs = 1; next }
+                in_jobs && /^[A-Za-z0-9_-]+:/ { in_jobs = 0; in_job = 0 }
+                in_jobs && $0 ~ ("^  " target ":[ ]*(#.*)?$") { in_job = 1; next }
+                in_jobs && /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/ { in_job = 0 }
+                in_job && /^[ ]+needs:/ { has_needs = 1 }
+                in_job && (/needs\.[A-Za-z0-9_-]+\.result/ || /verify-ci-results\.sh/) { gated = 1 }
+                END { exit(has_needs && gated ? 0 : 1) }
+            ' "$workflow_file"; then
+                return 0
+            fi
+        done
+        return 1
+    }
+    require_result_gated_substitute() {
+        local context="$1"
+        if ! ruleset_job_is_result_gated "$context"; then
+            err "$ruleset_file accepts '$context' in place of a template aggregate, but that job is not result-gated (needs: + needs.<leaf>.result or verify-ci-results.sh) — an echo-only rollup would launder failing leaves"
+        fi
+    }
     # Coverage, not exact match: a split-workflow repo satisfies the template's
     # `verify` with its per-workflow rollups (`build-verify` + `validate-verify`)
     # and `security` with `security-verify`. Extra required contexts are fine
     # only when a workflow actually defines that aggregate job — a context no
     # workflow reports wedges every PR.
-    if ! has_ruleset_context verify &&
-        ! { has_ruleset_context build-verify && has_ruleset_context validate-verify; }; then
-        err "$ruleset_file must require 'verify' (or the split 'build-verify' + 'validate-verify'); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
+    if ! has_ruleset_context verify; then
+        if has_ruleset_context build-verify && has_ruleset_context validate-verify; then
+            require_result_gated_substitute build-verify
+            require_result_gated_substitute validate-verify
+        else
+            err "$ruleset_file must require 'verify' (or the split 'build-verify' + 'validate-verify'); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
+        fi
     fi
-    if ! has_ruleset_context security && ! has_ruleset_context security-verify; then
-        err "$ruleset_file must require 'security' (or the split 'security-verify'); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
+    if ! has_ruleset_context security; then
+        if has_ruleset_context security-verify; then
+            require_result_gated_substitute security-verify
+        else
+            err "$ruleset_file must require 'security' (or the split 'security-verify'); found: $(printf '%s' "$ruleset_contexts" | tr '\n' ' ')"
+        fi
     fi
     if [ "$has_terraform" = true ] && ! has_ruleset_context terraform-verify; then
         err "$ruleset_file must require 'terraform-verify' when Terraform is present"
