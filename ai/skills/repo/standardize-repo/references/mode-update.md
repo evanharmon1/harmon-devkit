@@ -225,10 +225,14 @@ that range even though the file was skipped. Don't assume every renamed file
 needs porting on every update; confirm the delta is non-empty *for this repo's
 answers* before hand-editing.
 
-**Diff the template's script inventory across the range — renames leave orphans
-copier never deletes.** The three-way merge is path-keyed, so when the template
-*renames* a shipped helper the repo keeps the old file silently, and every
-workflow/Taskfile reference to it keeps "working" against stale code:
+**Diff the template's script inventory across the range — audit what
+survived the update.** Copier does delete a cleanly-tracked old file when
+the template renames it (delete + add in the re-rendered diff). The orphans
+are the *survivors*: an old copy the repo modified locally, adopted by hand
+(so copier never tracked it), or renamed out of path-match. Any of those
+stays behind silently while every workflow/Taskfile reference to it keeps
+"working" against stale code — so after the update, check each old-side
+inventory entry against the tree and clean up the ones still present:
 
 ```bash
 # -r: recurse — shipped subtrees (scripts/foreman/…) hide renames from a
