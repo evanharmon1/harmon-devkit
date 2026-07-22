@@ -748,6 +748,19 @@ if [ -f "$ruleset_file" ]; then
     # result-gated — it needs `needs:` and must inspect `needs.<leaf>.result`
     # (or run the trusted-results helper). A job that exists but just echoes
     # success would launder a failing leaf into a green required check.
+    workflow_reports_on_protected_events() {
+        awk '
+            BEGIN { in_on = 0; found = 0 }
+            /^on:/ {
+                in_on = 1
+                if (index($0, "pull_request") || index($0, "merge_group")) found = 1
+                next
+            }
+            in_on && /^[A-Za-z_-]+:/ { in_on = 0 }
+            in_on && /pull_request|merge_group/ { found = 1 }
+            END { exit(found ? 0 : 1) }
+        ' "$1"
+    }
     ruleset_job_is_result_gated() {
         local context="$1" workflow_file
         for workflow_file in .github/workflows/*.y*ml; do
@@ -807,9 +820,21 @@ if [ -f "$ruleset_file" ]; then
         case "$ruleset_context" in
         verify | security) continue ;;
         esac
-        if ! grep -qE "^  ${ruleset_context}:[ ]*(#.*)?$" \
-            .github/workflows/*.y*ml 2>/dev/null; then
+        context_defined=false
+        context_reports=false
+        for workflow_file in .github/workflows/*.y*ml; do
+            [ -f "$workflow_file" ] || continue
+            grep -qE "^  ${ruleset_context}:[ ]*(#.*)?$" "$workflow_file" || continue
+            context_defined=true
+            if workflow_reports_on_protected_events "$workflow_file"; then
+                context_reports=true
+                break
+            fi
+        done
+        if [ "$context_defined" = false ]; then
             err "$ruleset_file requires check '$ruleset_context' but no workflow defines that job — it would never report and wedge every PR"
+        elif [ "$context_reports" = false ]; then
+            err "$ruleset_file requires check '$ruleset_context' but its workflow never triggers on pull_request/merge_group — it would never report and wedge every protected merge"
         fi
     done <<<"$ruleset_contexts"
 fi

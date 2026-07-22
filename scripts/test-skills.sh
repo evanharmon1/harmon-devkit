@@ -1187,7 +1187,9 @@ write_terraform_build_workflow() {
     fi
     cat >"$TF_TARGET/.github/workflows/build.yml" <<EOF
 name: Build
-on: workflow_dispatch
+on:
+  pull_request:
+  merge_group:
 jobs:
   lint:
     if: >-
@@ -1285,7 +1287,9 @@ write_terraform_build_workflow
 # a required check no workflow reports would wedge every PR.
 cat >"$TF_TARGET/.github/workflows/terraform.yml" <<'EOF'
 name: Terraform
-on: workflow_dispatch
+on:
+  pull_request:
+  merge_group:
 jobs:
   terraform-verify:
     runs-on: ubuntu-latest
@@ -1343,7 +1347,9 @@ write_terraform_lock_regression
 write_split_terraform_workflows() {
     cat >"$TF_TARGET/.github/workflows/build.yml" <<EOF
 name: Build
-on: workflow_dispatch
+on:
+  pull_request:
+  merge_group:
 jobs:
   build-homepage:
     if: >-
@@ -1379,7 +1385,9 @@ jobs:
 EOF
     cat >"$TF_TARGET/.github/workflows/validate.yml" <<'EOF'
 name: Validate
-on: workflow_dispatch
+on:
+  pull_request:
+  merge_group:
 jobs:
   lint:
     if: >-
@@ -1396,13 +1404,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - env:
+          IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
           LINT_RESULT: ${{ needs.lint.result }}
         run: |
-          [ "$LINT_RESULT" = "success" ] || [ "$LINT_RESULT" = "skipped" ] || exit 1
+          case "$IS_FORK" in
+            true) expected=skipped ;;
+            false) expected=success ;;
+            *) exit 1 ;;
+          esac
+          [ "$LINT_RESULT" = "$expected" ] || exit 1
 EOF
     cat >"$TF_TARGET/.github/workflows/security.yml" <<'EOF'
 name: Security
-on: workflow_dispatch
+on:
+  pull_request:
+  merge_group:
 jobs:
   secrets:
     runs-on: ubuntu-latest
@@ -1424,7 +1440,9 @@ EOF
 write_ungated_security_workflow() {
     cat >"$TF_TARGET/.github/workflows/security.yml" <<'EOF'
 name: Security
-on: workflow_dispatch
+on:
+  pull_request:
+  merge_group:
 jobs:
   security-verify:
     runs-on: ubuntu-latest
@@ -1444,6 +1462,28 @@ write_ungated_security_workflow
 expect_fail "verify-applied rejects an echo-only substitute rollup" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
 write_split_terraform_workflows
+cat >"$TF_TARGET/.github/workflows/terraform.yml" <<'EOF'
+name: Terraform
+on: workflow_dispatch
+jobs:
+  terraform-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo terraform-verify
+EOF
+expect_fail "verify-applied rejects a required check whose workflow never runs on protected events" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+cat >"$TF_TARGET/.github/workflows/terraform.yml" <<'EOF'
+name: Terraform
+on:
+  pull_request:
+  merge_group:
+jobs:
+  terraform-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo terraform-verify
+EOF
 
 manifest="$STANDARDIZE_ASSETS/template-owned-files.txt"
 for required in \
