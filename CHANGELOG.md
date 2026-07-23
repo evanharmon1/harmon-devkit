@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.8.5](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.4...v0.8.5) (2026-07-23)
+
+
+### Bug Fixes
+
+* update to harmon-init v4.4.0 ([#125](https://github.com/evanharmon1/harmon-devkit/issues/125)) ([792e1a9](https://github.com/evanharmon1/harmon-devkit/commit/792e1a9240fa1836f6c555234f4e8419e3b5f0f9))
+
 ## [0.8.4](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.3...v0.8.4) (2026-07-22)
 
 
