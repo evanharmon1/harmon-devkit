@@ -29,7 +29,7 @@ fi
 echo "==> bootstrap is a no-op when Homebrew is already installed"
 # Run against STUBS, never the real toolchain. `test:tasks` is part of `verify`,
 # and in a generated use_node repo `bootstrap` runs `brew install node` plus
-# `npm install -g pnpm` — so invoking it for real made running the tests mutate
+# the pnpm bootstrap helper — so invoking it for real made running the tests mutate
 # the developer's machine, and CI too (GitHub's ubuntu images carry linuxbrew on
 # PATH). A test must not install a global toolchain as a side effect.
 #
@@ -37,11 +37,26 @@ echo "==> bootstrap is a no-op when Homebrew is already installed"
 # runs everywhere instead of silently doing nothing on most CI runners.
 bootstrap_bin="${test_tmp}/bootstrap-bin"
 installer_marker="${test_tmp}/homebrew-installer-fetched"
+brew_prefix="${test_tmp}/homebrew"
+pnpm_prefix="${brew_prefix}/opt/pnpm"
 mkdir -p "$bootstrap_bin"
-for stub in brew npm node pnpm; do
+for stub in npm node pnpm; do
     printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"${bootstrap_bin}/${stub}"
     chmod +x "${bootstrap_bin}/${stub}"
 done
+mkdir -p "${brew_prefix}/bin" "${pnpm_prefix}/bin"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"${pnpm_prefix}/bin/pnpm"
+chmod +x "${pnpm_prefix}/bin/pnpm"
+ln -s "${pnpm_prefix}/bin/pnpm" "${brew_prefix}/bin/pnpm"
+cat >"${bootstrap_bin}/brew" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+--prefix) printf '%s\\n' "${brew_prefix}" ;;
+"--prefix pnpm") printf '%s\\n' "${pnpm_prefix}" ;;
+esac
+exit 0
+EOF
+chmod +x "${bootstrap_bin}/brew"
 # Fake curl records any attempt to fetch the Homebrew installer, so we can prove
 # the `command -v brew` guard short-circuited instead of re-running setup.
 cat >"${bootstrap_bin}/curl" <<EOF
@@ -60,6 +75,76 @@ if ! PATH="${bootstrap_bin}:${PATH}" task bootstrap >/dev/null 2>&1; then
 fi
 if [ -f "$installer_marker" ]; then
     fail "task bootstrap fetched the Homebrew installer despite brew being on PATH"
+fi
+
+if [ -x scripts/bootstrap-pnpm.sh ]; then
+    echo "==> pnpm bootstrap migrates legacy npm-global ownership to Homebrew"
+    pnpm_test_bin="${test_tmp}/pnpm-test-bin"
+    pnpm_brew_prefix="${test_tmp}/pnpm-homebrew"
+    pnpm_cellar="${pnpm_brew_prefix}/Cellar/pnpm/11.0.0"
+    pnpm_opt="${pnpm_brew_prefix}/opt/pnpm"
+    pnpm_legacy="${pnpm_brew_prefix}/lib/node_modules/pnpm"
+    pnpm_uninstall_marker="${test_tmp}/pnpm-uninstalled"
+    pnpm_install_entry_marker="${test_tmp}/pnpm-install-entry"
+    mkdir -p "$pnpm_test_bin" "${pnpm_brew_prefix}/bin" "${pnpm_brew_prefix}/opt" "${pnpm_cellar}/bin" "$pnpm_legacy"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"${pnpm_cellar}/bin/pnpm"
+    chmod +x "${pnpm_cellar}/bin/pnpm"
+    ln -s "$pnpm_cellar" "$pnpm_opt"
+    ln -s "${pnpm_legacy}/bin/pnpm.cjs" "${pnpm_brew_prefix}/bin/pnpm"
+    cat >"${pnpm_test_bin}/brew" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+"install node") : >"${pnpm_install_entry_marker}" ;;
+"install pnpm") exit 1 ;;
+"list --formula pnpm") exit 0 ;;
+bundle\ --file=*)
+    case "\$(readlink "${pnpm_brew_prefix}/bin/pnpm")" in
+    "${pnpm_legacy}"/*) exit 1 ;;
+    esac
+    ;;
+--prefix) printf '%s\\n' "${pnpm_brew_prefix}" ;;
+"--prefix pnpm") printf '%s\\n' "${pnpm_opt}" ;;
+"unlink pnpm")
+    [ ! -L "${pnpm_brew_prefix}/bin/pnpm" ] || unlink "${pnpm_brew_prefix}/bin/pnpm"
+    ;;
+"link --overwrite pnpm")
+    ln -s "${pnpm_cellar}/bin/pnpm" "${pnpm_brew_prefix}/bin/pnpm"
+    ;;
+*) exit 1 ;;
+esac
+EOF
+    chmod +x "${pnpm_test_bin}/brew"
+    cat >"${pnpm_test_bin}/npm" <<EOF
+#!/usr/bin/env bash
+[ "\$*" = "uninstall --global --prefix ${pnpm_brew_prefix} pnpm" ] || exit 1
+rmdir "${pnpm_legacy}"
+: >"${pnpm_uninstall_marker}"
+EOF
+    chmod +x "${pnpm_test_bin}/npm"
+    for stub in pnpm lefthook uv; do
+        printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"${pnpm_test_bin}/${stub}"
+        chmod +x "${pnpm_test_bin}/${stub}"
+    done
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 127' >"${pnpm_test_bin}/realpath"
+    chmod +x "${pnpm_test_bin}/realpath"
+    PATH="${pnpm_test_bin}:${PATH}" ./scripts/bootstrap-pnpm.sh >/dev/null
+    [ -f "$pnpm_uninstall_marker" ] ||
+        fail "pnpm bootstrap did not retire the Homebrew-prefix npm package"
+    [ "$(readlink "${pnpm_brew_prefix}/bin/pnpm")" = "${pnpm_cellar}/bin/pnpm" ] ||
+        fail "pnpm bootstrap did not transfer executable ownership to Homebrew"
+    if [ "$(grep -c -- './scripts/bootstrap-pnpm.sh' Taskfile.yml)" -ge 2 ]; then
+        unlink "$pnpm_install_entry_marker"
+        unlink "${pnpm_brew_prefix}/bin/pnpm"
+        mkdir -p "$pnpm_legacy"
+        ln -s "${pnpm_legacy}/bin/pnpm.cjs" "${pnpm_brew_prefix}/bin/pnpm"
+        PATH="${pnpm_test_bin}:${PATH}" task install >/dev/null
+        [ -f "$pnpm_install_entry_marker" ] ||
+            fail "task install did not invoke the pnpm ownership migration"
+    fi
+fi
+
+if [ -n "${HARMON_TEST_PNPM_BOOTSTRAP_ONLY:-}" ]; then
+    exit 0
 fi
 
 echo "==> Semgrep wrapper preserves explicit scan targets"
@@ -81,11 +166,14 @@ fi
 
 echo "==> shell formatter preserves tracked paths and failures"
 format_repo="${test_tmp}/format-repo"
-# A plain whitespace path (no jinja-name segment like harmon-init's template/
-# fixture): shell-quality.sh has no template/ exclusion to exercise, and a
-# literal [% ... %] here would false-trip the standardize-repo skill's
-# unrendered-marker scan.
-format_path="${format_repo}/nested dir/script with spaces.sh"
+# Assemble the jinja-style segment so this file never contains a literal
+# copier marker: the standardize-repo skill's unrendered-marker scan
+# (verify-applied.sh) would otherwise flag scripts/test-tasks.sh in every
+# generated repo. The RUNTIME path still opens a real block marker ("[%"
+# followed by " if ... %]") plus whitespace — the case the repo's shell
+# formatter helper must survive.
+jinja_open='[%'
+format_path="${format_repo}/template/${jinja_open} if sample %]/script with spaces.sh"
 mkdir -p "$(dirname "$format_path")"
 git -C "$format_repo" init -q
 printf '%s\n' '#!/usr/bin/env bash' 'if true;then' 'echo ok' 'fi' >"$format_path"
