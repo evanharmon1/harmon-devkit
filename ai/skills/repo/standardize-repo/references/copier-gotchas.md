@@ -22,11 +22,11 @@ state with zero warning.
 the **latest git tag**, not your working tree. All uncommitted AND committed-but-
 untagged work is silently ignored.
 
-**Rule:** Production scaffolds use the canonical URL and a released ref, for
-example `copier copy --trust --vcs-ref=v3.26.1
-https://github.com/evanharmon1/harmon-init.git <dest>`. Pass `--vcs-ref=HEAD`
-only when rendering from a local checkout into a disposable preview/test. With
-it, copier auto-includes dirty **and** untracked changes via a
+**Rule:** Production scaffolds use the canonical URL and the remote-verified
+`HARMON_INIT_REF` flow in `mode-new-repo.md`; pass that exact ref with
+`--vcs-ref="$HARMON_INIT_REF"`. Pass `--vcs-ref=HEAD` only when rendering from a
+local checkout into a disposable preview/test. With it, copier auto-includes
+dirty **and** untracked changes via a
 throwaway `wip` commit in a temporary clone (you'll see a `DirtyLocalWarning`). Your
 real working tree is never touched. `scripts/test-template.sh` always passes
 `--vcs-ref=HEAD` — mirror that for any manual render of work-in-progress.

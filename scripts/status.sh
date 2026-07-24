@@ -646,7 +646,8 @@ if [[ "${SECTION}" == "setup" ]]; then
                         checkline unknown "CodeRabbit app" "config present; install unconfirmed"
                     fi
                 else
-                    checkline na "CodeRabbit app" "no .coderabbit.yaml"
+                    checkline unknown "CodeRabbit app access" \
+                        "no config; confirm repo is excluded from the App installation"
                 fi
                 if jq -e '.data.repository' "${d}/projects.json" >/dev/null 2>&1; then
                     proj_count="$(jq -r '(.data.repository.projectsV2.nodes // []) | length' \

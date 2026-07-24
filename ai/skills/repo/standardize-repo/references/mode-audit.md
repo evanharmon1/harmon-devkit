@@ -38,11 +38,12 @@ TEMPLATE=~/git/harmon-init           # source of truth
      canonical remote (a real finding — see
      [copier-gotchas.md](./copier-gotchas.md) gotcha 8 / [mode-update.md](./mode-update.md) §2).
    - Absent → it was never templated (or was adopted by a raw `copier copy`).
-     Reconciling the templated bits means a fresh adopt:
-     `copier copy --trust --vcs-ref=v3.26.1
-     https://github.com/evanharmon1/harmon-init.git .` (substitute the reviewed
-     current release; see §4). Treat
-     every catalog area as hand-verifiable rather than diff-against-answers.
+     Reconciling the templated bits means a fresh adopt, but only from a released
+     harmon-init tag whose `copier.yml` defines `use_coderabbit`. Use the
+     `HARMON_INIT_REF` guard and explicit answer in
+     [mode-adopt-existing.md](./mode-adopt-existing.md), Path B; older releases
+     render CodeRabbit unconditionally. Treat every catalog area as
+     hand-verifiable rather than diff-against-answers.
 
 2. **Walk each catalog area against the target.** For every area in
    `standards-catalog.md`, do the three-way check:
@@ -197,7 +198,7 @@ the devcontainer job and align CI job names to the rendered required-check set.
 Severity: **blocker** (wrong contexts mean the gate is unenforced or unsatisfiable).
 
 **E. YAML file extensions — NOT drift; do not flag.** `.yml` vs `.yaml` is left
-to each tool's own convention (`Taskfile.yml`, `.coderabbit.yaml`, GitHub Actions
+to each tool's own convention (`Taskfile.yml`, `.yamllint.yml`; GitHub Actions
 accepts either). Never rename a tool's file to homogenize extensions across the
 repo. Severity: **none** (listed only so audits don't wrongly raise it).
 
@@ -237,6 +238,18 @@ protection. Flag an Actions `SNYK_TOKEN` when no scheduled or deliberately paid
 Snyk workflow consumes it, and flag legacy Snyk PR/push jobs as policy drift.
 Severity: **should** (blocker if an unintended required check makes PRs
 unsatisfiable).
+
+**G3. CodeRabbit selection drift.** Read `use_coderabbit` from
+`.copier-answers.yml`; for legacy answers that omit it, apply the current
+fleet default of `false` unless the maintainer explicitly reviews and retains
+the integration. When true, `.coderabbit.yaml`, the conditional setup
+instructions, and `coderabbitai[bot]` trust must all be present. When false,
+all three must be absent. Also require a human-verifiable checklist item to
+remove the repository from the CodeRabbit GitHub App installation: repository
+files cannot prove or revoke external App access, so record that live access
+check as `?` until a human confirms it. Stale local config/trust is a
+**should** finding; an omitted App-access confirmation is a **should** manual
+finding.
 
 **H. lint-hygiene script portability to macOS bash 3.2.** `scripts/lint-hygiene.sh`
 must be portable: **no `mapfile`, no `grep -P`** (both Linux/bash-4-only), and it
@@ -480,22 +493,19 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
      rather than hand-porting:
      - Generated from the template (has `.copier-answers.yml`):
 
-       ```bash
-       ( cd "$TARGET" && copier update --trust )
-       ```
+       Follow [`mode-update.md`](./mode-update.md) end to end so the release and
+       explicit CodeRabbit choice are identical in preview and apply.
 
      - Never templated / adopting fresh:
 
-       ```bash
-       ( cd "$TARGET" && copier copy --trust --vcs-ref=v3.26.1 \
-           https://github.com/evanharmon1/harmon-init.git . )
-       ```
+       Follow Path B in
+       [`mode-adopt-existing.md`](./mode-adopt-existing.md), including its
+       remote-tag validation and explicit `use_coderabbit` answer.
 
-     Replace `v3.26.1` only with a deliberately selected newer release. A local
-     `--vcs-ref=HEAD` render is appropriate for a disposable pre-release preview,
-     not the production adoption, because dirty work can record an unreachable
-     throwaway commit. Answer the questions to match the repo, and keep all
-     side-effectful answers
+     A local `--vcs-ref=HEAD` render is appropriate for a disposable pre-release
+     preview, not the production adoption, because dirty work can record an
+     unreachable throwaway commit. Answer the questions to match the repo, and
+     keep all side-effectful answers
      (`github_remote_create`, `github_release_init`, `bunch_add`,
      `obsidian_project_add`, `run_task_install`) at their **no** defaults so the
      adopt has no side effects. Review the resulting diff carefully and discard

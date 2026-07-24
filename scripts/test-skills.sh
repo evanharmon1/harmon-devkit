@@ -437,12 +437,51 @@ expect_ok "new-repo guidance exposes the explicit CodeQL answer" \
 expect_ok "new-repo guidance exposes the explicit CodeQL language matrix" \
     grep -qF '| `codeql_languages` | multiselect |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo guidance exposes CodeRabbit as default off" \
+    grep -qF '| `use_coderabbit` | bool | `false` |' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "update guidance preserves the reviewed CodeRabbit answer" \
+    test "$(grep -Fc -- '--data use_coderabbit="$USE_CODERABBIT"' \
+        "$STANDARDIZE_REFS/mode-update.md")" -ge 2
+expect_ok "production guidance requires an exact remote tag on origin/main" \
+    grep -qF 'HARMON_INIT_REF must exactly match a release tag on origin/main' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "production guidance verifies the selected tag with origin" \
+    grep -qF 'ls-remote --exit-code origin' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "production guidance aborts when the origin refresh fails" \
+    grep -qF 'failed to refresh harmon-init from origin' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "update guidance refreshes the origin/main tracking ref explicitly" \
+    grep -qF '+refs/heads/main:refs/remotes/origin/main' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "post-generation guidance requires Renovate Scan and Alert mode" \
+    grep -qF '**Scan and Alert** mode' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "post-generation guidance requires external CodeRabbit access removal" \
+    grep -qF 'deleting the config alone does not revoke App' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "audit guidance reconciles CodeRabbit answers and external access" \
+    grep -qF '**G3. CodeRabbit selection drift.**' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "update guidance gates on a release supporting CodeRabbit selection" \
+    grep -qF "grep -q '^use_coderabbit:'" \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "status setup keeps CodeRabbit access removal human-visible" \
+    grep -qF 'checkline unknown "CodeRabbit app access"' \
+    "$repo/scripts/status.sh"
 expect_ok "production scaffolding uses the canonical released template" \
     grep -qF 'https://github.com/evanharmon1/harmon-init.git <dest>' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "production scaffolding pins a released ref" \
-    grep -qF -- '--trust --vcs-ref=v3.26.1' \
+    grep -qF -- '--trust --vcs-ref="$HARMON_INIT_REF"' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "update preview and apply pin the same reviewed release" \
+    test "$(grep -Fc -- '--vcs-ref="$HARMON_INIT_REF"' \
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+expect_fail "production command examples do not pin an obsolete release" \
+    grep -REq 'copier (copy|update).*(v3\.26\.1|v4\.4\.0)|--vcs-ref=(v3\.26\.1|v4\.4\.0)' \
+    "$STANDARDIZE_SKILL" "$STANDARDIZE_REFS"
 expect_ok "new-repo guidance forbids path-only lineage repair" \
     grep -qF 'do not rewrite only `_src_path`' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
