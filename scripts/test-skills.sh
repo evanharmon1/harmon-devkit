@@ -1578,9 +1578,9 @@ for required in \
     expect_ok "template-owned manifest includes $required" grep -qxF "$required" "$manifest"
 done
 
-# Exercise executable-mode drift, equivalent mature layouts, and index-backed
-# transient deletions end to end with a tiny local Copier template. The real
-# manifest is reused, but only scripts/status.sh exists in its curated set.
+# Exercise executable-mode drift, equivalent mature layouts, legacy CodeRabbit
+# opt-out handling, and index-backed transient deletions end to end with a tiny
+# local Copier template. The real manifest is reused.
 DT_TEMPLATE="$TMPROOT/diff-template-source"
 mkdir -p \
     "$DT_TEMPLATE/template/scripts" \
@@ -1597,6 +1597,7 @@ cat >"$DT_TEMPLATE/template/scripts/status.sh" <<'EOF'
 #!/usr/bin/env bash
 echo status
 EOF
+printf '%s\n' 'reviews:' '  profile: chill' >"$DT_TEMPLATE/template/.coderabbit.yaml"
 chmod +x "$DT_TEMPLATE/template/scripts/status.sh"
 for terraform_file in main.tf variables.tf outputs.tf; do
     printf '%s\n' '# starter' >"$DT_TEMPLATE/template/terraform/$terraform_file"
@@ -1651,6 +1652,12 @@ if printf '%s\n' "$equivalent_out" |
     ok "diff-template recognizes a renumbered seed ADR as equivalent"
 else
     bad "diff-template recognizes a renumbered seed ADR as equivalent"
+fi
+if printf '%s\n' "$equivalent_out" |
+    grep -qF "ABSENT   .coderabbit.yaml  (CodeRabbit disabled — expected)"; then
+    ok "diff-template accepts legacy CodeRabbit opt-out as intentional absence"
+else
+    bad "diff-template accepts legacy CodeRabbit opt-out as intentional absence"
 fi
 
 rm "$DT_TARGET/scripts/status.sh"
