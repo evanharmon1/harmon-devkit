@@ -178,20 +178,34 @@ Preview the exact answer set before the real update:
 
 ```bash
 : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
+: "${CODEQL_LANGUAGES:=$(yq -o=json -I=0 '.codeql_languages // []' .copier-answers.yml)}"
 : "${USE_FOREMAN:=$(yq -r '.use_foreman // false' .copier-answers.yml)}"
 : "${USE_CODERABBIT:=false}" # set true only for a deliberately retained opt-in
 case "$USE_FOREMAN" in true | false) ;; *) echo "USE_FOREMAN must be true or false" >&2; exit 1 ;; esac
 case "$USE_CODERABBIT" in true | false) ;; *) echo "USE_CODERABBIT must be true or false" >&2; exit 1 ;; esac
+if [ "$USE_CODEQL" = "false" ]; then
+  CODEQL_LANGUAGES='[]'
+elif [ "$USE_CODEQL" != "true" ] ||
+  ! printf '%s\n' "$CODEQL_LANGUAGES" |
+    yq -e '(tag == "!!seq") and (length > 0) and
+      ([.[] | select(. != "javascript-typescript" and . != "python")] | length == 0)' - >/dev/null; then
+  echo "CODEQL_LANGUAGES must be a nonempty YAML list of supported first-party languages" >&2
+  exit 1
+fi
 copier update --trust --defaults --pretend \
   --vcs-ref="$HARMON_INIT_COMMIT" \
   --data use_foreman="$USE_FOREMAN" \
   --data use_coderabbit="$USE_CODERABBIT" \
-  --data use_codeql="$USE_CODEQL"
+  --data use_codeql="$USE_CODEQL" \
+  --data codeql_languages="$CODEQL_LANGUAGES"
 ```
 
 The existing Foreman answer is the starting point, not an instruction to retain
 it blindly. Review that substantial per-repo choice and override `USE_FOREMAN`
-deliberately when the repository should change posture.
+deliberately when the repository should change posture. `CODEQL_LANGUAGES` is a
+serialized YAML list such as `["javascript-typescript","python"]`; the existing
+matrix is only a starting point and must be reviewed against actual first-party
+source. Disabling CodeQL records an empty matrix.
 
 `--pretend` confirms rendering succeeds but its output can be terse. For a heavily
 customized or high-impact repo, make a disposable clone under a temporary directory,
@@ -222,7 +236,8 @@ copier update --trust --defaults \
   --vcs-ref="$HARMON_INIT_COMMIT" \
   --data use_foreman="$USE_FOREMAN" \
   --data use_coderabbit="$USE_CODERABBIT" \
-  --data use_codeql="$USE_CODEQL"
+  --data use_codeql="$USE_CODEQL" \
+  --data codeql_languages="$CODEQL_LANGUAGES"
 ```
 
 Use the same reviewed variables and answers in the preview and real invocation;

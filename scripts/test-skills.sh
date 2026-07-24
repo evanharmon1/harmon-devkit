@@ -443,6 +443,12 @@ expect_ok "new-repo guidance exposes CodeRabbit as default off" \
 expect_ok "update guidance preserves the reviewed CodeRabbit answer" \
     test "$(grep -Fc -- '--data use_coderabbit="$USE_CODERABBIT"' \
         "$STANDARDIZE_REFS/mode-update.md")" -ge 2
+expect_ok "update guidance preserves the reviewed CodeQL language matrix" \
+    test "$(grep -Fc -- '--data codeql_languages="$CODEQL_LANGUAGES"' \
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+expect_ok "update guidance rejects an empty enabled CodeQL matrix" \
+    grep -qF 'CODEQL_LANGUAGES must be a nonempty YAML list' \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance preserves the reviewed Foreman answer" \
     test "$(grep -Fc -- '--data use_foreman="$USE_FOREMAN"' \
         "$STANDARDIZE_REFS/mode-update.md")" -eq 2
