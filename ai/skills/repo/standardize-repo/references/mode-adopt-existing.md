@@ -152,11 +152,12 @@ test -n "$REMOTE_TAG_OBJECT" &&
   test "$(git -C ~/git/harmon-init rev-parse "refs/tags/$HARMON_INIT_REF")" = "$REMOTE_TAG_OBJECT" &&
   git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
   { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
-git -C ~/git/harmon-init show "$HARMON_INIT_REF":copier.yml |
+HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{commit}")"
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
 copier copy --trust "$HARMON_INIT_SOURCE" . \
-  --vcs-ref="$HARMON_INIT_REF" --defaults --overwrite \
+  --vcs-ref="$HARMON_INIT_COMMIT" --defaults --overwrite \
   --data project_type="$PROJECT_TYPE" \
   --data project_name="<Formal Project Name>" \
   --data project_slug="$(basename "$(pwd)")" \
@@ -178,7 +179,9 @@ exists, the guard above intentionally blocks adoption. Older releases (including
 v4.4.0 and v3.26.1) render CodeRabbit unconditionally. Local `--vcs-ref=HEAD`
 adoption is for a disposable preview only, never the production apply: dirty
 local renders can record a throwaway `_commit` that no later remote update can
-resolve.
+resolve. Production adoption passes the peeled `HARMON_INIT_COMMIT` derived from
+the remote-verified tag, preventing a retag between validation and Copier's
+trusted template checkout from changing which tasks execute.
 
 Set `USE_CODEQL` and `CODEQL_LANGUAGES` deliberately before rendering. Use
 `true` only when supported first-party JS/TS or Python source is present and Code

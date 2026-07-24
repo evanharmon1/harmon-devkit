@@ -50,16 +50,19 @@ test -n "$REMOTE_TAG_OBJECT" &&
   test "$(git -C ~/git/harmon-init rev-parse "refs/tags/$HARMON_INIT_REF")" = "$REMOTE_TAG_OBJECT" &&
   git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
   { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
-git -C ~/git/harmon-init show "$HARMON_INIT_REF":copier.yml |
+HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{commit}")"
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
 copier copy "$HARMON_INIT_SOURCE" <dest> \
-  --trust --vcs-ref="$HARMON_INIT_REF"
+  --trust --vcs-ref="$HARMON_INIT_COMMIT"
 ```
 
 Choose `use_coderabbit=false` at the prompt unless this repository is
 deliberately retaining the CodeRabbit App. Do not use a moving branch for
-production lineage.
+production lineage. The guard resolves the remote-verified release tag to
+`HARMON_INIT_COMMIT` before Copier runs, so a later retag cannot change which
+trusted template tasks execute.
 For an unreleased template preview only, a developer may render a local checkout
 with `--vcs-ref=HEAD` into a disposable destination. That preview can contain a
 Copier-created throwaway commit and must not be promoted as a production scaffold.
@@ -89,11 +92,12 @@ test -n "$REMOTE_TAG_OBJECT" &&
   test "$(git -C ~/git/harmon-init rev-parse "refs/tags/$HARMON_INIT_REF")" = "$REMOTE_TAG_OBJECT" &&
   git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
   { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
-git -C ~/git/harmon-init show "$HARMON_INIT_REF":copier.yml |
+HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{commit}")"
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
 copier copy "$HARMON_INIT_SOURCE" <dest> \
-  --trust --vcs-ref="$HARMON_INIT_REF" --defaults \
+  --trust --vcs-ref="$HARMON_INIT_COMMIT" --defaults \
   --data project_name="My Project" \
   --data project_slug="my-project" \
   --data project_description="One-line description of the project" \

@@ -480,6 +480,12 @@ done
 expect_ok "production guidance aborts when the origin refresh fails" \
     grep -qF 'failed to refresh harmon-init from origin' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo guidance freezes each verified release tag to its commit" \
+    test "$(grep -Fc 'HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse' \
+        "$STANDARDIZE_REFS/mode-new-repo.md")" -eq 2
+expect_ok "adopt guidance freezes the verified release tag to its commit" \
+    grep -qF 'HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse' \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
 expect_ok "update guidance refreshes the origin/main tracking ref explicitly" \
     grep -qF '+refs/heads/main:refs/remotes/origin/main' \
     "$STANDARDIZE_REFS/mode-update.md"
@@ -504,9 +510,17 @@ expect_ok "update guidance gates on a release supporting CodeRabbit selection" \
 expect_ok "status setup keeps CodeRabbit access removal human-visible" \
     grep -qF 'checkline unknown "CodeRabbit app access"' \
     "$repo/scripts/status.sh"
-expect_ok "production scaffolding pins a released ref" \
-    grep -qF -- '--trust --vcs-ref="$HARMON_INIT_REF"' \
-    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo production scaffolding pins the immutable verified commit" \
+    test "$(grep -Fc -- '--trust --vcs-ref="$HARMON_INIT_COMMIT"' \
+        "$STANDARDIZE_REFS/mode-new-repo.md")" -eq 2
+expect_ok "adopt production scaffolding pins the immutable verified commit" \
+    grep -qF -- '--vcs-ref="$HARMON_INIT_COMMIT"' \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
+expect_fail "production copy commands do not reuse the mutable release tag" \
+    grep -RF -- '--vcs-ref="$HARMON_INIT_REF"' \
+    "$STANDARDIZE_SKILL" \
+    "$STANDARDIZE_REFS/mode-new-repo.md" \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
 expect_ok "update preview and apply pin the same immutable release commit" \
     test "$(grep -Fc -- '--vcs-ref="$HARMON_INIT_COMMIT"' \
         "$STANDARDIZE_REFS/mode-update.md")" -eq 2

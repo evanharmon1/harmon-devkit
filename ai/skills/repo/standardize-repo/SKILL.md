@@ -62,9 +62,11 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
 
 - **Production scaffolds use the canonical GitHub URL at a remote-verified
   release ref.** Select `HARMON_INIT_REF`, verify that exact tag against
-  `origin`, and pass it to Copier using the guarded commands in the applicable
-  mode reference. This records durable lineage that another machine can
-  resolve. A local-path `--vcs-ref=HEAD` render is only for a disposable
+  `origin`, peel it once to `HARMON_INIT_COMMIT`, and pass that immutable commit
+  to Copier using the guarded commands in the applicable mode reference. This
+  records durable lineage that another machine can resolve without allowing a
+  retag between validation and trusted template execution. A local-path
+  `--vcs-ref=HEAD` render is only for a disposable
   preview/test of unreleased template work. Copier may represent dirty local work
   with a throwaway commit that does not exist on GitHub; never promote that render
   by rewriting only `_src_path`. The recorded `_src_path` and `_commit` are one
@@ -83,12 +85,12 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
 
   ```bash
   copier copy https://github.com/evanharmon1/harmon-init.git ./new-project \
-    --vcs-ref="$HARMON_INIT_REF" --trust \
+    --vcs-ref="$HARMON_INIT_COMMIT" --trust \
     --data project_name="My Project" --data project_type=general --defaults
   ```
 
-  This is only the command shape; run the release-tag validation in
-  `references/mode-new-repo.md` before executing it.
+  This is only the command shape; run the release-tag validation and derive
+  `HARMON_INIT_COMMIT` in `references/mode-new-repo.md` before executing it.
 
 - **Validate after every apply.** Re-running `copier` or changing answers can churn
   files — confirm the result with the verification step below before committing.
