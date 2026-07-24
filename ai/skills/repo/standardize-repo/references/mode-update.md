@@ -180,7 +180,7 @@ Preview the exact answer set before the real update:
 : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
 : "${CODEQL_LANGUAGES:=$(yq -o=json -I=0 '.codeql_languages // []' .copier-answers.yml)}"
 : "${USE_FOREMAN:=$(yq -r '.use_foreman // false' .copier-answers.yml)}"
-: "${USE_CODERABBIT:=false}" # set true only for a deliberately retained opt-in
+: "${USE_CODERABBIT:=$(yq -r '.use_coderabbit // false' .copier-answers.yml)}"
 case "$USE_FOREMAN" in true | false) ;; *) echo "USE_FOREMAN must be true or false" >&2; exit 1 ;; esac
 case "$USE_CODERABBIT" in true | false) ;; *) echo "USE_CODERABBIT must be true or false" >&2; exit 1 ;; esac
 if [ "$USE_CODEQL" = "false" ]; then
@@ -202,10 +202,13 @@ copier update --trust --defaults --pretend \
 
 The existing Foreman answer is the starting point, not an instruction to retain
 it blindly. Review that substantial per-repo choice and override `USE_FOREMAN`
-deliberately when the repository should change posture. `CODEQL_LANGUAGES` is a
-serialized YAML list such as `["javascript-typescript","python"]`; the existing
-matrix is only a starting point and must be reviewed against actual first-party
-source. Disabling CodeQL records an empty matrix.
+deliberately when the repository should change posture. The existing CodeRabbit
+answer is handled the same way; legacy omission starts at the fleet's `false`
+default, while an explicit opt-in stays true unless the maintainer deliberately
+opts out. `CODEQL_LANGUAGES` is a serialized YAML list such as
+`["javascript-typescript","python"]`; the existing matrix is only a starting
+point and must be reviewed against actual first-party source. Disabling CodeQL
+records an empty matrix.
 
 `--pretend` confirms rendering succeeds but its output can be terse. For a heavily
 customized or high-impact repo, make a disposable clone under a temporary directory,

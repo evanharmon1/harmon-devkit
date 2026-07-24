@@ -443,6 +443,9 @@ expect_ok "new-repo guidance exposes CodeRabbit as default off" \
 expect_ok "update guidance preserves the reviewed CodeRabbit answer" \
     test "$(grep -Fc -- '--data use_coderabbit="$USE_CODERABBIT"' \
         "$STANDARDIZE_REFS/mode-update.md")" -ge 2
+expect_ok "update guidance starts from the recorded CodeRabbit answer" \
+    grep -qF ".use_coderabbit // false' .copier-answers.yml" \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance preserves the reviewed CodeQL language matrix" \
     test "$(grep -Fc -- '--data codeql_languages="$CODEQL_LANGUAGES"' \
         "$STANDARDIZE_REFS/mode-update.md")" -eq 2
