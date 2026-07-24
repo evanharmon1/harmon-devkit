@@ -113,6 +113,7 @@ config, toolchain, devcontainer, and dev environment — against the items below
 - [ ] Fill in the `TODO:` markers in README.md and docs/ (architecture diagram first)
 - [ ] Confirm README badges render (Actions URLs are correct once CI runs)
 - [ ] Initial release when ready: `task release:init` (v0.1.0) — releases stay manual
-- [ ] Stay current with harmon-init: periodically run `copier update --trust` to pull
-      template improvements (a three-way merge — your own edits are preserved). The
-      standardize-repo skill (`update` mode) automates this and verifies the result.
+- [ ] Stay current with harmon-init: periodically use the standardize-repo skill's
+      `update` mode to pull template improvements (a three-way merge — your own edits
+      are preserved). Follow its guarded source/ref/answer flow end to end; do not
+      substitute a bare `copier update --trust`.

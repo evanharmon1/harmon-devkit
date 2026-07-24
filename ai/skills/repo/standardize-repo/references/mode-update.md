@@ -82,11 +82,20 @@ questions added since the repo's recorded `_commit`:
 
 ```bash
 : "${HARMON_INIT_REF:?set to the deliberately selected latest harmon-init release tag}"
-git -C ~/git/harmon-init fetch origin \
+HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
+RECORDED_SOURCE="$(yq -r '._src_path // ""' .copier-answers.yml)"
+case "$RECORDED_SOURCE" in
+"$HARMON_INIT_SOURCE" | "$HARMON_INIT_SOURCE.git") ;;
+*)
+  echo "_src_path must be the canonical harmon-init URL before update" >&2
+  exit 1
+  ;;
+esac
+git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
   '+refs/heads/main:refs/remotes/origin/main' --tags ||
   { echo "failed to refresh harmon-init from origin" >&2; exit 1; }
 REMOTE_TAG_OBJECT="$(
-  git -C ~/git/harmon-init ls-remote --exit-code origin \
+  git -C ~/git/harmon-init ls-remote --exit-code "$HARMON_INIT_SOURCE" \
     "refs/tags/$HARMON_INIT_REF" |
     awk 'NR == 1 { print $1 }'
 )" ||
@@ -95,14 +104,19 @@ test -n "$REMOTE_TAG_OBJECT" &&
   test "$(git -C ~/git/harmon-init rev-parse "refs/tags/$HARMON_INIT_REF")" = "$REMOTE_TAG_OBJECT" &&
   git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
   { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
-git -C ~/git/harmon-init show "$HARMON_INIT_REF":copier.yml |
+HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{commit}")"
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "latest harmon-init release does not support the CodeRabbit choice" >&2; exit 1; }
 copier check-update --output-format json .
-git -C ~/git/harmon-init diff "$(yq -r '._commit' .copier-answers.yml)".."$HARMON_INIT_REF" -- copier.yml
+git -C ~/git/harmon-init diff \
+  "$(yq -r '._commit' .copier-answers.yml)".."$HARMON_INIT_COMMIT" -- copier.yml
 ```
 
-Stop before previewing or applying when that guard fails. The companion
+Stop before previewing or applying when that guard fails. Requiring the recorded
+source to be canonical binds Copier's actual update source to the remote that was
+validated. `HARMON_INIT_COMMIT` freezes the verified tag's peeled commit so a tag
+move between preview and apply cannot change what Copier renders. The companion
 harmon-init change must not be released until this skill is published and its
 new tag is pinned into harmon-init. After that pin refresh, release harmon-init;
 until then, older template releases render CodeRabbit unconditionally and cannot
@@ -164,14 +178,20 @@ Preview the exact answer set before the real update:
 
 ```bash
 : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
+: "${USE_FOREMAN:=$(yq -r '.use_foreman // false' .copier-answers.yml)}"
 : "${USE_CODERABBIT:=false}" # set true only for a deliberately retained opt-in
+case "$USE_FOREMAN" in true | false) ;; *) echo "USE_FOREMAN must be true or false" >&2; exit 1 ;; esac
 case "$USE_CODERABBIT" in true | false) ;; *) echo "USE_CODERABBIT must be true or false" >&2; exit 1 ;; esac
 copier update --trust --defaults --pretend \
-  --vcs-ref="$HARMON_INIT_REF" \
-  --data use_foreman=false \
+  --vcs-ref="$HARMON_INIT_COMMIT" \
+  --data use_foreman="$USE_FOREMAN" \
   --data use_coderabbit="$USE_CODERABBIT" \
   --data use_codeql="$USE_CODEQL"
 ```
+
+The existing Foreman answer is the starting point, not an instruction to retain
+it blindly. Review that substantial per-repo choice and override `USE_FOREMAN`
+deliberately when the repository should change posture.
 
 `--pretend` confirms rendering succeeds but its output can be terse. For a heavily
 customized or high-impact repo, make a disposable clone under a temporary directory,
@@ -199,8 +219,8 @@ commit; re-adopt from the canonical GitHub URL at a reviewed released ref.
 
 ```bash
 copier update --trust --defaults \
-  --vcs-ref="$HARMON_INIT_REF" \
-  --data use_foreman=false \
+  --vcs-ref="$HARMON_INIT_COMMIT" \
+  --data use_foreman="$USE_FOREMAN" \
   --data use_coderabbit="$USE_CODERABBIT" \
   --data use_codeql="$USE_CODEQL"
 ```
@@ -218,9 +238,10 @@ the template added since `_commit`; explicit `--data` values override those
 defaults and are recorded in `.copier-answers.yml`.
 
 **Always do a full update to the deliberately selected latest released
-version.** Pass the remote-verified `HARMON_INIT_REF` to both preview and apply;
-Copier then three-way-merges the *entire* delta from the repo's recorded
-`_commit` up to that tag, preserving local edits. Do not hand-pick which template
+version.** Derive `HARMON_INIT_COMMIT` once from the remote-verified
+`HARMON_INIT_REF`, then pass that immutable commit to both preview and apply.
+Copier three-way-merges the *entire* delta from the repo's recorded `_commit` up
+to that release commit, preserving local edits. Do not hand-pick which template
 changes to take—select the current release and reconcile the full result in §3.
 First-run `_tasks` are guarded on `_copier_operation == 'copy'`, so
 update will **not** make a scaffold commit, re-init git, or re-cut a release. Only

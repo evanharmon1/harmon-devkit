@@ -70,9 +70,10 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
   by rewriting only `_src_path`. The recorded `_src_path` and `_commit` are one
   lineage tuple: before changing a local path to the canonical URL, prove the
   recorded commit is reachable from that remote, or re-render/re-adopt from a
-  released remote ref. An update reuses the recorded source but must pass the
-  reviewed `HARMON_INIT_REF` so preview and apply cannot select different
-  releases. See `copier-gotchas.md` gotchas 1 and 8.
+  released remote ref. An update must reject a non-canonical recorded source and
+  pass the immutable commit derived from the remote-verified `HARMON_INIT_REF`
+  so preview and apply cannot select different releases. See
+  `copier-gotchas.md` gotchas 1 and 8.
 - **Side-effectful answers default to `no`** in `copier.yml` (`github_remote_create`,
   `github_release_init`, `bunch_add`, `obsidian_project_add`, `run_task_install`).
   Leave them off unless the user explicitly asks; only flip them on with confirmation.

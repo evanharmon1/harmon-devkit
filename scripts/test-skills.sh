@@ -443,6 +443,11 @@ expect_ok "new-repo guidance exposes CodeRabbit as default off" \
 expect_ok "update guidance preserves the reviewed CodeRabbit answer" \
     test "$(grep -Fc -- '--data use_coderabbit="$USE_CODERABBIT"' \
         "$STANDARDIZE_REFS/mode-update.md")" -ge 2
+expect_ok "update guidance preserves the reviewed Foreman answer" \
+    test "$(grep -Fc -- '--data use_foreman="$USE_FOREMAN"' \
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+expect_fail "update guidance never hard-codes Foreman off" \
+    grep -qF -- '--data use_foreman=false' "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "production guidance requires an exact remote tag on origin/main" \
     grep -qF 'HARMON_INIT_REF must exactly match a release tag on origin/main' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
@@ -454,6 +459,12 @@ expect_ok "production guidance aborts when the origin refresh fails" \
     "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "update guidance refreshes the origin/main tracking ref explicitly" \
     grep -qF '+refs/heads/main:refs/remotes/origin/main' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance requires the canonical recorded source" \
+    grep -qF '_src_path must be the canonical harmon-init URL before update' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance freezes the verified release commit" \
+    grep -qF 'HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse' \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "post-generation guidance requires Renovate Scan and Alert mode" \
     grep -qF '**Scan and Alert** mode' \
@@ -476,9 +487,11 @@ expect_ok "production scaffolding uses the canonical released template" \
 expect_ok "production scaffolding pins a released ref" \
     grep -qF -- '--trust --vcs-ref="$HARMON_INIT_REF"' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
-expect_ok "update preview and apply pin the same reviewed release" \
-    test "$(grep -Fc -- '--vcs-ref="$HARMON_INIT_REF"' \
+expect_ok "update preview and apply pin the same immutable release commit" \
+    test "$(grep -Fc -- '--vcs-ref="$HARMON_INIT_COMMIT"' \
         "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+expect_fail "update commands do not reuse the mutable release tag" \
+    grep -qF -- '--vcs-ref="$HARMON_INIT_REF"' "$STANDARDIZE_REFS/mode-update.md"
 expect_fail "production command examples do not pin an obsolete release" \
     grep -REq 'copier (copy|update).*(v3\.26\.1|v4\.4\.0)|--vcs-ref=(v3\.26\.1|v4\.4\.0)' \
     "$STANDARDIZE_SKILL" "$STANDARDIZE_REFS"
@@ -527,6 +540,8 @@ expect_ok "skill always refreshes enabled skills sync" \
 expect_ok "skill completion requires green CI and review adjudication" \
     grep -qF 'watch every required check to a terminal green result' \
     "$STANDARDIZE_SKILL"
+expect_fail "repository checklist has no bare Copier update path" \
+    grep -qE '`copier update --trust` to pull' "$repo/docs/CHECKLIST.md"
 expect_ok "catalog keeps fork aggregates from executing repository code" \
     grep -qF 'code on the aggregate runner' \
     "$STANDARDIZE_REFS/standards-catalog.md"
