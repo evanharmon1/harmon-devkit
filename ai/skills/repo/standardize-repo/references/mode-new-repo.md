@@ -36,11 +36,12 @@ commit, etc.) defined in `copier.yml`.
 
 ```bash
 : "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit}"
-git -C ~/git/harmon-init fetch origin \
+HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
+git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
   '+refs/heads/main:refs/remotes/origin/main' --tags ||
   { echo "failed to refresh harmon-init from origin" >&2; exit 1; }
 REMOTE_TAG_OBJECT="$(
-  git -C ~/git/harmon-init ls-remote --exit-code origin \
+  git -C ~/git/harmon-init ls-remote --exit-code "$HARMON_INIT_SOURCE" \
     "refs/tags/$HARMON_INIT_REF" |
     awk 'NR == 1 { print $1 }'
 )" ||
@@ -52,7 +53,7 @@ test -n "$REMOTE_TAG_OBJECT" &&
 git -C ~/git/harmon-init show "$HARMON_INIT_REF":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
-copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
+copier copy "$HARMON_INIT_SOURCE" <dest> \
   --trust --vcs-ref="$HARMON_INIT_REF"
 ```
 
@@ -74,11 +75,12 @@ to accept the default for any key you do not pass.
 
 ```bash
 : "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit}"
-git -C ~/git/harmon-init fetch origin \
+HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
+git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
   '+refs/heads/main:refs/remotes/origin/main' --tags ||
   { echo "failed to refresh harmon-init from origin" >&2; exit 1; }
 REMOTE_TAG_OBJECT="$(
-  git -C ~/git/harmon-init ls-remote --exit-code origin \
+  git -C ~/git/harmon-init ls-remote --exit-code "$HARMON_INIT_SOURCE" \
     "refs/tags/$HARMON_INIT_REF" |
     awk 'NR == 1 { print $1 }'
 )" ||
@@ -90,7 +92,7 @@ test -n "$REMOTE_TAG_OBJECT" &&
 git -C ~/git/harmon-init show "$HARMON_INIT_REF":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
-copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
+copier copy "$HARMON_INIT_SOURCE" <dest> \
   --trust --vcs-ref="$HARMON_INIT_REF" --defaults \
   --data project_name="My Project" \
   --data project_slug="my-project" \

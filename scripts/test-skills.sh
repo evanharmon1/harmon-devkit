@@ -457,9 +457,23 @@ expect_fail "update guidance never hard-codes Foreman off" \
 expect_ok "production guidance requires an exact remote tag on origin/main" \
     grep -qF 'HARMON_INIT_REF must exactly match a release tag on origin/main' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
-expect_ok "production guidance verifies the selected tag with origin" \
-    grep -qF 'ls-remote --exit-code origin' \
+expect_ok "production guidance verifies the selected tag with the Copier source" \
+    grep -qF 'ls-remote --exit-code "$HARMON_INIT_SOURCE"' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo production commands use the verified canonical source" \
+    test "$(grep -Fc 'copier copy "$HARMON_INIT_SOURCE" <dest>' \
+        "$STANDARDIZE_REFS/mode-new-repo.md")" -eq 2
+expect_ok "adopt guidance uses the verified canonical source" \
+    grep -qF 'copier copy --trust "$HARMON_INIT_SOURCE" .' \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
+for canonical_doc in \
+    "$STANDARDIZE_REFS/mode-new-repo.md" \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"; do
+    expect_ok "${canonical_doc##*/} verifies tags against the Copier source" \
+        grep -qF 'ls-remote --exit-code "$HARMON_INIT_SOURCE"' "$canonical_doc"
+    expect_fail "${canonical_doc##*/} does not validate a checkout-specific origin" \
+        grep -qF 'ls-remote --exit-code origin' "$canonical_doc"
+done
 expect_ok "production guidance aborts when the origin refresh fails" \
     grep -qF 'failed to refresh harmon-init from origin' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
@@ -487,9 +501,6 @@ expect_ok "update guidance gates on a release supporting CodeRabbit selection" \
 expect_ok "status setup keeps CodeRabbit access removal human-visible" \
     grep -qF 'checkline unknown "CodeRabbit app access"' \
     "$repo/scripts/status.sh"
-expect_ok "production scaffolding uses the canonical released template" \
-    grep -qF 'https://github.com/evanharmon1/harmon-init.git <dest>' \
-    "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "production scaffolding pins a released ref" \
     grep -qF -- '--trust --vcs-ref="$HARMON_INIT_REF"' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
