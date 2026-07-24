@@ -61,7 +61,7 @@ it points here.
 
 - **YAML:** 2-space indent, linted by yamllint. Use whichever extension
   (`.yml` or `.yaml`) each tool conventionally uses (e.g. `Taskfile.yml`,
-  `.coderabbit.yaml`) — don't normalize extensions repo-wide.
+  `.yamllint.yml`) — don't normalize extensions repo-wide.
 - **Markdown:** markdownlint — ATX headings, no duplicate headings, emphasis and
   strong markers consistent within a file; line-length and first-line-heading
   rules are off.

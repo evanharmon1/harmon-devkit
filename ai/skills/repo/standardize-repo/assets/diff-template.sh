@@ -93,6 +93,19 @@ index_root="$workdir/index-snapshot"
 datafile="$workdir/answers-data.yml"
 yq 'with_entries(select((.key | test("^_") | not) and (.value != null)))' "$answers" >"$datafile"
 
+# The fleet policy treats a legacy answer file that predates use_coderabbit as
+# opted out. Its recorded template baseline may still render .coderabbit.yaml
+# unconditionally, so apply that effective answer when interpreting drift
+# rather than telling an agent to restore the intentionally removed file.
+effective_use_coderabbit="$(yq -r '.use_coderabbit // false' "$answers" 2>/dev/null || echo false)"
+case "$effective_use_coderabbit" in
+true | false) ;;
+*)
+    echo "FAIL: use_coderabbit must be true or false in $answers" >&2
+    exit 2
+    ;;
+esac
+
 # Force every side-effect off in the throwaway render (`--data` wins over
 # `--data-file`).
 data_args=(
@@ -173,6 +186,18 @@ mode_count=0
 missing_count=0
 while IFS= read -r f; do
     case "$f" in '' | \#*) continue ;; esac
+    if [ "$f" = ".coderabbit.yaml" ] && [ "$effective_use_coderabbit" = "false" ]; then
+        checked=$((checked + 1))
+        rv="$(repo_variant "$f")"
+        if [ -n "$rv" ]; then
+            echo "DRIFT    .coderabbit.yaml  (CodeRabbit is disabled by the effective answer)"
+            drift=1
+            drift_count=$((drift_count + 1))
+        else
+            echo "ABSENT   .coderabbit.yaml  (CodeRabbit disabled — expected)"
+        fi
+        continue
+    fi
     [ -f "$render/$f" ] || continue # conditional file not in this profile
     checked=$((checked + 1))
     rv="$(repo_variant "$f")"

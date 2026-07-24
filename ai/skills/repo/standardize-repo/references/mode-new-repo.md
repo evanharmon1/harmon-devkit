@@ -16,8 +16,9 @@ Verify before running anything:
       `git`, and — if you will create the remote or release — `gh` (GitHub CLI,
       authenticated: `gh auth status`).
 - [ ] **Released template ref chosen.** Production scaffolds use the canonical
-      GitHub source and a reviewed release such as `v3.26.1`. A local checkout is
-      needed only to inspect source or preview unreleased work.
+      GitHub source and a deliberately selected release tag whose template
+      defines `use_coderabbit`. A local checkout is needed only to inspect source
+      or preview unreleased work.
 - [ ] **Destination does not already exist / is empty.** Copier writes into
       `<dest>`; pick a path that is free.
 - [ ] **Hidden author/org defaults are correct for you.** Identity, org info,
@@ -34,12 +35,31 @@ The `--trust` flag is required: it allows copier to run the `_tasks` (git init,
 commit, etc.) defined in `copier.yml`.
 
 ```bash
-copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
-  --trust --vcs-ref=v3.26.1
+: "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit}"
+HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
+git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
+  '+refs/heads/main:refs/remotes/origin/main' --tags ||
+  { echo "failed to refresh harmon-init from origin" >&2; exit 1; }
+REMOTE_TAG_OBJECT="$(
+  git -C ~/git/harmon-init ls-remote --exit-code "$HARMON_INIT_SOURCE" \
+    "refs/tags/$HARMON_INIT_REF" |
+    awk 'NR == 1 { print $1 }'
+)" ||
+  { echo "HARMON_INIT_REF is not a tag published by origin" >&2; exit 1; }
+test -n "$REMOTE_TAG_OBJECT" &&
+  test "$(git -C ~/git/harmon-init rev-parse "refs/tags/$HARMON_INIT_REF")" = "$REMOTE_TAG_OBJECT" &&
+  git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
+  { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
+git -C ~/git/harmon-init show "$HARMON_INIT_REF":copier.yml |
+  grep -q '^use_coderabbit:' ||
+  { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
+copier copy "$HARMON_INIT_SOURCE" <dest> \
+  --trust --vcs-ref="$HARMON_INIT_REF"
 ```
 
-`v3.26.1` is the current reviewed example; replace it when a newer release has
-been deliberately selected. Do not use a moving branch for production lineage.
+Choose `use_coderabbit=false` at the prompt unless this repository is
+deliberately retaining the CodeRabbit App. Do not use a moving branch for
+production lineage.
 For an unreleased template preview only, a developer may render a local checkout
 with `--vcs-ref=HEAD` into a disposable destination. That preview can contain a
 Copier-created throwaway commit and must not be promoted as a production scaffold.
@@ -54,8 +74,26 @@ questions all default to `no`, so omitting them is safe in CI. Add `--defaults`
 to accept the default for any key you do not pass.
 
 ```bash
-copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
-  --trust --vcs-ref=v3.26.1 --defaults \
+: "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit}"
+HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
+git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
+  '+refs/heads/main:refs/remotes/origin/main' --tags ||
+  { echo "failed to refresh harmon-init from origin" >&2; exit 1; }
+REMOTE_TAG_OBJECT="$(
+  git -C ~/git/harmon-init ls-remote --exit-code "$HARMON_INIT_SOURCE" \
+    "refs/tags/$HARMON_INIT_REF" |
+    awk 'NR == 1 { print $1 }'
+)" ||
+  { echo "HARMON_INIT_REF is not a tag published by origin" >&2; exit 1; }
+test -n "$REMOTE_TAG_OBJECT" &&
+  test "$(git -C ~/git/harmon-init rev-parse "refs/tags/$HARMON_INIT_REF")" = "$REMOTE_TAG_OBJECT" &&
+  git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
+  { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
+git -C ~/git/harmon-init show "$HARMON_INIT_REF":copier.yml |
+  grep -q '^use_coderabbit:' ||
+  { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
+copier copy "$HARMON_INIT_SOURCE" <dest> \
+  --trust --vcs-ref="$HARMON_INIT_REF" --defaults \
   --data project_name="My Project" \
   --data project_slug="my-project" \
   --data project_description="One-line description of the project" \
@@ -64,6 +102,7 @@ copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
   --data include_terraform=false \
   --data include_ansible=false \
   --data use_codeql=false \
+  --data use_coderabbit=false \
   --data ci_runner="ubuntu-latest" \
   --data license="mit" \
   --data use_release_please=true \
@@ -75,6 +114,13 @@ copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
   --data obsidian_project_add=false \
   --data run_task_install=false
 ```
+
+The `use_coderabbit` answer is introduced by the companion harmon-init change.
+Release this skill first so harmon-init can refresh its pinned vendored copy,
+then merge and release the harmon-init change. Until that supporting template
+release exists, this command intentionally stops at the guard above. Do not
+substitute an older release (including v4.4.0 or v3.26.1): those templates
+predate the question and render CodeRabbit unconditionally.
 
 ### Answerable questions (from `copier.yml`)
 
@@ -89,6 +135,8 @@ copier copy https://github.com/evanharmon1/harmon-init.git <dest> \
 | `include_ansible` | bool | `true` iff `project_type == 'iac'` | Adds `ansible/` skeleton + ansible linting. |
 | `use_codeql` | bool | `true` for `web-astro` / `web-app`; otherwise `false` | Includes CodeQL SAST. Public repositories have Code Security by default; for a private/internal repo, enable GitHub Code Security first or answer `false`. |
 | `codeql_languages` | multiselect | JS/TS for web; Python for supported Python/IaC selections when CodeQL is enabled | Exact CodeQL matrix; must be nonempty when `use_codeql=true` and should match real first-party source. |
+| `use_codex_review` | bool | `false` | Adds local, advisory Codex review/challenge tasks and the optional Claude → Codex stop-gate. |
+| `use_coderabbit` | bool | `false` | Adds `.coderabbit.yaml`, App setup instructions, and CodeRabbit bot trust. Requires an account/App install; public OSS hosted reviews are free with rate limits, while private hosted code reviews require a paid plan after the trial. |
 | `ci_runner` | str | `ubuntu-latest` | `ubuntu-latest` \| `self-hosted`. |
 | `license` | str | `mit` | `mit` \| `private`. |
 | `use_release_please` | bool | `true` | release-please rolling release PR + auto CHANGELOG. |
@@ -195,7 +243,8 @@ companion reference:
 - In the new repo: work through `docs/CHECKLIST.md` (rendered from
   `template/docs/CHECKLIST.md.jinja`). It covers, in order: local setup → GitHub
   repo settings (branch ruleset import via the GitHub UI, Dependabot
-  alerts + private vulnerability reporting, Renovate app, CodeRabbit app, Actions
+  alerts + private vulnerability reporting, Renovate app, optional CodeRabbit app
+  only when `use_coderabbit=true`, Actions
   secrets/variables, the CI GitHub App, GHCR publishing) → framework scaffolding
   for the chosen `project_type` → secrets/env → docs/meta (fill `TODO:` markers,
   confirm badges, optional `task release:init`).

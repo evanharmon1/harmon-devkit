@@ -9,7 +9,8 @@ work on a feature branch the whole time.
 For Copier mechanics (custom `[[ ]]`/`[% %]` jinja delimiters, released production
 refs versus local-preview `--vcs-ref=HEAD`, `--trust`, side-effect answers) see
 [`copier-gotchas.md`](./copier-gotchas.md). For the GitHub-side wiring after the
-files land (branch ruleset import, Renovate/CodeRabbit apps, Actions secrets, etc.)
+files land (branch ruleset import, Renovate and optional CodeRabbit apps, Actions
+secrets, etc.)
 see [`post-generation-checklist.md`](./post-generation-checklist.md).
 
 ---
@@ -75,6 +76,8 @@ Defaults worth knowing so you only override what's wrong (from `copier.yml`):
 - `ci_runner` defaults to `ubuntu-latest` (alt: `self-hosted`).
 - `license` defaults to `mit` (alt: `private`).
 - `use_release_please` and `devcontainer` default to **yes**.
+- `use_coderabbit` defaults to **no**. Keep it false unless this repository is
+  deliberately retaining the CodeRabbit GitHub App.
 - **All side-effect answers must stay `no`** when adopting: `git_init`,
   `github_remote_create`, `github_release_init`, `bunch_add`,
   `obsidian_project_add`, `run_task_install`. The repo already exists and has a
@@ -98,11 +101,13 @@ Defaults worth knowing so you only override what's wrong (from `copier.yml`):
 
 If a `.copier-answers.yml` exists at the repo root, the repo is already linked to
 the template. Update in place; copier performs a three-way merge between the old
-template output, the new template output, and your current files:
+template output, the new template output, and your current files. Follow
+[`mode-update.md`](./mode-update.md) end to end: it remote-verifies and pins the
+target release, collects the CodeRabbit decision (including for legacy answer
+files), and passes the identical reviewed answers to preview and apply.
 
 ```bash
-ls .copier-answers.yml          # present → use update
-copier update --trust --defaults
+ls .copier-answers.yml # present → use mode-update.md
 ```
 
 `--defaults` is **required non-interactively** — without a TTY copier crashes trying
@@ -112,10 +117,10 @@ to prompt (`OSError: [Errno 22]`). See [`mode-update.md`](./mode-update.md) §2.
 `.copier-answers.yml`, whose `_src_path` and `_commit` must form a resolvable
 lineage tuple (see [copier-gotchas.md](./copier-gotchas.md) gotcha 8; never
 normalize only a local path unless the recorded commit is reachable from the
-canonical remote). **Always do a full update to the latest released version** —
-plain `copier update` goes to harmon-init's newest tag and three-way-merges the whole
-delta into your files; don't scope it to a specific intermediate version. Override
-stale answers with `--data key=value` as needed (e.g. a changed `github_org`).
+canonical remote). **Always do a full update to the deliberately selected latest
+release** and pass that same ref to preview and apply. Override stale answers
+with `--data key=value` as needed (e.g. `use_coderabbit` or a changed
+`github_org`).
 (`--vcs-ref=HEAD` is only for a *template developer* testing unreleased local
 changes — never for a normal update.)
 
@@ -132,14 +137,33 @@ write `.copier-answers.yml` so future runs can use `copier update`:
 ```bash
 ls .copier-answers.yml          # absent → adopt fresh
 : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
-copier copy --trust https://github.com/evanharmon1/harmon-init.git . \
-  --vcs-ref=v3.26.1 --defaults --overwrite \
+: "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit}"
+HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
+git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
+  '+refs/heads/main:refs/remotes/origin/main' --tags ||
+  { echo "failed to refresh harmon-init from origin" >&2; exit 1; }
+REMOTE_TAG_OBJECT="$(
+  git -C ~/git/harmon-init ls-remote --exit-code "$HARMON_INIT_SOURCE" \
+    "refs/tags/$HARMON_INIT_REF" |
+    awk 'NR == 1 { print $1 }'
+)" ||
+  { echo "HARMON_INIT_REF is not a tag published by origin" >&2; exit 1; }
+test -n "$REMOTE_TAG_OBJECT" &&
+  test "$(git -C ~/git/harmon-init rev-parse "refs/tags/$HARMON_INIT_REF")" = "$REMOTE_TAG_OBJECT" &&
+  git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
+  { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
+git -C ~/git/harmon-init show "$HARMON_INIT_REF":copier.yml |
+  grep -q '^use_coderabbit:' ||
+  { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
+copier copy --trust "$HARMON_INIT_SOURCE" . \
+  --vcs-ref="$HARMON_INIT_REF" --defaults --overwrite \
   --data project_type="$PROJECT_TYPE" \
   --data project_name="<Formal Project Name>" \
   --data project_slug="$(basename "$(pwd)")" \
   --data github_org="<org-or-user>" \
   --data use_codeql="$USE_CODEQL" \
   --data codeql_languages="$CODEQL_LANGUAGES" \
+  --data use_coderabbit=false \
   --data git_init=false \
   --data github_remote_create=false --data github_release_init=false \
   --data bunch_add=false --data obsidian_project_add=false --data run_task_install=false
@@ -147,10 +171,14 @@ copier copy --trust https://github.com/evanharmon1/harmon-init.git . \
   #   defaults from the stale .copier-answers.yml, so they do NOT "default to no".
 ```
 
-`v3.26.1` is the current reviewed release example; deliberately select a newer
-released ref when appropriate. Local `--vcs-ref=HEAD` adoption is for a disposable
-preview only, never the production apply: dirty local renders can record a
-throwaway `_commit` that no later remote update can resolve.
+The `use_coderabbit` answer is introduced by the companion harmon-init change.
+Release this skill first so harmon-init can refresh its pinned vendored copy,
+then merge and release harmon-init. Until that supporting template release
+exists, the guard above intentionally blocks adoption. Older releases (including
+v4.4.0 and v3.26.1) render CodeRabbit unconditionally. Local `--vcs-ref=HEAD`
+adoption is for a disposable preview only, never the production apply: dirty
+local renders can record a throwaway `_commit` that no later remote update can
+resolve.
 
 Set `USE_CODEQL` and `CODEQL_LANGUAGES` deliberately before rendering. Use
 `true` only when supported first-party JS/TS or Python source is present and Code
@@ -293,13 +321,10 @@ after the copier run:
    docs with real content — fold them into the standard locations.
 
 3. **Leave YAML extensions alone.** Do not rename `.yaml`↔`.yml`. Each tool
-   keeps its own conventional extension (`Taskfile.yml`, `.coderabbit.yaml`,
+   keeps its own conventional extension (`Taskfile.yml`, `.yamllint.yml`;
    GitHub Actions accepts either) — homogenizing extensions across the repo is
-   not a goal.
-
-   (Note `.coderabbit.yaml` is intentionally `.yaml` — leave it.) After renaming,
-   update any branch-ruleset required-check contexts that referenced the old job
-   names (see `post-generation-checklist.md`).
+   not a goal. After renaming, update any branch-ruleset required-check contexts
+   that referenced the old job names (see `post-generation-checklist.md`).
 
 4. **Add `# renovate:` annotations to tool pins.** Inline tool-version pins in
    workflows must carry a renovate annotation so updates are automated and pins

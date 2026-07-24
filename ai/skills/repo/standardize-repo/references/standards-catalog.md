@@ -162,7 +162,10 @@ are check-only by design.
 `status:setup` is a **setup-completeness audit** (run by hand, not part of the
 default dashboard): it checks the repo against `docs/CHECKLIST.md` and reports
 ✓/✗/?/– per item across GitHub config (ruleset, Dependabot alerts, private vuln
-reporting, visibility-appropriate SAST route, Renovate/CodeRabbit apps, Actions
+reporting, visibility-appropriate SAST route, Renovate and the optional
+CodeRabbit app when configured. When CodeRabbit is off, `status:setup` must show
+a manual `?` until App access is confirmed removed; account-level installation
+metadata cannot prove repository selection. It also checks Actions
 secrets/variables by name only, GHCR image, linked Project, release), toolchain
 (`brew bundle check`), devcontainer profiles, and dev environment (1Password
 CLI, direnv). Useful as a quick first pass when auditing an already-standardized
@@ -209,8 +212,8 @@ Notable command bodies (for an auditor checking they match):
   `DESIGN.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
   `LICENSE`, `CHECKLIST.md`. **[copier]**
 - **YAML extensions follow each tool's own convention** — no repo-wide
-  `.yml`-vs-`.yaml` normalization (go-task → `Taskfile.yml`, CodeRabbit →
-  `.coderabbit.yaml`). Don't rename a tool's file to homogenize extensions.
+  `.yml`-vs-`.yaml` normalization (go-task → `Taskfile.yml`, yamllint →
+  `.yamllint.yml`). Don't rename a tool's file to homogenize extensions.
 - **Feature branches only.** Direct commits to `main` are blocked by the
   `guard:no-commit-to-main` pre-commit hook AND the branch ruleset. **[copier]**
   for the hook/ruleset file; **[manual]** to import the ruleset to GitHub.
@@ -693,7 +696,8 @@ install the Renovate GitHub App on the repo. Conventions:
   to main.** **[manual]** to actually cut a release.
 - Other root files: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`
   (mit/private), `<slug>.code-workspace`, `.vscode/{settings,extensions}.json`,
-  `.coderabbit.yaml` (CodeRabbit reviews — [manual] install the app),
+  `.coderabbit.yaml` only when `use_coderabbit=true` (CodeRabbit reviews —
+  [manual] install the app),
   `.github/PULL_REQUEST_TEMPLATE.md`, the `.github/ISSUE_TEMPLATE/` YAML **Issue
   Forms** (`{bug,feature,task,research}.yml` and `config.yml`, always generated —
   see §1.13 for the `type:`/assignee behavior), `.dockerignore`. **[copier]**

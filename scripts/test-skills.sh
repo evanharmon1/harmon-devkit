@@ -437,12 +437,84 @@ expect_ok "new-repo guidance exposes the explicit CodeQL answer" \
 expect_ok "new-repo guidance exposes the explicit CodeQL language matrix" \
     grep -qF '| `codeql_languages` | multiselect |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
-expect_ok "production scaffolding uses the canonical released template" \
-    grep -qF 'https://github.com/evanharmon1/harmon-init.git <dest>' \
+expect_ok "new-repo guidance exposes CodeRabbit as default off" \
+    grep -qF '| `use_coderabbit` | bool | `false` |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "update guidance preserves the reviewed CodeRabbit answer" \
+    test "$(grep -Fc -- '--data use_coderabbit="$USE_CODERABBIT"' \
+        "$STANDARDIZE_REFS/mode-update.md")" -ge 2
+expect_ok "update guidance starts from the recorded CodeRabbit answer" \
+    grep -qF ".use_coderabbit // false' .copier-answers.yml" \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance preserves the reviewed CodeQL language matrix" \
+    test "$(grep -Fc -- '--data codeql_languages="$CODEQL_LANGUAGES"' \
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+expect_ok "update guidance rejects an empty enabled CodeQL matrix" \
+    grep -qF 'CODEQL_LANGUAGES must be a nonempty YAML list' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance preserves the reviewed Foreman answer" \
+    test "$(grep -Fc -- '--data use_foreman="$USE_FOREMAN"' \
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+expect_fail "update guidance never hard-codes Foreman off" \
+    grep -qF -- '--data use_foreman=false' "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "production guidance requires an exact remote tag on origin/main" \
+    grep -qF 'HARMON_INIT_REF must exactly match a release tag on origin/main' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "production guidance verifies the selected tag with the Copier source" \
+    grep -qF 'ls-remote --exit-code "$HARMON_INIT_SOURCE"' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo production commands use the verified canonical source" \
+    test "$(grep -Fc 'copier copy "$HARMON_INIT_SOURCE" <dest>' \
+        "$STANDARDIZE_REFS/mode-new-repo.md")" -eq 2
+expect_ok "adopt guidance uses the verified canonical source" \
+    grep -qF 'copier copy --trust "$HARMON_INIT_SOURCE" .' \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
+for canonical_doc in \
+    "$STANDARDIZE_REFS/mode-new-repo.md" \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"; do
+    expect_ok "${canonical_doc##*/} verifies tags against the Copier source" \
+        grep -qF 'ls-remote --exit-code "$HARMON_INIT_SOURCE"' "$canonical_doc"
+    expect_fail "${canonical_doc##*/} does not validate a checkout-specific origin" \
+        grep -qF 'ls-remote --exit-code origin' "$canonical_doc"
+done
+expect_ok "production guidance aborts when the origin refresh fails" \
+    grep -qF 'failed to refresh harmon-init from origin' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "update guidance refreshes the origin/main tracking ref explicitly" \
+    grep -qF '+refs/heads/main:refs/remotes/origin/main' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance requires the canonical recorded source" \
+    grep -qF '_src_path must be the canonical harmon-init URL before update' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance freezes the verified release commit" \
+    grep -qF 'HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "post-generation guidance requires Renovate Scan and Alert mode" \
+    grep -qF '**Scan and Alert** mode' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "post-generation guidance requires external CodeRabbit access removal" \
+    grep -qF 'deleting the config alone does not revoke App' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "audit guidance reconciles CodeRabbit answers and external access" \
+    grep -qF '**G3. CodeRabbit selection drift.**' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "update guidance gates on a release supporting CodeRabbit selection" \
+    grep -qF "grep -q '^use_coderabbit:'" \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "status setup keeps CodeRabbit access removal human-visible" \
+    grep -qF 'checkline unknown "CodeRabbit app access"' \
+    "$repo/scripts/status.sh"
 expect_ok "production scaffolding pins a released ref" \
-    grep -qF -- '--trust --vcs-ref=v3.26.1' \
+    grep -qF -- '--trust --vcs-ref="$HARMON_INIT_REF"' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "update preview and apply pin the same immutable release commit" \
+    test "$(grep -Fc -- '--vcs-ref="$HARMON_INIT_COMMIT"' \
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+expect_fail "update commands do not reuse the mutable release tag" \
+    grep -qF -- '--vcs-ref="$HARMON_INIT_REF"' "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "production command examples do not pin an obsolete release" \
+    grep -REq 'copier (copy|update).*(v3\.26\.1|v4\.4\.0)|--vcs-ref=(v3\.26\.1|v4\.4\.0)' \
+    "$STANDARDIZE_SKILL" "$STANDARDIZE_REFS"
 expect_ok "new-repo guidance forbids path-only lineage repair" \
     grep -qF 'do not rewrite only `_src_path`' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
@@ -488,6 +560,8 @@ expect_ok "skill always refreshes enabled skills sync" \
 expect_ok "skill completion requires green CI and review adjudication" \
     grep -qF 'watch every required check to a terminal green result' \
     "$STANDARDIZE_SKILL"
+expect_fail "repository checklist has no bare Copier update path" \
+    grep -qE '`copier update --trust` to pull' "$repo/docs/CHECKLIST.md"
 expect_ok "catalog keeps fork aggregates from executing repository code" \
     grep -qF 'code on the aggregate runner' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -1539,9 +1613,9 @@ for required in \
     expect_ok "template-owned manifest includes $required" grep -qxF "$required" "$manifest"
 done
 
-# Exercise executable-mode drift, equivalent mature layouts, and index-backed
-# transient deletions end to end with a tiny local Copier template. The real
-# manifest is reused, but only scripts/status.sh exists in its curated set.
+# Exercise executable-mode drift, equivalent mature layouts, legacy CodeRabbit
+# opt-out handling, and index-backed transient deletions end to end with a tiny
+# local Copier template. The real manifest is reused.
 DT_TEMPLATE="$TMPROOT/diff-template-source"
 mkdir -p \
     "$DT_TEMPLATE/template/scripts" \
@@ -1558,6 +1632,7 @@ cat >"$DT_TEMPLATE/template/scripts/status.sh" <<'EOF'
 #!/usr/bin/env bash
 echo status
 EOF
+printf '%s\n' 'reviews:' '  profile: chill' >"$DT_TEMPLATE/template/.coderabbit.yaml"
 chmod +x "$DT_TEMPLATE/template/scripts/status.sh"
 for terraform_file in main.tf variables.tf outputs.tf; do
     printf '%s\n' '# starter' >"$DT_TEMPLATE/template/terraform/$terraform_file"
@@ -1612,6 +1687,12 @@ if printf '%s\n' "$equivalent_out" |
     ok "diff-template recognizes a renumbered seed ADR as equivalent"
 else
     bad "diff-template recognizes a renumbered seed ADR as equivalent"
+fi
+if printf '%s\n' "$equivalent_out" |
+    grep -qF "ABSENT   .coderabbit.yaml  (CodeRabbit disabled — expected)"; then
+    ok "diff-template accepts legacy CodeRabbit opt-out as intentional absence"
+else
+    bad "diff-template accepts legacy CodeRabbit opt-out as intentional absence"
 fi
 
 rm "$DT_TARGET/scripts/status.sh"

@@ -81,9 +81,46 @@ Before accepting `--defaults`, identify both the target release and any Copier
 questions added since the repo's recorded `_commit`:
 
 ```bash
+: "${HARMON_INIT_REF:?set to the deliberately selected latest harmon-init release tag}"
+HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
+RECORDED_SOURCE="$(yq -r '._src_path // ""' .copier-answers.yml)"
+case "$RECORDED_SOURCE" in
+"$HARMON_INIT_SOURCE" | "$HARMON_INIT_SOURCE.git") ;;
+*)
+  echo "_src_path must be the canonical harmon-init URL before update" >&2
+  exit 1
+  ;;
+esac
+git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
+  '+refs/heads/main:refs/remotes/origin/main' --tags ||
+  { echo "failed to refresh harmon-init from origin" >&2; exit 1; }
+REMOTE_TAG_OBJECT="$(
+  git -C ~/git/harmon-init ls-remote --exit-code "$HARMON_INIT_SOURCE" \
+    "refs/tags/$HARMON_INIT_REF" |
+    awk 'NR == 1 { print $1 }'
+)" ||
+  { echo "HARMON_INIT_REF is not a tag published by origin" >&2; exit 1; }
+test -n "$REMOTE_TAG_OBJECT" &&
+  test "$(git -C ~/git/harmon-init rev-parse "refs/tags/$HARMON_INIT_REF")" = "$REMOTE_TAG_OBJECT" &&
+  git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
+  { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
+HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{commit}")"
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
+  grep -q '^use_coderabbit:' ||
+  { echo "latest harmon-init release does not support the CodeRabbit choice" >&2; exit 1; }
 copier check-update --output-format json .
-git -C ~/git/harmon-init diff "$(yq -r '._commit' .copier-answers.yml)"..v<TARGET> -- copier.yml
+git -C ~/git/harmon-init diff \
+  "$(yq -r '._commit' .copier-answers.yml)".."$HARMON_INIT_COMMIT" -- copier.yml
 ```
+
+Stop before previewing or applying when that guard fails. Requiring the recorded
+source to be canonical binds Copier's actual update source to the remote that was
+validated. `HARMON_INIT_COMMIT` freezes the verified tag's peeled commit so a tag
+move between preview and apply cannot change what Copier renders. The companion
+harmon-init change must not be released until this skill is published and its
+new tag is pinned into harmon-init. After that pin refresh, release harmon-init;
+until then, older template releases render CodeRabbit unconditionally and cannot
+satisfy a reviewed false answer.
 
 Every newly introduced question needs an explicit decision. This is especially
 important for a feature with a material footprint or an external capability:
@@ -92,6 +129,11 @@ important for a feature with a material footprint or an external capability:
   documentation, and tests. It was default-on when introduced in v3.26.1;
   current template source defaults it off. Update mode must still decide whether
   the target should opt in.
+- `use_coderabbit` adds a third-party GitHub App integration and defaults off.
+  Pass `--data use_coderabbit=false` unless the repository is deliberately
+  retaining CodeRabbit. The false path removes `.coderabbit.yaml` and bot trust,
+  but a human must also remove the repository from the CodeRabbit App
+  installation because deleting repository files does not revoke App access.
 - `use_codeql` includes CodeQL only when the matrix corresponds to planned/actual
   first-party JS/TS/Python source. `use_node` / `use_python` are tooling flags,
   not source evidence; review and persist the explicit `codeql_languages`
@@ -136,10 +178,37 @@ Preview the exact answer set before the real update:
 
 ```bash
 : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
+: "${CODEQL_LANGUAGES:=$(yq -o=json -I=0 '.codeql_languages // []' .copier-answers.yml)}"
+: "${USE_FOREMAN:=$(yq -r '.use_foreman // false' .copier-answers.yml)}"
+: "${USE_CODERABBIT:=$(yq -r '.use_coderabbit // false' .copier-answers.yml)}"
+case "$USE_FOREMAN" in true | false) ;; *) echo "USE_FOREMAN must be true or false" >&2; exit 1 ;; esac
+case "$USE_CODERABBIT" in true | false) ;; *) echo "USE_CODERABBIT must be true or false" >&2; exit 1 ;; esac
+if [ "$USE_CODEQL" = "false" ]; then
+  CODEQL_LANGUAGES='[]'
+elif [ "$USE_CODEQL" != "true" ] ||
+  ! printf '%s\n' "$CODEQL_LANGUAGES" |
+    yq -e '(tag == "!!seq") and (length > 0) and
+      ([.[] | select(. != "javascript-typescript" and . != "python")] | length == 0)' - >/dev/null; then
+  echo "CODEQL_LANGUAGES must be a nonempty YAML list of supported first-party languages" >&2
+  exit 1
+fi
 copier update --trust --defaults --pretend \
-  --data use_foreman=false \
-  --data use_codeql="$USE_CODEQL"
+  --vcs-ref="$HARMON_INIT_COMMIT" \
+  --data use_foreman="$USE_FOREMAN" \
+  --data use_coderabbit="$USE_CODERABBIT" \
+  --data use_codeql="$USE_CODEQL" \
+  --data codeql_languages="$CODEQL_LANGUAGES"
 ```
+
+The existing Foreman answer is the starting point, not an instruction to retain
+it blindly. Review that substantial per-repo choice and override `USE_FOREMAN`
+deliberately when the repository should change posture. The existing CodeRabbit
+answer is handled the same way; legacy omission starts at the fleet's `false`
+default, while an explicit opt-in stays true unless the maintainer deliberately
+opts out. `CODEQL_LANGUAGES` is a serialized YAML list such as
+`["javascript-typescript","python"]`; the existing matrix is only a starting
+point and must be reviewed against actual first-party source. Disabling CodeQL
+records an empty matrix.
 
 `--pretend` confirms rendering succeeds but its output can be terse. For a heavily
 customized or high-impact repo, make a disposable clone under a temporary directory,
@@ -167,8 +236,15 @@ commit; re-adopt from the canonical GitHub URL at a reviewed released ref.
 
 ```bash
 copier update --trust --defaults \
-  --data <new-question>=<reviewed-answer>
+  --vcs-ref="$HARMON_INIT_COMMIT" \
+  --data use_foreman="$USE_FOREMAN" \
+  --data use_coderabbit="$USE_CODERABBIT" \
+  --data use_codeql="$USE_CODEQL" \
+  --data codeql_languages="$CODEQL_LANGUAGES"
 ```
+
+Use the same reviewed variables and answers in the preview and real invocation;
+do not retype or omit them between those two steps.
 
 **`--defaults` is mandatory when running non-interactively (agents have no TTY),
 but it is not permission to accept newly introduced behavior.** Review and pass
@@ -179,12 +255,13 @@ terminal). It reuses the stored answers and accepts defaults for any new questio
 the template added since `_commit`; explicit `--data` values override those
 defaults and are recorded in `.copier-answers.yml`.
 
-**Always do a full update to the latest released version.** Plain `copier update`
-goes to harmon-init's newest **tag** and three-way-merges the *entire* delta from the
-repo's recorded `_commit` up to that tag, preserving local edits. Don't get fancy
-scoping the update to a specific intermediate version (no `--vcs-ref vX.Y.Z`, no
-hand-picking which template changes to take) — pull all the way to latest and
-reconcile in §3. First-run `_tasks` are guarded on `_copier_operation == 'copy'`, so
+**Always do a full update to the deliberately selected latest released
+version.** Derive `HARMON_INIT_COMMIT` once from the remote-verified
+`HARMON_INIT_REF`, then pass that immutable commit to both preview and apply.
+Copier three-way-merges the *entire* delta from the repo's recorded `_commit` up
+to that release commit, preserving local edits. Do not hand-pick which template
+changes to take—select the current release and reconcile the full result in §3.
+First-run `_tasks` are guarded on `_copier_operation == 'copy'`, so
 update will **not** make a scaffold commit, re-init git, or re-cut a release. Only
 `CHANGELOG.md` is frozen (`_skip_if_exists`); every other template improvement
 (README, AGENTS.md, docs, scripts, …) flows in through the merge.

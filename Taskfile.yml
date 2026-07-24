@@ -381,7 +381,7 @@ tasks:
   # One-time, idempotent repo settings applied via gh (safe to re-run); run once
   # the repo exists on GitHub. The remaining setup steps need a browser or a real
   # credential and stay manual — see docs/CHECKLIST.md (branch ruleset import,
-  # Renovate/CodeRabbit app installs, Actions secrets, the CI GitHub App).
+  # Renovate/optional third-party app installs, Actions secrets, the CI GitHub App).
   setup:github:
     desc: >-
       Apply idempotent GitHub repo settings via gh (Dependabot alerts, private

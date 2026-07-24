@@ -60,18 +60,20 @@ differently.
 
 These are load-bearing. Full rationale and edge cases in `references/copier-gotchas.md`.
 
-- **Production scaffolds use the canonical GitHub URL at a released ref.** Run
-  `copier copy --trust --vcs-ref=v3.26.1
-  https://github.com/evanharmon1/harmon-init.git <dest> ...` (substitute the
-  reviewed current release). This records durable lineage that another machine
-  can resolve. A local-path `--vcs-ref=HEAD` render is only for a disposable
+- **Production scaffolds use the canonical GitHub URL at a remote-verified
+  release ref.** Select `HARMON_INIT_REF`, verify that exact tag against
+  `origin`, and pass it to Copier using the guarded commands in the applicable
+  mode reference. This records durable lineage that another machine can
+  resolve. A local-path `--vcs-ref=HEAD` render is only for a disposable
   preview/test of unreleased template work. Copier may represent dirty local work
   with a throwaway commit that does not exist on GitHub; never promote that render
   by rewriting only `_src_path`. The recorded `_src_path` and `_commit` are one
   lineage tuple: before changing a local path to the canonical URL, prove the
   recorded commit is reachable from that remote, or re-render/re-adopt from a
-  released remote ref. A normal `copier update` reuses that tuple and takes no
-  `--vcs-ref`. See `copier-gotchas.md` gotchas 1 and 8.
+  released remote ref. An update must reject a non-canonical recorded source and
+  pass the immutable commit derived from the remote-verified `HARMON_INIT_REF`
+  so preview and apply cannot select different releases. See
+  `copier-gotchas.md` gotchas 1 and 8.
 - **Side-effectful answers default to `no`** in `copier.yml` (`github_remote_create`,
   `github_release_init`, `bunch_add`, `obsidian_project_add`, `run_task_install`).
   Leave them off unless the user explicitly asks; only flip them on with confirmation.
@@ -81,9 +83,12 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
 
   ```bash
   copier copy https://github.com/evanharmon1/harmon-init.git ./new-project \
-    --vcs-ref=v3.26.1 --trust \
+    --vcs-ref="$HARMON_INIT_REF" --trust \
     --data project_name="My Project" --data project_type=general --defaults
   ```
+
+  This is only the command shape; run the release-tag validation in
+  `references/mode-new-repo.md` before executing it.
 
 - **Validate after every apply.** Re-running `copier` or changing answers can churn
   files — confirm the result with the verification step below before committing.
@@ -98,7 +103,7 @@ The asked questions live in `~/git/harmon-init/copier.yml` (e.g. `project_name`,
 [general / web-astro / web-app / iac / docs], `snyk_scan_schedule`
 [off / weekly / daily], `include_terraform`, `include_ansible`, `ci_runner`,
 `license`, `use_codeql`, `codeql_languages`, `use_release_please`, `devcontainer`,
-`git_init`). Read that file to
+`use_codex_review`, `use_coderabbit`, `git_init`). Read that file to
 confirm names/choices/defaults before scaffolding — do not invent answers.
 
 ## Standards catalog
