@@ -328,7 +328,17 @@ assets/diff-template.sh "$TARGET"
 # --show to see the per-file diff
 ```
 
-It renders harmon-init **at the repo's own `_commit`** (from its
+Do not set `HARMON_INIT` for a normal audit. The helper verifies the recorded
+source is canonical, snapshots that remote, removes its remote, rejects
+submodules, and renders the full recorded commit from the read-only clone. A
+legacy tag-valued `_commit` has no immutable historical proof, so show the
+maintainer the current canonical tag mapping and obtain approval before running
+with `ACCEPT_LEGACY_BASELINE=true`; a full commit needs no recovery approval.
+An explicit `HARMON_INIT` is only for a caller that already built an equivalent
+guarded clone (update mode passes `HARMON_INIT_RECORDED_COMMIT`) or for a
+disposable hermetic test.
+
+The helper renders harmon-init **at the repo's own frozen `_commit`** (from its
 `.copier-answers.yml`) and reports both content **`DRIFT`** in the curated set and
 **`MISSING`** template files the repo lacks entirely (mapping `.yml`↔`.yaml`). The
 `MISSING` scan walks the whole render and is **manifest-independent**, so a file the

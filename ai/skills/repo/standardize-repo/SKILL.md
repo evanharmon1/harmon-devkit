@@ -35,8 +35,11 @@ or widen access to credentials, or weaken a workflow merely to make CI green.
 Verify these before doing anything; stop and tell the user if one is unmet.
 
 - **copier** installed — `copier --version` (needs `>= 9.4.0`, per `_min_copier_version`).
-- **harmon-init** cloned locally at `~/git/harmon-init`. If missing:
+- **harmon-init** cloned locally at `~/git/harmon-init` for **new-repo**,
+  **adopt-existing**, and **update** modes. If missing in one of those modes:
   `git clone https://github.com/evanharmon1/harmon-init ~/git/harmon-init`.
+  **Audit mode does not require a local checkout**; its guarded drift helper
+  snapshots the canonical remote itself.
 - **task** (go-task) on PATH — `task --version` — for the verification gate.
 - **gh** authenticated (`gh auth status`) — only needed for the GitHub side-effect
   steps (remote create, release init). Not required for local scaffolding.
@@ -63,7 +66,12 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
 - **Production scaffolds use the canonical GitHub URL at a remote-verified
   release ref.** Select `HARMON_INIT_REF`, verify that exact tag against
   `origin`, peel it once to `HARMON_INIT_COMMIT`, and pass that immutable commit
-  to Copier using the guarded commands in the applicable mode reference. This
+  to Copier using the guarded commands in the applicable mode reference. Update
+  mode must also resolve the recorded `_commit` once, require maintainer-approved
+  recovery when legacy tag-only lineage lacks immutable evidence, and run every
+  trusted render from a read-only offline clone through process-scoped Git URL
+  rewrites.
+  Prove the target descends from the resolved baseline before rendering. This
   records durable lineage that another machine can resolve without allowing a
   retag between validation and trusted template execution. A local-path
   `--vcs-ref=HEAD` render is only for a disposable

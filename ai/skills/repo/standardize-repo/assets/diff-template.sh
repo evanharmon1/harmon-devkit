@@ -27,7 +27,8 @@
 #
 # Usage: diff-template.sh [-v|--show] [TARGET_DIR]   (default target: .)
 #        Flags and the target dir may appear in any order.
-# Env:   HARMON_INIT   template checkout (default: ~/git/harmon-init)
+# Env:   HARMON_INIT   explicitly prepared template checkout (advanced/test use)
+#        HARMON_INIT_RECORDED_COMMIT immutable commit in that checkout
 #
 # Exit: 0 = no drift, 1 = drift found (for callers that want a signal), 2 = setup error.
 # Portable to macOS bash 3.2 (no mapfile, no grep -P, no associative arrays).
@@ -53,7 +54,13 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ -n "$target" ] || target="."
-template="${HARMON_INIT:-$HOME/git/harmon-init}"
+template_is_explicit=0
+if [ "${HARMON_INIT+x}" = x ]; then
+    template_is_explicit=1
+    template="$HARMON_INIT"
+else
+    template="$HOME/git/harmon-init"
+fi
 here="$(cd "$(dirname "$0")" && pwd)"
 manifest="$here/template-owned-files.txt"
 
@@ -64,10 +71,13 @@ for t in copier yq; do
         exit 2
     }
 done
-[ -d "$template" ] || {
-    echo "FAIL: template not found at $template (set HARMON_INIT)" >&2
-    exit 2
-}
+if [ "$template_is_explicit" -eq 1 ] ||
+    [ -n "${HARMON_INIT_RECORDED_COMMIT:-}" ]; then
+    [ -d "$template" ] || {
+        echo "FAIL: prepared template not found at $template" >&2
+        exit 2
+    }
+fi
 [ -f "$manifest" ] || {
     echo "FAIL: manifest not found at $manifest" >&2
     exit 2
@@ -81,7 +91,7 @@ answers="$target/.copier-answers.yml"
 }
 
 workdir="$(mktemp -d -t harmon-init-render-XXXXXX)"
-trap 'rm -rf "$workdir"' EXIT
+trap 'chmod -R u+w "$workdir" 2>/dev/null || true; rm -rf "$workdir"' EXIT
 render="$workdir/render"
 index_root="$workdir/index-snapshot"
 
@@ -124,6 +134,109 @@ data_args=(
 # Falls back to HEAD if _commit is somehow absent.
 src_ref="$(yq -r '._commit // "HEAD"' "$answers" 2>/dev/null || echo HEAD)"
 [ -n "$src_ref" ] || src_ref=HEAD
+
+# A normal audit must not trust a mutable tag in the caller's default local
+# harmon-init checkout. Snapshot the canonical remote, freeze the recorded
+# baseline, and render from that no-remote read-only clone. An explicit
+# HARMON_INIT is reserved for callers (such as guarded update mode and hermetic
+# tests) that already prepared their own trust boundary.
+if [ -n "${HARMON_INIT_RECORDED_COMMIT:-}" ]; then
+    case "$HARMON_INIT_RECORDED_COMMIT" in
+    *[!0-9a-fA-F]*)
+        echo "FAIL: HARMON_INIT_RECORDED_COMMIT must be a 40-character commit" >&2
+        exit 2
+        ;;
+    esac
+    [ "${#HARMON_INIT_RECORDED_COMMIT}" -eq 40 ] || {
+        echo "FAIL: HARMON_INIT_RECORDED_COMMIT must be a 40-character commit" >&2
+        exit 2
+    }
+    git -C "$template" cat-file -e "$HARMON_INIT_RECORDED_COMMIT^{commit}" ||
+        {
+            echo "FAIL: prepared template lacks HARMON_INIT_RECORDED_COMMIT" >&2
+            exit 2
+        }
+    src_ref="$HARMON_INIT_RECORDED_COMMIT"
+elif [ "$template_is_explicit" -eq 0 ]; then
+    canonical_source=https://github.com/evanharmon1/harmon-init
+    recorded_source="$(yq -r '._src_path // ""' "$answers")"
+    case "$recorded_source" in
+    "$canonical_source" | "$canonical_source.git") ;;
+    *)
+        echo "FAIL: recorded _src_path is not canonical harmon-init" >&2
+        exit 2
+        ;;
+    esac
+    [ "$src_ref" != HEAD ] || {
+        echo "FAIL: recorded _commit is required for a guarded audit" >&2
+        exit 2
+    }
+    remote_tag_object=""
+    if printf '%s\n' "$src_ref" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+        :
+    elif printf '%s\n' "$src_ref" | grep -Eq '^[0-9a-fA-F]{7,39}$'; then
+        echo "FAIL: abbreviated recorded commits are not accepted" >&2
+        exit 2
+    else
+        [ "${ACCEPT_LEGACY_BASELINE:-}" = true ] || {
+            echo "FAIL: tag-valued baseline needs maintainer-approved ACCEPT_LEGACY_BASELINE=true" >&2
+            exit 2
+        }
+        remote_tag_object="$(
+            git ls-remote --exit-code "$canonical_source" "refs/tags/$src_ref" |
+                awk 'NR == 1 { print $1 }'
+        )" || {
+            echo "FAIL: recorded tag is not present on canonical harmon-init" >&2
+            exit 2
+        }
+        [ -n "$remote_tag_object" ] || {
+            echo "FAIL: canonical recorded tag resolved to no object" >&2
+            exit 2
+        }
+    fi
+    guarded_template="$workdir/guarded-template"
+    git clone --no-checkout "$canonical_source" "$guarded_template" >/dev/null 2>&1 ||
+        {
+            echo "FAIL: cannot snapshot canonical harmon-init" >&2
+            exit 2
+        }
+    if [ -n "$remote_tag_object" ]; then
+        [ "$(git -C "$guarded_template" rev-parse "refs/tags/$src_ref")" = \
+            "$remote_tag_object" ] || {
+            echo "FAIL: recorded tag changed during guarded audit preparation" >&2
+            exit 2
+        }
+    fi
+    recorded_commit="$(git -C "$guarded_template" rev-parse "$src_ref^{commit}")" ||
+        {
+            echo "FAIL: recorded baseline is not a commit in canonical harmon-init" >&2
+            exit 2
+        }
+    git -C "$guarded_template" merge-base --is-ancestor \
+        "$recorded_commit" origin/main || {
+        echo "FAIL: recorded baseline is not on canonical origin/main" >&2
+        exit 2
+    }
+    v3_commit="$(git -C "$guarded_template" rev-parse "v3.0.0^{commit}")" ||
+        {
+            echo "FAIL: cannot resolve the v3 migration boundary" >&2
+            exit 2
+        }
+    git -C "$guarded_template" merge-base --is-ancestor \
+        "$v3_commit" "$recorded_commit" || {
+        echo "FAIL: recorded baseline predates v3; use adoption mode" >&2
+        exit 2
+    }
+    if git -C "$guarded_template" cat-file -e \
+        "$recorded_commit:.gitmodules" 2>/dev/null; then
+        echo "FAIL: guarded audits do not support template submodules" >&2
+        exit 2
+    fi
+    git -C "$guarded_template" remote remove origin
+    chmod -R a-w "$guarded_template"
+    template="$guarded_template"
+    src_ref="$recorded_commit"
+fi
 
 copier copy "$template" "$render" --vcs-ref="$src_ref" --trust --defaults \
     --data-file "$datafile" "${data_args[@]}" >/dev/null 2>&1 || {
