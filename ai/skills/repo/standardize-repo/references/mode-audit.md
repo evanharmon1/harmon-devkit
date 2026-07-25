@@ -27,6 +27,14 @@ TARGET=/abs/path/to/target-repo      # the repo being audited
 TEMPLATE=~/git/harmon-init           # source of truth
 ```
 
+Audit mode **does** require this local checkout. `$TEMPLATE` is read directly by
+the catalog comparison below (step 2, and drift classes C and H in §3), and for a
+never-templated repo it is the only source of truth available. The single
+checkout-free step is the guarded drift helper in §3 drift class K
+([`assets/diff-template.sh`](../assets/diff-template.sh)), which snapshots the
+canonical remote itself — and it refuses to run at all on a repo with no
+`.copier-answers.yml`.
+
 1. **Establish provenance.** Check whether the repo was generated from the
    template: look for `.copier-answers.yml` at the target root.
    - Present → it can be reconciled with `copier update --trust` (it records
