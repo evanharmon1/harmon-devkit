@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.8.7](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.6...v0.8.7) (2026-07-25)
+
+
+### Bug Fixes
+
+* **standardize-repo:** freeze Copier update baselines ([#131](https://github.com/evanharmon1/harmon-devkit/issues/131)) ([63d3486](https://github.com/evanharmon1/harmon-devkit/commit/63d34866eeb53094b2f223b2bae009c3fb3d5238))
+
 ## [0.8.6](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.5...v0.8.6) (2026-07-24)
 
 
