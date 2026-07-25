@@ -60,7 +60,7 @@ expect_ok_contains() {
     fi
 }
 
-git_init() { git init -q "$1"; }
+git_init() { git init -q -b main "$1"; }
 git_commit_all() {
     git -C "$1" add -A
     git -C "$1" -c user.email=test@example.com -c user.name=test \
@@ -440,21 +440,33 @@ expect_ok "new-repo guidance exposes the explicit CodeQL language matrix" \
 expect_ok "new-repo guidance exposes CodeRabbit as default off" \
     grep -qF '| `use_coderabbit` | bool | `false` |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
-expect_ok "update guidance preserves the reviewed CodeRabbit answer" \
-    test "$(grep -Fc -- '--data use_coderabbit="$USE_CODERABBIT"' \
-        "$STANDARDIZE_REFS/mode-update.md")" -ge 2
+expect_ok "update guidance passes one frozen reviewed-data file to preview and apply" \
+    test "$(grep -Fc -- '--data-file="$REVIEWED_DATA"' \
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
 expect_ok "update guidance starts from the recorded CodeRabbit answer" \
     grep -qF ".use_coderabbit // false' .copier-answers.yml" \
     "$STANDARDIZE_REFS/mode-update.md"
-expect_ok "update guidance preserves the reviewed CodeQL language matrix" \
-    test "$(grep -Fc -- '--data codeql_languages="$CODEQL_LANGUAGES"' \
-        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+expect_ok "update guidance reads the reviewed CodeQL language matrix" \
+    grep -qF "'.codeql_languages' \"\$REVIEWED_DATA\"" \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance rejects an empty enabled CodeQL matrix" \
     grep -qF 'CODEQL_LANGUAGES must be a nonempty YAML list' \
     "$STANDARDIZE_REFS/mode-update.md"
-expect_ok "update guidance preserves the reviewed Foreman answer" \
-    test "$(grep -Fc -- '--data use_foreman="$USE_FOREMAN"' \
-        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+expect_ok "update guidance derives every newly introduced Copier question" \
+    sh -c 'grep -qF "baseline-questions" "$1" &&
+        grep -qF "target-questions" "$1" &&
+        grep -qF "new-question-candidates" "$1" &&
+        grep -qF "active-target-questions" "$1" &&
+        grep -qF "active-new-questions" "$1" &&
+        grep -qF "reviewed-keys" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance discovers recordable questions without running tasks" \
+    sh -c 'grep -qF "copy --trust --defaults --skip-tasks" "$1" &&
+        grep -qF "DISCOVERY_STABLE" "$1" &&
+        grep -qF "active-reviewed-data.yml" "$1" &&
+        grep -qF "inactive conditional" "$1" &&
+        grep -qF "questions are never passed as user data" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_fail "update guidance never hard-codes Foreman off" \
     grep -qF -- '--data use_foreman=false' "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "production guidance requires an exact remote tag on origin/main" \
@@ -495,6 +507,124 @@ expect_ok "update guidance requires the canonical recorded source" \
 expect_ok "update guidance freezes the verified release commit" \
     grep -qF 'HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse' \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance freezes the recorded baseline commit" \
+    grep -qF 'RECORDED_COMMIT="$(git -C ~/git/harmon-init rev-parse' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update routing recognizes guarded full-hash lineages" \
+    grep -qF '40-character commit recorded by a guarded update' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance rejects recorded baselines before v3" \
+    grep -qF '"$V3_BASELINE_COMMIT" "$RECORDED_COMMIT"' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance routes pre-v3 lineage to adoption" \
+    grep -qF 'recorded baseline predates v3' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance requires the target to descend from the baseline" \
+    grep -qF '"$RECORDED_COMMIT" "$HARMON_INIT_COMMIT"' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance requires explicit legacy baseline recovery approval" \
+    grep -qF 'ACCEPT_LEGACY_BASELINE:?obtain maintainer approval' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance accepts commit-targeted legacy releases" \
+    grep -qF '"$RECORDED_COMMIT") ;;' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance accepts main-targeted legacy releases" \
+    grep -qF 'recorded tag is not on the release target branch' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance freezes an offline read-only clone" \
+    sh -c 'grep -qF "remote remove origin" "$1" &&
+        grep -qF "chmod -R a-w" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance snapshots from the canonical remote" \
+    grep -qF 'git clone --no-checkout "$HARMON_INIT_SOURCE"' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "update guidance does not snapshot local-only tags" \
+    grep -qF 'git clone --no-local --no-checkout ~/git/harmon-init' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance rejects remote-capable template submodules" \
+    grep -qF '"$GUARDED_COMMIT:.gitmodules"' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance ignores recovery state in ordinary and linked worktrees" \
+    sh -c 'grep -qF "GUARDED_STATE=.copier-guarded-update" "$1" &&
+        grep -qF "git rev-parse --path-format=absolute --git-path info/exclude" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance refuses to overwrite interrupted guarded state" \
+    grep -qF 'recover or remove it before retrying' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance process-scopes canonical URL rewrites" \
+    sh -c 'grep -qF "GIT_CONFIG_COUNT=2" "$1" &&
+        grep -qF "insteadOf" "$1" &&
+        grep -qF "run_guarded_copier" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance binds apply and promotion to the prepared checkout" \
+    test "$(grep -Fc 'working checkout no longer matches guarded update state' \
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+expect_ok "update guidance persists and verifies the symbolic checkout" \
+    sh -c 'grep -qF "start-checkout" "$1" &&
+        grep -qF "guarded_checkout_id" "$1" &&
+        grep -qF "detached" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance persists and verifies the complete reviewed answer map" \
+    sh -c 'grep -qF "reviewed-data.yml" "$1" &&
+        grep -qF "__REVIEW_REQUIRED__" "$1" &&
+        grep -qF "reviewed-data-oid" "$1" &&
+        grep -qF "applied answer differs from reviewed value" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance validates every reviewed key after apply" \
+    grep -qF 'done <"$GUARDED_STATE/reviewed-keys"' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update check, preview, and apply use the guarded Copier wrapper" \
+    test "$(grep -Ec '^(if )?run_guarded_copier (check-update|update)' \
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 3
+expect_ok "update guidance runs drift only after guarded source creation" \
+    test "$(grep -nF 'GUARDED_TEMPLATE="$(mktemp' \
+        "$STANDARDIZE_REFS/mode-update.md" | cut -d: -f1)" -lt \
+    "$(grep -nF 'assets/diff-template.sh .' \
+        "$STANDARDIZE_REFS/mode-update.md" | head -1 | cut -d: -f1)"
+expect_ok "update guidance restores a canonical full-hash lineage tuple" \
+    sh -c 'grep -qF "._src_path = strenv(HARMON_INIT_SOURCE)" "$1" &&
+        grep -qF "._commit = strenv(HARMON_INIT_COMMIT)" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance atomically promotes the canonical answers file" \
+    grep -qF 'mv "$PROMOTED_ANSWERS" .copier-answers.yml' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance proves Copier applied the target before promotion" \
+    grep -qF 'guarded update did not apply the validated target' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance writes apply intent before Copier can mutate the tree" \
+    sh -c 'phase_line="$(grep -nF "write_guarded_phase applying" "$1" |
+            cut -d: -f1)"
+        copier_line="$(grep -nF \
+            "if run_guarded_copier update --trust --defaults" "$1" |
+            cut -d: -f1)"
+        test "$phase_line" -lt "$copier_line" &&
+        grep -qF "An \`applying\`" "$1" &&
+        grep -qF "state is never promotable" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance requires a clean worktree immediately before apply" \
+    sh -c 'clean_line="$(grep -nF \
+            "test -z \"\$(git status --porcelain)\"" "$1" |
+            sed -n "2p" | cut -d: -f1)"
+        phase_line="$(grep -nF "write_guarded_phase applying" "$1" |
+            cut -d: -f1)"
+        test -n "$clean_line" && test "$clean_line" -lt "$phase_line"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance makes interrupted rollback explicitly destructive" \
+    sh -c 'grep -qF "git clean -nd" "$1" &&
+        grep -qF "git diff HEAD --stat" "$1" &&
+        grep -qF "explicit maintainer approval" "$1" &&
+        grep -qF "This rollback is" "$1" &&
+        grep -qF "destructive and must never" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance snapshots and restores ignored managed paths" \
+    sh -c 'grep -qF "ignored-backup.tar" "$1" &&
+        grep -qF "ignored-absent-paths" "$1" &&
+        grep -qF "ignored-preapply.tar" "$1" &&
+        grep -qF "ignored-verify.tar" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance stages the promoted full-hash answers" \
+    grep -qF 'git add -- .copier-answers.yml' \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "post-generation guidance requires Renovate Scan and Alert mode" \
     grep -qF '**Scan and Alert** mode' \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
@@ -504,6 +634,23 @@ expect_ok "post-generation guidance requires external CodeRabbit access removal"
 expect_ok "audit guidance reconciles CodeRabbit answers and external access" \
     grep -qF '**G3. CodeRabbit selection drift.**' \
     "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit guidance requires the guarded canonical baseline render" \
+    sh -c 'grep -qF "Do not set \`HARMON_INIT\` for a normal audit" "$1" &&
+        grep -qF "ACCEPT_LEGACY_BASELINE=true" "$1" &&
+        grep -qF "read-only clone" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "top-level prerequisites do not require a local checkout for audits" \
+    sh -c 'grep -qF "**Audit mode does not require a local checkout**" "$1" &&
+        grep -qF "**harmon-init** cloned locally" "$1" &&
+        grep -qF "**new-repo**," "$1" &&
+        grep -qF "**adopt-existing**, and **update** modes" "$1"' sh \
+    "$STANDARDIZE_SKILL"
+expect_ok "template drift helper snapshots and freezes the canonical baseline" \
+    sh -c 'grep -qF "git clone --no-checkout" "$1" &&
+        grep -qF "remote remove origin" "$1" &&
+        grep -qF "recorded_commit" "$1" &&
+        grep -qF "chmod -R a-w" "$1"' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
 expect_ok "update guidance gates on a release supporting CodeRabbit selection" \
     grep -qF "grep -q '^use_coderabbit:'" \
     "$STANDARDIZE_REFS/mode-update.md"
@@ -521,9 +668,9 @@ expect_fail "production copy commands do not reuse the mutable release tag" \
     "$STANDARDIZE_SKILL" \
     "$STANDARDIZE_REFS/mode-new-repo.md" \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
-expect_ok "update preview and apply pin the same immutable release commit" \
+expect_ok "update discovery, preview, and apply pin the same immutable release commit" \
     test "$(grep -Fc -- '--vcs-ref="$HARMON_INIT_COMMIT"' \
-        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 3
 expect_fail "update commands do not reuse the mutable release tag" \
     grep -qF -- '--vcs-ref="$HARMON_INIT_REF"' "$STANDARDIZE_REFS/mode-update.md"
 expect_fail "production command examples do not pin an obsolete release" \
@@ -1720,6 +1867,532 @@ elif printf '%s\n' "$staged_delete_out" | grep -qF "MISSING  scripts/status.sh";
 else
     bad "diff-template reports a staged deletion (MISSING diagnostic absent)"
 fi
+
+GA_TEMPLATE="$TMPROOT/guarded-audit-template"
+GA_REMOTE="$TMPROOT/guarded-audit-remote.git"
+GA_TARGET="$TMPROOT/guarded-audit-target"
+mkdir -p "$GA_TEMPLATE/template"
+cat >"$GA_TEMPLATE/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+project_name:
+  type: str
+  default: Guarded Audit
+EOF
+cat >"$GA_TEMPLATE/template/.copier-answers.yml.jinja" <<'EOF'
+{{ _copier_answers|to_nice_yaml -}}
+EOF
+printf '%s\n' guarded-audit >"$GA_TEMPLATE/template/audit.txt"
+git_init "$GA_TEMPLATE"
+git_commit_all "$GA_TEMPLATE" "guarded audit baseline"
+git -C "$GA_TEMPLATE" tag v3.0.0
+git clone --bare "$GA_TEMPLATE" "$GA_REMOTE" >/dev/null 2>&1
+copier copy --trust --defaults --vcs-ref=v3.0.0 \
+    "$GA_TEMPLATE" "$GA_TARGET" >/dev/null
+GA_CANONICAL_SOURCE=https://github.com/evanharmon1/harmon-init
+GA_CANONICAL_SOURCE="$GA_CANONICAL_SOURCE" \
+    yq -i '._src_path = strenv(GA_CANONICAL_SOURCE)' \
+    "$GA_TARGET/.copier-answers.yml"
+expect_fail "guarded audit refuses an unapproved tag-valued baseline" \
+    env \
+    GIT_CONFIG_COUNT=1 \
+    "GIT_CONFIG_KEY_0=url.$GA_REMOTE.insteadOf" \
+    "GIT_CONFIG_VALUE_0=$GA_CANONICAL_SOURCE" \
+    "$STANDARDIZE_ASSETS/diff-template.sh" "$GA_TARGET"
+expect_ok "guarded audit snapshots the approved canonical tag baseline" \
+    env \
+    ACCEPT_LEGACY_BASELINE=true \
+    GIT_CONFIG_COUNT=1 \
+    "GIT_CONFIG_KEY_0=url.$GA_REMOTE.insteadOf" \
+    "GIT_CONFIG_VALUE_0=$GA_CANONICAL_SOURCE" \
+    "$STANDARDIZE_ASSETS/diff-template.sh" "$GA_TARGET"
+
+GU_TEMPLATE="$TMPROOT/guarded-update-source"
+GU_REMOTE="$TMPROOT/guarded-update-remote.git"
+GU_TARGET="$TMPROOT/guarded-update-target"
+GU_SNAPSHOT="$TMPROOT/guarded-update-snapshot"
+GU_CACHE="$TMPROOT/guarded-update-cache"
+mkdir -p "$GU_TEMPLATE/template"
+mkdir -p "$GU_CACHE"
+cat >"$GU_TEMPLATE/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+project_name:
+  type: str
+  default: Guarded Update
+use_foreman:
+  type: bool
+  default: false
+use_coderabbit:
+  type: bool
+  default: false
+use_codeql:
+  type: bool
+  default: false
+codeql_languages:
+  type: yaml
+  default: []
+EOF
+cat >"$GU_TEMPLATE/template/.copier-answers.yml.jinja" <<'EOF'
+{{ _copier_answers|to_nice_yaml -}}
+EOF
+mkdir -p "$GU_TEMPLATE/template/.vscode"
+printf '%s\n' '.vscode/*' \
+    '!.vscode/settings.json' \
+    '!.vscode/legacy.json' >"$GU_TEMPLATE/template/.gitignore"
+printf '%s\n' '{"setting":"baseline"}' \
+    >"$GU_TEMPLATE/template/.vscode/settings.json"
+printf '%s\n' '{"legacy":"baseline"}' \
+    >"$GU_TEMPLATE/template/.vscode/legacy.json"
+printf '%s\n' 'baseline' >"$GU_TEMPLATE/template/version.txt"
+git_init "$GU_TEMPLATE"
+git_commit_all "$GU_TEMPLATE" "baseline template"
+GU_BASELINE="$(git -C "$GU_TEMPLATE" rev-parse HEAD)"
+git -C "$GU_TEMPLATE" tag v1.0.0
+copier copy --trust --defaults --vcs-ref=v1.0.0 \
+    "$GU_TEMPLATE" "$GU_TARGET" >/dev/null
+GU_CANONICAL_SOURCE=https://github.com/example/guarded-update
+GU_CANONICAL_SOURCE="$GU_CANONICAL_SOURCE" \
+    yq -i '._src_path = strenv(GU_CANONICAL_SOURCE)' \
+    "$GU_TARGET/.copier-answers.yml"
+mkdir -p "$GU_TARGET/.vscode"
+printf '%s\n' '.vscode/*' >"$GU_TARGET/.gitignore"
+printf '%s\n' '{"setting":"custom"}' >"$GU_TARGET/.vscode/settings.json"
+printf '%s\n' '{"legacy":"custom"}' >"$GU_TARGET/.vscode/legacy.json"
+git_init "$GU_TARGET"
+git_commit_all "$GU_TARGET" "generated baseline"
+GU_TARGET_REAL="$(cd "$GU_TARGET" && pwd -P)"
+
+printf '%s\n' 'target' >"$GU_TEMPLATE/template/version.txt"
+printf '%s\n' '.vscode/*' \
+    '!.vscode/settings.json' \
+    '!.vscode/new.json' \
+    >"$GU_TEMPLATE/template/.gitignore"
+printf '%s\n' '{"setting":"target"}' \
+    >"$GU_TEMPLATE/template/.vscode/settings.json"
+rm "$GU_TEMPLATE/template/.vscode/legacy.json"
+printf '%s\n' '{"new":"target"}' \
+    >"$GU_TEMPLATE/template/.vscode/new.json"
+cat >>"$GU_TEMPLATE/copier.yml" <<'EOF'
+deploy_preview:
+  type: bool
+  default: false
+preview_region:
+  type: str
+  default: iad
+  when: "{{ deploy_preview }}"
+hidden_rollout:
+  type: str
+  default: internal
+  when: false
+EOF
+git_commit_all "$GU_TEMPLATE" "target template"
+GU_TARGET_COMMIT="$(git -C "$GU_TEMPLATE" rev-parse HEAD)"
+git -C "$GU_TEMPLATE" tag v2.0.0
+git clone --bare "$GU_TEMPLATE" "$GU_REMOTE" >/dev/null 2>&1
+git -C "$GU_TEMPLATE" tag v9.9.9
+git clone --no-local --no-checkout "$GU_REMOTE" "$GU_SNAPSHOT" >/dev/null 2>&1
+git -C "$GU_SNAPSHOT" remote remove origin
+expect_fail "guarded snapshot excludes local-only template tags" \
+    git -C "$GU_SNAPSHOT" rev-parse --verify refs/tags/v9.9.9
+printf '%s\n' '/.copier-guarded-update/' >>"$GU_TARGET/.git/info/exclude"
+mkdir "$GU_TARGET/.copier-guarded-update"
+git -C "$GU_TARGET" rev-parse HEAD \
+    >"$GU_TARGET/.copier-guarded-update/start-head"
+printf '%s\n' branch:main \
+    >"$GU_TARGET/.copier-guarded-update/start-checkout"
+git -C "$GU_TARGET" hash-object "$GU_TARGET/.copier-answers.yml" \
+    >"$GU_TARGET/.copier-guarded-update/canonical-answers-oid"
+printf '%s\n' "$GU_TARGET_COMMIT" \
+    >"$GU_TARGET/.copier-guarded-update/target-commit"
+printf '%s\n' "$GU_SNAPSHOT" \
+    >"$GU_TARGET/.copier-guarded-update/template-path"
+printf '%s\n' "$GU_CACHE" \
+    >"$GU_TARGET/.copier-guarded-update/cache-path"
+cp "$GU_TARGET/.copier-answers.yml" \
+    "$GU_TARGET/.copier-guarded-update/original-answers.yml"
+git -C "$GU_SNAPSHOT" show "$GU_BASELINE":copier.yml |
+    yq -r 'keys | .[] | select(test("^_") | not)' |
+    LC_ALL=C sort -u \
+        >"$GU_TARGET/.copier-guarded-update/baseline-questions"
+git -C "$GU_SNAPSHOT" show "$GU_TARGET_COMMIT":copier.yml |
+    yq -r 'keys | .[] | select(test("^_") | not)' |
+    LC_ALL=C sort -u \
+        >"$GU_TARGET/.copier-guarded-update/target-questions"
+comm -13 \
+    "$GU_TARGET/.copier-guarded-update/baseline-questions" \
+    "$GU_TARGET/.copier-guarded-update/target-questions" \
+    >"$GU_TARGET/.copier-guarded-update/new-question-candidates"
+GU_DISCOVERY="$TMPROOT/guarded-update-discovery"
+yq 'with_entries(select(.key | test("^_") | not))' \
+    "$GU_TARGET/.copier-guarded-update/original-answers.yml" \
+    >"$GU_TARGET/.copier-guarded-update/discovery-data.yml"
+copier copy --trust --defaults --skip-tasks \
+    --vcs-ref="$GU_TARGET_COMMIT" \
+    --data-file="$GU_TARGET/.copier-guarded-update/discovery-data.yml" \
+    "$GU_SNAPSHOT" "$GU_DISCOVERY" >/dev/null
+yq -r 'keys | .[] | select(test("^_") | not)' \
+    "$GU_DISCOVERY/.copier-answers.yml" |
+    LC_ALL=C sort -u \
+        >"$GU_TARGET/.copier-guarded-update/active-target-questions"
+comm -12 \
+    "$GU_TARGET/.copier-guarded-update/new-question-candidates" \
+    "$GU_TARGET/.copier-guarded-update/active-target-questions" \
+    >"$GU_TARGET/.copier-guarded-update/active-new-questions"
+{
+    cat "$GU_TARGET/.copier-guarded-update/active-new-questions"
+    printf '%s\n' use_foreman use_coderabbit use_codeql codeql_languages
+} |
+    LC_ALL=C sort -u |
+    comm -12 - \
+        "$GU_TARGET/.copier-guarded-update/active-target-questions" \
+        >"$GU_TARGET/.copier-guarded-update/reviewed-keys"
+USE_FOREMAN=true USE_CODERABBIT=false USE_CODEQL=true \
+    CODEQL_LANGUAGES='["javascript-typescript"]' DEPLOY_PREVIEW=true \
+    yq -n -o=yaml \
+    '{"use_foreman": (strenv(USE_FOREMAN) == "true"),
+      "use_coderabbit": (strenv(USE_CODERABBIT) == "true"),
+      "use_codeql": (strenv(USE_CODEQL) == "true"),
+      "codeql_languages": (strenv(CODEQL_LANGUAGES) | from_json),
+      "deploy_preview": (strenv(DEPLOY_PREVIEW) == "true")}' \
+    >"$GU_TARGET/.copier-guarded-update/reviewed-data.yml"
+expect_fail "first discovery excludes a conditional question whose controller defaults off" \
+    grep -qxF preview_region \
+    "$GU_TARGET/.copier-guarded-update/active-target-questions"
+yq eval-all \
+    'select(fileIndex == 0) * select(fileIndex == 1)' \
+    "$GU_TARGET/.copier-guarded-update/discovery-data.yml" \
+    "$GU_TARGET/.copier-guarded-update/reviewed-data.yml" \
+    >"$GU_TARGET/.copier-guarded-update/discovery-data.next.yml"
+GU_DISCOVERY_SECOND="$TMPROOT/guarded-update-discovery-second"
+copier copy --trust --defaults --skip-tasks \
+    --vcs-ref="$GU_TARGET_COMMIT" \
+    --data-file="$GU_TARGET/.copier-guarded-update/discovery-data.next.yml" \
+    "$GU_SNAPSHOT" "$GU_DISCOVERY_SECOND" >/dev/null
+yq -r 'keys | .[] | select(test("^_") | not)' \
+    "$GU_DISCOVERY_SECOND/.copier-answers.yml" |
+    LC_ALL=C sort -u \
+        >"$GU_TARGET/.copier-guarded-update/active-target-questions"
+comm -12 \
+    "$GU_TARGET/.copier-guarded-update/new-question-candidates" \
+    "$GU_TARGET/.copier-guarded-update/active-target-questions" \
+    >"$GU_TARGET/.copier-guarded-update/active-new-questions"
+{
+    cat "$GU_TARGET/.copier-guarded-update/active-new-questions"
+    printf '%s\n' use_foreman use_coderabbit use_codeql codeql_languages
+} |
+    LC_ALL=C sort -u |
+    comm -12 - \
+        "$GU_TARGET/.copier-guarded-update/active-target-questions" \
+        >"$GU_TARGET/.copier-guarded-update/reviewed-keys"
+PREVIEW_REGION=ord yq -i \
+    '.preview_region = strenv(PREVIEW_REGION)' \
+    "$GU_TARGET/.copier-guarded-update/reviewed-data.yml"
+find "$GU_DISCOVERY_SECOND" \( -type f -o -type l \) -print |
+    sed "s#^$GU_DISCOVERY_SECOND/##" |
+    LC_ALL=C sort -u \
+        >"$GU_TARGET/.copier-guarded-update/target-managed-paths"
+GU_BASELINE_DISCOVERY="$TMPROOT/guarded-update-baseline-discovery"
+copier copy --trust --defaults --skip-tasks \
+    --vcs-ref="$GU_BASELINE" \
+    --data-file="$GU_TARGET/.copier-guarded-update/discovery-data.yml" \
+    "$GU_SNAPSHOT" "$GU_BASELINE_DISCOVERY" >/dev/null
+find "$GU_BASELINE_DISCOVERY" \( -type f -o -type l \) -print |
+    sed "s#^$GU_BASELINE_DISCOVERY/##" |
+    LC_ALL=C sort -u \
+        >"$GU_TARGET/.copier-guarded-update/baseline-managed-paths"
+cat \
+    "$GU_TARGET/.copier-guarded-update/baseline-managed-paths" \
+    "$GU_TARGET/.copier-guarded-update/target-managed-paths" |
+    LC_ALL=C sort -u \
+        >"$GU_TARGET/.copier-guarded-update/managed-paths"
+git -C "$GU_TARGET" hash-object \
+    "$GU_TARGET/.copier-guarded-update/reviewed-data.yml" \
+    >"$GU_TARGET/.copier-guarded-update/reviewed-data-oid"
+expect_ok "guarded review set derives every target-only Copier question" \
+    sh -c 'grep -qxF deploy_preview "$1" &&
+        grep -qxF preview_region "$1"' sh \
+    "$GU_TARGET/.copier-guarded-update/active-new-questions"
+expect_ok "second discovery activates a conditional question after controller review" \
+    grep -qxF preview_region \
+    "$GU_TARGET/.copier-guarded-update/active-target-questions"
+cp "$GU_TARGET/.copier-guarded-update/reviewed-data.yml" \
+    "$GU_TARGET/.copier-guarded-update/stale-reviewed-data.yml"
+yq -i '.deploy_preview = false' \
+    "$GU_TARGET/.copier-guarded-update/stale-reviewed-data.yml"
+printf '%s\n' '{}' \
+    >"$GU_TARGET/.copier-guarded-update/stale-active-reviewed.yml"
+yq -r 'keys | .[] | select(test("^_") | not)' \
+    "$GU_DISCOVERY/.copier-answers.yml" |
+    LC_ALL=C sort -u |
+    while IFS= read -r active_key; do
+        if ACTIVE_KEY="$active_key" yq -e \
+            'has(strenv(ACTIVE_KEY))' \
+            "$GU_TARGET/.copier-guarded-update/stale-reviewed-data.yml" \
+            >/dev/null; then
+            ACTIVE_VALUE="$(
+                ACTIVE_KEY="$active_key" yq -o=json -I=0 \
+                    '.[strenv(ACTIVE_KEY)]' \
+                    "$GU_TARGET/.copier-guarded-update/stale-reviewed-data.yml"
+            )"
+            ACTIVE_KEY="$active_key" ACTIVE_VALUE="$ACTIVE_VALUE" yq -i \
+                '.[strenv(ACTIVE_KEY)] =
+                    (strenv(ACTIVE_VALUE) | from_json)' \
+                "$GU_TARGET/.copier-guarded-update/stale-active-reviewed.yml"
+        fi
+    done
+yq eval-all \
+    'select(fileIndex == 0) * select(fileIndex == 1)' \
+    "$GU_TARGET/.copier-guarded-update/discovery-data.yml" \
+    "$GU_TARGET/.copier-guarded-update/stale-active-reviewed.yml" \
+    >"$GU_TARGET/.copier-guarded-update/stale-discovery-data.yml"
+GU_DISCOVERY_STALE="$TMPROOT/guarded-update-discovery-stale"
+copier copy --trust --defaults --skip-tasks \
+    --vcs-ref="$GU_TARGET_COMMIT" \
+    --data-file="$GU_TARGET/.copier-guarded-update/stale-discovery-data.yml" \
+    "$GU_SNAPSHOT" "$GU_DISCOVERY_STALE" >/dev/null
+expect_fail "fixed-point filtering drops stale values from newly inactive questions" \
+    yq -e 'has("preview_region")' \
+    "$GU_DISCOVERY_STALE/.copier-answers.yml"
+expect_fail "guarded review set excludes hidden target-only questions" \
+    grep -qxF hidden_rollout \
+    "$GU_TARGET/.copier-guarded-update/reviewed-keys"
+expect_ok "guarded review data covers every required reviewed question" \
+    sh -c 'while IFS= read -r key; do
+        KEY="$key" yq -e "has(strenv(KEY))" "$1" >/dev/null || exit 1
+    done <"$2"' sh \
+    "$GU_TARGET/.copier-guarded-update/reviewed-data.yml" \
+    "$GU_TARGET/.copier-guarded-update/reviewed-keys"
+while IFS= read -r managed_path; do
+    if git -C "$GU_TARGET" check-ignore -q -- "$managed_path"; then
+        printf '%s\n' "$managed_path"
+    fi
+done <"$GU_TARGET/.copier-guarded-update/managed-paths" \
+    >"$GU_TARGET/.copier-guarded-update/ignored-managed-paths"
+: >"$GU_TARGET/.copier-guarded-update/ignored-absent-paths"
+: >"$GU_TARGET/.copier-guarded-update/ignored-existing-paths"
+while IFS= read -r ignored_path; do
+    if test -e "$GU_TARGET/$ignored_path" ||
+        test -L "$GU_TARGET/$ignored_path"; then
+        printf '%s\n' "$ignored_path" \
+            >>"$GU_TARGET/.copier-guarded-update/ignored-existing-paths"
+    else
+        printf '%s\n' "$ignored_path" \
+            >>"$GU_TARGET/.copier-guarded-update/ignored-absent-paths"
+    fi
+done <"$GU_TARGET/.copier-guarded-update/ignored-managed-paths"
+tar -C "$GU_TARGET" \
+    -cf "$GU_TARGET/.copier-guarded-update/ignored-backup.tar" \
+    -T "$GU_TARGET/.copier-guarded-update/ignored-existing-paths"
+git -C "$GU_TARGET" hash-object \
+    "$GU_TARGET/.copier-guarded-update/ignored-backup.tar" \
+    >"$GU_TARGET/.copier-guarded-update/ignored-backup-oid"
+git -C "$GU_TARGET" hash-object \
+    "$GU_TARGET/.copier-guarded-update/ignored-managed-paths" \
+    >"$GU_TARGET/.copier-guarded-update/ignored-managed-paths-oid"
+printf '%s\n' ready \
+    >"$GU_TARGET/.copier-guarded-update/ignored-snapshot-ready"
+expect_ok "guarded ignored backup is derived from the task-free target render" \
+    grep -qxF .vscode/settings.json \
+    "$GU_TARGET/.copier-guarded-update/ignored-managed-paths"
+expect_ok "guarded ignored backup includes baseline-only existing paths" \
+    grep -qxF .vscode/legacy.json \
+    "$GU_TARGET/.copier-guarded-update/ignored-existing-paths"
+expect_ok "guarded ignored backup records target-only absent paths" \
+    grep -qxF .vscode/new.json \
+    "$GU_TARGET/.copier-guarded-update/ignored-absent-paths"
+chmod -R a-w "$GU_SNAPSHOT"
+
+# Move the original mutable tag after the guarded snapshot exists. Copier 9.16
+# re-describes the baseline internally, so this proves its nested clone resolves
+# against the frozen local tag mapping instead of the changed source repository.
+git --git-dir="$GU_REMOTE" tag -f v1.0.0 "$GU_TARGET_COMMIT" >/dev/null
+git -C "$GU_TARGET" switch -c guarded-wrong-branch >/dev/null
+expect_fail "guarded update state rejects another branch at the same HEAD" \
+    sh -c 'test "$(cat "$1/.copier-guarded-update/start-checkout")" = \
+        "branch:$(git -C "$1" symbolic-ref --quiet --short HEAD)"' sh \
+    "$GU_TARGET"
+git -C "$GU_TARGET" switch main >/dev/null
+printf '%s\n' intervening >"$GU_TARGET/intervening.txt"
+expect_fail "guarded apply rejects intervening untracked worktree changes" \
+    sh -c 'test -z "$(git -C "$1" status --porcelain)"' sh "$GU_TARGET"
+rm "$GU_TARGET/intervening.txt"
+tar -C "$GU_TARGET" \
+    -cf "$GU_TARGET/.copier-guarded-update/ignored-preapply.tar" \
+    -T "$GU_TARGET/.copier-guarded-update/ignored-existing-paths"
+expect_ok "guarded apply verifies ignored managed paths before mutation" \
+    sh -c 'test "$(git -C "$1" hash-object \
+            "$1/.copier-guarded-update/ignored-preapply.tar")" = \
+        "$(cat "$1/.copier-guarded-update/ignored-backup-oid")"' sh \
+    "$GU_TARGET"
+rm "$GU_TARGET/.copier-guarded-update/ignored-preapply.tar"
+GU_APPLY_PHASE_CANDIDATE="$GU_TARGET/.copier-guarded-update/apply-phase.candidate"
+printf '%s\n' applying >"$GU_APPLY_PHASE_CANDIDATE"
+mv "$GU_APPLY_PHASE_CANDIDATE" \
+    "$GU_TARGET/.copier-guarded-update/apply-phase"
+expect_ok "guarded Copier update survives a source release retag" \
+    env \
+    "COPIER_CACHE_DIR=$GU_CACHE" \
+    GIT_CONFIG_COUNT=2 \
+    "GIT_CONFIG_KEY_0=url.$GU_SNAPSHOT.insteadOf" \
+    "GIT_CONFIG_VALUE_0=$GU_CANONICAL_SOURCE.git" \
+    "GIT_CONFIG_KEY_1=url.$GU_SNAPSHOT.insteadOf" \
+    "GIT_CONFIG_VALUE_1=$GU_CANONICAL_SOURCE" \
+    copier update --trust --defaults \
+    --vcs-ref="$GU_TARGET_COMMIT" \
+    --data-file="$GU_TARGET_REAL/.copier-guarded-update/reviewed-data.yml" \
+    "$GU_TARGET_REAL"
+expect_ok "guarded recovery retains write-ahead applying state after a crash window" \
+    grep -qxF applying "$GU_TARGET/.copier-guarded-update/apply-phase"
+expect_fail "guarded recovery never promotes an ambiguous applying state" \
+    sh -c 'case "$(cat "$1/.copier-guarded-update/apply-phase")" in
+        applied) exit 0 ;;
+        applying) exit 1 ;;
+        *) exit 2 ;;
+    esac' sh "$GU_TARGET"
+printf '%s\n' applied >"$GU_TARGET/.copier-guarded-update/apply-phase"
+expect_ok "guarded Copier update applies the intended target content" \
+    grep -qxF target "$GU_TARGET/version.txt"
+if git -C "$GU_TARGET" diff --name-only --diff-filter=U |
+    grep -qxF .gitignore; then
+    printf '%s\n' '.vscode/*' \
+        '!.vscode/settings.json' \
+        '!.vscode/new.json' >"$GU_TARGET/.gitignore"
+    git -C "$GU_TARGET" add -- .gitignore
+fi
+expect_ok "guarded Copier update leaves canonical answers conflict-free" \
+    sh -c 'yq -e "." "$1/.copier-answers.yml" >/dev/null &&
+        test -z "$(git -C "$1" diff --name-only --diff-filter=U)"' sh \
+    "$GU_TARGET"
+GU_APPLIED_REF="$(
+    yq -r '._commit // ""' "$GU_TARGET/.copier-answers.yml"
+)"
+GU_APPLIED_COMMIT="$(
+    git -C "$GU_SNAPSHOT" rev-parse "$GU_APPLIED_REF^{commit}"
+)"
+expect_ok "guarded Copier update records the validated applied target" \
+    test "$GU_APPLIED_COMMIT" = "$GU_TARGET_COMMIT"
+expect_ok "guarded Copier update retains the canonical source URL" \
+    test "$(yq -r '._src_path' "$GU_TARGET/.copier-answers.yml")" = \
+    "$GU_CANONICAL_SOURCE"
+expect_ok "guarded update state remains bound to checkout and original answers" \
+    sh -c 'test "$(cat "$1/.copier-guarded-update/start-head")" = \
+            "$(git -C "$1" rev-parse HEAD)" &&
+        test "$(cat "$1/.copier-guarded-update/canonical-answers-oid")" = \
+            "$(git -C "$1" hash-object \
+                "$1/.copier-guarded-update/original-answers.yml")"' sh \
+    "$GU_TARGET"
+expect_ok "guarded Copier update applies the exact reviewed answers" \
+    sh -c 'test "$(yq -r ".use_foreman" "$1/.copier-answers.yml")" = true &&
+        test "$(yq -r ".use_coderabbit" "$1/.copier-answers.yml")" = false &&
+        test "$(yq -r ".use_codeql" "$1/.copier-answers.yml")" = true &&
+        test "$(yq -o=json -I=0 ".codeql_languages" \
+            "$1/.copier-answers.yml")" = "[\"javascript-typescript\"]" &&
+        test "$(yq -r ".deploy_preview" "$1/.copier-answers.yml")" = true &&
+        test "$(yq -r ".preview_region" "$1/.copier-answers.yml")" = ord &&
+        ! yq -e "has(\"hidden_rollout\")" "$1/.copier-answers.yml" \
+            >/dev/null' sh \
+    "$GU_TARGET"
+expect_ok "guarded recovery validates every reviewed answer before promotion" \
+    sh -c 'while IFS= read -r key; do
+        KEY="$key" yq -e "has(strenv(KEY))" "$1/.copier-answers.yml" \
+            >/dev/null || exit 1
+        actual="$(KEY="$key" yq -o=json -I=0 \
+            ".[strenv(KEY)]" "$1/.copier-answers.yml")"
+        expected="$(KEY="$key" yq -o=json -I=0 \
+            ".[strenv(KEY)]" "$1/.copier-guarded-update/reviewed-data.yml")"
+        test "$actual" = "$expected" || exit 1
+    done <"$1/.copier-guarded-update/reviewed-keys"' sh \
+    "$GU_TARGET"
+printf '%s\n' '{"setting":"interrupted"}' >"$GU_TARGET/.vscode/settings.json"
+while IFS= read -r absent_ignored_path; do
+    rm -f "$GU_TARGET/$absent_ignored_path"
+done <"$GU_TARGET/.copier-guarded-update/ignored-absent-paths"
+tar -C "$GU_TARGET" \
+    -xf "$GU_TARGET/.copier-guarded-update/ignored-backup.tar"
+tar -C "$GU_TARGET" \
+    -cf "$GU_TARGET/.copier-guarded-update/ignored-verify.tar" \
+    -T "$GU_TARGET/.copier-guarded-update/ignored-existing-paths"
+expect_ok "guarded rollback restores and verifies ignored managed files" \
+    sh -c 'grep -qxF "{\"setting\":\"custom\"}" \
+            "$1/.vscode/settings.json" &&
+        grep -qxF "{\"legacy\":\"custom\"}" \
+            "$1/.vscode/legacy.json" &&
+        test ! -e "$1/.vscode/new.json" &&
+        test "$(git -C "$1" hash-object \
+            "$1/.copier-guarded-update/ignored-verify.tar")" = \
+        "$(cat "$1/.copier-guarded-update/ignored-backup-oid")"' sh \
+    "$GU_TARGET"
+rm "$GU_TARGET/.copier-guarded-update/ignored-verify.tar"
+expect_fail "guarded Copier update state refuses a concurrent or blind retry" \
+    mkdir "$GU_TARGET/.copier-guarded-update"
+git -C "$GU_TARGET" add -A
+GU_PROMOTED_ANSWERS="$GU_TARGET/.copier-answers.yml.promote"
+cp "$GU_TARGET/.copier-answers.yml" "$GU_PROMOTED_ANSWERS"
+GU_CANONICAL_SOURCE="$GU_CANONICAL_SOURCE" \
+    GU_TARGET_COMMIT="$GU_TARGET_COMMIT" \
+    yq -i \
+    '._src_path = strenv(GU_CANONICAL_SOURCE) |
+     ._commit = strenv(GU_TARGET_COMMIT)' \
+    "$GU_PROMOTED_ANSWERS"
+mv "$GU_PROMOTED_ANSWERS" "$GU_TARGET/.copier-answers.yml"
+git -C "$GU_TARGET" add -- .copier-answers.yml
+expect_ok "promoted full-hash answers replace the staged tag lineage" \
+    sh -c 'git -C "$1" show :.copier-answers.yml |
+        EXPECTED_COMMIT="$2" yq -e "._commit == strenv(EXPECTED_COMMIT)" - \
+            >/dev/null' sh \
+    "$GU_TARGET" "$GU_TARGET_COMMIT"
+chmod -R u+w "$GU_SNAPSHOT"
+
+RB_TARGET="$TMPROOT/guarded-rollback-target"
+mkdir -p "$RB_TARGET"
+git_init "$RB_TARGET"
+printf '%s\n' staged-original >"$RB_TARGET/staged.txt"
+printf '%s\n' unstaged-original >"$RB_TARGET/unstaged.txt"
+git_commit_all "$RB_TARGET" "rollback baseline"
+printf '%s\n' '/.copier-guarded-update/' >>"$RB_TARGET/.git/info/exclude"
+mkdir "$RB_TARGET/.copier-guarded-update"
+git -C "$RB_TARGET" rev-parse HEAD \
+    >"$RB_TARGET/.copier-guarded-update/start-head"
+printf '%s\n' staged-change >"$RB_TARGET/staged.txt"
+git -C "$RB_TARGET" add -- staged.txt
+printf '%s\n' unstaged-change >"$RB_TARGET/unstaged.txt"
+printf '%s\n' untracked-change >"$RB_TARGET/untracked.txt"
+expect_ok "rollback preview includes staged and unstaged tracked changes" \
+    sh -c 'git -C "$1" diff HEAD --stat | grep -qF staged.txt &&
+        git -C "$1" diff HEAD --stat | grep -qF unstaged.txt' sh \
+    "$RB_TARGET"
+expect_ok "rollback preview includes untracked removal candidates" \
+    sh -c 'git -C "$1" clean -nd | grep -qF untracked.txt' sh \
+    "$RB_TARGET"
+git -C "$RB_TARGET" restore \
+    --source="$(
+        cat "$RB_TARGET/.copier-guarded-update/start-head"
+    )" \
+    --staged --worktree -- .
+git -C "$RB_TARGET" clean -fd >/dev/null
+expect_ok "guarded rollback restores staged, unstaged, and untracked state" \
+    sh -c 'test "$(cat "$1/staged.txt")" = staged-original &&
+        test "$(cat "$1/unstaged.txt")" = unstaged-original &&
+        test ! -e "$1/untracked.txt" &&
+        test -z "$(git -C "$1" status --porcelain)"' sh \
+    "$RB_TARGET"
+
+WT_REPO="$TMPROOT/guarded-answers-worktree-repo"
+WT_TARGET="$TMPROOT/guarded-answers-linked-worktree"
+mkdir -p "$WT_REPO"
+git_init "$WT_REPO"
+printf '%s\n' tracked >"$WT_REPO/tracked.txt"
+git_commit_all "$WT_REPO" "linked worktree fixture"
+git -C "$WT_REPO" worktree add -b guarded-answers-test "$WT_TARGET" >/dev/null
+WT_EXCLUDE="$(
+    git -C "$WT_TARGET" rev-parse --path-format=absolute --git-path info/exclude
+)"
+printf '%s\n' '/.copier-guarded-update/' >>"$WT_EXCLUDE"
+mkdir "$WT_TARGET/.copier-guarded-update"
+printf '%s\n' guarded >"$WT_TARGET/.copier-guarded-update/original-answers.yml"
+expect_ok "guarded recovery state remains untracked in a linked worktree" \
+    test -z "$(git -C "$WT_TARGET" status --porcelain)"
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

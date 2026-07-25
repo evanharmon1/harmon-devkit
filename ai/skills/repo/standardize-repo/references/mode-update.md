@@ -6,8 +6,10 @@ the newest harmon-init changes into this repo," not initial setup.
 
 Routing:
 
-- **v3+ repo** (`.copier-answers.yml` present, `_commit: v3.x` or later) → this mode
-  (`copier update`).
+- **v3+ repo** (`.copier-answers.yml` present, with `_commit` either a `v3.x` or
+  later release ref or the 40-character commit recorded by a guarded update) →
+  this mode (`copier update`). For an unfamiliar full hash, resolve it against
+  the canonical harmon-init remote and confirm it descends from `v3.0.0`.
 - **v2 repo or never templated** → [`mode-adopt-existing.md`](./mode-adopt-existing.md)
   (v2→v3 was a breaking redesign; re-template via its Path B).
 - **Just want a drift report, no changes** → run §1 and stop, or see
@@ -40,12 +42,12 @@ already exists locally as a leftover from a prior run whose PR was
 the PR. (Deleting the stale local branch also works, but is destructive — prefer
 the versioned name.)
 
-## 1. See what's missing (read-only)
+## 1. Verify and freeze both template inputs
 
-```bash
-assets/diff-template.sh .
-# add --show to print the full per-file diff
-```
+Do not run `diff-template.sh` or any other trusted Copier render until the
+guarded source and answers file below exist. The ordinary drift command trusts
+the repo's recorded `_commit`; when that value is a tag, running it first would
+reintroduce the mutable-baseline gap this preflight closes.
 
 This renders harmon-init from the repo's own `.copier-answers.yml` and reports
 the following result classes (mapping `.yml`↔`.yaml`):
@@ -73,8 +75,6 @@ the following result classes (mapping `.yml`↔`.yaml`):
   log intentionally replaces a generated seed path. This is informational and
   does not fail the comparison.
 
-Together these are your reconciliation worklist for §3.
-
 ### Preview the release and review new answers
 
 Before accepting `--defaults`, identify both the target release and any Copier
@@ -84,6 +84,7 @@ questions added since the repo's recorded `_commit`:
 : "${HARMON_INIT_REF:?set to the deliberately selected latest harmon-init release tag}"
 HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
 RECORDED_SOURCE="$(yq -r '._src_path // ""' .copier-answers.yml)"
+RECORDED_REF="$(yq -r '._commit // ""' .copier-answers.yml)"
 case "$RECORDED_SOURCE" in
 "$HARMON_INIT_SOURCE" | "$HARMON_INIT_SOURCE.git") ;;
 *)
@@ -94,6 +95,55 @@ esac
 git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
   '+refs/heads/main:refs/remotes/origin/main' --tags ||
   { echo "failed to refresh harmon-init from origin" >&2; exit 1; }
+test -n "$RECORDED_REF" ||
+  { echo "_commit must name the recorded harmon-init baseline" >&2; exit 1; }
+if printf '%s\n' "$RECORDED_REF" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+  RECORDED_COMMIT="$(git -C ~/git/harmon-init rev-parse "$RECORDED_REF^{commit}")"
+else
+  # Legacy Copier answers normally contain `git describe` output (usually a
+  # release tag), which is not immutable evidence of the commit originally used.
+  # An agent must not accept the current mapping silently.
+  : "${ACCEPT_LEGACY_BASELINE:?obtain maintainer approval for the legacy baseline recovery}"
+  test "$ACCEPT_LEGACY_BASELINE" = true ||
+    { echo "ACCEPT_LEGACY_BASELINE must be exactly true" >&2; exit 1; }
+  RELEASE_TARGET="$(
+    gh api "repos/evanharmon1/harmon-init/releases/tags/$RECORDED_REF" \
+      --jq '.target_commitish'
+  )" ||
+    { echo "recorded tag has no matching GitHub release" >&2; exit 1; }
+  RECORDED_COMMIT="$(git -C ~/git/harmon-init rev-parse "$RECORDED_REF^{commit}")"
+  case "$RELEASE_TARGET" in
+  "$RECORDED_COMMIT") ;;
+  main)
+    git -C ~/git/harmon-init merge-base --is-ancestor \
+      "$RECORDED_COMMIT" origin/main ||
+      { echo "recorded tag is not on the release target branch" >&2; exit 1; }
+    ;;
+  *)
+    echo "GitHub release target must be the recorded commit or main" >&2
+    exit 1
+    ;;
+  esac
+fi
+git -C ~/git/harmon-init merge-base --is-ancestor "$RECORDED_COMMIT" origin/main ||
+  { echo "recorded _commit must resolve to a commit on origin/main" >&2; exit 1; }
+V3_TAG_OBJECT="$(
+  git -C ~/git/harmon-init ls-remote --exit-code "$HARMON_INIT_SOURCE" \
+    "refs/tags/v3.0.0" |
+    awk 'NR == 1 { print $1 }'
+)" ||
+  { echo "cannot verify the v3 migration boundary on origin" >&2; exit 1; }
+test -n "$V3_TAG_OBJECT" &&
+  test "$(git -C ~/git/harmon-init rev-parse refs/tags/v3.0.0)" = \
+    "$V3_TAG_OBJECT" ||
+  { echo "local v3.0.0 tag does not match origin" >&2; exit 1; }
+V3_BASELINE_COMMIT="$(git -C ~/git/harmon-init rev-parse "v3.0.0^{commit}")"
+git -C ~/git/harmon-init merge-base --is-ancestor \
+  "$V3_BASELINE_COMMIT" "$RECORDED_COMMIT" ||
+  {
+    echo "recorded baseline predates v3; use mode-adopt-existing.md" >&2
+    exit 1
+  }
 REMOTE_TAG_OBJECT="$(
   git -C ~/git/harmon-init ls-remote --exit-code "$HARMON_INIT_SOURCE" \
     "refs/tags/$HARMON_INIT_REF" |
@@ -105,22 +155,150 @@ test -n "$REMOTE_TAG_OBJECT" &&
   git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
   { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
 HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{commit}")"
+git -C ~/git/harmon-init merge-base --is-ancestor \
+  "$RECORDED_COMMIT" "$HARMON_INIT_COMMIT" ||
+  { echo "target release must descend from the recorded baseline" >&2; exit 1; }
 git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "latest harmon-init release does not support the CodeRabbit choice" >&2; exit 1; }
-copier check-update --output-format json .
 git -C ~/git/harmon-init diff \
-  "$(yq -r '._commit' .copier-answers.yml)".."$HARMON_INIT_COMMIT" -- copier.yml
+  "$RECORDED_COMMIT".."$HARMON_INIT_COMMIT" -- copier.yml
 ```
 
 Stop before previewing or applying when that guard fails. Requiring the recorded
 source to be canonical binds Copier's actual update source to the remote that was
-validated. `HARMON_INIT_COMMIT` freezes the verified tag's peeled commit so a tag
-move between preview and apply cannot change what Copier renders. The companion
-harmon-init change must not be released until this skill is published and its
-new tag is pinned into harmon-init. After that pin refresh, release harmon-init;
-until then, older template releases render CodeRabbit unconditionally and cannot
-satisfy a reviewed false answer.
+validated. `RECORDED_COMMIT` and `HARMON_INIT_COMMIT` freeze the old and new
+template inputs and the ancestry check rejects a downgrade or unrelated target.
+
+For a legacy tag-valued `_commit`, the original commit cannot be reconstructed
+cryptographically after the fact. `ACCEPT_LEGACY_BASELINE=true` is an explicit
+recovery decision, not a default: show the maintainer the current tag commit, the
+GitHub release target, and relevant repository history, then obtain approval
+before setting it. Record that decision in the eventual PR.
+
+Create a read-only offline clone containing the validated baseline and target,
+then bind Copier's canonical Git URL to that clone for each guarded subprocess:
+
+```bash
+GUARDED_TEMPLATE="$(mktemp -d -t harmon-init-guarded-XXXXXX)"
+GUARDED_COPIER_CACHE="$(mktemp -d -t copier-guarded-cache-XXXXXX)"
+git clone --no-checkout "$HARMON_INIT_SOURCE" "$GUARDED_TEMPLATE" ||
+  { echo "failed to snapshot harmon-init from the canonical remote" >&2; exit 1; }
+git -C "$GUARDED_TEMPLATE" remote remove origin
+test "$(git -C "$GUARDED_TEMPLATE" rev-parse "$RECORDED_COMMIT^{commit}")" = \
+  "$RECORDED_COMMIT" &&
+  test "$(git -C "$GUARDED_TEMPLATE" rev-parse "$HARMON_INIT_COMMIT^{commit}")" = \
+    "$HARMON_INIT_COMMIT" ||
+  { echo "guarded template does not contain the validated commits" >&2; exit 1; }
+test "$(git -C "$GUARDED_TEMPLATE" rev-parse "$HARMON_INIT_REF^{commit}")" = \
+  "$HARMON_INIT_COMMIT" ||
+  { echo "guarded target tag mapping changed during snapshot creation" >&2; exit 1; }
+if ! printf '%s\n' "$RECORDED_REF" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+  test "$(git -C "$GUARDED_TEMPLATE" rev-parse "$RECORDED_REF^{commit}")" = \
+    "$RECORDED_COMMIT" ||
+    { echo "guarded baseline tag mapping changed during snapshot creation" >&2; exit 1; }
+fi
+for GUARDED_COMMIT in "$RECORDED_COMMIT" "$HARMON_INIT_COMMIT"; do
+  if git -C "$GUARDED_TEMPLATE" cat-file -e \
+    "$GUARDED_COMMIT:.gitmodules" 2>/dev/null; then
+    echo "guarded updates do not support template commits with submodules" >&2
+    exit 1
+  fi
+done
+chmod -R a-w "$GUARDED_TEMPLATE"
+GUARDED_STATE=.copier-guarded-update
+guarded_checkout_id() {
+  if GUARDED_BRANCH="$(git symbolic-ref --quiet --short HEAD)"; then
+    printf 'branch:%s\n' "$GUARDED_BRANCH"
+  else
+    printf '%s\n' detached
+  fi
+}
+GIT_EXCLUDE="$(git rev-parse --path-format=absolute --git-path info/exclude)"
+grep -qxF "/$GUARDED_STATE/" "$GIT_EXCLUDE" ||
+  printf '%s\n' "/$GUARDED_STATE/" >>"$GIT_EXCLUDE" ||
+  { echo "failed to ignore guarded update state" >&2; exit 1; }
+mkdir "$GUARDED_STATE" ||
+  {
+    echo "$GUARDED_STATE already exists; recover or remove it before retrying" >&2
+    exit 1
+  }
+git rev-parse HEAD >"$GUARDED_STATE/start-head" &&
+  guarded_checkout_id >"$GUARDED_STATE/start-checkout" &&
+  git hash-object .copier-answers.yml >"$GUARDED_STATE/canonical-answers-oid" &&
+  printf '%s\n' "$HARMON_INIT_COMMIT" >"$GUARDED_STATE/target-commit" &&
+  printf '%s\n' "$GUARDED_TEMPLATE" >"$GUARDED_STATE/template-path" &&
+  printf '%s\n' "$GUARDED_COPIER_CACHE" >"$GUARDED_STATE/cache-path" &&
+  cp .copier-answers.yml "$GUARDED_STATE/original-answers.yml" ||
+  { echo "failed to initialize guarded update state" >&2; exit 1; }
+git -C "$GUARDED_TEMPLATE" show "$RECORDED_COMMIT":copier.yml |
+  yq -r 'keys | .[] | select(test("^_") | not)' |
+  LC_ALL=C sort -u >"$GUARDED_STATE/baseline-questions" &&
+  git -C "$GUARDED_TEMPLATE" show "$HARMON_INIT_COMMIT":copier.yml |
+    yq -r 'keys | .[] | select(test("^_") | not)' |
+    LC_ALL=C sort -u >"$GUARDED_STATE/target-questions" &&
+  comm -13 \
+    "$GUARDED_STATE/baseline-questions" \
+    "$GUARDED_STATE/target-questions" \
+    >"$GUARDED_STATE/new-question-candidates" ||
+  { echo "failed to derive new question candidates" >&2; exit 1; }
+test -z "$(git status --porcelain)" ||
+  { echo "guarded preparation must leave the worktree clean" >&2; exit 1; }
+run_guarded_copier() {
+  env \
+    "COPIER_CACHE_DIR=$GUARDED_COPIER_CACHE" \
+    GIT_CONFIG_COUNT=2 \
+    "GIT_CONFIG_KEY_0=url.$GUARDED_TEMPLATE.insteadOf" \
+    "GIT_CONFIG_VALUE_0=$HARMON_INIT_SOURCE.git" \
+    "GIT_CONFIG_KEY_1=url.$GUARDED_TEMPLATE.insteadOf" \
+    "GIT_CONFIG_VALUE_1=$HARMON_INIT_SOURCE" \
+    copier "$@"
+}
+HARMON_INIT="$GUARDED_TEMPLATE" \
+  HARMON_INIT_RECORDED_COMMIT="$RECORDED_COMMIT" \
+  assets/diff-template.sh .
+# add --show to print the full per-file diff
+run_guarded_copier check-update --output-format json .
+```
+
+The guarded clone has no remote, is read-only, and is rejected if either
+selected commit contains `.gitmodules`; Copier clones templates recursively, so
+allowing a submodule URL would break the offline trust boundary. This matters
+because Copier 9.16 checks out the recorded hash, then internally runs
+`git describe --tags --always` and reuses that description for its old render.
+Its nested clone now resolves that description against the same frozen local tag
+mapping instead of a freshly fetched remote. Keeping the tags also preserves the
+PEP 440 versions Copier requires for update ordering. Cloning the snapshot from
+the canonical remote prevents local-only tags in `~/git/harmon-init` from
+affecting `git describe`; both selected tag mappings are revalidated after the
+clone to catch a concurrent retag. `run_guarded_copier`
+defines two process-scoped Git `insteadOf` mappings so both accepted canonical
+URL spellings clone the offline snapshot; the longer `.git` spelling wins when
+applicable. Its isolated temporary mirror cache prevents a pre-existing
+canonical-URL cache from bypassing the snapshot. Copier continues reading and
+writing its canonical answers path, so harmon-init's fixed answers template and
+Copier agree on the same file.
+
+The worktree-root state directory is ignored through Git's resolved local
+exclude file, so it works in both ordinary and linked worktrees. Its atomic
+`mkdir` acts as a per-worktree lock and recovery marker. If preparation, preview,
+update, or promotion is interrupted, do not rerun preparation or remove that
+directory blindly: inspect the backed-up `original-answers.yml`, recorded
+`start-head`, `start-checkout`, `canonical-answers-oid`, `target-commit`,
+`template-path`, `cache-path`, reviewed/discovery data, and the ignored-path
+backup plus its recorded object IDs
+alongside the working-tree diff. Restore the validated variables and
+`run_guarded_copier` definition from that state when resuming, then run the
+context checks below. Either finish the update and promotion or explicitly
+discard the failed run. A concurrent or accidental rerun must stop at the
+existing-directory error instead of overwriting recovery state.
+
+The drift output is your reconciliation worklist for §3.
+
+The companion harmon-init change must not be released until this skill is
+published and its new tag is pinned into harmon-init. After that pin refresh,
+release harmon-init; until then, older template releases render CodeRabbit
+unconditionally and cannot satisfy a reviewed false answer.
 
 Every newly introduced question needs an explicit decision. This is especially
 important for a feature with a material footprint or an external capability:
@@ -171,16 +349,40 @@ important for a feature with a material footprint or an external capability:
   check-mode initialization must omit it. Do not accept a pre-existing
   `.terraform.lock.hcl` as proof of that process.
 
-Pass each reviewed answer with `--data`, even when the decision happens to match
-the current default.
+Pass the complete reviewed answer map with `--data-file`, even when a decision
+happens to match the current default. The guarded preparation first finds raw
+questions added between the frozen baseline and target, then performs a
+task-free target render to retain only questions Copier considers active and
+recordable under this repository's answers. It adds the four active
+repository-capability questions that always require reconsideration.
 
 Preview the exact answer set before the real update:
 
 ```bash
-: "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
-: "${CODEQL_LANGUAGES:=$(yq -o=json -I=0 '.codeql_languages // []' .copier-answers.yml)}"
-: "${USE_FOREMAN:=$(yq -r '.use_foreman // false' .copier-answers.yml)}"
-: "${USE_CODERABBIT:=$(yq -r '.use_coderabbit // false' .copier-answers.yml)}"
+REVIEWED_DATA="$GUARDED_STATE/reviewed-data.yml"
+ORIGINAL_DATA="$GUARDED_STATE/original-data.yml"
+yq 'with_entries(select(.key | test("^_") | not))' \
+  "$GUARDED_STATE/original-answers.yml" >"$ORIGINAL_DATA" ||
+  { echo "failed to prepare recorded answers for discovery" >&2; exit 1; }
+if test -e "$REVIEWED_DATA"; then
+  yq -e \
+    'tag == "!!map" and
+     ([.[] | select(. == "__REVIEW_REQUIRED__")] | length == 0)' \
+    "$REVIEWED_DATA" >/dev/null ||
+    {
+      echo "review every existing entry and replace all __REVIEW_REQUIRED__ values" >&2
+      exit 1
+    }
+  USE_FOREMAN="$(yq -r '.use_foreman' "$REVIEWED_DATA")"
+  USE_CODERABBIT="$(yq -r '.use_coderabbit' "$REVIEWED_DATA")"
+  USE_CODEQL="$(yq -r '.use_codeql' "$REVIEWED_DATA")"
+  CODEQL_LANGUAGES="$(yq -o=json -I=0 '.codeql_languages' "$REVIEWED_DATA")"
+else
+  : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
+  : "${CODEQL_LANGUAGES:=$(yq -o=json -I=0 '.codeql_languages // []' .copier-answers.yml)}"
+  : "${USE_FOREMAN:=$(yq -r '.use_foreman // false' .copier-answers.yml)}"
+  : "${USE_CODERABBIT:=$(yq -r '.use_coderabbit // false' .copier-answers.yml)}"
+fi
 case "$USE_FOREMAN" in true | false) ;; *) echo "USE_FOREMAN must be true or false" >&2; exit 1 ;; esac
 case "$USE_CODERABBIT" in true | false) ;; *) echo "USE_CODERABBIT must be true or false" >&2; exit 1 ;; esac
 if [ "$USE_CODEQL" = "false" ]; then
@@ -192,12 +394,234 @@ elif [ "$USE_CODEQL" != "true" ] ||
   echo "CODEQL_LANGUAGES must be a nonempty YAML list of supported first-party languages" >&2
   exit 1
 fi
-copier update --trust --defaults --pretend \
+CODEQL_LANGUAGES="$(
+  printf '%s\n' "$CODEQL_LANGUAGES" | yq -o=json -I=0 '.'
+)"
+DISCOVERY_DATA="$GUARDED_STATE/discovery-data.yml"
+: >"$GUARDED_STATE/active-target-questions"
+DISCOVERY_STABLE=false
+for DISCOVERY_ROUND in 1 2 3 4 5 6 7 8 9 10; do
+  ACTIVE_REVIEWED="$GUARDED_STATE/active-reviewed-data.yml"
+  printf '%s\n' '{}' >"$ACTIVE_REVIEWED" ||
+    { echo "failed to initialize active reviewed data" >&2; exit 1; }
+  if test -e "$REVIEWED_DATA"; then
+    while IFS= read -r ACTIVE_KEY; do
+      if ACTIVE_KEY="$ACTIVE_KEY" \
+        yq -e 'has(strenv(ACTIVE_KEY))' "$REVIEWED_DATA" >/dev/null; then
+        ACTIVE_VALUE="$(
+          ACTIVE_KEY="$ACTIVE_KEY" \
+            yq -o=json -I=0 '.[strenv(ACTIVE_KEY)]' "$REVIEWED_DATA"
+        )" &&
+          ACTIVE_KEY="$ACTIVE_KEY" ACTIVE_VALUE="$ACTIVE_VALUE" \
+            yq -i \
+              '.[strenv(ACTIVE_KEY)] = (strenv(ACTIVE_VALUE) | from_json)' \
+              "$ACTIVE_REVIEWED" ||
+          { echo "failed to select active reviewed value" >&2; exit 1; }
+      fi
+    done <"$GUARDED_STATE/active-target-questions"
+  fi
+  DISCOVERY_CANDIDATE="$(mktemp "$GUARDED_STATE/discovery-data.XXXXXX")" ||
+    { echo "failed to create discovery-data candidate" >&2; exit 1; }
+  yq eval-all \
+    'select(fileIndex == 0) * select(fileIndex == 1)' \
+    "$ORIGINAL_DATA" "$ACTIVE_REVIEWED" >"$DISCOVERY_CANDIDATE" ||
+    {
+      rm -f "$DISCOVERY_CANDIDATE"
+      echo "failed to merge discovery answers" >&2
+      exit 1
+    }
+  mv "$DISCOVERY_CANDIDATE" "$DISCOVERY_DATA" ||
+    {
+      rm -f "$DISCOVERY_CANDIDATE"
+      echo "failed to publish discovery answers" >&2
+      exit 1
+    }
+  TARGET_DISCOVERY="$(mktemp -d -t copier-target-discovery-XXXXXX)" ||
+    { echo "failed to create target discovery directory" >&2; exit 1; }
+  run_guarded_copier copy --trust --defaults --skip-tasks \
+    --vcs-ref="$HARMON_INIT_COMMIT" \
+    --data-file="$DISCOVERY_DATA" \
+    "$HARMON_INIT_SOURCE" "$TARGET_DISCOVERY" ||
+    { echo "target question discovery failed" >&2; exit 1; }
+  yq -r 'keys | .[] | select(test("^_") | not)' \
+    "$TARGET_DISCOVERY/.copier-answers.yml" |
+    LC_ALL=C sort -u >"$GUARDED_STATE/active-target-questions.next" ||
+    { echo "failed to derive active target questions" >&2; exit 1; }
+  if cmp -s \
+    "$GUARDED_STATE/active-target-questions" \
+    "$GUARDED_STATE/active-target-questions.next"; then
+    rm -f "$GUARDED_STATE/active-target-questions.next"
+    DISCOVERY_STABLE=true
+    break
+  fi
+  mv \
+    "$GUARDED_STATE/active-target-questions.next" \
+    "$GUARDED_STATE/active-target-questions" ||
+    { echo "failed to advance active question discovery" >&2; exit 1; }
+done
+test "$DISCOVERY_STABLE" = true ||
+  { echo "active question discovery did not converge in 10 rounds" >&2; exit 1; }
+comm -12 \
+  "$GUARDED_STATE/new-question-candidates" \
+  "$GUARDED_STATE/active-target-questions" \
+  >"$GUARDED_STATE/active-new-questions" ||
+  { echo "failed to derive active new questions" >&2; exit 1; }
+{
+  cat "$GUARDED_STATE/active-new-questions"
+  printf '%s\n' use_foreman use_coderabbit use_codeql codeql_languages
+} |
+  LC_ALL=C sort -u |
+  comm -12 - "$GUARDED_STATE/active-target-questions" \
+    >"$GUARDED_STATE/reviewed-keys" ||
+  { echo "failed to derive the complete active review set" >&2; exit 1; }
+for CAPABILITY_KEY in \
+  use_foreman use_coderabbit use_codeql codeql_languages; do
+  grep -qxF "$CAPABILITY_KEY" "$GUARDED_STATE/reviewed-keys" ||
+    {
+      echo "required capability question is not active: $CAPABILITY_KEY" >&2
+      exit 1
+    }
+done
+find "$TARGET_DISCOVERY" \( -type f -o -type l \) -print |
+  sed "s#^$TARGET_DISCOVERY/##" |
+  LC_ALL=C sort -u >"$GUARDED_STATE/target-managed-paths" ||
+  { echo "failed to inventory target render paths" >&2; exit 1; }
+REVIEWED_KEYSET_OID="$(
+  test -e "$REVIEWED_DATA" &&
+    yq -r 'keys | .[]' "$REVIEWED_DATA" |
+      LC_ALL=C sort -u |
+      git hash-object --stdin
+)"
+REQUIRED_KEYSET_OID="$(
+  git hash-object "$GUARDED_STATE/reviewed-keys"
+)"
+if ! test -e "$REVIEWED_DATA" ||
+  test "$REVIEWED_KEYSET_OID" != "$REQUIRED_KEYSET_OID"; then
+  REVIEWED_CANDIDATE="$(mktemp "$GUARDED_STATE/reviewed-data.XXXXXX")" ||
+    { echo "failed to create reviewed-data candidate" >&2; exit 1; }
+  printf '%s\n' '{}' >"$REVIEWED_CANDIDATE" ||
+    {
+      rm -f "$REVIEWED_CANDIDATE"
+      echo "failed to initialize reviewed-data candidate" >&2
+      exit 1
+    }
+  while IFS= read -r REVIEWED_KEY; do
+    if ! REVIEWED_KEY="$REVIEWED_KEY" yq -i \
+      '.[strenv(REVIEWED_KEY)] = "__REVIEW_REQUIRED__"' \
+      "$REVIEWED_CANDIDATE"; then
+      rm -f "$REVIEWED_CANDIDATE"
+      echo "failed to seed reviewed question: $REVIEWED_KEY" >&2
+      exit 1
+    fi
+  done <"$GUARDED_STATE/reviewed-keys"
+  if ! USE_FOREMAN="$USE_FOREMAN" \
+    USE_CODERABBIT="$USE_CODERABBIT" \
+    USE_CODEQL="$USE_CODEQL" \
+    CODEQL_LANGUAGES="$CODEQL_LANGUAGES" \
+    yq -i \
+      '.use_foreman = (strenv(USE_FOREMAN) == "true") |
+       .use_coderabbit = (strenv(USE_CODERABBIT) == "true") |
+       .use_codeql = (strenv(USE_CODEQL) == "true") |
+       .codeql_languages = (strenv(CODEQL_LANGUAGES) | from_json)' \
+      "$REVIEWED_CANDIDATE"; then
+    rm -f "$REVIEWED_CANDIDATE"
+    echo "failed to seed reviewed capability answers" >&2
+    exit 1
+  fi
+  mv "$REVIEWED_CANDIDATE" "$REVIEWED_DATA" ||
+    {
+      rm -f "$REVIEWED_CANDIDATE"
+      echo "failed to publish reviewed data" >&2
+      exit 1
+    }
+  echo "the active question set changed; review every key in $REVIEWED_DATA, replace all __REVIEW_REQUIRED__ values, then rerun discovery" >&2
+  exit 1
+fi
+while IFS= read -r REVIEWED_KEY; do
+  REVIEWED_KEY="$REVIEWED_KEY" yq -e \
+    'has(strenv(REVIEWED_KEY)) and
+     .[strenv(REVIEWED_KEY)] != "__REVIEW_REQUIRED__"' \
+    "$REVIEWED_DATA" >/dev/null ||
+    {
+      echo "missing explicit reviewed value for $REVIEWED_KEY" >&2
+      exit 1
+    }
+done <"$GUARDED_STATE/reviewed-keys"
+USE_FOREMAN="$(yq -r '.use_foreman' "$REVIEWED_DATA")"
+USE_CODERABBIT="$(yq -r '.use_coderabbit' "$REVIEWED_DATA")"
+USE_CODEQL="$(yq -r '.use_codeql' "$REVIEWED_DATA")"
+CODEQL_LANGUAGES="$(yq -o=json -I=0 '.codeql_languages' "$REVIEWED_DATA")"
+case "$USE_FOREMAN" in true | false) ;; *) echo "reviewed use_foreman must be boolean" >&2; exit 1 ;; esac
+case "$USE_CODERABBIT" in true | false) ;; *) echo "reviewed use_coderabbit must be boolean" >&2; exit 1 ;; esac
+case "$USE_CODEQL" in true | false) ;; *) echo "reviewed use_codeql must be boolean" >&2; exit 1 ;; esac
+if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
+  BASELINE_DISCOVERY="$(mktemp -d -t copier-baseline-discovery-XXXXXX)" ||
+    { echo "failed to create baseline discovery directory" >&2; exit 1; }
+  run_guarded_copier copy --trust --defaults --skip-tasks \
+    --vcs-ref="$RECORDED_COMMIT" \
+    --data-file="$ORIGINAL_DATA" \
+    "$HARMON_INIT_SOURCE" "$BASELINE_DISCOVERY" ||
+    { echo "baseline path discovery failed" >&2; exit 1; }
+  find "$BASELINE_DISCOVERY" \( -type f -o -type l \) -print |
+    sed "s#^$BASELINE_DISCOVERY/##" |
+    LC_ALL=C sort -u >"$GUARDED_STATE/baseline-managed-paths" ||
+    { echo "failed to inventory baseline render paths" >&2; exit 1; }
+  cat \
+    "$GUARDED_STATE/baseline-managed-paths" \
+    "$GUARDED_STATE/target-managed-paths" |
+    LC_ALL=C sort -u >"$GUARDED_STATE/managed-paths" ||
+    { echo "failed to inventory guarded render paths" >&2; exit 1; }
+  : >"$GUARDED_STATE/ignored-managed-paths"
+  : >"$GUARDED_STATE/ignored-existing-paths"
+  : >"$GUARDED_STATE/ignored-absent-paths"
+  while IFS= read -r MANAGED_PATH; do
+    case "$MANAGED_PATH" in
+    "" | /* | ../* | */../*)
+      echo "unsafe managed path: $MANAGED_PATH" >&2
+      exit 1
+      ;;
+    esac
+    if git check-ignore -q -- "$MANAGED_PATH"; then
+      printf '%s\n' "$MANAGED_PATH" \
+        >>"$GUARDED_STATE/ignored-managed-paths"
+      if test -e "$MANAGED_PATH" || test -L "$MANAGED_PATH"; then
+        test ! -d "$MANAGED_PATH" || test -L "$MANAGED_PATH" ||
+          {
+            echo "ignored managed path is an unsupported directory: $MANAGED_PATH" >&2
+            exit 1
+          }
+        printf '%s\n' "$MANAGED_PATH" \
+          >>"$GUARDED_STATE/ignored-existing-paths"
+      else
+        printf '%s\n' "$MANAGED_PATH" \
+          >>"$GUARDED_STATE/ignored-absent-paths"
+      fi
+    fi
+  done <"$GUARDED_STATE/managed-paths"
+  tar -cf "$GUARDED_STATE/ignored-backup.tar" \
+    -T "$GUARDED_STATE/ignored-existing-paths" ||
+    { echo "failed to back up ignored managed paths" >&2; exit 1; }
+  git hash-object "$GUARDED_STATE/ignored-backup.tar" \
+    >"$GUARDED_STATE/ignored-backup-oid" &&
+    git hash-object "$GUARDED_STATE/ignored-managed-paths" \
+      >"$GUARDED_STATE/ignored-managed-paths-oid" &&
+    printf '%s\n' ready >"$GUARDED_STATE/ignored-snapshot-ready" ||
+    { echo "failed to freeze ignored-path recovery state" >&2; exit 1; }
+fi
+REVIEWED_DATA_OID="$(git hash-object "$REVIEWED_DATA")"
+if test -e "$GUARDED_STATE/reviewed-data-oid"; then
+  test "$(cat "$GUARDED_STATE/reviewed-data-oid")" = "$REVIEWED_DATA_OID" ||
+    {
+      echo "reviewed data changed after preview; explicitly restart the guarded run" >&2
+      exit 1
+    }
+else
+  printf '%s\n' "$REVIEWED_DATA_OID" >"$GUARDED_STATE/reviewed-data-oid" ||
+    { echo "failed to freeze reviewed data" >&2; exit 1; }
+fi
+run_guarded_copier update --trust --defaults --pretend \
   --vcs-ref="$HARMON_INIT_COMMIT" \
-  --data use_foreman="$USE_FOREMAN" \
-  --data use_coderabbit="$USE_CODERABBIT" \
-  --data use_codeql="$USE_CODEQL" \
-  --data codeql_languages="$CODEQL_LANGUAGES"
+  --data-file="$REVIEWED_DATA"
 ```
 
 The existing Foreman answer is the starting point, not an instruction to retain
@@ -210,11 +634,37 @@ opts out. `CODEQL_LANGUAGES` is a serialized YAML list such as
 point and must be reviewed against actual first-party source. Disabling CodeQL
 records an empty matrix.
 
-`--pretend` confirms rendering succeeds but its output can be terse. For a heavily
-customized or high-impact repo, make a disposable clone under a temporary directory,
-run the same update there without `--pretend`, and inspect its full `git diff` before
-touching the working branch. A preview complements the pinned-baseline drift report;
-neither replaces the post-update reconciliation in §3.
+The reviewed payload is written atomically before preview. The first run stops
+after generating it: inspect every entry, replace every
+`__REVIEW_REQUIRED__` sentinel, and rerun discovery. A reviewed choice may
+activate another conditional new question; when that happens, discovery
+regenerates the exact active keyset and stops for another explicit review.
+Continue until the bounded discovery loop reaches a fixed point with no
+sentinel. Each pass supplies only reviewed keys that Copier marked active on
+the prior pass, so a stale value from a newly inactive question cannot affect
+later conditions. Hidden `when: false` values and inactive conditional
+questions are never passed as user data. On recovery, load the complete map
+instead of recomputing defaults:
+
+```bash
+REVIEWED_DATA="$GUARDED_STATE/reviewed-data.yml"
+USE_FOREMAN="$(yq -r '.use_foreman' "$REVIEWED_DATA")"
+USE_CODERABBIT="$(yq -r '.use_coderabbit' "$REVIEWED_DATA")"
+USE_CODEQL="$(yq -r '.use_codeql' "$REVIEWED_DATA")"
+CODEQL_LANGUAGES="$(
+  yq -o=json -I=0 '.codeql_languages' "$REVIEWED_DATA"
+)"
+```
+
+The frozen Git object ID refuses to preview or apply a different payload over
+recovery state from an interrupted run.
+
+`--pretend` confirms rendering succeeds but its output can be terse. For a
+heavily customized or high-impact repo, make a disposable clone under a
+temporary directory, repeat the guarded-source preparation there, run the same
+update without `--pretend`, and inspect its full `git diff` before touching the
+working branch. A preview complements the guarded-baseline drift report; neither
+replaces the post-update reconciliation in §3.
 
 ## 2. Run the update
 
@@ -235,16 +685,247 @@ otherwise unreachable, do not fabricate lineage by swapping only the path or
 commit; re-adopt from the canonical GitHub URL at a reviewed released ref.
 
 ```bash
-copier update --trust --defaults \
+test "$(cat "$GUARDED_STATE/start-head")" = "$(git rev-parse HEAD)" &&
+  test "$(cat "$GUARDED_STATE/start-checkout")" = "$(guarded_checkout_id)" &&
+  test "$(cat "$GUARDED_STATE/canonical-answers-oid")" = \
+    "$(git hash-object .copier-answers.yml)" &&
+  test "$(cat "$GUARDED_STATE/target-commit")" = "$HARMON_INIT_COMMIT" &&
+  test "$(cat "$GUARDED_STATE/template-path")" = "$GUARDED_TEMPLATE" &&
+  test "$(cat "$GUARDED_STATE/cache-path")" = "$GUARDED_COPIER_CACHE" &&
+  test "$(cat "$GUARDED_STATE/reviewed-data-oid")" = \
+    "$(git hash-object "$REVIEWED_DATA")" &&
+  test "$(cat "$GUARDED_STATE/ignored-snapshot-ready")" = ready &&
+  test "$(cat "$GUARDED_STATE/ignored-backup-oid")" = \
+    "$(git hash-object "$GUARDED_STATE/ignored-backup.tar")" &&
+  test "$(cat "$GUARDED_STATE/ignored-managed-paths-oid")" = \
+    "$(git hash-object "$GUARDED_STATE/ignored-managed-paths")" &&
+  test -z "$(git status --porcelain)" ||
+  { echo "working checkout no longer matches guarded update state" >&2; exit 1; }
+tar -cf "$GUARDED_STATE/ignored-preapply.tar" \
+  -T "$GUARDED_STATE/ignored-existing-paths" ||
+  { echo "failed to verify ignored paths before apply" >&2; exit 1; }
+test "$(git hash-object "$GUARDED_STATE/ignored-preapply.tar")" = \
+  "$(cat "$GUARDED_STATE/ignored-backup-oid")" ||
+  { echo "an ignored managed path changed after preparation" >&2; exit 1; }
+rm -f "$GUARDED_STATE/ignored-preapply.tar"
+while IFS= read -r ABSENT_IGNORED_PATH; do
+  if test -e "$ABSENT_IGNORED_PATH" || test -L "$ABSENT_IGNORED_PATH"; then
+    echo "an ignored managed path appeared after preparation: $ABSENT_IGNORED_PATH" >&2
+    exit 1
+  fi
+done <"$GUARDED_STATE/ignored-absent-paths"
+test ! -e "$GUARDED_STATE/apply-phase" ||
+  {
+    echo "apply already started; do not rerun Copier—continue with applied-state validation" >&2
+    exit 1
+  }
+write_guarded_phase() {
+  GUARDED_PHASE="$1"
+  GUARDED_PHASE_CANDIDATE="$(
+    mktemp "$GUARDED_STATE/apply-phase.XXXXXX"
+  )" ||
+    { echo "failed to create apply-phase candidate" >&2; return 1; }
+  if printf '%s\n' "$GUARDED_PHASE" >"$GUARDED_PHASE_CANDIDATE" &&
+    mv "$GUARDED_PHASE_CANDIDATE" "$GUARDED_STATE/apply-phase"; then
+    return 0
+  fi
+  rm -f "$GUARDED_PHASE_CANDIDATE"
+  echo "failed to persist guarded apply phase" >&2
+  return 1
+}
+write_guarded_phase applying ||
+  { echo "Copier was not started" >&2; exit 1; }
+if run_guarded_copier update --trust --defaults \
   --vcs-ref="$HARMON_INIT_COMMIT" \
-  --data use_foreman="$USE_FOREMAN" \
-  --data use_coderabbit="$USE_CODERABBIT" \
-  --data use_codeql="$USE_CODEQL" \
-  --data codeql_languages="$CODEQL_LANGUAGES"
+  --data-file="$REVIEWED_DATA"; then
+  write_guarded_phase applied ||
+    {
+      echo "Copier returned success but phase recording failed; validate the applied state" >&2
+      exit 1
+    }
+else
+  echo "guarded Copier update failed; preserve the applying phase and recovery state" >&2
+  exit 1
+fi
 ```
 
-Use the same reviewed variables and answers in the preview and real invocation;
-do not retype or omit them between those two steps.
+Use the same frozen reviewed-data file in the preview and real invocation; do
+not retype or omit answers between those two steps. The `applying` phase is
+atomically recorded before Copier can mutate the worktree. `applied` records a
+normal return, but promotion does not trust either phase by itself: it validates
+the complete resulting state below. After a crash or nonzero return, never
+blindly rerun Copier.
+
+Copier can return success while leaving merge conflicts. Reconcile those as
+described in §3 before promotion. Then prove that the canonical answers record
+the applied target and promote its lineage to the canonical URL plus full target
+commit:
+
+```bash
+test "$(cat "$GUARDED_STATE/start-head")" = "$(git rev-parse HEAD)" &&
+  test "$(cat "$GUARDED_STATE/start-checkout")" = "$(guarded_checkout_id)" &&
+  test "$(cat "$GUARDED_STATE/canonical-answers-oid")" = \
+    "$(git hash-object "$GUARDED_STATE/original-answers.yml")" &&
+  test "$(cat "$GUARDED_STATE/target-commit")" = "$HARMON_INIT_COMMIT" &&
+  test "$(cat "$GUARDED_STATE/template-path")" = "$GUARDED_TEMPLATE" &&
+  test "$(cat "$GUARDED_STATE/cache-path")" = "$GUARDED_COPIER_CACHE" &&
+  test "$(cat "$GUARDED_STATE/reviewed-data-oid")" = \
+    "$(git hash-object "$REVIEWED_DATA")" &&
+  test "$(cat "$GUARDED_STATE/ignored-snapshot-ready")" = ready &&
+  test "$(cat "$GUARDED_STATE/ignored-backup-oid")" = \
+    "$(git hash-object "$GUARDED_STATE/ignored-backup.tar")" &&
+  test "$(cat "$GUARDED_STATE/ignored-managed-paths-oid")" = \
+    "$(git hash-object "$GUARDED_STATE/ignored-managed-paths")" ||
+  { echo "working checkout no longer matches guarded update state" >&2; exit 1; }
+APPLY_PHASE="$(cat "$GUARDED_STATE/apply-phase")" ||
+  { echo "guarded apply has not started" >&2; exit 1; }
+case "$APPLY_PHASE" in
+applied) ;;
+applying)
+  echo "Copier did not record a normal return; validate for diagnosis, then use the rollback path" >&2
+  exit 1
+  ;;
+*) echo "invalid guarded apply phase" >&2; exit 1 ;;
+esac
+test -z "$(git diff --name-only --diff-filter=U)" ||
+  { echo "resolve every Copier merge conflict before promotion" >&2; exit 1; }
+APPLIED_REF="$(yq -r '._commit // ""' .copier-answers.yml)" &&
+  APPLIED_SOURCE="$(yq -r '._src_path // ""' .copier-answers.yml)" ||
+  { echo "applied canonical answers are not valid YAML" >&2; exit 1; }
+APPLIED_COMMIT="$(
+  git -C "$GUARDED_TEMPLATE" rev-parse "$APPLIED_REF^{commit}"
+)" ||
+  { echo "applied answers do not record a resolvable commit" >&2; exit 1; }
+case "$APPLIED_SOURCE" in
+"$HARMON_INIT_SOURCE" | "$HARMON_INIT_SOURCE.git") ;;
+*) echo "applied answers no longer name canonical harmon-init" >&2; exit 1 ;;
+esac
+test "$APPLIED_COMMIT" = "$HARMON_INIT_COMMIT" ||
+  { echo "guarded update did not apply the validated target" >&2; exit 1; }
+while IFS= read -r REVIEWED_KEY; do
+  REVIEWED_KEY="$REVIEWED_KEY" yq -e \
+    'has(strenv(REVIEWED_KEY))' .copier-answers.yml >/dev/null ||
+    {
+      echo "applied answers omit reviewed key: $REVIEWED_KEY" >&2
+      exit 1
+    }
+  ACTUAL_REVIEWED_VALUE="$(
+    REVIEWED_KEY="$REVIEWED_KEY" \
+      yq -o=json -I=0 '.[strenv(REVIEWED_KEY)]' .copier-answers.yml
+  )" &&
+    EXPECTED_REVIEWED_VALUE="$(
+      REVIEWED_KEY="$REVIEWED_KEY" \
+        yq -o=json -I=0 '.[strenv(REVIEWED_KEY)]' "$REVIEWED_DATA"
+    )" &&
+    test "$ACTUAL_REVIEWED_VALUE" = "$EXPECTED_REVIEWED_VALUE" ||
+    {
+      echo "applied answer differs from reviewed value: $REVIEWED_KEY" >&2
+      exit 1
+    }
+done <"$GUARDED_STATE/reviewed-keys"
+PROMOTED_ANSWERS="$(mktemp .copier-answers.yml.promote.XXXXXX)" ||
+  { echo "failed to create answers promotion file" >&2; exit 1; }
+if cp .copier-answers.yml "$PROMOTED_ANSWERS" &&
+  HARMON_INIT_SOURCE="$HARMON_INIT_SOURCE" \
+    HARMON_INIT_COMMIT="$HARMON_INIT_COMMIT" \
+    yq -i \
+      '._src_path = strenv(HARMON_INIT_SOURCE) |
+       ._commit = strenv(HARMON_INIT_COMMIT)' \
+      "$PROMOTED_ANSWERS"; then
+  mv "$PROMOTED_ANSWERS" .copier-answers.yml ||
+    { echo "failed to atomically promote canonical answers" >&2; exit 1; }
+  git add -- .copier-answers.yml ||
+    { echo "failed to stage promoted canonical answers" >&2; exit 1; }
+  test "$GUARDED_STATE" = .copier-guarded-update &&
+    test -d "$GUARDED_STATE" &&
+    test ! -L "$GUARDED_STATE" &&
+    rm -rf -- "$GUARDED_STATE" ||
+    { echo "canonical answers promoted, but guarded state cleanup failed" >&2; exit 1; }
+else
+  echo "answers promotion failed; canonical answers and recovery state remain" >&2
+  exit 1
+fi
+git diff -- .copier-answers.yml # canonical URL + full HARMON_INIT_COMMIT
+```
+
+Do not normalize only one field. The successful guarded update may have changed
+other answers, so copy its complete result first, then replace `_src_path` and
+`_commit` together with the already-validated canonical values. The temporary
+file is renamed over the canonical answers only after both edits succeed; if
+promotion fails, preserve it and recovery state for diagnosis. Promotion is
+allowed only when the checkout and original answers still match preparation and
+the `applied` phase proves Copier returned normally, the reviewed-data object is
+unchanged, and the applied canonical answers resolve to the validated target
+commit in the offline clone with every reviewed value intact. An `applying`
+state is never promotable: Copier writes the target answers before its full
+three-way merge is complete, so the answers alone cannot prove that a
+mid-process crash left a complete update.
+
+If an interrupted `applying` state fails that validation, preserve it for
+diagnosis. To abandon it, first verify the recorded branch and HEAD still match,
+inspect `git diff`, and obtain explicit maintainer approval to discard **all**
+worktree changes made since preparation. The deterministic rollback is:
+
+```bash
+test "$(cat "$GUARDED_STATE/start-head")" = "$(git rev-parse HEAD)" &&
+  test "$(cat "$GUARDED_STATE/start-checkout")" = "$(guarded_checkout_id)" &&
+  test "$(cat "$GUARDED_STATE/canonical-answers-oid")" = \
+    "$(git hash-object "$GUARDED_STATE/original-answers.yml")" &&
+  test "$(cat "$GUARDED_STATE/ignored-snapshot-ready")" = ready &&
+  test "$(cat "$GUARDED_STATE/ignored-backup-oid")" = \
+    "$(git hash-object "$GUARDED_STATE/ignored-backup.tar")" &&
+  test "$(cat "$GUARDED_STATE/ignored-managed-paths-oid")" = \
+    "$(git hash-object "$GUARDED_STATE/ignored-managed-paths")" ||
+  { echo "rollback context no longer matches guarded preparation" >&2; exit 1; }
+git diff HEAD --stat
+git clean -nd
+tar -tvf "$GUARDED_STATE/ignored-backup.tar"
+cat "$GUARDED_STATE/ignored-absent-paths"
+: "${APPROVE_GUARDED_ROLLBACK:?obtain maintainer approval after reviewing all four outputs}"
+test "$APPROVE_GUARDED_ROLLBACK" = true ||
+  { echo "APPROVE_GUARDED_ROLLBACK must be exactly true" >&2; exit 1; }
+git restore \
+  --source="$(cat "$GUARDED_STATE/start-head")" \
+  --staged --worktree -- .
+git clean -fd
+while IFS= read -r ABSENT_IGNORED_PATH; do
+  rm -f -- "$ABSENT_IGNORED_PATH" ||
+    { echo "failed to remove new ignored path: $ABSENT_IGNORED_PATH" >&2; exit 1; }
+done <"$GUARDED_STATE/ignored-absent-paths"
+tar -xf "$GUARDED_STATE/ignored-backup.tar" ||
+  { echo "failed to restore ignored managed paths" >&2; exit 1; }
+tar -cf "$GUARDED_STATE/ignored-verify.tar" \
+  -T "$GUARDED_STATE/ignored-existing-paths" ||
+  { echo "failed to verify ignored managed paths" >&2; exit 1; }
+test "$(git hash-object .copier-answers.yml)" = \
+  "$(cat "$GUARDED_STATE/canonical-answers-oid")" &&
+  test "$(git hash-object "$GUARDED_STATE/ignored-verify.tar")" = \
+    "$(cat "$GUARDED_STATE/ignored-backup-oid")" &&
+  test -z "$(git status --porcelain)" ||
+  { echo "rollback did not restore the prepared worktree" >&2; exit 1; }
+while IFS= read -r ABSENT_IGNORED_PATH; do
+  if test -e "$ABSENT_IGNORED_PATH" || test -L "$ABSENT_IGNORED_PATH"; then
+    echo "rollback left a newly-created ignored path: $ABSENT_IGNORED_PATH" >&2
+    exit 1
+  fi
+done <"$GUARDED_STATE/ignored-absent-paths"
+rm -f "$GUARDED_STATE/ignored-verify.tar"
+test "$GUARDED_STATE" = .copier-guarded-update &&
+  test -d "$GUARDED_STATE" &&
+  test ! -L "$GUARDED_STATE" &&
+  rm -rf -- "$GUARDED_STATE" ||
+  { echo "rollback succeeded, but guarded state cleanup failed" >&2; exit 1; }
+```
+
+Run `git clean -fd` only if its preview contains exclusively Copier-created
+paths; the ignored guarded state survives that command. The prepared tar archive
+restores pre-existing ignored template paths, and the absent-path list removes
+ignored paths that Copier created. This rollback is destructive and must never
+be inferred from a failed validation.
+
+Stage the promoted file immediately because §3 may already have staged Copier's
+tag-valued version. Leave the guarded template and Copier cache directories in
+the system temporary area until the PR is verified; the OS can clean them later.
 
 **`--defaults` is mandatory when running non-interactively (agents have no TTY),
 but it is not permission to accept newly introduced behavior.** Review and pass
@@ -252,15 +933,18 @@ new answers explicitly as described above. Without `--defaults`, Copier tries to
 prompt for answers and crashes with
 `OSError: [Errno 22] Invalid argument` (prompt_toolkit can't attach to a missing
 terminal). It reuses the stored answers and accepts defaults for any new questions
-the template added since `_commit`; explicit `--data` values override those
-defaults and are recorded in `.copier-answers.yml`.
+the template added since `_commit`; the generated `--data-file` explicitly
+authorizes every one of those new questions, while `--defaults` supplies only
+unchanged existing answers and noninteractive prompt behavior.
 
 **Always do a full update to the deliberately selected latest released
 version.** Derive `HARMON_INIT_COMMIT` once from the remote-verified
-`HARMON_INIT_REF`, then pass that immutable commit to both preview and apply.
-Copier three-way-merges the *entire* delta from the repo's recorded `_commit` up
-to that release commit, preserving local edits. Do not hand-pick which template
-changes to take—select the current release and reconcile the full result in §3.
+`HARMON_INIT_REF`, resolve `RECORDED_COMMIT` once, place both in the read-only
+offline clone, and pass the immutable target commit to both preview and apply
+through `run_guarded_copier`. Copier three-way-merges the *entire* delta from that
+immutable recorded baseline up to the release commit, preserving local edits.
+Do not hand-pick which template changes to take—select the current release and
+reconcile the full result in §3.
 First-run `_tasks` are guarded on `_copier_operation == 'copy'`, so
 update will **not** make a scaffold commit, re-init git, or re-cut a release. Only
 `CHANGELOG.md` is frozen (`_skip_if_exists`); every other template improvement
