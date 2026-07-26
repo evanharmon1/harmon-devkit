@@ -45,8 +45,19 @@ Verify these before doing anything; stop and tell the user if one is unmet.
   source of truth for a never-templated repo, where the drift helper cannot run
   at all.
 - **task** (go-task) on PATH — `task --version` — for the verification gate.
-- **gh** authenticated (`gh auth status`) — only needed for the GitHub side-effect
-  steps (remote create, release init). Not required for local scaffolding.
+- **yq** on PATH — reads and freezes the `.copier-answers.yml` lineage tuple.
+- **gh** authenticated (`gh auth status`) — `gh api` requires a credential even on
+  public repositories, so this is needed for:
+  - the GitHub side-effect steps (remote create, release init);
+  - **update mode's legacy-baseline branch**, taken whenever the recorded
+    `_commit` is tag-valued — it reads the GitHub release record;
+  - the **Code Security capability check** before selecting CodeQL on a
+    private/internal repo (`mode-update.md` §3, `mode-audit.md` drift class G) —
+    this one applies regardless of lineage, including full-hash baselines.
+
+  Plain local scaffolding does not need it, and neither does **audit mode's**
+  legacy-baseline recovery — that path is `git`-only (`assets/diff-template.sh`
+  resolves via `git ls-remote`, never `gh api`).
 
 ## Mode routing
 
@@ -70,7 +81,13 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
 - **Production scaffolds use the canonical GitHub URL at a remote-verified
   release ref.** Select `HARMON_INIT_REF`, verify that exact tag against
   `origin`, peel it once to `HARMON_INIT_COMMIT`, and pass that immutable commit
-  to Copier using the guarded commands in the applicable mode reference. Update
+  to Copier using the guarded commands in the applicable mode reference. **Then
+  freeze the tuple: `--vcs-ref` does not survive into the answers file.** Copier
+  derives `_commit` from `git describe --tags --always`, so a released tag lands
+  in `.copier-answers.yml` instead of the peeled hash — discarding the immutable
+  evidence the guard just established. Every mode that renders must promote
+  `_src_path`/`_commit` to the canonical URL and `HARMON_INIT_COMMIT` afterward.
+  Update
   mode must also resolve the recorded `_commit` once, require maintainer-approved
   recovery when legacy tag-only lineage lacks immutable evidence, and run every
   trusted render from a read-only offline clone through process-scoped Git URL
