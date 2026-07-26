@@ -230,8 +230,10 @@ Expose the kit so other systems and agents can consume it programmatically, not 
   can't drift.
 - **Stable, versioned asset URLs** — each logo/icon/image at a durable path (e.g. `/brand/assets/...`),
   and `brand-kit.zip` at a fixed URL automations can fetch.
-- **CORS** — if the JSON or zip will be fetched cross-origin (partner sites, agents), enable permissive
-  CORS on those endpoints.
+- **CORS** — the manifest and zip are public, non-credentialed, static assets, so
+  `Access-Control-Allow-Origin: *` is correct on **those** endpoints (partner sites and agents need to
+  fetch them cross-origin). Scope the header to them: anything authenticated or cookie-bearing needs an
+  origin allowlist, never `*`.
 - Keep the manifest the single thing other tools read, and render the page from it — so page and
   endpoint can never disagree. This extends Tier 1's automation structure outward: Tier 1's
   `#brand-tokens` JSON is the _internal_ token truth; this manifest is the _external_ asset/metadata

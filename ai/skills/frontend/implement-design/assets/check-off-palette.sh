@@ -32,7 +32,7 @@ root="${1:-src}"
 exts=(--include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.astro')
 
 # Fail-closed: a typo'd/missing target dir must be an error, not a silent
-# "clean" (grep's stderr is suppressed below, so it can't report this itself).
+# "clean" — caught here so it reports a clear message instead of a bare grep error.
 if [ ! -d "$root" ]; then
     echo "check-off-palette: target dir '$root' not found" >&2
     exit 2
@@ -54,7 +54,21 @@ arbitrary="(bg|text|border|fill|stroke|ring|from|via|to|outline|decoration|accen
 #    no color literal and pass untouched.
 attribute="(color|background|background-color|backgroundColor|background-image|backgroundImage|fill|stroke|stop-color|flood-color|border-color|borderColor|outline-color|outlineColor|caret-color|caretColor)[[:space:]]*[:=][[:space:]]*[\"']?[^\"';]*(#[0-9a-fA-F]{3}|$colorfn)"
 
-if matches=$(grep -rEn "${exts[@]}" "$arbitrary|$attribute" "$root" 2>/dev/null); then
+# grep's exit code is three-way: 0 = matches, 1 = no matches, 2 = ERROR (a file or
+# subdirectory under $root it could not read). Treating 2 as "no matches" would
+# report a clean scan over a tree that was never fully read — an unreadable file
+# could be the one carrying the violation — so the gate fails closed on it.
+# `|| rc=$?` keeps `set -e` from aborting on the expected non-zero, and grep's own
+# stderr is left visible so it can name what it couldn't read.
+rc=0
+matches=$(grep -rEn "${exts[@]}" "$arbitrary|$attribute" "$root") || rc=$?
+
+if [ "$rc" -gt 1 ]; then
+    echo "check-off-palette: scan of '$root' failed (grep exit $rc) — not a clean scan" >&2
+    exit 2
+fi
+
+if [ "$rc" -eq 0 ]; then
     echo "Off-palette color literals found — use semantic tokens instead:" >&2
     echo "$matches" >&2
     exit 1
