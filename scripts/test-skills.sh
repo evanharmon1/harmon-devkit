@@ -1382,6 +1382,15 @@ expect_fail_contains "verify-applied declines a multi-fragment include glob" \
     "uses an '!include' glob this auditor does not" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 rm -f "$AGG_TARGET/frag-a.yml" "$AGG_TARGET/frag-b.yml"
+# Copier globs with Path.glob, which matches leading-dot names — so a hidden
+# fragment is part of the match set and must not leave this looking single.
+printf '%s\n' '_subdirectory: template' >"$AGG_TARGET/a-frag.yml"
+printf '%s\n' '_subdirectory: elsewhere' >"$AGG_TARGET/.b-frag.yml"
+printf '%s\n' '!include *frag.yml' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied counts hidden include fragments like Path.glob" \
+    "uses an '!include' glob this auditor does not" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+rm -f "$AGG_TARGET/a-frag.yml" "$AGG_TARGET/.b-frag.yml"
 # Copier rejects a non-string _subdirectory, so `123` is not a directory here.
 printf '%s\n' '_subdirectory: 123' >"$AGG_TARGET/copier.yml"
 expect_fail_contains "verify-applied declines a non-string payload root" \

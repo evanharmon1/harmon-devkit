@@ -264,7 +264,7 @@ fi
 copier_include_unsupported=0
 copier_manifest_expanded() {
     local manifest="$1" root_dir="$2" depth="${3:-0}"
-    local line include_glob include_file include_matches
+    local line include_glob include_file include_matches saved_dotglob
     # Cap the depth: a cyclic include would otherwise spin forever. At the cap
     # the file is emitted unexpanded, leaving any tag for yq to reject — which
     # surfaces as the "could not parse" diagnostic.
@@ -286,11 +286,22 @@ copier_manifest_expanded() {
                 continue
                 ;;
             esac
+            # `Path.glob` matches leading-dot names (unlike the `glob` module
+            # and unlike bash's default), so `*frag.yml` finds `.b-frag.yml` for
+            # Copier but not for us. Without dotglob a hidden fragment that
+            # overrides `_subdirectory` stays invisible here, the match below
+            # still counts 1, and we would trust a payload root Copier never
+            # uses. Restore the setting straight after.
+            # `shopt -p` exits non-zero when the option is OFF, which under
+            # `set -e` would abort the whole run — hence `|| true`.
+            saved_dotglob="$(shopt -p dotglob || true)"
+            shopt -s dotglob
             # Deliberately unquoted: Copier's include target is a glob, and it
             # resolves against the top-level manifest's directory at every
             # nesting level.
             # shellcheck disable=SC2086
             set -- "$root_dir"/$include_glob
+            eval "$saved_dotglob"
             include_matches=0
             for include_file in "$@"; do
                 [ -f "$include_file" ] || continue
