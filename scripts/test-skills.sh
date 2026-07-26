@@ -1435,6 +1435,14 @@ printf '%s\n' '_subdirectory: "../template"' >"$AGG_TARGET/copier.yml"
 expect_fail_contains "verify-applied declines a payload root walking outside the repo" \
     "walks" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+# Copier rejects an absolute include path outright, so a repo-root fragment must
+# not be read and trusted here.
+printf '%s\n' '_subdirectory: elsewhere' >"$AGG_TARGET/frag.yml"
+printf '%s\n' '!include /frag.yml' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied rejects an absolute Copier include path" \
+    "absolute '!include' path, which Copier rejects" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+rm -f "$AGG_TARGET/frag.yml"
 # Copier's Path.glob yields directories too and its loader dies reading one, so
 # a non-file match is reason to decline rather than quietly skip.
 mkdir -p "$AGG_TARGET/frag-dir.yml"

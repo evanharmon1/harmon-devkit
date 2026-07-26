@@ -262,6 +262,7 @@ fi
 # diagnostic. Declining only over-reports a capability; guessing the wrong
 # directory would skip a contract the repo really owes.
 copier_include_unsupported=0
+copier_include_invalid=0
 copier_manifest_expanded() {
     local manifest="$1" root_dir="$2" depth="${3:-0}"
     local line include_glob include_file include_matches include_unreadable
@@ -282,6 +283,15 @@ copier_manifest_expanded() {
                     sed -E 's/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/'
             )"
             case "$include_glob" in
+            /*)
+                # Copier rejects the manifest outright here:
+                # `raise ValueError("YAML include file path must be a relative
+                # path")`. Concatenating it onto the root would happily read a
+                # repo-root fragment and trust a `_subdirectory` Copier never
+                # loads.
+                copier_include_invalid=1
+                continue
+                ;;
             *[[:space:]]* | *'**'*)
                 copier_include_unsupported=1
                 continue
@@ -370,7 +380,12 @@ elif [ -n "$copier_manifest" ]; then
         copier_manifest_merged="$(mktemp "${TMPDIR:-/tmp}/verify-copier-manifest.XXXXXX")"
         copier_manifest_expanded "$copier_manifest" "$(dirname "$copier_manifest")" \
             >"$copier_manifest_merged"
-        if [ "$copier_include_unsupported" -eq 1 ]; then
+        if [ "$copier_include_invalid" -eq 1 ]; then
+            template_payload_dir=""
+            echo "WARN: $copier_manifest has an absolute '!include' path, which Copier rejects" >&2
+            echo "      as an invalid manifest — no payload root is assumed and payload files" >&2
+            echo "      are read as first-party source." >&2
+        elif [ "$copier_include_unsupported" -eq 1 ]; then
             template_payload_dir=""
             echo "WARN: $copier_manifest uses an '!include' glob this auditor does not" >&2
             echo "      reproduce exactly (whitespace or '**'), so no payload root is" >&2
