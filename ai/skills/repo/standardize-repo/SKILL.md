@@ -35,11 +35,15 @@ or widen access to credentials, or weaken a workflow merely to make CI green.
 Verify these before doing anything; stop and tell the user if one is unmet.
 
 - **copier** installed — `copier --version` (needs `>= 9.4.0`, per `_min_copier_version`).
-- **harmon-init** cloned locally at `~/git/harmon-init` for **new-repo**,
-  **adopt-existing**, and **update** modes. If missing in one of those modes:
+- **harmon-init** cloned locally at `~/git/harmon-init` — required by **every**
+  mode. If missing:
   `git clone https://github.com/evanharmon1/harmon-init ~/git/harmon-init`.
-  **Audit mode does not require a local checkout**; its guarded drift helper
-  snapshots the canonical remote itself.
+  The one exemption is narrow: audit mode's guarded drift helper
+  (`assets/diff-template.sh`) snapshots the canonical remote itself and needs no
+  checkout. The rest of audit mode — the catalog comparison, which is the bulk of
+  the work — reads the checkout directly as `$TEMPLATE`, and it is the *only*
+  source of truth for a never-templated repo, where the drift helper cannot run
+  at all.
 - **task** (go-task) on PATH — `task --version` — for the verification gate.
 - **gh** authenticated (`gh auth status`) — only needed for the GitHub side-effect
   steps (remote create, release init). Not required for local scaffolding.

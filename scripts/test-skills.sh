@@ -639,12 +639,18 @@ expect_ok "audit guidance requires the guarded canonical baseline render" \
         grep -qF "ACCEPT_LEGACY_BASELINE=true" "$1" &&
         grep -qF "read-only clone" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
-expect_ok "top-level prerequisites do not require a local checkout for audits" \
-    sh -c 'grep -qF "**Audit mode does not require a local checkout**" "$1" &&
+expect_ok "top-level prerequisites require a local checkout for every mode" \
+    sh -c 'grep -qF "required by **every**" "$1" &&
         grep -qF "**harmon-init** cloned locally" "$1" &&
-        grep -qF "**new-repo**," "$1" &&
-        grep -qF "**adopt-existing**, and **update** modes" "$1"' sh \
+        grep -qF "assets/diff-template.sh" "$1"' sh \
     "$STANDARDIZE_SKILL"
+expect_fail "top-level prerequisites do not exempt audit mode wholesale" \
+    grep -qF "**Audit mode does not require a local checkout**" \
+    "$STANDARDIZE_SKILL"
+expect_ok "audit guidance states the catalog comparison needs the checkout" \
+    sh -c 'grep -qF "Audit mode **does** require this local checkout" "$1" &&
+        grep -qF "never-templated repo it is the only source of truth" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "template drift helper snapshots and freezes the canonical baseline" \
     sh -c 'grep -qF "git clone --no-checkout" "$1" &&
         grep -qF "remote remove origin" "$1" &&
