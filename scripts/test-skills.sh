@@ -12,6 +12,16 @@ repo="$(git rev-parse --show-toplevel)"
 SCRIPTS="$repo/scripts"
 STANDARDIZE_ASSETS="$repo/ai/skills/repo/standardize-repo/assets"
 
+# The render-backed cases below invoke copier directly. Without this preflight a
+# missing copier surfaces as a bare `copier: command not found` and exit 127
+# partway through the run, which names the wrong problem.
+if ! command -v copier >/dev/null 2>&1; then
+    echo "test-skills: required tool 'copier' is not installed" >&2
+    echo "  the render-backed cases call it to build throwaway templates" >&2
+    echo "  install it with 'task install' (brew host: Brewfile; otherwise uv)" >&2
+    exit 1
+fi
+
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
 
