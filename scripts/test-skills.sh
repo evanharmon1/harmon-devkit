@@ -869,6 +869,9 @@ expect_ok "catalog distinguishes CodeQL source from tooling flags" \
 expect_ok "catalog requires the CodeQL matrix to match real source" \
     grep -qF 'persisted matrix with real first-party source' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "catalog scopes the Copier payload exclusion to capability gating" \
+    grep -qF 'Security coverage does **not** skip it' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "catalog requires protected-event CodeQL triggers" \
     grep -qF 'triggers on PR and `merge_group`' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -1313,6 +1316,111 @@ expect_fail "verify-applied rejects codeql-verify without CodeQL intent" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 write_required_check_ruleset "$AGG_TARGET"
 
+# A Copier template repo's payload belongs to the repos it generates, not to
+# itself: harmon-init ships jinja-gated `.tf` files that must not switch on this
+# repo's Terraform contract. The same tree without a copier.yml still does.
+mkdir -p "$AGG_TARGET/template/[% if include_terraform %]terraform[% endif %]"
+printf '%s\n' 'terraform {}' \
+    >"$AGG_TARGET/template/[% if include_terraform %]terraform[% endif %]/main.tf"
+expect_fail_contains "verify-applied treats .tf outside a template payload as first-party" \
+    "Terraform is present but scripts/terraform-provider-locks.sh is missing" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+printf '%s\n' '_subdirectory: template' >"$AGG_TARGET/copier.yml"
+expect_ok_contains "verify-applied excludes a Copier template's payload from capability detection" \
+    "excluding the 'template/' payload" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+# Copier accepts several spellings of the same payload root; all must normalize
+# or the exclusion silently misses and the false positive returns.
+for payload_spelling in './template' 'template/' '"template"' 'template  # payload root'; do
+    printf '_subdirectory: %s\n' "$payload_spelling" >"$AGG_TARGET/copier.yml"
+    expect_ok_contains "verify-applied normalizes the payload root '$payload_spelling'" \
+        "excluding the 'template/' payload" \
+        bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+done
+# `_subdirectory` is a top-level setting: the same text nested in a question
+# must not be believed, or an arbitrary directory drops out of capability
+# detection and the Terraform contract is skipped for a repo that owns it.
+printf '%s\n' 'questions:' '  example:' '    _subdirectory: template' \
+    >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied ignores a nested _subdirectory setting" \
+    "Terraform is present but scripts/terraform-provider-locks.sh is missing" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+# copier.yml may hold several YAML documents, which Copier merges with the
+# later ones overriding — so the LAST top-level setting is the effective payload
+# root. Taking the first would exclude the wrong directory and skip the contract
+# for source the repo really owns.
+printf '%s\n' '_subdirectory: nonpayload' '---' '{_subdirectory: template}' \
+    >"$AGG_TARGET/copier.yml"
+expect_ok_contains "verify-applied takes the effective payload root from merged documents" \
+    "excluding the 'template/' payload" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+# Copier splices `!include <glob>` documents into the manifest before merging.
+# yq has no such tag and fails the whole merge on it, so the include is expanded
+# first — otherwise a valid template loses its payload root.
+printf '%s\n' '_subdirectory: template' >"$AGG_TARGET/copier-shared.yml"
+printf '%s\n' '!include copier-shared.yml' >"$AGG_TARGET/copier.yml"
+expect_ok_contains "verify-applied resolves a payload root behind a Copier !include" \
+    "excluding the 'template/' payload" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+# Copier's include constructor reuses the same loader, so includes nest — and
+# it closes over the TOP-LEVEL manifest, so a nested glob still resolves against
+# that directory, not the included file's.
+mkdir -p "$AGG_TARGET/config"
+printf '%s\n' '!include copier-shared.yml' >"$AGG_TARGET/config/outer.yml"
+printf '%s\n' '!include config/outer.yml' >"$AGG_TARGET/copier.yml"
+expect_ok_contains "verify-applied roots a nested Copier !include at the manifest" \
+    "excluding the 'template/' payload" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+rm -rf "$AGG_TARGET/config"
+# A glob matching several fragments is declined: the last one setting
+# `_subdirectory` wins, and shell expansion orders them differently from
+# Python's Path.glob (and hides dotfiles).
+printf '%s\n' '_subdirectory: template' >"$AGG_TARGET/frag-a.yml"
+printf '%s\n' '_subdirectory: elsewhere' >"$AGG_TARGET/frag-b.yml"
+printf '%s\n' '!include frag-*.yml' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied declines a multi-fragment include glob" \
+    "uses an '!include' glob this auditor does not" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+rm -f "$AGG_TARGET/frag-a.yml" "$AGG_TARGET/frag-b.yml"
+# Copier rejects a non-string _subdirectory, so `123` is not a directory here.
+printf '%s\n' '_subdirectory: 123' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied declines a non-string payload root" \
+    "declares a non-string _subdirectory" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+# An include glob this auditor cannot reproduce exactly (Copier uses Python's
+# Path.glob) is declined with a diagnostic rather than half-matched.
+printf '%s\n' '!include "fragments/shared config.yml"' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied declines an include glob it cannot reproduce" \
+    "uses an '!include' glob this auditor does not" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+rm -f "$AGG_TARGET/copier-shared.yml"
+# Copier matches the manifest suffix case-insensitively, so an uppercase
+# spelling is a real template — and two of them are ambiguous to Copier.
+printf '%s\n' '_subdirectory: template' >"$AGG_TARGET/copier.YAML"
+rm -f "$AGG_TARGET/copier.yml"
+expect_ok_contains "verify-applied discovers a case-variant Copier manifest" \
+    "excluding the 'template/' payload" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+printf '%s\n' '_subdirectory: template' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied declines to exclude across case-variant manifests" \
+    "Copier rejects that as ambiguous" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+rm -f "$AGG_TARGET/copier.YAML"
+# An unparseable manifest is diagnosed rather than silently treated as "no
+# payload root" — the exclusion is declined either way, which over-reports the
+# capability instead of skipping a contract the repo really owes.
+printf '%s\n' '_subdirectory: [unclosed' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied reports a Copier manifest it cannot parse" \
+    "yq could not parse" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+# A templated payload root cannot be resolved without answers; say so and
+# exclude nothing rather than compare against the literal Jinja text.
+printf '%s\n' '_subdirectory: "template/{{ variant }}"' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied reports an unresolvable templated payload root" \
+    "copier.yml declares a templated payload root" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+rm -rf "$AGG_TARGET/template" "$AGG_TARGET/copier.yml"
+
 VA_TARGET="$TMPROOT/verify-applied-codeowners"
 mkdir -p "$VA_TARGET/.github"
 printf '%s\n' '# Test instructions' >"$VA_TARGET/AGENTS.md"
@@ -1578,6 +1686,21 @@ expect_ok_contains "verify-applied warns when CodeQL omits first-party Python" \
     GH_TEST_CODE_SECURITY=enabled \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
 rm -rf "$CQ_TARGET/src"
+# A Copier payload is excluded from CAPABILITY detection but stays in the CodeQL
+# source inventory — it is authored code the template distributes, so a missing
+# language is a real scanning gap, not a template artifact.
+printf '%s\n' '_subdirectory: template' >"$CQ_TARGET/copier.yml"
+mkdir -p "$CQ_TARGET/template/src"
+printf '%s\n' 'print("shipped to generated repos")' \
+    >"$CQ_TARGET/template/src/app.py"
+write_codeql_workflow "" "" "" \
+    $'    strategy:\n      matrix:\n        language: [javascript-typescript]\n'
+expect_ok_contains "verify-applied keeps a Copier payload in CodeQL source coverage" \
+    'first-party Python source exists but CodeQL omits python.' \
+    env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \
+    GH_TEST_CODE_SECURITY=enabled \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$CQ_TARGET"
+rm -rf "$CQ_TARGET/template" "$CQ_TARGET/copier.yml"
 write_codeql_workflow ""
 expect_ok "verify-applied defers an unreadable Code Security field to manual audit" \
     env PATH="$FAKE_GH_BIN:$PATH" GH_TEST_VISIBILITY=private \

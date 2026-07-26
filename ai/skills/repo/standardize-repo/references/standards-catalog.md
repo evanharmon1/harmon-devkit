@@ -509,6 +509,16 @@ The repository-class policy is:
   neither proves that its corresponding source language exists, so reconcile the
   persisted matrix with real first-party source. **[copier]**; **[manual]** only
   for the paid private opt-in.
+- **A Copier template repo's payload is not its own source — for capability
+  gating.** In a repo whose `copier.yml` declares `_subdirectory:`, everything
+  under that root is what *generated* repos receive: harmon-init's
+  `template/[% if include_terraform %]terraform[% endif %]/main.tf` is a file
+  for its children, not Terraform harmon-init lints. So capability detection
+  ("does this repo implement Terraform?") skips the payload — counting it would
+  switch on a whole contract the template repo rightly does not implement.
+  Security coverage does **not** skip it: the payload is authored code the
+  template distributes, so the CodeQL matrix check still measures it and a
+  missing language is a real scanning gap.
 - **Snyk** — optional `security:sast:snyk` (`snyk code test`) +
   `security:sca:snyk` (`snyk test --all-projects`) second opinions. The default
   `snyk_scan_schedule=off` keeps `SNYK_TOKEN` local and Snyk outside required PR

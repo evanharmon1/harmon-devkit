@@ -231,8 +231,189 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 else
     repo_files="$(find . -type f 2>/dev/null | sed 's#^\./##' || true)"
 fi
+
+# A Copier TEMPLATE repo's payload is not its own source, for the purpose of
+# deciding which CAPABILITIES this repo implements. harmon-init ships
+# `template/[% if include_terraform %]terraform[% endif %]/main.tf` — a file the
+# GENERATED repo receives, not Terraform harmon-init lints — and counting it
+# turns on the whole Terraform contract (lint tasks, provider-lock helper, a
+# required terraform-verify) against a repo that rightly implements none of it.
+# The payload root is whatever `copier.yml` declares as `_subdirectory`, so only
+# a real template repo is affected.
+#
+# SCOPE: capability gating only. `repo_files` itself stays whole, because the
+# payload IS authored code the template distributes — hiding it from the CodeQL
+# matrix-drift check below would turn a security-coverage question ("is this
+# language scanned?") into a blind spot.
+# Expand Copier's `!include <glob>` documents in place. Copier splices the
+# referenced files' documents into the manifest before merging; yq has no such
+# tag and fails the whole merge on it ("cannot multiply !!map with !include"),
+# which would drop the payload root for a perfectly valid template.
+#
+# Two details are taken from Copier's own loader (`_template.load_template_config`)
+# rather than guessed: its `!include` constructor closes over the TOP-LEVEL
+# manifest, so every nested glob resolves against that one directory, and it
+# reuses the same loader class, so includes nest.
+#
+# DELIBERATE BOUNDARY: Copier globs with Python's `Path.glob`, which this cannot
+# reproduce in portable shell — a quoted path containing spaces would be word
+# split, and bash 3.2 has no `globstar` for `**`. Rather than half-match those,
+# the expansion refuses them and the caller declines the exclusion with a
+# diagnostic. Declining only over-reports a capability; guessing the wrong
+# directory would skip a contract the repo really owes.
+copier_include_unsupported=0
+copier_manifest_expanded() {
+    local manifest="$1" root_dir="$2" depth="${3:-0}"
+    local line include_glob include_file include_matches
+    # Cap the depth: a cyclic include would otherwise spin forever. At the cap
+    # the file is emitted unexpanded, leaving any tag for yq to reject — which
+    # surfaces as the "could not parse" diagnostic.
+    if [ "$depth" -ge 8 ]; then
+        cat "$manifest"
+        return 0
+    fi
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        '!include '*)
+            include_glob="$(
+                printf '%s' "${line#!include }" |
+                    sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//' |
+                    sed -E 's/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/'
+            )"
+            case "$include_glob" in
+            *[[:space:]]* | *'**'*)
+                copier_include_unsupported=1
+                continue
+                ;;
+            esac
+            # Deliberately unquoted: Copier's include target is a glob, and it
+            # resolves against the top-level manifest's directory at every
+            # nesting level.
+            # shellcheck disable=SC2086
+            set -- "$root_dir"/$include_glob
+            include_matches=0
+            for include_file in "$@"; do
+                [ -f "$include_file" ] || continue
+                include_matches=$((include_matches + 1))
+            done
+            if [ "$include_matches" -gt 1 ]; then
+                # Several fragments: whichever sets `_subdirectory` last wins,
+                # and shell expansion orders (and hides dotfiles) differently
+                # from Python's `Path.glob`. Decline rather than pick.
+                copier_include_unsupported=1
+                continue
+            fi
+            for include_file in "$@"; do
+                [ -f "$include_file" ] || continue
+                printf -- '---\n'
+                copier_manifest_expanded "$include_file" "$root_dir" "$((depth + 1))"
+                printf -- '\n---\n'
+            done
+            ;;
+        *) printf '%s\n' "$line" ;;
+        esac
+    done <"$manifest"
+}
+
+template_payload_dir=""
+copier_manifest=""
+copier_manifest_count=0
+# Mirror Copier's own discovery: it globs `copier.*` and keeps files whose
+# suffix matches /\.ya?ml/ CASE-INSENSITIVELY, raising MultipleConfigFilesError
+# when more than one matches. Looking only for the two lowercase spellings would
+# miss a valid `copier.YAML`, and picking one of two would trust a manifest
+# Copier refuses to read.
+for candidate_manifest in copier.*; do
+    [ -f "$candidate_manifest" ] || continue
+    case "$candidate_manifest" in
+    *.[Yy][Mm][Ll] | *.[Yy][Aa][Mm][Ll]) ;;
+    *) continue ;;
+    esac
+    copier_manifest_count=$((copier_manifest_count + 1))
+    [ -n "$copier_manifest" ] || copier_manifest="$candidate_manifest"
+done
+if [ "$copier_manifest_count" -gt 1 ]; then
+    # Copier itself rejects a template carrying both manifests, so there is no
+    # effective payload root to honour — picking one would exclude a directory
+    # on the authority of a file Copier refuses to read.
+    echo "WARN: several copier.y[a]ml manifests exist; Copier rejects that as ambiguous," >&2
+    echo "      so no payload root is assumed and payload files are read as first-party." >&2
+elif [ -n "$copier_manifest" ]; then
+    if have yq; then
+        # Let a real YAML parser decide. copier.yml may hold several documents
+        # (Copier merges them, later winning) in block or flow syntax, so a
+        # textual scan keeps disagreeing with the value Copier actually renders
+        # from — and disagreeing here excludes the WRONG directory, silently
+        # skipping the Terraform contract for source the repo really owns. The
+        # reduce below reproduces Copier's own merge order.
+        copier_manifest_merged="$(mktemp "${TMPDIR:-/tmp}/verify-copier-manifest.XXXXXX")"
+        copier_manifest_expanded "$copier_manifest" "$(dirname "$copier_manifest")" \
+            >"$copier_manifest_merged"
+        if [ "$copier_include_unsupported" -eq 1 ]; then
+            template_payload_dir=""
+            echo "WARN: $copier_manifest uses an '!include' glob this auditor does not" >&2
+            echo "      reproduce exactly (whitespace or '**'), so no payload root is" >&2
+            echo "      assumed and payload files are read as first-party source." >&2
+        elif copier_payload_tag="$(
+            yq ea -r '. as $document ireduce ({}; . * $document) | ._subdirectory | tag' \
+                "$copier_manifest_merged" 2>/dev/null
+        )"; then
+            # Copier hands a non-string `_subdirectory` to Jinja and rejects the
+            # template, so `123` is not a directory named "123" — treating it as
+            # one could exclude real source.
+            case "$copier_payload_tag" in
+            '!!str')
+                template_payload_dir="$(
+                    yq ea -r '. as $document ireduce ({}; . * $document) | ._subdirectory' \
+                        "$copier_manifest_merged" 2>/dev/null | sed -E 's|^\./||; s|/+$||'
+                )"
+                ;;
+            '!!null') template_payload_dir="" ;;
+            *)
+                template_payload_dir=""
+                echo "WARN: $copier_manifest declares a non-string _subdirectory ($copier_payload_tag)," >&2
+                echo "      which Copier rejects — no payload root is assumed and payload files" >&2
+                echo "      are read as first-party source." >&2
+                ;;
+            esac
+        else
+            template_payload_dir=""
+            echo "WARN: yq could not parse $copier_manifest, so no payload root is assumed" >&2
+            echo "      and payload files are read as first-party source. Check the manifest" >&2
+            echo "      if this repo is a Copier template." >&2
+        fi
+        rm -f "$copier_manifest_merged"
+    else
+        echo "WARN: $copier_manifest exists but yq is not installed, so this repo's Copier" >&2
+        echo "      payload root cannot be resolved — payload files will be read as" >&2
+        echo "      first-party source. Install yq for accurate capability detection." >&2
+    fi
+fi
+capability_files="$repo_files"
+case "$template_payload_dir" in
+"" | "." | "/" | ..*) ;;
+*'{{'* | *'{%'* | *'[['* | *'[%'*)
+    # Copier renders `_subdirectory` from the answers, so a templated value has
+    # no single payload root to compare against here. Say so and exclude
+    # nothing: over-reporting a capability is the safe direction.
+    echo "WARN: copier.yml declares a templated payload root ('$template_payload_dir');" >&2
+    echo "      it cannot be resolved without answers, so nothing is excluded from" >&2
+    echo "      capability detection — expect payload files to be read as first-party." >&2
+    ;;
+*)
+    echo "INFO: Copier template repo detected; excluding the '$template_payload_dir/' payload" >&2
+    echo "      from capability detection (it belongs to generated repos). CodeQL source" >&2
+    echo "      coverage still counts it." >&2
+    # Prefix compare rather than a regex, so a payload name needs no escaping.
+    capability_files="$(
+        printf '%s\n' "$repo_files" |
+            PAYLOAD_DIR="$template_payload_dir" \
+                awk 'index($0, ENVIRON["PAYLOAD_DIR"] "/") != 1'
+    )"
+    ;;
+esac
 terraform_sources="$(
-    printf '%s\n' "$repo_files" |
+    printf '%s\n' "$capability_files" |
         grep -E '\.tf$' |
         grep -vE '(^|/)(\.terraform|node_modules|vendor|dist|build)/' || true
 )"
