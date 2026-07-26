@@ -15,8 +15,9 @@ professional.
 - **Reject proprietary faces:** Helvetica, **SF Pro** (Apple platforms only), Gotham, Proxima Nova, and
   other foundry/licensed fonts — unless the user has bought a license. If the design calls for one,
   flag it and propose the nearest OFL alternative.
-- **Google Fonts** qualify (the library is OFL/Apache) — but **self-host** the `.woff2`
-  (`assets-fonts-favicons.md`), don't hotlink.
+- **Google Fonts** is mostly OFL/Apache, but the license is **per-family, not per-library** — it also
+  hosts Ubuntu Font License faces (Ubuntu, Ubuntu Mono), whose terms differ. Check the family's own
+  license before adopting, then **self-host** the `.woff2` (`assets-fonts-favicons.md`), don't hotlink.
 
 ## Icons — Lucide is safe
 
@@ -46,8 +47,8 @@ A prompt-generated logo is not what most people assume:
   authorship. That's where brand protection actually comes from.
 - **Practical advice to surface to the user:**
   - add meaningful **human modification** so the human-authored parts can carry copyright;
-  - run a **clearance search** (USPTO TESS plus common-law/web) before adopting it, to avoid
-    infringing an existing mark;
+  - run a **clearance search** (USPTO Trademark Search, `tmsearch.uspto.gov` — the old TESS was
+    retired in 2023 — plus common-law/web) before adopting it, to avoid infringing an existing mark;
   - **use it in commerce** to build trademark rights;
   - generic AI logos may be refused registration absent acquired distinctiveness.
 - Don't silently treat an AI logo as fully protected — flag this; it's a business decision.
