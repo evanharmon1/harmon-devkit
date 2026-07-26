@@ -652,6 +652,35 @@ expect_ok "update guidance snapshots and restores ignored managed paths" \
 expect_ok "update guidance stages the promoted full-hash answers" \
     grep -qF 'git add -- .copier-answers.yml' \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "orphan sweep compares the repo against a rendered target inventory" \
+    sh -c 'grep -qF "failed to render the target inventory" "$1" &&
+        grep -qF "git ls-files '\''scripts/*'\'' |" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "orphan sweep counts only scripts surviving in the worktree" \
+    sh -c 'grep -qF "test -e \"\$SCRIPT_PATH\" || test -L \"\$SCRIPT_PATH\"" "$1" &&
+        grep -qF "reads the **index**" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "orphan sweep renders from the frozen guarded source" \
+    sh -c 'end="$(grep -nF "failed to render the target inventory" "$1" |
+            cut -d: -f1)"
+        test -n "$end" || exit 1
+        block="$(sed -n "$((end - 6)),${end}p" "$1")"
+        printf "%s\n" "$block" |
+            grep -qF "run_guarded_copier copy --trust --defaults --skip-tasks" &&
+        printf "%s\n" "$block" |
+            grep -qF -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" &&
+        printf "%s\n" "$block" |
+            grep -qF "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "orphan sweep never renders from a mutable checkout or tag" \
+    grep -qF 'copier copy --trust --defaults --skip-tasks --vcs-ref=<new>' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "orphan sweep never strips template/ off a raw tree listing" \
+    grep -qF "sed 's|^template/||'" \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "orphan sweep does not ask the reader to un-gate raw names by hand" \
+    grep -qF 'jinja-wrapped in the raw listing' \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "post-generation guidance requires Renovate Scan and Alert mode" \
     grep -qF '**Scan and Alert** mode' \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
@@ -701,9 +730,9 @@ expect_fail "production copy commands do not reuse the mutable release tag" \
     "$STANDARDIZE_SKILL" \
     "$STANDARDIZE_REFS/mode-new-repo.md" \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
-expect_ok "update discovery, preview, and apply pin the same immutable release commit" \
+expect_ok "every update Copier run pins the same immutable release commit" \
     test "$(grep -Fc -- '--vcs-ref="$HARMON_INIT_COMMIT"' \
-        "$STANDARDIZE_REFS/mode-update.md")" -eq 3
+        "$STANDARDIZE_REFS/mode-update.md")" -eq 4
 expect_fail "update commands do not reuse the mutable release tag" \
     grep -qF -- '--vcs-ref="$HARMON_INIT_REF"' "$STANDARDIZE_REFS/mode-update.md"
 expect_fail "production command examples do not pin an obsolete release" \
