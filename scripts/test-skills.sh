@@ -44,6 +44,23 @@ expect_fail() {
     shift
     if "$@" >/dev/null 2>&1; then bad "$desc (expected non-zero exit)"; else ok "$desc"; fi
 }
+# Run a command, succeed iff it exits non-zero AND says why — a rejection that
+# fires for an unrelated reason is a passing test that proves nothing.
+expect_fail_contains() {
+    local desc="$1"
+    local needle="$2"
+    local output
+    shift 2
+    if output="$("$@" 2>&1)"; then
+        bad "$desc (expected non-zero exit)"
+        [ -z "$output" ] || printf '%s\n' "$output" | sed 's/^/      /' >&2
+    elif printf '%s\n' "$output" | grep -qF "$needle"; then
+        ok "$desc"
+    else
+        bad "$desc (missing diagnostic: $needle)"
+        [ -z "$output" ] || printf '%s\n' "$output" | sed 's/^/      /' >&2
+    fi
+}
 expect_ok_contains() {
     local desc="$1"
     local needle="$2"
@@ -962,6 +979,21 @@ expect_ok "catalog requires an always-emitted Terraform aggregate" \
 expect_ok "audit guidance rejects workflow-level Terraform path filters" \
     grep -qF 'internal change detector, not workflow-level path filters' \
     "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit guidance classifies required checks that cannot report" \
+    grep -qF '**D2. A required context that cannot report.**' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit guidance classes a job-level if bypass as fail-open, not a wedge" \
+    grep -qF 'that one is fail-**open** (the gate is bypassed, not wedged)' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog requires unfiltered triggers for every required context" \
+    grep -qF 'Every required context must report unconditionally.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "audit guidance binds provisioning to the gate job" \
+    grep -qF 'in a sibling job, an unused `./.github/actions/*`, or a dead workflow' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "catalog binds the Terraform toolchain to the gate job" \
+    grep -qF 'per job, not per workflow or per repo:' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "catalog binds Terraform skips to explicit predicates" \
     grep -qF 'predicates prove that result deliberate.' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -1155,27 +1187,80 @@ EOF
 write_required_check_ruleset() {
     local target="$1"
     local mode="${2:-baseline}"
-    local extra_context=""
+    local extra_context="" conditions=""
     local base_contexts=$'{"context": "verify"},\n          {"context": "security"}'
+    # Split-workflow repos require per-workflow aggregate rollups instead of the
+    # template's verify/security pair (e.g. harmon-infra).
+    local split_contexts=$'{"context": "build-verify"},\n          {"context": "validate-verify"},\n          {"context": "security-verify"}'
     case "$mode" in
     baseline) ;;
     terraform) extra_context=$',\n          {"context": "terraform-verify"}' ;;
     codeql) extra_context=$',\n          {"context": "codeql-verify"}' ;;
     split-terraform | split-terraform-ghost)
-        # Split-workflow repos require per-workflow aggregate rollups instead
-        # of the template's verify/security pair (e.g. harmon-infra).
-        base_contexts=$'{"context": "build-verify"},\n          {"context": "validate-verify"},\n          {"context": "security-verify"}'
+        base_contexts="$split_contexts"
         extra_context=$',\n          {"context": "terraform-verify"}'
         if [ "$mode" = split-terraform-ghost ]; then
             extra_context="$extra_context"$',\n          {"context": "ghost-verify"}'
         fi
+        ;;
+    nested-protected-branch)
+        # A protected ref with path segments — the case where GitHub's `*`
+        # (which stops at `/`) and a shell glob disagree.
+        base_contexts="$split_contexts"
+        extra_context=$',\n          {"context": "terraform-verify"}'
+        conditions=$'  "conditions": {\n    "ref_name": {\n      "include": ["refs/heads/releases/2026/q3"],\n      "exclude": []\n    }\n  },\n'
+        ;;
+    wildcard-protected-branch)
+        # A ref SELECTOR rather than a branch — coverage is a manual audit.
+        base_contexts="$split_contexts"
+        extra_context=$',\n          {"context": "terraform-verify"}'
+        conditions=$'  "conditions": {\n    "ref_name": {\n      "include": ["refs/heads/releases/**"],\n      "exclude": []\n    }\n  },\n'
+        ;;
+    excluded-included-branch)
+        # `exclude` removes one of the included refs — it is not protected.
+        base_contexts="$split_contexts"
+        extra_context=$',\n          {"context": "terraform-verify"}'
+        conditions=$'  "conditions": {\n    "ref_name": {\n      "include": ["refs/heads/main", "refs/heads/release"],\n      "exclude": ["refs/heads/release"]\n    }\n  },\n'
+        ;;
+    bracketed-protected-branch)
+        # A ref name containing `]` — a regex-based array scan would stop early.
+        # Spaces around the key colons too: valid JSON the walker must accept.
+        base_contexts="$split_contexts"
+        extra_context=$',\n          {"context": "terraform-verify"}'
+        conditions='  "conditions" : {"ref_name" : {"include" : ["refs/heads/release]","refs/heads/main"], "exclude" : []}},'$'\n'
+        ;;
+    wildcard-excluded-branch)
+        # A wildcard exclusion whose reach this auditor will not guess at.
+        base_contexts="$split_contexts"
+        extra_context=$',\n          {"context": "terraform-verify"}'
+        conditions=$'  "conditions": {\n    "ref_name": {\n      "include": ["refs/heads/main", "refs/heads/main1"],\n      "exclude": ["refs/heads/main?"]\n    }\n  },\n'
+        ;;
+    escaped-protected-branch)
+        # A protected branch whose name contains a glob special character.
+        base_contexts="$split_contexts"
+        extra_context=$',\n          {"context": "terraform-verify"}'
+        conditions=$'  "conditions": {\n    "ref_name": {\n      "include": ["refs/heads/release/v1+"],\n      "exclude": []\n    }\n  },\n'
+        ;;
+    all-branches-protected)
+        # `~ALL` selects every branch — not reducible to one branch name.
+        base_contexts="$split_contexts"
+        extra_context=$',\n          {"context": "terraform-verify"}'
+        conditions=$'  "conditions": {\n    "ref_name": {\n      "include": ["~ALL"],\n      "exclude": []\n    }\n  },\n'
+        ;;
+    compact-multi-branch)
+        # Compact JSON putting every ref on one line, `exclude` ahead of
+        # `include` (member order must not matter), and an excluded ref that
+        # must NOT be treated as protected.
+        base_contexts="$split_contexts"
+        extra_context=$',\n          {"context": "terraform-verify"}'
+        conditions='  "conditions":{"ref_name":{"exclude":["refs/heads/wip"],"include":["refs/heads/main","refs/heads/release"]}},'$'\n'
         ;;
     *) fail "unknown ruleset fixture mode: $mode" ;;
     esac
     mkdir -p "$target/.github"
     cat >"$target/.github/Branch Protection Ruleset - Protect Main.json" <<EOF
 {
-  "rules": [
+$conditions  "rules": [
     {
       "type": "required_status_checks",
       "parameters": {
@@ -1555,10 +1640,53 @@ EOF
 }
 write_terraform_build_workflow() {
     local include_tflint="${1:-true}"
+    local mode="${2:-inline}"
     local tflint_step='      - uses: terraform-linters/setup-tflint@1111111111111111111111111111111111111111'
+    local lint_setup_steps sibling_toolchain_job=""
+    local gate_step='      - run: task check'
     if [ "$include_tflint" = false ]; then
         tflint_step=""
     fi
+    case "$mode" in
+    inline)
+        # The gate job installs the toolchain in its own steps (harmon-infra).
+        lint_setup_steps="      - uses: hashicorp/setup-terraform@1111111111111111111111111111111111111111
+$tflint_step
+      - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111"
+        ;;
+    composite)
+        # The gate job installs it through the local composite action a freshly
+        # rendered repo ships (.github/actions/setup).
+        lint_setup_steps="      - uses: ./.github/actions/setup"
+        ;;
+    prefixed-gate)
+        # `task check` behind an environment prefix is still the gate.
+        lint_setup_steps="      - uses: hashicorp/setup-terraform@1111111111111111111111111111111111111111
+$tflint_step
+      - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111"
+        gate_step='      - run: CI=true task check'
+        ;;
+    sibling-toolchain | sibling-toolchain-anchored)
+        # The toolchain is provisioned in a DIFFERENT job — nothing lands on
+        # the gate job's runner, so `task check` cannot reach Terraform lint.
+        # The anchored variant puts a YAML anchor on the sibling's job header;
+        # a job-boundary test that demanded a bare `job:` line would miss the
+        # header and hand the gate job its sibling's steps.
+        local sibling_header="  toolchain:"
+        if [ "$mode" = sibling-toolchain-anchored ]; then
+            sibling_header="  toolchain: &toolchain"
+        fi
+        lint_setup_steps=""
+        sibling_toolchain_job="$sibling_header
+    runs-on: ubuntu-latest
+    steps:
+      - uses: hashicorp/setup-terraform@1111111111111111111111111111111111111111
+$tflint_step
+      - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111
+      - run: echo toolchain"
+        ;;
+    *) fail "unknown Terraform build workflow fixture mode: $mode" ;;
+    esac
     cat >"$TF_TARGET/.github/workflows/build.yml" <<EOF
 name: Build
 on:
@@ -1571,10 +1699,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: hashicorp/setup-terraform@1111111111111111111111111111111111111111
-$tflint_step
-      - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111
-      - run: task check
+$lint_setup_steps
+$gate_step
+$sibling_toolchain_job
   security:
     if: >-
       github.event_name != 'pull_request' ||
@@ -1716,6 +1843,37 @@ write_terraform_taskfile
 
 write_terraform_build_workflow false
 expect_fail "verify-applied rejects Terraform lint without reachable TFLint in CI" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_build_workflow true sibling-toolchain
+expect_fail_contains "verify-applied rejects a toolchain provisioned outside the 'task check' job" \
+    "job 'lint' runs 'task check' but neither it nor the composite actions it uses provisions Terraform lint dependency: hashicorp/setup-terraform@" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_build_workflow true sibling-toolchain-anchored
+expect_fail_contains "verify-applied stops a gate job's block at an anchored sibling job header" \
+    "job 'lint' runs 'task check' but neither it nor the composite actions it uses provisions Terraform lint dependency: hashicorp/setup-terraform@" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# The gate job may instead reach the toolchain through the local composite
+# action a freshly rendered repo ships; an unused composite must not vouch.
+mkdir -p "$TF_TARGET/.github/actions/setup"
+cat >"$TF_TARGET/.github/actions/setup/action.yml" <<'EOF'
+name: Setup toolchain
+description: Install the shared toolchain.
+runs:
+  using: composite
+  steps:
+    - uses: hashicorp/setup-terraform@1111111111111111111111111111111111111111
+    - uses: terraform-linters/setup-tflint@1111111111111111111111111111111111111111
+    - uses: astral-sh/setup-uv@1111111111111111111111111111111111111111
+EOF
+expect_fail_contains "verify-applied rejects a composite action the gate job never uses" \
+    "job 'lint' runs 'task check' but neither it nor the composite actions it uses provisions Terraform lint dependency: hashicorp/setup-terraform@" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_terraform_build_workflow true composite
+expect_ok "verify-applied accepts a gate job provisioned by its composite action" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+rm -rf "$TF_TARGET/.github/actions"
+write_terraform_build_workflow true prefixed-gate
+expect_ok "verify-applied finds the gate job behind an environment prefix" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
 write_terraform_build_workflow
 write_terraform_lock_helper false
@@ -1867,6 +2025,255 @@ jobs:
 EOF
 expect_fail "verify-applied rejects a required check whose workflow never runs on protected events" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# Path-filtered protected events: the workflow triggers on pull_request and
+# merge_group, but never starts for an out-of-scope change, so the required
+# context stays pending and wedges that merge.
+cat >"$TF_TARGET/.github/workflows/terraform.yml" <<'EOF'
+name: Terraform
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+  merge_group:
+  workflow_dispatch:
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo changes
+  terraform-verify:
+    if: always()
+    needs: [changes]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          [ "$CHANGES_RESULT" = "success" ] || exit 1
+EOF
+expect_fail_contains "verify-applied rejects a required check behind a pull_request paths filter" \
+    "its pull_request trigger carries a 'paths' filter" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+sed -i.bak '/^      - "terraform\/\*\*"$/d; /^    paths:$/d' \
+    "$TF_TARGET/.github/workflows/terraform.yml"
+rm "$TF_TARGET/.github/workflows/terraform.yml.bak"
+expect_ok "verify-applied accepts branch filters that cover the protected branch" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# $1/$2 are the block bodies of the pull_request / merge_group triggers
+# (indented four spaces).
+write_filtered_terraform_workflow() {
+    cat >"$TF_TARGET/.github/workflows/terraform.yml" <<EOF
+name: Terraform
+on:
+  push:
+    branches: [main]
+  pull_request:
+$1
+  merge_group:
+${2:-}
+  workflow_dispatch:
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo changes
+  terraform-verify:
+    if: always()
+    needs: [changes]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGES_RESULT: \${{ needs.changes.result }}
+        run: |
+          [ "\$CHANGES_RESULT" = "success" ] || exit 1
+EOF
+}
+# An unlisted trigger key is rejected on sight rather than assumed harmless —
+# the allowlist is `branches`, `branches-ignore`, `types`.
+write_filtered_terraform_workflow '    paths-ignore: ["docs/**"]'
+expect_fail_contains "verify-applied rejects an unlisted trigger filter key" \
+    "its pull_request trigger carries a 'paths-ignore' filter" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# A narrowed activity-type list that drops `synchronize` reports once and never
+# again, so a pushed commit leaves the required check pending forever.
+write_filtered_terraform_workflow '    types: [opened, reopened]'
+expect_fail_contains "verify-applied rejects a types filter that drops synchronize" \
+    "its pull_request types: filter omits 'synchronize'" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    types: [opened, reopened, synchronize]'
+expect_ok "verify-applied accepts an explicit types list that keeps synchronize" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# merge_group has exactly one activity type; a list omitting it wedges the queue.
+write_filtered_terraform_workflow '' '    types: [checks_required]'
+expect_fail_contains "verify-applied rejects a merge_group types list without checks_requested" \
+    "its merge_group types: filter omits 'checks_requested'" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '' '    types: [checks_requested]'
+expect_ok "verify-applied accepts an explicit merge_group checks_requested type" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# A branch filter is only safe when it COVERS the protected branch; one that
+# excludes it wedges every protected merge just like a paths filter.
+write_filtered_terraform_workflow '    branches: [develop]'
+expect_fail_contains "verify-applied rejects a branches filter that excludes the protected branch" \
+    "its pull_request branches: filter excludes main" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    branches: develop'
+expect_fail_contains "verify-applied reads a scalar branches filter" \
+    "its pull_request branches: filter excludes main" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow $'    branches-ignore:\n      - main'
+expect_fail_contains "verify-applied rejects a branches-ignore filter naming the protected branch" \
+    "its pull_request branches-ignore: filter excludes main" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    branches: ["releases/**", main]'
+expect_ok "verify-applied accepts a glob branch filter covering the protected branch" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# GitHub evaluates branch patterns in order, so a later positive pattern
+# re-includes a branch an earlier negative one excluded.
+write_filtered_terraform_workflow '    branches: ["!main", main]'
+expect_ok "verify-applied honors ordered branch patterns re-including a branch" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    branches: [main, "!main"]'
+expect_fail_contains "verify-applied honors a later negative branch pattern" \
+    "its pull_request branches: filter excludes main" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# An event body written as an inline flow mapping cannot be audited per key.
+write_filtered_terraform_workflow ''
+sed -i.bak 's|^  pull_request:$|  pull_request: {branches: main}|' \
+    "$TF_TARGET/.github/workflows/terraform.yml"
+rm "$TF_TARGET/.github/workflows/terraform.yml.bak"
+expect_fail_contains "verify-applied rejects an unauditable inline event body" \
+    "inline flow mapping this auditor cannot read per event" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# A flow mapping for the whole `on:` block hides its filters on one line; it is
+# rejected outright rather than accepted unread.
+cat >"$TF_TARGET/.github/workflows/terraform.yml" <<'EOF'
+name: Terraform
+on: {push: {branches: [main]}, pull_request: {paths: ["terraform/**"]}, merge_group: {}, workflow_dispatch: {}}
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo changes
+  terraform-verify:
+    if: always()
+    needs: [changes]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          [ "$CHANGES_RESULT" = "success" ] || exit 1
+EOF
+expect_fail_contains "verify-applied rejects an unauditable inline flow-mapping on: block" \
+    "inline flow mapping this auditor cannot read per event" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# GitHub branch globs are not shell globs: `*` stops at `/`, `**` crosses it. A
+# nested protected branch is covered by `**` and NOT by a single `*`.
+write_required_check_ruleset "$TF_TARGET" nested-protected-branch
+write_filtered_terraform_workflow '    branches: ["releases/*"]'
+expect_fail_contains "verify-applied applies GitHub glob semantics to a single-star branch filter" \
+    "its pull_request branches: filter excludes releases/2026/q3" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    branches: ["releases/**"]'
+expect_ok "verify-applied accepts a double-star branch filter crossing path segments" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# GitHub's `?` is "zero or one of the PRECEDING character", not "any one
+# character": `main?` covers main and mai, never mainx.
+write_required_check_ruleset "$TF_TARGET" split-terraform
+write_filtered_terraform_workflow '    branches: ["main?"]'
+expect_ok "verify-applied reads ? as an optional preceding character" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    branches: ["mai?"]'
+expect_fail_contains "verify-applied does not treat ? as a wildcard character" \
+    "its pull_request branches: filter excludes main" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# A wildcard ruleset selector names a set of branches; coverage is not decided
+# statically, so it is surfaced for manual audit instead of matched literally.
+write_required_check_ruleset "$TF_TARGET" wildcard-protected-branch
+write_filtered_terraform_workflow '    branches: ["releases/*"]'
+expect_ok_contains "verify-applied defers wildcard protected ref selectors to manual audit" \
+    "ruleset protects the wildcard ref selector 'refs/heads/releases/**'" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# `~ALL` protects every branch; it is a selector, not a branch, so it must not
+# silently collapse to the default branch.
+write_required_check_ruleset "$TF_TARGET" all-branches-protected
+write_filtered_terraform_workflow '    branches: [main]'
+expect_ok_contains "verify-applied defers a ~ALL ruleset selector to manual audit" \
+    "ruleset protects the ref selector '~ALL'" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# A comma inside a quoted pattern belongs to that pattern; splitting on it would
+# invent a covering `main` that GitHub never sees.
+write_required_check_ruleset "$TF_TARGET" split-terraform
+write_filtered_terraform_workflow '    branches: ["main,release"]'
+expect_fail_contains "verify-applied keeps a quoted comma inside one branch pattern" \
+    "its pull_request branches: filter excludes main" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# Compact JSON keeps every protected ref on one line; all of them must be read,
+# `exclude` refs must not be mistaken for protected ones, and `include` must be
+# found whatever its position among the object's members.
+write_required_check_ruleset "$TF_TARGET" compact-multi-branch
+write_filtered_terraform_workflow '    branches: [release]'
+expect_fail_contains "verify-applied reads every protected ref from a compact ruleset" \
+    "its pull_request branches: filter excludes main" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    branches: [main, release]'
+expect_ok "verify-applied ignores excluded refs when deriving protected branches" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# `exclude` carves a branch back out of `include`, so it is no longer protected
+# and a filter that omits it must not be reported as a wedge.
+write_required_check_ruleset "$TF_TARGET" excluded-included-branch
+write_filtered_terraform_workflow '    branches: [main]'
+expect_ok "verify-applied subtracts excluded refs from the included ones" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# A backslash escapes a literal special character in a GitHub branch pattern —
+# in both YAML spellings, since double quotes eat one level of backslash.
+write_required_check_ruleset "$TF_TARGET" escaped-protected-branch
+write_filtered_terraform_workflow "    branches: ['release/v1\\+']"
+expect_ok "verify-applied honors an escaped literal in a branch pattern" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    branches: ["release/v1\\+"]'
+expect_ok "verify-applied decodes a YAML double-quoted escape in a branch pattern" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    branches: ["release/v1+"]'
+expect_fail_contains "verify-applied reads an unescaped + as a quantifier" \
+    "its pull_request branches: filter excludes release/v1+" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# A `#` only starts a YAML comment after whitespace, so it stays inside a
+# branch name — truncating to `main` would fake coverage of the protected ref.
+write_required_check_ruleset "$TF_TARGET" split-terraform
+write_filtered_terraform_workflow '    branches: "main#backup"'
+expect_fail_contains "verify-applied keeps a hash inside a quoted branch pattern" \
+    "its pull_request branches: filter excludes main" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    branches: [main] # only the protected branch'
+expect_ok "verify-applied still strips a real trailing comment" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# Ruleset JSON is walked as strings, so a ref name may contain the delimiters a
+# regex would trip over.
+write_required_check_ruleset "$TF_TARGET" bracketed-protected-branch
+write_filtered_terraform_workflow '    branches: [main]'
+expect_fail_contains "verify-applied reads a protected ref containing a JSON delimiter" \
+    "its pull_request branches: filter excludes release]" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+# A wildcard EXCLUSION is not applied: ruleset selectors use fnmatch, whose
+# globstar reading differs from the Actions dialect, and guessing wrong would
+# drop a genuinely protected branch. It warns and the branch stays protected.
+write_required_check_ruleset "$TF_TARGET" wildcard-excluded-branch
+write_filtered_terraform_workflow '    branches: [main]'
+expect_fail_contains "verify-applied keeps branches protected against a wildcard exclusion" \
+    "its pull_request branches: filter excludes main1" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_filtered_terraform_workflow '    branches: [main, main1]'
+expect_ok_contains "verify-applied reports an unapplied wildcard exclusion" \
+    "ruleset excludes the wildcard ref selector 'refs/heads/main?'" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$TF_TARGET"
+write_required_check_ruleset "$TF_TARGET" terraform
 cat >"$TF_TARGET/.github/workflows/terraform.yml" <<'EOF'
 name: Terraform
 on:
