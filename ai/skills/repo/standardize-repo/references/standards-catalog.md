@@ -388,6 +388,37 @@ Shared structure:
   unknown state. A check that rejects only `failure` is fail-open. The
   `devcontainer-verify` aggregate follows the identical fork-skipped/trusted-
   success contract for its build leaf.
+- **Every required context must report unconditionally.** The workflow behind a
+  required check triggers on `pull_request` **and** `merge_group`, and no trigger
+  filter may keep it from starting on a protected ref — a workflow that does not
+  start posts no status, so branch protection wedges that merge exactly like a
+  context no workflow defines. Under those two events only three keys are
+  allowed, and `verify-applied.sh` rejects anything else unread rather than
+  assume it is harmless: `branches:` must cover the protected branch (the
+  standard's own `branches: [main]`), `branches-ignore:` must not name it, and a
+  `types:` list must keep GitHub's full default set — `opened`, `synchronize`,
+  `reopened` for `pull_request` (without `synchronize` a pushed commit never
+  re-reports on the new head SHA; without `opened` the check is missing until
+  someone pushes) and `checks_requested` for `merge_group`. `paths:` /
+  `paths-ignore:` are never allowed on a required check: scope the *work*, not
+  the trigger — the workflow always starts and an internal change-detection job
+  makes unrelated runs a fast no-op (`terraform.yml`). Path filters remain
+  correct on workflows that are **not** required checks (`deploy.yml`,
+  `devcontainer-build.yml` where `devcontainer-verify` is not required). Branch
+  patterns follow GitHub's glob rules, not the shell's — `*` stops at `/` and
+  only `**` crosses it — and are evaluated in order, so a later pattern overrides
+  an earlier one. **[audit requirements]** two residuals are deliberately not
+  statically decided. Wildcard ruleset ref selectors (`refs/heads/releases/**`)
+  name a branch *set*: rulesets match them with `File.fnmatch`, whose globstar
+  reading differs from the Actions dialect, so the verifier warns and defers —
+  a wildcard `include` gets no branch-coverage check, and a wildcard `exclude`
+  is left unapplied so the branches it might remove stay audited. And an
+  event-dependent job-level
+  `if:` on the reporting job fails the other way — a skipped job still posts a
+  status, and GitHub counts a skipped required check as **successful**, so the
+  gate is bypassed rather than wedged. That is the fail-open case the
+  `if: always()` + result-gating requirement above exists to catch; review any
+  reporting job whose `if:` is not `always()`.
 - Fork-PR guard: jobs gate on
   `github.event.pull_request.head.repo.full_name == github.repository`.
 - **Runner trust boundary [manual residual / audit requirement]:** public
@@ -877,9 +908,13 @@ Adds (all [copier]):
   `lint:terraform:tflint`, `lint:terraform:security` (Renovate-pinned Checkov via
   `uvx --from "checkov==…"`), and `lint:terraform:locks`.
   `lint:terraform:validate` remains the separate validation path. The root
-  `Brewfile` supplies Terraform, TFLint, and uv locally; the build workflow
-  provisions Terraform, pinned TFLint, and uv before invoking the shared task
-  gate. A docs claim or a defined-but-unreachable leaf task is not lint coverage.
+  `Brewfile` supplies Terraform, TFLint, and uv locally; in CI, the **job that
+  runs `task check`** provisions Terraform, pinned TFLint, and uv — through its
+  own steps (a split repo's `validate.yml` lint job) or through the local
+  composite action that job invokes (`./.github/actions/setup`). The binding is
+  per job, not per workflow or per repo: a setup action in a sibling job, an
+  unused composite, or a dead workflow installs nothing on the gate job's runner.
+  A docs claim or a defined-but-unreachable leaf task is not lint coverage.
   Lefthook runs the lint aggregate pre-commit and validate pre-push; the
   devcontainer includes Terraform; Renovate groups Terraform providers; VS Code
   includes hashicorp/terraform.

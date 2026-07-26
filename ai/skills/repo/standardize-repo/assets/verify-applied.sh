@@ -92,6 +92,21 @@ cd "$target"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# owner/repo for the checkout's origin remote, or nothing when it is not a
+# GitHub remote (or not a git work tree at all).
+github_remote_nwo() {
+    local remote_url nwo=""
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+    remote_url="$(git remote get-url origin 2>/dev/null || true)"
+    case "$remote_url" in
+    https://github.com/*) nwo="${remote_url#https://github.com/}" ;;
+    git@github.com:*) nwo="${remote_url#git@github.com:}" ;;
+    ssh://git@github.com/*) nwo="${remote_url#ssh://git@github.com/}" ;;
+    esac
+    nwo="${nwo%.git}"
+    printf '%s\n' "${nwo%/}"
+}
+
 fail=0
 fail_msgs=""
 err() {
@@ -221,6 +236,87 @@ terraform_sources="$(
         grep -E '\.tf$' |
         grep -vE '(^|/)(\.terraform|node_modules|vendor|dist|build)/' || true
 )"
+
+# Print the lines of one job's block (everything under `  <job>:` up to the next
+# job header). Used to bind a contract to the job that carries it rather than to
+# the whole workflow file. Inside `jobs:`, EVERY key at exactly two spaces is a
+# job header, whatever trails the colon — a boundary that also insisted on an
+# empty tail would let a header carrying a YAML anchor (`toolchain: &toolchain`)
+# slip through and hand the previous job its sibling's steps, which is the
+# fail-OPEN direction for a provisioning check. Job-level keys sit at four
+# spaces and block scalars must indent past their key, so nothing inside a job
+# can reach two.
+workflow_job_block() {
+    awk -v target="$2" '
+        BEGIN { in_job = 0 }
+        {
+            if (!in_job) {
+                if ($0 ~ ("^  " target ":([ ]|$)")) {
+                    in_job = 1
+                }
+                next
+            }
+            if ($0 ~ /^  [A-Za-z0-9_-]+:/ || $0 ~ /^[A-Za-z0-9_-]+:/) {
+                exit
+            }
+            print
+        }
+    ' "$1"
+}
+
+# Print the job keys whose own steps run the shared gate (`task check`). The
+# match is anchored on a command CONTEXT — after `run:`, at the start of a
+# run-block line, or after a `&&`/`||`/`;` separator — optionally behind an
+# environment or wrapper prefix (`CI=true task check`, `env FOO=bar task check`).
+# Comments are skipped, so prose mentioning the gate (harmon-infra's
+# claude-implement.yml does) never nominates a job.
+gate_jobs_running_check() {
+    awk '
+        function flush() {
+            if (job != "" && runs_check) {
+                print job
+            }
+            runs_check = 0
+        }
+        BEGIN {
+            in_jobs = 0
+            job = ""
+            runs_check = 0
+            prefix = "(([A-Za-z_][A-Za-z0-9_]*=[^ \t]*|env|command|sudo|nice|time)[ \t]+)*"
+            gate = prefix "task[ \t]+check([ \t]|$)"
+        }
+        {
+            line = $0
+            if (!in_jobs) {
+                if (line ~ /^jobs:[ ]*(#.*)?$/) {
+                    in_jobs = 1
+                }
+                next
+            }
+            if (line ~ /^[A-Za-z0-9_-]+:/) {
+                flush()
+                in_jobs = 0
+                next
+            }
+            if (line ~ /^  [A-Za-z0-9_-]+:([ ]|$)/) {
+                flush()
+                job = line
+                sub(/^  /, "", job)
+                sub(/:.*$/, "", job)
+                next
+            }
+            if (line ~ /^[[:space:]]*#/) {
+                next
+            }
+            if (line ~ ("run:[ \t]*" gate) ||
+                line ~ ("^[ \t]*" gate) ||
+                line ~ ("(&&|\\|\\||;)[ \t]*" gate)) {
+                runs_check = 1
+            }
+        }
+        END { flush() }
+    ' "$1"
+}
 
 provider_lock_init_modes_are_safe() {
     local helper="$1"
@@ -381,47 +477,47 @@ if [ "$has_terraform" = true ]; then
         done
     fi
 
-    # The toolchain must be reachable from the workflow that actually runs the
-    # shared gate (`task check`) — split repos provision it there directly
-    # (harmon-infra's validate.yml), while freshly rendered repos provision it
-    # through a local composite action the gate workflow invokes
-    # (.github/actions/setup). Scan the gate workflows plus the composite
-    # actions they reference, so a dead workflow carrying the setup actions
-    # cannot satisfy the contract.
-    gate_provision_files=""
+    # The toolchain must be reachable from the JOB that actually runs the shared
+    # gate (`task check`) — a setup action in a sibling job installs nothing on
+    # the gate job's runner. Split repos provision it in the gate job directly
+    # (harmon-infra's validate.yml lint job), while freshly rendered repos
+    # provision it through a local composite action that job invokes
+    # (.github/actions/setup). So each gate job is satisfied by its OWN steps
+    # plus the composite actions IT uses; a dead workflow — or a live but
+    # unrelated job — carrying the setup actions cannot vouch for it.
+    gate_jobs_found=false
     for workflow_file in .github/workflows/*.y*ml; do
         [ -f "$workflow_file" ] || continue
-        grep -q 'task check' "$workflow_file" || continue
-        gate_provision_files="$gate_provision_files$workflow_file
-"
-        while IFS= read -r composite_ref; do
-            [ -n "$composite_ref" ] || continue
-            for composite_file in "$composite_ref"/action.yml "$composite_ref"/action.yaml; do
-                [ -f "$composite_file" ] || continue
-                gate_provision_files="$gate_provision_files$composite_file
-"
-            done
-        done <<<"$(sed -n -E 's|^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*(\./\.github/actions/[A-Za-z0-9_./-]+).*|\1|p' "$workflow_file")"
-    done
-    if [ -z "$gate_provision_files" ]; then
-        err "Terraform is present but no CI workflow runs 'task check' to reach its lint contract"
-    else
-        for setup_action in \
-            'hashicorp/setup-terraform@' \
-            'terraform-linters/setup-tflint@' \
-            'astral-sh/setup-uv@'; do
-            found_setup=false
-            while IFS= read -r provision_file; do
-                [ -n "$provision_file" ] || continue
-                if grep -qE "^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+${setup_action}" "$provision_file"; then
-                    found_setup=true
-                    break
+        while IFS= read -r gate_job; do
+            [ -n "$gate_job" ] || continue
+            gate_jobs_found=true
+            gate_job_block="$(workflow_job_block "$workflow_file" "$gate_job")"
+            # The job's own steps, plus every local composite action it uses.
+            gate_provision_text="$gate_job_block"
+            while IFS= read -r composite_ref; do
+                [ -n "$composite_ref" ] || continue
+                for composite_file in "$composite_ref"/action.yml "$composite_ref"/action.yaml; do
+                    [ -f "$composite_file" ] || continue
+                    gate_provision_text="$gate_provision_text
+$(cat "$composite_file")"
+                done
+            done <<<"$(
+                printf '%s\n' "$gate_job_block" |
+                    sed -n -E 's|^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*(\./\.github/actions/[A-Za-z0-9_./-]+).*|\1|p'
+            )"
+            for setup_action in \
+                'hashicorp/setup-terraform@' \
+                'terraform-linters/setup-tflint@' \
+                'astral-sh/setup-uv@'; do
+                if ! printf '%s\n' "$gate_provision_text" |
+                    grep -qE "^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+${setup_action}"; then
+                    err "$workflow_file job '$gate_job' runs 'task check' but neither it nor the composite actions it uses provisions Terraform lint dependency: $setup_action"
                 fi
-            done <<<"$gate_provision_files"
-            if [ "$found_setup" = false ]; then
-                err "no 'task check' workflow (or composite action it invokes) provisions Terraform lint dependency: $setup_action"
-            fi
-        done
+            done
+        done <<<"$(gate_jobs_running_check "$workflow_file")"
+    done
+    if [ "$gate_jobs_found" = false ]; then
+        err "Terraform is present but no CI workflow runs 'task check' to reach its lint contract"
     fi
 fi
 
@@ -765,6 +861,268 @@ if [ -f "$ruleset_file" ]; then
     has_ruleset_context() {
         printf '%s\n' "$ruleset_contexts" | grep -qxF "$1"
     }
+    # Match a workflow `branches:` pattern. GitHub's Actions filter patterns are
+    # NOT shell globs, and every difference points at accepting a filter that
+    # never actually runs:
+    #   *   any characters EXCEPT `/`   (a shell `*` crosses `/`)
+    #   **  any characters including `/`
+    #   ?   zero or one of the PRECEDING character   (not "any one character")
+    #   +   one or more of the preceding character
+    # Translate to an anchored ERE rather than matching with `case`, whose `*`
+    # would happily cross `/` and accept `releases/*` for `releases/1/2`.
+    # Remaining regex metacharacters are escaped to literals, so a `[abc]`
+    # character class (legal but unheard of in a branch filter) simply fails to
+    # match — closed. The pattern crosses into awk through the environment, not
+    # `-v`: `-v` processes escape sequences in the value, so a pattern's `\+`
+    # would arrive as a bare `+` and be read back as a quantifier.
+    branch_pattern_matches() {
+        BRANCH_PATTERN="$1" BRANCH_NAME="$2" awk '
+            BEGIN {
+                pattern = ENVIRON["BRANCH_PATTERN"]
+                branch = ENVIRON["BRANCH_NAME"]
+                expr = "^"
+                count = length(pattern)
+                for (i = 1; i <= count; i++) {
+                    char = substr(pattern, i, 1)
+                    if (char == "\\") {
+                        # GitHub escapes a literal special character with a
+                        # backslash (`release/v1\+`); carry it through as a
+                        # literal instead of reading the quantifier.
+                        i++
+                        escaped = substr(pattern, i, 1)
+                        if (escaped != "") {
+                            if (index("\\^$.[]|(){}*+?", escaped) > 0) {
+                                expr = expr "\\" escaped
+                            } else {
+                                expr = expr escaped
+                            }
+                        }
+                        continue
+                    }
+                    if (char == "*") {
+                        if (substr(pattern, i + 1, 1) == "*") {
+                            expr = expr ".*"
+                            i++
+                        } else {
+                            expr = expr "[^/]*"
+                        }
+                    } else if (char == "?" || char == "+") {
+                        # ERE quantifiers bind to the preceding atom, which is
+                        # exactly what these two mean here.
+                        expr = expr char
+                    } else if (index("\\^$.[]|(){}", char) > 0) {
+                        expr = expr "\\" char
+                    } else {
+                        expr = expr char
+                    }
+                }
+                exit(branch ~ (expr "$") ? 0 : 1)
+            }
+        '
+    }
+
+    # The refs the ruleset protects — the branches a required context must be
+    # able to report on. Read `ref_name.include` specifically, not every
+    # `refs/heads/…` in the file: `exclude` entries are not protected, and
+    # treating one as a protected branch would invent a wedge.
+    #
+    # The scan is a JSON string walk, not a regex: a ref name may legally
+    # contain the very delimiters a regex would key on (`refs/heads/release]`
+    # ends an `[^]]*` array early, and the fallback would then audit the wrong
+    # branch). Walking characters with quote/escape state also makes member
+    # order irrelevant and pretty-printed vs compact JSON identical. Emits
+    # `include <ref>` / `exclude <ref>` lines.
+    ruleset_ref_selectors() {
+        awk '
+            function flush_string(   text) {
+                text = buffer
+                buffer = ""
+                return text
+            }
+            BEGIN {
+                RS = "^$"          # slurp the whole file
+                depth = 0
+                in_string = 0
+                escaped = 0
+                buffer = ""
+                pending_key = ""
+                ref_depth = -1
+                bucket = ""
+                seen_ref_name = 0
+            }
+            {
+                count = length($0)
+                for (i = 1; i <= count; i++) {
+                    char = substr($0, i, 1)
+                    if (in_string) {
+                        if (escaped) {
+                            buffer = buffer char
+                            escaped = 0
+                        } else if (char == "\\") {
+                            escaped = 1
+                        } else if (char == "\"") {
+                            in_string = 0
+                            text = flush_string()
+                            # A string followed by `:` is a key; otherwise it is
+                            # a value — and inside ref_name`s arrays, a ref.
+                            # JSON allows whitespace before the colon.
+                            lookahead = i + 1
+                            while (substr($0, lookahead, 1) ~ /[ \t\r\n]/) {
+                                lookahead++
+                            }
+                            if (substr($0, lookahead, 1) == ":") {
+                                pending_key = text
+                                if (text == "ref_name" && !seen_ref_name) {
+                                    seen_ref_name = 1
+                                    ref_depth = depth
+                                }
+                                if (ref_depth >= 0 && depth == ref_depth + 1 &&
+                                    (text == "include" || text == "exclude")) {
+                                    bucket = text
+                                }
+                            } else if (bucket != "" && ref_depth >= 0 &&
+                                depth == ref_depth + 2) {
+                                print bucket " " text
+                            }
+                        } else {
+                            buffer = buffer char
+                        }
+                        continue
+                    }
+                    if (char == "\"") {
+                        in_string = 1
+                        buffer = ""
+                        continue
+                    }
+                    if (char == "{" || char == "[") {
+                        depth++
+                        continue
+                    }
+                    if (char == "}" || char == "]") {
+                        depth--
+                        if (ref_depth >= 0 && depth <= ref_depth) {
+                            exit
+                        }
+                        if (ref_depth >= 0 && depth == ref_depth + 1) {
+                            bucket = ""
+                        }
+                        continue
+                    }
+                }
+            }
+        ' "$1"
+    }
+    ruleset_ref_selector_lines="$(ruleset_ref_selectors "$ruleset_file")"
+    protected_selectors="$(
+        printf '%s\n' "$ruleset_ref_selector_lines" |
+            { grep '^include ' || true; } | cut -d' ' -f2- | sort -u
+    )"
+    excluded_selectors="$(
+        printf '%s\n' "$ruleset_ref_selector_lines" |
+            { grep '^exclude ' || true; } | cut -d' ' -f2- | sort -u
+    )"
+    # `exclude` carves branches back out of `include`, so an excluded branch is
+    # not protected and auditing a filter against it would invent a wedge.
+    # Only a CONCRETE exclusion is applied. Ruleset ref selectors are matched
+    # with `File.fnmatch`, whose treatment of `**` under pathname semantics does
+    # not agree with the Actions dialect used everywhere else here (Ruby's
+    # `fnmatch("releases/**", "releases/2026/q3", FNM_PATHNAME)` is false, the
+    # Actions reading is true), and guessing wrong on an EXCLUSION drops a
+    # genuinely protected branch from the audit — the fail-open direction. So a
+    # wildcard exclusion is reported and left unapplied: the branch stays
+    # protected and its coverage still has to hold.
+    ruleset_excludes_branch() {
+        local branch="$1" excluded
+        for excluded in $excluded_selectors; do
+            case "$excluded" in
+            *'*'* | *'?'* | *'['*)
+                continue
+                ;;
+            "refs/heads/$branch")
+                return 0
+                ;;
+            esac
+        done
+        return 1
+    }
+    for excluded_selector in $excluded_selectors; do
+        case "$excluded_selector" in
+        *'*'* | *'?'* | *'['*)
+            echo "WARN: ruleset excludes the wildcard ref selector '$excluded_selector';" >&2
+            echo "      it is left applied-to-nothing (branches stay protected) — confirm by" >&2
+            echo "      hand which refs it actually removes." >&2
+            ;;
+        esac
+    done
+    # Resolve `~DEFAULT_BRANCH` to a branch name. GitHub resolves it against the
+    # repository's LIVE default branch, so ask the API first and fall back to the
+    # local `origin/HEAD` (which a default-branch rename leaves stale). Prints
+    # nothing when neither is available — the caller defers to a manual audit
+    # rather than guessing a name and vouching for a filter against it.
+    # `|| true`: under `pipefail` a repo with no origin remote (every test
+    # fixture, a fresh local scaffold) would otherwise abort the whole run.
+    live_default_branch() {
+        local nwo branch=""
+        nwo="$(github_remote_nwo)"
+        if [ -n "$nwo" ] && have gh; then
+            branch="$(gh api "repos/$nwo" --jq '.default_branch' 2>/dev/null || true)"
+        fi
+        if [ -z "$branch" ]; then
+            branch="$(
+                { git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true; } |
+                    sed 's|^origin/||'
+            )"
+        fi
+        printf '%s\n' "$branch"
+    }
+    # Only a selector that names ONE concrete branch can be matched against a
+    # workflow's branch filter. `~ALL`, a glob (`refs/heads/releases/**`), and
+    # any selector form this auditor does not model each name a SET of branches,
+    # and deciding whether a filter covers the whole set is glob containment —
+    # not attempted here, so they are surfaced for manual audit rather than
+    # matched as if they were literal branch names (which would silently accept
+    # `releases/*` for `releases/2026/q3`). Path and activity-type filters are
+    # still checked for those contexts; only branch coverage is deferred.
+    protected_branches=""
+    for protected_selector in $protected_selectors; do
+        case "$protected_selector" in
+        '~DEFAULT_BRANCH')
+            resolved_default_branch="$(live_default_branch)"
+            if [ -n "$resolved_default_branch" ]; then
+                ruleset_excludes_branch "$resolved_default_branch" ||
+                    protected_branches="${protected_branches}${resolved_default_branch}
+"
+            else
+                echo "WARN: ruleset protects '~DEFAULT_BRANCH' but this checkout cannot resolve the" >&2
+                echo "      repository's default branch — audit required-check branch-filter" >&2
+                echo "      coverage for it by hand." >&2
+            fi
+            ;;
+        refs/heads/*'*'* | refs/heads/*'?'* | refs/heads/*'['*)
+            echo "WARN: ruleset protects the wildcard ref selector '$protected_selector' —" >&2
+            echo "      audit required-check branch-filter coverage for it by hand." >&2
+            ;;
+        refs/heads/*)
+            ruleset_excludes_branch "${protected_selector#refs/heads/}" ||
+                protected_branches="${protected_branches}${protected_selector#refs/heads/}
+"
+            ;;
+        *)
+            echo "WARN: ruleset protects the ref selector '$protected_selector', which this" >&2
+            echo "      auditor cannot reduce to a single branch — audit required-check" >&2
+            echo "      branch-filter coverage for it by hand." >&2
+            ;;
+        esac
+    done
+    # A ruleset with no `conditions` at all is not a shape GitHub exports; treat
+    # it as protecting the default branch so the rest of the audit still runs,
+    # and use `main` when even that is unknowable — unlike the explicit
+    # `~DEFAULT_BRANCH` selector above, there is no stated intent to be faithful
+    # to here.
+    if [ -z "$protected_selectors" ]; then
+        protected_branches="$(live_default_branch)"
+        [ -n "$protected_branches" ] || protected_branches=main
+    fi
     # A split rollup standing in for the template's verify/security must be
     # result-gated — it needs `needs:` and must inspect `needs.<leaf>.result`
     # (or run the trusted-results helper). A job that exists but just echoes
@@ -799,6 +1157,330 @@ if [ -f "$ruleset_file" ]; then
             }
             END { exit(pr && mg ? 0 : 1) }
         ' "$1"
+    }
+    # A required context must report on EVERY protected-event run, not only the
+    # runs a trigger filter lets through. A filter that keeps the workflow from
+    # starting means the context never posts a status at all, and branch
+    # protection blocks that merge forever — the same wedge as a required check
+    # no workflow defines.
+    #
+    # This is an allowlist, not a blocklist of known-bad filters: under
+    # `on.pull_request` / `on.merge_group` only three keys are auditable —
+    #   * `branches:`        must cover the protected branch (`branches: [main]`,
+    #                        the standard's own shape, is fine)
+    #   * `branches-ignore:` must not name it
+    #   * `types:`           must keep `synchronize`, or a later push to the PR
+    #                        never re-reports and the check stays pending
+    # — and ANY other key (`paths`, `paths-ignore`, an unknown one) or any shape
+    # this parser cannot read (an inline flow mapping for the whole `on:` block
+    # or for an event body) is rejected unread. Enumerating unsafe shapes would
+    # fail open on the next legal variant; enumerating auditable ones fails
+    # closed on it. The standard keeps path scoping INSIDE the workflow anyway:
+    # terraform.yml always starts and an internal `changes` job makes unrelated
+    # changes a fast no-op (mode-audit: "internal change detector, not
+    # workflow-level path filters").
+    #
+    # DELIBERATE BOUNDARY: an event-dependent job-level `if:` can wedge the same
+    # way, but proving a conditional never evaluates true on a protected event
+    # needs expression evaluation, not static analysis — and the standard's
+    # aggregates are `if: always()`, so the filtered-*workflow* half is the
+    # cheap, unambiguous one and is what this rejects.
+
+    # Judge one protected event from its collected trigger keys/values. Echoes
+    # the reason it cannot always report, or nothing.
+    protected_event_verdict() {
+        local event="$1" keys="$2" values="$3" branches="$4"
+        local key value branch state required_types required_type
+        for key in $keys; do
+            case "$key" in
+            branches | branches-ignore | types) ;;
+            *)
+                printf "its %s trigger carries a '%s' filter, so a filtered-out run never starts the workflow\n" \
+                    "$event" "$key"
+                return 0
+                ;;
+            esac
+        done
+        # A narrowed types: list leaves some protected run unreported. For
+        # pull_request the default is [opened, synchronize, reopened] — without
+        # `opened` the check is missing until someone pushes, without
+        # `synchronize` a pushed commit never re-reports on the new head SHA.
+        # merge_group has exactly one activity type, so a list that omits
+        # `checks_requested` (an empty list, a typo) never runs in the queue.
+        if printf '%s\n' "$keys" | grep -qx types; then
+            case "$event" in
+            pull_request) required_types="opened synchronize reopened" ;;
+            *) required_types="checks_requested" ;;
+            esac
+            for required_type in $required_types; do
+                if ! printf '%s\n' "$values" | grep -qx "types $required_type"; then
+                    printf "its %s types: filter omits '%s', so some protected run never reports\n" \
+                        "$event" "$required_type"
+                    return 0
+                fi
+            done
+        fi
+        for branch in $branches; do
+            if printf '%s\n' "$keys" | grep -qx branches; then
+                # GitHub evaluates the patterns IN ORDER and the last match
+                # wins, so `['!main', main]` does run on main.
+                state=""
+                while read -r key value; do
+                    [ "$key" = branches ] || continue
+                    case "$value" in
+                    '!'*)
+                        if branch_pattern_matches "${value#!}" "$branch"; then
+                            state=excluded
+                        fi
+                        ;;
+                    *)
+                        if branch_pattern_matches "$value" "$branch"; then
+                            state=included
+                        fi
+                        ;;
+                    esac
+                done <<<"$values"
+                if [ "$state" != included ]; then
+                    printf 'its %s branches: filter excludes %s\n' "$event" "$branch"
+                    return 0
+                fi
+            fi
+            while read -r key value; do
+                [ "$key" = branches-ignore ] || continue
+                if branch_pattern_matches "$value" "$branch"; then
+                    printf 'its %s branches-ignore: filter excludes %s\n' "$event" "$branch"
+                    return 0
+                fi
+            done <<<"$values"
+        done
+    }
+
+    # Prints why the workflow cannot always report, or nothing when it can.
+    protected_event_filter_reason() {
+        local workflow="$1" branches="$2"
+        local tag rest reason="" event="" keys="" values="" unparsed=0
+        local unparsed_reason="its 'on:' triggers use an inline flow mapping this auditor cannot read per event — write them in block form"
+        while read -r tag rest; do
+            case "$tag" in
+            FLOWMAP | UNPARSED)
+                [ -n "$reason" ] || reason="$unparsed_reason"
+                unparsed=1
+                ;;
+            EVENT)
+                # An EVENT line closes the previous event; awk emits a final
+                # sentinel so the last one is always closed.
+                if [ -z "$reason" ] && [ -n "$event" ] && [ "$unparsed" -eq 0 ]; then
+                    reason="$(
+                        protected_event_verdict "$event" "$keys" "$values" "$branches"
+                    )"
+                fi
+                event="$rest"
+                keys=""
+                values=""
+                unparsed=0
+                ;;
+            K)
+                keys="${keys}${rest}
+"
+                ;;
+            V)
+                values="${values}${rest}
+"
+                ;;
+            esac
+        done <<<"$(
+            awk '
+                function indent_of(text) {
+                    match(text, /^[ ]*/)
+                    return RLENGTH
+                }
+                # Read one YAML scalar: strip quotes, decode double-quoted
+                # escapes, and drop a trailing comment. A `#` only starts a
+                # comment at the start of the value or after whitespace, so the
+                # branch pattern `main#backup` survives intact.
+                function scan_scalar(text,   i, count, char, quote, buffer) {
+                    count = length(text)
+                    quote = ""
+                    buffer = ""
+                    for (i = 1; i <= count; i++) {
+                        char = substr(text, i, 1)
+                        if (quote != "") {
+                            if (quote == "\"" && char == "\\") {
+                                i++
+                                buffer = buffer substr(text, i, 1)
+                            } else if (char == quote) {
+                                quote = ""
+                            } else {
+                                buffer = buffer char
+                            }
+                            continue
+                        }
+                        if (char == "\"" || char == "\047") {
+                            quote = char
+                            continue
+                        }
+                        if (char == "#" &&
+                            (i == 1 || substr(text, i - 1, 1) ~ /[ \t]/)) {
+                            break
+                        }
+                        buffer = buffer char
+                    }
+                    gsub(/^[ \t]+/, "", buffer)
+                    gsub(/[ \t]+$/, "", buffer)
+                    return buffer
+                }
+                function emit_item(key, item) {
+                    gsub(/^[ \t]+/, "", item)
+                    gsub(/[ \t]+$/, "", item)
+                    if (item != "") {
+                        print "V " key " " item
+                    }
+                }
+                # Emit a key value: a flow sequence ([a, b]) or a scalar.
+                # Returns 0 when the value is empty, i.e. a block list follows.
+                # The sequence is walked character by character rather than
+                # split on /,/ so a comma inside a quoted member stays part of
+                # that one pattern ("main,release" is a single branch filter,
+                # not two) and a `]` inside quotes does not end the sequence.
+                function emit_value(key, value,   i, count, char, quote, buffer) {
+                    gsub(/^[ \t]+/, "", value)
+                    if (value !~ /^\[/) {
+                        buffer = scan_scalar(value)
+                        if (buffer != "") {
+                            print "V " key " " buffer
+                            return 1
+                        }
+                        return 0
+                    }
+                    count = length(value)
+                    quote = ""
+                    buffer = ""
+                    for (i = 2; i <= count; i++) {
+                        char = substr(value, i, 1)
+                        if (quote != "") {
+                            # Inside YAML double quotes a backslash escapes the
+                            # next character, so `"a\\+"` is the three-character
+                            # branch pattern `a\+`. Single quotes take the text
+                            # verbatim.
+                            if (quote == "\"" && char == "\\") {
+                                i++
+                                buffer = buffer substr(value, i, 1)
+                            } else if (char == quote) {
+                                quote = ""
+                            } else {
+                                buffer = buffer char
+                            }
+                            continue
+                        }
+                        if (char == "\"" || char == "\047") {
+                            quote = char
+                            continue
+                        }
+                        if (char == "]") {
+                            break
+                        }
+                        if (char == ",") {
+                            emit_item(key, buffer)
+                            buffer = ""
+                            continue
+                        }
+                        buffer = buffer char
+                    }
+                    emit_item(key, buffer)
+                    return 1
+                }
+                BEGIN {
+                    in_on = 0
+                    event_indent = -1
+                    in_protected = 0
+                    pending = ""
+                    pending_indent = -1
+                }
+                {
+                    line = $0
+                    if (line ~ /^[ \t]*#/ || line ~ /^[ \t]*$/) {
+                        next
+                    }
+                    if (line ~ /^on:/) {
+                        in_on = 1
+                        event_indent = -1
+                        in_protected = 0
+                        pending = ""
+                        # `on: [push, pull_request]` is a flow SEQUENCE and
+                        # carries no filters; `on: {pull_request: {…}}` is a
+                        # flow mapping that hides them all on one line.
+                        rest = line
+                        sub(/^on:/, "", rest)
+                        gsub(/^[ \t]+|[ \t]+$/, "", rest)
+                        if (rest ~ /^\{/) {
+                            print "FLOWMAP"
+                        }
+                        next
+                    }
+                    if (!in_on) {
+                        next
+                    }
+                    if (line ~ /^[^ ]/) {
+                        in_on = 0
+                        next
+                    }
+                    indent = indent_of(line)
+                    if (event_indent < 0) {
+                        event_indent = indent
+                    }
+                    if (indent <= event_indent) {
+                        pending = ""
+                        in_protected = 0
+                        if (line ~ /^[ ]*["\047]?(pull_request|merge_group)["\047]?[ ]*:/) {
+                            in_protected = 1
+                            name = line
+                            sub(/^[ ]*["\047]?/, "", name)
+                            sub(/["\047]?[ ]*:.*$/, "", name)
+                            print "EVENT " name
+                            rest = line
+                            sub(/^[^:]*:/, "", rest)
+                            sub(/[ \t]*#.*$/, "", rest)
+                            gsub(/^[ \t]+|[ \t]+$/, "", rest)
+                            # A block event body is empty here; anything else
+                            # (`pull_request: {branches: main}`) is unreadable.
+                            if (rest != "") {
+                                print "UNPARSED"
+                            }
+                        }
+                        next
+                    }
+                    if (!in_protected) {
+                        next
+                    }
+                    if (pending != "" && indent > pending_indent && line ~ /^[ ]*-[ ]*/) {
+                        item = line
+                        sub(/^[ ]*-[ ]*/, "", item)
+                        item = scan_scalar(item)
+                        if (item != "") {
+                            print "V " pending " " item
+                        }
+                        next
+                    }
+                    pending = ""
+                    if (line !~ /^[ ]*["\047]?[A-Za-z0-9_-]+["\047]?[ ]*:/) {
+                        print "UNPARSED"
+                        next
+                    }
+                    key = line
+                    sub(/^[ ]*["\047]?/, "", key)
+                    sub(/["\047]?[ ]*:.*$/, "", key)
+                    print "K " key
+                    rest = line
+                    sub(/^[^:]*:/, "", rest)
+                    if (!emit_value(key, rest)) {
+                        pending = key
+                        pending_indent = indent
+                    }
+                }
+                END { print "EVENT --end--" }
+            ' "$workflow"
+        )"
+        [ -z "$reason" ] || printf '%s\n' "$reason"
     }
     ruleset_job_is_result_gated() {
         local context="$1" workflow_file
@@ -928,6 +1610,8 @@ if [ -f "$ruleset_file" ]; then
         [ -n "$ruleset_context" ] || continue
         context_defined=false
         context_reports=false
+        context_filter_reason=""
+        context_filtered_workflow=""
         for workflow_file in .github/workflows/*.y*ml; do
             [ -f "$workflow_file" ] || continue
             # GitHub reports a check under the job-level name: when present,
@@ -939,14 +1623,29 @@ if [ -f "$ruleset_file" ]; then
                 continue
             fi
             context_defined=true
-            if workflow_reports_on_protected_events "$workflow_file"; then
-                context_reports=true
-                break
+            workflow_reports_on_protected_events "$workflow_file" || continue
+            workflow_filter_reason="$(
+                protected_event_filter_reason "$workflow_file" "$protected_branches"
+            )"
+            if [ -n "$workflow_filter_reason" ]; then
+                # Keep looking: another workflow may define the same context
+                # without filters. Remember the first filtered one to name it.
+                if [ -z "$context_filtered_workflow" ]; then
+                    context_filtered_workflow="$workflow_file"
+                    context_filter_reason="$workflow_filter_reason"
+                fi
+                continue
             fi
+            context_reports=true
+            break
         done
         if [ "$context_defined" = false ]; then
             err "$ruleset_file requires check '$ruleset_context' but no workflow defines that job — it would never report and wedge every PR"
-        elif [ "$context_reports" = false ]; then
+        elif [ "$context_reports" = true ]; then
+            :
+        elif [ -n "$context_filtered_workflow" ]; then
+            err "$ruleset_file requires check '$ruleset_context' but $context_filtered_workflow cannot always report: $context_filter_reason — the check never reports on a filtered-out run and wedges that merge; make the workflow always start on the protected events and gate the work on an internal change-detection job"
+        else
             err "$ruleset_file requires check '$ruleset_context' but its workflow never triggers on pull_request/merge_group — it would never report and wedge every protected merge"
         fi
     done <<<"$ruleset_contexts"
@@ -1282,23 +1981,7 @@ if [ -n "$codeql_workflow" ]; then
     echo "INFO: CodeQL workflow presence and FULL_SECURITY_SCAN are configuration only;" >&2
     echo "      verify a successful analysis/SARIF upload before claiming coverage." >&2
 
-    codeql_nwo=""
-    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        remote_url="$(git remote get-url origin 2>/dev/null || true)"
-        case "$remote_url" in
-        https://github.com/*)
-            codeql_nwo="${remote_url#https://github.com/}"
-            ;;
-        git@github.com:*)
-            codeql_nwo="${remote_url#git@github.com:}"
-            ;;
-        ssh://git@github.com/*)
-            codeql_nwo="${remote_url#ssh://git@github.com/}"
-            ;;
-        esac
-        codeql_nwo="${codeql_nwo%.git}"
-        codeql_nwo="${codeql_nwo%/}"
-    fi
+    codeql_nwo="$(github_remote_nwo)"
 
     if [ -n "$codeql_nwo" ] && have gh; then
         if repo_security="$(gh api "repos/$codeql_nwo" \
