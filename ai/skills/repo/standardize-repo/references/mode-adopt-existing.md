@@ -254,6 +254,57 @@ restored. That's correct when the divergence is deliberate (e.g. a repo that kee
 its own CI auth model / runners / workflow tiers); otherwise backport the specific
 improvement now.
 
+### 2b. Freeze the lineage tuple before committing the adoption
+
+`--vcs-ref` does not survive into the answers file: Copier derives `_commit` from
+`git describe --tags --always`, so the render records the **tag** whenever one
+points at the checked-out commit — not the peeled `HARMON_INIT_COMMIT` the guard
+in §2 validated. An adoption left that way hits the maintainer-gated
+legacy-baseline recovery path on its first update
+([`mode-update.md`](./mode-update.md) §2). Freeze it to the validated commit
+before staging the adoption:
+
+Freeze it in the **same shell that ran the render**, and only after that render
+succeeded. The guards fail closed: if `HARMON_INIT_COMMIT` is unset (fresh shell)
+the promotion would blank the lineage, and if the render was aborted the recorded
+`_commit` is still the old baseline — both stop here rather than falsely
+advancing the tuple while the tree still reflects the previous template.
+
+```bash
+: "${HARMON_INIT_SOURCE:?must still hold the canonical harmon-init URL from §2}"
+: "${HARMON_INIT_COMMIT:?must still hold the peeled commit validated in §2}"
+test -f .copier-answers.yml ||
+  { echo "adopted repo has no .copier-answers.yml" >&2; exit 1; }
+RENDERED_REF="$(yq -r '._commit // ""' .copier-answers.yml)"
+case "$RENDERED_REF" in
+"$HARMON_INIT_REF" | "$HARMON_INIT_COMMIT") ;;
+*)
+  echo "refusing to freeze: .copier-answers.yml records '$RENDERED_REF', not the" >&2
+  echo "ref just rendered — did the adoption render complete in this shell?" >&2
+  exit 1
+  ;;
+esac
+PROMOTED_ANSWERS="$(mktemp .copier-answers.yml.promote.XXXXXX)" ||
+  { echo "failed to create the answers promotion file" >&2; exit 1; }
+if cp .copier-answers.yml "$PROMOTED_ANSWERS" &&
+  HARMON_INIT_SOURCE="$HARMON_INIT_SOURCE" \
+    HARMON_INIT_COMMIT="$HARMON_INIT_COMMIT" \
+    yq -i '._src_path = strenv(HARMON_INIT_SOURCE) |
+      ._commit = strenv(HARMON_INIT_COMMIT)' "$PROMOTED_ANSWERS"; then
+  mv "$PROMOTED_ANSWERS" .copier-answers.yml ||
+    { echo "failed to atomically freeze the lineage tuple" >&2; exit 1; }
+else
+  rm -f "$PROMOTED_ANSWERS"
+  echo "failed to freeze the adoption lineage tuple" >&2
+  exit 1
+fi
+yq -r '._commit' .copier-answers.yml | grep -Eq '^[0-9a-fA-F]{40}$' ||
+  { echo "lineage freeze failed: _commit is not a full hash" >&2; exit 1; }
+```
+
+Path B passes `--data git_init=false`, so no scaffold commit exists to amend —
+the frozen tuple is simply part of the adoption commit you stage next.
+
 ---
 
 ## 3. Overwrite / conflict handling — review every conflict

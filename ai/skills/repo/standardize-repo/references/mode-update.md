@@ -106,11 +106,33 @@ else
   : "${ACCEPT_LEGACY_BASELINE:?obtain maintainer approval for the legacy baseline recovery}"
   test "$ACCEPT_LEGACY_BASELINE" = true ||
     { echo "ACCEPT_LEGACY_BASELINE must be exactly true" >&2; exit 1; }
-  RELEASE_TARGET="$(
+  # This branch needs authenticated `gh` — `gh api` requires a credential even
+  # for a public repository. Probe it separately so a missing/unauthenticated
+  # CLI is not misreported as a tag/release problem.
+  command -v gh >/dev/null 2>&1 ||
+    { echo "legacy baseline recovery requires the gh CLI on PATH" >&2; exit 1; }
+  gh auth status >/dev/null 2>&1 ||
+    {
+      echo "legacy baseline recovery requires authenticated gh; run gh auth login" >&2
+      exit 1
+    }
+  RELEASE_ERR="$(mktemp -t harmon-init-release-err-XXXXXX)" ||
+    { echo "failed to allocate the release probe buffer" >&2; exit 1; }
+  if RELEASE_TARGET="$(
     gh api "repos/evanharmon1/harmon-init/releases/tags/$RECORDED_REF" \
-      --jq '.target_commitish'
-  )" ||
-    { echo "recorded tag has no matching GitHub release" >&2; exit 1; }
+      --jq '.target_commitish' 2>"$RELEASE_ERR"
+  )"; then
+    rm -f "$RELEASE_ERR"
+  elif grep -q 'HTTP 404' "$RELEASE_ERR"; then
+    rm -f "$RELEASE_ERR"
+    echo "recorded tag has no matching GitHub release" >&2
+    exit 1
+  else
+    echo "cannot read the GitHub release record for $RECORDED_REF:" >&2
+    cat "$RELEASE_ERR" >&2
+    rm -f "$RELEASE_ERR"
+    exit 1
+  fi
   RECORDED_COMMIT="$(git -C ~/git/harmon-init rev-parse "$RECORDED_REF^{commit}")"
   case "$RELEASE_TARGET" in
   "$RECORDED_COMMIT") ;;
@@ -175,6 +197,30 @@ cryptographically after the fact. `ACCEPT_LEGACY_BASELINE=true` is an explicit
 recovery decision, not a default: show the maintainer the current tag commit, the
 GitHub release target, and relevant repository history, then obtain approval
 before setting it. Record that decision in the eventual PR.
+
+That recovery branch is the one part of update mode that needs **authenticated
+`gh`** — see the Preconditions in [`SKILL.md`](../SKILL.md). The GitHub release
+record is deliberate here, not incidental: the check exists to detect a **moved
+tag**, and `git fetch --tags` re-fetches whatever origin currently claims, so
+local git data moves with the tampering and structurally cannot detect it. The
+release record is independent evidence, captured when the release was published.
+
+How much it proves depends on what `target_commitish` holds, and the two `case`
+arms above are not equally strong:
+
+- **A commit SHA** — what harmon-init's release-please releases record
+  (`v4.4.0 → 617a309b…`). This pins the tag to one commit and does detect a
+  retag. Strong evidence.
+- **A branch name** (the `main)` arm) — proves only that the release was cut from
+  that branch. It does **not** distinguish a retag to another commit on `main`,
+  so it collapses into the ancestry check below. Weak evidence; say so explicitly
+  when asking the maintainer to approve `ACCEPT_LEGACY_BASELINE`.
+
+Either way the record is signal no git-only check can reproduce.
+Do not "simplify" this by dropping `gh`.
+Repos scaffolded after the lineage freeze in
+[`mode-new-repo.md`](./mode-new-repo.md) §4a record a full hash and skip this
+branch (and its `gh` requirement) entirely.
 
 Create a read-only offline clone containing the validated baseline and target,
 then bind Copier's canonical Git URL to that clone for each guarded subprocess:

@@ -190,14 +190,116 @@ If you left the side-effectful answers at their `no` defaults (the CI-safe,
 recommended path for unattended generation), only steps 1–2 run and you finish
 setup manually in the next section.
 
-## 4a. Verify durable Copier lineage
+## 4a. Freeze and verify durable Copier lineage
 
-The production command above records both the canonical `_src_path` and the
-released `_commit` in `.copier-answers.yml`. Treat those fields as one lineage
-tuple and verify both before the first push:
+**`--vcs-ref` does not survive into the answers file.** Copier derives `_commit`
+from `git describe --tags --always` (`copier/_template.py`), so whenever a
+release tag points at the checked-out commit the answers record the **tag**, not
+the peeled hash you passed — even though `--vcs-ref="$HARMON_INIT_COMMIT"` was an
+immutable 40-hex commit. Copier computes the peeled hash separately (`commit_hash`
+→ `rev-parse HEAD`); it just never reaches `.copier-answers.yml`.
+
+Left alone, the scaffold discards the immutable evidence the guard above just
+established, and lands in the maintainer-gated legacy-baseline recovery path on
+its very first update ([`mode-update.md`](./mode-update.md) §2). Freeze the tuple
+to the validated commit — the same promotion update mode performs after apply:
+
+**Run this inside `<dest>`.** §2/§3 pass the destination as an argument and leave
+the shell in the *parent* directory; the only `cd` into it is down in §5. Freezing
+from the parent would edit and amend whatever repo the shell is sitting in —
+silently corrupting an unrelated one if it also has a `.copier-answers.yml`.
+Every guard below fails closed, so a mistyped destination or a stale shell stops
+here instead of promoting the wrong repo:
+
+```bash
+cd <dest> ||
+  { echo "cannot enter the generated repo" >&2; exit 1; }
+: "${HARMON_INIT_SOURCE:?must still hold the canonical harmon-init URL from §3}"
+: "${HARMON_INIT_COMMIT:?must still hold the peeled commit validated in §3}"
+test -f .copier-answers.yml ||
+  { echo "generated repo has no .copier-answers.yml" >&2; exit 1; }
+RENDERED_REF="$(yq -r '._commit // ""' .copier-answers.yml)"
+case "$RENDERED_REF" in
+"$HARMON_INIT_REF" | "$HARMON_INIT_COMMIT") ;;
+*)
+  echo "refusing to freeze: .copier-answers.yml records '$RENDERED_REF', not the" >&2
+  echo "ref just rendered — is the shell inside the generated repo?" >&2
+  exit 1
+  ;;
+esac
+PROMOTED_ANSWERS="$(mktemp .copier-answers.yml.promote.XXXXXX)" ||
+  { echo "failed to create the answers promotion file" >&2; exit 1; }
+if cp .copier-answers.yml "$PROMOTED_ANSWERS" &&
+  HARMON_INIT_SOURCE="$HARMON_INIT_SOURCE" \
+    HARMON_INIT_COMMIT="$HARMON_INIT_COMMIT" \
+    yq -i '._src_path = strenv(HARMON_INIT_SOURCE) |
+      ._commit = strenv(HARMON_INIT_COMMIT)' "$PROMOTED_ANSWERS"; then
+  mv "$PROMOTED_ANSWERS" .copier-answers.yml ||
+    { echo "failed to atomically freeze the lineage tuple" >&2; exit 1; }
+else
+  rm -f "$PROMOTED_ANSWERS"
+  echo "failed to freeze the scaffold lineage tuple" >&2
+  exit 1
+fi
+```
+
+With `git_init=true`, Copier's `_tasks` already made the scaffold commit before
+this runs, so the frozen tuple has to reach history too. Which side effects you
+enabled decides how — all three cases below are real, and the `_tasks` ordering
+in `copier.yml` is what separates them:
+
+- **Recommended path** (every side-effect answer at its `no` default). Nothing is
+  published and no hooks are installed yet — Copier makes the scaffold commit
+  *before* `task install` precisely so nothing intercepts it. Amend, and the
+  lineage is correct from the very first commit.
+- **`github_remote_create=yes` / `github_release_init=yes`.** `gh repo create
+  --push` published the scaffold and `task release:init` may have tagged it.
+  Never rewrite that — record a follow-up commit **and push it**. Left local, the
+  remote default branch keeps the tag-valued tuple and a fresh clone still enters
+  legacy recovery on its first update, which defeats the whole point.
+- **`run_task_install=yes`.** `task install` runs *before* this section and
+  installs lefthook while the repo is still on `main`, so the generated
+  `guard:no-commit-to-main` pre-commit hook blocks any commit here. `--no-verify`
+  is prohibited; put the freeze on a feature branch and open a PR, exactly as the
+  generated repo's own conventions require.
+
+```bash
+if git rev-parse --verify HEAD >/dev/null 2>&1 &&
+  ! git diff --quiet -- .copier-answers.yml; then
+  # run_task_install=yes installs lefthook before this point; committing on main
+  # then trips guard:no-commit-to-main. Branch instead of bypassing the hook.
+  if test -x .git/hooks/pre-commit &&
+    test "$(git rev-parse --abbrev-ref HEAD)" = main; then
+    echo "lefthook is installed and HEAD is main: commit the lineage freeze on a" >&2
+    echo "feature branch and open a PR — never --no-verify" >&2
+    exit 1
+  fi
+  git add -- .copier-answers.yml ||
+    { echo "failed to stage the frozen lineage tuple" >&2; exit 1; }
+  if git rev-parse --verify '@{upstream}' >/dev/null 2>&1 ||
+    test -n "$(git tag --points-at HEAD)"; then
+    # Already pushed and/or tagged — never rewrite published history.
+    git commit -m 'chore: freeze copier lineage to the verified template commit' ||
+      { echo "failed to record the frozen lineage tuple" >&2; exit 1; }
+    git push ||
+      {
+        echo "freeze commit is local only — the remote still carries the" >&2
+        echo "tag-valued tuple; push it before the first update" >&2
+        exit 1
+      }
+  else
+    git commit --amend --no-edit ||
+      { echo "failed to record the frozen lineage tuple" >&2; exit 1; }
+  fi
+fi
+```
+
+Then verify both fields — `_commit` must be a full 40-hex hash, not a tag:
 
 ```bash
 grep -E '^(_src_path|_commit):' .copier-answers.yml
+yq -r '._commit' .copier-answers.yml | grep -Eq '^[0-9a-fA-F]{40}$' ||
+  { echo "lineage freeze failed: _commit is not a full hash" >&2; exit 1; }
 ```
 
 If a repo was rendered from a local checkout, **do not rewrite only `_src_path`**.

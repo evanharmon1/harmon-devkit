@@ -679,6 +679,139 @@ expect_fail "production command examples do not pin an obsolete release" \
 expect_ok "new-repo guidance forbids path-only lineage repair" \
     grep -qF 'do not rewrite only `_src_path`' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+# Copier records `_commit` from `git describe --tags --always`, so a released tag
+# overrides the peeled `--vcs-ref` SHA. Both rendering modes must freeze the
+# tuple afterward or every scaffold lands in update mode's legacy recovery path.
+for scaffold_mode in mode-new-repo mode-adopt-existing; do
+    expect_ok "$scaffold_mode freezes the canonical source into the tuple" \
+        grep -qF '._src_path = strenv(HARMON_INIT_SOURCE)' \
+        "$STANDARDIZE_REFS/$scaffold_mode.md"
+    expect_ok "$scaffold_mode freezes the peeled commit into the tuple" \
+        grep -qF '._commit = strenv(HARMON_INIT_COMMIT)' \
+        "$STANDARDIZE_REFS/$scaffold_mode.md"
+    expect_ok "$scaffold_mode promotes the frozen tuple atomically" \
+        grep -qF 'mv "$PROMOTED_ANSWERS" .copier-answers.yml' \
+        "$STANDARDIZE_REFS/$scaffold_mode.md"
+    expect_ok "$scaffold_mode asserts the frozen commit is a full hash" \
+        grep -qF "lineage freeze failed: _commit is not a full hash" \
+        "$STANDARDIZE_REFS/$scaffold_mode.md"
+    expect_ok "$scaffold_mode explains why --vcs-ref does not reach the answers" \
+        grep -qF 'git describe --tags --always' \
+        "$STANDARDIZE_REFS/$scaffold_mode.md"
+done
+expect_ok "new-repo guidance carries the freeze into the scaffold commit" \
+    sh -c 'grep -qF "git commit --amend --no-edit" "$1" &&
+        grep -qF "failed to record the frozen lineage tuple" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+# github_remote_create runs `gh repo create --push` and github_release_init runs
+# `task release:init`, so the scaffold commit can already be published and tagged
+# by the time the freeze runs. The amend must be gated in code, not just prose.
+expect_ok "new-repo freeze never rewrites a published scaffold commit" \
+    sh -c 'grep -qF "git rev-parse --verify '\''@{upstream}'\''" "$1" &&
+        grep -qF "git tag --points-at HEAD" "$1" &&
+        grep -qF "never rewrite published history" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo freeze offers a follow-up commit for published scaffolds" \
+    grep -qF "chore: freeze copier lineage to the verified template commit" \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+# §2/§3 leave the shell in the parent dir; freezing there would amend whatever
+# repo the shell is in. The freeze must cd first and refuse a mismatched tuple.
+# Anchored to the command at line start, not prose mentioning the same words.
+expect_ok "new-repo freeze enters the destination before touching answers" \
+    sh -c 'cd_line="$(grep -nE "^cd <dest> \|\|$" "$1" | head -1 | cut -d: -f1)"
+        freeze_line="$(grep -nF "PROMOTED_ANSWERS=\"\$(mktemp" "$1" |
+            head -1 | cut -d: -f1)"
+        test -n "$cd_line" && test "$cd_line" -lt "$freeze_line"' sh \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo freeze refuses a tuple that is not the ref just rendered" \
+    sh -c 'grep -qF "refusing to freeze" "$1" &&
+        grep -qF "is the shell inside the generated repo?" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+# An unset HARMON_INIT_COMMIT would blank the tuple; both render modes must
+# require the §2/§3 environment and prove the render actually happened.
+for scaffold_mode in mode-new-repo mode-adopt-existing; do
+    expect_ok "$scaffold_mode freeze requires the validated commit in the env" \
+        grep -qF 'must still hold the peeled commit validated in' \
+        "$STANDARDIZE_REFS/$scaffold_mode.md"
+    expect_ok "$scaffold_mode freeze requires the canonical source in the env" \
+        grep -qF 'must still hold the canonical harmon-init URL from' \
+        "$STANDARDIZE_REFS/$scaffold_mode.md"
+    expect_ok "$scaffold_mode freeze proves the recorded ref was just rendered" \
+        grep -qF 'refusing to freeze' \
+        "$STANDARDIZE_REFS/$scaffold_mode.md"
+done
+expect_ok "adopt freeze refuses a tuple from an aborted or stale render" \
+    grep -qF 'did the adoption render complete in this shell?' \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
+# A published scaffold keeps the tag-valued tuple on the remote until the
+# follow-up freeze commit is pushed, so the local-only path is not a fix.
+expect_ok "new-repo freeze pushes the follow-up commit on a published scaffold" \
+    sh -c 'grep -qF "git push ||" "$1" &&
+        grep -qF "freeze commit is local only" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+# run_task_install=yes installs lefthook before the freeze runs, so committing on
+# main trips guard:no-commit-to-main. Branch and PR — never --no-verify.
+expect_ok "new-repo freeze refuses to commit on main behind installed hooks" \
+    sh -c 'grep -qF "test -x .git/hooks/pre-commit" "$1" &&
+        grep -qF "guard:no-commit-to-main" "$1" &&
+        grep -qF "never --no-verify" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+# Matches a real bypass invocation, not the prose that prohibits one.
+expect_fail "new-repo freeze never invokes a hook bypass" \
+    grep -qE '^[^#]*git (commit|push)([[:space:]]|[^#])*--no-verify' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+# `target_commitish` is branch-valued for releases cut from a branch — the `main)`
+# arm exists for exactly that. Guidance must not claim it is always a commit.
+expect_ok "update guidance grades release-record evidence by target_commitish" \
+    sh -c 'grep -qF "does **not** distinguish a retag to another commit" "$1" &&
+        grep -qF "Weak evidence" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "update guidance does not claim target_commitish is always a commit" \
+    grep -qF 'returns the actual release commit, not the branch name' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "cardinal rules require freezing the tuple after every render" \
+    grep -qF '`--vcs-ref` does not survive into the answers file' \
+    "$STANDARDIZE_SKILL"
+# The legacy recovery branch calls `gh api`, which needs a credential even for a
+# public repo. Preconditions must say so, and gh failures must not be reported as
+# a missing release record.
+expect_ok "top-level prerequisites scope gh to the legacy update branch" \
+    sh -c 'grep -qF "update mode'\''s legacy-baseline branch" "$1" &&
+        grep -qF "\`_commit\` is tag-valued" "$1"' sh \
+    "$STANDARDIZE_SKILL"
+expect_ok "top-level prerequisites explain why gh needs a credential" \
+    grep -qF 'requires a credential even on' "$STANDARDIZE_SKILL"
+# diff-template.sh resolves its baseline with git ls-remote and never calls
+# gh api, so audit must not inherit update mode's credential requirement.
+expect_ok "top-level prerequisites exempt audit from the gh requirement" \
+    grep -qF "legacy-baseline recovery — that path is \`git\`-only" \
+    "$STANDARDIZE_SKILL"
+# The Code Security check calls gh api on private/internal repos whatever the
+# recorded lineage is, so the gh exemption must not be stated as blanket.
+expect_ok "top-level prerequisites keep gh for the Code Security check" \
+    sh -c 'grep -qF "Code Security capability check" "$1" &&
+        grep -qF "regardless of lineage, including full-hash baselines" "$1"' sh \
+    "$STANDARDIZE_SKILL"
+expect_fail "audit drift helper does not depend on gh" \
+    grep -qE '(^|[^[:alnum:]])gh (api|auth|release) ' \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
+expect_fail "top-level prerequisites do not limit gh to side-effect steps" \
+    grep -qF 'only needed for the GitHub side-effect' "$STANDARDIZE_SKILL"
+expect_ok "top-level prerequisites declare the yq dependency" \
+    grep -qF '**yq** on PATH' "$STANDARDIZE_SKILL"
+expect_ok "update guidance probes gh before the legacy release lookup" \
+    sh -c 'grep -qF "legacy baseline recovery requires the gh CLI on PATH" "$1" &&
+        grep -qF "requires authenticated gh; run gh auth login" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance detects a missing release by HTTP status" \
+    grep -qF "grep -q 'HTTP 404'" \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance reports a release API failure distinctly" \
+    grep -qF 'cannot read the GitHub release record for' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance justifies keeping the gh release check" \
+    grep -qF 'Do not "simplify" this by dropping `gh`' \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance requires a remotely reachable recorded commit" \
     grep -qF 'only when the recorded commit is' \
     "$STANDARDIZE_REFS/mode-update.md"
