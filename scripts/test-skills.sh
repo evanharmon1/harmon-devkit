@@ -1422,6 +1422,13 @@ printf '%s\n' '_subdirectory: [unclosed' >"$AGG_TARGET/copier.yml"
 expect_fail_contains "verify-applied reports a Copier manifest it cannot parse" \
     "yq could not parse" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+# `_envops` can set any Jinja delimiters, so a templated payload root need not
+# use a spelling the delimiter list knows. It is still not a real directory —
+# excluding it would match nothing while announcing that it excluded something.
+printf '%s\n' '_subdirectory: "<< payload >>"' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied declines a payload root that is not a directory" \
+    "but no such" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 # A templated payload root cannot be resolved without answers; say so and
 # exclude nothing rather than compare against the literal Jinja text.
 printf '%s\n' '_subdirectory: "template/{{ variant }}"' >"$AGG_TARGET/copier.yml"

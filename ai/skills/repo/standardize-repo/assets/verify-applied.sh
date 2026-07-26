@@ -412,15 +412,28 @@ case "$template_payload_dir" in
     echo "      capability detection — expect payload files to be read as first-party." >&2
     ;;
 *)
-    echo "INFO: Copier template repo detected; excluding the '$template_payload_dir/' payload" >&2
-    echo "      from capability detection (it belongs to generated repos). CodeQL source" >&2
-    echo "      coverage still counts it." >&2
-    # Prefix compare rather than a regex, so a payload name needs no escaping.
-    capability_files="$(
-        printf '%s\n' "$repo_files" |
-            PAYLOAD_DIR="$template_payload_dir" \
-                awk 'index($0, ENVIRON["PAYLOAD_DIR"] "/") != 1'
-    )"
+    # A payload root that is not a real directory here cannot be what Copier
+    # renders from. The delimiter list above only knows the default and harmon
+    # spellings, and `_envops` can set any others (`<< payload >>`), so this
+    # catches every templated value regardless of delimiters — and a typo too.
+    # Without it the exclusion silently matches nothing while announcing that
+    # it excluded something.
+    if [ ! -d "$template_payload_dir" ]; then
+        echo "WARN: $copier_manifest declares payload root '$template_payload_dir' but no such" >&2
+        echo "      directory exists here — a value templated with custom Jinja delimiters" >&2
+        echo "      (_envops) reads like this, as does a typo. Nothing is excluded from" >&2
+        echo "      capability detection; payload files are read as first-party." >&2
+    else
+        echo "INFO: Copier template repo detected; excluding the '$template_payload_dir/' payload" >&2
+        echo "      from capability detection (it belongs to generated repos). CodeQL source" >&2
+        echo "      coverage still counts it." >&2
+        # Prefix compare rather than a regex, so a payload name needs no escaping.
+        capability_files="$(
+            printf '%s\n' "$repo_files" |
+                PAYLOAD_DIR="$template_payload_dir" \
+                    awk 'index($0, ENVIRON["PAYLOAD_DIR"] "/") != 1'
+        )"
+    fi
     ;;
 esac
 terraform_sources="$(
