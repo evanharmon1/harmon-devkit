@@ -24,7 +24,16 @@ if ! command -v brew >/dev/null 2>&1; then
     # bakes the toolchain into the image. Detect that directly rather than
     # assuming it: on an ordinary host, exiting 0 here would report a successful
     # install over a machine that has none of the Brewfile tools.
-    if [ ! -e /.dockerenv ] && [ ! -e /run/.containerenv ]; then
+    # Signal set mirrors scripts/status.sh (its devcontainer detection): the
+    # runtime marker files cover Docker and Podman, and the env vars cover
+    # Codespaces, VS Code Remote - Containers, and Coder/envbuilder workspaces,
+    # which do not always expose a marker file.
+    if [ ! -e /.dockerenv ] &&
+        [ ! -e /run/.containerenv ] &&
+        [ -z "${REMOTE_CONTAINERS:-}" ] &&
+        [ -z "${REMOTE_CONTAINERS_IPC:-}" ] &&
+        [ -z "${CODESPACES:-}" ] &&
+        [ "${CODER:-}" != "true" ]; then
         echo "install: Homebrew not found on a non-container host." >&2
         echo "  run 'task bootstrap' to install Homebrew, then re-run 'task install'." >&2
         exit 1
