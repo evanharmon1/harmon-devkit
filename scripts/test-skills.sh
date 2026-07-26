@@ -1422,6 +1422,28 @@ printf '%s\n' '_subdirectory: [unclosed' >"$AGG_TARGET/copier.yml"
 expect_fail_contains "verify-applied reports a Copier manifest it cannot parse" \
     "yq could not parse" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+# Lexical dot segments must normalize, or the prefix compare matches nothing
+# against the `template/main.tf` paths git reports.
+for payload_dots in 'template/.' '././template' 'template//'; do
+    printf '_subdirectory: "%s"\n' "$payload_dots" >"$AGG_TARGET/copier.yml"
+    expect_ok_contains "verify-applied normalizes dot segments in '$payload_dots'" \
+        "excluding the 'template/' payload" \
+        bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+done
+# A `..` segment has no lexical prefix to compare against repo-relative paths.
+printf '%s\n' '_subdirectory: "../template"' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied declines a payload root walking outside the repo" \
+    "walks" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+# Copier's Path.glob yields directories too and its loader dies reading one, so
+# a non-file match is reason to decline rather than quietly skip.
+mkdir -p "$AGG_TARGET/frag-dir.yml"
+printf '%s\n' '_subdirectory: template' >"$AGG_TARGET/frag-ok.yml"
+printf '%s\n' '!include frag-dir.yml' >"$AGG_TARGET/copier.yml"
+expect_fail_contains "verify-applied declines an include glob matching a directory" \
+    "uses an '!include' glob this auditor does not" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+rm -rf "$AGG_TARGET/frag-dir.yml" "$AGG_TARGET/frag-ok.yml"
 # `_envops` can set any Jinja delimiters, so a templated payload root need not
 # use a spelling the delimiter list knows. It is still not a real directory —
 # excluding it would match nothing while announcing that it excluded something.

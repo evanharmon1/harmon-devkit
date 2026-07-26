@@ -264,7 +264,8 @@ fi
 copier_include_unsupported=0
 copier_manifest_expanded() {
     local manifest="$1" root_dir="$2" depth="${3:-0}"
-    local line include_glob include_file include_matches saved_dotglob
+    local line include_glob include_file include_matches include_unreadable
+    local saved_dotglob
     # Cap the depth: a cyclic include would otherwise spin forever. At the cap
     # the file is emitted unexpanded, leaving any tag for yq to reject — which
     # surfaces as the "could not parse" diagnostic.
@@ -302,15 +303,24 @@ copier_manifest_expanded() {
             # shellcheck disable=SC2086
             set -- "$root_dir"/$include_glob
             eval "$saved_dotglob"
+            # Count EVERY glob result, not just the readable files. Copier's
+            # `Path.glob` yields directories too and its loader then dies trying
+            # to read one — so skipping them here could let us parse a manifest
+            # Copier rejects outright, and act on a `_subdirectory` it never
+            # honours. A non-file match is reason to decline, not to ignore.
             include_matches=0
+            include_unreadable=0
             for include_file in "$@"; do
-                [ -f "$include_file" ] || continue
+                [ -e "$include_file" ] || continue
                 include_matches=$((include_matches + 1))
+                if [ ! -f "$include_file" ] || [ ! -r "$include_file" ]; then
+                    include_unreadable=1
+                fi
             done
-            if [ "$include_matches" -gt 1 ]; then
-                # Several fragments: whichever sets `_subdirectory` last wins,
-                # and shell expansion orders (and hides dotfiles) differently
-                # from Python's `Path.glob`. Decline rather than pick.
+            # Several fragments: whichever sets `_subdirectory` last wins, and
+            # shell expansion orders them differently from Python's `Path.glob`.
+            # Decline rather than pick.
+            if [ "$include_matches" -gt 1 ] || [ "$include_unreadable" -eq 1 ]; then
                 copier_include_unsupported=1
                 continue
             fi
@@ -374,9 +384,26 @@ elif [ -n "$copier_manifest" ]; then
             # one could exclude real source.
             case "$copier_payload_tag" in
             '!!str')
+                # Normalize lexically before comparing: `git ls-files` reports
+                # `template/main.tf`, so a root spelled `././template` or
+                # `template/.` would pass the -d check below and then match no
+                # prefix at all. Drop empty and `.` segments; a `..` segment
+                # cannot be resolved by string comparison, so leave it in place
+                # for the directory guard to reject.
                 template_payload_dir="$(
                     yq ea -r '. as $document ireduce ({}; . * $document) | ._subdirectory' \
-                        "$copier_manifest_merged" 2>/dev/null | sed -E 's|^\./||; s|/+$||'
+                        "$copier_manifest_merged" 2>/dev/null |
+                        awk '{
+                            count = split($0, segment, "/")
+                            normalized = ""
+                            for (i = 1; i <= count; i++) {
+                                if (segment[i] == "" || segment[i] == ".") {
+                                    continue
+                                }
+                                normalized = (normalized == "" ? segment[i] : normalized "/" segment[i])
+                            }
+                            print normalized
+                        }'
                 )"
                 ;;
             '!!null') template_payload_dir="" ;;
@@ -402,7 +429,13 @@ elif [ -n "$copier_manifest" ]; then
 fi
 capability_files="$repo_files"
 case "$template_payload_dir" in
-"" | "." | "/" | ..*) ;;
+"" | "." | "/") ;;
+*'..'*)
+    # A `..` segment cannot be compared lexically against the repo-relative
+    # paths `git ls-files` reports, so there is no safe prefix to filter on.
+    echo "WARN: $copier_manifest declares payload root '$template_payload_dir', which walks" >&2
+    echo "      outside the repo layout — nothing is excluded from capability detection." >&2
+    ;;
 *'{{'* | *'{%'* | *'[['* | *'[%'*)
     # Copier renders `_subdirectory` from the answers, so a templated value has
     # no single payload root to compare against here. Say so and exclude
