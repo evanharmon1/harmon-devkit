@@ -1065,37 +1065,37 @@ the `<old>` template tree, so its rename shows up only as the successor's
 orphans were exactly this shape. So, for every script the inventory diff
 ADDS, grep the repo for a predecessor under a different name; and list the
 repo's template-extra scripts outright and judge each one (local keeper vs
-orphan of a new successor):
+orphan of a new successor). `diff-template.sh` does that sweep as its
+**ORPHAN** section — no separate command, and it is advisory, so it never
+changes the script's exit status:
 
 ```bash
-comm -23 <(git ls-files 'scripts/*' | sort) \
-    <(git -C ~/git/harmon-init ls-tree -r --name-only <new> template/scripts/ |
-        sed 's|^template/||' | sort)
+assets/diff-template.sh .   # ORPHAN lines
 ```
 
-Read the output with the gating rule: answer-gated template files appear
-jinja-wrapped in the raw listing (`[% if use_codeql %]…`), so their rendered
-names always show as "repo-extra" here. For each such match, judge by the
-repo's answer — answer ON means the file is canonical (not extra); answer
-OFF (or a feature the template newly gated) means the repo copy is an orphan
-of a disabled feature, exactly the kind this sweep exists to catch. For
-fully repo-local names, decide local keeper vs orphan-of-a-successor as
-above.
+Compare against the **render**, never the raw template tree. The render is
+built from this repo's own recorded answers, so an answer-gated file whose
+feature is off is simply absent from it and a nested gated tree
+(`scripts/foreman/…`) resolves by itself. A raw `git ls-tree` listing shows
+those paths jinja-wrapped (`[% if use_codeql %]…`), which forces the reader to
+undo the gating by hand — correct in principle, noisy in practice, and wrong
+as soon as the wrapper sits on a parent directory.
 
 Real case (harmon-infra v4.0.0→v4.3.1): five orphans — `shell-quality.sh` (→
 `format-shell.sh` + `lint-shell.sh`), `verify-required-results.sh` (→
 `verify-ci-results.sh`), its truth-table test, and two CodeQL helpers — with
 stale references in two workflows, the Taskfile, and `test-tasks.sh`.
 
-**Answer flips do NOT show in this diff — sweep them explicitly.** A file
-gated on a copier answer (`[% if use_codeql %]…`) exists in the raw template
-tree at *both* refs, so flipping the answer off (e.g. `use_codeql=false`)
-produces an empty inventory diff while still orphaning that feature's
-helpers. Copier deletes the cleanly-tracked rendered copies on the flip, but
-hand-copied or locally-modified ones survive — when an update turns a
-feature answer off, separately `grep -rn` the repo for the disabled
-feature's scripts, workflow steps, Taskfile targets, and doc claims, and
-remove them with the same reference-repoint-then-delete discipline.
+**Answer flips are caught by the render, but their references are not.** A
+file gated on a copier answer (`[% if use_codeql %]…`) exists in the raw
+template tree at *both* refs, so a raw-tree diff stays empty when the answer
+flips off (e.g. `use_codeql=false`) even though the feature's helpers are now
+orphaned. The render-based ORPHAN sweep above does surface those, because the
+disabled feature's files drop out of the render — but only under `scripts/`,
+and only for files, not references. So when an update turns a feature answer
+off, still `grep -rn` the repo for that feature's workflow steps, Taskfile
+targets, and doc claims, and remove them with the same
+reference-repoint-then-delete discipline.
 
 ## 3. Reconcile conflicts (in place — no special files)
 

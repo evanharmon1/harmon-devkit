@@ -881,6 +881,12 @@ expect_ok "skill favors rolling updates over permanent version migrations" \
 expect_ok "skill keeps credential writes human-only" \
     grep -qF 'Keep secret and credential-store writes human-only.' \
     "$STANDARDIZE_SKILL"
+expect_ok "update guidance sweeps orphans against the render, not the raw tree" \
+    grep -qF 'Compare against the **render**, never the raw template tree.' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "update guidance no longer hand-interprets jinja-wrapped names" \
+    grep -qF "comm -23 <(git ls-files 'scripts/*' | sort)" \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance requires a deletion audit" \
     grep -qF 'Deletion audit — justify every removed pre-existing path.' \
     "$STANDARDIZE_REFS/mode-update.md"
@@ -2519,6 +2525,7 @@ cat >"$DT_TEMPLATE/template/scripts/status.sh" <<'EOF'
 echo status
 EOF
 printf '%s\n' 'reviews:' '  profile: chill' >"$DT_TEMPLATE/template/.coderabbit.yaml"
+printf '%s\n' 'helper: true' >"$DT_TEMPLATE/template/scripts/config.yaml"
 chmod +x "$DT_TEMPLATE/template/scripts/status.sh"
 for terraform_file in main.tf variables.tf outputs.tf; do
     printf '%s\n' '# starter' >"$DT_TEMPLATE/template/terraform/$terraform_file"
@@ -2536,6 +2543,7 @@ mkdir -p \
     "$DT_TARGET/terraform/environments/production" \
     "$DT_TARGET/docs/decisions"
 cp "$DT_TEMPLATE/template/scripts/status.sh" "$DT_TARGET/scripts/status.sh"
+cp "$DT_TEMPLATE/template/scripts/config.yaml" "$DT_TARGET/scripts/config.yaml"
 chmod -x "$DT_TARGET/scripts/status.sh"
 printf '%s\n' '# production root' \
     >"$DT_TARGET/terraform/environments/production/main.tf"
@@ -2580,6 +2588,101 @@ if printf '%s\n' "$equivalent_out" |
 else
     bad "diff-template accepts legacy CodeRabbit opt-out as intentional absence"
 fi
+
+# ORPHAN: a repo helper the render does not contain — the survivor of a template
+# rename, or a local keeper. Compared against the RENDER, so an answer-gated or
+# nested gated path needs no interpretation, and it stays advisory (exit 0).
+printf '%s\n' '#!/usr/bin/env bash' 'echo stale' \
+    >"$DT_TARGET/scripts/verify-required-results.sh"
+mkdir -p "$DT_TARGET/scripts/foreman"
+printf '%s\n' '#!/usr/bin/env bash' 'echo gated' \
+    >"$DT_TARGET/scripts/foreman/lint.sh"
+if orphan_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template keeps the ORPHAN sweep advisory (exit stays 0)"
+else
+    bad "diff-template keeps the ORPHAN sweep advisory (exit stays 0): $orphan_out"
+fi
+if printf '%s\n' "$orphan_out" |
+    grep -qF "ORPHAN   scripts/verify-required-results.sh"; then
+    ok "diff-template reports a repo helper the render lacks as ORPHAN"
+else
+    bad "diff-template reports a repo helper the render lacks as ORPHAN"
+fi
+if printf '%s\n' "$orphan_out" | grep -qF "ORPHAN   scripts/foreman/lint.sh"; then
+    ok "diff-template sweeps nested gated trees without interpretation"
+else
+    bad "diff-template sweeps nested gated trees without interpretation"
+fi
+if printf '%s\n' "$orphan_out" | grep -qF "ORPHAN   scripts/status.sh"; then
+    bad "diff-template must not flag a rendered file as ORPHAN"
+else
+    ok "diff-template does not flag a rendered file as ORPHAN"
+fi
+# The primary update scenario: copier deletes a renamed script and the deletion
+# is not staged yet, so `--cached` still lists it. That file did NOT survive.
+git -C "$DT_TARGET" add -A
+git -C "$DT_TARGET" -c user.email=test@example.com -c user.name=test \
+    -c commit.gpgsign=false commit -q -m "track helpers before the rename"
+rm "$DT_TARGET/scripts/verify-required-results.sh"
+deleted_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" &&
+    deleted_rc=0 || deleted_rc=$?
+if [ "$deleted_rc" -ne 0 ]; then
+    bad "diff-template runs cleanly with an unstaged deletion (exit $deleted_rc)"
+elif printf '%s\n' "$deleted_out" | grep -qF "ORPHAN   scripts/verify-required-results.sh"; then
+    bad "diff-template must not report an unstaged deletion as a surviving ORPHAN"
+else
+    ok "diff-template does not report an unstaged deletion as a surviving ORPHAN"
+fi
+# A template that replaces a file with a directory of the same name: the
+# surviving repo FILE is still an orphan, and the render's directory must not
+# mask it.
+mkdir -p "$DT_TARGET/scripts/legacy-helper.d"
+printf '%s\n' 'x' >"$DT_TARGET/scripts/legacy-helper.d/inner.sh"
+printf '%s\n' 'stale' >"$DT_TARGET/scripts/legacy-helper"
+if dir_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" &&
+    printf '%s\n' "$dir_out" | grep -qF "ORPHAN   scripts/legacy-helper  "; then
+    ok "diff-template reports a file the render only has as a directory"
+else
+    bad "diff-template reports a file the render only has as a directory"
+fi
+rm -rf "$DT_TARGET/scripts/legacy-helper" "$DT_TARGET/scripts/legacy-helper.d"
+# .yml<->.yaml renames are tolerated (drift class E) — but not when the repo
+# also carries the exact rendered name. Then the twin is a leftover.
+printf '%s\n' 'helper: stale' >"$DT_TARGET/scripts/config.yml"
+if twin_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" &&
+    printf '%s\n' "$twin_out" | grep -qF "ORPHAN   scripts/config.yml"; then
+    ok "diff-template flags a stale extension twin when the successor is present"
+else
+    bad "diff-template flags a stale extension twin when the successor is present"
+fi
+rm -f "$DT_TARGET/scripts/config.yaml"
+if rename_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" &&
+    printf '%s\n' "$rename_out" | grep -qF "ORPHAN   scripts/config.yml"; then
+    bad "diff-template must still tolerate a genuine .yml/.yaml rename"
+else
+    ok "diff-template still tolerates a genuine .yml/.yaml rename"
+fi
+cp "$DT_TEMPLATE/template/scripts/config.yaml" "$DT_TARGET/scripts/config.yaml"
+rm -f "$DT_TARGET/scripts/config.yml"
+rm -rf "$DT_TARGET/scripts/verify-required-results.sh" "$DT_TARGET/scripts/foreman"
+# An enumeration that fails must SAY so. Silently producing an empty inventory
+# would report no orphans and still finish "clean", i.e. the audit never ran.
+DT_BROKEN="$TMPROOT/diff-template-broken-index"
+cp -R "$DT_TARGET" "$DT_BROKEN"
+printf 'garbage' >"$DT_BROKEN/.git/index"
+broken_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_BROKEN" 2>&1)" &&
+    broken_rc=0 || broken_rc=$?
+if printf '%s\n' "$broken_out" | grep -qF "the orphan sweep did NOT run"; then
+    ok "diff-template reports a failed orphan enumeration instead of an empty sweep"
+else
+    bad "diff-template reports a failed orphan enumeration instead of an empty sweep"
+fi
+if [ "$broken_rc" -eq 2 ]; then
+    ok "diff-template exits 2 (setup error) when the orphan sweep cannot run"
+else
+    bad "diff-template exits 2 when the orphan sweep cannot run (got $broken_rc)"
+fi
+rm -rf "$DT_BROKEN"
 
 rm "$DT_TARGET/scripts/status.sh"
 expect_ok "diff-template compares an unstaged tracked deletion from the index" \

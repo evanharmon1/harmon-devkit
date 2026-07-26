@@ -21,6 +21,11 @@
 #               A tracked file deleted only from the working tree is compared
 #               from the index, so an unstaged/transient delete is not reported
 #               as drift; once the deletion is staged it is real MISSING.
+#   • ORPHAN  — the inverse: a repo helper under scripts/ the render does NOT
+#               contain. Either a local keeper or the survivor of a template
+#               rename. Comparing against the render (not the raw template tree)
+#               means answer-gated and nested gated paths need no interpretation.
+#               ADVISORY — never affects the exit status.
 # This is a REVIEW AID for apply/update/audit, not a pass/fail gate. For each
 # DRIFT/MISSING, inspect and reconcile — pull template improvements in via
 # `copier update`, keep legit local customizations.
@@ -421,6 +426,106 @@ while IFS= read -r abs; do
         ;;
     esac
 done < <(find "$render" -type f | sort)
+
+# ORPHAN — the inverse scan. A repo helper under scripts/ that a render from
+# THIS repo's own answers does not contain is either a local keeper or the
+# survivor of a template rename: copier deletes a cleanly-tracked file when the
+# template renames it, but a locally-modified or hand-copied copy stays behind
+# while every workflow/Taskfile reference to it keeps "working" against stale
+# code. Comparing against the RENDER rather than the raw template tree means
+# answer-gated paths need no interpretation — a file whose feature is switched
+# off for this repo is simply absent from the render, and a nested gated tree
+# (scripts/foreman/…) resolves the same way.
+#
+# Advisory only: this never sets `drift`, so callers keyed on the exit status
+# (verify-applied's template-drift WARN) do not start firing on repos that
+# legitimately carry their own helpers.
+# `-f`, not `-e`: when a template replaces `scripts/foo` with a directory
+# `scripts/foo/…`, a surviving `scripts/foo` FILE in the repo must still be
+# reported. Matching any filesystem node would let the render's directory
+# suppress exactly the file-to-directory migration this scan diagnoses.
+render_has() {
+    o="$1"
+    [ -f "$render/$o" ] && return 0
+    case "$o" in
+    *.yml) twin="${o%.yml}.yaml" ;;
+    *.yaml) twin="${o%.yaml}.yml" ;;
+    *) return 1 ;;
+    esac
+    # The extension twin is tolerated because a repo may legitimately rename
+    # .yml<->.yaml (drift class E, explicitly not drift) — but only when the
+    # repo does NOT also carry the exact rendered name. If it does, this file is
+    # a leftover of the rename rather than the rename itself, which is precisely
+    # the survivor this scan looks for.
+    [ -f "$render/$twin" ] && [ ! -e "$target/$twin" ] && return 0
+    return 1
+}
+# Enumerate the way the repo itself does: tracked files only, so build output
+# and ignored trees never reach the list. Bundle internals (`*.app/`) are opaque
+# assets rather than helpers — a single Automator app contributed 47 paths of
+# pure noise before this skipped them.
+orphan_count=0
+# Writes the inventory to $1. Returns non-zero if enumeration itself failed —
+# an empty list must mean "no repo scripts", never "the scan could not run".
+# Consuming this through process substitution would discard that status, so the
+# caller reads a file instead.
+list_repo_scripts() {
+    out="$1"
+    if git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        # Tracked AND untracked-but-not-ignored, the same enumeration
+        # verify-applied uses: a freshly rendered repo that has not been
+        # committed yet is still fully swept, while ignored build output and
+        # vendored trees stay out. stderr is kept: a corrupt index must be
+        # visible, not swallowed into an empty sweep.
+        git -C "$target" ls-files --cached --others --exclude-standard \
+            -- scripts | sort -u >"$out" || return 1
+    elif [ -d "$target/scripts" ]; then
+        # Strip the prefix with parameter expansion, not sed: a legal target
+        # path may contain sed delimiters or regex metacharacters
+        # (`/tmp/project#1`, `/tmp/project[1]`), which would break the
+        # expression or silently leave absolute, unusable paths.
+        find "$target/scripts" -type f |
+            while IFS= read -r orphan_abs; do
+                printf '%s\n' "${orphan_abs#"$target"/}"
+            done | sort >"$out" || return 1
+    else
+        : >"$out" || return 1
+    fi
+    return 0
+}
+orphan_inventory="$workdir/repo-scripts"
+if list_repo_scripts "$orphan_inventory"; then
+    while IFS= read -r o; do
+        [ -n "$o" ] || continue
+        case "$o" in
+        *.app/*) continue ;;
+        esac
+        # `--cached` still lists a path whose deletion is unstaged, which is
+        # exactly the state right after a copier update removes a renamed
+        # script. An orphan is a file that SURVIVED, so require it to exist in
+        # the working tree — otherwise the cleanly-deleted files this sweep
+        # exists to distinguish would all be reported as survivors.
+        [ -e "$target/$o" ] || continue
+        render_has "$o" && continue
+        echo "ORPHAN   $o  (repo has it; a render from this repo's answers does not — local keeper, or survivor of a template rename?)"
+        orphan_count=$((orphan_count + 1))
+    done <"$orphan_inventory"
+else
+    # A sweep that could not run is a setup error, not a clean result. Callers
+    # keyed on the exit status (verify-applied) must not read "audit skipped"
+    # as "nothing found" — this is distinct from the advisory ORPHAN findings,
+    # which deliberately leave the status alone.
+    echo "ORPHAN?  could not enumerate the repo's scripts/ — the orphan sweep did NOT run" >&2
+    exit 2
+fi
+if [ "$orphan_count" -gt 0 ]; then
+    echo ""
+    echo "  ${orphan_count} ORPHAN above (advisory; does not affect exit status). For each:"
+    echo "  grep the repo for references, repoint them at the canonical successor, and"
+    echo "  delete the orphan — an intentional repo-owned keeper is the exception. Diff"
+    echo "  a locally-modified orphan against its own template baseline first; its"
+    echo "  repo-specific behavior may need porting to the successor."
+fi
 
 echo ""
 if [ "$drift" -ne 0 ]; then
