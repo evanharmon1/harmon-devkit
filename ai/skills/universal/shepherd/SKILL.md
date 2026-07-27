@@ -35,10 +35,14 @@ runs always go through the normal permission prompt.
 ## 1. Target
 
 Take the PR number or URL from the arguments; otherwise infer it from the
-current branch (`gh pr view --json number,url,title`). A URL pins the
-repository; otherwise derive it from the branch's remote. Pass
-`--repo "$repo"` on every `gh` command — never rely on `gh`'s default repo.
-If the target is ambiguous, ask the user.
+current branch (`gh pr view --json number,url,title` resolves the branch's
+PR and its URL). `$repo` is the PR's **base** repository — a URL names it
+directly, and an inferred PR's URL does too. A bare number also lives in
+the base repo: in a fork checkout, resolving it against the fork remote
+queries the wrong repository (or an unrelated same-numbered PR), so bind
+`$repo` from the PR URL/base, never from whichever remote the branch
+happens to track. Pass `--repo "$repo"` on every `gh` command — never rely
+on `gh`'s default repo. If the target is ambiguous, ask the user.
 
 Then verify the checkout **is** the PR before touching anything: fetch
 `gh pr view <n> --repo "$repo" --json state,headRepositoryOwner,headRepository,headRefName,headRefOid`
@@ -157,10 +161,12 @@ For every failing check and every review finding:
 
 Reply to **every** inline review comment in its own thread — fixes ("fixed
 in `<sha>`") and rejections (with evidence) alike. Two ordering rules:
-filter the comments payload to top-level reviewer comments
-(`in_reply_to_id == null`) and skip threads you already answered in an
-earlier round — replying to replies nests invalidly and re-answering spams
-the thread. And post "fixed in `<sha>`" replies only **after** the verified
+group the comments payload by thread (replies carry `in_reply_to_id`) and
+reply through each thread's **root** comment ID — replying to a reply
+nests invalidly. Skip a thread only when nothing new arrived since your
+last answer; a reviewer follow-up posted after your reply is a fresh
+finding to adjudicate and answer (through the same root ID), while
+re-answering an unchanged thread just spams it. And post "fixed in `<sha>`" replies only **after** the verified
 commit has actually been pushed (rejection-only replies can go out
 immediately) — a fix reply pointing at a commit that later gets amended or
 never pushed is a false claim.
