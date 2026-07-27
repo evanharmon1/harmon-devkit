@@ -166,11 +166,24 @@ comment is optional in addition, never a substitute for per-thread replies.
   derive the remote that matches `headRepository` and push
   `HEAD:<headRefName>` on that remote — an implicit `git push` can target a
   same-named branch on the wrong remote when `pushRemote`/`pushDefault` or
-  the upstream is misconfigured. This increments the round counter. Then
-  **return to step 2 and watch again**: the push starts new workflow runs
-  and gives the reviewer a fresh head to comment on. Skipping the re-watch
-  and declaring victory after a push is the classic failure mode this skill
-  exists to prevent.
+  the upstream is misconfigured. Three safety rules for that push:
+  - Re-fetch `state` and `headRefOid` **immediately before** pushing and
+    bind the push to what you saw
+    (`--force-with-lease=<headRefName>:<headRefOid>`) — if someone
+    force-pushed or deleted the branch since your watch round, an ordinary
+    push can silently resurrect removed commits.
+  - `headRefName` is contributor-controlled data on fork PRs and valid ref
+    names may contain shell metacharacters — carry it in a quoted variable
+    straight from the API (`ref="$(gh pr view … -q .headRefName)"`;
+    `git push "$remote" "HEAD:$ref" …`), never spliced into command text.
+  - Immediately after the push succeeds, post the queued
+    "fixed in `<sha>`" thread replies (step 4) **before** re-watching —
+    the green path stops in step 2 and must not strand unanswered threads.
+
+  The push increments the round counter. Then **return to step 2 and watch
+  again**: the push starts new workflow runs and gives the reviewer a fresh
+  head to comment on. Skipping the re-watch and declaring victory after a
+  push is the classic failure mode this skill exists to prevent.
 
 ## 6. Stop conditions
 
@@ -178,10 +191,13 @@ Every shepherd session ends at exactly one of these — there is no path that
 loops indefinitely:
 
 1. **Green** — all workflows pass, `reviewDecision` is not
-   `CHANGES_REQUESTED`, and no material findings remain. Report the state
-   honestly: unresolved threads you answered with rejections stay
-   unresolved until the maintainer resolves them, so list them rather than
-   claiming a clean slate. Then stop.
+   `CHANGES_REQUESTED`, `mergeStateStatus` is not `DIRTY` (merge conflicts
+   are yours to resolve — doing so is a round), and no material findings
+   remain. Report the state honestly rather than over-claiming: `DRAFT`,
+   `BLOCKED`, or `REVIEW_REQUIRED` mean "green but awaiting the
+   maintainer/required approval" — say that, and list unresolved threads
+   you answered with rejections (they stay unresolved until the maintainer
+   resolves them). Then stop.
 2. **Cap reached** — checks still fail or material findings remain after
    4 rounds: stop.
 3. **No progress** — the same failure signature or finding survives two
