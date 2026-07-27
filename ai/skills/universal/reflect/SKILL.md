@@ -19,7 +19,11 @@ most recent work.
 ## 1. Gather PRs and issues
 
 Enumerate every PR and issue that was worked on **or even referenced** during
-the session. Do not trust remembered status — re-verify each one live:
+the session. If the conversation has been compacted, the earlier context is
+summarized and the enumeration is best-effort: say so explicitly, cross-check
+`gh pr list --author @me` and the session's branches for work the summary may
+have dropped, and note that the tables may be incomplete. Do not trust
+remembered status — re-verify each one live:
 
 - `gh pr view <n> --json state,isDraft,mergedAt,reviewDecision,statusCheckRollup,url,title`
 - `gh issue view <n> --json state,stateReason,assignees,url,title`

@@ -32,8 +32,10 @@ Design properties:
 
 - **Never blocks or noisies session exit** — every failure path (missing
   `jq`/`gzip`, absent transcript, unwritable archive dir) exits 0.
-- **Idempotent per session** — if an archive for the `session_id` already
-  exists, the hook is a no-op (a session can end more than once via resume).
+- **Resume-safe** — a session can end more than once (exit → resume → exit)
+  under the same `session_id`, growing the transcript each time; the hook
+  re-archives into the same file whenever the transcript is newer than the
+  existing archive, and is a no-op otherwise.
 - **Atomic** — writes through a temp file in the archive dir, so a
   half-written archive never satisfies the idempotency check.
 - Dependencies: `jq`, `gzip`.

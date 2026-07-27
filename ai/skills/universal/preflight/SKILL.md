@@ -34,9 +34,12 @@ proceeding.
 - Each related PR:
   `gh pr view <pr> --json state,mergeStateStatus,reviewDecision,title,url`
   and `gh pr checks <pr>`.
-- Recent history: `git log --oneline main..HEAD` and
-  `git log --oneline -10 main` for merges that may have changed the ground
-  under the issue.
+- Recent history against the **fetched** default branch (local `main` may be
+  stale, and the default branch is not always named `main`):
+  `default="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"`,
+  then `git log --oneline "$default"..HEAD` and
+  `git log --oneline -10 "$default"` for merges that may have changed the
+  ground under the issue.
 
 ## 3. Sanity analysis
 
@@ -64,8 +67,9 @@ if `gh` is unauthenticated or lacks write access, report the commands for the
 user to run instead of failing the flow:
 
 - `gh issue edit <n> --add-assignee @me`
-- Label only if the label exists:
-  `gh label list --json name -q '.[].name' | grep -qx in-progress && gh issue edit <n> --add-label in-progress`
+- Label only if the label exists (`--limit` matters — the default returns
+  only 30 labels):
+  `gh label list --limit 1000 --json name -q '.[].name' | grep -qx in-progress && gh issue edit <n> --add-label in-progress`
 - `gh issue comment <n> --body "Claiming — starting implementation on branch <branch> (session <name>)."`
 
 ## 6. Hand off
