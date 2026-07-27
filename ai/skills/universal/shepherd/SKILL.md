@@ -95,8 +95,9 @@ and compare against the local branch and HEAD. Requirements, all hard:
   adjudicate both the same way.
 - Bot-reaction semantics where the Codex cloud connector is installed: read
   the PR-level reactions explicitly —
-  `gh api repos/"$repo"/issues/<n>/reactions` (they are not in the
-  `gh pr view` fields). A bare 👍 from the bot is its clean pass; a lone 👀
+  `gh api --paginate repos/"$repo"/issues/<n>/reactions` (they are not in
+  the `gh pr view` fields, and without `--paginate` a busy PR can hide the
+  bot's latest reaction behind older pages). A bare 👍 from the bot is its clean pass; a lone 👀
   that never resolves means the cloud run failed (re-trigger or note it —
   it is not a finding).
 - Wait for **both** signals before deciding anything: let every check
