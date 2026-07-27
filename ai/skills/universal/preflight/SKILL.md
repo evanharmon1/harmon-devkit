@@ -6,12 +6,16 @@ description: >-
   blockers, then claim the issue (assign, label, comment). Invoke as
   /preflight [issue #].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git:*), Bash(gh:*), Bash(task:*)
+allowed-tools: Read, Glob, Grep, Bash(git fetch:*), Bash(git status:*), Bash(git log:*), Bash(git remote:*), Bash(git branch:*), Bash(git symbolic-ref:*), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
 ---
 
 # Preflight
 
 **Arguments:** $ARGUMENTS
+
+Only read commands are pre-approved for this skill; the claim writes in
+step 5 intentionally go through the normal permission prompt, so untrusted
+issue content can never trigger a mutation silently.
 
 Run this right before starting implementation. It is the lightweight
 interactive sibling of harmon-init's `foreman-preflight` agent and uses the
@@ -26,9 +30,13 @@ proceeding.
 
 ## 2. Refresh state (read-only)
 
-- Pick the authoritative remote and fetch **it**:
+- Pick the authoritative remote, fetch **it**, and bind the GitHub repo
+  identity to it up front — in a multi-remote checkout `gh`'s default repo
+  can be a different repository, so every `gh` command in this skill (reads
+  and writes alike) must pass `--repo "$repo"`:
   `remote="$(git remote | grep -qx upstream && echo upstream || echo origin)"`,
-  then `git fetch --prune "$remote"`.
+  `git fetch --prune "$remote"`,
+  `repo="$(gh repo view "$(git remote get-url "$remote")" --json nameWithOwner -q .nameWithOwner)"`.
 - Repo status: `task status:git` and `task status:gh` if **both** targets
   exist (probe each with `task --list-all 2>/dev/null | grep -q '<target>'`);
   otherwise `git status -sb` and `gh pr list --state open`. Caution: `task`
@@ -72,14 +80,13 @@ the issue, and ask the user how to proceed.
 
 ## 5. Claim the issue
 
-The only writes this skill makes. Bind them to the repository you actually
-inspected — in a multi-remote checkout `gh`'s default repo can differ from
-`$remote` — by deriving
-`repo="$(gh repo view "$(git remote get-url "$remote")" --json nameWithOwner -q .nameWithOwner)"`
-and passing `--repo "$repo"` on every `gh issue`/`gh label` command in this
-skill. Show the commands before running them, and if `gh` is unauthenticated
-or lacks write access, report the commands for the user to run instead of
-failing the flow:
+The only writes this skill makes; all target `--repo "$repo"` from step 2.
+Immediately before the first write, re-fetch
+`gh issue view <n> --repo "$repo" --json state,assignees,closedByPullRequestsReferences`
+— the ground can shift during the analysis, and a now-closed, newly-assigned,
+or newly-implemented issue is a `blocker` again. Show the commands before
+running them, and if `gh` is unauthenticated or lacks write access, report
+the commands for the user to run instead of failing the flow:
 
 - `gh issue edit <n> --add-assignee @me`
 - Label only if the label exists (`--limit` matters — the default returns

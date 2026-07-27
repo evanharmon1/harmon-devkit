@@ -64,12 +64,14 @@ dest="${existing:-$archive_dir/$(date +%Y%m%d-%H%M%S)-${slug}-${session_id}.json
 # Write via a temp file in the same directory so the final mv is atomic and
 # a half-written archive never matches the idempotency glob.
 tmp="$(mktemp "$archive_dir/.archive.XXXXXX")"
-trap 'rm -f "$tmp"; rmdir "$lock"' EXIT
+stamp="$(mktemp "$archive_dir/.stamp.XXXXXX")"
+trap 'rm -f "$tmp" "$stamp"; rmdir "$lock"' EXIT
 
-# Snapshot the transcript's pre-compression mtime on the lock dir and stamp
-# it onto the finished archive: if the transcript grows while gzip runs, it
+# Snapshot the transcript's pre-compression mtime on a separate stamp file
+# (never the lock — its mtime must keep representing lock age) and copy it
+# onto the finished archive: if the transcript grows while gzip runs, it
 # ends up newer than the archive and the next hook run re-archives it.
-touch -r "$transcript" "$lock"
+touch -r "$transcript" "$stamp"
 gzip -c "$transcript" >"$tmp"
 mv "$tmp" "$dest"
-touch -r "$lock" "$dest"
+touch -r "$stamp" "$dest"

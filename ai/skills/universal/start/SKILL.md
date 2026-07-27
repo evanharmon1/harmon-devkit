@@ -5,7 +5,7 @@ description: >-
   PRs/issues) and compose a descriptive session name, emitting a
   copy-pasteable /rename command for the user. Invoke as /start [topic or issue #].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git:*), Bash(gh:*), Bash(task:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git log:*), Bash(git branch:*), Bash(task --list-all:*), Bash(task status:*), Bash(gh pr list:*), Bash(gh issue list:*)
 ---
 
 # Start Session
