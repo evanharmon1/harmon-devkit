@@ -60,9 +60,40 @@ if [ -z "$perishable" ]; then
     exit 0
 fi
 
-if printf '%s\n' "$draft" | grep -qiE '^#{1,6}[[:space:]]*Verify'; then
+# Collect the Verify section: everything between its heading and the next heading
+# (or EOF). A heading on its own is not a Verify section — the command under it is
+# the entire point, and an empty one is easy to reach from both the skeleton below
+# and the optional Verify field on the issue forms.
+verify_content="$(printf '%s\n' "$draft" | awk '
+    tolower($0) ~ /^#+[[:space:]]*verify/ { inv = 1; next }
+    inv && /^#+[[:space:]]/ { inv = 0 }
+    inv { print }
+')"
+
+# Blank lines, bare code fences, and unfilled <placeholders> are not a command.
+substantive="$(printf '%s\n' "$verify_content" |
+    grep -vE '^[[:space:]]*$' |
+    grep -vE '^[[:space:]]*`{3,}' |
+    grep -vE '^[[:space:]]*<[^>]*>[[:space:]]*$' || true)"
+
+if [ -n "$substantive" ]; then
     echo "check-issue-rot: perishable claims are covered by a Verify section — ok"
     exit 0
+fi
+
+if [ -n "$verify_content" ] || printf '%s\n' "$draft" | grep -qiE '^#+[[:space:]]*Verify'; then
+    cat >&2 <<EOF
+check-issue-rot: the Verify section is empty, so the perishable claims below are
+still unverifiable. A heading on its own re-checks nothing — put the command under it.
+
+$(printf '%s\n' "$perishable" | sed 's/^\([0-9][0-9]*\):/  line \1: /')
+
+    ## Verify
+    \`\`\`sh
+    <command that re-checks it, and what its output means>
+    \`\`\`
+EOF
+    exit 1
 fi
 
 cat >&2 <<EOF

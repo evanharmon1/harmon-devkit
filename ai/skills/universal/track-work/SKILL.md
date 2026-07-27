@@ -151,13 +151,14 @@ that re-checks it:
 <file:line, behaviour — perishable; a lead, not a fact>
 
 ## Verify
-<a command that re-establishes whether this is still true, and what its
-output means>
+<command that re-checks it, and what its output means>
 ```
 
 The `Verify` block is what makes the perishable part safe. With it a reader
 re-checks in seconds; without it, a stale citation is indistinguishable from a
-live one.
+live one. The heading alone is not the section — an empty `## Verify`, or the
+`<placeholder>` above left unfilled, re-checks nothing and the check rejects
+both.
 
 ```sh
 <skill-dir>/assets/check-issue-rot.sh <draft-file>

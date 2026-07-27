@@ -201,6 +201,41 @@ task test:hygiene
 ```
 ')" = 0 ] || fail "Verify section should clear the draft"
 
+echo "==> an EMPTY Verify heading does not clear the draft"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+')" = 1 ] || fail "a Verify heading with nothing under it should still fail"
+
+echo "==> an unfilled <placeholder> under Verify does not count as a command"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+```sh
+<command that re-checks it, and what its output means>
+```
+')" = 1 ] || fail "the unfilled skeleton should still fail"
+
+echo "==> a Verify section followed immediately by another heading fails"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+## Notes
+
+Some prose.
+')" = 1 ] || fail "an empty Verify before another heading should fail"
+
+echo "==> prose under Verify counts — it need not be a code fence"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+Run `task test:hygiene`; a TEST FAIL means it is still live.
+')" = 0 ] || fail "prose under Verify should count"
+
 echo "==> a Verify section at any heading level counts"
 [ "$(run_rot 'scripts/foo.sh:42 is wrong.
 
