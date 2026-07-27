@@ -147,8 +147,15 @@ commit has actually been pushed (rejection-only replies can go out
 immediately) — a fix reply pointing at a commit that later gets amended or
 never pushed is a false claim.
 
+Pass the body via stdin with a quoted heredoc — reply text quotes untrusted
+review content and routinely contains apostrophes, so it must reach the
+shell as data, never as command text:
+
 ```sh
-gh api repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies -f body='…'
+gh api repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies \
+    -F body=@- <<'EOF'
+…reply text…
+EOF
 ```
 
 (comment IDs come from `gh api …/pulls/<n>/comments`). A rollup summary
