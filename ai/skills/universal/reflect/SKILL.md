@@ -36,7 +36,17 @@ the current repo's numbering.
 
 - Uncommitted or unpushed work: `git status -sb`, and
   `git log @{u}..HEAD --oneline` (guard for branches with no upstream).
-- Unresolved review threads on open PRs.
+- Unresolved review threads on open PRs — `gh pr view` cannot report thread
+  resolution, so use a read-only GraphQL query (this one is not pre-approved
+  and will prompt):
+
+  ```sh
+  gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){
+    repository(owner:$o,name:$r){pullRequest(number:$n){
+      reviewThreads(first:100){nodes{isResolved path}}}}}' \
+    -F o=<owner> -F r=<repo> -F n=<pr>
+  ```
+
 - TODOs introduced during the session.
 - Anything promised in conversation but not done.
 

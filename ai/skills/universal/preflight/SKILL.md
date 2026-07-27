@@ -35,24 +35,28 @@ confirm with the user before proceeding.
 
 ## 2. Refresh state (read-only)
 
-- Pick the authoritative remote, fetch **it**, and bind the GitHub repo
-  identity to it up front — in a multi-remote checkout `gh`'s default repo
-  can be a different repository, so every `gh` command in this skill (reads
-  and writes alike) must pass `--repo "$repo"`:
-  `remote="$(git remote | grep -qx upstream && echo upstream || echo origin)"`,
-  `git fetch --prune "$remote"`,
+- Bind the GitHub repo identity up front — in a multi-remote checkout `gh`'s
+  default repo can be a different repository, so every `gh` command in this
+  skill (reads and writes alike) must pass `--repo "$repo"`. If step 1 pinned
+  the target with a full issue URL, **that URL determines `$repo`**, and
+  `$remote` is whichever remote's URL points at it (if none does, say so and
+  confirm with the user). Otherwise:
+  `remote="$(git remote | grep -qx upstream && echo upstream || echo origin)"`
+  and
   `repo="$(gh repo view "$(git remote get-url "$remote")" --json nameWithOwner -q .nameWithOwner)"`.
+  Then fetch it: `git fetch --prune "$remote"`.
 - Repo status: `task status:git` and `task status:gh` if **both** targets
   exist (probe each with `task --list-all 2>/dev/null | grep -q '<target>'`);
-  otherwise `git status -sb` and `gh pr list --state open`. Caution: `task`
-  executes the checked-out Taskfile; on an untrusted branch use the raw
-  commands.
-- The issue itself: `gh issue view <n> --comments`, plus its linked work —
-  `gh issue view <n> --json state,assignees,closedByPullRequestsReferences` —
-  so a PR already fixing the issue is caught even if no comment mentions it.
+  otherwise `git status -sb` and `gh pr list --repo "$repo" --state open`.
+  Caution: `task` executes the checked-out Taskfile; on an untrusted branch
+  use the raw commands.
+- The issue itself: `gh issue view <n> --repo "$repo" --comments`, plus its
+  linked work —
+  `gh issue view <n> --repo "$repo" --json state,assignees,closedByPullRequestsReferences`
+  — so a PR already fixing the issue is caught even if no comment mentions it.
 - Each related PR:
-  `gh pr view <pr> --json state,mergeStateStatus,reviewDecision,title,url`
-  and `gh pr checks <pr>`.
+  `gh pr view <pr> --repo "$repo" --json state,mergeStateStatus,reviewDecision,title,url`
+  and `gh pr checks <pr> --repo "$repo"`.
 - Recent history against the **fetched** default branch (local `main` may be
   stale, and the default branch is not always named `main`). Using the
   `$remote` fetched above, refresh its cached default-branch ref

@@ -38,8 +38,9 @@ Design properties:
   existing archive, and is a no-op otherwise.
 - **Atomic and serialized** — writes through a temp file in the archive dir,
   so a half-written archive never satisfies the freshness check, and a
-  per-session lock keeps overlapping hook runs from clobbering each other
-  (a stale lock from a crashed run expires after an hour).
+  per-session lock keeps overlapping hook runs from clobbering each other.
+  The lock records its owner's PID — a crashed owner's lock is stolen
+  immediately, with an hour-based expiry as the recycled-PID backstop.
 - Dependencies: `jq`, `gzip`.
 
 ## Install
@@ -80,9 +81,10 @@ truncate a live transcript — if the destination already exists, the restore
 is refused:
 
 ```sh
-tmp="$(mktemp)"
+dest_dir=~/.claude/projects/<project-slug>
+tmp="$(mktemp "$dest_dir/.restore.XXXXXX")"   # same filesystem => atomic mv
 gunzip -c <timestamp>-<slug>-<session-id>.jsonl.gz > "$tmp" &&
-    mv -n "$tmp" ~/.claude/projects/<project-slug>/<session-id>.jsonl
+    mv -n "$tmp" "$dest_dir/<session-id>.jsonl"
 rm -f "$tmp"   # no-op if the mv happened; cleans up if it was refused
 ```
 
