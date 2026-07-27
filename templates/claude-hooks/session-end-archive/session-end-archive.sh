@@ -30,12 +30,14 @@ mkdir -p "$archive_dir"
 # (.lock-<sid>.<pid>): the owner's identity is pinned in the name itself,
 # so removing a dead owner's lock can never remove a lock a live process
 # holds — there is no inspect-then-delete race. Between live contenders the
-# lowest PID wins; the loser backs off and retries. Retry briefly rather
-# than dropping the run — this invocation may be the last chance to archive.
-# An hour-old lock expires as the recycled-PID backstop.
+# lowest PID wins; the loser backs off and retries. Wait up to 60s (the
+# hook runs async with a 120s timeout, so nothing user-facing blocks)
+# rather than dropping the run — this invocation may be the last chance to
+# archive, e.g. when the transcript grew after a slow contender's gzip
+# already read it. An hour-old lock expires as the recycled-PID backstop.
 mylock="$archive_dir/.lock-${session_id}.$$"
 acquired=""
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq 60); do
     mkdir "$mylock" || exit 0
     contender=""
     for other in "$archive_dir/.lock-${session_id}."*; do

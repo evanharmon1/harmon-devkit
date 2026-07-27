@@ -30,8 +30,10 @@ ${CLAUDE_TRANSCRIPT_ARCHIVE_DIR:-~/.claude/transcript-archive}/<timestamp>-<proj
 
 Design properties:
 
-- **Never blocks or noisies session exit** — every failure path (missing
-  `jq`/`gzip`, absent transcript, unwritable archive dir) exits 0.
+- **Never blocks or noisies session exit** — the snippet registers the hook
+  with `"async": true`, so archiving runs off the exit path entirely, and
+  every failure path (missing `jq`/`gzip`, absent transcript, unwritable
+  archive dir) exits 0.
 - **Resume-safe** — a session can end more than once (exit → resume → exit)
   under the same `session_id`, growing the transcript each time; the hook
   re-archives into the same file whenever the transcript is newer than the
