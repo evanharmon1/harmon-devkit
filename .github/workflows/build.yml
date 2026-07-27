@@ -60,6 +60,7 @@ jobs:
       - run: task test:hooks
       - run: task test:skills
       - run: task test:hygiene
+      - run: task test:archive-hook
       - run: task test:devcontainer:permissions
 
   security:
