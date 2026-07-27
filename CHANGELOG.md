@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.9.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.7...v0.9.0) (2026-07-27)
+
+
+### Features
+
+* add dev-workflow session skills and SessionEnd transcript-archive hook template ([#152](https://github.com/evanharmon1/harmon-devkit/issues/152)) ([6a817c8](https://github.com/evanharmon1/harmon-devkit/commit/6a817c8d291536c6bff309fbb540840d6d6fa194))
+* **lint-hygiene:** fail a shebanged file that is not executable in git ([#151](https://github.com/evanharmon1/harmon-devkit/issues/151)) ([7187812](https://github.com/evanharmon1/harmon-devkit/commit/7187812064541c51f1f94acf9af6cda973a902ff)), closes [#88](https://github.com/evanharmon1/harmon-devkit/issues/88)
+* notify harmon-init when a release is published ([#157](https://github.com/evanharmon1/harmon-devkit/issues/157)) ([5c1c001](https://github.com/evanharmon1/harmon-devkit/commit/5c1c0011493ab4e6289958ae3aeeeb061d7cde4d))
+
+
+### Bug Fixes
+
+* **implement-design:** correct font/trademark licensing facts and fail closed on unreadable scans ([#146](https://github.com/evanharmon1/harmon-devkit/issues/146)) ([9b8a521](https://github.com/evanharmon1/harmon-devkit/commit/9b8a52157c63f87e8a4ca159b7db67464e5b1b11)), closes [#84](https://github.com/evanharmon1/harmon-devkit/issues/84)
+* make copier available in the brew-less devcontainer ([#141](https://github.com/evanharmon1/harmon-devkit/issues/141)) ([7334cd5](https://github.com/evanharmon1/harmon-devkit/commit/7334cd5116b3503fb43ccfa371a7d93cda6aaf79))
+* **standardize-repo:** detect required-check trigger wedges and bind the toolchain to the gate job ([#143](https://github.com/evanharmon1/harmon-devkit/issues/143)) ([8228403](https://github.com/evanharmon1/harmon-devkit/commit/8228403cefd3edc5152fd79b22152e253dbabae8))
+* **standardize-repo:** persist the peeled Copier commit and scope the gh precondition ([#139](https://github.com/evanharmon1/harmon-devkit/issues/139)) ([1ba94da](https://github.com/evanharmon1/harmon-devkit/commit/1ba94da31afdfb9e8dd95eff9da5d246a17b35f1)), closes [#133](https://github.com/evanharmon1/harmon-devkit/issues/133) [#134](https://github.com/evanharmon1/harmon-devkit/issues/134)
+* **standardize-repo:** scope the audit-mode local checkout exemption ([#137](https://github.com/evanharmon1/harmon-devkit/issues/137)) ([9dde60a](https://github.com/evanharmon1/harmon-devkit/commit/9dde60a487712683c18ac738fc7ee5815b7942ee)), closes [#135](https://github.com/evanharmon1/harmon-devkit/issues/135)
+* **standardize-repo:** stop reading a Copier template's payload as first-party source ([#147](https://github.com/evanharmon1/harmon-devkit/issues/147)) ([f323856](https://github.com/evanharmon1/harmon-devkit/commit/f323856db3ad1eaa480a1d64c52bd30debd3ed8d))
+* **standardize-repo:** sweep orphans against a rendered inventory ([#148](https://github.com/evanharmon1/harmon-devkit/issues/148)) ([095a05e](https://github.com/evanharmon1/harmon-devkit/commit/095a05e98055886520da87e3bef4a6d9f9a97558)), closes [#145](https://github.com/evanharmon1/harmon-devkit/issues/145)
+
 ## [0.8.7](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.6...v0.8.7) (2026-07-25)
 
 
