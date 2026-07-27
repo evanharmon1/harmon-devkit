@@ -71,9 +71,12 @@ if [[ -n "$existing" && ! "$transcript" -nt "$existing" ]]; then
     [[ "$src_size" != "$arch_size" ]] || exit 0
 fi
 
-# Sanitize the project slug for use in a filename (cwd may be "/" or contain
-# characters that would create unintended paths).
-slug="$(basename "${cwd:-unknown}")"
+# Use Claude's own project slug (the transcript's parent directory name,
+# which encodes the full project path) so restoration is unambiguous even
+# across same-named checkouts; fall back to the cwd basename. Sanitize for
+# filename use either way.
+slug="$(basename "$(dirname "$transcript")")"
+[[ -n "$slug" && "$slug" != "/" && "$slug" != "." ]] || slug="$(basename "${cwd:-unknown}")"
 slug="${slug//[^[:alnum:]._-]/-}"
 [[ -n "${slug//-/}" ]] || slug="unknown"
 

@@ -37,19 +37,24 @@ confirm with the user before proceeding.
 
 - Bind the GitHub repo identity up front — in a multi-remote checkout `gh`'s
   default repo can be a different repository, so every `gh` command in this
-  skill (reads and writes alike) must pass `--repo "$repo"`. If step 1 pinned
-  the target with a full issue URL, **that URL determines `$repo`**, and
-  `$remote` is whichever remote's URL points at it. If no remote matches,
-  that is a `blocker`: the fetch, default-branch, and history checks below
-  all need a matching checkout, so stop and ask the user to establish one
-  (or to explicitly accept claiming without live-code verification). Otherwise:
+  skill (reads and writes alike) must pass `--repo "$repo"`. **`$repo` is
+  always the repository of the target confirmed in step 1** — whether pinned
+  by a URL or resolved by the user's answer to an ambiguity question — and
+  `$remote` is whichever remote's URL points at `$repo`; never let a
+  heuristic override a confirmed target. If no remote matches `$repo`, that
+  is a `blocker`: the fetch, default-branch, and history checks below all
+  need a matching checkout, so stop and ask the user to establish one (or to
+  explicitly accept claiming without live-code verification). Only when
+  step 1 pinned nothing, fall back to
   `remote="$(git remote | grep -qx upstream && echo upstream || echo origin)"`
   and
   `repo="$(gh repo view "$(git remote get-url "$remote")" --json nameWithOwner -q .nameWithOwner)"`.
   Then fetch it: `git fetch --prune "$remote"`.
 - Repo status: `task status:git` and `task status:gh` if **both** targets
-  exist (probe each with `task --list-all 2>/dev/null | grep -q '<target>'`);
-  otherwise `git status -sb` and `gh pr list --repo "$repo" --state open`.
+  exist (probe each with `task --list-all 2>/dev/null | grep -q '<target>'`)
+  **and** `$repo` is the checkout's own repository — the status tasks are not
+  repo-bound, so when a URL pinned a different `$repo`, use the raw commands.
+  Fallback: `git status -sb` and `gh pr list --repo "$repo" --state open`.
   Caution: `task` executes the checked-out Taskfile; on an untrusted branch
   use the raw commands.
 - The issue itself: `gh issue view <n> --repo "$repo" --comments`, plus its
