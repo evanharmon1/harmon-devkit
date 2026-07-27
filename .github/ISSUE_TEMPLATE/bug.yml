@@ -22,6 +22,17 @@ body:
     validations:
       required: true
   - type: textarea
+    id: acceptance
+    attributes:
+      label: Definition of done
+      description: >-
+        What has to be true before this closes. Task-list items, because that is what the
+        closing-keyword guard reads — a bug with no checklist is treated as fully complete, so a
+        PR can auto-close it while part of the report is still outstanding.
+      value: |
+        - [ ] Fix verified against the reproduction above
+        - [ ] Regression test covers it
+  - type: textarea
     id: verify
     attributes:
       label: Verify

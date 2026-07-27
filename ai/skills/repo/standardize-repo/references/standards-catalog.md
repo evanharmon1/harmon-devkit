@@ -832,8 +832,10 @@ template does not yet render either, so audit for the skill, not the workflow.
   violation (observed YYYY-MM-DD)` / `Verify`). Strongest form where a test
   harness exists: a failing assertion instead of a description.
 - **Acceptance criteria are `- [ ]` task-list items** — the closing-keyword guard
-  reads them, so an issue without them silently loses the protection. Issue Forms
-  should seed an acceptance-criteria field and a `Verify` field.
+  reads them, so an issue without them silently loses the protection. **Every**
+  Issue Form seeds a task-list field and a `Verify` field, bug reports included:
+  a form that omits the checklist leaves that whole issue type unprotected. A
+  `checkboxes` field satisfies this too — it renders as `- [ ]` in the body.
 
 ---
 
