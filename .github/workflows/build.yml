@@ -57,6 +57,7 @@ jobs:
       - run: task test:codex-review
       - run: task test:ci-results
       - run: task test:release-title
+      - run: task test:track-work
       - run: task test:notify-release
       - run: task test:hooks
       - run: task test:skills
