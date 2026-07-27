@@ -138,7 +138,14 @@ For every failing check and every review finding:
 ## 4. Reply in-thread
 
 Reply to **every** inline review comment in its own thread — fixes ("fixed
-in `<sha>`") and rejections (with evidence) alike:
+in `<sha>`") and rejections (with evidence) alike. Two ordering rules:
+filter the comments payload to top-level reviewer comments
+(`in_reply_to_id == null`) and skip threads you already answered in an
+earlier round — replying to replies nests invalidly and re-answering spams
+the thread. And post "fixed in `<sha>`" replies only **after** the verified
+commit has actually been pushed (rejection-only replies can go out
+immediately) — a fix reply pointing at a commit that later gets amended or
+never pushed is a false claim.
 
 ```sh
 gh api repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies -f body='…'
@@ -155,11 +162,15 @@ comment is optional in addition, never a substitute for per-thread replies.
   Never `--no-verify`, never weaken a gate to get through it.
 - Do **not** re-enter the local challenge/review loops — the post-push
   cloud/bot review is the second-model check at this stage.
-- Push the fix commit (conventional message) — this increments the round
-  counter — then **return to step 2 and watch again**: the push starts new
-  workflow runs and gives the reviewer a fresh head to comment on. Skipping
-  the re-watch and declaring victory after a push is the classic failure
-  mode this skill exists to prevent.
+- Push the fix commit (conventional message) **explicitly to the PR head**:
+  derive the remote that matches `headRepository` and push
+  `HEAD:<headRefName>` on that remote — an implicit `git push` can target a
+  same-named branch on the wrong remote when `pushRemote`/`pushDefault` or
+  the upstream is misconfigured. This increments the round counter. Then
+  **return to step 2 and watch again**: the push starts new workflow runs
+  and gives the reviewer a fresh head to comment on. Skipping the re-watch
+  and declaring victory after a push is the classic failure mode this skill
+  exists to prevent.
 
 ## 6. Stop conditions
 
@@ -174,8 +185,11 @@ loops indefinitely:
 2. **Cap reached** — checks still fail or material findings remain after
    4 rounds: stop.
 3. **No progress** — the same failure signature or finding survives two
-   consecutive rounds unchanged: stop early; burning the remaining rounds
-   on it won't help.
+   consecutive rounds unchanged **and** it is the sole remaining blocker
+   (or the rounds made no material progress overall): stop early; burning
+   the remaining rounds on it won't help. While other confirmed findings
+   are still being fixed, keep going — a stubborn failure alongside real
+   progress is not a stop.
 4. **Blocked on the maintainer** — the remaining failure needs secrets,
    permissions, external-service action, or a decision only the maintainer
    can make: stop immediately, whatever the round count.
