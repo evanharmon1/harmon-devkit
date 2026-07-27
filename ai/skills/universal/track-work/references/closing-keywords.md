@@ -5,6 +5,11 @@ an instruction to GitHub: **close this issue when the PR merges**. GitHub obeys
 it exactly. That is the whole failure mode — nothing malfunctions, the design is
 just wrong.
 
+The **PR title is the same instruction** on a squash-merge repo: GitHub sets the
+commit subject from the title, and a closing keyword in a commit message that
+lands on the default branch closes the issue. `fix: tidy up, closes #123` in a
+title is as final as it is in a body, and easier to miss.
+
 ## The rule
 
 | Situation | Keyword |
@@ -21,13 +26,18 @@ default; a closing keyword is the exception you justify.
 ## The check
 
 ```sh
-<skill-dir>/assets/check-closing-keywords.sh --repo <owner/repo> <body-file>
+PR_TITLE="<title>" PR_BODY="<body>" \
+  <skill-dir>/assets/check-closing-keywords.sh --repo <owner/repo> \
+    --title-env PR_TITLE --body-env PR_BODY
 ```
 
 Exit 0 safe, 1 violation, 2 could not verify — and *could not verify* is not
 *clean*. In a repo that wires it up, `task guard:closing-keywords` runs the same
-check from `$PR_BODY`, and CI runs it on every PR at `opened`/`edited`, so
-rewording the body re-runs it.
+check, and CI runs it on every PR at `opened`/`edited`.
+
+**Clearing a red check.** Editing the PR title or body re-runs it automatically.
+Ticking the issue's boxes does **not** — the workflow watches pull-request
+events, not issues, so that path needs the check re-run by hand.
 
 By hand:
 

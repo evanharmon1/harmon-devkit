@@ -41,6 +41,14 @@ jobs:
     #     PR-controlled code (as release-content-guard.yml and build.yml already
     #     do). Checking out the base ref instead would be self-protecting, but
     #     would fail any PR that legitimately adds or changes the check.
+    #   * A DEPENDENCY-BOT body is never checked, and GitHub would honour a closing
+    #     keyword quoted from an upstream changelog. Checked empirically before
+    #     accepting this: all four open Renovate PRs at the time — including one
+    #     with a 14.6 KB release-notes body — contained no closing-keyword match,
+    #     because Renovate renders upstream references as full URLs. Running the
+    #     guard on them would exit 2 on any upstream number with no local issue,
+    #     blocking the repo's most frequent PR type. Revisit by teaching the check
+    #     to treat a 404 as "no local issue to orphan" rather than unverifiable.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'renovate[bot]' &&
@@ -58,11 +66,14 @@ jobs:
           # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
           version: 3.51.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Refuse a body that auto-closes unfinished work
-        # The PR body is untrusted input — pass it through the environment (never
-        # interpolate into the run script) and only string-match on it. GH_TOKEN
-        # is what `gh issue view` authenticates with.
+      - name: Refuse a title or body that auto-closes unfinished work
+        # Title and body are untrusted input — pass them through the environment
+        # (never interpolate into the run script) and only string-match on them.
+        # The title matters because squash-merge makes it the commit subject, and
+        # a closing keyword in a commit message landing on main closes the issue
+        # exactly as the body does. GH_TOKEN is what `gh issue view` uses.
         env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

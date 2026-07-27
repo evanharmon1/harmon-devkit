@@ -35,10 +35,14 @@ skill at authoring time and by the **tracking guard**
   closing keyword (`Closes`/`Fixes`/`Resolves`) only when the PR resolves the
   issue **entirely** — GitHub obeys it at merge, and anything left unticked
   survives only inside a closed issue, off every backlog.
+- **The PR title is a closing vector too.** Squash-merge makes it the commit
+  subject, and a closing keyword in a commit message landing on `main` closes the
+  issue exactly as a body does. The guard checks title and body.
 - **An issue with unticked items must not be auto-closed.** Tick the ones the PR
-  genuinely satisfies, or use `Refs`. The guard fails the PR either way until one
-  of those is true; `edited` re-runs it, so reworking the body clears the check.
-  Never bypass it.
+  genuinely satisfies, or use `Refs`. The guard fails the PR until one of those is
+  true. Editing the title or body re-runs it; ticking the issue's boxes does not
+  (it watches pull-request events), so that path needs a manual re-run. Never
+  bypass it.
 - **Never close across repos.** Write `Refs owner/repo#N`. A bare `#123` always
   means *this* repo — a number that crosses a repo boundary carries its repo
   everywhere it is written or verified.

@@ -117,6 +117,36 @@ env -u PR_BODY ISSUE_BODY_DIR="$fixtures" GH_REPO="" \
     "$closing" --repo "$repo" --body-env PR_BODY >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "an unset body variable should pass (got $_rc)"
 
+echo "==> a closing keyword in the PR TITLE fails, even with a clean body"
+# Squash-merge makes the title the commit subject, which closes issues on main.
+_rc=0
+env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='fix: cleanup, closes #5' PR_BODY='Nothing to see.' \
+    "$closing" --repo "$repo" --body-env PR_BODY --title-env PR_TITLE >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a closing keyword in the title should fail (got $_rc)"
+
+echo "==> a title violation is reported as the title, not as a body line"
+out="$(env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='fix: cleanup, closes #5' PR_BODY='Nothing to see.' \
+    "$closing" --repo "$repo" --body-env PR_BODY --title-env PR_TITLE 2>&1 || true)"
+printf '%s\n' "$out" | grep -q 'PR title' || fail "the violation should be located in the PR title"
+
+echo "==> body line numbers stay correct when a title is also scanned"
+out="$(env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='fix: a clean title' PR_BODY='line one
+line two
+Closes #5' "$closing" --repo "$repo" --body-env PR_BODY --title-env PR_TITLE 2>&1 || true)"
+printf '%s\n' "$out" | grep -q 'body line 3' || fail "body line numbers should exclude the title line"
+
+echo "==> a clean title and a clean body pass together"
+_rc=0
+env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='feat: add a thing' PR_BODY='Refs #5' \
+    "$closing" --repo "$repo" --body-env PR_BODY --title-env PR_TITLE >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "a clean title and body should pass (got $_rc)"
+
+echo "==> an empty title and body pass together"
+_rc=0
+env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='' PR_BODY='' \
+    "$closing" --repo "$repo" --body-env PR_BODY --title-env PR_TITLE >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "empty title and body should pass (got $_rc)"
+
 echo "==> the same issue referenced twice is reported once"
 out="$(printf 'Closes #5 and closes #5 again' |
     env ISSUE_BODY_DIR="$fixtures" GH_REPO="" "$closing" --repo "$repo" 2>&1 || true)"

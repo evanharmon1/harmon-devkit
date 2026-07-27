@@ -61,10 +61,15 @@ verified.
 ## 2. Before you write a closing keyword
 
 `Closes`/`Fixes`/`Resolves` hands GitHub permission to delete an issue from the
-backlog at merge. Run this against the body you are about to submit:
+backlog at merge. **The PR title counts as much as the body** — on a
+squash-merge repo the title becomes the commit subject, and a closing keyword in
+a commit message landing on the default branch closes the issue just the same.
+Run this against both, before submitting:
 
 ```sh
-printf '%s' "$body" | <skill-dir>/assets/check-closing-keywords.sh --repo <owner/repo>
+PR_TITLE="<title>" PR_BODY="<body>" \
+  <skill-dir>/assets/check-closing-keywords.sh --repo <owner/repo> \
+    --title-env PR_TITLE --body-env PR_BODY
 ```
 
 **Exit 0** — safe. **Exit 1** — do not submit that body. **Exit 2** — it could
