@@ -8,15 +8,18 @@
 # exits 0 — a SessionEnd hook must never make session exit noisy.
 set -euo pipefail
 
+# Best-effort by design: swallow both failure statuses and their diagnostics
+# (a full disk or unwritable archive dir must not noisy up session exit).
 trap 'exit 0' ERR
+exec 2>/dev/null
 
-command -v jq >/dev/null 2>&1 || exit 0
-command -v gzip >/dev/null 2>&1 || exit 0
+command -v jq >/dev/null || exit 0
+command -v gzip >/dev/null || exit 0
 
 input="$(cat)"
-session_id="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)"
-transcript="$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null)"
-cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)"
+session_id="$(jq -r '.session_id // empty' <<<"$input")"
+transcript="$(jq -r '.transcript_path // empty' <<<"$input")"
+cwd="$(jq -r '.cwd // empty' <<<"$input")"
 [[ -n "$session_id" && -n "$transcript" && -f "$transcript" ]] || exit 0
 
 archive_dir="${CLAUDE_TRANSCRIPT_ARCHIVE_DIR:-$HOME/.claude/transcript-archive}"

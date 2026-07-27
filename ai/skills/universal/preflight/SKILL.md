@@ -27,19 +27,21 @@ proceeding.
 ## 2. Refresh state (read-only)
 
 - `git fetch --prune`
-- Repo status: `task status:git` and `task status:gh` if those targets exist
-  (`task --list-all 2>/dev/null | grep -q 'status:git'`); otherwise
-  `git status -sb` and `gh pr list --state open`.
+- Repo status: `task status:git` and `task status:gh` if **both** targets
+  exist (probe each with `task --list-all 2>/dev/null | grep -q '<target>'`);
+  otherwise `git status -sb` and `gh pr list --state open`. Caution: `task`
+  executes the checked-out Taskfile; on an untrusted branch use the raw
+  commands.
 - The issue itself: `gh issue view <n> --comments`.
 - Each related PR:
   `gh pr view <pr> --json state,mergeStateStatus,reviewDecision,title,url`
   and `gh pr checks <pr>`.
 - Recent history against the **fetched** default branch (local `main` may be
-  stale, and the default branch is not always named `main`):
-  `default="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"`,
-  then `git log --oneline "$default"..HEAD` and
-  `git log --oneline -10 "$default"` for merges that may have changed the
-  ground under the issue.
+  stale, and the default branch is not always named `main`). Refresh the
+  cached default-branch ref first — `git remote set-head origin --auto` —
+  then `default="$(git symbolic-ref --short refs/remotes/origin/HEAD)"`,
+  `git log --oneline "$default"..HEAD`, and `git log --oneline -10 "$default"`
+  for merges that may have changed the ground under the issue.
 
 ## 3. Sanity analysis
 
@@ -70,7 +72,14 @@ user to run instead of failing the flow:
 - Label only if the label exists (`--limit` matters — the default returns
   only 30 labels):
   `gh label list --limit 1000 --json name -q '.[].name' | grep -qx in-progress && gh issue edit <n> --add-label in-progress`
-- `gh issue comment <n> --body "Claiming — starting implementation on branch <branch> (session <name>)."`
+- Comment via stdin with a quoted heredoc so the branch/session values are
+  never re-evaluated by the shell (a branch name can contain `$(…)`):
+
+  ```sh
+  gh issue comment <n> --body-file - <<'EOF'
+  Claiming — starting implementation on branch <branch> (session <name>).
+  EOF
+  ```
 
 ## 6. Hand off
 

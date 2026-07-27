@@ -20,8 +20,11 @@ is easy to identify later in the session picker and the Claude mobile app.
 Prefer the repo's own status plumbing when it exists; fall back to raw
 commands otherwise:
 
-- If `task --list-all 2>/dev/null | grep -q 'status:git'`, run
-  `task status:git` and `task status:gh`.
+- If **both** targets exist — `task --list-all 2>/dev/null | grep -q 'status:git'`
+  and the same check for `status:gh` — run `task status:git` and
+  `task status:gh`. Caution: `task` executes the checked-out Taskfile; on an
+  untrusted branch (e.g. reviewing a stranger's PR), use the raw fallback
+  instead.
 - Otherwise run `git status -sb`, `git log --oneline -5`,
   `gh pr list --limit 10`, and `gh issue list --limit 10`.
 
