@@ -39,11 +39,22 @@ mkdir -p "$archive_dir"
 # exercise contention without real 60s waits.
 lock_retries="${SESSION_END_ARCHIVE_LOCK_RETRIES:-60}"
 lock_sleep="${SESSION_END_ARCHIVE_LOCK_SLEEP:-1}"
+# Election: create my PID-named lock, then defer to any live lock that has
+# already won (an `acquired` marker) or is still electing with a lower PID.
+# Winning is two-phase — mark acquired, wait a grace tick, re-scan — so two
+# simultaneous electors both mark, then the higher PID sees the marked
+# lower PID and withdraws. Late arrivals see the winner's marker and defer
+# regardless of PID order.
 mylock="$archive_dir/.lock-${session_id}.$$"
 acquired=""
 for _ in $(seq "$lock_retries"); do
-    mkdir "$mylock" || exit 0
-    contender=""
+    if ! mkdir "$mylock"; then
+        # A leftover lock bearing our own (recycled) PID: no live process
+        # but us can own this name, so reap it and retry the create.
+        rm -rf "$mylock" || true
+        mkdir "$mylock" || exit 0
+    fi
+    defer=""
     for other in "$archive_dir/.lock-${session_id}."*; do
         [[ -d "$other" && "$other" != "$mylock" ]] || continue
         opid="${other##*.}"
@@ -51,13 +62,25 @@ for _ in $(seq "$lock_retries"); do
             rm -rf "$other" || true # dead owner — name pins identity, safe
         elif [[ -n "$(find "$other" -maxdepth 0 -mmin +60)" ]]; then
             rm -rf "$other" || true # recycled-PID backstop
-        elif [[ "$opid" -lt $$ ]]; then
-            contender=1 # live lower-PID owner holds the session
+        elif [[ -e "$other/acquired" || "$opid" -lt $$ ]]; then
+            defer=1 # a winner, or a live lower-PID elector
         fi
     done
-    if [[ -z "$contender" ]]; then
-        acquired=1
-        break
+    if [[ -z "$defer" ]]; then
+        : >"$mylock/acquired"
+        sleep "$lock_sleep"
+        for other in "$archive_dir/.lock-${session_id}."*; do
+            [[ -d "$other" && "$other" != "$mylock" ]] || continue
+            opid="${other##*.}"
+            if [[ -e "$other/acquired" && "$opid" -lt $$ ]] &&
+                kill -0 "$opid" 2>/dev/null; then
+                defer=1 # simultaneous mark — lowest PID wins the tie
+            fi
+        done
+        if [[ -z "$defer" ]]; then
+            acquired=1
+            break
+        fi
     fi
     rm -rf "$mylock" || true
     sleep "$lock_sleep"

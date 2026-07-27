@@ -6,7 +6,7 @@ description: >-
   issues to file), plus status tables with clickable links and status emoji
   for every PR and issue touched or referenced this session. Invoke as /reflect.
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git log:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh issue view:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh issue view:*)
 ---
 
 # Reflect
