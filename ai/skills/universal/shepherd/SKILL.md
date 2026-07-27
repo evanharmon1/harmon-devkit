@@ -41,24 +41,46 @@ repository; otherwise derive it from the branch's remote. Pass
 If the target is ambiguous, ask the user.
 
 Then verify the checkout **is** the PR before touching anything: fetch
-`gh pr view <n> --repo "$repo" --json headRepositoryOwner,headRepository,headRefName,headRefOid`
-and compare against the local branch and HEAD. If the working tree is on a
-different branch, repo, or fork than the PR head, stop and switch to (or
-ask for) the matching clean checkout first — inspecting, gating, or pushing
-from an unrelated checkout is how the wrong code gets "fixed".
+`gh pr view <n> --repo "$repo" --json state,headRepositoryOwner,headRepository,headRefName,headRefOid`
+and compare against the local branch and HEAD. Requirements, all hard:
+
+- The PR `state` is `OPEN` — never shepherd a closed or merged PR.
+- The local branch and HEAD match the PR's head repo/branch/OID; if not,
+  stop and switch to (or ask for) the matching checkout — inspecting,
+  gating, or pushing from an unrelated checkout is how the wrong code gets
+  "fixed".
+- `git status` is **clean** — pre-existing uncommitted edits can ride into
+  a shepherd commit or get clobbered; park them first.
+- **Fork-trust check**: if the PR head comes from a fork you don't control,
+  the checkout's Taskfile/scripts are contributor-controlled — running
+  `task verify`/`task ci` executes them on your machine. Inspect the diff
+  for changes to the gate toolchain (Taskfile, `scripts/`, workflows,
+  hooks) before ever running a repo-defined task, and prefer a
+  sandbox/container for gates on untrusted forks.
 
 ## 2. Watch
 
+- Start every watch round by re-fetching the PR head
+  (`gh pr view <n> --repo "$repo" --json headRefOid,state`) and confirming
+  it still matches local HEAD — after a push, run/log lookups keyed to a
+  stale SHA diagnose the wrong run.
 - Checks: `gh pr checks <n> --repo "$repo" --watch` (fall back to polling
   `gh pr checks` if a long watch is impractical). Treat `skipping` jobs as
-  neutral, not failures.
+  neutral, not failures. Right after a push there is a window where
+  GitHub reports **no checks yet** — poll (bounded, a few minutes) until
+  check suites register on the new head before concluding anything; and
+  if the repo genuinely has no applicable CI, say so explicitly and judge
+  on reviews alone rather than treating the absence as pass or fail.
 - Reviews and inline comments:
   `gh pr view <n> --repo "$repo" --json reviews,reviewDecision,mergeStateStatus`
   plus `gh api --paginate repos/{owner}/{repo}/pulls/<n>/comments`
   (read-only; will prompt) — `--paginate` matters, or findings past the
   first page are silently never adjudicated. Thread resolution is not in
   the REST payload; check it with the paginated GraphQL `reviewThreads`
-  query (`pageInfo{hasNextPage endCursor}`, `nodes{isResolved}`).
+  query (`pageInfo{hasNextPage endCursor}`, `nodes{isResolved}`). Also
+  fetch the top-level PR conversation
+  (`gh api --paginate repos/{owner}/{repo}/issues/<n>/comments`) — material
+  findings get posted there too, not only as reviews or inline threads.
   Distinguish bot reviewers (Codex, CodeRabbit, …) from humans, but
   adjudicate both the same way.
 - Bot-reaction semantics where the Codex cloud connector is installed: read
@@ -94,9 +116,11 @@ noise behind the reviewer:
   a missing wiring step, a broken workflow file — fix it in this round.
 - Distinguish unfixable failures: external-service quotas, runner or
   infra outages, and permissions/secrets only the maintainer controls are
-  **not** yours to fix and must not consume rounds — one re-run for a
-  plainly transient infra failure is fine, then report it as external and
-  move on.
+  **not** yours to fix. One re-run for a plainly transient infra failure
+  is fine; beyond that, if such a failure is the **only** thing left, that
+  is stop condition 4 — stop and report, don't burn rounds on it. When it
+  coexists with fixable findings, fix those (the round counts for that
+  work) and report the external failure alongside.
 
 For every failing check and every review finding:
 
