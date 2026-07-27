@@ -271,6 +271,28 @@ echo "==> an unfilled <placeholder> under Verify does not count as a command"
 ```
 ')" = 1 ] || fail "the unfilled skeleton should still fail"
 
+echo "==> Issue Forms' '_No response_' under Verify does not count as a command"
+# An optional Issue Forms field left blank renders exactly this, under an h3
+# label — the shape every issue filed from .github/ISSUE_TEMPLATE arrives in.
+[ "$(run_rot '### Summary
+
+scripts/foo.sh:42 is stale.
+
+### Verify
+
+_No response_
+')" = 1 ] || fail "an unfilled Issue Forms Verify field should still fail"
+
+echo "==> other stand-ins for nothing do not count either"
+for filler in 'N/A' 'TBD' 'TODO' 'None'; do
+    [ "$(run_rot "scripts/foo.sh:42 is stale.
+
+## Verify
+
+${filler}
+")" = 1 ] || fail "'${filler}' under Verify should not count as a command"
+done
+
 echo "==> a Verify section followed immediately by another heading fails"
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
 

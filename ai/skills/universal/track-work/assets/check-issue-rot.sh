@@ -75,11 +75,16 @@ verify_content="$(printf '%s\n' "$draft" | awk '
     inv { print }
 ')"
 
-# Blank lines, bare code fences, and unfilled <placeholders> are not a command.
+# None of these is a command: blank lines, bare code fences, an unfilled
+# <placeholder>, or a stand-in for "nothing here". `_No response_` matters most —
+# it is exactly what GitHub Issue Forms render for an optional field left blank,
+# so without it the check would pass every issue filed from a form with the
+# Verify field skipped.
 substantive="$(printf '%s\n' "$verify_content" |
     grep -vE '^[[:space:]]*$' |
     grep -vE '^[[:space:]]*`{3,}' |
-    grep -vE '^[[:space:]]*<[^>]*>[[:space:]]*$' || true)"
+    grep -vE '^[[:space:]]*<[^>]*>[[:space:]]*$' |
+    grep -viE '^[[:space:]]*(_?no response_?|n/?a|tbd|todo|none)[[:space:]]*\.?$' || true)"
 
 if [ -n "$substantive" ]; then
     echo "check-issue-rot: perishable claims are covered by a Verify section — ok"
