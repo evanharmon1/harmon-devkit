@@ -804,6 +804,36 @@ CI GitHub App, reading the `ORG_PROJECT_ID` org variable (title fallback).
 **[copier]**. The project's built-in **"Auto-add to project"** workflow
 (**[manual]**, UI, no API) puts every issue/PR on the board.
 
+### 1.14 Issue & PR tracking hygiene
+
+Independent of `project_management` — these apply to any repo with an issue
+tracker. Enforced by the vendored **`track-work`** skill at authoring time and,
+where the repo ships it, by a **tracking guard** at PR time
+(`.github/workflows/tracking-guard.yml` → `task guard:closing-keywords` →
+`.claude/skills/track-work/assets/check-closing-keywords.sh`). The check lives
+inside the skill so it is vendored with it; a repo that syncs the `universal`
+category has it and only needs the task + workflow wired up. **[manual]** — the
+template does not yet render either, so audit for the skill, not the workflow.
+
+- **`Refs #N` is the default in a PR body**; a closing keyword (`Closes`/`Fixes`/
+  `Resolves`) only when the PR resolves the issue entirely. An issue with
+  unticked items must not be auto-closed — tick what the PR satisfies or use
+  `Refs`. Never close across repos.
+- **A bare `#123` means the current repo.** Cross-repo references are written
+  `owner/repo#123` (or a full URL) everywhere, including when verifying them.
+- **Re-read an issue before describing it**, including one read earlier in the
+  same session.
+- **Follow-up work is filed in the repo that owns the code, immediately**, with a
+  provenance line — never batched into a tracking issue or a follow-ups doc.
+- **Close reasons are factual**: `completed` means built; declined / duplicate /
+  obsolete / superseded are `not planned` with a comment naming the replacement.
+- **Perishable claims carry a `## Verify` command** (`Invariant` / `Current
+  violation (observed YYYY-MM-DD)` / `Verify`). Strongest form where a test
+  harness exists: a failing assertion instead of a description.
+- **Acceptance criteria are `- [ ]` task-list items** — the closing-keyword guard
+  reads them, so an issue without them silently loses the protection. Issue Forms
+  should seed an acceptance-criteria field and a `Verify` field.
+
 ---
 
 ## Part 2 — By project type

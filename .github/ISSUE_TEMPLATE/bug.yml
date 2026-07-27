@@ -21,6 +21,19 @@ body:
         3. See error
     validations:
       required: true
+  - type: textarea
+    id: verify
+    attributes:
+      label: Verify
+      description: >-
+        The single command that reproduces this, and what its output means — stronger than prose
+        steps, because a reader can re-check in seconds whether the bug is still live. A failing
+        test case is the strongest form.
+      placeholder: |
+        ```sh
+        task test:hygiene
+        ```
+        TEST FAIL on the shebang case means the bug is still live.
   - type: input
     id: environment
     attributes:

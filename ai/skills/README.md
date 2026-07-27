@@ -15,7 +15,8 @@ ai/skills/
 │   ├── start/SKILL.md       # /start — orient + name the session
 │   ├── preflight/SKILL.md   # /preflight — sanity-check + claim the issue
 │   ├── reflect/SKILL.md     # /reflect — end-of-session retro + status tables
-│   └── close/SKILL.md       # /close — wrap up + rename done-<name>
+│   ├── close/SKILL.md       # /close — wrap up + rename done-<name>
+│   └── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
 ├── backend/     # server / data / Convex
 ├── frontend/    # React / TanStack / shadcn / design
 ├── infra/       # Terraform / Cloudflare / CI
@@ -26,7 +27,12 @@ ai/skills/
 
 `universal/` ships the dev-workflow session suite — four user-invoked slash
 commands (`disable-model-invocation: true`) covering the phases of a working
-session.
+session — plus `track-work`, which is deliberately **not** slash-only. Tracking
+mistakes happen mid-flow, while a PR body is being written and nobody is typing
+a command, so it must be model-invocable to fire at all. It also bundles
+executable checks under `assets/` that harmon-devkit's own CI runs against every
+PR body (`tracking-guard.yml`), so the skill's rules and the enforced rules are
+the same code.
 
 | Category | For |
 | --- | --- |

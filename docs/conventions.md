@@ -24,6 +24,42 @@ it points here.
 - Run **`task verify`** before pushing; the pre-push hook runs secret scanning
   (and type/IaC checks where applicable).
 
+## Issues & tracked work
+
+The mechanics are enforced by the [`track-work`](../ai/skills/universal/track-work/)
+skill at authoring time and by the **tracking guard**
+(`tracking-guard.yml` → `guard:closing-keywords`, unit-tested by
+`task test:track-work`) at PR time.
+
+- **`Refs #N` is the default in a PR body.** It links without closing. Use a
+  closing keyword (`Closes`/`Fixes`/`Resolves`) only when the PR resolves the
+  issue **entirely** — GitHub obeys it at merge, and anything left unticked
+  survives only inside a closed issue, off every backlog.
+- **An issue with unticked items must not be auto-closed.** Tick the ones the PR
+  genuinely satisfies, or use `Refs`. The guard fails the PR either way until one
+  of those is true; `edited` re-runs it, so reworking the body clears the check.
+  Never bypass it.
+- **Never close across repos.** Write `Refs owner/repo#N`. A bare `#123` always
+  means *this* repo — a number that crosses a repo boundary carries its repo
+  everywhere it is written or verified.
+- **Re-read an issue before describing it** (`gh issue view <n> --json
+  state,title,body`), including one you read earlier in the same session — your
+  own merged PRs can resolve items in it.
+- **Follow-up work is filed in the repo that owns the code, immediately**, with a
+  provenance line back to where it was found. Not batched into a tracking issue,
+  not appended to a doc; both have failed here, in opposite directions.
+- **Close reasons are factual claims.** `completed` means it was built;
+  everything else — declined, duplicate, obsolete, **superseded** — is
+  `not planned`, with a comment naming what replaced it.
+- **Perishable claims carry a `## Verify` command.** An issue citing `file:line`
+  or "currently does X" needs a command that re-establishes whether it still
+  holds; without one a stale citation is indistinguishable from a live one.
+  Stronger still, where a test harness exists: ship a failing assertion instead
+  of a description — it cannot rot, and it closes when the test passes.
+- **Acceptance criteria are `- [ ]` task-list items.** An issue with no task list
+  gives the closing-keyword guard nothing to read, so the protection silently
+  does not apply.
+
 ## Task runner (Taskfile)
 
 - Tasks are named **`group:action`** — the group/domain comes first, the action
@@ -115,7 +151,7 @@ it points here.
   Fixes** (patch), `feat!` / `BREAKING CHANGE:` → major. The rest (`build`,
   `chore`, `ci`, `docs`, `perf`, `refactor`, `revert`, `style`, `test`) don't cut
   a release on their own — they ride along in the next one.
-- **On a squash-merge repo the PR title _is_ the release type.** GitHub sets the
+- **On a squash-merge repo the PR title *is* the release type.** GitHub sets the
   squash commit subject from the PR title, and release-please reads only that
   subject — so a `chore:`/`docs:`-titled PR merges with **no release** even when it
   carries releasable content. The **release-content guard**

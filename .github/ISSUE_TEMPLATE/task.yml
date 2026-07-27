@@ -18,6 +18,20 @@ body:
       value: |
         - [ ]
   - type: textarea
+    id: verify
+    attributes:
+      label: Verify
+      description: >-
+        A command that re-establishes whether the claims above still hold, and what its output
+        means. Add one whenever this issue cites a `file:line` or says "currently…" — those go
+        stale, and without a way to re-check, a reader months from now cannot tell a stale claim
+        from a live one. Strongest form: a test assertion that fails today.
+      placeholder: |
+        ```sh
+        task test:hygiene
+        ```
+        A failing assertion means the violation is still live.
+  - type: textarea
     id: context
     attributes:
       label: Additional context
