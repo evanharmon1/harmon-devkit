@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/session-end-archive.sh",
-            "timeout": 30
+            "timeout": 120
           }
         ]
       }

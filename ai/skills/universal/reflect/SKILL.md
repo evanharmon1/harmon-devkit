@@ -41,11 +41,16 @@ the current repo's numbering.
   and will prompt):
 
   ```sh
-  gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){
+  gh api graphql -f query='query($o:String!,$r:String!,$n:Int!,$c:String){
     repository(owner:$o,name:$r){pullRequest(number:$n){
-      reviewThreads(first:100){nodes{isResolved path}}}}}' \
+      reviewThreads(first:100,after:$c){
+        pageInfo{hasNextPage endCursor}
+        nodes{isResolved path}}}}}' \
     -F o=<owner> -F r=<repo> -F n=<pr>
   ```
+
+  If `hasNextPage` is true, repeat with `-F c=<endCursor>` until every page
+  is seen — a thread past the first 100 can still block the PR.
 
 - TODOs introduced during the session.
 - Anything promised in conversation but not done.

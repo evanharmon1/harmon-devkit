@@ -39,13 +39,19 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
         break
     fi
     # The owner may release the lock at any point in this iteration — a
-    # vanished lock/pid is a normal retry condition, not an error.
+    # vanished lock/pid is a normal retry condition, not an error. Reap a
+    # dead-owner or expired lock by atomic rename first: when two
+    # contenders race to steal, only one mv succeeds, so neither can
+    # delete a lock the other has already reacquired.
     owner="$(cat "$lock/pid")" || owner=""
     if [[ -n "$owner" ]] && ! kill -0 "$owner"; then
-        rm -rf "$lock" || true
+        { mv "$lock" "$lock.reap.$$" && rm -rf "$lock.reap.$$"; } || true
         continue
     fi
-    find "$lock" -maxdepth 0 -mmin +60 -exec rm -rf {} \; || true
+    if [[ -n "$(find "$lock" -maxdepth 0 -mmin +60)" ]]; then
+        { mv "$lock" "$lock.reap.$$" && rm -rf "$lock.reap.$$"; } || true
+        continue
+    fi
     sleep 1
 done
 [[ -n "$acquired" ]] || exit 0
@@ -54,11 +60,15 @@ trap 'rm -rf "$lock"' EXIT
 
 # A session can end more than once (exit, resume, exit again) under the same
 # session_id, growing the transcript each time. Reuse the existing archive
-# path and re-archive when the transcript is newer; skip only when the
-# existing archive is already up to date.
+# path and re-archive when the transcript changed; skip only when the
+# existing archive is already up to date. mtime alone can miss growth on
+# coarse-timestamp filesystems or after a clock rollback, so also compare
+# the source size against the archive's stored uncompressed size.
 existing="$(find "$archive_dir" -maxdepth 1 -name "*-${session_id}.jsonl.gz" | head -1)"
 if [[ -n "$existing" && ! "$transcript" -nt "$existing" ]]; then
-    exit 0
+    src_size="$(wc -c <"$transcript" | tr -d ' ')"
+    arch_size="$(gzip -l "$existing" | awk 'NR==2{print $2}')"
+    [[ "$src_size" != "$arch_size" ]] || exit 0
 fi
 
 # Sanitize the project slug for use in a filename (cwd may be "/" or contain

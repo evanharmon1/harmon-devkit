@@ -39,8 +39,10 @@ confirm with the user before proceeding.
   default repo can be a different repository, so every `gh` command in this
   skill (reads and writes alike) must pass `--repo "$repo"`. If step 1 pinned
   the target with a full issue URL, **that URL determines `$repo`**, and
-  `$remote` is whichever remote's URL points at it (if none does, say so and
-  confirm with the user). Otherwise:
+  `$remote` is whichever remote's URL points at it. If no remote matches,
+  that is a `blocker`: the fetch, default-branch, and history checks below
+  all need a matching checkout, so stop and ask the user to establish one
+  (or to explicitly accept claiming without live-code verification). Otherwise:
   `remote="$(git remote | grep -qx upstream && echo upstream || echo origin)"`
   and
   `repo="$(gh repo view "$(git remote get-url "$remote")" --json nameWithOwner -q .nameWithOwner)"`.
