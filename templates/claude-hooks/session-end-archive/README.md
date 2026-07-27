@@ -36,8 +36,10 @@ Design properties:
   under the same `session_id`, growing the transcript each time; the hook
   re-archives into the same file whenever the transcript is newer than the
   existing archive, and is a no-op otherwise.
-- **Atomic** — writes through a temp file in the archive dir, so a
-  half-written archive never satisfies the idempotency check.
+- **Atomic and serialized** — writes through a temp file in the archive dir,
+  so a half-written archive never satisfies the freshness check, and a
+  per-session lock keeps overlapping hook runs from clobbering each other
+  (a stale lock from a crashed run expires after an hour).
 - Dependencies: `jq`, `gzip`.
 
 ## Install

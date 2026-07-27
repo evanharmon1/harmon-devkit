@@ -25,11 +25,21 @@ cwd="$(jq -r '.cwd // empty' <<<"$input")"
 archive_dir="${CLAUDE_TRANSCRIPT_ARCHIVE_DIR:-$HOME/.claude/transcript-archive}"
 mkdir -p "$archive_dir"
 
+# Serialize per session so overlapping hook runs (rapid exit/resume/exit)
+# cannot clobber each other. A lock left by a crashed run expires after an
+# hour; until then concurrent runs simply skip.
+lock="$archive_dir/.lock-${session_id}"
+if ! mkdir "$lock"; then
+    find "$lock" -maxdepth 0 -mmin +60 -exec rmdir {} \;
+    exit 0
+fi
+trap 'rmdir "$lock"' EXIT
+
 # A session can end more than once (exit, resume, exit again) under the same
 # session_id, growing the transcript each time. Reuse the existing archive
 # path and re-archive when the transcript is newer; skip only when the
 # existing archive is already up to date.
-existing="$(find "$archive_dir" -maxdepth 1 -name "*-${session_id}.jsonl.gz" 2>/dev/null | head -1)"
+existing="$(find "$archive_dir" -maxdepth 1 -name "*-${session_id}.jsonl.gz" | head -1)"
 if [[ -n "$existing" && ! "$transcript" -nt "$existing" ]]; then
     exit 0
 fi
@@ -45,6 +55,6 @@ dest="${existing:-$archive_dir/$(date +%Y%m%d-%H%M%S)-${slug}-${session_id}.json
 # Write via a temp file in the same directory so the final mv is atomic and
 # a half-written archive never matches the idempotency glob.
 tmp="$(mktemp "$archive_dir/.archive.XXXXXX")"
-trap 'rm -f "$tmp"' EXIT
+trap 'rm -f "$tmp"; rmdir "$lock"' EXIT
 gzip -c "$transcript" >"$tmp"
 mv "$tmp" "$dest"

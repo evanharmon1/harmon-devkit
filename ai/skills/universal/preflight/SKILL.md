@@ -32,20 +32,27 @@ proceeding.
   otherwise `git status -sb` and `gh pr list --state open`. Caution: `task`
   executes the checked-out Taskfile; on an untrusted branch use the raw
   commands.
-- The issue itself: `gh issue view <n> --comments`.
+- The issue itself: `gh issue view <n> --comments`, plus its linked work —
+  `gh issue view <n> --json state,assignees,closedByPullRequestsReferences` —
+  so a PR already fixing the issue is caught even if no comment mentions it.
 - Each related PR:
   `gh pr view <pr> --json state,mergeStateStatus,reviewDecision,title,url`
   and `gh pr checks <pr>`.
 - Recent history against the **fetched** default branch (local `main` may be
-  stale, and the default branch is not always named `main`). Refresh the
-  cached default-branch ref first — `git remote set-head origin --auto` —
-  then `default="$(git symbolic-ref --short refs/remotes/origin/HEAD)"`,
+  stale, and the default branch is not always named `main`). Use the
+  authoritative remote — `upstream` if it exists (fork workflow), else
+  `origin` — refresh its cached default-branch ref first
+  (`git remote set-head <remote> --auto`), then
+  `default="$(git symbolic-ref --short refs/remotes/<remote>/HEAD)"`,
   `git log --oneline "$default"..HEAD`, and `git log --oneline -10 "$default"`
   for merges that may have changed the ground under the issue.
 
 ## 3. Sanity analysis
 
-Verify claims against the code — do not speculate. Look for:
+Verify claims against the code — do not speculate. First, the issue's own
+state: if it is **closed**, **assigned to someone else**, or has an open
+linked PR already implementing it, that is a `blocker` — do not claim without
+explicit confirmation from the user. Then look for:
 
 - **Stale references** — files, APIs, or docs the issue mentions that no
   longer match the live tree.

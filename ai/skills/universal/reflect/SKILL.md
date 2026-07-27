@@ -28,6 +28,10 @@ remembered status — re-verify each one live:
 - `gh pr view <n> --json state,isDraft,mergedAt,reviewDecision,statusCheckRollup,url,title`
 - `gh issue view <n> --json state,stateReason,assignees,url,title`
 
+Keep each reference's repository identity: a bare `#123` from another repo
+must be verified with `--repo owner/repo` (or by its full URL), never against
+the current repo's numbering.
+
 ## 2. Loose ends and next actions
 
 - Uncommitted or unpushed work: `git status -sb`, and
