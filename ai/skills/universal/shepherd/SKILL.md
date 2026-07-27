@@ -104,7 +104,10 @@ and compare against the local branch and HEAD. Requirements, all hard:
   the PR-level reactions explicitly —
   `gh api --paginate repos/"$repo"/issues/<n>/reactions` (they are not in
   the `gh pr view` fields, and without `--paginate` a busy PR can hide the
-  bot's latest reaction behind older pages). A bare 👍 from the bot is its clean pass; a lone 👀
+  bot's latest reaction behind older pages). Reactions are **not scoped to
+  a commit**: after a push, an earlier 👍 still sits on the PR, so a
+  verdict only counts for the current head if its `created_at` postdates
+  the head's push — otherwise wait for a fresh reaction/review cycle. A bare 👍 from the bot is its clean pass; a lone 👀
   that never resolves means the cloud run failed (re-trigger or note it —
   it is not a finding).
 - Wait for **both** signals before deciding anything: let every check
