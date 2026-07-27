@@ -20,10 +20,12 @@ PR is not done until CI/CD workflows pass *and* no material review findings
 remain. This cap is independent of any other loop caps used earlier in the
 dev flow.
 
-**Round accounting (read this first):** one round = one fix push. Count
-rounds explicitly (say "round 2 of 4" when you push) — the counter only
-ever increases, every wait below is bounded, and every path ends in one of
-the stop conditions in step 6, so the loop cannot run forever.
+**Round accounting (read this first):** one round = one fix push, **or**
+one no-change adjudication cycle (everything rejected/external — replies
+posted, nothing to fix — then back to watching). Count rounds explicitly
+(say "round 2 of 4") — the counter only ever increases, every wait below is
+bounded, and every path ends in one of the stop conditions in step 6, so
+the loop cannot run forever.
 
 Only write-incapable reads are pre-approved (`git log`/`diff`/`show` accept
 `--output=<file>`, `git fetch` accepts `--upload-pack=<cmd>`, and
@@ -38,20 +40,33 @@ repository; otherwise derive it from the branch's remote. Pass
 `--repo "$repo"` on every `gh` command — never rely on `gh`'s default repo.
 If the target is ambiguous, ask the user.
 
+Then verify the checkout **is** the PR before touching anything: fetch
+`gh pr view <n> --repo "$repo" --json headRepositoryOwner,headRepository,headRefName,headRefOid`
+and compare against the local branch and HEAD. If the working tree is on a
+different branch, repo, or fork than the PR head, stop and switch to (or
+ask for) the matching clean checkout first — inspecting, gating, or pushing
+from an unrelated checkout is how the wrong code gets "fixed".
+
 ## 2. Watch
 
 - Checks: `gh pr checks <n> --repo "$repo" --watch` (fall back to polling
   `gh pr checks` if a long watch is impractical). Treat `skipping` jobs as
   neutral, not failures.
 - Reviews and inline comments:
-  `gh pr view <n> --repo "$repo" --json reviews,comments` plus
-  `gh api repos/{owner}/{repo}/pulls/<n>/comments` (read-only; will prompt)
-  for inline threads. Distinguish bot reviewers (Codex, CodeRabbit, …) from
-  humans, but adjudicate both the same way.
-- Bot-reaction semantics where the Codex cloud connector is installed: a
-  bare 👍 reaction from the bot is its clean pass; a lone 👀 that never
-  resolves means the cloud run failed (re-trigger or note it — it is not a
-  finding).
+  `gh pr view <n> --repo "$repo" --json reviews,reviewDecision,mergeStateStatus`
+  plus `gh api --paginate repos/{owner}/{repo}/pulls/<n>/comments`
+  (read-only; will prompt) — `--paginate` matters, or findings past the
+  first page are silently never adjudicated. Thread resolution is not in
+  the REST payload; check it with the paginated GraphQL `reviewThreads`
+  query (`pageInfo{hasNextPage endCursor}`, `nodes{isResolved}`).
+  Distinguish bot reviewers (Codex, CodeRabbit, …) from humans, but
+  adjudicate both the same way.
+- Bot-reaction semantics where the Codex cloud connector is installed: read
+  the PR-level reactions explicitly —
+  `gh api repos/{owner}/{repo}/issues/<n>/reactions` (they are not in the
+  `gh pr view` fields). A bare 👍 from the bot is its clean pass; a lone 👀
+  that never resolves means the cloud run failed (re-trigger or note it —
+  it is not a finding).
 - Wait for **both** signals before deciding anything: let every check
   conclude (bounded — if a check hangs past ~30 minutes, treat it as a
   failure to diagnose, not something to wait on forever), and give the
@@ -68,10 +83,14 @@ If the target is ambiguous, ask the user.
 Failing CI/CD workflows are findings too — first-class ones, not background
 noise behind the reviewer:
 
-- Diagnose every failed workflow from its logs
-  (`gh run view <run-id> --repo "$repo" --log-failed`) and reproduce
-  locally where the repo mirrors CI (here, `task ci` runs the same
-  targets). If there is a reasonable fix — a real lint/test/build issue,
+- Diagnose every failed workflow from its logs. Resolve the run ID
+  explicitly first —
+  `gh run list --repo "$repo" --commit <headRefOid> --json databaseId,name,conclusion`
+  (or the run URL from `gh pr checks`) — then
+  `gh run view <run-id> --repo "$repo" --log-failed`; without an explicit
+  ID, `gh run view` opens an interactive selector and may show an
+  unrelated run. Reproduce locally where the repo mirrors CI (here,
+  `task ci` runs the same targets). If there is a reasonable fix — a real lint/test/build issue,
   a missing wiring step, a broken workflow file — fix it in this round.
 - Distinguish unfixable failures: external-service quotas, runner or
   infra outages, and permissions/secrets only the maintainer controls are
@@ -123,8 +142,11 @@ comment is optional in addition, never a substitute for per-thread replies.
 Every shepherd session ends at exactly one of these — there is no path that
 loops indefinitely:
 
-1. **Green** — all workflows pass and no material findings remain: report
-   and stop.
+1. **Green** — all workflows pass, `reviewDecision` is not
+   `CHANGES_REQUESTED`, and no material findings remain. Report the state
+   honestly: unresolved threads you answered with rejections stay
+   unresolved until the maintainer resolves them, so list them rather than
+   claiming a clean slate. Then stop.
 2. **Cap reached** — checks still fail or material findings remain after
    4 rounds: stop.
 3. **No progress** — the same failure signature or finding survives two
