@@ -75,6 +75,12 @@ ls /tmp/transcript-archive-test
 Run it twice — the second run should be a no-op. Piping `{}` (no
 `transcript_path`) should exit 0 silently.
 
+The full offline regression suite lives at `scripts/test-archive-hook.sh`
+(`task test:archive-hook`, part of `task test`) and covers freshness,
+lock contention/stealing, and silent-failure behavior. For tests,
+`SESSION_END_ARCHIVE_LOCK_RETRIES` / `SESSION_END_ARCHIVE_LOCK_SLEEP`
+shrink the contention wait.
+
 ## Restore
 
 Transcripts are plain JSONL; to make an archived session resumable again,

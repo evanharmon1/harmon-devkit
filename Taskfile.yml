@@ -200,6 +200,7 @@ tasks:
       - test:hooks
       - test:skills
       - test:hygiene
+      - test:archive-hook
 
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)
@@ -250,6 +251,11 @@ tasks:
     desc: Unit-test lint-hygiene's exec-bit check on shebanged files
     cmds:
       - ./scripts/test-hygiene.sh
+
+  test:archive-hook:
+    desc: Offline regression tests for the SessionEnd transcript-archive hook template
+    cmds:
+      - ./scripts/test-archive-hook.sh
 
   # ── Second-model review (Codex) ───────────────────────────────
   # Optional second AI model (the OpenAI Codex CLI) reviewing the current

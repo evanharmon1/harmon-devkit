@@ -35,9 +35,13 @@ mkdir -p "$archive_dir"
 # rather than dropping the run — this invocation may be the last chance to
 # archive, e.g. when the transcript grew after a slow contender's gzip
 # already read it. An hour-old lock expires as the recycled-PID backstop.
+# Retry count/interval are overridable so the offline regression test can
+# exercise contention without real 60s waits.
+lock_retries="${SESSION_END_ARCHIVE_LOCK_RETRIES:-60}"
+lock_sleep="${SESSION_END_ARCHIVE_LOCK_SLEEP:-1}"
 mylock="$archive_dir/.lock-${session_id}.$$"
 acquired=""
-for _ in $(seq 60); do
+for _ in $(seq "$lock_retries"); do
     mkdir "$mylock" || exit 0
     contender=""
     for other in "$archive_dir/.lock-${session_id}."*; do
@@ -56,7 +60,7 @@ for _ in $(seq 60); do
         break
     fi
     rm -rf "$mylock" || true
-    sleep 1
+    sleep "$lock_sleep"
     mylock="$archive_dir/.lock-${session_id}.$$" # recreate next round
 done
 [[ -n "$acquired" ]] || {

@@ -6,7 +6,7 @@ description: >-
   blockers, then claim the issue (assign, label, comment). Invoke as
   /preflight [issue #].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git fetch:*), Bash(git status:*), Bash(git log:*), Bash(git remote), Bash(git remote get-url:*), Bash(git remote set-head:*), Bash(git branch --show-current), Bash(git symbolic-ref --short:*), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
+allowed-tools: Read, Glob, Grep, Bash(git fetch:*), Bash(git status:*), Bash(git log:*), Bash(git diff:*), Bash(git show:*), Bash(git rev-list:*), Bash(git remote), Bash(git remote get-url:*), Bash(git remote set-head:*), Bash(git branch --show-current), Bash(git symbolic-ref --short:*), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
 ---
 
 # Preflight
@@ -71,6 +71,13 @@ confirm with the user before proceeding.
   `default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD")"`,
   `git log --oneline "$default"..HEAD`, and `git log --oneline -10 "$default"`
   for merges that may have changed the ground under the issue.
+- The working tree can be **behind** the fetched default branch, and
+  `Read`/`Grep` inspect the working tree — so if
+  `git rev-list --count HEAD.."$default"` is nonzero, do not clear
+  stale-reference findings from the working tree alone: inspect the fetched
+  content directly (`git diff HEAD..."$default" --stat`,
+  `git show "$default":<path>`) or ask the user to update the checkout
+  first.
 
 ## 3. Sanity analysis
 
