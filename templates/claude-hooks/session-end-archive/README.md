@@ -74,11 +74,16 @@ Run it twice — the second run should be a no-op. Piping `{}` (no
 ## Restore
 
 Transcripts are plain JSONL; to make an archived session resumable again,
-gunzip it back to its original name under the project's transcript dir:
+restore it to its original name under the project's transcript dir. Go
+through a temp file and `mv -n` so a mistyped or corrupt archive can never
+truncate a live transcript — if the destination already exists, the restore
+is refused:
 
 ```sh
-gunzip -c <timestamp>-<slug>-<session-id>.jsonl.gz \
-    > ~/.claude/projects/<project-slug>/<session-id>.jsonl
+tmp="$(mktemp)"
+gunzip -c <timestamp>-<slug>-<session-id>.jsonl.gz > "$tmp" &&
+    mv -n "$tmp" ~/.claude/projects/<project-slug>/<session-id>.jsonl
+rm -f "$tmp"   # no-op if the mv happened; cleans up if it was refused
 ```
 
 The JSONL format is internal to Claude Code and changes between versions —
