@@ -26,13 +26,20 @@ archive_dir="${CLAUDE_TRANSCRIPT_ARCHIVE_DIR:-$HOME/.claude/transcript-archive}"
 mkdir -p "$archive_dir"
 
 # Serialize per session so overlapping hook runs (rapid exit/resume/exit)
-# cannot clobber each other. A lock left by a crashed run expires after an
-# hour; until then concurrent runs simply skip.
+# cannot clobber each other. Retry briefly rather than dropping the run —
+# this invocation may be the last chance to archive. A lock left by a
+# crashed run expires after an hour.
 lock="$archive_dir/.lock-${session_id}"
-if ! mkdir "$lock"; then
+acquired=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if mkdir "$lock"; then
+        acquired=1
+        break
+    fi
     find "$lock" -maxdepth 0 -mmin +60 -exec rmdir {} \;
-    exit 0
-fi
+    sleep 1
+done
+[[ -n "$acquired" ]] || exit 0
 trap 'rmdir "$lock"' EXIT
 
 # A session can end more than once (exit, resume, exit again) under the same

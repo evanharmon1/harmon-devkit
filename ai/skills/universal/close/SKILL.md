@@ -5,7 +5,7 @@ description: >-
   anything left dangling, and emit the copy-pasteable
   /rename done-<session-name> command for the user. Invoke as /close.
 disable-model-invocation: true
-allowed-tools: Read, Bash, Glob, Grep
+allowed-tools: Read, Glob, Grep, Bash(git:*), Bash(gh:*)
 ---
 
 # Close Session

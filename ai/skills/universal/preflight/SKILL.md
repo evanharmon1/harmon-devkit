@@ -6,7 +6,7 @@ description: >-
   blockers, then claim the issue (assign, label, comment). Invoke as
   /preflight [issue #].
 disable-model-invocation: true
-allowed-tools: Read, Bash, Glob, Grep
+allowed-tools: Read, Glob, Grep, Bash(git:*), Bash(gh:*), Bash(task:*)
 ---
 
 # Preflight
@@ -26,7 +26,9 @@ proceeding.
 
 ## 2. Refresh state (read-only)
 
-- `git fetch --prune`
+- Pick the authoritative remote and fetch **it**:
+  `remote="$(git remote | grep -qx upstream && echo upstream || echo origin)"`,
+  then `git fetch --prune "$remote"`.
 - Repo status: `task status:git` and `task status:gh` if **both** targets
   exist (probe each with `task --list-all 2>/dev/null | grep -q '<target>'`);
   otherwise `git status -sb` and `gh pr list --state open`. Caution: `task`
@@ -39,11 +41,10 @@ proceeding.
   `gh pr view <pr> --json state,mergeStateStatus,reviewDecision,title,url`
   and `gh pr checks <pr>`.
 - Recent history against the **fetched** default branch (local `main` may be
-  stale, and the default branch is not always named `main`). Use the
-  authoritative remote — `upstream` if it exists (fork workflow), else
-  `origin` — refresh its cached default-branch ref first
-  (`git remote set-head <remote> --auto`), then
-  `default="$(git symbolic-ref --short refs/remotes/<remote>/HEAD)"`,
+  stale, and the default branch is not always named `main`). Using the
+  `$remote` fetched above, refresh its cached default-branch ref
+  (`git remote set-head "$remote" --auto`), then
+  `default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD")"`,
   `git log --oneline "$default"..HEAD`, and `git log --oneline -10 "$default"`
   for merges that may have changed the ground under the issue.
 
@@ -87,6 +88,10 @@ user to run instead of failing the flow:
   Claiming — starting implementation on branch <branch> (session <name>).
   EOF
   ```
+
+After claiming, re-fetch the assignees (`gh issue view <n> --json assignees`):
+`--add-assignee` accumulates rather than arbitrates, so if someone else
+claimed concurrently, surface it and coordinate before implementing.
 
 ## 6. Hand off
 
