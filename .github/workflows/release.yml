@@ -47,3 +47,42 @@ jobs:
         id: release
         with:
           token: ${{ steps.app-token.outputs.token }}
+      # ── Tell harmon-init a stable release exists ──────────────────
+      # harmon-init vendors this repo's shared agent skills at a pinned tag. It
+      # listens for this dispatch and opens/updates ONE pin-and-sync PR — it
+      # never merges anything, and neither does this. Only fires when merging
+      # the release PR actually cut a tag, not on every push to main.
+      #
+      # A SEPARATE token from release-please's above: scoped to harmon-init
+      # instead of this repo, and holding only the contents:write that
+      # POST /repos/{owner}/{repo}/dispatches requires. Minted after the release
+      # so a run that cuts no tag never mints it at all.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: dispatch-token
+        if: steps.release.outputs.release_created
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: harmon-init
+          permission-contents: write
+      # release-please needs no checkout, so this job had none — but the helper
+      # below is a file in this repo. Checked out only on the release path, and
+      # AFTER the release step, so the ordinary no-release run is unchanged.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        if: steps.release.outputs.release_created
+        with:
+          persist-credentials: false
+      - name: Notify harmon-init of the release
+        if: steps.release.outputs.release_created
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          # release-please's own output — not user input — but passed through
+          # the environment rather than interpolated into the run script, and
+          # re-validated by the helper and again by the receiver.
+          TAG: ${{ steps.release.outputs.tag_name }}
+        # Fails the job on a failed dispatch: harmon-init's daily reconciliation
+        # is the eventual fallback, but a silent miss would make that slow path
+        # look like the normal one. The release itself is already cut by here,
+        # so a red job means "re-send the dispatch", not "the release broke".
+        run: ./scripts/notify-devkit-release.sh "$TAG"
