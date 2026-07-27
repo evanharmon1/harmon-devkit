@@ -59,10 +59,15 @@ and compare against the local branch and HEAD. Requirements, all hard:
   running `task verify`/`task ci` executes contributor-controlled code on
   your machine — and not just the gate toolchain: an *unchanged* Taskfile
   still runs tests that import whatever application code the PR modified.
-  Inspecting the diff is necessary but never sufficient. On an untrusted
-  fork, run local gates only inside a sandbox/container; if no isolation
-  is available, skip the local gate, rely on the remote CI run for
-  judgment, and say so.
+  Inspecting the diff is necessary but never sufficient. And gates are not
+  the only vector: `git commit` and `git push` fire repo-configured hooks
+  (here, lefthook delegates them to the checked-out Taskfile), so *any*
+  local mutation of the checkout can execute contributor code — and
+  bypassing hooks is forbidden anyway. On an untrusted fork, do **all**
+  local work — gates, commits, pushes — inside a sandbox/container; if no
+  isolation is available, don't work on the fork checkout at all: stop,
+  report what the remote CI shows, and hand the fix decision to the
+  maintainer.
 
 ## 2. Watch
 
