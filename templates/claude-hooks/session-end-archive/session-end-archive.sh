@@ -36,7 +36,9 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
         acquired=1
         break
     fi
-    find "$lock" -maxdepth 0 -mmin +60 -exec rmdir {} \;
+    # The owner may release the lock between mkdir and find — a vanished
+    # lock is a normal retry condition, not an error.
+    find "$lock" -maxdepth 0 -mmin +60 -exec rmdir {} \; || true
     sleep 1
 done
 [[ -n "$acquired" ]] || exit 0
@@ -63,5 +65,11 @@ dest="${existing:-$archive_dir/$(date +%Y%m%d-%H%M%S)-${slug}-${session_id}.json
 # a half-written archive never matches the idempotency glob.
 tmp="$(mktemp "$archive_dir/.archive.XXXXXX")"
 trap 'rm -f "$tmp"; rmdir "$lock"' EXIT
+
+# Snapshot the transcript's pre-compression mtime on the lock dir and stamp
+# it onto the finished archive: if the transcript grows while gzip runs, it
+# ends up newer than the archive and the next hook run re-archives it.
+touch -r "$transcript" "$lock"
 gzip -c "$transcript" >"$tmp"
 mv "$tmp" "$dest"
+touch -r "$lock" "$dest"

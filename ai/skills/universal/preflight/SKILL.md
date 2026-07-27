@@ -72,9 +72,14 @@ the issue, and ask the user how to proceed.
 
 ## 5. Claim the issue
 
-The only writes this skill makes. Show the commands before running them, and
-if `gh` is unauthenticated or lacks write access, report the commands for the
-user to run instead of failing the flow:
+The only writes this skill makes. Bind them to the repository you actually
+inspected — in a multi-remote checkout `gh`'s default repo can differ from
+`$remote` — by deriving
+`repo="$(gh repo view "$(git remote get-url "$remote")" --json nameWithOwner -q .nameWithOwner)"`
+and passing `--repo "$repo"` on every `gh issue`/`gh label` command in this
+skill. Show the commands before running them, and if `gh` is unauthenticated
+or lacks write access, report the commands for the user to run instead of
+failing the flow:
 
 - `gh issue edit <n> --add-assignee @me`
 - Label only if the label exists (`--limit` matters — the default returns
