@@ -76,19 +76,22 @@ and compare against the local branch and HEAD. Requirements, all hard:
   on reviews alone rather than treating the absence as pass or fail.
 - Reviews and inline comments:
   `gh pr view <n> --repo "$repo" --json reviews,reviewDecision,mergeStateStatus`
-  plus `gh api --paginate repos/{owner}/{repo}/pulls/<n>/comments`
-  (read-only; will prompt) — `--paginate` matters, or findings past the
-  first page are silently never adjudicated. Thread resolution is not in
+  plus `gh api --paginate repos/"$repo"/pulls/<n>/comments`
+  (read-only; will prompt). `gh api` has **no** `--repo` flag — a
+  `{owner}/{repo}` placeholder resolves from the checkout/`GH_REPO`, not
+  from your binding — so `$repo` must appear literally in every endpoint
+  path, as here. `--paginate` matters too, or findings past the first page
+  are silently never adjudicated. Thread resolution is not in
   the REST payload; check it with the paginated GraphQL `reviewThreads`
   query (`pageInfo{hasNextPage endCursor}`, `nodes{isResolved}`). Also
   fetch the top-level PR conversation
-  (`gh api --paginate repos/{owner}/{repo}/issues/<n>/comments`) — material
+  (`gh api --paginate repos/"$repo"/issues/<n>/comments`) — material
   findings get posted there too, not only as reviews or inline threads.
   Distinguish bot reviewers (Codex, CodeRabbit, …) from humans, but
   adjudicate both the same way.
 - Bot-reaction semantics where the Codex cloud connector is installed: read
   the PR-level reactions explicitly —
-  `gh api repos/{owner}/{repo}/issues/<n>/reactions` (they are not in the
+  `gh api repos/"$repo"/issues/<n>/reactions` (they are not in the
   `gh pr view` fields). A bare 👍 from the bot is its clean pass; a lone 👀
   that never resolves means the cloud run failed (re-trigger or note it —
   it is not a finding).
@@ -167,7 +170,7 @@ review content and routinely contains apostrophes, so it must reach the
 shell as data, never as command text:
 
 ```sh
-gh api repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies \
+gh api repos/"$repo"/pulls/<n>/comments/<comment-id>/replies \
     -F body=@- <<'EOF'
 …reply text…
 EOF
