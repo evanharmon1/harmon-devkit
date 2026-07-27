@@ -189,10 +189,13 @@ fetch_body() {
 }
 
 # unchecked_boxes BODY — count GitHub task-list items that are still open.
-# GFM renders a checkbox in ordered lists too (`1. [ ] item`), not just after a
-# `-`/`*`/`+`, so both forms count.
+# Matches every spelling GFM actually renders as a checkbox: unordered (`-`, `*`,
+# `+`) and ordered (`1.`, `1)`) markers, any indentation, and any run of
+# whitespace between the marker and the box — `-  [ ]` renders the same as
+# `- [ ]`, and a formatter can introduce that on its own.
+UNCHECKED_RE='^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+\[[[:space:]]\]'
 unchecked_boxes() {
-    printf '%s\n' "$1" | grep -cE '^[[:space:]]*([-*+]|[0-9]+[.)]) \[ \]' || true
+    printf '%s\n' "$1" | grep -cE "$UNCHECKED_RE" || true
 }
 
 violations=""

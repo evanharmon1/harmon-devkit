@@ -31,9 +31,10 @@ default; a closing keyword is the exception you justify.
 ## The check
 
 ```sh
+git log --format=%B <base>..HEAD >/tmp/commits.txt
 PR_TITLE="<title>" PR_BODY="<body>" \
   <skill-dir>/assets/check-closing-keywords.sh --repo <owner/repo> \
-    --title-env PR_TITLE --body-env PR_BODY
+    --title-env PR_TITLE --body-env PR_BODY --commits-file /tmp/commits.txt
 ```
 
 Exit 0 safe, 1 violation, 2 could not verify — and *could not verify* is not
@@ -47,7 +48,7 @@ events, not issues, so that path needs the check re-run by hand.
 By hand:
 
 ```sh
-gh issue view <n> --repo <owner/repo> --json body --jq '.body' | grep -nE '^[[:space:]]*([-*+]|[0-9]+[.)]) \[ \]'
+gh issue view <n> --repo <owner/repo> --json body --jq '.body' | grep -nE '^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+\[[[:space:]]\]'
 ```
 
 Any output means the issue holds work this PR is not finishing.

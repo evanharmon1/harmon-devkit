@@ -83,7 +83,7 @@ PR_TITLE="<title>" PR_BODY="<body>" \
 not verify; treat as unsafe, not as clean. Without the script:
 
 ```sh
-gh issue view <n> --repo <owner/repo> --json body --jq '.body' | grep -nE '^[[:space:]]*([-*+]|[0-9]+[.)]) \[ \]'
+gh issue view <n> --repo <owner/repo> --json body --jq '.body' | grep -nE '^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+\[[[:space:]]\]'
 ```
 
 Any output means the issue holds work this PR is not finishing.
@@ -141,7 +141,7 @@ gh issue close <n> --repo <owner/repo> --reason "not planned" --comment "Superse
   finds the issue later.
 
 **Fail condition:** closing with `completed` while `gh issue view <n> --json
-body` still shows `- [ ]`.
+body` still shows an unticked item (`- [ ]`, or the ordered `1. [ ]` form).
 
 ## 5. Writing an issue that will not rot
 

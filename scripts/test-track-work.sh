@@ -71,6 +71,20 @@ printf '## Acceptance\n\n1. [x] done\n2. [ ] not done\n' >"$fixtures/evanharmon1
 printf '## Acceptance\n\n1) [ ] not done\n' >"$fixtures/evanharmon1_harmon-devkit__10.md"
 [ "$(run_closing 'Closes #10')" = 1 ] || fail "ordered '1) [ ]' items should be counted"
 
+echo "==> task-list spacing variants all count as unchecked"
+# GFM renders every one of these as a checkbox; a formatter can introduce the
+# wider gaps on its own, and each would otherwise slip past the guard.
+i=11
+for item in '-  [ ] two spaces' '*   [ ] three spaces' '1.  [ ] ordered, two spaces' '  - [ ] indented'; do
+    printf '## Acceptance\n\n%s\n' "$item" >"$fixtures/evanharmon1_harmon-devkit__${i}.md"
+    [ "$(run_closing "Closes #${i}")" = 1 ] || fail "'$item' should count as an unchecked item"
+    i=$((i + 1))
+done
+
+echo "==> a checked box is not counted, whatever the spacing"
+printf '## Acceptance\n\n-  [x] done\n1.  [X] also done\n' >"$fixtures/evanharmon1_harmon-devkit__20.md"
+[ "$(run_closing 'Closes #20')" = 0 ] || fail "checked boxes should not block a close"
+
 echo "==> every closing keyword and inflection is recognised"
 for kw in close closes closed fix fixes fixed resolve resolves resolved; do
     [ "$(run_closing "${kw} #5")" = 1 ] || fail "'${kw}' should be treated as a closing keyword"
