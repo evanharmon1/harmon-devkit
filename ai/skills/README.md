@@ -12,6 +12,10 @@ Skills are grouped into **category subdirectories**:
 ```text
 ai/skills/
 ├── universal/   # every repo gets these
+│   ├── start/SKILL.md       # /start — orient + name the session
+│   ├── preflight/SKILL.md   # /preflight — sanity-check + claim the issue
+│   ├── reflect/SKILL.md     # /reflect — end-of-session retro + status tables
+│   └── close/SKILL.md       # /close — wrap up + rename done-<name>
 ├── backend/     # server / data / Convex
 ├── frontend/    # React / TanStack / shadcn / design
 ├── infra/       # Terraform / Cloudflare / CI
@@ -19,6 +23,10 @@ ai/skills/
 └── repo/        # repo standardization / conventions
     └── standardize-repo/SKILL.md
 ```
+
+`universal/` ships the dev-workflow session suite — four user-invoked slash
+commands (`disable-model-invocation: true`) covering the phases of a working
+session.
 
 | Category | For |
 | --- | --- |

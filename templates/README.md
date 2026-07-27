@@ -14,6 +14,7 @@ The full template index lives in the [root README](../README.md#template-index).
 | [`serverlessFunctionTemplates/`](./serverlessFunctionTemplates/) | Serverless function handlers for AWS Lambda, Google Cloud Functions, and Netlify Functions |
 | [`webTemplates/`](./webTemplates/) | Web/HTML snippets |
 | [`skills-sync/`](./skills-sync/) | Pinned, pull-based vendoring of shared agent skills from harmon-devkit into a consumer repo (manifest + `task sync:skills` + drift check) |
+| [`claude-hooks/`](./claude-hooks/) | Claude Code hook boilerplates — SessionEnd transcript archiving (script + settings snippet) |
 
 ## Conventions
 
