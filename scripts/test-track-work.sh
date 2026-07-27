@@ -81,6 +81,14 @@ for item in '-  [ ] two spaces' '*   [ ] three spaces' '1.  [ ] ordered, two spa
     i=$((i + 1))
 done
 
+echo "==> blockquoted task-list items are counted"
+# A checklist carried over from another issue arrives as `> - [ ] …` and holds
+# exactly the same unfinished work.
+printf '## Carried over\n\n> - [ ] still unfinished\n' >"$fixtures/evanharmon1_harmon-devkit__21.md"
+[ "$(run_closing 'Closes #21')" = 1 ] || fail "a blockquoted unchecked item should be counted"
+printf '## Nested\n\n> > 1. [ ] still unfinished\n' >"$fixtures/evanharmon1_harmon-devkit__22.md"
+[ "$(run_closing 'Closes #22')" = 1 ] || fail "a nested blockquoted item should be counted"
+
 echo "==> a checked box is not counted, whatever the spacing"
 printf '## Acceptance\n\n-  [x] done\n1.  [X] also done\n' >"$fixtures/evanharmon1_harmon-devkit__20.md"
 [ "$(run_closing 'Closes #20')" = 0 ] || fail "checked boxes should not block a close"
@@ -253,6 +261,18 @@ for benign in 'The build runs at 10:30 every day.' 'Serve it on localhost:3000 t
     [ "$(run_rot "$benign")" = 0 ] || fail "'$benign' should not be flagged"
 done
 
+echo "==> a host or IP with a port is not a file citation"
+# `.com:443` and `1.1:8080` are indistinguishable from `file.ext:line` by shape,
+# so a citation now needs a real file cue.
+for host in 'See https://example.com:443 for docs.' 'Reach it at 192.168.1.1:8080 now.' 'Check example.com:443 please.' 'The registry is ghcr.io:443 for pulls.'; do
+    [ "$(run_rot "$host")" = 0 ] || fail "'$host' should not be flagged as a citation"
+done
+
+echo "==> real citations still register after the host-and-port fix"
+for cite in 'scripts/foo.sh:42 is wrong.' 'The value in config.yml:8 is stale.' 'See template/x.yml.jinja:119 for it.' 'a/b/weird.xyz:3 is off.'; do
+    [ "$(run_rot "$cite")" = 1 ] || fail "'$cite' should still be flagged"
+done
+
 echo "==> a temporal claim with no Verify section fails"
 for phrase in 'Currently it exits 0.' 'Today it exits 0.' 'As of the last run it exits 0.' 'Right now it exits 0.'; do
     [ "$(run_rot "$phrase")" = 1 ] || fail "'$phrase' should be flagged as perishable"
@@ -324,6 +344,26 @@ echo "==> prose under Verify counts — it need not be a code fence"
 
 Run `task test:hygiene`; a TEST FAIL means it is still live.
 ')" = 0 ] || fail "prose under Verify should count"
+
+echo "==> a heading that merely starts with Verify is not a Verify section"
+for heading in '## Verify later' '## Verify-notes' '## Verifying the fix'; do
+    [ "$(run_rot "scripts/foo.sh:42 is stale.
+
+${heading}
+
+some prose that is not a command
+")" = 1 ] || fail "'${heading}' should not satisfy the Verify requirement"
+done
+
+echo "==> 'Verification' and closing hashes are accepted spellings"
+for heading in '## Verification' '## Verify ##' '##   Verify'; do
+    [ "$(run_rot "scripts/foo.sh:42 is stale.
+
+${heading}
+
+task test:hygiene
+")" = 0 ] || fail "'${heading}' should count as a Verify section"
+done
 
 echo "==> a Verify section at any heading level counts"
 [ "$(run_rot 'scripts/foo.sh:42 is wrong.

@@ -50,12 +50,17 @@ fi
 # was written. The leading group is a portable word boundary (BSD and GNU grep
 # disagree on \b). Fenced code blocks are scanned too: a file:line inside one is
 # just as perishable as a file:line in prose.
-# Two citation shapes: a dotted filename (scripts/foo.sh:42) and the common
-# extensionless ones (Dockerfile:12), which the dotted form would miss. Named
-# explicitly rather than allowing any bare word before ":<digits>", which would
-# swallow times, ports, and version strings.
+#
+# A citation needs a file cue, not just "dotted thing, colon, digits" — by shape
+# alone `example.com:443` and `192.168.1.1:8080` are indistinguishable from
+# `foo.sh:42`, and treating them as citations demanded a Verify section for a URL.
+# So: a path with a directory separator, OR a bare filename whose extension is a
+# known code/config one, OR a known extensionless filename.
+CODE_EXT='(sh|bash|zsh|py|rb|go|rs|js|ts|jsx|tsx|mjs|cjs|java|c|h|cpp|hpp|cs|php|pl|lua|swift|kt|scala|ex|exs|yml|yaml|json|jsonc|toml|ini|cfg|conf|tf|tfvars|md|txt|sql|html|css|scss|xml|jinja|tmpl|gradle|properties|env|lock|mk)'
 BARE_FILES='(Dockerfile|Containerfile|Makefile|Taskfile|Justfile|Procfile|Gemfile|Rakefile|Brewfile|Vagrantfile|Jenkinsfile|CODEOWNERS|LICENSE|NOTICE)'
-CITATION="([A-Za-z0-9_./-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}:[0-9]+|(^|[^A-Za-z0-9_-])${BARE_FILES}:[0-9]+)"
+CITATION="([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}:[0-9]+\
+|(^|[^A-Za-z0-9_./-])[A-Za-z0-9_.-]*[A-Za-z0-9_-]\\.${CODE_EXT}:[0-9]+\
+|(^|[^A-Za-z0-9_-])${BARE_FILES}:[0-9]+)"
 TEMPORAL='(currently|today|as of|right now|at present|at the moment)'
 perishable="$(printf '%s\n' "$draft" |
     grep -noiE "(${CITATION}|(^|[^A-Za-z0-9_-])${TEMPORAL})" || true)"
@@ -70,7 +75,7 @@ fi
 # the entire point, and an empty one is easy to reach from both the skeleton below
 # and the optional Verify field on the issue forms.
 verify_content="$(printf '%s\n' "$draft" | awk '
-    tolower($0) ~ /^#+[[:space:]]*verify/ { inv = 1; next }
+    tolower($0) ~ /^#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$/ { inv = 1; next }
     inv && /^#+[[:space:]]/ { inv = 0 }
     inv { print }
 ')"
@@ -91,7 +96,7 @@ if [ -n "$substantive" ]; then
     exit 0
 fi
 
-if [ -n "$verify_content" ] || printf '%s\n' "$draft" | grep -qiE '^#+[[:space:]]*Verify'; then
+if [ -n "$verify_content" ] || printf '%s\n' "$draft" | grep -qiE '^#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$'; then
     cat >&2 <<EOF
 check-issue-rot: the Verify section is empty, so the perishable claims below are
 still unverifiable. A heading on its own re-checks nothing — put the command under it.
