@@ -61,15 +61,22 @@ verified.
 ## 2. Before you write a closing keyword
 
 `Closes`/`Fixes`/`Resolves` hands GitHub permission to delete an issue from the
-backlog at merge. **The PR title counts as much as the body** — on a
-squash-merge repo the title becomes the commit subject, and a closing keyword in
-a commit message landing on the default branch closes the issue just the same.
-Run this against both, before submitting:
+backlog at merge. **The body is only one of three ways it gets there:**
+
+| Where | How it reaches the default branch |
+| --- | --- |
+| PR body | GitHub links and closes on merge |
+| PR title | squash-merge makes it the commit subject |
+| Commit messages | verbatim under `rebase`/`merge`; also the squash body when the repo's `squash_merge_commit_message` is `COMMIT_MESSAGES` |
+
+Checking only the body leaves the other two open. Run this against all three
+before submitting:
 
 ```sh
+git log --format=%B <base>..HEAD >/tmp/commits.txt
 PR_TITLE="<title>" PR_BODY="<body>" \
   <skill-dir>/assets/check-closing-keywords.sh --repo <owner/repo> \
-    --title-env PR_TITLE --body-env PR_BODY
+    --title-env PR_TITLE --body-env PR_BODY --commits-file /tmp/commits.txt
 ```
 
 **Exit 0** — safe. **Exit 1** — do not submit that body. **Exit 2** — it could

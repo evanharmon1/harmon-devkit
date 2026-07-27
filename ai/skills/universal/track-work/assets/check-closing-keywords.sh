@@ -9,10 +9,17 @@
 # the PR that removed the source file said `closes #<that issue>`, and the merge
 # orphaned all three (see references/closing-keywords.md).
 #
-# The TITLE is checked too, when --title-env is given. On a squash-merge repo the
-# PR title becomes the commit subject, and a closing keyword in a commit message
-# landing on the default branch closes the issue exactly as a PR body does — so a
-# body-only check leaves that path open.
+# A PR body is only one of THREE ways a closing keyword reaches the default
+# branch, so all three are checked:
+#
+#   * the body            — GitHub links and closes on merge
+#   * the PR title        — squash-merge makes it the commit subject
+#   * the commit messages — they land on main under `rebase` and `merge`, and
+#                           also under squash when the repo's
+#                           `squash_merge_commit_message` is COMMIT_MESSAGES
+#                           (they become the squash commit's body)
+#
+# A body-only check leaves the other two wide open.
 #
 # The guard is deliberately FAIL-CLOSED. It scans everything, including fenced
 # code blocks, because missing a real closing keyword loses work while a false
@@ -21,15 +28,16 @@
 #
 # Usage:
 #   check-closing-keywords.sh [--repo owner/repo] [--body-env VAR]
-#                             [--title-env VAR] [BODY_FILE]
+#                             [--title-env VAR] [--commits-file PATH] [BODY_FILE]
 #
 # Body comes from BODY_FILE, else from the environment variable named by
-# --body-env, else stdin; the title only from --title-env. Passing them by
-# variable name is how CI hands over untrusted PR text without it ever reaching a
-# command line. The default repository resolves from --repo, then $GH_REPO, then
-# `gh repo view`. Set $ISSUE_BODY_DIR to read issue bodies from fixtures instead
-# of the API (offline tests): issue N of owner/repo is read from
-# "$ISSUE_BODY_DIR/owner_repo__N.md".
+# --body-env, else stdin; the title only from --title-env; commit messages from
+# --commits-file (an empty value means none were supplied, so a caller can pass
+# "${VAR:-}" without branching). Passing text by variable name is how CI hands
+# over untrusted PR content without it ever reaching a command line. The default
+# repository resolves from --repo, then $GH_REPO, then `gh repo view`. Set
+# $ISSUE_BODY_DIR to read issue bodies from fixtures instead of the API (offline
+# tests): issue N of owner/repo is read from "$ISSUE_BODY_DIR/owner_repo__N.md".
 #
 # Exit: 0 = ok (no closing keyword, or every closed issue is fully ticked),
 #       1 = violation, 2 = usage/environment error (could not verify).
@@ -44,6 +52,7 @@ default_repo="${GH_REPO:-}"
 body_file=""
 body_env=""
 title_env=""
+commits_file=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --repo)
@@ -73,6 +82,17 @@ while [ "$#" -gt 0 ]; do
         title_env="${1#--title-env=}"
         shift
         ;;
+    --commits-file)
+        [ "$#" -ge 2 ] || usage
+        # An empty value means "no commit messages supplied", so a caller can
+        # pass "${VAR:-}" unconditionally without branching.
+        commits_file="$2"
+        shift 2
+        ;;
+    --commits-file=*)
+        commits_file="${1#--commits-file=}"
+        shift
+        ;;
     -h | --help) usage ;;
     -*) usage ;;
     *)
@@ -97,21 +117,15 @@ else
     body="$(cat)"
 fi
 
-# The title is a closing vector too, and an easy one to miss: on a squash-merge
-# repo GitHub sets the commit subject from the PR title, and a closing keyword in
-# a commit message landing on the default branch closes the issue just as a PR
-# body does. Scanned as a synthetic first line so one pass covers both.
-title_offset=0
-scan="$body"
-if [ -n "$title_env" ]; then
-    title_offset=1
-    scan="$(printf '%s\n%s' "${!title_env-}" "$body")"
-fi
+title="${title_env:+${!title_env-}}"
 
-# Nothing to scan cannot contain a closing keyword.
-if [ -z "$body" ] && { [ -z "$title_env" ] || [ -z "${!title_env-}" ]; }; then
-    echo "check-closing-keywords: empty title and body — no closing keywords, ok"
-    exit 0
+commits=""
+if [ -n "$commits_file" ]; then
+    [ -f "$commits_file" ] || {
+        echo "check-closing-keywords: no such file: $commits_file" >&2
+        exit 2
+    }
+    commits="$(cat "$commits_file")"
 fi
 
 # GitHub's closing keywords, each followed by an issue reference in one of the
@@ -119,11 +133,25 @@ fi
 # and GNU grep disagree on \b); it is stripped back off after matching.
 KEYWORDS='(close[sd]?|fix(e[sd])?|resolve[sd]?)'
 REF='(https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+|[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+|#[0-9]+)'
-matches="$(printf '%s\n' "$scan" |
-    grep -noiE "(^|[^A-Za-z0-9_-])${KEYWORDS}[[:space:]]*:?[[:space:]]*${REF}" || true)"
+
+# find_matches REGION TEXT — emit "REGION|LINENO:MATCH" per hit. Each region is
+# scanned separately so a hit reports against its own line numbering.
+find_matches() {
+    _fm_region="$1"
+    [ -n "$2" ] || return 0
+    printf '%s\n' "$2" |
+        grep -noiE "(^|[^A-Za-z0-9_-])${KEYWORDS}[[:space:]]*:?[[:space:]]*${REF}" |
+        sed "s/^/${_fm_region}|/" || true
+}
+
+matches="$(
+    find_matches title "$title"
+    find_matches body "$body"
+    find_matches commit "$commits"
+)"
 
 if [ -z "$matches" ]; then
-    echo "check-closing-keywords: no closing keywords in the title or body — ok"
+    echo "check-closing-keywords: no closing keywords in the title, body, or commits — ok"
     exit 0
 fi
 
@@ -171,15 +199,16 @@ seen=""
 
 while IFS= read -r match; do
     [ -n "$match" ] || continue
-    lineno="${match%%:*}"
-    text="${match#*:}"
+    region="${match%%|*}"
+    rest="${match#*|}"
+    lineno="${rest%%:*}"
+    text="${rest#*:}"
 
-    # Line 1 is the synthetic title line when --title-env was given.
-    if [ "$title_offset" -eq 1 ] && [ "$lineno" -eq 1 ]; then
-        where="PR title"
-    else
-        where="body line $((lineno - title_offset))"
-    fi
+    case "$region" in
+    title) where="PR title" ;;
+    commit) where="commit message line ${lineno}" ;;
+    *) where="body line ${lineno}" ;;
+    esac
 
     # Resolve the reference to owner/repo + number.
     case "$text" in

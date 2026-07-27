@@ -23,6 +23,8 @@ permissions:
   contents: read
   # Read the referenced issues' bodies to count unticked items.
   issues: read
+  # Read the PR's commit messages.
+  pull-requests: read
 
 jobs:
   guard:
@@ -32,6 +34,14 @@ jobs:
     # Known, accepted gaps — this is a mistake-catcher among trusted collaborators,
     # not a security boundary, and the skill at authoring time is the primary
     # mechanism:
+    #   * NOT A REQUIRED CHECK. "Branch Protection Ruleset - Protect Main.json"
+    #     requires only `verify` and `security` (release-content-guard.yml is not
+    #     required either), so a red Tracking Guard is visible but does not block
+    #     merge. Making it required first needs the skips below removed — a job
+    #     skipped by `if:` never reports, and a required check that never reports
+    #     blocks the PR forever, which would deadlock every Renovate PR. Sequence
+    #     is: always run the job and self-skip inside it, then add the context to
+    #     the ruleset (a maintainer action against live repo settings).
     #   * A FORK PR's body is never checked, yet its closing keywords still close
     #     base-repo issues on merge. Covering it needs the guard to run from
     #     trusted code, since a fork checkout is untrusted — and the usual answer,
@@ -66,15 +76,28 @@ jobs:
           # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
           version: 3.51.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Refuse a title or body that auto-closes unfinished work
+      - name: Collect the PR's commit messages
+        # Commit messages are a third path to main: they land verbatim under
+        # `rebase` and `merge`, and this repo's squash_merge_commit_message is
+        # COMMIT_MESSAGES, so they become the squash commit's body too. Written to
+        # a file rather than an env var — untrusted multi-line text must not go
+        # near $GITHUB_ENV, where a crafted delimiter line is an injection.
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr view "$PR_NUMBER" --repo "$GH_REPO" --json commits \
+            --jq '.commits[] | .messageHeadline, .messageBody' \
+            > "$RUNNER_TEMP/pr-commits.txt"
+      - name: Refuse a title, body, or commit that auto-closes unfinished work
         # Title and body are untrusted input — pass them through the environment
         # (never interpolate into the run script) and only string-match on them.
-        # The title matters because squash-merge makes it the commit subject, and
-        # a closing keyword in a commit message landing on main closes the issue
-        # exactly as the body does. GH_TOKEN is what `gh issue view` uses.
+        # GH_TOKEN is what `gh issue view` uses.
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_COMMITS_FILE: ${{ runner.temp }}/pr-commits.txt
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: task guard:closing-keywords

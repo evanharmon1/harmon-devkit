@@ -172,15 +172,18 @@ tasks:
     # merge) does not exist locally. A `Closes #N` over an issue that still holds
     # outstanding work deletes that work from the backlog the moment the PR merges.
     # The check ships inside the skill so consumers vendor it; this target is what
-    # keeps devkit's own PRs honest. The TITLE is checked as well as the body:
-    # squash-merge makes the title the commit subject, and a closing keyword in a
-    # commit message landing on main closes the issue just the same. Pre-flight
-    # before opening a PR:
+    # keeps devkit's own PRs honest. All three paths a closing keyword can take to
+    # main are checked — the body, the title (squash-merge makes it the commit
+    # subject), and the commit messages (they land on main under rebase/merge, and
+    # under squash too because squash_merge_commit_message is COMMIT_MESSAGES).
+    # PR_COMMITS_FILE is optional; empty means none supplied. Pre-flight before
+    # opening a PR:
     #   PR_TITLE="<title>" PR_BODY="$(cat body.md)" task guard:closing-keywords
-    # (CI passes PR_TITLE/PR_BODY + GH_REPO; unit-tested by `task test:track-work`.)
+    # (CI passes PR_TITLE/PR_BODY/PR_COMMITS_FILE + GH_REPO; unit-tested by
+    # `task test:track-work`.)
     desc: "Guard: a PR must not auto-close an issue holding unfinished work"
     cmds:
-      - ./ai/skills/universal/track-work/assets/check-closing-keywords.sh --body-env PR_BODY --title-env PR_TITLE
+      - ./ai/skills/universal/track-work/assets/check-closing-keywords.sh --body-env PR_BODY --title-env PR_TITLE --commits-file "${PR_COMMITS_FILE:-}"
 
   format:
     desc: Auto-format code

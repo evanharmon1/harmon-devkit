@@ -147,6 +147,43 @@ env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='' PR_BODY='' \
     "$closing" --repo "$repo" --body-env PR_BODY --title-env PR_TITLE >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "empty title and body should pass (got $_rc)"
 
+echo "==> a closing keyword in a COMMIT MESSAGE fails, with a clean title and body"
+# Commit messages reach main under rebase/merge, and under squash too when the
+# repo's squash_merge_commit_message is COMMIT_MESSAGES (as this repo's is).
+printf 'fix: tidy up\n\nCloses #5\n' >"$tmp/commits.txt"
+_rc=0
+env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='feat: clean title' PR_BODY='Clean body.' \
+    "$closing" --repo "$repo" --title-env PR_TITLE --body-env PR_BODY \
+    --commits-file "$tmp/commits.txt" >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a closing keyword in a commit message should fail (got $_rc)"
+
+echo "==> a commit violation is located as a commit message, not a body line"
+out="$(env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='feat: clean' PR_BODY='Clean.' \
+    "$closing" --repo "$repo" --title-env PR_TITLE --body-env PR_BODY \
+    --commits-file "$tmp/commits.txt" 2>&1 || true)"
+printf '%s\n' "$out" | grep -q 'commit message line 3' || fail "commit hits should report their own line numbers"
+
+echo "==> an empty --commits-file value means no commits were supplied"
+_rc=0
+env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='feat: clean' PR_BODY='Refs #5' \
+    "$closing" --repo "$repo" --title-env PR_TITLE --body-env PR_BODY \
+    --commits-file "" >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "an empty --commits-file should be a no-op (got $_rc)"
+
+echo "==> a missing --commits-file path is a usage error, not a silent skip"
+_rc=0
+env ISSUE_BODY_DIR="$fixtures" GH_REPO="" \
+    "$closing" --repo "$repo" --commits-file "$tmp/nope.txt" </dev/null >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "a nonexistent commits file should exit 2 (got $_rc)"
+
+echo "==> clean commits alongside a clean title and body pass"
+printf 'feat: add a thing\n\nRefs #5\n' >"$tmp/clean-commits.txt"
+_rc=0
+env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='feat: add a thing' PR_BODY='Refs #5' \
+    "$closing" --repo "$repo" --title-env PR_TITLE --body-env PR_BODY \
+    --commits-file "$tmp/clean-commits.txt" >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "clean commits should pass (got $_rc)"
+
 echo "==> the same issue referenced twice is reported once"
 out="$(printf 'Closes #5 and closes #5 again' |
     env ISSUE_BODY_DIR="$fixtures" GH_REPO="" "$closing" --repo "$repo" 2>&1 || true)"

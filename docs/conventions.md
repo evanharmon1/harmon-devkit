@@ -35,14 +35,20 @@ skill at authoring time and by the **tracking guard**
   closing keyword (`Closes`/`Fixes`/`Resolves`) only when the PR resolves the
   issue **entirely** — GitHub obeys it at merge, and anything left unticked
   survives only inside a closed issue, off every backlog.
-- **The PR title is a closing vector too.** Squash-merge makes it the commit
-  subject, and a closing keyword in a commit message landing on `main` closes the
-  issue exactly as a body does. The guard checks title and body.
+- **The title and the commit messages are closing vectors too.** Squash-merge
+  makes the title the commit subject, and this repo's
+  `squash_merge_commit_message` is `COMMIT_MESSAGES`, so commit messages become
+  the squash body — plus they land verbatim under `rebase`/`merge`. The guard
+  checks all three.
 - **An issue with unticked items must not be auto-closed.** Tick the ones the PR
-  genuinely satisfies, or use `Refs`. The guard fails the PR until one of those is
-  true. Editing the title or body re-runs it; ticking the issue's boxes does not
-  (it watches pull-request events), so that path needs a manual re-run. Never
-  bypass it.
+  genuinely satisfies, or use `Refs`. Editing the title or body re-runs the guard;
+  ticking the issue's boxes does not (it watches pull-request events), so that
+  path needs a manual re-run. Never bypass it.
+- **The guard is advisory, not blocking.** The ruleset requires only `verify` and
+  `security`, so a red Tracking Guard is visible but does not stop a merge — same
+  as the release-content guard. Treat a red one as a stop anyway; making it
+  required means first removing its fork/bot job skips, since a skipped job never
+  reports and a required check that never reports blocks the PR forever.
 - **Never close across repos.** Write `Refs owner/repo#N`. A bare `#123` always
   means *this* repo — a number that crosses a repo boundary carries its repo
   everywhere it is written or verified.

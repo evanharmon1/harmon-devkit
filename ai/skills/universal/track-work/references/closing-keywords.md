@@ -5,10 +5,15 @@ an instruction to GitHub: **close this issue when the PR merges**. GitHub obeys
 it exactly. That is the whole failure mode — nothing malfunctions, the design is
 just wrong.
 
-The **PR title is the same instruction** on a squash-merge repo: GitHub sets the
-commit subject from the title, and a closing keyword in a commit message that
-lands on the default branch closes the issue. `fix: tidy up, closes #123` in a
-title is as final as it is in a body, and easier to miss.
+The **PR title and the commit messages carry the same instruction.** GitHub
+honours closing keywords in commit messages that land on the default branch, and
+a squash-merge repo puts the PR title in the commit subject. Worse, a repo whose
+`squash_merge_commit_message` is `COMMIT_MESSAGES` (harmon-devkit's is) copies
+every commit message into the squash commit's body — so a keyword buried in the
+third commit of a PR reaches `main` even though the PR body is spotless.
+
+Check all three. A title reading `fix: tidy up, closes #123` is as final as a
+body, and much easier to miss.
 
 ## The rule
 
