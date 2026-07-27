@@ -62,6 +62,7 @@ tasks:
       - task: test:ci-results
       - task: test:codex-review
       - task: test:release-title
+      - task: test:notify-release
       - task: test:hooks
       - task: test:devcontainer:permissions
       - task: test
@@ -221,6 +222,11 @@ tasks:
     desc: Unit-test the release-content title guard (require-release-title.sh)
     cmds:
       - ./scripts/test-release-title.sh
+
+  test:notify-release:
+    desc: Unit-test the harmon-init release dispatch (offline, stubbed gh)
+    cmds:
+      - ./scripts/test-notify-devkit-release.sh
 
   test:devcontainer:root:
     desc: Smoke test the primary (AI bot) devcontainer via the devcontainers CLI
