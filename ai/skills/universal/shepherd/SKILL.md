@@ -64,9 +64,12 @@ and compare against the local branch and HEAD. Requirements, all hard:
   (`gh pr view <n> --repo "$repo" --json headRefOid,state`) and confirming
   it still matches local HEAD — after a push, run/log lookups keyed to a
   stale SHA diagnose the wrong run.
-- Checks: `gh pr checks <n> --repo "$repo" --watch` (fall back to polling
-  `gh pr checks` if a long watch is impractical). Treat `skipping` jobs as
-  neutral, not failures. Right after a push there is a window where
+- Checks: poll `gh pr checks <n> --repo "$repo"` on an interval (or run
+  `--watch` only under an external timeout) so the wait has a real
+  deadline — an unbounded `--watch` on a hung runner stalls the loop
+  forever. After ~30 minutes of a check neither passing nor failing, treat
+  it as a failure to diagnose. Treat `skipping` jobs as neutral, not
+  failures. Right after a push there is a window where
   GitHub reports **no checks yet** — poll (bounded, a few minutes) until
   check suites register on the new head before concluding anything; and
   if the repo genuinely has no applicable CI, say so explicitly and judge
@@ -117,10 +120,14 @@ noise behind the reviewer:
 - Distinguish unfixable failures: external-service quotas, runner or
   infra outages, and permissions/secrets only the maintainer controls are
   **not** yours to fix. One re-run for a plainly transient infra failure
-  is fine; beyond that, if such a failure is the **only** thing left, that
-  is stop condition 4 — stop and report, don't burn rounds on it. When it
-  coexists with fixable findings, fix those (the round counts for that
-  work) and report the external failure alongside.
+  is fine — but only after checking the workflow is safe to repeat: a run
+  whose earlier jobs deploy, publish, or otherwise mutate external state
+  is not (`gh run rerun --failed` limits the blast radius to failed jobs,
+  and when in doubt, defer the rerun to the maintainer). Beyond that, if
+  such a failure is the **only** thing left, that is stop condition 4 —
+  stop and report, don't burn rounds on it. When it coexists with fixable
+  findings, fix those (the round counts for that work) and report the
+  external failure alongside.
 
 For every failing check and every review finding:
 
@@ -158,8 +165,12 @@ gh api repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies \
 EOF
 ```
 
-(comment IDs come from `gh api …/pulls/<n>/comments`). A rollup summary
-comment is optional in addition, never a substitute for per-thread replies.
+(comment IDs come from `gh api …/pulls/<n>/comments`). Findings that
+arrive **outside** inline threads — in a review body or a top-level PR
+comment — have no reply endpoint, so answer them with a PR conversation
+comment carrying the same fixed/rejected evidence; no adjudicated finding
+may end the session without a PR-visible response. A rollup summary comment
+is optional in addition, never a substitute for per-thread replies.
 
 ## 5. Fix, gate, push, re-watch
 
