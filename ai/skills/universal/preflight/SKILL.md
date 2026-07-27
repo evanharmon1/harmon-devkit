@@ -6,7 +6,7 @@ description: >-
   blockers, then claim the issue (assign, label, comment). Invoke as
   /preflight [issue #].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(git remote), Bash(git remote get-url:*), Bash(git branch --show-current), Bash(git symbolic-ref --short:*), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(git remote), Bash(git remote get-url:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
 ---
 
 # Preflight
@@ -15,9 +15,10 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(
 
 Only write-incapable read commands are pre-approved for this skill —
 `git log`/`diff`/`show` are deliberately excluded because they accept
-`--output=<file>` (a silent file-write primitive), and `git fetch` /
+`--output=<file>` (a silent file-write primitive); `git fetch` /
 `git remote set-head` because fetch accepts `--upload-pack=<cmd>` (command
-execution); expect a permission prompt when you run them. The
+execution); and `git symbolic-ref` because it accepts the write form even
+with `--short` present; expect a permission prompt when you run them. The
 claim writes in step 5 additionally require the user's explicit go-ahead in
 conversation — permission prompts alone are not a reliable boundary (the
 user's own settings may already allow `gh` broadly), and untrusted issue

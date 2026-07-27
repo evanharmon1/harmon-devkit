@@ -47,7 +47,7 @@ lock_sleep="${SESSION_END_ARCHIVE_LOCK_SLEEP:-1}"
 # regardless of PID order.
 mylock="$archive_dir/.lock-${session_id}.$$"
 acquired=""
-for _ in $(seq "$lock_retries"); do
+for ((attempt = 0; attempt < lock_retries; attempt++)); do
     if ! mkdir "$mylock"; then
         # A leftover lock bearing our own (recycled) PID: no live process
         # but us can own this name, so reap it and retry the create.
