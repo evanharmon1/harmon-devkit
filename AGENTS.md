@@ -112,9 +112,10 @@ something to ask permission for.
   fails or a review lands findings, treat the findings as hypotheses: verify
   them against the code, fix only what's confirmed, explain rejections in a
   PR comment, push the fix commit, and watch again. Shepherd-round fixes
-  must pass `task verify` before each push; the local challenge/review loops
-  are not re-entered — the post-push cloud/bot review is the second-model
-  check at this stage. This cap is independent of the other loop caps. If
+  must pass `task ci` (the full local CI mirror — it gates the same stages
+  the remote pipeline judges) before each push; the local challenge/review
+  loops are not re-entered — the post-push cloud/bot review is the
+  second-model check at this stage. This cap is independent of the other loop caps. If
   checks still fail or material findings remain after 4 rounds, stop and
   summarize what's unresolved on the PR for the maintainer.
 - **Stop at green.** Report that checks pass, then stop — merging is always a

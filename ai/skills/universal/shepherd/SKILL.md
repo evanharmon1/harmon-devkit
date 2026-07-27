@@ -192,13 +192,18 @@ is optional in addition, never a substitute for per-thread replies.
 
 ## 5. Fix, gate, push, re-watch
 
-- Every shepherd-round fix must **pass** the repo's definition-of-done gate
-  (`task verify` here) before each push — actually run it and confirm exit
-  0, not just intend to; a fix that can't pass verify doesn't get pushed.
-  Gate the exact commit that will travel: commit the complete fix first and
-  run the gate with a **clean tree**, so verify cannot pass on the strength
-  of uncommitted or untracked files that the push would then omit. Never
-  `--no-verify`, never weaken a gate to get through it.
+- Every shepherd-round fix must **pass the full local CI mirror**
+  (`task ci`) before each push — actually run it and confirm exit 0, not
+  just intend to; a fix that can't pass locally doesn't get pushed. The
+  mirror is the right gate because it runs the same stages the remote
+  pipeline will judge (including security), so a round is never burned on
+  a failure that three local minutes would have caught. In the rare repo
+  without a `task ci`, run the definition-of-done gate (`task verify`) and
+  say so — that is the floor, never skipped. Gate the exact commit that
+  will travel: commit the complete fix first and run the gate with a
+  **clean tree**, so it cannot pass on the strength of uncommitted or
+  untracked files that the push would then omit. Never `--no-verify`,
+  never weaken a gate to get through it.
 - Do **not** re-enter the local challenge/review loops — the post-push
   cloud/bot review is the second-model check at this stage.
 - Push the fix commit (conventional message) **explicitly to the PR head**:
