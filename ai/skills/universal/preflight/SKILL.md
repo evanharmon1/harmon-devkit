@@ -45,9 +45,9 @@ confirm with the user before proceeding.
   is a `blocker`: the fetch, default-branch, and history checks below all
   need a matching checkout, so stop and ask the user to establish one (or to
   explicitly accept claiming without live-code verification). Only when
-  step 1 pinned nothing, fall back to
-  `remote="$(git remote | grep -qx upstream && echo upstream || echo origin)"`
-  and
+  step 1 pinned nothing, fall back to: the sole remote if there is exactly
+  one (whatever its name), else `upstream` if present, else `origin`; if
+  none of those resolves, ask the user. Then
   `repo="$(gh repo view "$(git remote get-url "$remote")" --json nameWithOwner -q .nameWithOwner)"`.
   Then fetch it: `git fetch --prune "$remote"`.
 - Repo status: `task status:git` and `task status:gh` if **both** targets

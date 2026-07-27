@@ -39,8 +39,9 @@ Design properties:
 - **Atomic and serialized** — writes through a temp file in the archive dir,
   so a half-written archive never satisfies the freshness check, and a
   per-session lock keeps overlapping hook runs from clobbering each other.
-  The lock records its owner's PID — a crashed owner's lock is stolen
-  immediately, with an hour-based expiry as the recycled-PID backstop.
+  Locks are PID-named, so reclaiming a crashed owner's lock can never touch
+  a live one (the name pins ownership); between live contenders the lowest
+  PID wins, and an hour-based expiry backstops recycled PIDs.
 - Dependencies: `jq`, `gzip`.
 
 ## Install

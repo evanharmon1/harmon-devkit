@@ -26,37 +26,42 @@ archive_dir="${CLAUDE_TRANSCRIPT_ARCHIVE_DIR:-$HOME/.claude/transcript-archive}"
 mkdir -p "$archive_dir"
 
 # Serialize per session so overlapping hook runs (rapid exit/resume/exit)
-# cannot clobber each other. Retry briefly rather than dropping the run —
-# this invocation may be the last chance to archive. A lock records its
-# owner's PID: a dead owner's lock is stolen immediately (hooks are always
-# local processes), and as a recycled-PID backstop any lock older than an
-# hour expires.
-lock="$archive_dir/.lock-${session_id}"
+# cannot clobber each other. Locks are PID-named directories
+# (.lock-<sid>.<pid>): the owner's identity is pinned in the name itself,
+# so removing a dead owner's lock can never remove a lock a live process
+# holds — there is no inspect-then-delete race. Between live contenders the
+# lowest PID wins; the loser backs off and retries. Retry briefly rather
+# than dropping the run — this invocation may be the last chance to archive.
+# An hour-old lock expires as the recycled-PID backstop.
+mylock="$archive_dir/.lock-${session_id}.$$"
 acquired=""
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if mkdir "$lock"; then
+    mkdir "$mylock" || exit 0
+    contender=""
+    for other in "$archive_dir/.lock-${session_id}."*; do
+        [[ -d "$other" && "$other" != "$mylock" ]] || continue
+        opid="${other##*.}"
+        if ! kill -0 "$opid" 2>/dev/null; then
+            rm -rf "$other" || true # dead owner — name pins identity, safe
+        elif [[ -n "$(find "$other" -maxdepth 0 -mmin +60)" ]]; then
+            rm -rf "$other" || true # recycled-PID backstop
+        elif [[ "$opid" -lt $$ ]]; then
+            contender=1 # live lower-PID owner holds the session
+        fi
+    done
+    if [[ -z "$contender" ]]; then
         acquired=1
         break
     fi
-    # The owner may release the lock at any point in this iteration — a
-    # vanished lock/pid is a normal retry condition, not an error. Reap a
-    # dead-owner or expired lock by atomic rename first: when two
-    # contenders race to steal, only one mv succeeds, so neither can
-    # delete a lock the other has already reacquired.
-    owner="$(cat "$lock/pid")" || owner=""
-    if [[ -n "$owner" ]] && ! kill -0 "$owner"; then
-        { mv "$lock" "$lock.reap.$$" && rm -rf "$lock.reap.$$"; } || true
-        continue
-    fi
-    if [[ -n "$(find "$lock" -maxdepth 0 -mmin +60)" ]]; then
-        { mv "$lock" "$lock.reap.$$" && rm -rf "$lock.reap.$$"; } || true
-        continue
-    fi
+    rm -rf "$mylock" || true
     sleep 1
+    mylock="$archive_dir/.lock-${session_id}.$$" # recreate next round
 done
-[[ -n "$acquired" ]] || exit 0
-echo "$$" >"$lock/pid"
-trap 'rm -rf "$lock"' EXIT
+[[ -n "$acquired" ]] || {
+    rm -rf "$mylock"
+    exit 0
+}
+trap 'rm -rf "$mylock"' EXIT
 
 # A session can end more than once (exit, resume, exit again) under the same
 # session_id, growing the transcript each time. Reuse the existing archive
@@ -86,7 +91,7 @@ dest="${existing:-$archive_dir/$(date +%Y%m%d-%H%M%S)-${slug}-${session_id}.json
 # a half-written archive never matches the idempotency glob.
 tmp="$(mktemp "$archive_dir/.archive.XXXXXX")"
 stamp="$(mktemp "$archive_dir/.stamp.XXXXXX")"
-trap 'rm -f "$tmp" "$stamp"; rm -rf "$lock"' EXIT
+trap 'rm -f "$tmp" "$stamp"; rm -rf "$mylock"' EXIT
 
 # Snapshot the transcript's pre-compression mtime on a separate stamp file
 # (never the lock — its mtime must keep representing lock age) and copy it
