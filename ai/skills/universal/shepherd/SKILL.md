@@ -122,8 +122,10 @@ noise behind the reviewer:
   **not** yours to fix. One re-run for a plainly transient infra failure
   is fine — but only after checking the workflow is safe to repeat: a run
   whose earlier jobs deploy, publish, or otherwise mutate external state
-  is not (`gh run rerun --failed` limits the blast radius to failed jobs,
-  and when in doubt, defer the rerun to the maintainer). Beyond that, if
+  is not (`gh run rerun <run-id> --repo "$repo" --failed` — always with the
+  run ID resolved above, or `gh` prompts interactively/fails — limits the
+  blast radius to failed jobs; when in doubt, defer the rerun to the
+  maintainer). Beyond that, if
   such a failure is the **only** thing left, that is stop condition 4 —
   stop and report, don't burn rounds on it. When it coexists with fixable
   findings, fix those (the round counts for that work) and report the
