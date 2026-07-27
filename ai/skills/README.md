@@ -34,6 +34,20 @@ executable checks under `assets/` that harmon-devkit's own CI runs against every
 PR body (`tracking-guard.yml`), so the skill's rules and the enforced rules are
 the same code.
 
+**harmon-devkit uses the `universal/` skills itself.** Each is symlinked into
+`.claude/skills/` — consumers vendor a pinned copy, but the source repo cannot
+vendor from itself without waiting on its own release. The symlink makes the
+authored skill the live one, so a change is dogfooded in the session that writes
+it instead of a release and a pin bump later:
+
+```sh
+ln -s ../../ai/skills/universal/<name> .claude/skills/<name>
+```
+
+Safe with the repo's gates: `lint-hygiene.sh` skips symlinks, `.claude/**` is
+excluded from markdownlint, and `verify-skills.sh` only walks `ai/skills/`, so
+nothing is linted or counted twice.
+
 | Category | For |
 | --- | --- |
 | `universal` | Skills every consumer repo should have |
