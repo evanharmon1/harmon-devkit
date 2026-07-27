@@ -56,11 +56,13 @@ and compare against the local branch and HEAD. Requirements, all hard:
 - `git status` is **clean** — pre-existing uncommitted edits can ride into
   a shepherd commit or get clobbered; park them first.
 - **Fork-trust check**: if the PR head comes from a fork you don't control,
-  the checkout's Taskfile/scripts are contributor-controlled — running
-  `task verify`/`task ci` executes them on your machine. Inspect the diff
-  for changes to the gate toolchain (Taskfile, `scripts/`, workflows,
-  hooks) before ever running a repo-defined task, and prefer a
-  sandbox/container for gates on untrusted forks.
+  running `task verify`/`task ci` executes contributor-controlled code on
+  your machine — and not just the gate toolchain: an *unchanged* Taskfile
+  still runs tests that import whatever application code the PR modified.
+  Inspecting the diff is necessary but never sufficient. On an untrusted
+  fork, run local gates only inside a sandbox/container; if no isolation
+  is available, skip the local gate, rely on the remote CI run for
+  judgment, and say so.
 
 ## 2. Watch
 
@@ -128,12 +130,15 @@ noise behind the reviewer:
 - Distinguish unfixable failures: external-service quotas, runner or
   infra outages, and permissions/secrets only the maintainer controls are
   **not** yours to fix. One re-run for a plainly transient infra failure
-  is fine — but only after checking the workflow is safe to repeat: a run
-  whose earlier jobs deploy, publish, or otherwise mutate external state
-  is not (`gh run rerun <run-id> --repo "$repo" --failed` — always with the
-  run ID resolved above, or `gh` prompts interactively/fails — limits the
-  blast radius to failed jobs; when in doubt, defer the rerun to the
-  maintainer). Beyond that, if
+  is fine — but only after checking the **whole workflow graph** is safe
+  to repeat: a run whose earlier jobs mutated external state is unsafe,
+  and so is one where a newly-passing job would unleash a downstream
+  deploy/publish for the first time — `--failed` reruns failed jobs
+  *including dependencies*, so success can trigger exactly the jobs that
+  never ran. Use `gh run rerun <run-id> --repo "$repo" --failed` (always
+  with the run ID resolved above, or `gh` prompts interactively/fails)
+  only when nothing in the graph deploys, publishes, or otherwise
+  side-effects; when in doubt, defer the rerun to the maintainer. Beyond that, if
   such a failure is the **only** thing left, that is stop condition 4 —
   stop and report, don't burn rounds on it. When it coexists with fixable
   findings, fix those (the round counts for that work) and report the
@@ -235,13 +240,15 @@ Every shepherd session ends at exactly one of these — there is no path that
 loops indefinitely:
 
 1. **Green** — all workflows pass, `reviewDecision` is not
-   `CHANGES_REQUESTED`, `mergeStateStatus` is not `DIRTY` (merge conflicts
-   are yours to resolve — doing so is a round), and no material findings
-   remain. Report the state honestly rather than over-claiming: `DRAFT`,
-   `BLOCKED`, or `REVIEW_REQUIRED` mean "green but awaiting the
-   maintainer/required approval" — say that, and list unresolved threads
-   you answered with rejections (they stay unresolved until the maintainer
-   resolves them). Then stop.
+   `CHANGES_REQUESTED`, `mergeStateStatus` is not `DIRTY` or `BEHIND`
+   (conflicts and an out-of-date head are yours to resolve — a merge/update
+   with the base plus re-verification is a round), and no material findings
+   remain. `UNKNOWN` means GitHub is still computing mergeability — re-poll
+   briefly rather than classifying it. Report the state honestly rather
+   than over-claiming: `DRAFT`, `BLOCKED`, or `REVIEW_REQUIRED` mean
+   "green but awaiting the maintainer/required approval" — say that, and
+   list unresolved threads you answered with rejections (they stay
+   unresolved until the maintainer resolves them). Then stop.
 2. **Cap reached** — checks still fail or material findings remain after
    4 rounds: stop.
 3. **No progress** — the same failure signature or finding survives two
