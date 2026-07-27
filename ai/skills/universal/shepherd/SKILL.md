@@ -191,13 +191,17 @@ never pushed is a false claim.
 
 Pass the body via stdin with a quoted heredoc — reply text quotes untrusted
 review content and routinely contains apostrophes, so it must reach the
-shell as data, never as command text:
+shell as data, never as command text. Choose a delimiter that does **not**
+occur anywhere in the body (quoting the delimiter disables expansion, not
+termination — a quoted comment containing a literal `EOF` line would end a
+fixed-`EOF` heredoc early and let the remaining lines execute). Check the
+body first, or write it to a `mktemp` file and use `-F body=@"$file"`:
 
 ```sh
 gh api repos/"$repo"/pulls/<n>/comments/<comment-id>/replies \
-    -F body=@- <<'EOF'
+    -F body=@- <<'REPLY_BODY_9f3k'
 …reply text…
-EOF
+REPLY_BODY_9f3k
 ```
 
 (comment IDs come from `gh api …/pulls/<n>/comments`). Findings that
@@ -224,7 +228,9 @@ is optional in addition, never a substitute for per-thread replies.
 - Do **not** re-enter the local challenge/review loops — the post-push
   cloud/bot review is the second-model check at this stage.
 - Push the fix commit (conventional message) **explicitly to the PR head**:
-  derive the remote that matches `headRepository` and push
+  derive the remote whose URL matches `headRepositoryOwner` **and**
+  `headRepository` — owner and name both, since forks usually keep the
+  base repo's name and a name-only match can select the upstream — and push
   `HEAD:<headRefName>` on that remote — an implicit `git push` can target a
   same-named branch on the wrong remote when `pushRemote`/`pushDefault` or
   the upstream is misconfigured. Three safety rules for that push:
