@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/session-end-archive.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
