@@ -63,11 +63,15 @@ and compare against the local branch and HEAD. Requirements, all hard:
   the only vector: `git commit` and `git push` fire repo-configured hooks
   (here, lefthook delegates them to the checked-out Taskfile), so *any*
   local mutation of the checkout can execute contributor code — and
-  bypassing hooks is forbidden anyway. On an untrusted fork, do **all**
-  local work — gates, commits, pushes — inside a sandbox/container; if no
-  isolation is available, don't work on the fork checkout at all: stop,
-  report what the remote CI shows, and hand the fix decision to the
-  maintainer.
+  bypassing hooks is forbidden anyway. On an untrusted fork, do inspection
+  and gating only inside a sandbox/container **with no credentials in it**,
+  and never perform an authenticated push from the fork checkout at all —
+  even sandboxed, the contributor's pre-push hook runs during the push and
+  can reuse whatever SSH agent, credential helper, or token the push
+  needed. Deliver the fix as a patch/branch from a trusted checkout for
+  the maintainer to apply instead. If no isolation is available, don't
+  work on the fork checkout at all: stop, report what the remote CI shows,
+  and hand the fix decision to the maintainer.
 
 ## 2. Watch
 
