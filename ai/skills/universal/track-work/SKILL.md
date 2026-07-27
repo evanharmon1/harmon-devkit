@@ -83,7 +83,7 @@ PR_TITLE="<title>" PR_BODY="<body>" \
 not verify; treat as unsafe, not as clean. Without the script:
 
 ```sh
-gh issue view <n> --repo <owner/repo> --json body --jq '.body' | grep -nE '^[[:space:]]*[-*+] \[ \]'
+gh issue view <n> --repo <owner/repo> --json body --jq '.body' | grep -nE '^[[:space:]]*([-*+]|[0-9]+[.)]) \[ \]'
 ```
 
 Any output means the issue holds work this PR is not finishing.

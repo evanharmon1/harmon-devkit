@@ -47,7 +47,7 @@ events, not issues, so that path needs the check re-run by hand.
 By hand:
 
 ```sh
-gh issue view <n> --repo <owner/repo> --json body --jq '.body' | grep -nE '^[[:space:]]*[-*+] \[ \]'
+gh issue view <n> --repo <owner/repo> --json body --jq '.body' | grep -nE '^[[:space:]]*([-*+]|[0-9]+[.)]) \[ \]'
 ```
 
 Any output means the issue holds work this PR is not finishing.

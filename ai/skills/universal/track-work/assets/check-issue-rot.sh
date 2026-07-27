@@ -50,7 +50,12 @@ fi
 # was written. The leading group is a portable word boundary (BSD and GNU grep
 # disagree on \b). Fenced code blocks are scanned too: a file:line inside one is
 # just as perishable as a file:line in prose.
-CITATION='[A-Za-z0-9_./-]*[A-Za-z0-9_-]\.[A-Za-z0-9]{1,10}:[0-9]+'
+# Two citation shapes: a dotted filename (scripts/foo.sh:42) and the common
+# extensionless ones (Dockerfile:12), which the dotted form would miss. Named
+# explicitly rather than allowing any bare word before ":<digits>", which would
+# swallow times, ports, and version strings.
+BARE_FILES='(Dockerfile|Containerfile|Makefile|Taskfile|Justfile|Procfile|Gemfile|Rakefile|Brewfile|Vagrantfile|Jenkinsfile|CODEOWNERS|LICENSE|NOTICE)'
+CITATION="([A-Za-z0-9_./-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}:[0-9]+|(^|[^A-Za-z0-9_-])${BARE_FILES}:[0-9]+)"
 TEMPORAL='(currently|today|as of|right now|at present|at the moment)'
 perishable="$(printf '%s\n' "$draft" |
     grep -noiE "(${CITATION}|(^|[^A-Za-z0-9_-])${TEMPORAL})" || true)"

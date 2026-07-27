@@ -65,6 +65,12 @@ echo "==> closing an issue with no task list at all passes"
 echo "==> '*' and '+' task-list markers are counted too"
 [ "$(run_closing 'Closes #7')" = 1 ] || fail "alternate list markers should be counted"
 
+echo "==> ordered task-list checkboxes are counted (GFM renders them too)"
+printf '## Acceptance\n\n1. [x] done\n2. [ ] not done\n' >"$fixtures/evanharmon1_harmon-devkit__9.md"
+[ "$(run_closing 'Closes #9')" = 1 ] || fail "ordered '1. [ ]' items should be counted"
+printf '## Acceptance\n\n1) [ ] not done\n' >"$fixtures/evanharmon1_harmon-devkit__10.md"
+[ "$(run_closing 'Closes #10')" = 1 ] || fail "ordered '1) [ ]' items should be counted"
+
 echo "==> every closing keyword and inflection is recognised"
 for kw in close closes closed fix fixes fixed resolve resolves resolved; do
     [ "$(run_closing "${kw} #5")" = 1 ] || fail "'${kw}' should be treated as a closing keyword"
@@ -222,6 +228,16 @@ echo "==> a draft with nothing perishable passes"
 
 echo "==> a file:line citation with no Verify section fails"
 [ "$(run_rot 'The check in scripts/foo.sh:42 returns 0 on failure.')" = 1 ] || fail "file:line without Verify should fail"
+
+echo "==> an extensionless file citation counts as perishable"
+for cite in 'Dockerfile:12 installs curl.' 'Makefile:8 is wrong.' 'See CODEOWNERS:3 for the owner.'; do
+    [ "$(run_rot "$cite")" = 1 ] || fail "'$cite' should be flagged as perishable"
+done
+
+echo "==> a bare word before a number is not mistaken for a file citation"
+for benign in 'The build runs at 10:30 every day.' 'Serve it on localhost:3000 to check.' 'See section 4:2 of the RFC.'; do
+    [ "$(run_rot "$benign")" = 0 ] || fail "'$benign' should not be flagged"
+done
 
 echo "==> a temporal claim with no Verify section fails"
 for phrase in 'Currently it exits 0.' 'Today it exits 0.' 'As of the last run it exits 0.' 'Right now it exits 0.'; do
