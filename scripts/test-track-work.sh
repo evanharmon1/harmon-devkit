@@ -273,6 +273,16 @@ for cite in 'scripts/foo.sh:42 is wrong.' 'The value in config.yml:8 is stale.' 
     [ "$(run_rot "$cite")" = 1 ] || fail "'$cite' should still be flagged"
 done
 
+echo "==> citations with unlisted extensions and dotfiles are caught"
+# The host exclusion must not become an allowlist of known extensions — that
+# silently drops every real citation the list forgot.
+for cite in 'component.vue:12 is wrong.' 'Info.plist:8 is wrong.' 'See .gitignore:3 for it.' 'The .env:4 line is stale.' 'Chart.lock:7 drifted.'; do
+    [ "$(run_rot "$cite")" = 1 ] || fail "'$cite' should be flagged"
+done
+
+echo "==> an unrecognised internet suffix is still not a citation"
+[ "$(run_rot 'Use my.site:8080 to reach it.')" = 0 ] || fail "'my.site:8080' should not be flagged"
+
 echo "==> a temporal claim with no Verify section fails"
 for phrase in 'Currently it exits 0.' 'Today it exits 0.' 'As of the last run it exits 0.' 'Right now it exits 0.'; do
     [ "$(run_rot "$phrase")" = 1 ] || fail "'$phrase' should be flagged as perishable"
@@ -364,6 +374,25 @@ ${heading}
 task test:hygiene
 ")" = 0 ] || fail "'${heading}' should count as a Verify section"
 done
+
+echo "==> a Markdown-indented Verify heading counts"
+# CommonMark allows up to three spaces before an ATX heading.
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+   ## Verify
+
+   task test:hygiene
+')" = 0 ] || fail "an indented Verify heading should be recognised"
+
+echo "==> an indented following heading still ends the Verify section"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+  ## Notes
+
+prose
+')" = 1 ] || fail "an indented heading should terminate the Verify section"
 
 echo "==> a Verify section at any heading level counts"
 [ "$(run_rot 'scripts/foo.sh:42 is wrong.

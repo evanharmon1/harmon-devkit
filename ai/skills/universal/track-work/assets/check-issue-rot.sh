@@ -54,16 +54,32 @@ fi
 # A citation needs a file cue, not just "dotted thing, colon, digits" — by shape
 # alone `example.com:443` and `192.168.1.1:8080` are indistinguishable from
 # `foo.sh:42`, and treating them as citations demanded a Verify section for a URL.
-# So: a path with a directory separator, OR a bare filename whose extension is a
-# known code/config one, OR a known extensionless filename.
-CODE_EXT='(sh|bash|zsh|py|rb|go|rs|js|ts|jsx|tsx|mjs|cjs|java|c|h|cpp|hpp|cs|php|pl|lua|swift|kt|scala|ex|exs|yml|yaml|json|jsonc|toml|ini|cfg|conf|tf|tfvars|md|txt|sql|html|css|scss|xml|jinja|tmpl|gradle|properties|env|lock|mk)'
+#
+# The discriminator is a DENYLIST of internet suffixes, not an allowlist of code
+# extensions: an allowlist silently drops every real citation it forgot
+# (`component.vue:12`, `Info.plist:8`), and the set of file extensions has no end.
+# The denylist is short, stable, and deliberately excludes every suffix that is
+# also a plausible extension — `.md` (Moldova), `.sh`, `.ts`, `.rs`, `.pl` are
+# country TLDs and must keep working as files.
+HOST_TLD='(com|org|net|dev|app|edu|gov|mil|int|info|biz|xyz|cloud|tech|online|site|io|co|me)'
 BARE_FILES='(Dockerfile|Containerfile|Makefile|Taskfile|Justfile|Procfile|Gemfile|Rakefile|Brewfile|Vagrantfile|Jenkinsfile|CODEOWNERS|LICENSE|NOTICE)'
+# Four shapes: a path with a directory separator; a bare filename whose extension
+# is neither an internet suffix nor all-digits (which would be an IPv4 octet); a
+# dotfile (`.gitignore:3`); and the common extensionless filenames.
 CITATION="([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}:[0-9]+\
-|(^|[^A-Za-z0-9_./-])[A-Za-z0-9_.-]*[A-Za-z0-9_-]\\.${CODE_EXT}:[0-9]+\
+|(^|[^A-Za-z0-9_./-])[A-Za-z0-9_.-]*[A-Za-z0-9_-]\\.[A-Za-z][A-Za-z0-9]{0,9}:[0-9]+\
+|(^|[^A-Za-z0-9_./-])\\.[A-Za-z][A-Za-z0-9_-]*:[0-9]+\
 |(^|[^A-Za-z0-9_-])${BARE_FILES}:[0-9]+)"
+# Applied after matching, because grep -E has no negative lookahead. Two shapes
+# are dropped: anything carrying a URL scheme, and a SLASHLESS match ending in an
+# internet suffix. The slashless condition matters — `a/b/weird.xyz:3` is a real
+# path even though `xyz` is also a TLD, so a directory separator settles it.
+# Records are "<lineno>:<match>", hence the leading `[0-9]+:`.
+NOT_A_CITATION="(://|^[0-9]+:[^/]*\\.${HOST_TLD}:[0-9]+\$)"
 TEMPORAL='(currently|today|as of|right now|at present|at the moment)'
 perishable="$(printf '%s\n' "$draft" |
-    grep -noiE "(${CITATION}|(^|[^A-Za-z0-9_-])${TEMPORAL})" || true)"
+    grep -noiE "(${CITATION}|(^|[^A-Za-z0-9_-])${TEMPORAL})" |
+    grep -viE "${NOT_A_CITATION}" || true)"
 
 if [ -z "$perishable" ]; then
     echo "check-issue-rot: no perishable claims — ok"
@@ -74,9 +90,11 @@ fi
 # (or EOF). A heading on its own is not a Verify section — the command under it is
 # the entire point, and an empty one is easy to reach from both the skeleton below
 # and the optional Verify field on the issue forms.
+# CommonMark allows up to three spaces of indent before an ATX heading, so the
+# `#` is not necessarily in column 1.
 verify_content="$(printf '%s\n' "$draft" | awk '
-    tolower($0) ~ /^#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$/ { inv = 1; next }
-    inv && /^#+[[:space:]]/ { inv = 0 }
+    tolower($0) ~ /^ ? ? ?#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$/ { inv = 1; next }
+    inv && /^ ? ? ?#+[[:space:]]/ { inv = 0 }
     inv { print }
 ')"
 
@@ -96,7 +114,7 @@ if [ -n "$substantive" ]; then
     exit 0
 fi
 
-if [ -n "$verify_content" ] || printf '%s\n' "$draft" | grep -qiE '^#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$'; then
+if [ -n "$verify_content" ] || printf '%s\n' "$draft" | grep -qiE '^ ? ? ?#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$'; then
     cat >&2 <<EOF
 check-issue-rot: the Verify section is empty, so the perishable claims below are
 still unverifiable. A heading on its own re-checks nothing — put the command under it.
