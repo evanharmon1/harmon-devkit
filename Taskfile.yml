@@ -199,6 +199,7 @@ tasks:
       - test:tasks
       - test:hooks
       - test:skills
+      - test:hygiene
 
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)
@@ -244,6 +245,11 @@ tasks:
     desc: Unit-test the skills tooling (source guard + pinned vendoring engine)
     cmds:
       - ./scripts/test-skills.sh
+
+  test:hygiene:
+    desc: Unit-test lint-hygiene's exec-bit check on shebanged files
+    cmds:
+      - ./scripts/test-hygiene.sh
 
   # ── Second-model review (Codex) ───────────────────────────────
   # Optional second AI model (the OpenAI Codex CLI) reviewing the current

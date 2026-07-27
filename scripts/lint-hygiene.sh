@@ -2,7 +2,8 @@
 # lint-hygiene.sh — File hygiene checks (replaces pre-commit-hooks builtins).
 #
 # Checks: trailing whitespace, missing EOF newline, merge conflict markers,
-# private key detection, mixed line endings, check-json, check-toml.
+# private key detection, mixed line endings, check-json, check-toml,
+# executable bit on shebanged files.
 #
 # Portable across macOS (bash 3.2, BSD grep) and Linux.
 #
@@ -42,6 +43,17 @@ if [ -f .lint-hygiene-ignore ]; then
         ignore_patterns+=("$line")
     done <.lint-hygiene-ignore
 fi
+
+# Tracked paths git records as non-executable, in one call. The exec-bit check
+# below reads git's mode rather than the filesystem bit: the mode is what gets
+# published, and it stays meaningful where core.fileMode is off. Untracked
+# files are absent here and so are never flagged — nothing is published yet.
+non_exec_tracked=""
+while IFS= read -r -d '' entry; do
+    case "$entry" in
+    100644\ *) non_exec_tracked="$non_exec_tracked${entry#*$'\t'}"$'\n' ;;
+    esac
+done < <(git ls-files -s -z 2>/dev/null)
 
 is_ignored() {
     # Empty-array guard: "${arr[@]}" on an empty array is an unbound-variable
@@ -97,6 +109,23 @@ for f in "${files[@]}"; do
             warn "$f: no newline at end of file"
         fi
     fi
+
+    # --- Executable bit on files that declare an interpreter ---
+    # A shebang says "run me"; without the exec bit every consumer that vendors
+    # the file (skills sync, a copier render) gets something it cannot run and
+    # has to chmod +x by hand, which the next re-sync undoes. Placed here so
+    # the skips above already excluded symlinks and binaries — the read is a
+    # builtin, and a text file cannot open with a NUL that would fool it.
+    IFS= read -r first_line <"$f" 2>/dev/null || first_line=""
+    case "$first_line" in
+    '#!'*)
+        case $'\n'"$non_exec_tracked" in
+        *$'\n'"$f"$'\n'*)
+            warn "$f: shebang without the executable bit (fix: chmod +x '$f')"
+            ;;
+        esac
+        ;;
+    esac
 
     # --- Merge conflict markers ---
     if grep -En '^(<<<<<<<|>>>>>>>|=======)( |$)' "$f" >/dev/null 2>&1; then

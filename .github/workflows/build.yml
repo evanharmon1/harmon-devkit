@@ -59,6 +59,7 @@ jobs:
       - run: task test:release-title
       - run: task test:hooks
       - run: task test:skills
+      - run: task test:hygiene
       - run: task test:devcontainer:permissions
 
   security:
