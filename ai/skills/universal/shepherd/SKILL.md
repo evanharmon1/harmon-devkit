@@ -117,10 +117,15 @@ and compare against the local branch and HEAD. Requirements, all hard:
   in <sha>` / `declined: <reason>` / `filed as #<n>`. The checkbox is the
   durable settlement state — without it, the next return to this step reads
   the same entries as open and re-adjudicates them, duplicating follow-up
-  issues and burning rounds. **Re-fetch the body immediately before editing**
-  and apply the ticks to that fresh copy — a watch round can be long, and
-  rewriting a snapshot taken before it would silently revert any description
-  edit the author made meanwhile. Never drop or reword the other sections.
+  issues and burning rounds. Editing replaces the **whole** body, so treat it
+  as read-modify-write: re-fetch immediately before editing, apply the ticks
+  to that fresh copy, write it, then **re-fetch once more and confirm the
+  result is the text you wrote**. Re-fetching first only narrows the window —
+  the author or a bot can still edit between your read and your write, and
+  nothing in the API rejects a stale write. The verify step is what turns that
+  from a silent revert into something you notice: if the body is not what you
+  wrote, someone else's edit was overwritten, so re-apply your ticks on top of
+  the newer text and write again. Never drop or reword the other sections.
 - Reviews and inline comments:
   `gh pr view <n> --repo "$repo" --json reviews,reviewDecision,mergeStateStatus`
   plus `gh api --paginate repos/"$repo"/pulls/<n>/comments`
