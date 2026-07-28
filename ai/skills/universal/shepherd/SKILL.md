@@ -520,12 +520,22 @@ is optional in addition, never a substitute for per-thread replies.
                          | [.id, .updated_at]] | sort) })'
     # before sending, over the comments you actually adjudicated:
     jq -c --arg me "$me" "$fingerprint" <<<"$comments" >"$snap"
-    # after sending, over a fresh fetch:
+    # after sending, over a fresh fetch — guarded, exactly like step 2's:
+    fresh="$(gh api --paginate --slurp repos/"$repo"/pulls/<n>/comments)" \
+      || { echo 'post-send fetch failed — reconcile UNKNOWN, not clean'; exit 1; }
     jq -c --arg me "$me" --slurpfile before "$snap" "$fingerprint"'
         | (INDEX($before[0][]; .root)) as $b
         | map(select(.sig != ($b[.root | tostring].sig // [])))
         | .[]' <<<"$fresh"
     ```
+
+    Guard that second fetch as carefully as step 2 guards its first. An
+    unguarded `$fresh` that came back empty feeds `jq` empty input, which
+    exits 0 printing nothing — the reconcile reads clean at precisely the
+    moment it is blindest. And this failure is worse than step 2's, because
+    it is unrecoverable: your reply is already posted, so the later step-2
+    scan now sees the thread as answered and the missed activity never
+    surfaces again. A failed post-send fetch is *unknown*; re-run it.
 
     Every line it prints is reviewer activity your replies never saw —
     adjudicate it before treating the round as complete. Compare the whole
