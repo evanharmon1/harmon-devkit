@@ -23,6 +23,19 @@ body:
       label: Background / context
       description: What do we already know, and why is this worth investigating?
   - type: textarea
+    id: verify
+    attributes:
+      label: Verify
+      description: >-
+        A command that re-establishes whether the background above still holds, and what its
+        output means. Research issues age fastest — they describe a current state by definition —
+        so without a way to re-check, a reader cannot tell which findings are still true.
+      placeholder: |
+        ```sh
+        gh api repos/{owner}/{repo}/rulesets --jq '.[].name'
+        ```
+        No `terraform-verify` in the output means the gap is still open.
+  - type: textarea
     id: scope
     attributes:
       label: Scope
