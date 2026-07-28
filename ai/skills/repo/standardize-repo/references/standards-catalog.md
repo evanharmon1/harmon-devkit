@@ -9,7 +9,10 @@ Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 `harmon-init/AGENTS.md`, the `harmon-init/template/` tree. Live reference repos
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
 project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
-was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13.
+was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
+**§1.13 (project management) alone was re-verified against harmon-init v4.7.0 on
+2026-07-28** — the rest still carries the v3.26.1 baseline, so treat a §1.13
+statement as current and anything else as possibly lagging.
 The platform and client repos are kept current via mode-update passes, so their
 remaining divergences are often **deliberate customizations** (Part 3.2), not lag
 — but they can drift between passes, so
@@ -754,16 +757,19 @@ for the doc/tasks/workflows; **[manual]** to run the setup (they hit the live
 GitHub API and are shellcheck/shfmt-gated only, never CI-tested).
 
 **One default Project (V2) per owner**, titled after the owner's GitHub login
-(`<owner> Project`); every repo feeds the one board. Slice it (by Product /
-`layer:` / Agent) instead of spinning up more projects.
+(`<owner> Project`); every repo feeds the one board. Slice it by the **fields**
+`Product` / `Domain` / `Layer` / `Agent` — for `Domain` and `Layer`, slice by the
+field and not by the mirrored `domain:`/`layer:` labels, which carry the same
+option names but are never synced to the field values (`Product` and `Agent` have
+no label family at all) — instead of spinning up more projects.
 
 **Setup tasks** (idempotent + non-destructive; **[copier]** generates them, **[manual]** to run):
 
 | Task | Needs | Rendered when | Does |
 |---|---|---|---|
-| `setup:github-project` | `gh` + `project` scope | `project_management: github` | Create/sync the board + `Status` pipeline; write the `ORG_PROJECT_ID` org var (org only); on a **personal** account also create Priority/Effort/Product/Agent as project fields |
+| `setup:github-project` | `gh` + `project` scope | `project_management: github` | Create/sync the board + `Status` pipeline + the `Size` number field (both owner types); write the `ORG_PROJECT_ID` org var (org only); on a **personal** account also create Priority/Product/Agent/Domain/Layer as project fields |
 | `setup:github-labels` | `gh` + repo write | `project_management: github` | `gh label create --force` for the five label families |
-| `setup:github-issue-fields` | `gh` + `admin:org` | `github` **and** org owner | Add the org **issue fields** Product + Agent (public preview) |
+| `setup:github-issue-fields` | `gh` + `admin:org` | `github` **and** org owner | Add the org **issue fields** Product + Agent + Domain + Layer (public preview) |
 | `setup:github-issue-types` | `gh` + `admin:org` | **org owner** (independent of `project_management`) | Ensure org issue types Bug/Feature/Task/Research (Task is GitHub's default; adds Research) |
 
 **Conventions the doc encodes** (audit the doc + the field/label/workflow
@@ -779,15 +785,43 @@ artifacts; the prose rules are guidance, not lint):
   field** (estimation points, Fibonacci): only project number fields sum in view
   group headers, so it lives on the project even for orgs. The GitHub built-in
   issue fields (**Priority**, single-select **Effort**, Start/Target date) are
-  left at their defaults; **Product + Agent** are org issue fields from
-  `setup:github-issue-fields`. On a personal account (no issue fields)
-  `setup:github-project` creates Priority/Product/Agent/Size as project fields.
+  left at their defaults — **`Effort` is never re-created as a project field**;
+  `Size` is the numeric, summable estimate. **Product + Agent + Domain + Layer**
+  are org issue fields from `setup:github-issue-fields` (Domain = which part of
+  the product, Layer = which slice of the stack). On a personal account (no issue
+  fields) `setup:github-project` creates Priority/Product/Agent/Domain/Layer/Size
+  as project fields. Both scripts are **create-if-missing** for these fields: an
+  existing one is left as-is, options and all, and **both** warn when the name
+  already exists with the wrong data type (GitHub can't change a field's data type
+  in place — rename or delete it and re-run). `Status` is the one exception:
+  `setup:github-project` keeps its existing options and appends any missing
+  pipeline ones, so items already assigned an option are never orphaned. So
+  **adding an option to any other already-created field is [manual]** — edit it in
+  the org issue-field settings or the Project UI; re-running the setup task will
+  not do it, and skipping it leaves the label and field vocabularies divergent.
 - **Issue types** — Bug/Feature/Task/Research (org). The Issue Forms set `type:` on
   org repos and a **default assignee**, and apply **no labels** (type is the Type
   field, not a label).
-- **Labels** — repo-level, five color families (Concerns / Source / Workflow /
-  Layer / Domain), orthogonal to Status and Type. There is no shared org label
-  pool; run `setup:github-labels` per repo.
+- **Labels** — repo-level, five color families, orthogonal to Status and Type:
+  **Concerns** (purple `5319E7`) `sec`, `a11y`, `perf`, `tech-debt`, `i18n`,
+  `l10n`; **Source** (pink `EC4899`) `customer-request`, `ai-generated`;
+  **Workflow** (orange `E36209`) `needs-triage`, `needs-requirements`, `blocked`,
+  `waiting`, `needs-decision`, `needs-response`, `needs-communication`;
+  **Layer** (blue `1D76DB`) `layer:ui`, `layer:logic`, `layer:data`,
+  `layer:integration`; **Domain** (yellow `FBCA04`) `domain:auth`,
+  `domain:billing`, `domain:platform`. The `layer:`/`domain:` families are
+  deliberately the **same vocabulary** as the Layer/Domain fields above — same
+  option names, but **nothing syncs a label to a field value**, so group board
+  views by the fields and use the labels for `gh issue list --label`; extend the
+  label list and both field lists together. Names must agree where they overlap,
+  but the sets need not be equal: on an org the `Domain` issue field is org-wide
+  while labels are repo-level, so a repo's `domain:` labels are the **subset** it
+  actually uses, not the org's full option list. There is no shared
+  org label pool; run `setup:github-labels` per repo. It is create-or-update
+  (`--force`) and never deletes, so a repo seeded before the layer family became
+  `ui`/`logic`/`data`/`integration` keeps orphaned `layer:frontend`,
+  `layer:backend`, `layer:infra` labels — re-map those issues and delete the three
+  by hand. **[manual]**
 - **Milestones** — named after release versions (title == git tag), small +
   rolling, preferred over iterations pre-launch.
   `.github/workflows/close-milestone-on-release.yml` closes the matching milestone
@@ -795,8 +829,10 @@ artifacts; the prose rules are guidance, not lint):
 - **Views** (Board / Triage / Agent queue / Planning / Mine) are **UI-only** —
   Projects V2 has no view API. **[manual]**.
 - **Hierarchy** — sub-issues, no Epic type: the parent holds the spec +
-  milestone/project (children inherit both); leaves hold the `Task` type + `Effort`
-  points.
+  milestone/project (children inherit both); leaves hold the `Task` type + the
+  **`Size` points** (the numeric estimate — on an org, the built-in `Effort`
+  single-select is a separate coarse field left at its default and never used for
+  points; on a personal account there is no `Effort` field at all).
 
 **Org-only automation** (`github_org != author`):
 `.github/workflows/project-automation.yml` syncs `Status` from PR/CI events as the
