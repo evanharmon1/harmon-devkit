@@ -157,6 +157,123 @@ and compare against the local branch and HEAD. Requirements, all hard:
   findings get posted there too, not only as reviews or inline threads.
   Distinguish bot reviewers (Codex, CodeRabbit, …) from humans, but
   adjudicate both the same way.
+- **Which comments are still unanswered — settle it by reply linkage, never
+  by timestamp.** "Nothing new since my last push" does not establish that
+  every comment is answered: a comment landing *between* a poll and the next
+  push falls outside that window on both sides and is silently never
+  adjudicated. Ask the order-independent question instead — *which threads
+  does my own reply not terminate?* — which returns the same answer whenever
+  the comment arrived:
+
+  ```sh
+  me="$(gh api user --jq .login)"
+  [ -n "$me" ] || { echo 'identity lookup failed — unknown'; exit 1; }
+  comments="$(gh api --paginate --slurp repos/"$repo"/pulls/<n>/comments)" \
+    || { echo 'comment fetch failed — unknown, NOT answered'; exit 1; }
+  jq -c --arg me "$me" 'add
+      | group_by(.in_reply_to_id // .id)
+      | map({ root: (.[0].in_reply_to_id // .[0].id), path: .[0].path,
+              mine:   ([.[] | select(.user.login == $me
+                                     and .in_reply_to_id != null)
+                             | .created_at] | max),
+              theirs: ([.[] | select(.user.login != $me)
+                            | ([.created_at, .updated_at] | max)] | max) })
+      | map(select(.mine == null or .theirs >= .mine))
+      | map(.state = (if .mine == null then "unanswered"
+                      else "changed-since-reply" end))
+      | .[]' <<<"$comments"
+  ```
+
+  It prints one line per thread that needs your attention, each carrying the
+  **root** comment ID that step 4 replies through — and prints **literally
+  nothing** when every thread's newest reviewer activity predates your reply
+  to it. The trailing `.[]` is load-bearing: without it the command prints
+  `[]` on success, which is not empty output, and a gate reading "any output
+  means findings remain" could then never go green.
+
+  The two states are not settled the same way, and conflating them either
+  misses findings or deadlocks the loop:
+
+  - `unanswered` — you have never replied in this thread. Always a finding;
+    answer it per step 4. Posting the reply advances `mine`, so the line
+    clears on the next run. This is the state that #165 was filed about.
+  - `changed-since-reply` — you replied, and reviewer activity lands at or
+    after your reply. **Re-read the current body**: if the edit or follow-up
+    is material, answer it (which clears the line mechanically); if it is a
+    typo fix or other non-material change, nothing you can do advances
+    `mine` short of spamming the thread, so record the decision instead —
+    name the root ID and why it needs no reply, in the round summary or a
+    PR comment. Stop condition 1 requires that accounting by root ID, so a
+    non-material edit cannot be waved away silently, and a re-read alone
+    cannot hold the PR hostage forever.
+
+  Six details the shorter forms get wrong:
+
+  - **Guard the identity lookup too, not just the comment fetch.** If
+    `gh api user` fails transiently while the public comments endpoint keeps
+    working, `$me` is empty, every comment — including replies you just
+    posted — classifies as reviewer activity, and the check can never clear.
+    That fails *loud* rather than false-green, but it still burns the round
+    cap, so bail on an empty login.
+
+  - **Capture the fetch and check its exit status before filtering.** `jq`
+    exits 0 and prints nothing on empty input, so a one-liner piping a
+    rate-limited, unauthenticated, or timed-out `gh api` straight into `jq`
+    renders "the API broke" identically to "nothing outstanding" — the exact
+    false green this check exists to prevent. A failed fetch is *unknown*,
+    never *answered*.
+  - **`--slurp` is what makes it page-safe.** `--paginate` with `--jq` runs
+    the filter over each page separately, so a reply on page 2 never cancels
+    its root on page 1 and the command prints one result per page instead of
+    one answer. `gh api` refuses `--slurp` alongside `--jq`, hence the pipe
+    to a standalone `jq`.
+  - **Compare newest-reviewer-activity against your reply**, rather than
+    asking whether a reply merely exists: a reviewer follow-up posted after
+    your answer leaves a thread that is replied-to but not answered, and
+    step 4 treats that follow-up as a fresh finding.
+  - **Take `updated_at` into account, not just `created_at`.** An edited
+    comment keeps its original `created_at`, so a reviewer who rewrites a
+    finding after you replied stays hidden behind your later-created reply
+    while its body says something new. Timestamps are ISO-8601 `Z`, so
+    lexical `max`/`>=` is chronological. This does flag edits that changed
+    nothing material — that is what the `changed-since-reply` state above is
+    for; a cheap re-read beats a missed finding.
+  - **A `mine` timestamp only means *answered* if that reply was composed
+    from the thread's current state.** The predicate compares clocks, not
+    content: it assumes your reply is responsive to everything posted before
+    it. Step 5 deliberately queues "fixed in `<sha>`" replies until after the
+    gate and push, which can be many minutes after you read the thread — a
+    reviewer editing or following up inside that window gets stamped as
+    answered by a reply that never saw it, and the thread then drops out of
+    this check for good. So **re-read each thread immediately before posting
+    its queued reply** and fold in anything new; a reply that reaches the
+    thread later than the activity it ignored is indistinguishable, after the
+    fact, from one that addressed it. Step 5 carries the watermark check that
+    closes the remaining sliver between that re-read and the post.
+  - **Break ties toward unanswered (`>=`, not `>`).** GitHub serializes these
+    timestamps at second precision, so reviewer activity landing in the same
+    second as your reply is genuinely ambiguous about ordering. A strict `>`
+    resolves that ambiguity in favour of green; `>=` resolves it toward one
+    redundant re-read, which is the direction a fail-closed gate should err in.
+
+  `mine` counts only comments with an `in_reply_to_id` — replies, not roots.
+  The shepherd usually runs as the PR author's own account, so without that
+  clause an inline note *you* left would count as its own answer: `theirs`
+  would be null, the thread would filter out, and a finding a human wrote on
+  their own PR would never be raised. Counting replies only makes such a
+  thread `unanswered` until something actually replies to it. One reply
+  clears it, so the loop cannot stick.
+
+  The residual blind spot is narrower and worth stating: the API shows the
+  same login for a reply the shepherd posted and one you typed by hand, so
+  the check cannot tell them apart. It measures whether a thread has been
+  answered, never who thought about it.
+
+  This covers inline threads only. Top-level PR conversation comments carry no
+  reply linkage at all — track those from the `issues/<n>/comments` fetch
+  above. Thread `isResolved` state comes from the GraphQL query and is a
+  separate question: resolution is the maintainer's act, never evidence that
+  you replied.
 - Bot-reaction semantics where the Codex cloud connector is installed: read
   the PR-level reactions explicitly —
   `gh api --paginate repos/"$repo"/issues/<n>/reactions` (they are not in
@@ -234,7 +351,9 @@ Reply to **every** inline review comment in its own thread — fixes ("fixed
 in `<sha>`") and rejections (with evidence) alike. Two ordering rules:
 group the comments payload by thread (replies carry `in_reply_to_id`) and
 reply through each thread's **root** comment ID — replying to a reply
-nests invalidly. Skip a thread only when nothing new arrived since your
+nests invalidly. Step 2's enumeration already emits exactly that set, keyed
+by root ID: work its output, don't re-derive which threads are owed a reply.
+Skip a thread only when nothing new arrived since your
 last answer; a reviewer follow-up posted after your reply is a fresh
 finding to adjudicate and answer (through the same root ID), while
 re-answering an unchanged thread just spams it. And post "fixed in `<sha>`" replies only **after** the verified
@@ -299,6 +418,42 @@ is optional in addition, never a substitute for per-thread replies.
   - Immediately after the push succeeds, post the queued
     "fixed in `<sha>`" thread replies (step 4) **before** re-watching —
     the green path stops in step 2 and must not strand unanswered threads.
+    **Re-read each thread as you post its reply**, because the gate and push
+    put minutes between composing the reply and sending it: an edit or
+    follow-up that landed in that window is real activity your reply does not
+    address, yet posting stamps the thread as answered and drops it from
+    step 2's check permanently. If the thread moved, adjudicate the new
+    content and answer it in the same reply.
+
+    That re-read narrows the window but does not close it — activity can
+    still land between the re-read and the post. Close it with a
+    **fingerprint** of each thread's reviewer comments, snapshotted before
+    sending and re-compared after: unlike step 2's predicate it never
+    consults your reply's timestamp, so a newer reply cannot bury anything.
+
+    ```sh
+    fingerprint='add | group_by(.in_reply_to_id // .id)
+      | map({ root: (.[0].in_reply_to_id // .[0].id),
+              sig: ([.[] | select(.user.login != $me)
+                         | [.id, .updated_at]] | sort) })'
+    # before sending, over the comments you actually adjudicated:
+    jq -c --arg me "$me" "$fingerprint" <<<"$comments" >"$snap"
+    # after sending, over a fresh fetch:
+    jq -c --arg me "$me" --slurpfile before "$snap" "$fingerprint"'
+        | (INDEX($before[0][]; .root)) as $b
+        | map(select(.sig != ($b[.root | tostring].sig // [])))
+        | .[]' <<<"$fresh"
+    ```
+
+    Every line it prints is reviewer activity your replies never saw —
+    adjudicate it before treating the round as complete. Compare the whole
+    `(id, updated_at)` set, **not** a newest-timestamp watermark: GitHub's
+    timestamps are second-precision and bot reviewers post in batches, so a
+    follow-up sharing a second with the previously newest comment leaves a
+    `max` unchanged and then hides behind your reply forever. (Three such
+    same-second pairs occur on `harmon-devkit#164` alone.) The set comparison
+    also catches edits and deletions, and a thread created after the snapshot
+    has no entry in `$b`, so the `// []` default flags it too.
 
   The push increments the round counter. Then **return to step 2 and watch
   again**: the push starts new workflow runs and gives the reviewer a fresh
@@ -315,7 +470,17 @@ loops indefinitely:
    (conflicts and an out-of-date head are yours to resolve — a merge/update
    with the base plus re-verification is a round), and no findings remain
    unresolved — including the low-priority ones deferred into this stage,
-   which count as resolved once their box is ticked with the outcome. A
+   which count as resolved once their box is ticked with the outcome.
+   **Re-run step 2's unanswered-thread enumeration as the last act before
+   reporting green**. No `unanswered` line may remain — that is a hard gate,
+   whatever the round count says. A remaining `changed-since-reply` line is
+   allowed only when this round's report names its root ID and says why the
+   change needs no reply; unnamed, it counts as a finding remaining. And no
+   output because the command errored is *unknown*, not *answered* — a failed
+   fetch or identity lookup is never a pass. Run the check rather than
+   recalling that you
+   replied: the whole point of the linkage check is that it does not depend on
+   when a comment arrived relative to your pushes, and memory does. A
    finding carried in the PR body has no inline thread to answer, so its
    decline reasoning belongs in the ticked entry itself (and, when it
    deserves more than one line, a PR comment it points to). `UNKNOWN` means GitHub is still computing mergeability — re-poll
