@@ -3,7 +3,7 @@ name: shepherd
 description: >-
   Shepherd an open PR to green — watch CI and incoming bot/human reviews,
   treat findings as hypotheses (verify, fix only what's confirmed, explain
-  rejections in per-thread replies), push, and re-watch, for at most 4
+  rejections in per-thread replies), push, and re-watch, for at most 5
   rounds. Invoke as /shepherd [PR # or URL].
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*)
@@ -15,15 +15,23 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-curr
 
 Opening a PR is not the end. Shepherd it: watch CI **and** incoming
 bot/human reviews, adjudicate what lands, fix what's confirmed, and re-watch
-— for at most **4 rounds**. Both signals matter and both must end green: a
-PR is not done until CI/CD workflows pass *and* no material review findings
+— for at most **5 rounds**. Both signals matter and both must end green: a
+PR is not done until CI/CD workflows pass *and* no unresolved review findings
 remain. This cap is independent of any other loop caps used earlier in the
 dev flow.
+
+**This stage settles the low-priority findings.** Where the earlier dev-flow
+loops gate only on high-priority findings (in repos that run a
+severity-labelled second-model review, that is P0/P1), the ones they deferred
+land here — carried in the PR description, per step 2 — alongside whatever
+the PR reviewers raise. Nothing is waved through for being minor: every
+finding is fixed, declined with reasoning in its thread, or filed as a
+follow-up issue.
 
 **Round accounting (read this first):** one round = one fix push, **or**
 one no-change adjudication cycle (everything rejected/external — replies
 posted, nothing to fix — then back to watching). Count rounds explicitly
-(say "round 2 of 4") — the counter only ever increases, every wait below is
+(say "round 2 of 5") — the counter only ever increases, every wait below is
 bounded, and every path ends in one of the stop conditions in step 6, so
 the loop cannot run forever.
 
@@ -89,6 +97,24 @@ and compare against the local branch and HEAD. Requirements, all hard:
   check suites register on the new head before concluding anything; and
   if the repo genuinely has no applicable CI, say so explicitly and judge
   on reviews alone rather than treating the absence as pass or fail.
+- Findings deferred into this stage: read the **PR description**
+  (`gh pr view <n> --repo "$repo" --json body`) for a section listing
+  findings the pre-PR review loops deferred here (conventionally
+  "Deferred findings"). Those loops run locally — their output is ephemeral
+  and a cloud reviewer will not repost a low-priority finding — so the PR
+  body is the only place they survive. Treat every **unchecked** entry as an
+  open finding and settle it like any other. If the workflow that deferred
+  them left no such section, say so rather than assuming there was nothing to
+  defer.
+- **Tick each one off as you settle it**, in the same round, by editing the
+  PR body (`gh pr edit <n> --repo "$repo" --body-file -`): `- [x] … — fixed
+  in <sha>` / `declined: <reason>` / `filed as #<n>`. The checkbox is the
+  durable settlement state — without it, the next return to this step reads
+  the same entries as open and re-adjudicates them, duplicating follow-up
+  issues and burning rounds. **Re-fetch the body immediately before editing**
+  and apply the ticks to that fresh copy — a watch round can be long, and
+  rewriting a snapshot taken before it would silently revert any description
+  edit the author made meanwhile. Never drop or reword the other sections.
 - Reviews and inline comments:
   `gh pr view <n> --repo "$repo" --json reviews,reviewDecision,mergeStateStatus`
   plus `gh api --paginate repos/"$repo"/pulls/<n>/comments`
@@ -120,8 +146,8 @@ and compare against the local branch and HEAD. Requirements, all hard:
   reviewer a chance to post on the current head commit (a bounded wait,
   ~10–15 minutes after checks conclude, is enough; if no review lands in
   that window, proceed on CI alone and say so).
-- A round begins when a check fails or a review lands material findings.
-  All workflows green and no unresolved material findings → **stop at
+- A round begins when a check fails or a review lands findings. All
+  workflows green and no unresolved findings → **stop at
   green**: report that checks pass and any review verdicts, then stop.
   Never merge — merging is always the maintainer's decision.
 
@@ -260,15 +286,19 @@ loops indefinitely:
 1. **Green** — all workflows pass, `reviewDecision` is not
    `CHANGES_REQUESTED`, `mergeStateStatus` is not `DIRTY` or `BEHIND`
    (conflicts and an out-of-date head are yours to resolve — a merge/update
-   with the base plus re-verification is a round), and no material findings
-   remain. `UNKNOWN` means GitHub is still computing mergeability — re-poll
+   with the base plus re-verification is a round), and no findings remain
+   unresolved — including the low-priority ones deferred into this stage,
+   which count as resolved once their box is ticked with the outcome. A
+   finding carried in the PR body has no inline thread to answer, so its
+   decline reasoning belongs in the ticked entry itself (and, when it
+   deserves more than one line, a PR comment it points to). `UNKNOWN` means GitHub is still computing mergeability — re-poll
    briefly rather than classifying it. Report the state honestly rather
    than over-claiming: `DRAFT`, `BLOCKED`, or `REVIEW_REQUIRED` mean
    "green but awaiting the maintainer/required approval" — say that, and
    list unresolved threads you answered with rejections (they stay
    unresolved until the maintainer resolves them). Then stop.
-2. **Cap reached** — checks still fail or material findings remain after
-   4 rounds: stop.
+2. **Cap reached** — checks still fail or findings remain unresolved after
+   5 rounds: stop.
 3. **No progress** — the same failure signature or finding survives two
    consecutive rounds unchanged **and** it is the sole remaining blocker
    (or the rounds made no material progress overall): stop early; burning
