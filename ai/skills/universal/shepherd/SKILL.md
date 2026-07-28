@@ -420,12 +420,64 @@ is optional in addition, never a substitute for per-thread replies.
 - Do **not** re-enter the local challenge/review loops — the post-push
   cloud/bot review is the second-model check at this stage.
 - Push the fix commit (conventional message) **explicitly to the PR head**:
-  derive the remote whose URL matches `headRepositoryOwner` **and**
+  derive the remote whose **push** URL matches `headRepositoryOwner` **and**
   `headRepository` — owner and name both, since forks usually keep the
   base repo's name and a name-only match can select the upstream — and push
   `HEAD:<headRefName>` on that remote — an implicit `git push` can target a
   same-named branch on the wrong remote when `pushRemote`/`pushDefault` or
-  the upstream is misconfigured. Three safety rules for that push:
+  the upstream is misconfigured. Four safety rules for that push:
+  - Match on the **push** URL, never the fetch URL, reading it with
+    `git remote get-url --push --all "$remote"`. `remote.<name>.pushurl`
+    redirects where `git push "$remote"` actually sends, so a remote can
+    fetch from the head repo and push to a different repository entirely —
+    the base repo, say — and a fetch-URL match would clear it while the
+    commit lands in the wrong place. Three rules on that output:
+    - **Require exactly one destination.** `pushurl` is multi-valued and a
+      push delivers to every one configured ("pushing to a remote affects
+      all defined pushurls" — git-push(1)); `--all` is what reveals the
+      extras, since plain `--push` prints only the first. A
+      multi-destination push is also not atomic — a later URL failing
+      after an earlier one succeeded leaves the head updated behind a
+      non-zero exit, and the after-the-push replies below would never be
+      posted — so reject such a remote rather than push to it. When no
+      `pushurl` is set, `--all` prints the fetch URL, which is what
+      `git push` uses in that case, so the check stays correct.
+    - **Compare the whole destination, by equality.** Normalise it to host
+      plus path — drop a trailing `.git` and a trailing `/`, and lowercase
+      both sides, since GitHub and GHES treat owner and repository names
+      case-insensitively and a remote spelled `Owner/Repo` must not be
+      rejected against a canonical `owner/repo`. Then require the path to
+      equal `<headRepositoryOwner>/<headRepository>` — string equality,
+      never a regex and never a suffix test. A suffix test
+      happily accepts `ssh://git@other.example/<owner>/<name>.git` or a
+      local path ending in those same two segments; an interpolated regex
+      accepts a different repository whenever the name contains a `.`,
+      which GitHub permits. The host must be the PR's own host **or** a
+      documented clone endpoint of that provider — `ssh.github.com` (the
+      port-443 endpoint) and a GHES instance's separate SSH hostname are
+      legitimate and must not be rejected for differing from the web host.
+      Reject an https destination carrying userinfo, and any destination
+      carrying a query string **or fragment**: all three embed write
+      credentials, and git echoes the URL back in its own push errors, so
+      once the push runs the leak is no longer yours to prevent —
+      credentials belong in a credential helper. The fragment is worth
+      screening explicitly, because a URI parser strips it *before* the
+      comparison above: `https://host/<owner>/<name>.git#<secret>` would
+      pass that equality unnoticed while git still carries the secret. The ssh forms' fixed `git@` user is *not* a
+      credential (the key or agent authenticates) and must be accepted:
+      `git@github.com:<owner>/<name>.git` is the ordinary remote, and its
+      scp-style shape still normalises to that same host and path. Reject
+      local paths, remote helpers, and other transports; they never
+      address the PR head.
+    - **Never echo that URL.** A push URL can carry a write credential —
+      userinfo (`https://x-access-token:<token>@…`) is one carrier, a
+      `?access_token=…` query is another — and no redaction pattern is
+      provably complete, so the rule is "don't print it", not "redact it
+      well". Capture it into a variable
+      (`urls="$(git remote get-url --push --all "$remote")"`), run the
+      count and the comparison against that variable, and print only the
+      verdict. Never paste a raw push URL into a thread reply, PR comment,
+      or issue either.
   - Re-fetch `state` and `headRefOid` **immediately before** pushing and
     bind the push to what you saw
     (`--force-with-lease=<headRefName>:<headRefOid>`) — if someone
@@ -435,9 +487,19 @@ is optional in addition, never a substitute for per-thread replies.
     names may contain shell metacharacters — carry it in a quoted variable
     straight from the API (`ref="$(gh pr view … -q .headRefName)"`;
     `git push "$remote" "HEAD:$ref" …`), never spliced into command text.
-  - Immediately after the push succeeds, post the queued
+  - Treat that URL check as a screen, not proof, and **confirm the push
+    landed on the PR**: `url.<base>.pushInsteadOf` rewrites and ssh host
+    aliases mean the string you validated is not necessarily where git
+    delivered, and no amount of URL parsing settles that from the client
+    side. So after the push, re-fetch
+    `gh pr view <n> --repo "$repo" --json headRefOid` and confirm it now
+    equals the SHA you pushed — the provider is the authority on whether
+    the PR moved. Only once that matches, post the queued
     "fixed in `<sha>`" thread replies (step 4) **before** re-watching —
     the green path stops in step 2 and must not strand unanswered threads.
+    A push that "succeeded" against some other destination leaves the head
+    unmoved, and replying first would claim a fix the PR never received.
+
     **Re-read each thread as you post its reply**, because the gate and push
     put minutes between composing the reply and sending it: an edit or
     follow-up that landed in that window is real activity your reply does not
