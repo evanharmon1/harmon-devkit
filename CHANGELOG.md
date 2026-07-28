@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.11.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.11.0...v0.11.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **shepherd:** find unanswered comments by reply linkage, not timestamp ([#167](https://github.com/evanharmon1/harmon-devkit/issues/167)) ([555e28a](https://github.com/evanharmon1/harmon-devkit/commit/555e28ac56c1425f701e1e57940e220cfb5cd949))
+* **shepherd:** match the head remote on its push URL, not the fetch URL ([#168](https://github.com/evanharmon1/harmon-devkit/issues/168)) ([1687336](https://github.com/evanharmon1/harmon-devkit/commit/168733668ec11e2d6718ae44672141d6b0c2f29b)), closes [#162](https://github.com/evanharmon1/harmon-devkit/issues/162)
+
 ## [0.11.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.10.0...v0.11.0) (2026-07-28)
 
 
