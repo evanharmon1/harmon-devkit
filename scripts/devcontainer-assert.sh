@@ -21,7 +21,7 @@ fail() {
 }
 
 # renovate: datasource=npm depName=@devcontainers/cli
-DEVCONTAINER_CLI_VERSION=0.87.0
+DEVCONTAINER_CLI_VERSION=0.88.0
 
 devcontainer_cli() {
     if command -v devcontainer >/dev/null 2>&1; then
