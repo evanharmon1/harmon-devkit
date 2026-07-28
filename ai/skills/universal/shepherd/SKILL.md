@@ -20,6 +20,12 @@ PR is not done until CI/CD workflows pass *and* no unresolved review findings
 remain. This cap is independent of any other loop caps used earlier in the
 dev flow.
 
+**The repository's own policy outranks this file.** Where its `AGENTS.md`
+states a different shepherd cap or exit condition, follow `AGENTS.md` — it is
+the policy, this skill is the procedure. A repository whose `AGENTS.md`
+predates the P0/P1-gating dev flow still caps shepherding at four rounds, and
+that is the correct behavior there until it syncs.
+
 **This stage settles the low-priority findings.** Where the earlier dev-flow
 loops gate only on high-priority findings (in repos that run a
 severity-labelled second-model review, that is P0/P1), the ones they deferred
