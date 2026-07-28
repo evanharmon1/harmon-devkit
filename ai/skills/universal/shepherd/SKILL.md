@@ -126,15 +126,22 @@ and compare against the local branch and HEAD. Requirements, all hard:
   already filed**
   (`gh issue list --repo "$repo" --state all --search "<distinctive phrase>"`):
   the issue and the tick are two writes, so an earlier round can have created
-  the issue and then failed to record it, and a blind retry files it twice. Editing replaces the **whole** body, so treat it
-  as read-modify-write: re-fetch immediately before editing, apply the ticks
-  to that fresh copy, write it, then **re-fetch once more and confirm the
-  result is the text you wrote**. Re-fetching first only narrows the window —
-  the author or a bot can still edit between your read and your write, and
-  nothing in the API rejects a stale write. The verify step is what turns that
-  from a silent revert into something you notice: if the body is not what you
-  wrote, someone else's edit was overwritten, so re-apply your ticks on top of
-  the newer text and write again. Never drop or reword the other sections.
+  the issue and then failed to record it, and a blind retry files it twice.
+- **Record a `fixed in <sha>` tick only once that commit is on the PR head.**
+  The fix, its push, and the tick are separate steps, and a tick written first
+  survives a failed push or an interrupted session — leaving a checked entry
+  pointing at a commit the PR does not contain, which a later session reads as
+  settled. Queue the body update with the inline replies of step 5 and write it
+  after confirming the head advanced.
+- Editing replaces the **whole** body, so treat it as read-modify-write:
+  fetch, compose the ticks against that copy, then **fetch again immediately
+  before writing and compare**. If it changed, recompose on the newer text —
+  that is what catches an edit landing while you worked. Note the limit
+  honestly: a read *after* your own write proves nothing, because it returns
+  your text whether or not you overwrote someone. The API offers no conditional
+  update, so the window between that final read and the write is not
+  detectable — keep it to a single command, and never drop or reword the other
+  sections.
 - Reviews and inline comments:
   `gh pr view <n> --repo "$repo" --json reviews,reviewDecision,mergeStateStatus`
   plus `gh api --paginate repos/"$repo"/pulls/<n>/comments`
