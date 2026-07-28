@@ -172,15 +172,22 @@ and compare against the local branch and HEAD. Requirements, all hard:
     || { echo 'comment fetch failed — unknown, NOT answered'; exit 1; }
   jq -c --arg me "$me" 'add
       | group_by(.in_reply_to_id // .id)
-      | map({ root: (.[0].in_reply_to_id // .[0].id), path: .[0].path,
-              mine:   ([.[] | select(.user.login == $me
-                                     and .in_reply_to_id != null)
-                             | .created_at] | max),
-              theirs: ([.[] | select(.user.login != $me)
-                            | ([.created_at, .updated_at] | max)] | max) })
-      | map(select(.mine == null or .theirs >= .mine))
-      | map(.state = (if .mine == null then "unanswered"
-                      else "changed-since-reply" end))
+      | map( . as $t
+        | ([$t[] | select(.user.login == $me and .in_reply_to_id != null)
+                 | .created_at] | max) as $mine
+        | ([$t[] | select(.user.login != $me
+                          and ($mine == null or .created_at >= $mine))
+                 | .created_at] | max) as $new
+        | ([$t[] | select(.user.login != $me and $mine != null
+                          and .updated_at >= $mine and .created_at < $mine)
+                 | .updated_at] | max) as $edit
+        | { root: ($t[0].in_reply_to_id // $t[0].id), path: $t[0].path,
+            state: (if   $mine == null then "unanswered"
+                    elif $new  != null then "new-follow-up"
+                    elif $edit != null then "edited-since-reply"
+                    else null end),
+            at: ($new // $edit) })
+      | map(select(.state != null))
       | .[]' <<<"$comments"
   ```
 
@@ -191,21 +198,34 @@ and compare against the local branch and HEAD. Requirements, all hard:
   `[]` on success, which is not empty output, and a gate reading "any output
   means findings remain" could then never go green.
 
-  The two states are not settled the same way, and conflating them either
+  The three states are not settled the same way, and conflating them either
   misses findings or deadlocks the loop:
 
   - `unanswered` — you have never replied in this thread. Always a finding;
     answer it per step 4. Posting the reply advances `mine`, so the line
     clears on the next run. This is the state that #165 was filed about.
-  - `changed-since-reply` — you replied, and reviewer activity lands at or
-    after your reply. **Re-read the current body**: if the edit or follow-up
-    is material, answer it (which clears the line mechanically); if it is a
-    typo fix or other non-material change, nothing you can do advances
-    `mine` short of spamming the thread, so record the decision instead —
-    name the root ID and why it needs no reply, in the round summary or a
-    PR comment. Stop condition 1 requires that accounting by root ID, so a
-    non-material edit cannot be waved away silently, and a re-read alone
-    cannot hold the PR hostage forever.
+  - `new-follow-up` — a reviewer posted a **new** comment in the thread at or
+    after your reply. Also always a finding, with no exception for looking
+    minor: `AGENTS.md` requires a reply to every inline review comment in its
+    own thread, and a reply here advances `mine` and clears the line, so
+    nothing is gained by skipping it. Adjudicate the new comment and answer
+    it through the same root ID.
+  - `edited-since-reply` — no new comment; a reviewer **edited** an existing
+    one after your reply. This is the only state with an escape hatch, and it
+    needs one: replying again to an unchanged finding is spam, yet nothing
+    else advances `mine`. **Re-read the current body.** If the edit is
+    material, answer it (which clears the line mechanically); if it is a typo
+    fix or other non-material change, record the decision instead — name the
+    root ID and why it needs no reply, in the round summary or a PR comment.
+    Stop condition 1 requires that accounting by root ID, so a non-material
+    edit cannot be waved away silently, and a re-read alone cannot hold the
+    PR hostage forever.
+
+  Splitting `new-follow-up` from `edited-since-reply` is the point of
+  comparing `created_at` and `updated_at` separately. Collapse them into one
+  "changed since my reply" state and the escape hatch that edits legitimately
+  need silently extends to brand-new inline comments, which must always be
+  answered.
 
   Six details the shorter forms get wrong:
 
@@ -236,7 +256,7 @@ and compare against the local branch and HEAD. Requirements, all hard:
     finding after you replied stays hidden behind your later-created reply
     while its body says something new. Timestamps are ISO-8601 `Z`, so
     lexical `max`/`>=` is chronological. This does flag edits that changed
-    nothing material — that is what the `changed-since-reply` state above is
+    nothing material — that is what the `edited-since-reply` state above is
     for; a cheap re-read beats a missed finding.
   - **A `mine` timestamp only means *answered* if that reply was composed
     from the thread's current state.** The predicate compares clocks, not
@@ -472,10 +492,11 @@ loops indefinitely:
    unresolved — including the low-priority ones deferred into this stage,
    which count as resolved once their box is ticked with the outcome.
    **Re-run step 2's unanswered-thread enumeration as the last act before
-   reporting green**. No `unanswered` line may remain — that is a hard gate,
-   whatever the round count says. A remaining `changed-since-reply` line is
-   allowed only when this round's report names its root ID and says why the
-   change needs no reply; unnamed, it counts as a finding remaining. And no
+   reporting green**. No `unanswered` and no `new-follow-up` line may
+   remain — both are hard gates, whatever the round count says. A remaining
+   `edited-since-reply` line is allowed only when this round's report names
+   its root ID and says why the edit needs no reply; unnamed, it counts as a
+   finding remaining. And no
    output because the command errored is *unknown*, not *answered* — a failed
    fetch or identity lookup is never a pass. Run the check rather than
    recalling that you
