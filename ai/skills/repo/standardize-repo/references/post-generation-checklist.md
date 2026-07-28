@@ -282,8 +282,13 @@ Both owner types — the org-only follow-ups are in the next section.
 
 ### Org repos only (`github_org != author_git_provider_username`)
 
-- [ ] **[scriptable via gh]** Add the org **issue fields**. Needs `gh` with the
-      `admin:org` scope (`gh auth refresh -s admin:org`):
+The first two items apply only when `project_management: github` — the
+issue-field task is rendered for `github` **and** an org owner, so an org repo
+answering `linear`/`none` has no such task and should skip them.
+
+- [ ] **[scriptable via gh; `project_management: github` only]** Add the org
+      **issue fields**. Needs `gh` with the `admin:org` scope
+      (`gh auth refresh -s admin:org`):
 
   ```bash
   task setup:github-issue-fields
@@ -295,7 +300,8 @@ Both owner types — the org-only follow-ups are in the next section.
   > the wrong data type — GitHub cannot change a field's data type in place, so
   > rename or delete it in the org's issue-field settings and re-run.
 
-- [ ] **[manual — GitHub UI]** Customize the **`Domain`** options. The script
+- [ ] **[manual — GitHub UI; `project_management: github` only]** Customize the
+      **`Domain`** options. The script
       seeds `auth`/`billing`/`platform` only — add this product's real domains
       (from your ERD entities) in the org's issue-field settings. The field is
       org-wide while labels are per-repo, so each repo carries the `domain:` labels
