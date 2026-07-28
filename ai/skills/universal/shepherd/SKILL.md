@@ -112,12 +112,21 @@ and compare against the local branch and HEAD. Requirements, all hard:
   open finding and settle it like any other. If the workflow that deferred
   them left no such section, say so rather than assuming there was nothing to
   defer.
+- A ticked entry counts as settled only if it **carries its outcome** — a
+  commit sha, a decline reason, or an issue number. The description is
+  contributor-editable and is the only copy of these findings, so a bare
+  `- [x]` with nothing behind it settles nothing: treat it as open and say
+  why. The checkbox records a decision; it is not the decision.
 - **Tick each one off as you settle it**, in the same round, by editing the
   PR body (`gh pr edit <n> --repo "$repo" --body-file -`): `- [x] … — fixed
   in <sha>` / `declined: <reason>` / `filed as #<n>`. The checkbox is the
   durable settlement state — without it, the next return to this step reads
   the same entries as open and re-adjudicates them, duplicating follow-up
-  issues and burning rounds. Editing replaces the **whole** body, so treat it
+  issues and burning rounds. Before filing a follow-up, **search for one you
+  already filed**
+  (`gh issue list --repo "$repo" --state all --search "<distinctive phrase>"`):
+  the issue and the tick are two writes, so an earlier round can have created
+  the issue and then failed to record it, and a blind retry files it twice. Editing replaces the **whole** body, so treat it
   as read-modify-write: re-fetch immediately before editing, apply the ticks
   to that fresh copy, write it, then **re-fetch once more and confirm the
   result is the text you wrote**. Re-fetching first only narrows the window —
