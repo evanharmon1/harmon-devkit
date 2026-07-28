@@ -86,7 +86,7 @@ jobs:
         with:
           lint-tools: "true"
           gitleaks: "true"
-      - uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1.0.148
+      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         # GH_TOKEN lets Claude's own `gh` calls (e.g. `gh pr create`)
         # authenticate as the CI app bot with the narrow token, matching the git
         # identity above.
