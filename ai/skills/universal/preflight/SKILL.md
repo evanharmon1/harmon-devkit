@@ -125,12 +125,15 @@ run instead of failing the flow:
   only 30 labels):
   `gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' | grep -qx in-progress && gh issue edit <n> --repo "$repo" --add-label in-progress`
 - Comment via stdin with a quoted heredoc so the branch/session values are
-  never re-evaluated by the shell (a branch name can contain `$(…)`):
+  never re-evaluated by the shell (a branch name can contain `$(…)`). Use a
+  delimiter that cannot occur in the body — quoting disables expansion, not
+  termination, so a body containing a literal `EOF` line would end a
+  fixed-`EOF` heredoc early:
 
   ```sh
-  gh issue comment <n> --repo "$repo" --body-file - <<'EOF'
+  gh issue comment <n> --repo "$repo" --body-file - <<'CLAIM_BODY_9f3k'
   Claiming — starting implementation on branch <branch> (session <name>).
-  EOF
+  CLAIM_BODY_9f3k
   ```
 
 After claiming, re-fetch the assignees

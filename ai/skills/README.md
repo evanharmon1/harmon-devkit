@@ -14,6 +14,7 @@ ai/skills/
 ├── universal/   # every repo gets these
 │   ├── start/SKILL.md       # /start — orient + name the session
 │   ├── preflight/SKILL.md   # /preflight — sanity-check + claim the issue
+│   ├── shepherd/SKILL.md    # /shepherd — watch an open PR's CI/reviews to green
 │   ├── reflect/SKILL.md     # /reflect — end-of-session retro + status tables
 │   ├── close/SKILL.md       # /close — wrap up + rename done-<name>
 │   └── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
@@ -25,9 +26,10 @@ ai/skills/
     └── standardize-repo/SKILL.md
 ```
 
-`universal/` ships the dev-workflow session suite — four user-invoked slash
+`universal/` ships the dev-workflow session suite — five user-invoked slash
 commands (`disable-model-invocation: true`) covering the phases of a working
-session — plus `track-work`, which is deliberately **not** slash-only. Tracking
+session, from naming it to shepherding its PR to green — plus `track-work`,
+which is deliberately **not** slash-only. Tracking
 mistakes happen mid-flow, while a PR body is being written and nobody is typing
 a command, so it must be model-invocable to fire at all. It also bundles
 executable checks under `assets/` that harmon-devkit's own CI runs against every
