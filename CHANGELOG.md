@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.10.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.9.0...v0.10.0) (2026-07-28)
+
+
+### Features
+
+* add /shepherd skill for driving an open PR to green ([#158](https://github.com/evanharmon1/harmon-devkit/issues/158)) ([29175ba](https://github.com/evanharmon1/harmon-devkit/commit/29175ba1befa6877ff56f9753808ea210d772ecd))
+* **track-work:** add the issue/PR tracking-hygiene skill and pre-merge guard ([#159](https://github.com/evanharmon1/harmon-devkit/issues/159)) ([2a28b5b](https://github.com/evanharmon1/harmon-devkit/commit/2a28b5b11f81d2ebb89700e25eb09c122f643ca3))
+
 ## [0.9.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.8.7...v0.9.0) (2026-07-27)
 
 
