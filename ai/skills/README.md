@@ -16,7 +16,8 @@ ai/skills/
 │   ├── preflight/SKILL.md   # /preflight — sanity-check + claim the issue
 │   ├── shepherd/SKILL.md    # /shepherd — watch an open PR's CI/reviews to green
 │   ├── reflect/SKILL.md     # /reflect — end-of-session retro + status tables
-│   └── close/SKILL.md       # /close — wrap up + rename done-<name>
+│   ├── close/SKILL.md       # /close — wrap up + rename done-<name>
+│   └── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
 ├── backend/     # server / data / Convex
 ├── frontend/    # React / TanStack / shadcn / design
 ├── infra/       # Terraform / Cloudflare / CI
@@ -27,7 +28,27 @@ ai/skills/
 
 `universal/` ships the dev-workflow session suite — five user-invoked slash
 commands (`disable-model-invocation: true`) covering the phases of a working
-session, from naming it to shepherding its PR to green.
+session, from naming it to shepherding its PR to green — plus `track-work`,
+which is deliberately **not** slash-only. Tracking
+mistakes happen mid-flow, while a PR body is being written and nobody is typing
+a command, so it must be model-invocable to fire at all. It also bundles
+executable checks under `assets/` that harmon-devkit's own CI runs against every
+PR body (`tracking-guard.yml`), so the skill's rules and the enforced rules are
+the same code.
+
+**harmon-devkit uses the `universal/` skills itself.** Each is symlinked into
+`.claude/skills/` — consumers vendor a pinned copy, but the source repo cannot
+vendor from itself without waiting on its own release. The symlink makes the
+authored skill the live one, so a change is dogfooded in the session that writes
+it instead of a release and a pin bump later:
+
+```sh
+ln -s ../../ai/skills/universal/<name> .claude/skills/<name>
+```
+
+Safe with the repo's gates: `lint-hygiene.sh` skips symlinks, `.claude/**` is
+excluded from markdownlint, and `verify-skills.sh` only walks `ai/skills/`, so
+nothing is linted or counted twice.
 
 | Category | For |
 | --- | --- |

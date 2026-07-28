@@ -62,6 +62,7 @@ tasks:
       - task: test:ci-results
       - task: test:codex-review
       - task: test:release-title
+      - task: test:notify-release
       - task: test:hooks
       - task: test:devcontainer:permissions
       - task: test
@@ -165,6 +166,25 @@ tasks:
     cmds:
       - ./scripts/require-release-title.sh {{.RELEASE_CONTENT_PATHS}}
 
+  guard:closing-keywords:
+    # The CI counterpart of the track-work skill — enforced by tracking-guard.yml
+    # at PR time because the thing it checks (the PR body, which GitHub acts on at
+    # merge) does not exist locally. A `Closes #N` over an issue that still holds
+    # outstanding work deletes that work from the backlog the moment the PR merges.
+    # The check ships inside the skill so consumers vendor it; this target is what
+    # keeps devkit's own PRs honest. All three paths a closing keyword can take to
+    # main are checked — the body, the title (squash-merge makes it the commit
+    # subject), and the commit messages (they land on main under rebase/merge, and
+    # under squash too because squash_merge_commit_message is COMMIT_MESSAGES).
+    # PR_COMMITS_FILE is optional; empty means none supplied. Pre-flight before
+    # opening a PR:
+    #   PR_TITLE="<title>" PR_BODY="$(cat body.md)" task guard:closing-keywords
+    # (CI passes PR_TITLE/PR_BODY/PR_COMMITS_FILE + GH_REPO; unit-tested by
+    # `task test:track-work`.)
+    desc: "Guard: a PR must not auto-close an issue holding unfinished work"
+    cmds:
+      - ./ai/skills/universal/track-work/assets/check-closing-keywords.sh --body-env PR_BODY --title-env PR_TITLE --commits-file "${PR_COMMITS_FILE:-}"
+
   format:
     desc: Auto-format code
     cmds:
@@ -201,6 +221,7 @@ tasks:
       - test:skills
       - test:hygiene
       - test:archive-hook
+      - test:track-work
 
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)
@@ -221,6 +242,16 @@ tasks:
     desc: Unit-test the release-content title guard (require-release-title.sh)
     cmds:
       - ./scripts/test-release-title.sh
+
+  test:notify-release:
+    desc: Unit-test the harmon-init release dispatch (offline, stubbed gh)
+    cmds:
+      - ./scripts/test-notify-devkit-release.sh
+
+  test:track-work:
+    desc: Unit-test the track-work skill's issue/PR tracking checks (offline)
+    cmds:
+      - ./scripts/test-track-work.sh
 
   test:devcontainer:root:
     desc: Smoke test the primary (AI bot) devcontainer via the devcontainers CLI
