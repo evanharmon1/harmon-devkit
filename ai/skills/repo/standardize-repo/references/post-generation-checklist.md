@@ -229,25 +229,87 @@ push so the remote exists.
       workflow already requests `packages: write` and logs in with
       `GITHUB_TOKEN`; org package-creation policy is a UI setting.
 
-### Org repos only (`github_org != author_git_provider_username`)
+### Project management (when `project_management: github`)
 
-- [ ] **[scriptable via gh]** Create/sync the org **Project V2**. The generated
-      repo ships an idempotent task; run it (needs the `project` scope —
+Both owner types — the org-only follow-ups are in the next section.
+
+- [ ] **[scriptable via gh]** Create/sync the owner's default **Project V2**. The
+      generated repo ships an idempotent task; run it (needs the `project` scope —
       `gh auth refresh -s project`):
 
   ```bash
   task setup:github-project
   ```
 
-  > It looks the project up by title, so it is safe to re-run and safe to run
-  > from any org repo (the first run creates it, later runs only reconcile). It
-  > seeds the full `Status` pipeline plus the Priority/Estimate/Product/Agent
-  > fields and never deletes existing options or fields.
-  > `project-automation.yml` and the `claude-*` workflows drive `Status`: the
-  > task records the project id in the `ORG_PROJECT_ID` org variable those
-  > workflows read (falling back to the project's title), so it no longer has to
-  > be the org's project number 1. For the exact GraphQL (or to run it by hand),
-  > see `scripts/setup-github-project.sh`.
+  > It looks the project up by title, so it is safe to re-run and safe to run from
+  > any of the owner's repos (the first run creates it, later runs only
+  > reconcile). It seeds the full `Status` pipeline plus the **`Size`** number
+  > field — `Size` is the numeric estimate, because only project number fields sum
+  > in view group headers — and never deletes existing options or fields.
+  > **On an org** it also records the project id in the `ORG_PROJECT_ID` org
+  > variable that `project-automation.yml` and the `claude-*` workflows read
+  > (falling back to the project's title), so it no longer has to be the org's
+  > project number 1; the remaining metadata are org *issue* fields (next
+  > section), where Priority/Effort and the date fields are GitHub built-ins left
+  > at their defaults. **On a personal account** there are no issue fields at all
+  > (they are org-only, so no Priority/Effort/date built-ins either) — the script
+  > instead creates Priority/Product/Agent/Domain/Layer as project fields, and
+  > `Status` automation is a separate follow-up: the board exists, but issue/PR
+  > status is not auto-synced. For the exact GraphQL (or to run it by hand), see
+  > `scripts/setup-github-project.sh`.
+
+- [ ] **[manual — GitHub UI; personal accounts]** Customize the **`Domain`**
+      options in the Project UI — the script seeds `auth`/`billing`/`platform`
+      only, so add this product's real domains (from your ERD entities). `Layer`
+      (`ui`/`logic`/`data`/`integration`) is product-independent and normally needs
+      no edits. Adding an option to an already-created field is manual — re-running
+      the setup task will not do it. Org repos do this in the org's issue-field
+      settings instead (next section).
+
+- [ ] **[scriptable via gh]** Seed this repo's **labels** — the five starter
+      families (concerns / source / workflow / `layer:` / `domain:`). Labels are
+      **per-repo** (there is no shared org label pool), so run it in every repo:
+
+  ```bash
+  task setup:github-labels
+  ```
+
+  > Create-or-update (`--force`); it never deletes, so pruning GitHub's defaults —
+  > or a pre-`ui`/`logic`/`data`/`integration` repo's stale `layer:frontend`,
+  > `layer:backend`, `layer:infra` labels — stays manual. Whenever you add a
+  > `domain:` option, add it to `scripts/setup-github-labels.sh` **and re-run this
+  > task**: editing the script alone does not touch the live labels.
+
+### Org repos only (`github_org != author_git_provider_username`)
+
+The first two items apply only when `project_management: github` — the
+issue-field task is rendered for `github` **and** an org owner, so an org repo
+answering `linear`/`none` has no such task and should skip them.
+
+- [ ] **[scriptable via gh; `project_management: github` only]** Add the org
+      **issue fields**. Needs `gh` with the `admin:org` scope
+      (`gh auth refresh -s admin:org`):
+
+  ```bash
+  task setup:github-issue-fields
+  ```
+
+  > Adds the org's **Product**, **Agent**, **Domain**, and **Layer** issue fields
+  > (public preview). Idempotent and non-destructive: an existing field is left
+  > as-is, options and all, and the script warns when a name already exists with
+  > the wrong data type — GitHub cannot change a field's data type in place, so
+  > rename or delete it in the org's issue-field settings and re-run.
+
+- [ ] **[manual — GitHub UI; `project_management: github` only]** Customize the
+      **`Domain`** options. The script
+      seeds `auth`/`billing`/`platform` only — add this product's real domains
+      (from your ERD entities) in the org's issue-field settings. The field is
+      org-wide while labels are per-repo, so each repo carries the `domain:` labels
+      for the domains it actually uses: add those to
+      `scripts/setup-github-labels.sh` and re-run `task setup:github-labels` in
+      that repo. `Layer` (`ui`/`logic`/`data`/`integration`) is product-independent
+      and normally needs no edits. Adding an option to an already-created field is
+      manual — re-running the setup task will not do it.
 
 - [ ] **[scriptable via gh]** Add the bot machine account
       (`<author_git_provider_username>-bot`) as a **Write** collaborator (it does
