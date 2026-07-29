@@ -310,13 +310,17 @@ Both owner types — the org-only follow-ups are in the next section.
   >   reads as complete while the backlog is missing.
   > - **The workflows are capped per project** — 1 on Free, 5 on Pro/Team, 20 on
   >   Enterprise. "Every repo feeds the one board" holds only under that cap, and
-  >   nothing here gets you past it: an `actions/add-to-project` fallback would
-  >   need a Projects-write token (the repo `GITHUB_TOKEN` cannot write an
-  >   owner-level project, and the bot PAT is deliberately org-**read**-only) and
-  >   still would not cover fork PRs, which cannot reach secrets. Past the cap,
-  >   treat board coverage as knowingly incomplete rather than assumed. The
-  >   issue-form `projects:` key is not a substitute either: it covers only
-  >   form-created issues and hard-codes a project number.
+  >   **no fallback is specified here** — past it, treat board coverage as
+  >   knowingly incomplete rather than assumed. Closing the gap needs an
+  >   `actions/add-to-project` workflow with a Projects-write token: the repo
+  >   `GITHUB_TOKEN` cannot write an owner-level project and the bot PAT is
+  >   deliberately org-**read**-only, so on an org that means the CI App
+  >   (`organization_projects: write`, which its manifest grants for org owners
+  >   only), and covering fork PRs additionally means `pull_request_target`,
+  >   which must never check out or execute fork code. That is an unbuilt design,
+  >   not a step you can tick here. The issue-form `projects:` key is not a
+  >   substitute either: it covers only form-created issues and hard-codes a
+  >   project number.
 
 ### Org repos only (`github_org != author_git_provider_username`)
 
