@@ -1496,6 +1496,72 @@ issue_is 87 '> - item
 - [x] outside the quote
 ' || fail "a shallower line must still pop the quoted container"
 
+echo "==> a blockquote inside a list item is the container, not indentation"
+write_issue 88 '- outer
+    > - [ ] quoted criterion nested under the item
+'
+[ "$(run_tick 88 --index 1)" = 0 ] || fail "a quoted nested criterion should be tickable"
+issue_is 88 '- outer
+    > - [x] quoted criterion nested under the item
+' || fail "the quote marker column must not count as indentation"
+
+echo "==> a top-level fence ends the list item before it"
+write_issue 89 '- item
+
+```text
+x
+```
+
+    - [ ] sample in an indented code block
+
+- [ ] the real criterion
+'
+[ "$(run_tick 89 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 89 '- item
+
+```text
+x
+```
+
+    - [ ] sample in an indented code block
+
+- [x] the real criterion
+' || fail "a fence delimiter closes the containers it has left"
+
+echo "==> a fence inside a list item leaves that item open"
+write_issue 90 '- item
+
+  ```text
+  x
+  ```
+
+  - [ ] nested criterion after a fence inside the item
+'
+[ "$(run_tick 90 --index 1)" = 0 ] || fail "the item should survive its own fenced block"
+issue_is 90 '- item
+
+  ```text
+  x
+  ```
+
+  - [x] nested criterion after a fence inside the item
+' || fail "a fence at the item content column closes nothing"
+
+echo "==> an ordered marker over nine digits opens no container either"
+write_issue 91 '1234567890. text
+
+            - [ ] sample
+
+- [ ] the real criterion
+'
+[ "$(run_tick 91 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 91 '1234567890. text
+
+            - [ ] sample
+
+- [x] the real criterion
+' || fail "a ten-digit marker is prose, so it seeds no container"
+
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
 - [ ] the real criterion

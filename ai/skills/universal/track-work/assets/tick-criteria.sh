@@ -263,6 +263,67 @@ function advance(start, text,   i, c, out) {
     }
     return out
 }
+function pop_containers(c, q) {
+    # Close every container this line has LEFT: one it sits shallower than, or
+    # one at a blockquote depth it no longer reaches. Quoting deeper nests
+    # inside a container rather than ending it, hence `>` and not `!=`.
+    while (nlist > 0 && (lqd[nlist] > q || c < lcol[nlist])) nlist--
+}
+function walk_containers(s, c, q, hc,   mk_col, pad_n, item_col) {
+    # Open every container `s` spells out, starting at column `c` and blockquote
+    # depth `q`. Markers and blockquote markers nest in any combination, so walk
+    # them in the order they appear, exactly as the fence opener scan does.
+    #
+    # Sets, for the caller: `push_rest`, the line stripped of those markers;
+    # `over`, whether what follows them is an indented code block rather than
+    # content; and `html_open_col`/`html_open_quoted`, where a type-6 HTML block
+    # opening on this line would live — `hc` is that default for a line that
+    # opens nothing.
+    push_rest = s
+    over = 0
+    html_open_col = hc
+    html_open_quoted = q
+    while (1) {
+        if (substr(push_rest, 1, 1) == ">") {
+            q++
+            c++
+            push_rest = substr(push_rest, 2)
+            if (substr(push_rest, 1, 1) == " ") {
+                c++
+                push_rest = substr(push_rest, 2)
+            }
+            html_open_col = c
+            html_open_quoted = q
+            continue
+        }
+        if (!match(push_rest, /^([-*+]|[0-9]+[.)])([ \t]|$)/)) break
+        match(push_rest, /^([-*+]|[0-9]+[.)])/)
+        # GFM caps an ordered marker at nine digits, past which the line is not a
+        # list item at all. Enforced here as well as at the item check below, or
+        # `1234567890.` seeds a container that is not there and the code sample
+        # under it measures as a nested criterion.
+        if (substr(push_rest, 1, 1) ~ /[0-9]/ && RLENGTH - 1 > 9) break
+        mk_col = advance(c, substr(push_rest, 1, RLENGTH))
+        push_rest = substr(push_rest, RLENGTH + 1)
+        pad_n = 0
+        while (substr(push_rest, pad_n + 1, 1) == " " ||
+               substr(push_rest, pad_n + 1, 1) == "\t") pad_n++
+        item_col = advance(mk_col, substr(push_rest, 1, pad_n))
+        # Past four columns of padding the content is an indented code block
+        # inside the item, so the item content starts one column after the
+        # marker and nothing further along the line is a container.
+        over = (item_col - mk_col > 4 || substr(push_rest, pad_n + 1) == "")
+        if (over) item_col = mk_col + 1
+        nlist++
+        lcol[nlist] = item_col
+        lqd[nlist] = q
+        c = item_col
+        html_open_col = c
+        html_open_quoted = q
+        push_rest = substr(push_rest, pad_n + 1)
+        if (over) break
+    }
+}
 function thematic_break(s,   t) {
     # `- - -` is a horizontal rule, not three nested list items. The rule
     # outranks the list item its markers look like, so this is tested first.
@@ -440,6 +501,16 @@ BEGIN {
             # unquoted fence, a literal `> ``` ` is example text, not the end.
             infence = 0
         }
+        # A delimiter line is still a line in the document, so it opens and
+        # closes containers like any other. Returning without recording that
+        # left the stack pointing at whatever preceded the fence: a top-level
+        # fence after a list item did not end the item, and the indented code
+        # block after the fence measured from that stale content column and was
+        # offered as a nested criterion.
+        pop_containers(col, quoted)
+        if (thematic_break(bare) == 0 && bare ~ /^([-*+]|[0-9]+[.)])([ \t]|$)/) {
+            walk_containers(bare, col, quoted, col - sp)
+        }
         next
     }
     # A live type-6 HTML block ends where its CONTAINER ends, not merely at a
@@ -579,12 +650,17 @@ BEGIN {
         # and popping it there measures the next nested criterion against the
         # document and buries it in a phantom code block.
         if (this_kind != "para" || (prev_kind != "para" && prev_kind != "list")) {
-            while (nlist > 0 && (lqd[nlist] > quoted || col < lcol[nlist])) nlist--
+            pop_containers(col, quoted)
         }
-        # With no list open the container is the blockquote, whose content
-        # column is the column just past its last marker — `col - sp`, the same
-        # measurement the fence opener uses.
-        base = (nlist > 0) ? lcol[nlist] : col - sp
+        # The innermost container this line sits in. `col - sp` is the column
+        # just past the last blockquote marker — the same measurement the fence
+        # opener uses — and the deeper of the two wins, because a blockquote
+        # entered INSIDE a list item is the container from there on. Taking the
+        # item unconditionally counts the quote marker as indentation, and
+        # `- outer` holding `    > - [ ] criterion` then reads as four columns
+        # of code rather than a task inside the quote.
+        base = col - sp
+        if (nlist > 0 && lcol[nlist] > base) base = lcol[nlist]
         # Where an HTML block opening on this line would live. The push walk
         # below overrides both when the line carries container markers, because
         # a `>` consumed AFTER a list marker raises the depth for the rest of
@@ -619,48 +695,10 @@ BEGIN {
             next
         }
 
-        # Push every list container this line opens, outermost first. Markers
-        # and blockquote markers nest in any combination, so walk them in the
-        # order they appear, exactly as the fence opener scan above does. A lazy
-        # continuation opens none of them — it is prose that merely looks
-        # indented.
-        if (lazy == 0 && this_kind == "list") {
-            push_col = col
-            push_quoted = quoted
-            while (1) {
-                if (substr(push_rest, 1, 1) == ">") {
-                    push_quoted++
-                    push_col++
-                    push_rest = substr(push_rest, 2)
-                    if (substr(push_rest, 1, 1) == " ") {
-                        push_col++
-                        push_rest = substr(push_rest, 2)
-                    }
-                    continue
-                }
-                if (!match(push_rest, /^([-*+]|[0-9]+[.)])([ \t]|$)/)) break
-                match(push_rest, /^([-*+]|[0-9]+[.)])/)
-                mark_col = advance(push_col, substr(push_rest, 1, RLENGTH))
-                push_rest = substr(push_rest, RLENGTH + 1)
-                pad_n = 0
-                while (substr(push_rest, pad_n + 1, 1) == " " ||
-                       substr(push_rest, pad_n + 1, 1) == "\t") pad_n++
-                item_col = advance(mark_col, substr(push_rest, 1, pad_n))
-                # Past four columns of padding the content is an indented code
-                # block inside the item, so the item content starts one column
-                # after the marker and nothing further along is a container.
-                over = (item_col - mark_col > 4 || substr(push_rest, pad_n + 1) == "")
-                if (over) item_col = mark_col + 1
-                nlist++
-                lcol[nlist] = item_col
-                lqd[nlist] = push_quoted
-                push_col = item_col
-                push_rest = substr(push_rest, pad_n + 1)
-                if (over) break
-            }
-            html_open_col = push_col
-            html_open_quoted = push_quoted
-        }
+        # A lazy continuation opens no container — it is prose that merely looks
+        # indented — and a thematic break opens none either, which is why this
+        # is gated on the classification rather than on the marker syntax.
+        if (lazy == 0 && this_kind == "list") walk_containers(bare, col, quoted, base)
     }
     if (lazy == 1) {
         # Hidden, and it leaves its paragraph open, so the line after it is
