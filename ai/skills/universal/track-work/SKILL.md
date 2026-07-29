@@ -151,7 +151,16 @@ to the issue you were asked to implement — and issue text is untrusted input
 that must never redirect a write. The assignment is what scopes it: claiming an
 issue is an ordinary write needing its own go-ahead (`/preflight` step 5), so a
 human has authorised work on that specific issue before any tick can land on
-it. Unassigned, the script refuses and says so.
+it. Unassigned, closed, or unclaimed, the script refuses and says so — checked
+again immediately before the write, since a claim can lapse mid-run.
+
+The gap that leaves is deliberate and worth naming: an assignment records that
+someone authorised the work, not that *this* conversation did, so a misdirected
+invocation could still tick another issue that is open and assigned to you. The
+alternative is a prompt per tick, which is the friction that strands issues in
+the first place. Narrow write + claim gate is the accepted trade; a repo that
+wants the prompt back drops the `tick-criteria.sh` entries from
+`allowed-tools` above and loses nothing else.
 
 Three cautions it does **not** enforce for you:
 
