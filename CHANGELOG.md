@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.13.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.12.0...v0.13.0) (2026-07-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* `/start` and `/reflect` are now `/orient` and `/retro`. Consumer repos pick the rename up on their next skills-sync pin bump; the sync removes managed directories the pin no longer ships, so no manual migration is needed.
+
+### Features
+
+* rename /start to /orient and /reflect to /retro, add /implement ([#196](https://github.com/evanharmon1/harmon-devkit/issues/196)) ([b3211f1](https://github.com/evanharmon1/harmon-devkit/commit/b3211f1557a486bce462157d00d809479a2b6c75))
+
+
+### Bug Fixes
+
+* **codex-review:** adopt harmon-init v4.8.1's P0/P1/P2 review contract ([#195](https://github.com/evanharmon1/harmon-devkit/issues/195)) ([e1635ea](https://github.com/evanharmon1/harmon-devkit/commit/e1635ea3518bd25e6521a4a740352457719994c6)), closes [#180](https://github.com/evanharmon1/harmon-devkit/issues/180)
+* **preflight:** flag Copier-template-managed targets before implementation ([#202](https://github.com/evanharmon1/harmon-devkit/issues/202)) ([0475c29](https://github.com/evanharmon1/harmon-devkit/commit/0475c2980951b9ae39da59ac3870db252576ba28))
+* **track-work:** enumerate only the checkboxes GitHub renders as criteria ([#200](https://github.com/evanharmon1/harmon-devkit/issues/200)) ([ecf7bb6](https://github.com/evanharmon1/harmon-devkit/commit/ecf7bb610c6f34fce05dab6b8e40d426d6110295)), closes [#189](https://github.com/evanharmon1/harmon-devkit/issues/189)
+* **track-work:** search the target repo for duplicates before filing ([#205](https://github.com/evanharmon1/harmon-devkit/issues/205)) ([7c86fef](https://github.com/evanharmon1/harmon-devkit/commit/7c86fef5d5db7c74724d78df41d26abe1cabde87))
+
 ## [0.12.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.11.1...v0.12.0) (2026-07-29)
 
 
