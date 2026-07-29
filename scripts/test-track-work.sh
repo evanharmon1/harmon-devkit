@@ -486,10 +486,17 @@ board_stub "$on_board"
     fail "a missing option should exit 3"
 [ ! -s "$tmp/mutations.log" ] || fail "a missing option must write nothing"
 
-echo "==> a missing Agent field (org issue field) skips without failing the Status write"
-board_stub '{"data":{"repository":{"issue":{"projectItems":{"nodes":[{"id":"I_1","project":{"id":"P_2","title":"Other Board"}}]}}}}}'
-[ "$(run_status --issue 5 --status "Todo" --agent "Claude Code" --project "Other Board")" = 0 ] ||
-    fail "Status applying is enough for exit 0"
+echo "==> a partial apply is exit 4, never 0 — a skipped Status must not hide behind a written Agent"
+board_stub "$on_board"
+[ "$(run_status --issue 5 --status "Ready to Merge" --agent "Claude Code")" = 4 ] ||
+    fail "a skipped Status with a written Agent must report partial, not success"
+grep -q 'F_agent' "$tmp/mutations.log" || fail "the resolvable half should still be written"
+if grep -q 'F_status' "$tmp/mutations.log"; then fail "the unresolvable Status must not be written"; fi
+
+echo "==> every requested field applying is exit 0"
+board_stub "$on_board"
+[ "$(run_status --issue 5 --status "Todo" --agent "Claude Code")" = 0 ] ||
+    fail "all requested fields applying should exit 0"
 
 echo "==> --dry-run resolves without mutating"
 board_stub "$on_board"

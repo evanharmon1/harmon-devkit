@@ -33,11 +33,14 @@
 #
 # Needs the `project` token scope: gh auth refresh -s read:project,project
 #
-# Exit: 0 = at least one field applied (or resolved cleanly under --dry-run),
+# Exit: 0 = every requested field applied (or resolved cleanly under --dry-run),
 #       1 = a field resolved but the write failed,
 #       2 = usage/environment error (could not verify — treat as unsafe),
 #       3 = nothing to do: the issue is on no board, or no requested field or
 #           option exists on it. Benign — the caller carries on.
+#       4 = partial: some requested fields applied and some were skipped. Kept
+#           distinct from 0 so a Status that never moved cannot hide behind an
+#           Agent that did — the caller must not report a claim it did not make.
 set -euo pipefail
 
 usage() {
@@ -173,6 +176,7 @@ if ! fields=$(gh api graphql \
     exit 2
 fi
 
+requested=0
 applied=0
 
 # Resolve one field + option and write it. A field or option the board does not
@@ -199,7 +203,7 @@ apply_field() {
 
     if [ "$dry_run" -eq 1 ]; then
         echo "would set $field_name = $option_name on '$board' ($repo#$issue)"
-        applied=1
+        applied=$((applied + 1))
         return 0
     fi
 
@@ -210,22 +214,32 @@ apply_field() {
         -F p="$project_id" -F i="$item_id" -F f="$field_id" -F v="$option_id" >/dev/null || return 1
 
     echo "set $field_name = $option_name on '$board' ($repo#$issue)"
-    applied=1
+    applied=$((applied + 1))
 }
 
 rc=0
 if [ -n "$status" ]; then
+    requested=$((requested + 1))
     apply_field "Status" "$status" || rc=1
 fi
 if [ -n "$agent" ]; then
+    requested=$((requested + 1))
     apply_field "Agent" "$agent" || rc=1
 fi
 
 if [ "$rc" -ne 0 ]; then
     exit 1
 fi
-if [ "$applied" -eq 1 ]; then
+if [ "$applied" -eq "$requested" ]; then
     exit 0
+fi
+if [ "$applied" -gt 0 ]; then
+    # Partial. Counting any single success as "applied" would let a skipped
+    # Status hide behind a written Agent, and the caller would report a claim
+    # for a card that never moved. Distinguish it so the caller can say which
+    # half landed.
+    echo "applied $applied of $requested requested field(s) — see the skips above" >&2
+    exit 4
 fi
 # Everything requested was skipped — the board exists but does not speak this
 # vocabulary. Benign: the label and assignee still carry the claim.

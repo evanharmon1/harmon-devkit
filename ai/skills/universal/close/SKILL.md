@@ -37,10 +37,27 @@ read it in the UI) — never guess.
     Nothing to do.
   - **Merged / issue closed** — nothing to release, but say so.
   - **Neither** — the session stopped mid-flight. Surface it and offer the
-    commands to hand the work back: move the card off `In Progress` (to
-    `Todo`, or `Agent Queue` if it should stay queued for an agent), drop the
-    `agent:*` label, and comment why. Do not run them unasked — this is the
-    user's call, and they may be resuming tomorrow.
+    commands to hand the work back. `/preflight` set **four** markers, and a
+    hand-back that clears only some leaves the issue still advertising itself
+    as held — which is the exact failure this step exists to prevent. All
+    four:
+
+    ```sh
+    gh issue edit <n> --repo <owner/repo> --remove-assignee @me \
+      --remove-label agent:claude-code
+    <track-work-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
+      --status Todo   # or "Agent Queue" if it should stay queued for an agent
+    gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
+    ```
+
+    The `Agent` field is the fourth. `set-issue-status.sh` only *sets*
+    single-select options, so clearing it is manual — `gh project item-edit
+    --clear` on the item, or the board UI. Say so rather than leaving it set;
+    an `Agent` value with no `In Progress` status still reads as "an agent has
+    this".
+
+    Do not run any of it unasked — this is the user's call, and they may be
+    resuming tomorrow.
 - List anything left dangling as explicit handoff bullets for the next
   session.
 

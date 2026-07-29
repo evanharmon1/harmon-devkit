@@ -88,7 +88,9 @@ and compare against the local branch and HEAD. Requirements, all hard:
   and hand the fix decision to the maintainer.
 
 Once the PR is confirmed `OPEN` and the checkout matches, move the claimed
-issue's card to `In Review` — see [§7](#7-move-the-project-card).
+issue's card to `Verifying` while checks run — see
+[§7](#7-move-the-project-card), which is also where the rules live for *which*
+issue may be moved at all.
 
 ## 2. Watch
 
@@ -585,7 +587,10 @@ loops indefinitely:
    "green but awaiting the maintainer/required approval" — say that, and
    list unresolved threads you answered with rejections (they stay
    unresolved until the maintainer resolves them). Move the claimed issue's
-   card to `Ready to Merge` ([§7](#7-move-the-project-card)), then stop.
+   card ([§7](#7-move-the-project-card)) — `Ready to Merge` only when
+   `reviewDecision` is `APPROVED`, otherwise `In Review`, because a `DRAFT`,
+   `BLOCKED`, or `REVIEW_REQUIRED` PR is green *and still waiting on a human*.
+   Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
    5 rounds: stop.
 3. **No progress** — the same failure signature or finding survives two
@@ -610,36 +615,63 @@ that is never released is worse than no claim at all: the board keeps showing
 an agent mid-flight on work that is finished or abandoned, and the next
 reader trusts it. So shepherd advances the same card as the PR moves.
 
-**Which issue.** `gh pr view <n> --repo "$repo" --json closingIssuesReferences`
-returns only issues linked by a *closing* keyword — and `Refs #N` is the
-default here, so that list is usually empty and is never sufficient on its
-own. Take the issue `/preflight` claimed this session; failing that, the
-`Refs`/`Closes` numbers in the PR body. If neither names an issue, there is
-nothing to move — skip the step rather than guessing. Never move a card for a
-`owner/repo#N` reference in another repo unless that repo is `$repo`.
+**Which issue — this is the part that goes wrong.** Move a card only for an
+issue that is *both* this PR's and fully resolved by it. Exactly two sources
+qualify:
 
-**When.** Two transitions, both using `track-work`'s asset (paths resolve as
-in `track-work`: `.claude/skills/track-work/assets/…` vendored,
-`ai/skills/universal/track-work/assets/…` in harmon-devkit):
+1. The issue `/preflight` claimed **this session**. You know it is claimed
+   because you claimed it.
+2. An issue linked by a **closing keyword** —
+   `gh pr view <n> --repo "$repo" --json closingIssuesReferences`. The keyword
+   is the author's assertion that this PR resolves the issue entirely.
+
+A bare **`Refs #N` does not qualify**, and it is the default here precisely
+because it means *related, not resolved* (`track-work` §2). One green partial
+PR advancing a half-finished issue to `Ready to Merge` is a worse lie than
+never moving it. If neither source names an issue, skip the step — do not
+guess from the body. Never move a card in another repo, whatever the
+`owner/repo#N` reference says, unless that repo is `$repo`.
+
+Before the first write, re-read the issue's live state
+(`gh issue view <n> --repo "$repo" --json state,assignees,labels`). A closed
+issue, or one claimed by a different agent since, is not yours to move.
+
+**When.** Match the status to what is *actually* true, using `track-work`'s
+asset (paths resolve as in `track-work`: `.claude/skills/track-work/assets/…`
+vendored, `ai/skills/universal/track-work/assets/…` in harmon-devkit). The
+pipeline distinguishes these three, so do not collapse them:
+
+| Condition | Status |
+| --- | --- |
+| PR open, checks still running | `Verifying` |
+| Checks green, awaiting human review | `In Review` |
+| `reviewDecision` is `APPROVED` and step 6's Green conditions hold | `Ready to Merge` |
 
 ```sh
-# on entering shepherd, once step 1 confirms the PR is OPEN
-<track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --status "In Review"
-
-# at stop condition 1 (Green), before reporting
-<track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --status "Ready to Merge"
+<track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --status "Verifying"
 ```
 
-Exit **3** means the issue is on no board or the board lacks that option —
-benign, note it once and never retry. **1** and **2** are worth a line in the
-report; **2** is usually a missing token scope
-(`gh auth refresh -s read:project,project`). These are writes like any other:
-they need the user's go-ahead, and where `gh` cannot write, report the command
-instead of failing the round.
+`Ready to Merge` means *approved, awaiting merge* — that is the option's own
+description on the board. So a PR that is green but `DRAFT`, `BLOCKED`, or
+`REVIEW_REQUIRED` stays at `In Review`: it is waiting on a human, which is
+what `In Review` says and what `Ready to Merge` would deny. Report the
+distinction rather than rounding it up.
 
 Do **not** move the card to `Done` — merging is the maintainer's decision and
-`Done` is the terminal status. Ending at `Ready to Merge` says exactly what is
-true: the work is finished and waiting on a human. On an org, the repo's
-`project-automation.yml` may already sync `Status` from PR events; a
-second write to the same value is harmless, but say so in the report rather
-than claiming shepherd moved it.
+`Done` is the terminal status.
+
+Exit **3** means the issue is on no board or the board lacks that option —
+benign, note it once and never retry. **4** is partial (some fields applied,
+some skipped): say which half landed rather than reporting the move as done.
+**1** and **2** are worth a line in the report; **2** is usually a missing
+token scope (`gh auth refresh -s read:project,project`). These are writes like
+any other: they need the user's go-ahead, and where `gh` cannot write, report
+the command instead of failing the round.
+
+**On an organization, prefer doing nothing.** `project-automation.yml` already
+syncs `Status` from PR and CI events — it sets `Verifying` on open/synchronize
+and advances after CI. Writing the same field from here races it, and the
+final value is decided by whichever wrote last. Where that workflow is present
+(`.github/workflows/project-automation.yml` exists and the repo is org-owned),
+leave these transitions to it and say so in the report; only write the card
+yourself when nothing is automating it.

@@ -192,8 +192,17 @@ in [`references/issue-authoring.md`](references/issue-authoring.md).
 An issue being *worked on right now* is a fact the tracker holds badly. The
 assignee is buried on the issue page, a claim comment is one entry in a thread,
 and neither appears on the board — which is where the work is actually watched.
-The result is the failure this section prevents: two agents, or an agent and a
-human, starting the same issue because nothing said it was taken.
+So two agents, or an agent and a human, start the same issue because nothing
+visible said it was taken.
+
+**A claim is a signal, not a lock.** Nothing here is atomic: two sessions can
+read "unclaimed" and both write. Worse, two sessions authenticating as the
+*same* GitHub user are invisible to each other — `--add-assignee @me`
+converges on the same value, the label is idempotent, and the `Agent` field is
+last-writer-wins, so the post-claim assignee re-read shows no collision. The
+claim makes concurrent work *discoverable by a human*; it does not prevent it.
+Read the board before starting, and treat a claim as information rather than a
+mutex.
 
 The taxonomy already answers this; nothing was writing it. Two axes, and the
 claim needs **both** because each is blind where the other sees:
@@ -214,11 +223,13 @@ syncs a label to a field value**. Write both or the two disagree.
   --status "In Progress" --agent "Claude Code"
 ```
 
-**Exit 0** applied. **Exit 3** nothing to do — the issue is on no board, or the
-board has no such field/option; benign, note it once and never retry.
-**Exit 1** the write failed. **Exit 2** it could not verify — usually a missing
-token scope (`gh auth refresh -s read:project,project`); treat as unsafe, not
-as clean.
+**Exit 0** every requested field applied. **Exit 3** nothing to do — the issue
+is on no board, or the board has no such field/option; benign, note it once and
+never retry. **Exit 4** partial — some applied, some skipped; report which half
+landed rather than claiming the move, since a `Status` that never moved would
+otherwise hide behind an `Agent` that did. **Exit 1** the write failed.
+**Exit 2** it could not verify — usually a missing token scope
+(`gh auth refresh -s read:project,project`); treat as unsafe, not as clean.
 
 The script sets **project** fields only. On an organization, `Agent` is an org
 *issue field* instead, so `--agent` reports a skip there and the label carries

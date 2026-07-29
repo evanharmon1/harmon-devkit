@@ -147,13 +147,16 @@ run instead of failing the flow:
     --repo "$repo" --issue <n> --status "In Progress" --agent "Claude Code"
   ```
 
-  Read the exit code rather than the noise: **0** applied, **3** nothing to do
-  (the issue is on no board, or the board lacks the field/option) — benign, note
-  it and move on, **1** the write failed, **2** it could not verify, usually a
-  missing token scope (`gh auth refresh -s read:project,project`). Only 1 and 2
-  are worth surfacing; never retry a 3. On an **organization** `Agent` is an org
-  *issue field* rather than a project field, so `--agent` reports a skip there
-  and the `agent:*` label carries that half of the signal.
+  Read the exit code rather than the noise: **0** every requested field applied,
+  **3** nothing to do (the issue is on no board, or the board lacks the
+  field/option) — benign, note it and move on, **4** partial, **1** the write
+  failed, **2** it could not verify, usually a missing token scope
+  (`gh auth refresh -s read:project,project`). Never retry a 3. On **4**, say
+  which half landed — "claimed" is only true of what actually applied, and a
+  card still sitting outside `In Progress` must not be reported as moved. On an
+  **organization** `Agent` is an org *issue field* rather than a project field,
+  so `--agent` is the expected skip there (a 4 with `Status` applied) and the
+  `agent:*` label carries that half of the signal.
 - **Comment** via stdin with a quoted heredoc so the branch/session values are
   never re-evaluated by the shell (a branch name can contain `$(…)`). Use a
   delimiter that cannot occur in the body — quoting disables expansion, not
@@ -169,7 +172,11 @@ run instead of failing the flow:
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):
 `--add-assignee` accumulates rather than arbitrates, so if someone else
-claimed concurrently, surface it and coordinate before implementing.
+claimed concurrently, surface it and coordinate before implementing. This
+catches a *different* GitHub identity and nothing more — another session
+running as the same user converges on the same assignee, label, and `Agent`
+value, and is invisible to this check. The claim is a signal, not a lock
+(`track-work` §6).
 
 A claim is a promise to release it. `/shepherd` advances the card as the PR
 moves, and `/close` flags a session that ends with an issue left at
