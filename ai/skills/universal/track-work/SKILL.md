@@ -246,14 +246,50 @@ that was visible but died the moment a PR closed it. Only an issue in the repo
 that owns the code is both. See
 [`references/cross-repo-work.md`](references/cross-repo-work.md).
 
+**Search the repo you are filing into — not the one you are working in.** A
+duplicate check bound to the wrong repo is not a weak check, it is no check, and
+binding it wrong is the *default*: you have spent the session reading, grepping,
+and running `gh` against the working repo, so "I looked for duplicates" feels
+done after a search that never touched the target's tracker. This is the one
+step the rule above actively works against — filing where the code lives is
+correct, and it moves the target away from the only tracker you have open.
+
+```sh
+gh issue list --repo <target-owner/target-repo> --state all --limit 200 \
+  --search "<distinctive phrase from the invariant>"
+```
+
+- **`--state all`**, because a closed issue is an answer too. One closed
+  `not planned` means the thing was already declined; refiling it needs to
+  engage that decision, not reopen it blind.
+- **`--limit 200`**, because the default returns 30.
+- Search the **invariant's** vocabulary, not your title's. The same defect gets
+  named differently by everyone who finds it, so a title-shaped query is the one
+  most likely to miss.
+
+**On a hit, read the existing issue before you write anything.** It may carry
+the reason the obvious fix is wrong. harmon-init#412 recorded that the
+devcontainer lockfile ignore rule came from #375 *because* a tracked lockfile
+had gone stale — so the duplicate filed past it (#460) did not just waste
+triage, it recommended reversing a deliberate earlier decision. Add what you
+found as a **comment on that issue**; a second issue splits the reasoning across
+two places and leaves neither complete.
+
+**If you filed a duplicate anyway**, the recovery is ordered. Comment your new
+evidence onto the canonical issue **first**, then close yours `not planned`
+naming it (§4). A closed issue is where observations go to be unread, so closing
+before you have moved the evidence loses exactly the part that was worth having.
+
 Carry provenance when you relocate work, so the trail back survives:
 
 ```text
 Found while doing <owner/repo>#<n> — moved here because this repo owns <thing>.
 ```
 
-**Fail condition:** you are about to write "we should also…" about code in
-another repo without an issue number in that repo to point at.
+**Fail conditions:** you are about to write "we should also…" about code in
+another repo without an issue number in that repo to point at — or you are about
+to run `gh issue create --repo <target>` without having run
+`gh issue list --repo <target>` for the same `<target>` first.
 
 ## 4. Closing an issue
 
@@ -310,7 +346,9 @@ draft makes claims nobody can re-check; add the `Verify` section before filing.
 assertion* rather than a description. It closes when the test passes, and it
 cannot rot, because the codebase evaluates it rather than the reader.
 
-Also on a new issue: put it in the repo that owns the code (§3), give acceptance
+Also on a new issue: search the repo you are filing into for a duplicate and put
+it in the repo that owns the code — both are §3, and the search is bound to the
+*target* repo whether or not that is the one you are working in — give acceptance
 criteria as `- [ ]` items so §2's check has something to read, and label it. More
 in [`references/issue-authoring.md`](references/issue-authoring.md).
 

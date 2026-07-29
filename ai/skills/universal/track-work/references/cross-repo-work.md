@@ -31,9 +31,44 @@ Durable but invisible, then visible but mortal. **An issue in the repo that owns
 the code is the only option that is both** — it survives, and it appears in front
 of the person who would actually fix it, in the tracker they actually read.
 
+## Look there before you file there
+
+The search that finds a duplicate has to run against **the repo you are filing
+into**. Nothing about the working session points there: the checkout, the greps,
+`gh`'s default repo, and every earlier `gh issue list` are all bound to the repo
+you are *in*, so the habitual duplicate check answers a question nobody asked.
+
+```sh
+gh issue list --repo <target-owner/target-repo> --state all --limit 200 \
+  --search "<distinctive phrase from the invariant>"
+```
+
+`--state all` surfaces a previous `not planned` — a decision to engage, not a
+gap to fill. `--limit 200` because the default is 30. Query the invariant's
+words rather than your title's; the same defect is named differently by everyone
+who finds it.
+
+**This has already cost something here.** While doing harmon-devkit#180 an agent
+filed harmon-init#460 after searching harmon-devkit — the repo it was working in
+— and finding nothing. harmon-init#412 had been open the whole time. The
+duplicate was the cheap half of the damage: #412 recorded that the ignore rule
+came from harmon-init#375 *because* a tracked lockfile had gone stale, so filing
+blind also meant recommending a fix that reversed a deliberate earlier decision.
+A duplicate wastes triage; a duplicate that contradicts the original is worse.
+
+**On a hit, read the issue, then comment on it.** The existing issue is the one
+that already holds the context — add your evidence there. A second issue with
+half the reasoning is worse than a comment with all of it.
+
+**If a duplicate lands anyway**, move the evidence before closing: comment
+whatever the canonical issue lacks onto it, *then* close yours `not planned`
+referencing it. Closing first strands the new evidence in an issue nobody will
+open again.
+
 ## Filing it
 
-Two commands, at the moment you find the work — not later:
+Three commands, at the moment you find the work — not later. The search above is
+the first:
 
 ```sh
 gh issue create --repo <target-owner/target-repo> \

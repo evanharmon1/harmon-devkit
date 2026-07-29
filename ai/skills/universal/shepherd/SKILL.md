@@ -129,11 +129,19 @@ issue may be moved at all.
   in <sha>` / `declined: <reason>` / `filed as #<n>`. The checkbox is the
   durable settlement state — without it, the next return to this step reads
   the same entries as open and re-adjudicates them, duplicating follow-up
-  issues and burning rounds. Before filing a follow-up, **search for one you
-  already filed**
-  (`gh issue list --repo "$repo" --state all --search "<distinctive phrase>"`):
-  the issue and the tick are two writes, so an earlier round can have created
-  the issue and then failed to record it, and a blind retry files it twice.
+  issues and burning rounds. Before filing a follow-up, **search the repo the
+  follow-up is going into** — `track-work` §3 owns this step and the reasoning;
+  the short form is
+  `gh issue list --repo <target> --state all --limit 200 --search "<distinctive phrase>"`.
+  Two distinct duplicates are in play here and one command catches both. The
+  one this stage creates: the issue and the tick are two writes, so an earlier
+  round can have filed it and then failed to record it, and a blind retry files
+  it twice. And the one that predates you entirely — somebody else's open issue
+  for the same defect. Note that `<target>` is **not** `"$repo"` whenever the
+  follow-up belongs to another repository, which the repo conventions require it
+  to when that repo owns the code: `$repo` is this PR's base, so reusing it
+  searches the tracker you are working in instead of the one you are filing
+  into, and finds nothing every time.
 - **Record a `fixed in <sha>` tick only once that commit is on the PR head.**
   The fix, its push, and the tick are separate steps, and a tick written first
   survives a failed push or an interrupted session — leaving a checked entry

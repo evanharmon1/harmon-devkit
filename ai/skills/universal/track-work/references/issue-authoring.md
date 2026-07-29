@@ -142,5 +142,16 @@ body` still shows `- [ ]`.
 - **Perishable claims covered** — `check-issue-rot.sh` exits 0.
 - **Acceptance criteria as `- [ ]`.**
 - **Provenance**, if the work was found somewhere else.
-- **Search first** — `gh issue list --repo <owner/repo> --search '<keywords>'`.
-  A duplicate is rarely linked from anywhere.
+- **Search first, in the repo from the previous bullet** — not the one you are
+  working in:
+
+  ```sh
+  gh issue list --repo <target-owner/target-repo> --state all --limit 200 \
+    --search '<distinctive phrase>'
+  ```
+
+  A duplicate is rarely linked from anywhere, so nothing surfaces it but this
+  command. `--state all` and `--limit 200` are both load-bearing, and on a hit
+  you read that issue and comment on it rather than filing a second one — see
+  [`cross-repo-work.md`](cross-repo-work.md) for why, and for the recovery when
+  a duplicate lands anyway.
