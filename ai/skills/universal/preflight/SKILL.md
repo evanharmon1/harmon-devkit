@@ -135,7 +135,13 @@ explicit confirmation from the user. Then look for:
     is still template-originated, and `copier update` merges the whole
     baseline-to-current delta rather than only today's tree. Found at the
     baseline but absent now, the verdict is unproven and worth flagging — the
-    next update may delete or replace the local copy.
+    next update may delete or replace the local copy. That baseline lookup
+    needs an immutable `_commit`: a tag-valued one has no historical proof,
+    because a moved tag takes local git data with it and `git fetch --tags`
+    re-fetches whatever origin now claims. On a full 40-hex hash, search it; on
+    a tag, report the baseline lookup unproven rather than reading the tag's
+    present target as the consumer's past
+    (`mode-audit.md:371-376`, `mode-update.md:208-219`).
   - Say what you found for every target, upstream copy or not. One whose
     canonical copy is upstream is a `correction` at minimum: name the repo and
     the path, and recommend fixing it there so the change flows down.
