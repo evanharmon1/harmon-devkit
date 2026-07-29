@@ -56,9 +56,13 @@ came from harmon-init#375 *because* a tracked lockfile had gone stale, so filing
 blind also meant recommending a fix that reversed a deliberate earlier decision.
 A duplicate wastes triage; a duplicate that contradicts the original is worse.
 
-**On a hit, read the issue, then comment on it.** The existing issue is the one
-that already holds the context — add your evidence there. A second issue with
-half the reasoning is worse than a comment with all of it.
+**On a hit, read the issue — then act on what state it is in.** For an open
+issue, add your evidence as a comment there: it already holds the context, and a
+second issue with half the reasoning is worse than a comment with all of it. But
+"comment on it" is not the answer for every hit, and a closed `completed` issue
+whose defect has come back needs a *live* issue rather than a footnote on a
+settled one. The three cases are tabulated in the skill's §3 — follow that table
+rather than the one-line version, and do not reason about it from here.
 
 **If a duplicate lands anyway**, move the evidence before closing: comment
 whatever the canonical issue lacks onto it, *then* close yours `not planned`

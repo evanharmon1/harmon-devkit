@@ -138,6 +138,13 @@ issue may be moved at all.
   owns the code: `$repo` is this PR's base, so reusing it searches the tracker
   you are working in instead of the one you are filing into, and finds nothing
   every time.
+- **Qualify the number in the tick when it crosses a repo.** `filed as #<n>` is
+  only correct for a follow-up in `$repo`; a bare `#<n>` in a PR body resolves
+  against the PR's own repository, so where you filed into another one it
+  silently links whatever issue happens to hold that number there. Write
+  `filed as <target-owner/target-repo>#<n>` — this is `track-work`'s existing
+  rule that a number crossing a repo boundary is never bare, applied to the one
+  place this stage writes issue numbers.
 - **The search rules out a settled duplicate, not a fresh one.** `--search` reads
   GitHub's search index, which is eventually consistent, so it is blind to
   anything filed in the last moments — and what decides that is **how recently

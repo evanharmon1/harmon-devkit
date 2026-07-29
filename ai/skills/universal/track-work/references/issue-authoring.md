@@ -151,7 +151,9 @@ body` still shows `- [ ]`.
   ```
 
   A duplicate is rarely linked from anywhere, so nothing surfaces it but this
-  command. `--state all` and `--limit 200` are both load-bearing, and on a hit
-  you read that issue and comment on it rather than filing a second one — see
-  [`cross-repo-work.md`](cross-repo-work.md) for why, and for the recovery when
-  a duplicate lands anyway.
+  command. `--state all` and `--limit 200` are both load-bearing. On a hit, read
+  that issue and then act on **what state it is in** — commenting is right for an
+  open one, while a closed `completed` issue whose defect recurred needs a live
+  issue instead. The skill's §3 tabulates all three cases; follow it there, and
+  see [`cross-repo-work.md`](cross-repo-work.md) for the recovery when a
+  duplicate lands anyway.
