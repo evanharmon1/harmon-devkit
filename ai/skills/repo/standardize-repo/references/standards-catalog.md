@@ -10,9 +10,11 @@ Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
 project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
 was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
-**§1.13 (project management) alone was re-verified against harmon-init v4.7.0 on
+**§1.13 (project management) alone was re-verified against harmon-init v4.7.2 on
 2026-07-28** — the rest still carries the v3.26.1 baseline, so treat a §1.13
-statement as current and anything else as possibly lagging.
+statement as current and anything else as possibly lagging. (The v4.7.0 pass
+recorded the setup scripts as create-if-missing; `e235d43`, released in v4.7.2,
+made them append missing starter options to existing single-selects.)
 The platform and client repos are kept current via mode-update passes, so their
 remaining divergences are often **deliberate customizations** (Part 3.2), not lag
 — but they can drift between passes, so
