@@ -26,6 +26,10 @@
 # A failed edit is read back before it is reported, because GitHub can apply one
 # and lose the response, and a retry would then find nothing left to tick.
 #
+# The issue must be assigned to the authenticated account. Being pre-approved,
+# nothing in the permission layer scopes this command to the issue the user
+# asked about — the claim is what scopes it.
+#
 # Usage:
 #   tick-criteria.sh --repo owner/repo --issue N [--match TEXT]... [--index K]...
 #                    [--dry-run]
@@ -67,6 +71,12 @@ while [ "$#" -gt 0 ]; do
         ;;
     --match)
         [ "$#" -ge 2 ] || usage
+        # An empty pattern matches every item, so on a one-criterion issue it
+        # would tick without naming anything. A selector has to be a claim.
+        [ -n "$2" ] || {
+            echo "tick-criteria: --match needs text; an empty pattern names no criterion" >&2
+            exit 2
+        }
         selectors="${selectors}match:$2"$'\n'
         shift 2
         ;;
@@ -127,6 +137,31 @@ read_body_or_die() {
     }
 }
 
+# The allowlist entry that makes this command pre-approved cannot constrain its
+# arguments, so nothing in the permission layer ties a tick to the issue the
+# user actually asked for — and issue text is untrusted input that must never be
+# able to redirect a write. Bind it here instead: tick only an issue this
+# account has claimed. Claiming is an ordinary write and still needs its own
+# go-ahead (`/preflight` step 5 does it), so the assignment is a record that a
+# human authorised work on this specific issue.
+assert_claimed() {
+    [ -n "$fixture" ] && return 0
+    _me="$(gh api user --jq '.login' 2>/dev/null || true)"
+    [ -n "$_me" ] || {
+        echo "tick-criteria: could not resolve the authenticated user" >&2
+        exit 2
+    }
+    _assignees="$(gh issue view "$issue" --repo "$repo" --json assignees \
+        --jq '[.assignees[].login] | join(" ")' 2>/dev/null || true)"
+    case " $_assignees " in
+    *" $_me "*) return 0 ;;
+    esac
+    echo "tick-criteria: $repo#$issue is not assigned to $_me — claim it before ticking it" >&2
+    exit 1
+}
+
+assert_claimed
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 before="$tmp/before.md"
@@ -151,12 +186,17 @@ read_body_or_die >"$before"
 items="$(awk '
 BEGIN { infence = 0 }
 {
-    if (match($0, /^[ \t]*(```+|~~~+)/)) {
-        marker = substr($0, RSTART, RLENGTH)
+    # Strip indentation and any blockquote prefix before looking for a fence:
+    # the item pattern below accepts `> - [ ]`, so a fence that only matched at
+    # the margin would leave `> ``` … > - [ ] example` looking like a criterion.
+    bare = $0
+    sub(/^[ \t]*(>[ \t]*)*/, "", bare)
+    if (match(bare, /^(```+|~~~+)/)) {
+        marker = substr(bare, RSTART, RLENGTH)
         gsub(/[ \t]/, "", marker)
         ch = substr(marker, 1, 1)
         len = length(marker)
-        rest = substr($0, RSTART + RLENGTH)
+        rest = substr(bare, RSTART + RLENGTH)
         if (infence == 0) {
             infence = 1
             fence_ch = ch
@@ -186,7 +226,17 @@ while IFS= read -r selector; do
     value="${selector#*:}"
     case "$kind" in
     match)
-        hits="$(printf '%s\n' "$items" | grep -iF -- "$value" || true)"
+        # Match the criterion text only. The records carry a "lineno:" prefix,
+        # and matching through it lets `--match 12` resolve via the line number
+        # of a criterion that never mentions 12 — a selector resolving on
+        # metadata is not the claim the caller thinks they are making.
+        hits="$(printf '%s\n' "$items" | awk -v pat="$value" '
+            BEGIN { p = tolower(pat) }
+            {
+                i = index($0, ":")
+                text = substr($0, i + 1)
+                if (index(tolower(text), p) > 0) print
+            }')"
         ;;
     index)
         case "$value" in

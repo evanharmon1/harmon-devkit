@@ -538,6 +538,14 @@ mkdir -p "$stub_bin"
 cat >"$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "user" ]; then
+    printf '%s' "${STUB_LOGIN:-tester}"
+    exit 0
+fi
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json assignees'; then
+    printf '%s' "${STUB_ASSIGNEES-tester}"
+    exit 0
+fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
     # Once an edit has been accepted, that is the server's state — which is what
     # makes "the edit applied but the response was lost" testable.
@@ -628,6 +636,66 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_EDIT="$tmp/edited" \
     "$tick" --repo "$repo" --issue 30 --index 1 >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "an unreadable issue should exit 2 (got $_rc)"
+
+echo "==> a tick is refused on an issue this account has not claimed"
+# The allowlist cannot constrain arguments, so the claim is what scopes the
+# pre-approved write to work a human actually authorised.
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_ASSIGNEES="someone-else" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "an unclaimed issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "an unclaimed issue must not be written to"
+
+echo "==> an issue claimed alongside others is still tickable"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_ASSIGNEES="someone-else tester" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "a co-assigned issue should tick (got $_rc)"
+
+echo "==> a checkbox inside a blockquoted fence is not a criterion"
+write_issue 33 '> ```
+> - [ ] quoted example
+> ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 33 --index 1)" = 0 ] || fail "--index 1 should skip the quoted example"
+issue_is 33 '> ```
+> - [ ] quoted example
+> ```
+
+- [x] the real criterion
+' || fail "a checkbox inside a blockquoted fence must be left alone"
+
+echo "==> --match resolves on criterion text, never the line number"
+write_issue 34 '
+
+
+
+
+
+
+
+
+- [ ] alpha
+- [ ] beta
+'
+[ "$(run_tick 34 --match '9')" = 1 ] || fail "a line number must not resolve a --match"
+
+echo "==> an empty --match is a usage error, not a blind tick"
+write_issue 35 '- [ ] the only criterion
+'
+[ "$(run_tick 35 --match '')" = 2 ] || fail "an empty --match should exit 2"
+issue_is 35 '- [ ] the only criterion
+' || fail "an empty --match must not write"
 
 echo "==> a checkbox inside a fenced code block is not a criterion"
 write_issue 31 '## Verify
