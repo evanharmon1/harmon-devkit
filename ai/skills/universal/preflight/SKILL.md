@@ -163,11 +163,25 @@ run instead of failing the flow:
   termination, so a body containing a literal `EOF` line would end a
   fixed-`EOF` heredoc early:
 
+  **Record the status you are overwriting.** `--status "In Progress"` destroys
+  whatever the card held — `Ready`, `Shaping`, `Next`, `Agent Queue` — and
+  nothing anywhere else remembers it, so an abandoned session cannot put the
+  issue back where it was and has to guess. Read it before the board write
+  (`--dry-run` reports the board and field without touching them; the value
+  itself comes from the item's current `Status`) and name it in the comment.
+  The comment is the right place: it survives compaction, a lost session, and
+  a different agent doing the hand-back.
+
   ```sh
   gh issue comment <n> --repo "$repo" --body-file - <<'CLAIM_BODY_9f3k'
   Claiming — starting implementation on branch <branch> (session <name>).
+  Board status was <prior status> before this claim; restore it if the work is
+  handed back.
   CLAIM_BODY_9f3k
   ```
+
+  If the prior status could not be read, say "unknown" rather than inventing
+  one — `/close` then asks instead of guessing.
 
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):

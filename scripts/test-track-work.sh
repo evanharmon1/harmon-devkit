@@ -498,6 +498,40 @@ board_stub "$on_board"
 [ "$(run_status --issue 5 --status "Todo" --agent "Claude Code")" = 0 ] ||
     fail "all requested fields applying should exit 0"
 
+echo "==> a write that fails AFTER one succeeded is partial (4), not a flat failure (1)"
+cat >"$stub/gh" <<STUB
+#!/bin/sh
+case "\$*" in
+*projectItems*) echo '$on_board' ;;
+*ProjectV2SingleSelectField*)
+    echo '{"data":{"node":{"fields":{"nodes":[{"id":"F_status","name":"Status","options":[{"id":"O_todo","name":"Todo"}]},{"id":"F_agent","name":"Agent","options":[{"id":"O_cc","name":"Claude Code"}]}]}}}}'
+    ;;
+# Status writes; the second mutation (Agent) fails, as a timeout would.
+*F_status*) echo '{"data":{}}' ;;
+*F_agent*) exit 1 ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "$stub/gh"
+[ "$(run_status --issue 5 --status "Todo" --agent "Claude Code")" = 4 ] ||
+    fail "a failed write after a successful one must report partial, not total failure"
+
+echo "==> a write that fails with nothing else applied is exit 1"
+cat >"$stub/gh" <<STUB
+#!/bin/sh
+case "\$*" in
+*projectItems*) echo '$on_board' ;;
+*ProjectV2SingleSelectField*)
+    echo '{"data":{"node":{"fields":{"nodes":[{"id":"F_status","name":"Status","options":[{"id":"O_todo","name":"Todo"}]}]}}}}'
+    ;;
+*F_status*) exit 1 ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "$stub/gh"
+[ "$(run_status --issue 5 --status "Todo")" = 1 ] ||
+    fail "a sole failed write should exit 1"
+
 echo "==> --dry-run resolves without mutating"
 board_stub "$on_board"
 [ "$(run_status --issue 5 --status "In Progress" --dry-run)" = 0 ] ||

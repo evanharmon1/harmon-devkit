@@ -29,35 +29,55 @@ read it in the UI) — never guess.
 - If `/reflect` has not run this session, offer to run it first.
 - **Release any claim this session made.** If `/preflight` claimed an issue
   (assignee, `agent:*` label, card at `In Progress`), check what actually
-  became of it: `gh issue view <n> --repo <owner/repo> --json state,assignees`
-  plus whether a PR is open for it. A claim left standing over abandoned or
-  finished work is a lie the board tells the next reader, and it outlives the
-  session that told it. Three outcomes:
+  became of it — a claim left standing over abandoned or finished work is a lie
+  the board tells the next reader, and it outlives the session that told it:
+
+  ```sh
+  gh issue view <n> --repo <owner/repo> --json state,stateReason,assignees,labels
+  gh pr list --repo <owner/repo> --search <n> --state all   # what, if anything, is in flight
+  ```
+
+  **Before offering to clear anything, check nothing else is still working.**
+  The markers are shared and converge (`track-work` §6), so a second session on
+  the same GitHub identity is invisible in all of them. Another open PR
+  referencing the issue, or activity newer than this session's claim comment,
+  means the claim may not be yours alone to release — say so and let the user
+  decide rather than presenting cleanup as obviously safe.
+
+  Three outcomes:
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
     Nothing to do.
-  - **Merged / issue closed** — this is *not* "nothing to release". GitHub
-    clears none of the four markers on merge, and a personal-account project
-    has no automation to move the card either, so the work finishes and the
-    board keeps showing an agent holding it at `Ready to Merge` forever. Offer
-    the same cleanup as below, plus `--status Done` — the one place `Done` is
-    correct, because the merge already happened and is being recorded, not
-    predicted. (`/shepherd` must never set it: it stops *before* the merge, so
-    for it `Done` would be a prediction.)
-  - **Neither** — the session stopped mid-flight. Surface it and offer the
-    commands to hand the work back. `/preflight` set **four** markers, and a
-    hand-back that clears only some leaves the issue still advertising itself
-    as held — which is the exact failure this step exists to prevent. All
-    four:
+  - **Merged / issue closed** — *not* "nothing to release". GitHub clears no
+    marker on merge, and a personal-account project has no automation to move
+    the card, so the work finishes and the board shows an agent still holding
+    it. Offer the cleanup below. Add `--status Done` **only with evidence the
+    issue is actually finished**: it is closed as `completed`
+    (`stateReason`), or a merged PR linked it with a *closing keyword*. A
+    merged PR that only says `Refs #N` finished part of it, and an issue
+    closed `not planned` was never delivered — `Done` would be false in both,
+    so clear the claim markers and leave `Status` alone. (`/shepherd` never
+    sets `Done` at all: it stops before the merge, so for it `Done` is a
+    prediction rather than a record.)
+  - **Neither** — the session stopped mid-flight. Offer the commands to hand
+    the work back. `/preflight` set **four** markers, and clearing only some
+    leaves the issue still advertising itself as held — the exact failure this
+    step exists to prevent:
 
     ```sh
     gh issue edit <n> --repo <owner/repo> --remove-assignee @me \
       --remove-label agent:claude-code
     <track-work-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
-      --status Todo   # or "Agent Queue" if it should stay queued for an agent
+      --status "<the status the claim comment recorded>"
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```
 
-    The `Agent` field is the fourth. `set-issue-status.sh` only *sets*
+    **Restore, don't reset.** The claim comment records the status the claim
+    overwrote; put that back. Sending a shaped, prioritized issue to `Todo`
+    silently discards planning state and can requeue it wrongly. If the comment
+    says "unknown" or no comment survives, ask the user instead of picking —
+    `Todo` and `Agent Queue` are guesses, not defaults.
+
+    The `Agent` field is the fourth marker. `set-issue-status.sh` only *sets*
     single-select options, so clearing it is manual — `gh project item-edit
     --clear` on the item, or the board UI. Say so rather than leaving it set;
     an `Agent` value with no `In Progress` status still reads as "an agent has

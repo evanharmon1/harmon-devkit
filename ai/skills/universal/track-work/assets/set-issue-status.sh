@@ -34,13 +34,15 @@
 # Needs the `project` token scope: gh auth refresh -s read:project,project
 #
 # Exit: 0 = every requested field applied (or resolved cleanly under --dry-run),
-#       1 = a field resolved but the write failed,
+#       1 = a field resolved but the write failed, and nothing else applied,
 #       2 = usage/environment error (could not verify — treat as unsafe),
 #       3 = nothing to do: the issue is on no board, or no requested field or
 #           option exists on it. Benign — the caller carries on.
-#       4 = partial: some requested fields applied and some were skipped. Kept
-#           distinct from 0 so a Status that never moved cannot hide behind an
-#           Agent that did — the caller must not report a claim it did not make.
+#       4 = partial: some requested fields applied and some were skipped or
+#           failed. Kept distinct from 0 so a Status that never moved cannot
+#           hide behind an Agent that did, and distinct from 1 so a write that
+#           failed after another landed does not understate what changed — the
+#           caller must report neither more nor less than it actually did.
 set -euo pipefail
 
 usage() {
@@ -228,6 +230,13 @@ if [ -n "$agent" ]; then
 fi
 
 if [ "$rc" -ne 0 ]; then
+    # A failed write after a successful one is still partial. Reporting it as a
+    # flat failure would understate what landed just as badly as reporting it
+    # as success would overstate it — the board really did change.
+    if [ "$applied" -gt 0 ]; then
+        echo "applied $applied of $requested requested field(s) before a write failed" >&2
+        exit 4
+    fi
     exit 1
 fi
 if [ "$applied" -eq "$requested" ]; then
