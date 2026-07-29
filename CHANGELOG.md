@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.12.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.11.1...v0.12.0) (2026-07-29)
+
+
+### Features
+
+* **skills:** claim an issue on the project board when an agent starts work ([#176](https://github.com/evanharmon1/harmon-devkit/issues/176)) ([ece1e3c](https://github.com/evanharmon1/harmon-devkit/commit/ece1e3c45a30a7124b19384921bac77edbd38492))
+
+
+### Bug Fixes
+
+* **shepherd:** route agents into /shepherd and settle the round cap at 5 ([#184](https://github.com/evanharmon1/harmon-devkit/issues/184)) ([7af47ee](https://github.com/evanharmon1/harmon-devkit/commit/7af47ee9f8ae334c4264467bf760527a134b9266))
+* **standardize-repo:** add starter-views and auto-add steps to the post-generation checklist ([#175](https://github.com/evanharmon1/harmon-devkit/issues/175)) ([7236d2f](https://github.com/evanharmon1/harmon-devkit/commit/7236d2fe69de16a1d42a05f46192ae8b258ebde7))
+* **standardize-repo:** reconcile live GitHub metadata in update mode ([#177](https://github.com/evanharmon1/harmon-devkit/issues/177)) ([afc6451](https://github.com/evanharmon1/harmon-devkit/commit/afc6451ba83e7823848a54b57be2a8aa54b5c1e0))
+* **standardize-repo:** sync the GitHub project-management reference to harmon-init v4.7.0 ([#173](https://github.com/evanharmon1/harmon-devkit/issues/173)) ([10f807e](https://github.com/evanharmon1/harmon-devkit/commit/10f807ec8667ac4051e48184ab994a50fa7880f1))
+* **track-work:** tick acceptance criteria as they are verified, not at PR time ([#182](https://github.com/evanharmon1/harmon-devkit/issues/182)) ([5b8788e](https://github.com/evanharmon1/harmon-devkit/commit/5b8788efcecde2182794c2436c029edc0e99129c))
+
 ## [0.11.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.11.0...v0.11.1) (2026-07-28)
 
 
