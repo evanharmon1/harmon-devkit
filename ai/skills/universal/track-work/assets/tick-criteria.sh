@@ -220,9 +220,32 @@ read_body_or_die >"$before"
 # command that writes must not treat an example as a criterion, or `--index 1`
 # ticks a code sample and reports success while the real criterion stays open.
 #
-# Four-space-indented code blocks are *not* excluded: indistinguishable, without
-# a full parser, from a checkbox nested under a list item, where ticking is
-# right. Prefer `--match` when a body carries either.
+# Containment is modelled here rather than parsed — the script is deliberately
+# dependency-free so consumers can vendor it with the skill, which rules out a
+# CommonMark library. Modelled: fenced code blocks, indented code blocks,
+# blockquotes, list items, HTML comments, and HTML blocks of CommonMark type 1
+# (`pre`, `script`, `style`, `textarea`) and type 6 (the known block-tag set).
+#
+# Deliberately NOT modelled — the complete list, so this stays a bounded set and
+# not an open-ended "and other corners":
+#
+#   - HTML blocks of types 3 (`<?…?>`), 4 (`<!LETTER`) and 5 (`<![CDATA[`).
+#   - HTML block type 7 (any other complete tag alone on its line). Unlike
+#     type 6 it cannot interrupt a paragraph, and recognising it needs a full
+#     tag parse — attribute values may contain `>`.
+#   - Blockquote lazy continuation: an unquoted line directly under a quoted
+#     paragraph continues it, and is enumerated here as if it had left the
+#     quote. Indented lazy continuation inside a list item IS modelled.
+#   - A fence whose interior is prose leaves that prose as the preceding line
+#     kind, so an indented block on the line after the closing delimiter reads
+#     as a lazy continuation instead of code. Both are hidden; only the ending
+#     differs.
+#   - An HTML block ending because the list item or blockquote containing it
+#     ended. Type 6 is closed here only by a blank line or a change of
+#     blockquote depth.
+#
+# Every one of those over-enumerates — it offers a line GitHub renders as
+# something else — so prefer `--match` over `--index` on a body carrying one.
 items="$(awk '
 function advance(start, text,   i, c, out) {
     # Column after rendering `text` starting at column `start`. A tab moves to
@@ -237,7 +260,34 @@ function advance(start, text,   i, c, out) {
     }
     return out
 }
-BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; prev_kind = "blank"; raw_tag = "" }
+function html_block_tag(s,   t, n, r) {
+    # True when `s` opens a CommonMark HTML block of type 6 — `<tag`, or
+    # `</tag`, from the known block-level set.
+    if (substr(s, 1, 1) != "<") return 0
+    t = substr(s, 2)
+    if (substr(t, 1, 1) == "/") t = substr(t, 2)
+    if (!match(t, /^[A-Za-z][A-Za-z0-9]*/)) return 0
+    n = tolower(substr(t, 1, RLENGTH))
+    r = substr(t, RLENGTH + 1)
+    # The name has to END there. Matched as a prefix, an autolink like
+    # <https://example.com> reads as <hr> and would hide the rest of the body.
+    if (r != "" && r !~ /^([ \t]|\/?>)/) return 0
+    return (n in htmlblock)
+}
+BEGIN {
+    infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; prev_kind = "blank"; raw_tag = ""
+    nlist = 0; incode = 0; code_quoted = 0; inhtml = 0; html_quoted = 0
+    # CommonMark HTML block type 6, verbatim. Type 1 (pre, script, style,
+    # textarea) is absent on purpose: it is closed by its closing tag, not by a
+    # blank line, and is tracked separately below.
+    split("address article aside base basefont blockquote body caption center " \
+        "col colgroup dd details dialog dir div dl dt fieldset figcaption " \
+        "figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr " \
+        "html iframe legend li link main menu menuitem nav noframes ol " \
+        "optgroup option p param search section summary table tbody td tfoot " \
+        "th thead title tr track ul", html_names, " ")
+    for (hn in html_names) htmlblock[html_names[hn]] = 1
+}
 {
     # Walk the container prefix once, in the order it appears: indentation,
     # blockquote markers, and (for a possible opener) list markers, which nest in
@@ -284,6 +334,12 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; 
         break
     }
     bare = rest_line
+    # Blankness is judged AFTER the prefix, because every rule that turns on it
+    # — a fence surviving a gap, a code block surviving a gap, an HTML block
+    # closing, a paragraph ending — is a rule about the container. A lone `>` is
+    # a blank line inside its blockquote; measuring `$0` instead calls it prose,
+    # which ends nothing and starts nothing.
+    blank = (bare ~ /^[ \t]*$/)
 
     # A fence ends where its CONTAINER ends: the first non-blank line that does
     # not reach the container content column, or that sits shallower than the
@@ -292,7 +348,7 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; 
     # this runs BEFORE the opener scan below: a sibling `- ```text` both ends the
     # previous item and opens its own fence, and a scan gated on the stale state
     # would never reconsider it.
-    if (infence == 1 && $0 !~ /^[ \t]*$/ &&
+    if (infence == 1 && blank == 0 &&
         (col < fence_col || quoted < fence_quoted)) {
         infence = 0
     }
@@ -376,12 +432,135 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; 
         }
         next
     }
+    # `bare` is $0 with the blockquote prefix and leading spaces already removed,
+    # so the item pattern only has to describe the marker and the box.
+    # Classify this line for the next one: blank, a list item (which keeps an
+    # ordered marker in list context), or paragraph text. This runs before the
+    # containment tracking below, which needs to know whether the line is a list
+    # item without re-deriving it.
+    if (blank) {
+        this_kind = "blank"
+    } else if (bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[ \t]/) {
+        this_kind = "list"
+        # A marker that cannot interrupt a paragraph does not start a list, so
+        # the paragraph continues through it. Classified on syntax alone, one
+        # such line would hand the NEXT line a list context it never entered.
+        if (prev_kind == "para" && match(bare, /^[ \t]*[0-9]+/)) {
+            num_kind = substr(bare, RSTART, RLENGTH)
+            sub(/^[ \t]*/, "", num_kind)
+            if (num_kind + 0 != 1) this_kind = "para"
+        }
+    } else {
+        this_kind = "para"
+    }
+
+    # Indented code blocks, and the list containment that makes them decidable.
+    #
+    # A checkbox four columns past its CONTAINER is an indented code block; a
+    # checkbox four columns past the DOCUMENT is usually a criterion nested
+    # under a list item, where ticking is right. The two are indistinguishable
+    # from the line alone, which is what made this a known gap — the missing
+    # piece is the content column of the innermost list item still open, and
+    # that is a stack: pushed by every list marker, popped by the first line
+    # that fails to reach it.
+    lazy = 0
+    if (infence == 0 && blank == 0) {
+        while (nlist > 0 && (lqd[nlist] != quoted || col < lcol[nlist])) nlist--
+        # With no list open the container is the blockquote, whose content
+        # column is the column just past its last marker — `col - sp`, the same
+        # measurement the fence opener uses.
+        base = (nlist > 0) ? lcol[nlist] : col - sp
+
+        # A code block runs until a non-blank line comes back inside the
+        # container. Blank lines belong to it, which is why this whole block is
+        # gated on non-blank: a blank line between two indented lines must not
+        # end it.
+        if (incode == 1 && (quoted != code_quoted || col - base < 4)) incode = 0
+        if (incode == 0 && col - base >= 4) {
+            # Four columns past the container with a paragraph still open is a
+            # LAZY CONTINUATION of that paragraph, not a code block — indented
+            # code cannot interrupt a paragraph, and a list item begins one. It
+            # renders as prose either way, so it is hidden either way; what
+            # differs is the ending. A paragraph ends at the next blank line, a
+            # code block survives it. Wrapped criteria depend on this: the
+            # continuation lines of `- [ ] a criterion too long for one line`
+            # sit exactly four columns past the item.
+            if (prev_kind == "para" || prev_kind == "list") lazy = 1
+            else {
+                incode = 1
+                code_quoted = quoted
+            }
+        }
+        if (incode == 1) {
+            # "code" is neither "para" nor "list", so a criterion on the first
+            # line after the block is judged on its own merits.
+            prev_kind = "code"
+            next
+        }
+
+        # Push every list container this line opens, outermost first. Markers
+        # and blockquote markers nest in any combination, so walk them in the
+        # order they appear, exactly as the fence opener scan above does. A lazy
+        # continuation opens none of them — it is prose that merely looks
+        # indented.
+        if (lazy == 0 && this_kind == "list") {
+            push_rest = bare
+            push_col = col
+            push_quoted = quoted
+            while (1) {
+                if (substr(push_rest, 1, 1) == ">") {
+                    push_quoted++
+                    push_col++
+                    push_rest = substr(push_rest, 2)
+                    if (substr(push_rest, 1, 1) == " ") {
+                        push_col++
+                        push_rest = substr(push_rest, 2)
+                    }
+                    continue
+                }
+                if (!match(push_rest, /^([-*+]|[0-9]+[.)])[ \t]/)) break
+                match(push_rest, /^([-*+]|[0-9]+[.)])/)
+                mark_col = advance(push_col, substr(push_rest, 1, RLENGTH))
+                push_rest = substr(push_rest, RLENGTH + 1)
+                pad_n = 0
+                while (substr(push_rest, pad_n + 1, 1) == " " ||
+                       substr(push_rest, pad_n + 1, 1) == "\t") pad_n++
+                item_col = advance(mark_col, substr(push_rest, 1, pad_n))
+                # Past four columns of padding the content is an indented code
+                # block inside the item, so the item content starts one column
+                # after the marker and nothing further along is a container.
+                over = (item_col - mark_col > 4 || substr(push_rest, pad_n + 1) == "")
+                if (over) item_col = mark_col + 1
+                nlist++
+                lcol[nlist] = item_col
+                lqd[nlist] = push_quoted
+                push_col = item_col
+                push_rest = substr(push_rest, pad_n + 1)
+                if (over) break
+            }
+        }
+    }
+
+    # CommonMark HTML block type 6: a known block-level tag opening its own line
+    # starts a block whose contents are raw HTML, so a task item inside one is
+    # example text that GitHub renders as prose. Unlike type 1 below, it closes
+    # on a BLANK LINE and not on a closing tag — which is exactly what keeps the
+    # common `<details>` / `<summary>` wrapper working, since the blank line
+    # before the checklist ends the block and the criteria after it are live.
+    if (infence == 0 && incomment == 0 && inpre == 0) {
+        if (inhtml == 1 && (blank || quoted != html_quoted)) inhtml = 0
+        if (inhtml == 0 && blank == 0 && html_block_tag(bare)) {
+            inhtml = 1
+            html_quoted = quoted
+        }
+    }
+
     # HTML comments hide their contents from every renderer, and issue templates
     # routinely ship commented-out example checklists. A line that begins inside
     # one is not a criterion — ticking it would edit invisible text and report
     # success while the first real criterion stayed open. Comment state is not
     # tracked inside a fence, where the delimiters are just characters.
-    starts_hidden = incomment || inpre
+    starts_hidden = incomment || inpre || inhtml || lazy
     if (infence == 0) {
         rest_of_line = $0
         while (1) {
@@ -436,26 +615,12 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; 
             }
         }
     }
-    if (starts_hidden) next
-
-    # `bare` is $0 with the blockquote prefix and leading spaces already removed,
-    # so the item pattern only has to describe the marker and the box.
-    # Classify this line for the next one: blank, a list item (which keeps an
-    # ordered marker in list context), or paragraph text.
-    if ($0 ~ /^[ \t]*$/) {
-        this_kind = "blank"
-    } else if (bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[ \t]/) {
-        this_kind = "list"
-        # A marker that cannot interrupt a paragraph does not start a list, so
-        # the paragraph continues through it. Classified on syntax alone, one
-        # such line would hand the NEXT line a list context it never entered.
-        if (prev_kind == "para" && match(bare, /^[ \t]*[0-9]+/)) {
-            num_kind = substr(bare, RSTART, RLENGTH)
-            sub(/^[ \t]*/, "", num_kind)
-            if (num_kind + 0 != 1) this_kind = "para"
-        }
-    } else {
-        this_kind = "para"
+    if (starts_hidden) {
+        # A lazy continuation leaves its paragraph open, so the line after it is
+        # judged against a paragraph and not against the list item the wrapped
+        # text belongs to.
+        if (lazy) prev_kind = "para"
+        next
     }
 
     if (infence == 0 && bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[[:space:]]+\[[ \t]\]([[:space:]]|$)/) {

@@ -132,11 +132,14 @@ box:
 
 `--index K` addresses the K-th *unticked* item instead, `--dry-run` shows what
 would change, and both selectors repeat to tick several at once. Checkboxes
-GitHub does not render as criteria are skipped — inside fenced code, HTML
-comments (an issue template's commented-out sample), or `<pre>` — because an
-example is not a criterion. What it cannot tell apart is a four-space-indented
-checkbox from one nested under a list item, so prefer `--match` on a body that
-carries either.
+GitHub does not render as criteria are skipped — inside fenced or indented
+code, HTML comments (an issue template's commented-out sample), `<pre>`, or an
+HTML block such as `<div>` or `<table>` — because an example is not a
+criterion. A checkbox nested under a list item is still a criterion; so is one
+after the blank line that ends a `<details>` wrapper, which is where GitHub
+starts rendering Markdown again. Containment is modelled, not parsed: the
+script names the constructs it does not model in a comment above the
+enumerator, and on a body carrying one of those, prefer `--match`.
 
 **Fail condition:** you are about to write a PR body for an issue whose
 criteria you satisfied and verified during this work, and its boxes are still
