@@ -10,9 +10,11 @@ Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
 project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
 was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
-**§1.13 (project management) alone was re-verified against harmon-init v4.7.0 on
+**§1.13 (project management) alone was re-verified against harmon-init v4.7.2 on
 2026-07-28** — the rest still carries the v3.26.1 baseline, so treat a §1.13
-statement as current and anything else as possibly lagging.
+statement as current and anything else as possibly lagging. (The v4.7.0 pass
+recorded the setup scripts as create-if-missing; `e235d43`, released in v4.7.2,
+made them append missing starter options to existing single-selects.)
 The platform and client repos are kept current via mode-update passes, so their
 remaining divergences are often **deliberate customizations** (Part 3.2), not lag
 — but they can drift between passes, so
@@ -790,15 +792,34 @@ artifacts; the prose rules are guidance, not lint):
   are org issue fields from `setup:github-issue-fields` (Domain = which part of
   the product, Layer = which slice of the stack). On a personal account (no issue
   fields) `setup:github-project` creates Priority/Product/Agent/Domain/Layer/Size
-  as project fields. Both scripts are **create-if-missing** for these fields: an
-  existing one is left as-is, options and all, and **both** warn when the name
-  already exists with the wrong data type (GitHub can't change a field's data type
-  in place — rename or delete it and re-run). `Status` is the one exception:
-  `setup:github-project` keeps its existing options and appends any missing
-  pipeline ones, so items already assigned an option are never orphaned. So
-  **adding an option to any other already-created field is [manual]** — edit it in
-  the org issue-field settings or the Project UI; re-running the setup task will
-  not do it, and skipping it leaves the label and field vocabularies divergent.
+  as project fields. Both scripts are **create-if-missing then additive** for
+  these fields: an existing field keeps every option it has, and a re-run appends
+  whatever **starter** option it lacks — `Status` and the custom
+  Domain/Layer/Agent fields alike, so items already assigned an option are never
+  orphaned. Neither script ever **removes** an option or a field, so a starter the
+  template retires survives until you delete it by hand (only after re-mapping —
+  deleting an assigned option clears those values). **[manual]**
+  What a re-run still will not do: add **repo-specific** options (the scripts ship
+  only the `auth`/`billing`/`platform` floor — this product's real domains are
+  yours to add), or fix anything the script *warned and continued* past. Both
+  warn-and-exit-0 rather than abort a half-reconciled project — with one known
+  upstream gap: `setup-github-project.sh` routes only the **custom** fields
+  through its `field_exists` data-type guard, so a reused project carrying a
+  non-single-select field named **`Status`** goes straight to `append_options`
+  and the task fails there instead of warning (possibly after `ORG_PROJECT_ID`
+  was already written). Treat that one as a hard stop, not a warning. Otherwise
+  read the WARNING lines: a field that already exists with the **wrong data type**
+  (GitHub can't
+  change a type in place, and deleting the field destroys every issue's value for
+  it org-wide — rename it, let the re-run create the replacement, migrate the
+  values, then delete the original), one **at the
+  single-select option cap**, or an issue-fields `PATCH` **rejected by the public
+  preview**. Each names the field and the options it skipped. Skipping those
+  leaves the label and field vocabularies divergent.
+  The option arrays are replaced wholesale with no expected-version token, so
+  **never run these concurrently against one owner** — a racing write (parallel
+  fleet run, or the Project UI) can be silently dropped along with its
+  assignments.
 - **Issue types** — Bug/Feature/Task/Research (org). The Issue Forms set `type:` on
   org repos and a **default assignee**, and apply **no labels** (type is the Type
   field, not a label).
