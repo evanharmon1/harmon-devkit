@@ -1478,9 +1478,18 @@ note that §6 is still outstanding.
 never merges; nothing protects one that merges and is reverted later. The setup
 scripts are additive — they cannot restore a prior option set, a label's previous
 color, or the old `ORG_PROJECT_ID`. So capture the before-state *first* and keep
-it: run the three verification commands at the end of 6c **before** 6b, and save
-their output. That snapshot is the only rollback you will have, and undoing from
-it is manual — re-set the variable, restore label attributes, and re-add or
+it: run the verification commands at the end of 6c **before** 6b, and save their
+output. On an org, add the variable's **access policy** — `setup-github-project.sh`
+rewrites it with a hardcoded `--visibility all`, so an existing `private` or
+`selected` scope is silently widened and the value alone will not restore it:
+
+```bash
+gh api "orgs/<org>/actions/variables/ORG_PROJECT_ID"                # value + visibility
+gh api "orgs/<org>/actions/variables/ORG_PROJECT_ID/repositories"   # if 'selected'
+```
+
+That snapshot is the only rollback you will have, and undoing from it is manual —
+re-set the variable *and its visibility*, restore label attributes, and re-add or
 re-remove options by hand (re-mapping assignments before any removal).
 
 This section applies only when the repo answers `project_management: github`:
@@ -1545,10 +1554,23 @@ gh api graphql --paginate -F l='<owner>' -f query='
 script will not pick arbitrarily — not that it will pick the *right* board. If
 the board in real use was renamed and an obsolete or closed one kept the
 canonical title, the count is still 1, and the script will select the obsolete
-board and overwrite `ORG_PROJECT_ID` with its id. So compare ids, not counts:
+board and overwrite `ORG_PROJECT_ID` with its id. So compare ids, not counts.
+
+**On an org with the variable already set**, that comparison is mechanical:
 
 ```bash
-gh variable get ORG_PROJECT_ID --org <org>   # org repos: must equal the id above
+gh variable get ORG_PROJECT_ID --org <org>   # must equal the id from the query above
+```
+
+**Otherwise the check is the operator's eyes, and it is not optional.** A
+personal account never has that variable (the script skips it — no user-level
+variable scope), and so does an org templated before `ORG_PROJECT_ID` existed. A
+missing variable is not a pass: open the matched board and confirm it is the one
+actually in use — the items are there, the `Status` options are the pipeline you
+recognize — before running anything:
+
+```bash
+gh project view <number> --owner <owner> --web   # <number> from the 6a query
 ```
 
 Zero matches is its own alarm — the script would **create** a fresh empty board
