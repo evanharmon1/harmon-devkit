@@ -224,7 +224,7 @@ read_body_or_die >"$before"
 # a full parser, from a checkbox nested under a list item, where ticking is
 # right. Prefer `--match` when a body carries either.
 items="$(awk '
-BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0 }
+BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_in_list = 0 }
 {
     # Strip indentation and any blockquote prefix before looking for a fence:
     # the item pattern below accepts `> - [ ]`, so a fence that only matched at
@@ -260,7 +260,21 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0 }
         after_marker = substr(bare, RLENGTH + 1)
     }
 
+    # A fence that opened inside a list item ends where the item does: the first
+    # non-blank line indented less than the item content column leaves the
+    # container, and CommonMark ends the fence with it. That line is then live
+    # again — it may be a new fence opener, or a criterion.
+    if (infence == 1 && fence_in_list && $0 !~ /^[ \t]*$/ && fence_indent < fence_col) {
+        infence = 0
+    }
+
     opens = (fence_indent < 4 && match(after_marker, /^(```+|~~~+)/))
+    # A backtick fence cannot carry backticks in its info string, so a line like
+    # ``` followed by `quoted text` is not an opener at all. Treated as one, the
+    # NEXT real fence reads as its closer and the sample inside becomes live.
+    if (opens && substr(after_marker, RSTART, 1) == "`") {
+        if (index(substr(after_marker, RSTART + RLENGTH), "`") > 0) opens = 0
+    }
     # A closer is measured against the column its opener started in, and may be
     # indented up to three further spaces. Unclosable is the safe direction: the
     # enumeration ends, selectors stop resolving, and the command refuses — where
@@ -281,6 +295,7 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0 }
             fence_len = len
             fence_quoted = quoted
             fence_col = fence_indent + marker_width
+            fence_in_list = (marker_width > 0)
         } else if (quoted == fence_quoted && ch == fence_ch && len >= fence_len && rest ~ /^[ \t]*$/) {
             # A closer has to sit in the same container as its opener: inside an
             # unquoted fence, a literal `> ``` ` is example text, not the end.
@@ -317,13 +332,18 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0 }
             if (inpre) {
                 at = index(rest_of_line, "</pre")
                 if (at == 0) break
+                after = substr(rest_of_line, at + 5, 1)
                 rest_of_line = substr(rest_of_line, at + 5)
-                inpre = 0
+                # The tag name has to END there. Matched as a prefix, a sample
+                # mentioning </prevent> would leave preformatted mode early and
+                # expose the rest of the block.
+                if (after == ">" || after == "" || after == " " || after == "\t") inpre = 0
             } else {
                 at = index(rest_of_line, "<pre")
                 if (at == 0) break
+                after = substr(rest_of_line, at + 4, 1)
                 rest_of_line = substr(rest_of_line, at + 4)
-                inpre = 1
+                if (after == ">" || after == "" || after == " " || after == "\t" || after == "/") inpre = 1
             }
         }
     }

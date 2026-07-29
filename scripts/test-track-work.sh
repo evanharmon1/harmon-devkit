@@ -702,6 +702,59 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
+echo "==> a backtick line whose info string holds backticks is not an opener"
+write_issue 47 '``` `not an opener`
+```
+- [ ] example inside the real fence
+```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 47 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 47 '``` `not an opener`
+```
+- [ ] example inside the real fence
+```
+
+- [x] the real criterion
+' || fail "a non-opener must not shift the fence boundaries"
+
+echo "==> leaving a list container ends the fence it opened"
+write_issue 48 '- ```text
+  - [ ] indented example
+```
+- [ ] example in the new outer fence
+```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 48 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 48 '- ```text
+  - [ ] indented example
+```
+- [ ] example in the new outer fence
+```
+
+- [x] the real criterion
+' || fail "an unindented delimiter opens a new fence, it is not just a closer"
+
+echo "==> a closing-tag-shaped word does not end a <pre> block"
+write_issue 49 '<pre>
+sample text </prevent> more
+- [ ] example inside pre
+</pre>
+
+- [ ] the real criterion
+'
+[ "$(run_tick 49 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 49 '<pre>
+sample text </prevent> more
+- [ ] example inside pre
+</pre>
+
+- [x] the real criterion
+' || fail "</prevent> must not end preformatted mode"
+
 echo "==> a fence opened as a list item hides its contents"
 write_issue 45 '- ```text
   - [ ] example inside a list-item fence
