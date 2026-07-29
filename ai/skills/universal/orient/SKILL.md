@@ -1,14 +1,14 @@
 ---
-name: start
+name: orient
 description: >-
   Start-of-session ritual — orient in the repo (branch, working tree, open
   PRs/issues) and compose a descriptive session name, emitting a
-  copy-pasteable /rename command for the user. Invoke as /start [topic or issue #].
+  copy-pasteable /rename command for the user. Invoke as /orient [topic or issue #].
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh pr list:*), Bash(gh issue list:*)
 ---
 
-# Start Session
+# Orient Session
 
 **Arguments:** $ARGUMENTS
 
@@ -68,7 +68,7 @@ then only if its work has finished or stalled.
 claim comment survives its own release — and where the issue was already
 assigned to you, `/close` correctly leaves that assignment in place too. Both
 markers then persist forever, and treating the comment alone as current would
-make every future `/start` re-report the same long-released claim. So the
+make every future `/orient` re-report the same long-released claim. So the
 comment counts only when **no later `Claim released —` comment supersedes it**.
 Prefer the live markers (`agent:*` label, card at `In Progress`); fall back to
 the comment only after checking what follows it.
@@ -110,4 +110,5 @@ context even after compaction.
 
 Finish with 3–5 orientation bullets: current branch, clean/dirty tree,
 notable open PRs or issues, and the suggested next step. If implementation
-work is coming, suggest running `/preflight` first.
+work is coming, suggest `/preflight` next — it sanity-checks the issue and
+claims it, and `/implement` expects that claim to already exist.

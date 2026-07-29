@@ -1,15 +1,15 @@
 ---
-name: reflect
+name: retro
 description: >-
   End-of-session retrospective — loose ends, follow-ups, next actions,
   improvement opportunities (skills to write, settings/env changes, GitHub
   issues to file), plus status tables with clickable links and status emoji
-  for every PR and issue touched or referenced this session. Invoke as /reflect.
+  for every PR and issue touched or referenced this session. Invoke as /retro.
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh issue view:*)
 ---
 
-# Reflect
+# Retro
 
 **Arguments:** $ARGUMENTS
 
