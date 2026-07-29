@@ -573,13 +573,24 @@ BEGIN {
         # belongs to the innermost item however far it dedents, so it closes no
         # container. Popping on it loses the item, and a nested criterion after
         # the next blank line then measures against the document as code.
+        # Only LEAVING a container closes it, which is why the quote test is `>`
+        # and not `!=`. Quoting deeper nests inside the item rather than ending
+        # it: `- outer` holding `  > - quoted` still has the outer item open,
+        # and popping it there measures the next nested criterion against the
+        # document and buries it in a phantom code block.
         if (this_kind != "para" || (prev_kind != "para" && prev_kind != "list")) {
-            while (nlist > 0 && (lqd[nlist] != quoted || col < lcol[nlist])) nlist--
+            while (nlist > 0 && (lqd[nlist] > quoted || col < lcol[nlist])) nlist--
         }
         # With no list open the container is the blockquote, whose content
         # column is the column just past its last marker — `col - sp`, the same
         # measurement the fence opener uses.
         base = (nlist > 0) ? lcol[nlist] : col - sp
+        # Where an HTML block opening on this line would live. The push walk
+        # below overrides both when the line carries container markers, because
+        # a `>` consumed AFTER a list marker raises the depth for the rest of
+        # the line while the prefix `quoted` stays where it was.
+        html_open_col = base
+        html_open_quoted = quoted
 
         # A code block runs until a non-blank line comes back inside the
         # container. Blank lines belong to it, which is why this whole block is
@@ -647,6 +658,8 @@ BEGIN {
                 push_rest = substr(push_rest, pad_n + 1)
                 if (over) break
             }
+            html_open_col = push_col
+            html_open_quoted = push_quoted
         }
     }
     if (lazy == 1) {
@@ -673,10 +686,11 @@ BEGIN {
     if (infence == 0 && blank == 0 && inhtml == 0 && over == 0 &&
         html_block_tag(push_rest)) {
         inhtml = 1
-        html_quoted = quoted
         # The container the block opens IN — measured after the markers on this
-        # line, so a sibling item dedenting past it ends the block.
-        html_base = (nlist > 0) ? lcol[nlist] : base
+        # line, so a sibling item dedenting past it ends the block, and leaving
+        # a blockquote entered mid-line (`- > <div>`) ends it too.
+        html_base = html_open_col
+        html_quoted = html_open_quoted
         next
     }
 

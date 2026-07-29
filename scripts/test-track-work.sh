@@ -1465,6 +1465,37 @@ continuation without indent
     - [x] nested task item
 ' || fail "a lazy continuation closes no container"
 
+echo "==> quoting deeper nests inside a list item rather than ending it"
+write_issue 85 '- outer
+  > - quoted
+
+    - [ ] live criterion
+'
+[ "$(run_tick 85 --index 1)" = 0 ] || fail "the outer item should survive the quoted sub-list"
+issue_is 85 '- outer
+  > - quoted
+
+    - [x] live criterion
+' || fail "only leaving a container closes it"
+
+echo "==> leaving a blockquote entered after a list marker ends its HTML block"
+write_issue 86 '- > <div>
+  - [ ] live criterion in the outer item
+'
+[ "$(run_tick 86 --index 1)" = 0 ] || fail "leaving the quote should end the block"
+issue_is 86 '- > <div>
+  - [x] live criterion in the outer item
+' || fail "the block depth is the one the markers reached, not the line prefix"
+
+echo "==> leaving a blockquote still closes the list it held"
+write_issue 87 '> - item
+- [ ] outside the quote
+'
+[ "$(run_tick 87 --index 1)" = 0 ] || fail "an unquoted sibling should be tickable"
+issue_is 87 '> - item
+- [x] outside the quote
+' || fail "a shallower line must still pop the quoted container"
+
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
 - [ ] the real criterion
