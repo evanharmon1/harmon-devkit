@@ -62,10 +62,19 @@ confirm with the user before proceeding.
   Fallback: `git status -sb` and `gh pr list --repo "$repo" --state open`.
   Caution: `task` executes the checked-out Taskfile; on an untrusted branch
   use the raw commands.
-- Template provenance: if the repo has a Copier answers file
-  (`.copier-answers.yml` unless the template relocated it), read it and report
-  `_src_path` — the template it came from — and `_commit`, the revision it was
-  rendered at. Then ask the *source* question separately rather than as a
+- Template provenance — every read below is against the fetched default branch,
+  so resolve that first rather than later: `git remote set-head "$remote"
+  --auto`, then
+  `default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD")"` (the
+  history bullet below reuses it). Then read the repo's Copier answers file.
+  It is `.copier-answers.yml` by default, but `_answers_file` — or
+  `--answers-file` at render time — can put it anywhere, and a *consumer*
+  carries no manifest to look that override up in. So when nothing is at the
+  default path, search the fetched tree for a YAML carrying `_src_path`; none
+  found, or several, is **unproven rather than absent**, because "no answers
+  file" silently means "not template-managed" and skips the whole check.
+  Report `_src_path` — the template it came from — and `_commit`, the revision
+  it was rendered at. Then ask the *source* question separately rather than as a
   fallback: a root Copier manifest beside a payload tree makes the repo a
   template source, and a template scaffolded from another template is both —
   gating that test on "no answers file" is what makes such a repo skip its own
@@ -89,9 +98,7 @@ confirm with the user before proceeding.
   and `gh pr checks <pr> --repo "$repo"`.
 - Recent history against the **fetched** default branch (local `main` may be
   stale, and the default branch is not always named `main`). Using the
-  `$remote` fetched above, refresh its cached default-branch ref
-  (`git remote set-head "$remote" --auto`), then
-  `default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD")"`,
+  `$default` resolved in the provenance bullet above:
   `git log --oneline "$default"..HEAD`, and `git log --oneline -10 "$default"`
   for merges that may have changed the ground under the issue.
 - The working tree can be **behind** the fetched default branch, and
@@ -166,6 +173,14 @@ explicit confirmation from the user. Then look for:
     checkout to use rather than opening whatever it names, and if there is
     none, say the targets went unclassified — never let a search that could
     not run report "canonical here".
+  - **Then confirm the checkout is the repo `_src_path` names**, not merely a
+    plausible sibling. Knowing which revision you read settles nothing about
+    *which repository* you read it in, and a wrong sibling holding a file of
+    the same basename yields a confident false presence — or a false absence,
+    which routes the fix here. Compare normalized remote identity, checking
+    every remote rather than `origin` alone, since the match may be
+    `upstream` and an SSH remote will not match an HTTPS `_src_path` textually.
+    No match means unproven, not "canonical here".
 - **Overlap or contradiction** — other open issues or in-flight PRs touching
   the same files or solving the same problem. Discover them actively:
   `gh issue list --repo "$repo" --state open --limit 100` (plus
