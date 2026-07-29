@@ -76,10 +76,15 @@ confirm with the user before proceeding.
   *consumer* if it has an answers file, and a *template source* if it has a
   root manifest with a payload tree. Neither filename is fixed: the manifest
   is `copier.yml` **or** `copier.yaml`, and the answers file defaults to
-  `.copier-answers.yml` but any template can relocate it via `_answers_file`
-  (as can `--answers-file` at render time), so check the manifest's own value
-  before concluding a repo has no lineage. Hard-coding the two defaults makes
-  a perfectly ordinary layout skip this check silently. A template repo has no
+  `.copier-answers.yml` but `_answers_file` (or `--answers-file` at render
+  time) can put it anywhere. Do not look that override up in the local
+  manifest: a consumer has no manifest, and a *source* repo's `_answers_file`
+  describes where **its** consumers keep answers, not where this repo keeps
+  its own. Identify an answers file by its content instead — a Copier answers
+  file is the YAML carrying `_src_path` and `_commit` — and if none turns up
+  where lineage is otherwise suspected, ask the user rather than concluding
+  there is none. Hard-coding the defaults makes an ordinary layout skip this
+  check in silence. A template repo has no
   answers file of its own, having never been rendered from itself — but a template
   repo that was scaffolded from some other template has both, and checking the
   second only when the first is absent would miss its root-twin obligations
@@ -106,9 +111,14 @@ confirm with the user before proceeding.
   in the matched source*. A tag-valued `_commit` proves nothing, because tags
   move. Neither does a bare hash: it can name no object at all, name a
   non-commit, or exist in the chosen checkout only because that clone once
-  fetched it from a fork. Confirm the object resolves against a freshly
-  fetched matching remote; short of that, report the baseline as unprovable
-  rather than reasoning from it. The template's current default
+  fetched it from a fork. **Resolving is not proving** — an object fetched
+  from anywhere stays in the local object database, so `rev-parse` and
+  `cat-file` keep succeeding afterwards and reproduce exactly the false
+  confidence they were meant to dispel. Require the commit to be *reachable
+  from a ref fetched from the matched remote* (`git branch -r --contains`
+  over that remote's refs, say), or read it from a clean clone. Short of
+  that, report the baseline as unprovable rather than reasoning from it. The
+  template's current default
   branch is where a fix would have to land, and it has moved: files added,
   removed, renamed, or newly gated since the render all read as original
   provenance if you consult only the newer tree, while only the newer tree
@@ -116,6 +126,15 @@ confirm with the user before proceeding.
   default branch — a stale checkout misses precisely the recent changes this
   comparison exists to catch. (`diff-template.sh` renders at `_commit` for
   the same reason.)
+- **Read those revisions, not the checkout's working tree.** Fetching updates
+  refs, never the tree on disk, and the checkout you were handed may be dirty,
+  stale, or parked on a feature branch — so `Glob`/`Grep`, which see only the
+  working tree, can report a file present that the baseline never had or
+  absent when it is there. Inspect the git trees at the two revisions
+  (`git ls-tree -r <rev>`, `git cat-file -p <rev>:<path>`) or materialize a
+  snapshot per revision and search that. These are outside this skill's
+  pre-approved set, so expect a permission prompt — the same treatment
+  `git log`/`show` already get.
 - The checkout has to exist first; this skill clones nothing and
   `Read`/`Glob`/`Grep` see only the local filesystem, while `_src_path` is
   normally an HTTPS URL. Without a checkout, say so and ask the user to
@@ -176,18 +195,29 @@ explicit confirmation from the user. Then look for:
     `diff-template.sh:241` invokes `copier copy --trust`, and `--trust` is
     the flag that enables tasks and other side effects, so it can write files
     and reach the network. That is not a read-only operation, and this stage
-    is read-only. Do not render on this skill's authority. Either get the
-    user's explicit go-ahead — the same bar step 5's writes are held to,
-    named as a render of a specific template revision — or report the hunk
-    verdict as unproven and say why. An unproven verdict is a usable finding;
-    a confidently wrong one routes the work to the wrong repo, and a silent
-    `--trust` render is a worse bargain than either.
-  - Look for the target under the template's **payload root** — whatever
-    `copier.yml`'s `_subdirectory` declares (`template/` in harmon-init, but
-    some templates render straight from the repo root). Hard-coding
-    `template/` searches a directory that may not be the one Copier emits
-    from, and finding nothing there reads as "canonical here" when it means
-    "looked in the wrong place". Do not build a literal path either:
+    is read-only. Do not render on this skill's authority. Prefer a render
+    that cannot execute anything — skip tasks, withhold trust — and treat
+    that as the only kind this stage asks for casually. Where the template
+    declares `_tasks` or custom Jinja extensions, no single confirmation is
+    adequate: "render this revision" sounds bounded but authorizes arbitrary
+    code that can read secrets, write outside the destination, and reach the
+    network, which is far broader than the specific commands step 5 shows the
+    user. Name the tasks, or run it isolated, or don't run it. Otherwise
+    report the hunk verdict as unproven and say why — an unproven verdict is
+    a usable finding, a confidently wrong one routes the work to the wrong
+    repo, and a silent `--trust` render is a worse bargain than either.
+  - Look for the target under the template's **payload root** — whatever the
+    manifest's `_subdirectory` declares (`template/` in harmon-init, but some
+    templates render straight from the repo root). Hard-coding `template/`
+    searches a directory that may not be the one Copier emits from, and
+    finding nothing there reads as "canonical here" when it means "looked in
+    the wrong place". `_subdirectory` is itself template-supplied and can be
+    answer-templated, so normalize the rendered value and require it to stay
+    inside the source tree before searching: an absolute path or one climbing
+    through `..` aims the pre-approved `Glob`/`Grep` straight past the
+    `_src_path` boundary established above, and a symlinked payload root
+    escapes it just as well. Copier applies the same containment check.
+    Do not build a literal path either:
     filenames embed Jinja conditionals in custom
     `[% %]` delimiters, e.g.
     `template/.claude/[% if use_foreman %]agents[% endif %]/foreman-preflight.md`
@@ -200,11 +230,16 @@ explicit confirmation from the user. Then look for:
   - **Presence upstream is necessary, not sufficient.** A file can sit under
     `template/` and still be owned by the consumer, so confirm the template
     actually renders *and keeps* it before routing anything upstream:
-    - `copier.yml`'s `_skip_if_exists` list freezes files after the first
-      render — harmon-init freezes `CHANGELOG.md`, `*.code-workspace`, and
-      `.github/CODEOWNERS` that way. Those are consumer-owned; an upstream
-      "fix" to one never reaches an existing repo, and for `CODEOWNERS` the
-      local edit is the access-control decision, not drift.
+    - `_skip_if_exists` freezes files after the first render — harmon-init
+      freezes `CHANGELOG.md`, `*.code-workspace`, and `.github/CODEOWNERS`
+      that way. Frozen is not the same as consumer-owned, and the difference
+      is which defect you are looking at. An upstream fix never reaches *this*
+      repo's existing copy, so a repo-specific problem — `CODEOWNERS` naming
+      the wrong reviewers, say — is local, and its local edit is an
+      access-control decision rather than drift. But the template still seeds
+      these files for every repo generated from here on, so a defect in the
+      *seed itself* is upstream-owned and fixing only here leaves every future
+      consumer with it. When both are true, both copies need the edit.
     - A conditionally-named file is only rendered when its condition holds
       for *this* repo's answers. `Glob` finds
       `[% if use_foreman %]agents[% endif %]/…` regardless, so check the
