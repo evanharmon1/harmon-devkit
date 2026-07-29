@@ -208,17 +208,24 @@ explicit confirmation from the user. Then look for:
     `diff-template.sh:241` invokes `copier copy --trust`, and `--trust` is
     the flag that enables tasks and other side effects, so it can write files
     and reach the network. That is not a read-only operation, and this stage
-    is read-only. Do not render on this skill's authority. Prefer a render
-    that cannot execute anything — skip tasks, withhold trust — and treat
-    that as the only kind this stage asks for casually. Where the template
-    declares `_tasks` or custom Jinja extensions, no single confirmation is
-    adequate: "render this revision" sounds bounded but authorizes arbitrary
-    code that can read secrets, write outside the destination, and reach the
-    network, which is far broader than the specific commands step 5 shows the
-    user. Name the tasks, or run it isolated, or don't run it. Otherwise
-    report the hunk verdict as unproven and say why — an unproven verdict is
-    a usable finding, a confidently wrong one routes the work to the wrong
-    repo, and a silent `--trust` render is a worse bargain than either.
+    is read-only. Do not render on this skill's authority. **And withholding
+    `--trust` is not a sandbox**: Copier parses the manifest with PyYAML's
+    FullLoader, so a computed YAML default such as
+    `!!python/name:os.system` is callable from an ordinary Jinja file, and
+    `copier copy --defaults --skip-tasks` executes it with no `--trust`
+    anywhere (verified against Copier 9.16). `!include` can likewise reach
+    outside the checkout by relative or symlinked path. So the flags are a
+    courtesy, not a boundary — treat *every* render of a revision you have
+    not vetted as arbitrary code execution, not merely the templates that
+    declare `_tasks` or custom extensions, and give it OS- or
+    container-level isolation. Anything less asks the user to approve
+    "render this revision", which sounds bounded, while handing over
+    something far broader than the specific commands step 5 shows them.
+    Where isolation is unavailable, report the hunk verdict as unproven and
+    say why — an unproven verdict is a usable finding, a confidently wrong
+    one routes the work to the wrong repo, and executing an unvetted
+    template to settle a documentation question is a worse bargain than
+    either.
   - Look for the target under the template's **payload root** — whatever the
     manifest's `_subdirectory` declares (`template/` in harmon-init, but some
     templates render straight from the repo root). Hard-coding `template/`
@@ -264,12 +271,21 @@ explicit confirmation from the user. Then look for:
     a generated mirror). Canonical is wherever the file is edited by hand;
     every other copy is overwritten on the next sync. Backwards, this check
     is worse than none: it routes the fix to the repo that will lose it.
+  - **Origin is not scope.** A render comparison says where a line *came
+    from*, never how widely the issue means to change it. Copier's three-way
+    merge exists precisely so a repo can carry a deliberate local override,
+    and a line that still matches the baseline is exactly what such an
+    override starts from — so an issue asking to change a generated default
+    *for this repo only* is correctly fixed here, template-owned line and
+    all. Read the issue's intended scope alongside the line's origin, and
+    route upstream only when the defect is the template's, not when the
+    repo is choosing to differ.
   - Report the verdict for every target either way — "canonical here" is a
     finding too, and it is what lets the next reader skip the search. A
-    target whose changed lines are template-owned is a `correction` at
-    minimum: name the upstream repo and the path you found, and recommend
-    fixing it there and letting the change flow down, rather than editing the
-    local copy. Say which it is at hunk level when the file is mixed —
+    target whose changed lines are template-owned *and* whose defect is the
+    template's is a `correction` at minimum: name the upstream repo and the
+    path you found, and recommend fixing it there and letting the change flow
+    down, rather than editing the local copy. Say which it is at hunk level when the file is mixed —
     "template-managed file, but the lines this issue changes are local" is a
     verdict of its own, and the one that keeps a consumer fix from being
     exiled upstream.
