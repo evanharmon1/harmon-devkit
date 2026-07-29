@@ -1398,6 +1398,73 @@ issue_is 79 '-
     - [x] child of an empty parent marker
 ' || fail "a bare marker opens a list item, so its child is not code"
 
+echo "==> a thematic break is a rule, not three nested list containers"
+write_issue 80 '- - -
+
+    - [ ] example in an indented code block
+
+- [ ] the real criterion
+'
+[ "$(run_tick 80 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 80 '- - -
+
+    - [ ] example in an indented code block
+
+- [x] the real criterion
+' || fail "a thematic break must open no container"
+
+echo "==> a deeper blockquote stays inside the HTML block holding it"
+write_issue 81 '> <div>
+> > - [ ] example inside the quoted html block
+
+- [ ] the real criterion
+'
+[ "$(run_tick 81 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 81 '> <div>
+> > - [ ] example inside the quoted html block
+
+- [x] the real criterion
+' || fail "quoting deeper must not close the block"
+
+echo "==> a sibling list item ends the HTML block inside its predecessor"
+write_issue 82 '- <div>
+  raw content
+- [ ] the real criterion
+'
+[ "$(run_tick 82 --index 1)" = 0 ] || fail "a sibling item should be live again"
+issue_is 82 '- <div>
+  raw content
+- [x] the real criterion
+' || fail "an HTML block ends where its container ends"
+
+echo "==> a list-looking line inside raw HTML leaves no container behind"
+write_issue 83 '<div>
+- item inside raw html
+
+    - [ ] example in an indented code block
+- [ ] the real criterion
+'
+[ "$(run_tick 83 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 83 '<div>
+- item inside raw html
+
+    - [ ] example in an indented code block
+- [x] the real criterion
+' || fail "raw HTML must record no block structure"
+
+echo "==> an unindented lazy continuation keeps its list item open"
+write_issue 84 '- outer paragraph
+continuation without indent
+
+    - [ ] nested task item
+'
+[ "$(run_tick 84 --index 1)" = 0 ] || fail "the nested task item should stay tickable"
+issue_is 84 '- outer paragraph
+continuation without indent
+
+    - [x] nested task item
+' || fail "a lazy continuation closes no container"
+
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
 - [ ] the real criterion
