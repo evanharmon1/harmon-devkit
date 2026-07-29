@@ -775,16 +775,20 @@ BEGIN {
             if (substr(bare, 1, 1) == " " || substr(bare, 1, 1) == "\t") digits--
             if (digits > 9) item_ok = 0
         }
-        # A marker followed by five or more spaces puts its content four columns
-        # in, which is an indented code block inside the item — not a checkbox.
+        # A marker whose padding reaches five columns puts its content four
+        # columns in, which is an indented code block inside the item — not a
+        # checkbox. Measured in RENDERED columns, like every other width here:
+        # counting characters instead misses `-\t\t[ ] example`, whose two tabs
+        # are two characters but expand past the limit, and offers a code sample
+        # as a criterion.
         if (match(bare, /^[ \t]*([-*+]|[0-9]+[.)])/)) {
-            pad = 0
-            at_pad = RLENGTH + 1
-            while (substr(bare, at_pad, 1) == " " || substr(bare, at_pad, 1) == "\t") {
-                pad++
-                at_pad++
+            mark_end = advance(col, substr(bare, 1, RLENGTH))
+            pad_start = RLENGTH + 1
+            at_pad = pad_start
+            while (substr(bare, at_pad, 1) == " " || substr(bare, at_pad, 1) == "\t") at_pad++
+            if (advance(mark_end, substr(bare, pad_start, at_pad - pad_start)) - mark_end > 4) {
+                item_ok = 0
             }
-            if (pad > 4) item_ok = 0
         }
         # Only an ordered marker starting at 1 may interrupt a paragraph, so
         # `2. [ ] text` directly under prose stays part of that prose. Tracked

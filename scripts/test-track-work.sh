@@ -1625,6 +1625,18 @@ issue_is 96 'Some prose
 2. [x] real criterion
 ' || fail "raw HTML is a leaf block, so no paragraph survives it"
 
+echo "==> marker padding is measured in rendered columns, so tabs count fully"
+write_issue 97 "$(printf -- '-\t\t[ ] example indented into code by tabs\n\n- [ ] the real criterion\n')"
+[ "$(run_tick 97 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 97 "$(printf -- '-\t\t[ ] example indented into code by tabs\n\n- [x] the real criterion\n')" ||
+    fail "two tabs expand past four columns, so that item is code"
+
+echo "==> one tab of marker padding is still within the limit"
+write_issue 98 "$(printf -- '-\t[ ] one tab is within the limit\n')"
+[ "$(run_tick 98 --index 1)" = 0 ] || fail "one tab should stay a criterion"
+issue_is 98 "$(printf -- '-\t[x] one tab is within the limit\n')" ||
+    fail "a single tab reaches column four, which is the cap and not past it"
+
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
 - [ ] the real criterion
