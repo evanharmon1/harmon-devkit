@@ -89,11 +89,30 @@ issue, and two agents start implementing.
    user explicitly says to continue.
 3. **Claimed by you** — and the markers are **not equally good evidence of
    who**, so rank them rather than accepting any one:
-   - **Strong** — a claim comment naming *this session*, not superseded by a
-     later `Claim released —`. `/preflight` writes exactly that record, which is
-     why it is the one marker that answers "who", not merely "someone". The
-     session name alone; the branch it records is **not** identity evidence, for
-     the reason below.
+   - **Strong** — a claim comment naming *this session*, **authored by you**,
+     not superseded by a later `Claim released —`. `/preflight` writes exactly
+     that record, which is why it is the one marker that answers "who", not
+     merely "someone". The session name alone; the branch it records is **not**
+     identity evidence, for the reason below.
+
+     **Check the author, not just the text.** A claim comment is ordinary issue
+     text on a public repo: anyone can post a claim-shaped comment naming a
+     guessable session, or repost an old claim after its release, and a rule
+     that reads only the body would accept it — letting untrusted input satisfy
+     the very check that stands in for `/preflight`'s sanity pass. Same
+     reasoning as the author-weighting in step 2, applied one step earlier,
+     where it matters more:
+
+     ```sh
+     me="$(gh api user --jq .login)"
+     [ -n "$me" ] || { echo 'identity lookup failed — treat as unclaimed'; exit 1; }
+     gh issue view <n> --repo "$repo" --json comments \
+       --jq --arg me "$me" '.comments[] | select(.author.login == $me)'
+     ```
+
+     A failed identity lookup is *unknown*, never *mine* — fall through to
+     outcome 4 and offer `/preflight` rather than proceeding on an unverified
+     comment.
    - **Corroborating** — an `agent:*` label for this agent. It names the agent
      but not the session, and a repo with no such label family cannot have one
      at all (`/preflight` treats that as benign), so its absence proves nothing.
@@ -284,7 +303,22 @@ second PR is the expensive way to find out.
   for **every** file it holds, not just this branch's — a branch renamed
   mid-change strands its notes under the old name where nothing will look for
   them again.
-- Push the branch and `gh pr create`.
+- **Push to a remote you can write to, named explicitly.** `$repo` from step 1
+  is where the *issue* and the PR live; it is not necessarily where you may
+  push. In a fork workflow the two differ — `$repo` is upstream, your writable
+  remote is the fork — and step 3 branched from `$remote`'s default ref, so the
+  new branch may track upstream. A bare `git push` then either fails under
+  git's `simple` default or aims at a repository you have no business writing
+  to. Name both sides:
+
+  ```sh
+  git push -u <writable-remote> HEAD:<branch>
+  gh pr create --repo "$repo" --head <owner>:<branch>   # owner: prefix only for a fork
+  ```
+
+  Where the checkout is not a fork, the writable remote and `$repo`'s remote are
+  the same one — naming it explicitly costs nothing and removes the ambiguity.
+- `gh pr create`, then confirm the PR's head SHA matches what you pushed.
 - **Delete the scratch file last** — only once `gh pr create` has returned a URL
   *and* you have re-read the PR body and confirmed the findings are in it. The
   file is the sole durable copy: a push rejected for auth, a validation error, a
