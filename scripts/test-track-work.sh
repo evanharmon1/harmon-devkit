@@ -539,6 +539,7 @@ cat >"$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "api" ] && [ "${2:-}" = "user" ]; then
+    [ -n "${STUB_FAIL_META:-}" ] && exit 1
     printf '%s' "${STUB_LOGIN:-tester}"
     exit 0
 fi
@@ -699,6 +700,36 @@ issue_is 37 '````
 
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
+
+echo "==> text GFM does not render as a task item is not a criterion"
+# `- [ ]example` has no delimiter after the box, so GitHub renders it as prose.
+write_issue 39 '- [ ]example prose, not a checkbox
+
+- [ ] the real criterion
+'
+[ "$(run_tick 39 --match 'example')" = 1 ] || fail "un-rendered task text should not be selectable"
+[ "$(run_tick 39 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 39 '- [ ]example prose, not a checkbox
+
+- [x] the real criterion
+' || fail "prose that looks like a task item must be left alone"
+
+echo "==> an empty criterion at end of line is still a criterion"
+write_issue 40 '- [ ]
+'
+[ "$(run_tick 40 --index 1)" = 0 ] || fail "a bare box at end of line should tick"
+
+echo "==> a failed metadata lookup is an environment error, not 'unassigned'"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_FAIL_META=1 \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "a failed metadata lookup should exit 2 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "a failed metadata lookup must not write"
 
 echo "==> a deeper fence inside a quoted fenced block does not close it"
 write_issue 38 '> ```

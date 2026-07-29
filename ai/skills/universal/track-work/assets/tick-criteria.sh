@@ -161,13 +161,22 @@ read_body_or_die() {
 # human authorised work on this specific issue.
 assert_claimed() {
     [ -n "$fixture" ] && return 0
-    _me="$(gh api user --jq '.login' 2>/dev/null || true)"
+    # Each lookup keeps its exit status: swallowed with `|| true`, an expired
+    # token or a network blip reads as "unassigned" and the caller is told to
+    # claim an issue they already hold.
+    _me="$(gh api user --jq '.login' 2>/dev/null)" || {
+        echo "tick-criteria: could not resolve the authenticated user" >&2
+        exit 2
+    }
     [ -n "$_me" ] || {
         echo "tick-criteria: could not resolve the authenticated user" >&2
         exit 2
     }
     _state="$(gh issue view "$issue" --repo "$repo" --json state \
-        --jq '.state' 2>/dev/null || true)"
+        --jq '.state' 2>/dev/null)" || {
+        echo "tick-criteria: could not read the state of $repo#$issue" >&2
+        exit 2
+    }
     case "$_state" in
     OPEN | open) ;;
     *)
@@ -176,7 +185,10 @@ assert_claimed() {
         ;;
     esac
     _assignees="$(gh issue view "$issue" --repo "$repo" --json assignees \
-        --jq '[.assignees[].login] | join(" ")' 2>/dev/null || true)"
+        --jq '[.assignees[].login] | join(" ")' 2>/dev/null)" || {
+        echo "tick-criteria: could not read the assignees of $repo#$issue" >&2
+        exit 2
+    }
     case " $_assignees " in
     *" $_me "*) return 0 ;;
     esac
@@ -196,10 +208,14 @@ read_body_or_die >"$before"
 
 # Enumerate the unticked items as "lineno:text", in body order.
 #
-# The item pattern is the one check-closing-keywords.sh counts — unordered and
-# ordered markers, any indentation, any whitespace run before the box, any depth
-# of blockquote prefix — but fenced blocks are skipped, where that guard
-# deliberately scans them. The bias inverts with the operation: a read-only guard
+# The item pattern is check-closing-keywords.sh's — unordered and ordered
+# markers, any indentation, any whitespace run before the box, any depth of
+# blockquote prefix — with two deliberate departures, both because this one
+# writes. Fenced blocks are skipped, where that guard scans them. And the box
+# must be followed by whitespace or the end of the line, as GFM requires to
+# render a task item at all: `- [ ]example` is literal text, and ticking it
+# would edit prose while the real criterion stayed open. The guard can safely
+# over-count there; a mutation cannot. The bias inverts with the operation: a read-only guard
 # is fail-closed, so a checkbox in an example counts as unfinished work; a
 # command that writes must not treat an example as a criterion, or `--index 1`
 # ticks a code sample and reports success while the real criterion stays open.
@@ -242,7 +258,7 @@ BEGIN { infence = 0 }
         }
         next
     }
-    if (infence == 0 && $0 ~ /^[[:space:]]*(>[[:space:]]*)*([-*+]|[0-9]+[.)])[[:space:]]+\[[ \t]\]/) {
+    if (infence == 0 && $0 ~ /^[[:space:]]*(>[[:space:]]*)*([-*+]|[0-9]+[.)])[[:space:]]+\[[ \t]\]([[:space:]]|$)/) {
         print NR ":" $0
     }
 }' "$before")"
