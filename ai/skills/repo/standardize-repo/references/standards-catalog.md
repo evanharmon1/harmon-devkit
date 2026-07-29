@@ -849,6 +849,18 @@ artifacts; the prose rules are guidance, not lint):
   on release publish — **[copier]** when `use_release_please` + `github`.
 - **Views** (Board / Triage / Agent queue / Planning / Mine) are **UI-only** —
   Projects V2 has no view API. **[manual]**.
+- **Auto-add** — the project's built-in **"Auto-add to project"** workflow
+  (Settings → Workflows, filter `is:open`) puts every issue/PR on the board, for
+  both owner types. UI-only, no API. **[manual]**. Three limits bound the "every
+  repo feeds the one board" rule: a workflow targets **one repo** (so each repo
+  needs its own), it **never backfills** existing items (only ones created or
+  updated after it is on), and a project may hold only **1 on Free, 5 on
+  Pro/Team, 20 on Enterprise** — past the cap the rule does not hold and no
+  fallback is specified: an `actions/add-to-project` workflow needs a
+  Projects-write token (not `GITHUB_TOKEN`), and fork-PR coverage needs a
+  fork-influenced trigger the CI App key must never be read from, so closing the
+  gap is an open design question. Filter qualifiers AND together, so
+  `is:issue is:pr` matches nothing; leave the type unqualified.
 - **Hierarchy** — sub-issues, no Epic type: the parent holds the spec +
   milestone/project (children inherit both); leaves hold the `Task` type + the
   **`Size` points** (the numeric estimate — on an org, the built-in `Effort`
@@ -858,8 +870,8 @@ artifacts; the prose rules are guidance, not lint):
 **Org-only automation** (`github_org != author`):
 `.github/workflows/project-automation.yml` syncs `Status` from PR/CI events as the
 CI GitHub App, reading the `ORG_PROJECT_ID` org variable (title fallback).
-**[copier]**. The project's built-in **"Auto-add to project"** workflow
-(**[manual]**, UI, no API) puts every issue/PR on the board.
+**[copier]**. It only updates items already on the board, so it depends on the
+**Auto-add** workflow above being on for the repo.
 
 ### 1.14 Issue & PR tracking hygiene
 

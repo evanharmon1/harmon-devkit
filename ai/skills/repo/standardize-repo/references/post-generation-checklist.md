@@ -288,6 +288,57 @@ Both owner types — the org-only follow-ups are in the next section.
   > `domain:` option, add it to `scripts/setup-github-labels.sh` **and re-run this
   > task**: editing the script alone does not touch the live labels.
 
+- [ ] **[manual — GitHub UI]** Create the project's **starter views** — **Board**,
+      **Triage**, **Agent queue**, **Planning**, **Mine**. Projects V2 has no view
+      API, so no task can do this and re-running the setup tasks will not create
+      them. The filter and layout for each view are in the generated repo's
+      `docs/project-management.md`; keep the saved set small and slice the one
+      board for everything else.
+
+  > **`Triage` cannot be built exactly as specified** — build the closest
+  > workable form and move on. Its spec groups by **`Type`**, which is an
+  > org-level issue field a personal account does not have, and filters on
+  > "missing a `Priority`" **or** `needs-triage`, a union across two qualifiers
+  > that Projects cannot express (distinct qualifiers AND). On a personal
+  > account, group by something you do have (`Priority`); either way pick one
+  > half of the filter and know the other half of the inbox is not in this view.
+  > Tracked upstream as evanharmon1/harmon-init#444.
+
+- [ ] **[manual — GitHub UI]** Turn on the project's built-in **"Auto-add to
+      project"** workflow — this is what puts **every** issue and PR on the board.
+      In the Project's **Settings → Workflows**, enable *Auto-add to project*,
+      point it at this repo, and set the filter to `is:open`.
+
+  > It is GitHub's native built-in — no Actions, no tokens — and the only
+  > mechanism that catches an item however it was created. A repo that skips it
+  > silently never reaches the project however completely the rest of this
+  > section was followed, and (on an org) `project-automation.yml` then has no
+  > items whose `Status` it can sync. Four things the UI will not warn you about:
+  >
+  > - **Filter qualifiers AND together**, so `is:issue is:pr` matches *nothing*.
+  >   Leave the type unqualified — `is:open` alone already matches both issues
+  >   and PRs, which is what the board wants.
+  > - **One workflow targets one repo.** Every repo feeding the board needs its
+  >   own auto-add workflow: add a new one, never re-point an existing repo's, or
+  >   that repo silently stops feeding the board.
+  > - **It does not backfill.** Existing items are never added — the workflow
+  >   fires only when an item is created or updated afterwards. Adopting an
+  >   existing repo, add the current backlog to the project by hand, or the board
+  >   reads as complete while the backlog is missing.
+  > - **The workflows are capped per project** — 1 on Free, 5 on Pro/Team, 20 on
+  >   Enterprise. "Every repo feeds the one board" holds only under that cap, and
+  >   **no fallback is specified here** — past it, treat board coverage as
+  >   knowingly incomplete rather than assumed. This is not a gap to close on the
+  >   spot with an `actions/add-to-project` workflow: it needs a Projects-write
+  >   token that the repo `GITHUB_TOKEN` does not have and the bot PAT
+  >   deliberately withholds (org-**read**-only), and fork-PR coverage would
+  >   require a fork-influenced trigger — which the CI App key must never be read
+  >   from (`docs/architecture/security.md`: not fork `pull_request`, not
+  >   `pull_request_target`, not `workflow_run`). Design it deliberately, or
+  >   accept the gap; do not improvise it here. The issue-form `projects:` key is
+  >   not a substitute either: it covers only form-created issues and hard-codes
+  >   a project number.
+
 ### Org repos only (`github_org != author_git_provider_username`)
 
 The first two items apply only when `project_management: github` — the
