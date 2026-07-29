@@ -684,12 +684,21 @@ when nothing is automating it.
 Check for it on the **base** revision, never the checkout:
 
 ```sh
-gh api repos/"$repo"/contents/.github/workflows/project-automation.yml \
-  --jq .name >/dev/null 2>&1 && echo active
+base="$(gh pr view <n> --repo "$repo" --json baseRefName -q .baseRefName)"
+gh api "repos/$repo/contents/.github/workflows/project-automation.yml?ref=$base" \
+  --jq .name >/dev/null 2>&1 && echo present
 ```
 
 The checkout is the PR head (step 1 requires it), so reading the file there
 lets the PR under review decide the answer: a PR that *adds* the workflow would
 suppress manual writes although nothing is running yet, and a PR that *deletes*
 it would authorize them although the base workflow is still live and still
-racing. What matters is what runs on the base branch today.
+racing. What matters is what runs on the PR's base today — hence the explicit
+`?ref=`, since the contents endpoint otherwise reads the *default* branch,
+which is not the base for a stacked or release-branch PR.
+
+Presence is not activation: a workflow can be disabled
+(`gh api repos/"$repo"/actions/workflows --jq '.workflows[]|{path,state}'`
+reports `disabled_manually`). When the two disagree, say which you observed
+rather than assuming — and when it is genuinely ambiguous, write nothing and
+report that, because a racing write is worse than a missing one.

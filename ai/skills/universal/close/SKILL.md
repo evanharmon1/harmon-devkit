@@ -92,6 +92,12 @@ read it in the UI) — never guess.
     says "unknown" or no comment survives, ask the user instead of picking —
     `Todo` and `Agent Queue` are guesses, not defaults.
 
+    **Check the card first** (`set-issue-status.sh … --show`). If its `Status`
+    is no longer `In Progress`, someone moved it after the claim, and writing
+    the recorded value would erase a newer decision that is invisible in the
+    issue's own history — project-field edits leave no trace on the issue.
+    Restore only from `In Progress`; otherwise leave it and say what you found.
+
     The `Agent` field is the fourth marker. `set-issue-status.sh` only *sets*
     single-select options, so clearing it is manual — `gh project item-edit
     --clear` on the item, or the board UI. Say so rather than leaving it set;

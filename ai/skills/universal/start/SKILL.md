@@ -40,12 +40,21 @@ caught, because it is the one step that runs without depending on the session
 that made the claim:
 
 ```sh
-gh issue list --repo <owner/repo> --assignee @me --state open --json number,title,labels,url
+gh issue list --repo <owner/repo> --assignee @me --state all --limit 200 \
+  --json number,title,state,labels,url
 ```
 
-Report any whose work has finished or stalled — a merged or closed linked PR,
-or no PR at all — as a loose end, and point at `/close` for the release
-commands. Do not clear anything here: this step orients, it does not mutate.
+`--state all`, not `open`: the motivating case is a *closing* PR merged after
+the session ended, which auto-closes the issue — so `--state open` filters out
+exactly the stale claims this sweep exists to find. The explicit `--limit`
+matters too; the default returns 30.
+
+**Assignment alone is not a claim.** Plenty of people assign themselves planned
+backlog work. Flag an issue only when a claim marker corroborates it — an
+`agent:*` label, a card at `In Progress`, or a `/preflight` claim comment —
+and then only if its work has finished or stalled. Report those as loose ends
+and point at `/close` for the release commands. Do not clear anything here:
+this step orients, it does not mutate.
 
 ## 2. Compose the session name
 
