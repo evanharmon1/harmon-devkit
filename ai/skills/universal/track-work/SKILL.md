@@ -266,6 +266,12 @@ gh issue list --repo <target-owner/target-repo> --state all --limit 200 \
 - Search the **invariant's** vocabulary, not your title's. The same defect gets
   named differently by everyone who finds it, so a title-shaped query is the one
   most likely to miss.
+- Know what it does *not* cover: `--search` reads GitHub's search index, which is
+  eventually consistent, so an issue filed seconds ago may not be in it. Against
+  a duplicate that predates you — the case this step exists for — the index is
+  current and the search is sound. Against re-filing something *you* just filed
+  and failed to record, it is not; that case needs the number `gh issue create`
+  returned, or a plain `--author @me` listing rather than a search.
 
 **On a hit, read the existing issue before you write anything.** It may carry
 the reason the obvious fix is wrong. harmon-init#412 recorded that the
@@ -347,10 +353,10 @@ assertion* rather than a description. It closes when the test passes, and it
 cannot rot, because the codebase evaluates it rather than the reader.
 
 Also on a new issue: search the repo you are filing into for a duplicate and put
-it in the repo that owns the code — both are §3, and the search is bound to the
-*target* repo whether or not that is the one you are working in — give acceptance
-criteria as `- [ ]` items so §2's check has something to read, and label it. More
-in [`references/issue-authoring.md`](references/issue-authoring.md).
+it in the repo that owns the code (both §3 — the search binds to the *target*
+repo, not the one you happen to be working in), give acceptance criteria as
+`- [ ]` items so §2's check has something to read, and label it. More in
+[`references/issue-authoring.md`](references/issue-authoring.md).
 
 ## 6. Making an agent's work visible while it happens
 

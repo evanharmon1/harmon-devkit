@@ -133,15 +133,22 @@ issue may be moved at all.
   follow-up is going into** — `track-work` §3 owns this step and the reasoning;
   the short form is
   `gh issue list --repo <target> --state all --limit 200 --search "<distinctive phrase>"`.
-  Two distinct duplicates are in play here and one command catches both. The
-  one this stage creates: the issue and the tick are two writes, so an earlier
-  round can have filed it and then failed to record it, and a blind retry files
-  it twice. And the one that predates you entirely — somebody else's open issue
-  for the same defect. Note that `<target>` is **not** `"$repo"` whenever the
-  follow-up belongs to another repository, which the repo conventions require it
-  to when that repo owns the code: `$repo` is this PR's base, so reusing it
-  searches the tracker you are working in instead of the one you are filing
-  into, and finds nothing every time.
+  Note that `<target>` is **not** `"$repo"` whenever the follow-up belongs to
+  another repository, which the repo conventions require it to when that repo
+  owns the code: `$repo` is this PR's base, so reusing it searches the tracker
+  you are working in instead of the one you are filing into, and finds nothing
+  every time.
+- **Two different duplicates are in play, and the search only rules out one of
+  them.** It reliably catches the issue that *predates* you — somebody else's
+  open issue for the same defect. It is not a dependable guard against the issue
+  **this stage just filed**: `--search` reads GitHub's search index, which is
+  eventually consistent, so an issue created moments ago may not be in it yet and
+  a prompt retry gets a clean miss. For that case the record is the number
+  `gh issue create` returned — carry it to the tick rather than re-deriving it,
+  and if it is already lost, re-derive it with a plain
+  `gh issue list --repo <target> --author @me --state all --limit 20` (no
+  `--search`, so it reads the issue list rather than the index) before filing
+  anything a second time.
 - **Record a `fixed in <sha>` tick only once that commit is on the PR head.**
   The fix, its push, and the tick are separate steps, and a tick written first
   survives a failed push or an interrupted session — leaving a checked entry
