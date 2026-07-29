@@ -90,7 +90,12 @@ confirm with the user before proceeding.
   manifest: a consumer has no manifest, and a *source* repo's `_answers_file`
   describes where **its** consumers keep answers, not where this repo keeps
   its own. Identify an answers file by its content instead — a Copier answers
-  file is the YAML carrying `_src_path` and `_commit` — but content alone
+  file is the YAML carrying `_src_path`, with `_commit` alongside it only
+  when the template was a VCS source — render from a local directory and
+  Copier writes no `_commit` at all, so demanding both keys misses that
+  consumer entirely and files it under "no lineage". Treat `_src_path` as
+  enough to identify a candidate, and a missing `_commit` as an unprovable
+  baseline rather than an absent one. Content alone
   does not make it *this repo's* lineage. Test fixtures and documentation
   examples carry the same keys, and reading one as the real thing points the
   whole analysis at an unrelated template or raises a false `blocker`.
@@ -128,24 +133,34 @@ confirm with the user before proceeding.
   from anywhere stays in the local object database, so `rev-parse` and
   `cat-file` keep succeeding afterwards and reproduce exactly the false
   confidence they were meant to dispel. Require the commit to be *reachable
-  from a ref fetched from the matched remote* (`git branch -r --contains`
-  over that remote's refs, say), or read it from a clean clone. Short of
-  that, report the baseline as unprovable rather than reasoning from it. The
+  from a ref the matched remote advertises now*, or read it from a clean
+  clone. Remote-tracking refs are not that: a plain fetch neither prunes refs
+  the remote has deleted nor refreshes the cached remote `HEAD`, and a
+  checkout that once pointed somewhere else keeps those refs indefinitely —
+  so `git branch -r --contains` over a stale namespace will happily bless a
+  fork-only `_commit`. Fetch with `--prune` into a clean namespace and
+  re-resolve the remote head (`git remote set-head <remote> --auto`), or
+  check against freshly advertised refs with `git ls-remote`. Short of that,
+  report the baseline as unprovable rather than reasoning from it. The
   template's current default
   branch is where a fix would have to land, and it has moved: files added,
   removed, renamed, or newly gated since the render all read as original
   provenance if you consult only the newer tree, while only the newer tree
-  shows today's canonical state. Fetch that remote before resolving its
-  default branch — a stale checkout misses precisely the recent changes this
-  comparison exists to catch. (`diff-template.sh` renders at `_commit` for
-  the same reason.)
+  shows today's canonical state. The same staleness bites here — an obsolete
+  cached `HEAD` points the comparison at a default branch the remote no
+  longer has. (`diff-template.sh` renders at `_commit` for the same reason.)
 - **Read those revisions, not the checkout's working tree.** Fetching updates
   refs, never the tree on disk, and the checkout you were handed may be dirty,
   stale, or parked on a feature branch — so `Glob`/`Grep`, which see only the
   working tree, can report a file present that the baseline never had or
-  absent when it is there. Inspect the git trees at the two revisions
-  (`git ls-tree -r <rev>`, `git cat-file -p <rev>:<path>`) or materialize a
-  snapshot per revision and search that. These are outside this skill's
+  absent when it is there. Inspect the git trees at the two revisions at
+  **object level** — `git ls-tree -r <rev>`, `git cat-file -p <rev>:<path>`.
+  Do not check out or materialize a snapshot to search instead: an unvetted
+  revision can carry a tracked symlink, materializing recreates it, and
+  `Read`/`Grep` then follow it straight to a host file — walking around the
+  payload-root containment below rather than through it. Object-level reads
+  never dereference anything; a symlink is just a blob naming its target.
+  These are outside this skill's
   pre-approved set, so expect a permission prompt — the same treatment
   `git log`/`show` already get.
 - The checkout has to exist first; this skill clones nothing and
