@@ -1448,9 +1448,12 @@ Commit on the branch with a Conventional-Commits message
 merge to `main` directly. Re-import the branch ruleset via the GitHub UI only if the
 ruleset JSON changed (see [`post-generation-checklist.md`](./post-generation-checklist.md)).
 
-On a `project_management: github` repo the update has one more part, and it lands
-**after the PR merges**: §6. Say so in the PR description — it is the operator's
-cue that the merge is not the end of the update.
+The update has one more part on two kinds of repo, and it lands **after the PR
+merges**: §6. It applies to any `project_management: github` repo, *and* to any
+**org-owned** repo whatever its `project_management` answer — `setup:github-issue-types`
+is rendered for every org repo, so a `linear`/`none` org repo still has live
+issue types to reconcile. Say so in the PR description — it is the operator's cue
+that the merge is not the end of the update.
 
 ## 6. Reconcile live GitHub metadata (`project_management: github`) — post-merge
 
@@ -1549,9 +1552,19 @@ gh variable get ORG_PROJECT_ID --org <org>   # org repos: must equal the id abov
 ```
 
 Zero matches is its own alarm — the script would **create** a fresh empty board
-and point automation at it. Any disagreement is an operator decision: rename the
-boards to match reality, or re-point `ORG_PROJECT_ID` deliberately. Never resolve
-it by letting the script choose.
+and point automation at it.
+
+**Re-pointing `ORG_PROJECT_ID` is not a fix.** The script never *reads* that
+variable — it resolves by title and then overwrites the variable with whatever it
+picked. So setting it by hand and then running the task just gets it clobbered
+again. There are only two valid resolutions, and both come before the task runs:
+
+1. Make the intended board the **unique title match** — rename the obsolete or
+   duplicate board so the canonical title belongs to the board actually in use.
+2. Or **skip `setup:github-project` entirely** for this repo and reconcile the
+   board's fields by hand, leaving `ORG_PROJECT_ID` alone.
+
+Never resolve it by letting the script choose.
 
 **Do not run 6b across a fleet in parallel against the same owner.** Both field
 scripts re-read immediately before writing, which narrows but does not close a
@@ -1651,8 +1664,12 @@ warnings above describe:
 # labels — --limit matters, the default returns only 30
 gh label list --repo <owner>/<repo> --limit 1000
 
-# personal accounts: the metadata live as project fields
-gh project list --owner <owner>                        # get <number> by title
+# project fields — BOTH owner types. setup:github-project syncs Status and the
+# Size number field on an org board too, so an org run needs this snapshot as
+# much as a personal one (personal accounts additionally carry
+# Priority/Product/Agent/Domain/Layer here). Take <number> from the paginated
+# identity query in 6a — `gh project list` would miss a closed board or one past
+# its default 30.
 gh project field-list <number> --owner <owner> -L 100 --format json
 
 # orgs: issue fields + issue types are org-wide (needs admin:org). Take the
@@ -1663,7 +1680,11 @@ gh project field-list <number> --owner <owner> -L 100 --format json
 gh api "orgs/<org>/issue-fields" -H "X-GitHub-Api-Version: <pin>" --paginate |
   jq -s '[ .[] | if type == "object" then (.issue_fields // []) else . end | .[] ]
          | map({name, data_type, options: [.options[]?.name]})'
-gh api "orgs/<org>/issue-types" --paginate --jq '.[].name'
+# issue types: name alone is not enough — the script matches on name and leaves
+# an existing type untouched, so a DISABLED or stale-metadata Bug/Feature/Task/
+# Research passes a names-only check while being unusable.
+gh api "orgs/<org>/issue-types" --paginate \
+  --jq '.[] | {name, is_enabled, color, description}'
 ```
 
 Expect the two halves to **agree where they overlap, not to be equal**. On an org
