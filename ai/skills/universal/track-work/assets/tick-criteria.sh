@@ -224,7 +224,7 @@ read_body_or_die >"$before"
 # a full parser, from a checkbox nested under a list item, where ticking is
 # right. Prefer `--match` when a body carries either.
 items="$(awk '
-BEGIN { infence = 0; incomment = 0 }
+BEGIN { infence = 0; incomment = 0; inpre = 0 }
 {
     # Strip indentation and any blockquote prefix before looking for a fence:
     # the item pattern below accepts `> - [ ]`, so a fence that only matched at
@@ -271,7 +271,7 @@ BEGIN { infence = 0; incomment = 0 }
     # one is not a criterion — ticking it would edit invisible text and report
     # success while the first real criterion stayed open. Comment state is not
     # tracked inside a fence, where the delimiters are just characters.
-    starts_hidden = incomment
+    starts_hidden = incomment || inpre
     if (infence == 0) {
         rest_of_line = $0
         while (1) {
@@ -285,6 +285,23 @@ BEGIN { infence = 0; incomment = 0 }
                 if (at == 0) break
                 rest_of_line = substr(rest_of_line, at + 4)
                 incomment = 1
+            }
+        }
+        # Raw HTML renders its contents verbatim, so a task item inside <pre> is
+        # example text. <pre> only: the full set of CommonMark HTML blocks needs
+        # a real parser, and this is the one that carries code samples.
+        rest_of_line = tolower($0)
+        while (1) {
+            if (inpre) {
+                at = index(rest_of_line, "</pre")
+                if (at == 0) break
+                rest_of_line = substr(rest_of_line, at + 5)
+                inpre = 0
+            } else {
+                at = index(rest_of_line, "<pre")
+                if (at == 0) break
+                rest_of_line = substr(rest_of_line, at + 4)
+                inpre = 1
             }
         }
     }

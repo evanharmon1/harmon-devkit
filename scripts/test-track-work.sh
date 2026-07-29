@@ -702,6 +702,32 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
+echo "==> a task item inside raw <pre> HTML is not a criterion"
+write_issue 44 '<pre>
+- [ ] example rendered verbatim
+</pre>
+
+- [ ] the real criterion
+'
+[ "$(run_tick 44 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 44 '<pre>
+- [ ] example rendered verbatim
+</pre>
+
+- [x] the real criterion
+' || fail "a task item inside <pre> must be left alone"
+
+echo "==> the closing-keyword guard points at the narrowed ticker"
+_out="$(printf '%s' 'Closes #5' |
+    env ISSUE_BODY_DIR="$fixtures" GH_REPO="" "$closing" --repo "$repo" 2>&1 || true)"
+case "$_out" in
+*tick-criteria.sh*) ;;
+*) fail "the guard should recommend tick-criteria.sh" ;;
+esac
+case "$_out" in
+*"gh issue edit"*) fail "the guard should no longer recommend gh issue edit" ;;
+esac
+
 echo "==> the body comparison is the last thing before the write"
 # The claim re-check makes three API calls; between the comparison and the edit
 # they would widen the window the comparison exists to keep small.

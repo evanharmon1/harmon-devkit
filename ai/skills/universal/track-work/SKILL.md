@@ -126,10 +126,12 @@ box:
 ```
 
 `--index K` addresses the K-th *unticked* item instead, `--dry-run` shows what
-would change, and both selectors repeat to tick several at once. Checkboxes in
-fenced code blocks are skipped — an example is not a criterion — but a
-four-space-indented one cannot be told from a nested list item, so prefer
-`--match` on a body that carries either.
+would change, and both selectors repeat to tick several at once. Checkboxes
+GitHub does not render as criteria are skipped — inside fenced code, HTML
+comments (an issue template's commented-out sample), or `<pre>` — because an
+example is not a criterion. What it cannot tell apart is a four-space-indented
+checkbox from one nested under a list item, so prefer `--match` on a body that
+carries either.
 
 **Fail condition:** you are about to write a PR body for an issue whose
 criteria you satisfied and verified during this work, and its boxes are still

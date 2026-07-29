@@ -297,9 +297,12 @@ Fix, either way:
   * drop the closing keyword — replace "Closes #<n>" with "Refs #<n>". Editing the
     PR title or body re-runs this check by itself.
   * or tick the items this PR genuinely satisfies:
-        gh issue edit <n> --repo ${default_repo}
+        tick-criteria.sh --repo ${default_repo} --issue <n> --match '<criterion text>'
     then RE-RUN this check by hand. It watches pull-request events, not issues, so
     editing an issue does not clear a red check on its own.
+    Reaching this point means the ticks were left until PR time. They belong at
+    the moment each criterion is verified, during implementation — see SKILL.md
+    section 2, "Tick as you go".
 
 If the remaining items belong to another repository, file them there now — an
 issue in the repo that owns the code is the only place that is both durable and
