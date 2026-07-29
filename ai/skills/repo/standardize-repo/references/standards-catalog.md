@@ -834,10 +834,10 @@ artifacts; the prose rules are guidance, not lint):
   repo feeds the one board" rule: a workflow targets **one repo** (so each repo
   needs its own), it **never backfills** existing items (only ones created or
   updated after it is on), and a project may hold only **1 on Free, 5 on
-  Pro/Team, 20 on Enterprise** — past the cap a repo needs its own
-  `actions/add-to-project` workflow on `issues`/`pull_request` events (the action
-  reads the item from the event payload; `schedule` adds nothing). Filter
-  qualifiers AND together, so
+  Pro/Team, 20 on Enterprise** — past the cap the rule simply does not hold and
+  no fallback is specified, since an `actions/add-to-project` workflow would need
+  a Projects-write token (not `GITHUB_TOKEN`) and could not cover fork PRs.
+  Filter qualifiers AND together, so
   `is:issue is:pr` matches nothing; leave the type unqualified.
 - **Hierarchy** — sub-issues, no Epic type: the parent holds the spec +
   milestone/project (children inherit both); leaves hold the `Task` type + the
