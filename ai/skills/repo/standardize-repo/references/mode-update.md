@@ -1573,8 +1573,15 @@ recognize — before running anything:
 gh project view <number> --owner <owner> --web   # <number> from the 6a query
 ```
 
-Zero matches is its own alarm — the script would **create** a fresh empty board
-and point automation at it.
+Zero matches has two very different meanings, so do not treat it as pass or fail
+on its own. Re-read the full listing from the query above:
+
+- **The owner has other boards** — the intended one was renamed, or this repo's
+  title answer drifted. The script would **create a fresh empty board** and point
+  automation at it. Stop and resolve as below.
+- **The owner genuinely has no matching project** — `project_management: github`
+  was answered but `setup:github-project` was never run here. Creation is the
+  script's supported first-run path and the correct outcome; go ahead.
 
 **Re-pointing `ORG_PROJECT_ID` is not a fix.** The script never *reads* that
 variable — it resolves by title and then overwrites the variable with whatever it
@@ -1660,7 +1667,10 @@ update can create, none of which any script closes:
 - **Options the scripts skipped and warned about.** The scripts warn-and-continue
   (exit 0) rather than abort a half-reconciled project, so a clean-looking run can
   still have skipped a field: one that already exists with the **wrong data type**
-  (GitHub cannot change a type in place — rename or delete it and re-run), one
+  (GitHub cannot change a type in place, and **deleting a field destroys every
+  issue's value for it org-wide** — so rename the old field, let the re-run
+  create the correctly-typed replacement, migrate the values, and only then
+  delete the original; never lead with the delete), one
   **at GitHub's single-select option cap**, or an issue-fields `PATCH` **rejected
   by the public preview**. Read the run's WARNING lines; each names the field and
   the options it did not add.

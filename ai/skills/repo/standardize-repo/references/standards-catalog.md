@@ -804,7 +804,9 @@ artifacts; the prose rules are guidance, not lint):
   yours to add), or fix anything the script *warned and continued* past. Both
   warn-and-exit-0 rather than abort a half-reconciled project, so read the WARNING
   lines: a field that already exists with the **wrong data type** (GitHub can't
-  change a type in place — rename or delete it and re-run), one **at the
+  change a type in place, and deleting the field destroys every issue's value for
+  it org-wide — rename it, let the re-run create the replacement, migrate the
+  values, then delete the original), one **at the
   single-select option cap**, or an issue-fields `PATCH` **rejected by the public
   preview**. Each names the field and the options it skipped. Skipping those
   leaves the label and field vocabularies divergent.

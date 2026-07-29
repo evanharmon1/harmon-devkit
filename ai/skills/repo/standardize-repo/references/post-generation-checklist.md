@@ -241,9 +241,15 @@ Both owner types — the org-only follow-ups are in the next section.
   task setup:github-project
   ```
 
-  > It looks the project up by title, so it is safe to re-run and safe to run from
-  > any of the owner's repos (the first run creates it, later runs only
-  > reconcile). It seeds the full `Status` pipeline plus the **`Size`** number
+  > It looks the project up by title and can be run from any of the owner's repos
+  > (the first run creates it, later runs only reconcile). **Title lookup is not
+  > identity**, though: it takes the first match and creates a new board when
+  > nothing matches, then overwrites `ORG_PROJECT_ID` with whatever it picked. If
+  > the owner already has boards — a renamed one, duplicate titles, or an obsolete
+  > closed board holding the canonical title — run the identity preflight in
+  > [`mode-update.md`](./mode-update.md) §6a **first**. On a genuinely fresh owner
+  > with no boards, creation is the expected outcome and there is nothing to check.
+  > It seeds the full `Status` pipeline plus the **`Size`** number
   > field — `Size` is the numeric estimate, because only project number fields sum
   > in view group headers — and never deletes existing options or fields.
   > **On an org** it also records the project id in the `ORG_PROJECT_ID` org
@@ -300,8 +306,10 @@ answering `linear`/`none` has no such task and should skip them.
   > (public preview). Idempotent and additive: an existing field keeps every
   > option it has and gains any missing *starter* one, and nothing is ever
   > removed. It warns and exits 0 rather than failing when it cannot reconcile a
-  > field — wrong data type (GitHub cannot change a type in place, so rename or
-  > delete it in the org's issue-field settings and re-run), option cap reached,
+  > field — wrong data type (GitHub cannot change a type in place, and deleting
+  > the field destroys every issue's value for it org-wide: **rename** it in the
+  > org's issue-field settings, re-run to create the correctly-typed replacement,
+  > migrate the values, and only then delete the original), option cap reached,
   > or a `PATCH` the preview rejected — so read the WARNING lines rather than
   > trusting the exit code.
 
