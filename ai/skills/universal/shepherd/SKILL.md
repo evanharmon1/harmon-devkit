@@ -129,11 +129,33 @@ issue may be moved at all.
   in <sha>` / `declined: <reason>` / `filed as #<n>`. The checkbox is the
   durable settlement state — without it, the next return to this step reads
   the same entries as open and re-adjudicates them, duplicating follow-up
-  issues and burning rounds. Before filing a follow-up, **search for one you
-  already filed**
-  (`gh issue list --repo "$repo" --state all --search "<distinctive phrase>"`):
-  the issue and the tick are two writes, so an earlier round can have created
-  the issue and then failed to record it, and a blind retry files it twice.
+  issues and burning rounds. Before filing a follow-up, **search the repo the
+  follow-up is going into** — `track-work` §3 owns this step and the reasoning;
+  the short form is
+  `gh issue list --repo <target> --state all --limit 200 --search "<distinctive phrase>"`.
+  Note that `<target>` is **not** `"$repo"` whenever the follow-up belongs to
+  another repository, which the repo conventions require it to when that repo
+  owns the code: `$repo` is this PR's base, so reusing it searches the tracker
+  you are working in instead of the one you are filing into, and finds nothing
+  every time.
+- **Qualify the number in the tick when it crosses a repo.** `filed as #<n>` is
+  only correct for a follow-up in `$repo`; a bare `#<n>` in a PR body resolves
+  against the PR's own repository, so where you filed into another one it
+  silently links whatever issue happens to hold that number there. Write
+  `filed as <target-owner/target-repo>#<n>` — this is `track-work`'s existing
+  rule that a number crossing a repo boundary is never bare, applied to the one
+  place this stage writes issue numbers.
+- **The search rules out a settled duplicate, not a fresh one.** `--search` reads
+  GitHub's search index, which is eventually consistent, so it is blind to
+  anything filed in the last moments — and what decides that is **how recently
+  the issue was indexed, not who filed it**. Two fresh duplicates are in play
+  here and the search catches neither: the issue *this stage* filed in an earlier
+  round before failing to record the tick, and one another session filed against
+  the same finding while you worked. For your own, the number `gh issue create`
+  returned is the record — carry it to the tick rather than re-deriving it. For
+  either, when you have to look it up, use a plain listing rather than a search
+  (`gh issue list --repo <target> --state all --limit 20`, newest first) before
+  filing a second time.
 - **Record a `fixed in <sha>` tick only once that commit is on the PR head.**
   The fix, its push, and the tick are separate steps, and a tick written first
   survives a failed push or an interrupted session — leaving a checked entry

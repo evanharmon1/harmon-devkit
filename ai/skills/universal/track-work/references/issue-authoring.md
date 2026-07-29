@@ -113,12 +113,18 @@ Keep them to things a reader can adjudicate. "Works well" is not a criterion.
 ```sh
 gh issue close <n> --repo <owner/repo> --reason completed
 gh issue close <n> --repo <owner/repo> --reason "not planned" --comment "Superseded by …"
+gh issue close <n> --repo <owner/repo> --reason duplicate --comment "Duplicate of owner/repo#<n>"
 ```
 
 | Reason | Means |
 | --- | --- |
 | `completed` | It was built. Every acceptance item is ticked. |
-| `not planned` | It won't be built — declined, duplicate, obsolete, **or superseded** |
+| `not planned` | It won't be built — declined, obsolete, **or superseded** |
+| `duplicate` | It *will* be done, tracked elsewhere. Name that issue in the comment — GitHub stores the reason, not the target. |
+
+`duplicate` is a reason in its own right, not a flavour of `not planned`: the
+work is live somewhere else rather than declined, and a later duplicate search
+reads `stateReason` and branches on exactly that difference (skill §3).
 
 **Superseded work closes `not planned`, with a comment naming what replaced
 it.** This is the case most often got wrong, because the work "went away" and
@@ -142,5 +148,18 @@ body` still shows `- [ ]`.
 - **Perishable claims covered** — `check-issue-rot.sh` exits 0.
 - **Acceptance criteria as `- [ ]`.**
 - **Provenance**, if the work was found somewhere else.
-- **Search first** — `gh issue list --repo <owner/repo> --search '<keywords>'`.
-  A duplicate is rarely linked from anywhere.
+- **Search first, in the repo from the previous bullet** — not the one you are
+  working in:
+
+  ```sh
+  gh issue list --repo <target-owner/target-repo> --state all --limit 200 \
+    --search '<distinctive phrase>'
+  ```
+
+  A duplicate is rarely linked from anywhere, so nothing surfaces it but this
+  command. `--state all` and `--limit 200` are both load-bearing. On a hit, read
+  that issue and then act on **what state it is in** — commenting is right for an
+  open one, while a closed `completed` issue whose defect recurred needs a live
+  issue instead. The skill's §3 tabulates all three cases; follow it there, and
+  see [`cross-repo-work.md`](cross-repo-work.md) for the recovery when a
+  duplicate lands anyway.

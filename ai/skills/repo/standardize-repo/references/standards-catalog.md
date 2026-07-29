@@ -895,8 +895,14 @@ template does not yet render either, so audit for the skill, not the workflow.
   same session.
 - **Follow-up work is filed in the repo that owns the code, immediately**, with a
   provenance line — never batched into a tracking issue or a follow-ups doc.
-- **Close reasons are factual**: `completed` means built; declined / duplicate /
-  obsolete / superseded are `not planned` with a comment naming the replacement.
+- **Search the target repo before filing there** — `gh issue list --repo <target>
+  --state all --limit 200 --search "<phrase>"`. The bullet above moves the target
+  away from the tracker you have open, which is how a cross-repo follow-up
+  duplicates silently.
+- **Close reasons are factual**: `completed` means built; declined / obsolete /
+  superseded are `not planned` with a comment naming the replacement; `duplicate`
+  is its own reason and must name the canonical issue, since GitHub stores the
+  reason and not the target.
 - **Perishable claims carry a `## Verify` command** (`Invariant` / `Current
   violation (observed YYYY-MM-DD)` / `Verify`). Strongest form where a test
   harness exists: a failing assertion instead of a description.

@@ -57,14 +57,22 @@ skill at authoring time and by the **tracking guard**
   means *this* repo — a number that crosses a repo boundary carries its repo
   everywhere it is written or verified.
 - **Re-read an issue before describing it** (`gh issue view <n> --json
-  state,title,body`), including one you read earlier in the same session — your
-  own merged PRs can resolve items in it.
+  state,stateReason,title,body,comments`), including one you read earlier in the
+  same session — your own merged PRs can resolve items in it. `state` is `CLOSED`
+  for every closed issue; `stateReason` is what says whether that was a decline,
+  a delivery, or a pointer elsewhere.
 - **Follow-up work is filed in the repo that owns the code, immediately**, with a
   provenance line back to where it was found. Not batched into a tracking issue,
   not appended to a doc; both have failed here, in opposite directions.
+- **Search the repo you are filing into before filing there** — `gh issue list
+  --repo <target> --state all --limit 200 --search "<phrase>"`. The bullet above
+  moves the target away from the tracker you have open, so the habitual duplicate
+  check answers a question nobody asked.
 - **Close reasons are factual claims.** `completed` means it was built;
-  everything else — declined, duplicate, obsolete, **superseded** — is
-  `not planned`, with a comment naming what replaced it.
+  `not planned` covers declined, obsolete and **superseded**, with a comment
+  naming what replaced it; `duplicate` is its own reason — the work is live
+  elsewhere rather than declined — and **must** name the canonical issue in the
+  comment, because GitHub records the reason and not the target.
 - **Perishable claims carry a `## Verify` command.** An issue citing `file:line`
   or "currently does X" needs a command that re-establishes whether it still
   holds; without one a stale citation is indistinguishable from a live one.
