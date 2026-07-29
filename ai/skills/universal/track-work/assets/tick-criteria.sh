@@ -224,70 +224,105 @@ read_body_or_die >"$before"
 # a full parser, from a checkbox nested under a list item, where ticking is
 # right. Prefer `--match` when a body carries either.
 items="$(awk '
-BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_in_list = 0 }
+BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0 }
 {
-    # Strip indentation and any blockquote prefix before looking for a fence:
-    # the item pattern below accepts `> - [ ]`, so a fence that only matched at
-    # the margin would leave `> ``` … > - [ ] example` looking like a criterion.
-    # The blockquote DEPTH is kept, because it is part of what identifies the
-    # fence: inside a fence opened at depth 1, a fence-looking line at depth 2 is
-    # content, not the closer. (No apostrophes in here: the awk program is
-    # single-quoted shell.)
-    bare = $0
+    # Walk the container prefix once, in the order it appears: indentation,
+    # blockquote markers, and (for a possible opener) list markers, which nest in
+    # any combination — `- > ```text` is a fence inside a quote inside an item.
+    #
+    # Two columns come out of it, and keeping them apart is the whole trick.
+    # `col` is the absolute column where content begins, counting quote markers,
+    # and it is what container membership is measured in — every line inside a
+    # container reaches the same `col`, however that container is spelled.
+    # `sp` is the spaces since the last container marker, which is what
+    # CommonMark caps at three for a fence delimiter. Comparing an indent in one
+    # unit against a column in the other is what let quoted and indented fences
+    # close early. (No apostrophes in here: the awk program is single-quoted
+    # shell.)
+    rest_line = $0
+    col = 0
+    sp = 0
     quoted = 0
-    while (match(bare, /^[ \t]*>/)) {
-        quoted++
-        sub(/^[ \t]*>/, "", bare)
+    while (1) {
+        c = substr(rest_line, 1, 1)
+        if (c == " ") {
+            col++
+            sp++
+            rest_line = substr(rest_line, 2)
+            continue
+        }
+        if (c == "\t") {
+            col += 4
+            sp += 4
+            rest_line = substr(rest_line, 2)
+            continue
+        }
+        if (c == ">") {
+            quoted++
+            col++
+            sp = 0
+            rest_line = substr(rest_line, 2)
+            if (substr(rest_line, 1, 1) == " ") {
+                col++
+                rest_line = substr(rest_line, 2)
+            }
+            continue
+        }
+        break
     }
-    # CommonMark allows at most three spaces before a fence delimiter; at four
-    # the line is code. Stripping every leading space would let an indented
-    # delimiter inside a block close it, exposing the code that follows.
-    fence_indent = 0
-    while (substr(bare, 1, 1) == " ") {
-        fence_indent++
-        bare = substr(bare, 2)
-    }
-    if (substr(bare, 1, 1) == "\t") fence_indent = 4
+    bare = rest_line
 
-    # A fence can also open as the content of a list item — `- ``` ` — where the
-    # delimiter sits after the marker and the block indents to match. Only an
-    # opener may carry a marker: a marker on a later line starts a new item, it
-    # does not close anything.
-    marker_width = 0
+    # A fence can also open as the content of a list item, where the delimiter
+    # sits after the marker. Consume markers and any quotes they contain, in
+    # encountered order. Only an opener may carry a marker: a marker on a later
+    # line starts a new item, it does not close anything.
+    had_marker = 0
+    open_col = col
+    open_quoted = quoted
     after_marker = bare
     if (infence == 0) {
-        # Every marker, not just the first: `- - ```text` nests two containers,
-        # and stopping at one leaves the fence unopened and its sample live.
-        while (match(after_marker, /^([-*+]|[0-9]+[.)])[ \t]+/)) {
-            marker_width += RLENGTH
-            after_marker = substr(after_marker, RLENGTH + 1)
+        while (1) {
+            if (match(after_marker, /^([-*+]|[0-9]+[.)])[ \t]+/)) {
+                had_marker = 1
+                open_col += RLENGTH
+                after_marker = substr(after_marker, RLENGTH + 1)
+                continue
+            }
+            if (substr(after_marker, 1, 1) == ">") {
+                open_quoted++
+                open_col++
+                after_marker = substr(after_marker, 2)
+                if (substr(after_marker, 1, 1) == " ") {
+                    open_col++
+                    after_marker = substr(after_marker, 2)
+                }
+                continue
+            }
+            break
         }
     }
 
-    # A fence ends where its CONTAINER ends, in either direction of nesting: the
-    # first non-blank line that leaves the list item (indented less than the item
-    # content column) or leaves the blockquote (shallower than the opener depth)
-    # closes it implicitly, exactly as CommonMark does. That line is then live
-    # again — it may be a new fence opener, or a criterion. Without the
-    # blockquote half, a later `> ``` ` reads as the old opener closer and the
-    # sample inside the new quoted block becomes selectable.
+    # A fence ends where its CONTAINER ends: the first non-blank line that does
+    # not reach the container content column, or that sits shallower than the
+    # opener blockquote depth, closes it implicitly the way CommonMark does. That
+    # line is then live again — it may be a new fence opener, or a criterion.
     if (infence == 1 && $0 !~ /^[ \t]*$/ &&
-        ((fence_in_list && fence_indent < fence_col) || quoted < fence_quoted)) {
+        (col < fence_col || quoted < fence_quoted)) {
         infence = 0
     }
 
-    opens = (fence_indent < 4 && match(after_marker, /^(```+|~~~+)/))
+    opens = (infence == 0 && sp < 4 && match(after_marker, /^(```+|~~~+)/))
     # A backtick fence cannot carry backticks in its info string, so a line like
     # ``` followed by `quoted text` is not an opener at all. Treated as one, the
     # NEXT real fence reads as its closer and the sample inside becomes live.
     if (opens && substr(after_marker, RSTART, 1) == "`") {
         if (index(substr(after_marker, RSTART + RLENGTH), "`") > 0) opens = 0
     }
-    # A closer is measured against the column its opener started in, and may be
-    # indented up to three further spaces. Unclosable is the safe direction: the
-    # enumeration ends, selectors stop resolving, and the command refuses — where
-    # closing too early would expose a code sample to a tick.
-    closes = (infence == 1 && marker_width == 0 && fence_indent <= fence_col + 3 &&
+    # A closer carries no marker and, like an opener, at most three spaces since
+    # its container. Unclosable is the safe direction: the enumeration ends,
+    # selectors stop resolving, and the command refuses — where closing too early
+    # would expose a code sample to a tick.
+    closes = (infence == 1 && had_marker == 0 && sp <= 3 &&
         match(bare, /^(```+|~~~+)/))
     if (opens || closes) {
         scan = closes ? bare : after_marker
@@ -296,15 +331,16 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_in_list = 0 
         gsub(/[ \t]/, "", marker)
         ch = substr(marker, 1, 1)
         len = length(marker)
-        rest = substr(scan, RSTART + RLENGTH)
+        rest_after = substr(scan, RSTART + RLENGTH)
         if (infence == 0) {
             infence = 1
             fence_ch = ch
             fence_len = len
-            fence_quoted = quoted
-            fence_col = fence_indent + marker_width
-            fence_in_list = (marker_width > 0)
-        } else if (quoted == fence_quoted && ch == fence_ch && len >= fence_len && rest ~ /^[ \t]*$/) {
+            fence_quoted = open_quoted
+            # The container content column, not the delimiter column: a document
+            # fence indented one space still contains lines at column 0.
+            fence_col = had_marker ? open_col : open_col - sp
+        } else if (quoted == fence_quoted && ch == fence_ch && len >= fence_len && rest_after ~ /^[ \t]*$/) {
             # A closer has to sit in the same container as its opener: inside an
             # unquoted fence, a literal `> ``` ` is example text, not the end.
             infence = 0
@@ -363,13 +399,24 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_in_list = 0 
         # GFM caps an ordered marker at nine digits; beyond that the line is not
         # a list item at all, so `1234567890. [ ] text` is prose. Counted here
         # rather than with a bounded repeat, which not every awk supports.
-        ordered_ok = 1
+        item_ok = 1
         if (match(bare, /^[ \t]*[0-9]+/)) {
             digits = RLENGTH
             if (substr(bare, 1, 1) == " " || substr(bare, 1, 1) == "\t") digits--
-            if (digits > 9) ordered_ok = 0
+            if (digits > 9) item_ok = 0
         }
-        if (ordered_ok) print NR ":" $0
+        # A marker followed by five or more spaces puts its content four columns
+        # in, which is an indented code block inside the item — not a checkbox.
+        if (match(bare, /^[ \t]*([-*+]|[0-9]+[.)])/)) {
+            pad = 0
+            at_pad = RLENGTH + 1
+            while (substr(bare, at_pad, 1) == " " || substr(bare, at_pad, 1) == "\t") {
+                pad++
+                at_pad++
+            }
+            if (pad > 4) item_ok = 0
+        }
+        if (item_ok) print NR ":" $0
     }
 }' "$before")"
 [ -n "$items" ] || {

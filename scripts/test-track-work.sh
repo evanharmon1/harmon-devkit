@@ -702,6 +702,56 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
+echo "==> an indented opener still caps its closer at three spaces"
+write_issue 54 ' ```
+    ```
+- [ ] example after the false closer
+ ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 54 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 54 ' ```
+    ```
+- [ ] example after the false closer
+ ```
+
+- [x] the real criterion
+' || fail "a four-space delimiter is content, not a closer"
+
+echo "==> mixed list and blockquote containers hide a fence"
+write_issue 55 '- > ```text
+  > - [ ] example in a quoted list fence
+  > ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 55 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 55 '- > ```text
+  > - [ ] example in a quoted list fence
+  > ```
+
+- [x] the real criterion
+' || fail "a fence inside a quote inside a list item must hide its contents"
+
+echo "==> a marker padded past four spaces is code, not a criterion"
+write_issue 56 '-     [ ] example indented into a code block
+
+- [ ] the real criterion
+'
+[ "$(run_tick 56 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 56 '-     [ ] example indented into a code block
+
+- [x] the real criterion
+' || fail "five spaces of padding must not be tickable"
+
+echo "==> four spaces of marker padding is still a criterion"
+write_issue 57 '-    [ ] four spaces is still a criterion
+'
+[ "$(run_tick 57 --index 1)" = 0 ] || fail "four spaces is within the limit"
+issue_is 57 '-    [x] four spaces is still a criterion
+' || fail "a four-space padded item should tick"
+
 echo "==> a fence under nested list markers hides its contents"
 write_issue 51 '- - ```text
     - [ ] example in a nested list fence
