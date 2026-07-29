@@ -62,6 +62,14 @@ confirm with the user before proceeding.
   Fallback: `git status -sb` and `gh pr list --repo "$repo" --state open`.
   Caution: `task` executes the checked-out Taskfile; on an untrusted branch
   use the raw commands.
+- Template provenance: if `.copier-answers.yml` exists at the repo root, read
+  it and report `_src_path` (the template repo) and `_commit` (the revision
+  this tree was rendered from) alongside the branch. §3's provenance check
+  needs both — `_src_path` says where to look for a canonical copy, and
+  `_commit` says which revision this tree matches, so an apparent local
+  difference can be read as real divergence rather than an un-applied update.
+  No `.copier-answers.yml` means the repo is not template-managed: say so
+  once and skip that check.
 - The issue itself: `gh issue view <n> --repo "$repo" --comments`, plus its
   linked work —
   `gh issue view <n> --repo "$repo" --json state,assignees,closedByPullRequestsReferences`
@@ -93,6 +101,36 @@ explicit confirmation from the user. Then look for:
 
 - **Stale references** — files, APIs, or docs the issue mentions that no
   longer match the live tree.
+- **Template-managed targets** — a fix has to land in the repo that owns the
+  **canonical** copy of the file it touches, or it ships as drift the next
+  `copier update` has to reconcile, in exactly the hunks that update
+  rewrites. Being Copier-managed is a property of the *repo* (§2); being
+  template-managed is a property of each *file* — so check every path the
+  issue targets, not the repo once. A repo rendered from a template still
+  owns plenty of files the template never supplied.
+  - Look for the target under the template repo's `template/` tree. Do not
+    build a literal path: filenames there embed Jinja conditionals in custom
+    `[% %]` delimiters, e.g.
+    `template/.claude/[% if use_foreman %]agents[% endif %]/foreman-preflight.md`
+    — no literal path matches it, and unquoted, the brackets are read as a
+    shell glob. Use `Glob` on the basename, or `Grep` for a distinctive line
+    of the file's body. See `copier-gotchas.md` §2 and §6 for why the names
+    look like that.
+  - **Establish which way the file flows.** Finding the same content
+    upstream does not make upstream canonical — a template repo may itself
+    *vendor* the file from elsewhere (a `.skills-sync.yaml` pin, a submodule,
+    a generated mirror). Canonical is wherever the file is edited by hand;
+    every other copy is overwritten on the next sync. Backwards, this check
+    is worse than none: it routes the fix to the repo that will lose it.
+  - Report the verdict for every target either way — "canonical here" is a
+    finding too, and it is what lets the next reader skip the search. A
+    target whose canonical copy lives upstream is a `correction` at minimum:
+    name the upstream repo and the path you found, and recommend fixing it
+    there and letting the change flow down, rather than editing the local
+    copy.
+  - Upstream repos often **dogfood their own template**: a root twin of the
+    templated file, kept byte-identical (`diff -q` the pair to confirm).
+    Both need the same edit in the same PR, or the fix is half-applied.
 - **Overlap or contradiction** — other open issues or in-flight PRs touching
   the same files or solving the same problem. Discover them actively:
   `gh issue list --repo "$repo" --state open --limit 100` (plus
