@@ -22,9 +22,11 @@ dev flow.
 
 **The repository's own policy outranks this file.** Where its `AGENTS.md`
 states a different shepherd cap or exit condition, follow `AGENTS.md` — it is
-the policy, this skill is the procedure. A repository whose `AGENTS.md`
-predates the P0/P1-gating dev flow still caps shepherding at four rounds, and
-that is the correct behavior there until it syncs.
+the policy, this skill is the procedure. Read the cap from what `AGENTS.md`
+actually states, never from inferring its vintage: a four-round cap is correct
+in a repo whose `AGENTS.md` still says four, and stops being correct the
+moment that file says otherwise — including in repos that have not yet adopted
+the P0/P1-gating dev flow.
 
 **This stage settles the low-priority findings.** Where the earlier dev-flow
 loops gate only on high-priority findings (in repos that run a

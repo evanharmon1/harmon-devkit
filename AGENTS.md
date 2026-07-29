@@ -107,19 +107,31 @@ something to ask permission for.
 - **`task ci`** — the full CI mirror; fix anything it catches.
 - **Open the PR** — conventional commit, push the branch, `gh pr create` with
   a clear what/why/verification summary.
-- **Shepherd the PR (max 4 rounds).** Opening the PR is not the end. Watch CI
-  (`gh pr checks <n> --watch`) and incoming bot/human reviews. When a check
-  fails or a review lands findings, treat the findings as hypotheses: verify
-  them against the code, fix only what's confirmed, explain rejections in a
-  PR comment, push the fix commit, and watch again. Shepherd-round fixes
-  must pass `task ci` (the full local CI mirror — it gates the same stages
-  the remote pipeline judges) before each push; the local challenge/review
-  loops are not re-entered — the post-push cloud/bot review is the
-  second-model check at this stage. This cap is independent of the other loop caps. If
-  checks still fail or material findings remain after 4 rounds, stop and
-  summarize what's unresolved on the PR for the maintainer.
-- **Stop at green.** Report that checks pass, then stop — merging is always a
-  human decision.
+- **Shepherd the PR (`/shepherd`, max 5 rounds).** `gh pr create` returning is
+  the trigger for this stage, not the end of the work — invoke the
+  `/shepherd` skill on the PR you just opened rather than judging for yourself
+  when it is finished. Watch CI (`gh pr checks <n> --watch`) and incoming
+  bot/human reviews. When a check fails or a review lands findings, treat the
+  findings as hypotheses: verify them against the code, fix only what's
+  confirmed, explain rejections in a PR comment, push the fix commit, and
+  watch again. Shepherd-round fixes must pass `task ci` (the full local CI
+  mirror — it gates the same stages the remote pipeline judges) before each
+  push; the local challenge/review loops are not re-entered — the post-push
+  cloud/bot review is the second-model check at this stage. This cap is
+  independent of the other loop caps. If checks still fail or material
+  findings remain after 5 rounds, stop and summarize what's unresolved on the
+  PR for the maintainer.
+- **Checks green is a non-terminal state.** Reporting "all checks pass"
+  without having polled reviews and inline comments is not a handoff — it is
+  the middle of the shepherd stage. Bot and human reviews land *after* checks
+  settle, so `gh pr checks --watch` returns at exactly the moment the review
+  has not run yet: an empty comment list read at that instant means "not
+  reviewed yet", not "nothing to answer". Wait for **both** signals before
+  judging the PR done — `/shepherd` step 2 bounds the wait (let every check
+  conclude, then give the reviewer ~10–15 minutes on the current head, and
+  proceed on CI alone only if nothing lands in that window).
+- **Stop at green.** Once checks pass *and* no review findings are
+  unresolved, report that and stop — merging is always a human decision.
 
 ## Definition of Done
 
