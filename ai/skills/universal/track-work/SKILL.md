@@ -266,12 +266,23 @@ gh issue list --repo <target-owner/target-repo> --state all --limit 200 \
 - Search the **invariant's** vocabulary, not your title's. The same defect gets
   named differently by everyone who finds it, so a title-shaped query is the one
   most likely to miss.
-- Know what it does *not* cover: `--search` reads GitHub's search index, which is
-  eventually consistent, so an issue filed seconds ago may not be in it. Against
-  a duplicate that predates you — the case this step exists for — the index is
-  current and the search is sound. Against re-filing something *you* just filed
-  and failed to record, it is not; that case needs the number `gh issue create`
-  returned, or a plain `--author @me` listing rather than a search.
+- Know what it does *not* cover. `--search` reads GitHub's search index, which is
+  eventually consistent, so the search is blind to any issue filed in the last
+  moments — and the line falls on **how recently the issue was indexed, not on
+  who filed it**. An issue somebody else opened thirty seconds ago already
+  "predates" you and is just as invisible as one of your own. So the search is
+  sound against the settled backlog, which is the case this step exists for, and
+  is not a guard against a *concurrent* filing from either direction. Where that
+  is plausible — a retry of your own filing, or two sessions working the same
+  finding — add a plain listing, which reads the issue list rather than the
+  index:
+
+  ```sh
+  gh issue list --repo <target> --state all --limit 20   # newest first
+  ```
+
+  For re-filing something you filed yourself, the number `gh issue create`
+  returned is better than either: carry it forward rather than re-deriving it.
 
 **On a hit, read the existing issue before you write anything.** It may carry
 the reason the obvious fix is wrong. harmon-init#412 recorded that the

@@ -138,17 +138,17 @@ issue may be moved at all.
   owns the code: `$repo` is this PR's base, so reusing it searches the tracker
   you are working in instead of the one you are filing into, and finds nothing
   every time.
-- **Two different duplicates are in play, and the search only rules out one of
-  them.** It reliably catches the issue that *predates* you — somebody else's
-  open issue for the same defect. It is not a dependable guard against the issue
-  **this stage just filed**: `--search` reads GitHub's search index, which is
-  eventually consistent, so an issue created moments ago may not be in it yet and
-  a prompt retry gets a clean miss. For that case the record is the number
-  `gh issue create` returned — carry it to the tick rather than re-deriving it,
-  and if it is already lost, re-derive it with a plain
-  `gh issue list --repo <target> --author @me --state all --limit 20` (no
-  `--search`, so it reads the issue list rather than the index) before filing
-  anything a second time.
+- **The search rules out a settled duplicate, not a fresh one.** `--search` reads
+  GitHub's search index, which is eventually consistent, so it is blind to
+  anything filed in the last moments — and what decides that is **how recently
+  the issue was indexed, not who filed it**. Two fresh duplicates are in play
+  here and the search catches neither: the issue *this stage* filed in an earlier
+  round before failing to record the tick, and one another session filed against
+  the same finding while you worked. For your own, the number `gh issue create`
+  returned is the record — carry it to the tick rather than re-deriving it. For
+  either, when you have to look it up, use a plain listing rather than a search
+  (`gh issue list --repo <target> --state all --limit 20`, newest first) before
+  filing a second time.
 - **Record a `fixed in <sha>` tick only once that commit is on the PR head.**
   The fix, its push, and the tick are separate steps, and a tick written first
   survives a failed push or an interrupted session — leaving a checked entry
