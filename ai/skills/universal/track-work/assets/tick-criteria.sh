@@ -213,12 +213,17 @@ BEGIN { infence = 0 }
     # Strip indentation and any blockquote prefix before looking for a fence:
     # the item pattern below accepts `> - [ ]`, so a fence that only matched at
     # the margin would leave `> ``` … > - [ ] example` looking like a criterion.
-    # Whether the line was quoted is kept, because it is part of what identifies
-    # the fence — see the closer below. (No apostrophes in here: the awk program
-    # is single-quoted shell.)
+    # The blockquote DEPTH is kept, because it is part of what identifies the
+    # fence: inside a fence opened at depth 1, a fence-looking line at depth 2 is
+    # content, not the closer. (No apostrophes in here: the awk program is
+    # single-quoted shell.)
     bare = $0
-    quoted = ($0 ~ /^[ \t]*>/) ? 1 : 0
-    sub(/^[ \t]*(>[ \t]*)*/, "", bare)
+    quoted = 0
+    while (match(bare, /^[ \t]*>/)) {
+        quoted++
+        sub(/^[ \t]*>/, "", bare)
+    }
+    sub(/^[ \t]*/, "", bare)
     if (match(bare, /^(```+|~~~+)/)) {
         marker = substr(bare, RSTART, RLENGTH)
         gsub(/[ \t]/, "", marker)
@@ -353,6 +358,12 @@ if [ -n "$fixture" ]; then
     echo "tick-criteria: wrote fixture $fixture (ISSUE_BODY_DIR set — no API call)"
     exit 0
 fi
+
+# Re-assert the authorisation immediately before the write. The state can move
+# during the read and the selector work — the issue closed, the assignment
+# dropped — without the body changing, so the byte comparison above would still
+# pass on an issue this command is no longer entitled to touch.
+assert_claimed
 
 if gh issue edit "$issue" --repo "$repo" --body-file "$after" >/dev/null; then
     echo "tick-criteria: ticked $expected criterion(s) on $repo#$issue"

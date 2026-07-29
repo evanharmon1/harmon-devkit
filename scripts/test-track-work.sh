@@ -700,6 +700,25 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
+echo "==> a deeper fence inside a quoted fenced block does not close it"
+write_issue 38 '> ```
+> > ```
+> > - [ ] example nested deeper
+> > ```
+> ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 38 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 38 '> ```
+> > ```
+> > - [ ] example nested deeper
+> > ```
+> ```
+
+- [x] the real criterion
+' || fail "a deeper fence must not close a shallower one"
+
 echo "==> a checkbox inside a blockquoted fence is not a criterion"
 write_issue 33 '> ```
 > - [ ] quoted example
