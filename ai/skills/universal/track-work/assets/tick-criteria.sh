@@ -440,7 +440,12 @@ BEGIN {
     # item without re-deriving it.
     if (blank) {
         this_kind = "blank"
-    } else if (bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[ \t]/) {
+    } else if (bare ~ /^[ \t]*([-*+]|[0-9]+[.)])([ \t]|$)/) {
+        # A marker alone on its line is an EMPTY list item, and it still opens a
+        # container: the indented line under a bare `-` is a child of that item,
+        # so requiring a trailing space here would measure its criteria against
+        # the document and bury them in a phantom code block. (No apostrophes in
+        # here: the awk program is single-quoted shell.)
         this_kind = "list"
         # A marker that cannot interrupt a paragraph does not start a list, so
         # the paragraph continues through it. Classified on syntax alone, one
@@ -464,6 +469,12 @@ BEGIN {
     # that is a stack: pushed by every list marker, popped by the first line
     # that fails to reach it.
     lazy = 0
+    # `push_rest` ends up holding this line stripped of its container markers,
+    # and `over` whether what follows them is indented code. The HTML-block scan
+    # below needs both, and for a line that opens no container they stay as
+    # initialised here.
+    push_rest = bare
+    over = 0
     if (infence == 0 && blank == 0) {
         while (nlist > 0 && (lqd[nlist] != quoted || col < lcol[nlist])) nlist--
         # With no list open the container is the blockquote, whose content
@@ -504,7 +515,6 @@ BEGIN {
         # continuation opens none of them — it is prose that merely looks
         # indented.
         if (lazy == 0 && this_kind == "list") {
-            push_rest = bare
             push_col = col
             push_quoted = quoted
             while (1) {
@@ -518,7 +528,7 @@ BEGIN {
                     }
                     continue
                 }
-                if (!match(push_rest, /^([-*+]|[0-9]+[.)])[ \t]/)) break
+                if (!match(push_rest, /^([-*+]|[0-9]+[.)])([ \t]|$)/)) break
                 match(push_rest, /^([-*+]|[0-9]+[.)])/)
                 mark_col = advance(push_col, substr(push_rest, 1, RLENGTH))
                 push_rest = substr(push_rest, RLENGTH + 1)
@@ -547,9 +557,17 @@ BEGIN {
     # on a BLANK LINE and not on a closing tag — which is exactly what keeps the
     # common `<details>` / `<summary>` wrapper working, since the blank line
     # before the checklist ends the block and the criteria after it are live.
+    # It opens as the CONTENT of its container, so the scan runs on the line
+    # stripped of its list markers: `- <div>` opens a block inside the item, and
+    # testing `bare` would miss it and leave the raw HTML after it tickable. Two
+    # things cannot open one: a lazy continuation, because an HTML block needs
+    # at most three columns of indentation and the paragraph swallows the line
+    # instead; and a marker padded past four columns, because its content is an
+    # indented code block rather than a tag.
     if (infence == 0 && incomment == 0 && inpre == 0) {
         if (inhtml == 1 && (blank || quoted != html_quoted)) inhtml = 0
-        if (inhtml == 0 && blank == 0 && html_block_tag(bare)) {
+        if (inhtml == 0 && blank == 0 && lazy == 0 && over == 0 &&
+            html_block_tag(push_rest)) {
             inhtml = 1
             html_quoted = quoted
         }

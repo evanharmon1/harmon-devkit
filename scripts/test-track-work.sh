@@ -1350,6 +1350,54 @@ issue_is 70 '<details>
 </details>
 ' || fail "the blank line after <summary> ends the HTML block"
 
+echo "==> a type-6 block opened as list-item content still hides its contents"
+write_issue 76 '- <div>
+  - [ ] example rendered as raw html
+</div>
+
+- [ ] the real criterion
+'
+[ "$(run_tick 76 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 76 '- <div>
+  - [ ] example rendered as raw html
+</div>
+
+- [x] the real criterion
+' || fail "the scan must see past the list marker to the tag"
+
+echo "==> a lazy continuation that looks like a tag opens no HTML block"
+write_issue 77 'Some prose
+    <div>
+- [ ] the real criterion
+'
+[ "$(run_tick 77 --index 1)" = 0 ] || fail "a paragraph continuation must not hide the next line"
+issue_is 77 'Some prose
+    <div>
+- [x] the real criterion
+' || fail "an HTML block needs at most three columns of indentation"
+
+echo "==> a marker padded past four spaces opens no HTML block either"
+write_issue 78 '-     <div>
+      - [ ] example indented into code
+
+- [ ] the real criterion
+'
+[ "$(run_tick 78 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 78 '-     <div>
+      - [ ] example indented into code
+
+- [x] the real criterion
+' || fail "content past four columns of padding is code, not a tag"
+
+echo "==> an empty list marker still opens a container for its children"
+write_issue 79 '-
+    - [ ] child of an empty parent marker
+'
+[ "$(run_tick 79 --index 1)" = 0 ] || fail "a child of an empty parent should stay tickable"
+issue_is 79 '-
+    - [x] child of an empty parent marker
+' || fail "a bare marker opens a list item, so its child is not code"
+
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
 - [ ] the real criterion
