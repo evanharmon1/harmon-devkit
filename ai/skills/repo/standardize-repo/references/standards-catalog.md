@@ -835,10 +835,10 @@ artifacts; the prose rules are guidance, not lint):
   needs its own), it **never backfills** existing items (only ones created or
   updated after it is on), and a project may hold only **1 on Free, 5 on
   Pro/Team, 20 on Enterprise** — past the cap the rule does not hold and no
-  fallback is specified, since an `actions/add-to-project` workflow would need a
-  Projects-write token (not `GITHUB_TOKEN`; on an org, the CI App's
-  `organization_projects: write`) plus `pull_request_target` for fork PRs.
-  Filter qualifiers AND together, so
+  fallback is specified: an `actions/add-to-project` workflow needs a
+  Projects-write token (not `GITHUB_TOKEN`), and fork-PR coverage needs a
+  fork-influenced trigger the CI App key must never be read from, so closing the
+  gap is an open design question. Filter qualifiers AND together, so
   `is:issue is:pr` matches nothing; leave the type unqualified.
 - **Hierarchy** — sub-issues, no Epic type: the parent holds the spec +
   milestone/project (children inherit both); leaves hold the `Task` type + the

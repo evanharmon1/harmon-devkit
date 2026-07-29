@@ -311,16 +311,16 @@ Both owner types — the org-only follow-ups are in the next section.
   > - **The workflows are capped per project** — 1 on Free, 5 on Pro/Team, 20 on
   >   Enterprise. "Every repo feeds the one board" holds only under that cap, and
   >   **no fallback is specified here** — past it, treat board coverage as
-  >   knowingly incomplete rather than assumed. Closing the gap needs an
-  >   `actions/add-to-project` workflow with a Projects-write token: the repo
-  >   `GITHUB_TOKEN` cannot write an owner-level project and the bot PAT is
-  >   deliberately org-**read**-only, so on an org that means the CI App
-  >   (`organization_projects: write`, which its manifest grants for org owners
-  >   only), and covering fork PRs additionally means `pull_request_target`,
-  >   which must never check out or execute fork code. That is an unbuilt design,
-  >   not a step you can tick here. The issue-form `projects:` key is not a
-  >   substitute either: it covers only form-created issues and hard-codes a
-  >   project number.
+  >   knowingly incomplete rather than assumed. This is not a gap to close on the
+  >   spot with an `actions/add-to-project` workflow: it needs a Projects-write
+  >   token that the repo `GITHUB_TOKEN` does not have and the bot PAT
+  >   deliberately withholds (org-**read**-only), and fork-PR coverage would
+  >   require a fork-influenced trigger — which the CI App key must never be read
+  >   from (`docs/architecture/security.md`: not fork `pull_request`, not
+  >   `pull_request_target`, not `workflow_run`). Design it deliberately, or
+  >   accept the gap; do not improvise it here. The issue-form `projects:` key is
+  >   not a substitute either: it covers only form-created issues and hard-codes
+  >   a project number.
 
 ### Org repos only (`github_org != author_git_provider_username`)
 
