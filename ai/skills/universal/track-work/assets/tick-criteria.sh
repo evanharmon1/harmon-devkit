@@ -267,6 +267,12 @@ function advance(start, text,   i, c, out) {
     }
     return out
 }
+function container_base(c, q,   k) {
+    # Content column of the innermost open container a line at column `c` and
+    # blockquote depth `q` still sits inside — the deepest one it reaches.
+    for (k = nlist; k >= 1; k--) if (lqd[k] <= q && lcol[k] <= c) return lcol[k]
+    return 0
+}
 function pop_containers(c, q) {
     # Close every container this line has LEFT: one it sits shallower than, or
     # one at a blockquote depth it no longer reaches. Quoting deeper nests
@@ -396,6 +402,16 @@ BEGIN {
             continue
         }
         if (c == ">") {
+            # A container marker carries at most three columns of indentation.
+            # Four puts the line in an indented code block, where a `>` is
+            # literal text: after a blank line, `    > - [ ] example` renders as
+            # code, and consuming that `>` as a blockquote made the sample a
+            # tickable criterion. Measured against the container, not column 0,
+            # so `- item` holding `    > quoted` is still a real blockquote.
+            marker_base = col - sp
+            enclosing = container_base(col, quoted)
+            if (enclosing > marker_base) marker_base = enclosing
+            if (col - marker_base >= 4) break
             quoted++
             col++
             sp = 0
@@ -594,6 +610,13 @@ BEGIN {
         # nothing ever opened: a list-looking line inside a `<div>` would
         # otherwise keep its phantom item after the block closes, and the code
         # sample under it would measure as a nested criterion.
+        #
+        # It does close the paragraph before it, though. Raw HTML, a comment and
+        # a `<pre>` are all LEAF blocks, so nothing is open once one starts —
+        # and leaving `prev_kind` at "para" across a block that ends by leaving
+        # its container withheld the non-1 interruption rule from a line that
+        # was starting a genuine ordered list.
+        prev_kind = "leaf"
         next
     }
 
@@ -736,6 +759,9 @@ BEGIN {
         # a blockquote entered mid-line (`- > <div>`) ends it too.
         html_base = html_open_col
         html_quoted = html_open_quoted
+        # A leaf block, same as the hidden lines that follow it: whatever
+        # paragraph preceded the opener is closed by it.
+        prev_kind = "leaf"
         next
     }
 

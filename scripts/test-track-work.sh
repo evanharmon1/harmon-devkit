@@ -1588,6 +1588,43 @@ issue_is 93 'Some prose
 - [x] the real criterion
 ' || fail "only an ordered marker at 1 may interrupt a paragraph"
 
+echo "==> a blockquote marker four columns in is code, not a container"
+write_issue 94 'Example:
+
+    > - [ ] example inside an indented code block
+
+- [ ] the real criterion
+'
+[ "$(run_tick 94 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 94 'Example:
+
+    > - [ ] example inside an indented code block
+
+- [x] the real criterion
+' || fail "a container marker carries at most three columns of indentation"
+
+echo "==> a quote three columns past its container is still a container"
+write_issue 95 '- item
+    > - [ ] quoted at two columns past the item content
+'
+[ "$(run_tick 95 --index 1)" = 0 ] || fail "a quoted nested criterion should be tickable"
+issue_is 95 '- item
+    > - [x] quoted at two columns past the item content
+' || fail "the cap is measured against the container, not column 0"
+
+echo "==> an HTML block closes the paragraph before it"
+write_issue 96 'Some prose
+- <div>
+  raw content
+2. [ ] real criterion
+'
+[ "$(run_tick 96 --index 1)" = 0 ] || fail "the ordered criterion after the block should be tickable"
+issue_is 96 'Some prose
+- <div>
+  raw content
+2. [x] real criterion
+' || fail "raw HTML is a leaf block, so no paragraph survives it"
+
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
 - [ ] the real criterion
