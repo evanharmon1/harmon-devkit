@@ -1637,6 +1637,23 @@ write_issue 98 "$(printf -- '-\t[ ] one tab is within the limit\n')"
 issue_is 98 "$(printf -- '-\t[x] one tab is within the limit\n')" ||
     fail "a single tab reaches column four, which is the cap and not past it"
 
+echo "==> a list item holding a leaf block grants no lazy continuation"
+write_issue 99 '- # heading
+following unindented prose
+
+    - [ ] example
+
+- [ ] the real criterion
+'
+[ "$(run_tick 99 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 99 '- # heading
+following unindented prose
+
+    - [ ] example
+
+- [x] the real criterion
+' || fail "prose under a heading-only item closes that item"
+
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
 - [ ] the real criterion

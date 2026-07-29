@@ -728,7 +728,19 @@ BEGIN {
         # A lazy continuation opens no container — it is prose that merely looks
         # indented — and a thematic break opens none either, which is why this
         # is gated on the classification rather than on the marker syntax.
-        if (lazy == 0 && this_kind == "list") walk_containers(bare, col, quoted, base)
+        if (lazy == 0 && this_kind == "list") {
+            walk_containers(bare, col, quoted, base)
+            # Lazy continuation is a property of an open PARAGRAPH, not of a
+            # list item, so an item whose content is a leaf block does not grant
+            # one. `- # heading` is the case: the unindented prose under it
+            # closes the item rather than continuing it, and treating the item
+            # as still open kept a stale container that made the indented code
+            # block after the next blank line look like a nested criterion.
+            if (push_rest ~ /^[ \t]*$/ || over ||
+                thematic_break(push_rest) || push_rest ~ /^#{1,6}([ \t]|$)/) {
+                this_kind = "leaf"
+            }
+        }
     }
     if (lazy == 1) {
         # Hidden, and it leaves its paragraph open, so the line after it is
