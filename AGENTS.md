@@ -145,8 +145,9 @@ something to ask permission for.
 - Work on a feature branch; direct commits to `main` are blocked.
 - **Never merge to main yourself** — no `gh pr merge`, `git merge`, or push to
   `main` without the maintainer's explicit, per-merge approval, even when CI is
-  green and the ruleset would allow it. Open the PR, report that checks pass,
-  then stop; merging is always a human decision.
+  green and the ruleset would allow it. Open the PR and shepherd it — checks
+  green with reviews unpolled is not the stopping point — then report and
+  stop; merging is always a human decision.
 - **Reply to every inline PR review comment in its own thread** — bot
   reviewers (Codex, CodeRabbit, …) and humans alike. Treat findings as
   hypotheses: verify each against the code, fix what's confirmed, and post the
