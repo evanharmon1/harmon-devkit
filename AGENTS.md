@@ -108,9 +108,12 @@ something to ask permission for.
 - **Open the PR** — conventional commit, push the branch, `gh pr create` with
   a clear what/why/verification summary.
 - **Shepherd the PR (`/shepherd`, max 5 rounds).** `gh pr create` returning is
-  the trigger for this stage, not the end of the work — invoke the
-  `/shepherd` skill on the PR you just opened rather than judging for yourself
-  when it is finished. Watch CI (`gh pr checks <n> --watch`) and incoming
+  the trigger for this stage, not the end of the work — enter it deliberately
+  instead of judging for yourself when the PR is finished. `/shepherd` is the
+  procedure, and like the rest of the session suite it is **user-invocable
+  only** (`disable-model-invocation: true`), so an agent enters the stage by
+  reading `.claude/skills/shepherd/SKILL.md` and following it — not by calling
+  a slash command it cannot call. Watch CI (`gh pr checks <n> --watch`) and incoming
   bot/human reviews. When a check fails or a review lands findings, treat the
   findings as hypotheses: verify them against the code, fix only what's
   confirmed, explain rejections in a PR comment, push the fix commit, and
