@@ -65,9 +65,15 @@ confirm with the user before proceeding.
 - Template provenance: if the repo has a Copier answers file
   (`.copier-answers.yml` unless the template relocated it), read it and report
   `_src_path` — the template it came from — and `_commit`, the revision it was
-  rendered at. A repo with no answers file that has a root `copier.yml` and a
-  payload tree is itself a template source; say which of the two this is (a
-  repo can be both), and skip §3's provenance check only when it is neither.
+  rendered at. Then ask the *source* question separately rather than as a
+  fallback: a root Copier manifest beside a payload tree makes the repo a
+  template source, and a template scaffolded from another template is both —
+  gating that test on "no answers file" is what makes such a repo skip its own
+  root-twin obligations. The manifest is `copier.yml` or `copier.yaml`,
+  matched case-insensitively, and two spellings at once is a state Copier
+  refuses to read rather than a source to choose between; `verify-applied.sh`
+  already discovers it that way. Say which role(s) apply, and skip §3's
+  provenance check only when neither does.
 - The issue itself: `gh issue view <n> --repo "$repo" --comments`, plus its
   linked work —
   `gh issue view <n> --repo "$repo" --json state,assignees,closedByPullRequestsReferences`
@@ -110,7 +116,12 @@ explicit confirmation from the user. Then look for:
     build a literal path: filenames there carry Jinja conditionals in `[% %]`
     delimiters, so `template/.claude/[% if use_foreman %]agents[% endif %]/…`
     matches no literal path and, unquoted, reads as a shell glob. Match on the
-    basename or on a distinctive line of the body instead.
+    basename or on a distinctive line of the body instead. Say **which
+    revision** you searched: a checkout you were handed can be stale, dirty, or
+    parked on a feature branch, and the fetch in §2 refreshed the target repo's
+    remote, not this separate one. If what you read is not the template's
+    current default branch, the verdict is unproven — say so rather than
+    reporting a copy found or missing.
   - Say what you found for every target, upstream copy or not. One whose
     canonical copy is upstream is a `correction` at minimum: name the repo and
     the path, and recommend fixing it there so the change flows down.
