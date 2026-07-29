@@ -30,10 +30,12 @@ remembered status — re-verify each one live:
 
 An open issue assigned to you is a **live claim** from `/preflight` if *any*
 claim marker corroborates it: an `agent:*` label, a card at `In Progress`, or a
-claim comment. Do not require the label — `/preflight` treats a missing
-`agent:*` family as benign and claims anyway, so demanding it would miss every
-claim in an older repo or one with `project_management: none`, which are
-exactly the repos where the label cannot exist. Report it as "open — claimed,
+claim comment **not superseded by a later `Claim released —` comment** (the
+claim comment outlives its own release, so on its own it proves nothing about
+now). Do not require the label — `/preflight` treats a missing `agent:*` family
+as benign and claims anyway, so demanding it would miss every claim in an older
+repo or one with `project_management: none`, which are exactly the repos where
+the label cannot exist. Report it as "open — claimed,
 in progress", then check it is still true: a claim with no open PR and no work
 in flight is a loose end for §2, not a status. `/close` offers the commands to
 hand it back.

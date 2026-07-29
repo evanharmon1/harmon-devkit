@@ -97,6 +97,14 @@ read it in the UI) — never guess.
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```
 
+    **The hand-back comment must say it released the claim**, on its own line
+    and verbatim, because the claim comment is never deleted and would
+    otherwise keep reading as a live claim to every future `/start`:
+
+    ```text
+    Claim released — <why>. (Supersedes the claim record above.)
+    ```
+
     **Restore, don't reset.** The claim comment records the status the claim
     overwrote; put that back. Sending a shaped, prioritized issue to `Todo`
     silently discards planning state and can requeue it wrongly. If the comment

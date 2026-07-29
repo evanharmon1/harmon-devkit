@@ -51,10 +51,21 @@ matters too; the default returns 30.
 
 **Assignment alone is not a claim.** Plenty of people assign themselves planned
 backlog work. Flag an issue only when a claim marker corroborates it — an
-`agent:*` label, a card at `In Progress`, or a `/preflight` claim comment —
-and then only if its work has finished or stalled. Report those as loose ends
-and point at `/close` for the release commands. Do not clear anything here:
-this step orients, it does not mutate.
+`agent:*` label, a card at `In Progress`, or a `/preflight` claim comment — and
+then only if its work has finished or stalled.
+
+**A claim comment is history, not state.** Comments are never deleted, so the
+claim comment survives its own release — and where the issue was already
+assigned to you, `/close` correctly leaves that assignment in place too. Both
+markers then persist forever, and treating the comment alone as current would
+make every future `/start` re-report the same long-released claim. So the
+comment counts only when **no later `Claim released —` comment supersedes it**.
+Prefer the live markers (`agent:*` label, card at `In Progress`); fall back to
+the comment only after checking what follows it.
+
+Report what survives that test as loose ends and point at `/close` for the
+release commands. Do not clear anything here: this step orients, it does not
+mutate.
 
 ## 2. Compose the session name
 

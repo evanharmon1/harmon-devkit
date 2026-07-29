@@ -140,6 +140,16 @@ something to overwrite. The board is saying another agent holds this work, and
 issue assigned to someone else. An existing `Claude Code` value is a no-op
 write, so it has nothing to undo either.
 
+**On an organization, `--show` cannot answer this question.** There `Agent` is
+an org *issue field*, and the script reads project fields only — so it returns
+no `Agent=` line whether the field is empty or says `Codex`, and a blocker that
+trusts it would silently never fire in exactly the setup that has the field.
+Use the `agent:*` label instead: it mirrors the same vocabulary and *is*
+readable, which is why the family exists. A label naming another agent is the
+same blocker. If the repo has neither a readable `Agent` value nor the label
+family, ownership is **unverifiable** — say so and get the user's go-ahead
+rather than treating silence as "unclaimed".
+
 Carry every answer into the claim comment. `/close` undoes only what the claim
 actually added — all four markers, `Agent` included.
 
