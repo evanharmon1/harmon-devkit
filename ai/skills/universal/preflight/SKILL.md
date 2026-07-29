@@ -73,9 +73,14 @@ confirm with the user before proceeding.
   checkout confirmed against a tuple from the same branch proves only that the
   branch agrees with itself.
 - **The two Copier roles are independent; test for both.** A repo is a
-  *consumer* if it has `.copier-answers.yml`, and a *template source* if it
-  has a root `copier.yml` with a payload tree. A template repo has no answers
-  file of its own, having never been rendered from itself — but a template
+  *consumer* if it has an answers file, and a *template source* if it has a
+  root manifest with a payload tree. Neither filename is fixed: the manifest
+  is `copier.yml` **or** `copier.yaml`, and the answers file defaults to
+  `.copier-answers.yml` but any template can relocate it via `_answers_file`
+  (as can `--answers-file` at render time), so check the manifest's own value
+  before concluding a repo has no lineage. Hard-coding the two defaults makes
+  a perfectly ordinary layout skip this check silently. A template repo has no
+  answers file of its own, having never been rendered from itself — but a template
   repo that was scaffolded from some other template has both, and checking the
   second only when the first is absent would miss its root-twin obligations
   entirely. Being a source means §3 applies in the root-twin direction; being
@@ -97,9 +102,13 @@ confirm with the user before proceeding.
 - Then read **two** revisions of that checkout, because they answer different
   questions and neither substitutes for the other. `_commit` is the recorded
   baseline: it settles whether the template actually rendered the content in
-  front of you — but only if it is an immutable 40-hex commit. A tag-valued
-  `_commit` proves nothing, because tags move; report the baseline as
-  unprovable rather than reasoning from it. The template's current default
+  front of you — but only if it is an immutable 40-hex commit *that resolves
+  in the matched source*. A tag-valued `_commit` proves nothing, because tags
+  move. Neither does a bare hash: it can name no object at all, name a
+  non-commit, or exist in the chosen checkout only because that clone once
+  fetched it from a fork. Confirm the object resolves against a freshly
+  fetched matching remote; short of that, report the baseline as unprovable
+  rather than reasoning from it. The template's current default
   branch is where a fix would have to land, and it has moved: files added,
   removed, renamed, or newly gated since the render all read as original
   provenance if you consult only the newer tree, while only the newer tree
@@ -162,11 +171,17 @@ explicit confirmation from the user. Then look for:
     template line reads `owner: [[ github_org ]]` where the rendered file
     says `owner: acme`; matched textually, every substituted, looped, or
     conditional line looks local, which is the failure mode that sends
-    template-owned fixes downstream. Where a render at `_commit` with this
-    repo's answers is available — `diff-template.sh` produces exactly that —
-    diff against it. Where it is not, report the hunk verdict as unproven and
-    say why. An unproven verdict is a usable finding; a confidently wrong one
-    routes the work to the wrong repo.
+    template-owned fixes downstream. A render at `_commit` with this repo's
+    answers is what settles it — but **rendering executes the template**:
+    `diff-template.sh:241` invokes `copier copy --trust`, and `--trust` is
+    the flag that enables tasks and other side effects, so it can write files
+    and reach the network. That is not a read-only operation, and this stage
+    is read-only. Do not render on this skill's authority. Either get the
+    user's explicit go-ahead — the same bar step 5's writes are held to,
+    named as a render of a specific template revision — or report the hunk
+    verdict as unproven and say why. An unproven verdict is a usable finding;
+    a confidently wrong one routes the work to the wrong repo, and a silent
+    `--trust` render is a worse bargain than either.
   - Look for the target under the template's **payload root** — whatever
     `copier.yml`'s `_subdirectory` declares (`template/` in harmon-init, but
     some templates render straight from the repo root). Hard-coding
