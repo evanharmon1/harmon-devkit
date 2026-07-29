@@ -239,8 +239,16 @@ BEGIN { infence = 0; incomment = 0 }
         quoted++
         sub(/^[ \t]*>/, "", bare)
     }
-    sub(/^[ \t]*/, "", bare)
-    if (match(bare, /^(```+|~~~+)/)) {
+    # CommonMark allows at most three spaces before a fence delimiter; at four
+    # the line is code. Stripping every leading space would let an indented
+    # delimiter inside a block close it, exposing the code that follows.
+    fence_indent = 0
+    while (substr(bare, 1, 1) == " ") {
+        fence_indent++
+        bare = substr(bare, 2)
+    }
+    if (substr(bare, 1, 1) == "\t") fence_indent = 4
+    if (fence_indent < 4 && match(bare, /^(```+|~~~+)/)) {
         marker = substr(bare, RSTART, RLENGTH)
         gsub(/[ \t]/, "", marker)
         ch = substr(marker, 1, 1)
@@ -385,6 +393,14 @@ if [ -n "$dry_run" ]; then
     exit 0
 fi
 
+# Re-assert the authorisation BEFORE the final read. The state can move during
+# the read and the selector work — the issue closed, the assignment dropped —
+# without the body changing, so the byte comparison alone would still pass on an
+# issue this command is no longer entitled to touch. It goes first because its
+# three API calls must not sit between the comparison and the write: that gap is
+# the one the comparison exists to keep small.
+assert_claimed
+
 # Re-read and compare immediately before writing. A body that moved since the
 # read has to be re-composed against the newer text, not overwritten.
 read_body_or_die >"$recheck"
@@ -398,12 +414,6 @@ if [ -n "$fixture" ]; then
     echo "tick-criteria: wrote fixture $fixture (ISSUE_BODY_DIR set — no API call)"
     exit 0
 fi
-
-# Re-assert the authorisation immediately before the write. The state can move
-# during the read and the selector work — the issue closed, the assignment
-# dropped — without the body changing, so the byte comparison above would still
-# pass on an issue this command is no longer entitled to touch.
-assert_claimed
 
 if gh issue edit "$issue" --repo "$repo" --body-file "$after" >/dev/null; then
     echo "tick-criteria: ticked $expected criterion(s) on $repo#$issue"

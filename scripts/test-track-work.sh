@@ -538,6 +538,7 @@ mkdir -p "$stub_bin"
 cat >"$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+[ -n "${STUB_LOG:-}" ] && printf '%s %s\n' "${1:-}" "${2:-}" >>"$STUB_LOG"
 if [ "${1:-}" = "api" ] && [ "${2:-}" = "user" ]; then
     [ -n "${STUB_FAIL_META:-}" ] && exit 1
     printf '%s' "${STUB_LOGIN:-tester}"
@@ -700,6 +701,39 @@ issue_is 37 '````
 
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
+
+echo "==> the body comparison is the last thing before the write"
+# The claim re-check makes three API calls; between the comparison and the edit
+# they would widen the window the comparison exists to keep small.
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state" "$tmp/log"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_LOG="$tmp/log" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "the ordering probe should tick (got $_rc)"
+[ "$(grep -c . "$tmp/log")" -gt 2 ] || fail "the probe should have logged calls"
+[ "$(tail -2 "$tmp/log" | head -1)" = "issue view" ] || fail "the body read must be second to last"
+[ "$(tail -1 "$tmp/log")" = "issue edit" ] || fail "the edit must immediately follow the body read"
+
+echo "==> a fence delimiter indented four spaces does not close a block"
+write_issue 43 '```
+    ```
+- [ ] still inside the code block
+```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 43 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 43 '```
+    ```
+- [ ] still inside the code block
+```
+
+- [x] the real criterion
+' || fail "an over-indented delimiter must not close the fence"
 
 echo "==> a checklist hidden in an HTML comment is not a criterion"
 write_issue 41 '<!--
