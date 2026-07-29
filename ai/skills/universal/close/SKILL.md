@@ -58,8 +58,9 @@ read it in the UI) — never guess.
   - **Merged / issue closed** — *not* "nothing to release". GitHub clears no
     marker on merge, and a personal-account project has no automation to move
     the card, so the work finishes and the board shows an agent still holding
-    it. Offer the cleanup below. Add `--status Done` **only with evidence the
-    issue is actually finished**: it is closed as `completed`
+    it. Offer the cleanup below — including its "undo only what the claim
+    added" rule, which binds here too. Add `--status Done` **only with evidence
+    the issue is actually finished**: it is closed as `completed`
     (`stateReason`), or a merged PR linked it with a *closing keyword*
     (`closedByPullRequestsReferences`). A merged PR that only says `Refs #N`
     finished part of it, and an issue closed `not planned` was never
@@ -74,13 +75,23 @@ read it in the UI) — never guess.
     leaves the issue still advertising itself as held — the exact failure this
     step exists to prevent:
 
+    **Undo only what the claim added.** The claim comment carries a "Claim
+    record" listing which markers `/preflight` actually created. An issue can
+    be assigned to you, or carry the label, *before* the claim — ordinary
+    backlog ownership, which `/preflight` explicitly allows — and the writes
+    are all add-if-missing, so on that path they changed nothing. Removing
+    them anyway destroys state the session never created, and no amount of
+    user approval recovers it, because by then nobody can tell which it was.
+    Skip any line the record marks `no`; if no record survives, ask rather
+    than assume the claim created everything.
+
     ```sh
     # Separate commands on purpose: the label is optional (/preflight skips it
     # where the family does not exist), and `--remove-label` on a label the
     # repo lacks fails the whole `gh issue edit` — taking the assignee removal
     # down with it and leaving the claim standing.
-    gh issue edit <n> --repo <owner/repo> --remove-assignee @me
-    gh issue edit <n> --repo <owner/repo> --remove-label agent:claude-code  # only if present
+    gh issue edit <n> --repo <owner/repo> --remove-assignee @me          # only if the record says the claim added it
+    gh issue edit <n> --repo <owner/repo> --remove-label agent:claude-code  # likewise
     <track-work-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
       --status "<the status the claim comment recorded>"
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back

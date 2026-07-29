@@ -120,6 +120,21 @@ the user's explicit go-ahead before running them, and if `gh` is
 unauthenticated or lacks write access, report the commands for the user to
 run instead of failing the flow:
 
+**First, note what is already there.** Step 3 blocks only on an assignment to
+*someone else*, so an issue already assigned to **you** — ordinary backlog
+ownership — is a supported path into this step. Every write below is
+add-if-missing, so on that path it changes nothing and there is nothing to undo.
+A hand-back that removes it anyway destroys state the session never created:
+
+```sh
+gh issue view <n> --repo "$repo" --json assignees,labels \
+  --jq '{assigned: ([.assignees[].login] | index("<your-login>") != null),
+         labelled: ([.labels[].name] | index("agent:claude-code") != null)}'
+```
+
+Carry both answers into the claim comment. `/close` undoes only what the claim
+actually added.
+
 - **Assign:** `gh issue edit <n> --repo "$repo" --add-assignee @me`
 - **Label** — the `agent:*` family names *which* agent has it, mirroring the
   options of the `Agent` field. Apply it only if the repo actually has the
@@ -181,8 +196,11 @@ run instead of failing the flow:
   # 2. persist it, still before touching the board
   gh issue comment <n> --repo "$repo" --body-file - <<'CLAIM_BODY_9f3k'
   Claiming — starting implementation on branch <branch> (session <name>).
-  Board status was <prior status> before this claim; restore it if the work is
-  handed back.
+
+  Claim record (for `/close` — undo only what this claim added):
+  - prior board status: <prior status, or "unknown">
+  - assignee added by this claim: <yes|no, it was already assigned to me>
+  - `agent:` label added by this claim: <yes|no|n/a, repo has no such label>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card
