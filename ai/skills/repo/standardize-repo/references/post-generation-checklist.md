@@ -262,9 +262,11 @@ Both owner types — the org-only follow-ups are in the next section.
       options in the Project UI — the script seeds `auth`/`billing`/`platform`
       only, so add this product's real domains (from your ERD entities). `Layer`
       (`ui`/`logic`/`data`/`integration`) is product-independent and normally needs
-      no edits. Adding an option to an already-created field is manual — re-running
-      the setup task will not do it. Org repos do this in the org's issue-field
-      settings instead (next section).
+      no edits. A re-run appends any missing *starter* option, but never your
+      repo-specific ones and never a **removal** — retiring an option is manual
+      too, and only after re-mapping (deleting an assigned option clears those
+      values). Org repos do this in the org's issue-field settings instead (next
+      section).
 
 - [ ] **[scriptable via gh]** Seed this repo's **labels** — the five starter
       families (concerns / source / workflow / `layer:` / `domain:`). Labels are
@@ -295,10 +297,13 @@ answering `linear`/`none` has no such task and should skip them.
   ```
 
   > Adds the org's **Product**, **Agent**, **Domain**, and **Layer** issue fields
-  > (public preview). Idempotent and non-destructive: an existing field is left
-  > as-is, options and all, and the script warns when a name already exists with
-  > the wrong data type — GitHub cannot change a field's data type in place, so
-  > rename or delete it in the org's issue-field settings and re-run.
+  > (public preview). Idempotent and additive: an existing field keeps every
+  > option it has and gains any missing *starter* one, and nothing is ever
+  > removed. It warns and exits 0 rather than failing when it cannot reconcile a
+  > field — wrong data type (GitHub cannot change a type in place, so rename or
+  > delete it in the org's issue-field settings and re-run), option cap reached,
+  > or a `PATCH` the preview rejected — so read the WARNING lines rather than
+  > trusting the exit code.
 
 - [ ] **[manual — GitHub UI; `project_management: github` only]** Customize the
       **`Domain`** options. The script
@@ -308,8 +313,10 @@ answering `linear`/`none` has no such task and should skip them.
       for the domains it actually uses: add those to
       `scripts/setup-github-labels.sh` and re-run `task setup:github-labels` in
       that repo. `Layer` (`ui`/`logic`/`data`/`integration`) is product-independent
-      and normally needs no edits. Adding an option to an already-created field is
-      manual — re-running the setup task will not do it.
+      and normally needs no edits. A re-run appends any missing *starter* option,
+      but never your repo-specific ones and never a **removal** — retiring an
+      option is manual too, and only after re-mapping (deleting an assigned option
+      clears those values).
 
 - [ ] **[scriptable via gh]** Add the bot machine account
       (`<author_git_provider_username>-bot`) as a **Write** collaborator (it does
