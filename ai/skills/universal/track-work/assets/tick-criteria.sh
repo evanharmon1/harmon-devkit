@@ -358,6 +358,7 @@ function html_block_tag(s,   t, n, r) {
 BEGIN {
     infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; prev_kind = "blank"; raw_tag = ""
     nlist = 0; incode = 0; code_quoted = 0; inhtml = 0; html_quoted = 0; html_base = 0
+    comment_block = 0; pre_block = 0
     # CommonMark HTML block type 6, verbatim. Type 1 (pre, script, style,
     # textarea) is absent on purpose: it is closed by its closing tag, not by a
     # blank line, and is tracked separately below.
@@ -550,8 +551,14 @@ BEGIN {
     # success while the first real criterion stayed open. Comment state is not
     # tracked inside a fence, where the delimiters are just characters.
     starts_hidden = incomment || inpre || inhtml
+    # Whether the hiding started as a BLOCK — a comment or raw tag that opened
+    # its own line — or inline, part way through a paragraph. Only the first
+    # closes the paragraph; `Some prose <!--` leaves it open across the comment,
+    # so what follows the `-->` is still that paragraph.
+    hidden_block = inhtml || (incomment && comment_block) || (inpre && pre_block)
     if (infence == 0) {
         rest_of_line = $0
+        opens_seen = 0
         while (1) {
             if (incomment) {
                 at = index(rest_of_line, "-->")
@@ -563,12 +570,18 @@ BEGIN {
                 if (at == 0) break
                 rest_of_line = substr(rest_of_line, at + 4)
                 incomment = 1
+                # Only the FIRST comment on a line can be the one that opens it
+                # as a block; a second `<!--` after a `-->` is mid-line by
+                # construction. (No apostrophes here: single-quoted shell.)
+                opens_seen++
+                comment_block = (opens_seen == 1 && bare ~ /^<!--/)
             }
         }
         # Raw HTML renders its contents verbatim, so a task item inside one of
         # these blocks is example text, never a criterion. These four are the
         # CommonMark block type that suppresses Markdown parsing outright.
         rest_of_line = tolower($0)
+        raw_opens_seen = 0
         while (1) {
             if (inpre) {
                 at = index(rest_of_line, "</" raw_tag)
@@ -601,6 +614,11 @@ BEGIN {
                 rest_of_line = substr(rest_of_line, at + 1 + length(raw_hit))
                 inpre = 1
                 raw_tag = raw_hit
+                # Same distinction as the comment above: a `<pre>` that opens
+                # the line is a block, one inside a sentence is inline HTML.
+                raw_opens_seen++
+                pre_block = (raw_opens_seen == 1 &&
+                    tolower(bare) ~ /^<\/?(pre|script|style|textarea)([ \t>\/]|$)/)
             }
         }
     }
@@ -611,12 +629,17 @@ BEGIN {
         # otherwise keep its phantom item after the block closes, and the code
         # sample under it would measure as a nested criterion.
         #
-        # It does close the paragraph before it, though. Raw HTML, a comment and
-        # a `<pre>` are all LEAF blocks, so nothing is open once one starts —
-        # and leaving `prev_kind` at "para" across a block that ends by leaving
-        # its container withheld the non-1 interruption rule from a line that
-        # was starting a genuine ordered list.
-        prev_kind = "leaf"
+        # A BLOCK also closes the paragraph before it — raw HTML, a comment and
+        # a `<pre>` are leaf blocks, so nothing is open once one starts, and
+        # leaving `prev_kind` at "para" across one that ends by leaving its
+        # container withheld the non-1 interruption rule from a line that was
+        # starting a genuine ordered list.
+        #
+        # An INLINE comment closes nothing. `Some prose <!--` keeps its paragraph
+        # open across the hidden lines, so the `2. [ ] example` after the `-->`
+        # is lazy continuation text rather than a task item — clearing the state
+        # for every hidden line offered that prose to `--index 1`.
+        if (hidden_block) prev_kind = "leaf"
         next
     }
 

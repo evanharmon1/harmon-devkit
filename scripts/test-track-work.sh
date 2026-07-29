@@ -1654,6 +1654,53 @@ following unindented prose
 - [x] the real criterion
 ' || fail "prose under a heading-only item closes that item"
 
+echo "==> an inline comment leaves its paragraph open across the hidden lines"
+write_issue 100 'Some prose <!--
+hidden
+-->
+2. [ ] example
+
+- [ ] the real criterion
+'
+[ "$(run_tick 100 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 100 'Some prose <!--
+hidden
+-->
+2. [ ] example
+
+- [x] the real criterion
+' || fail "a mid-paragraph comment is inline HTML and closes no paragraph"
+
+echo "==> a comment that opens its own line still closes the paragraph"
+write_issue 101 '<!--
+- [ ] commented-out example
+-->
+2. [ ] real ordered criterion
+'
+[ "$(run_tick 101 --index 1)" = 0 ] || fail "the ordered criterion after a comment block should tick"
+issue_is 101 '<!--
+- [ ] commented-out example
+-->
+2. [x] real ordered criterion
+' || fail "a type-2 comment block is a leaf block"
+
+echo "==> an inline <pre> leaves its paragraph open too"
+write_issue 102 'Some prose <pre>
+- [ ] inline pre content
+</pre>
+2. [ ] example
+
+- [ ] the real criterion
+'
+[ "$(run_tick 102 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 102 'Some prose <pre>
+- [ ] inline pre content
+</pre>
+2. [ ] example
+
+- [x] the real criterion
+' || fail "the block/inline distinction applies to raw tags as well"
+
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
 - [ ] the real criterion
