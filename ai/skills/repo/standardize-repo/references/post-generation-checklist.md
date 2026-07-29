@@ -280,6 +280,42 @@ Both owner types — the org-only follow-ups are in the next section.
   > `domain:` option, add it to `scripts/setup-github-labels.sh` **and re-run this
   > task**: editing the script alone does not touch the live labels.
 
+- [ ] **[manual — GitHub UI]** Create the project's **starter views** — **Board**,
+      **Triage**, **Agent queue**, **Planning**, **Mine**. Projects V2 has no view
+      API, so no task can do this and re-running the setup tasks will not create
+      them. The filter and layout for each view are in the generated repo's
+      `docs/project-management.md`; keep the saved set small and slice the one
+      board for everything else.
+
+- [ ] **[manual — GitHub UI]** Turn on the project's built-in **"Auto-add to
+      project"** workflow — this is what puts **every** issue and PR on the board.
+      In the Project's **Settings → Workflows**, enable *Auto-add to project*,
+      point it at this repo, and set the filter to `is:open`.
+
+  > It is GitHub's native built-in — no Actions, no tokens — and the only
+  > mechanism that catches an item however it was created. A repo that skips it
+  > silently never reaches the project however completely the rest of this
+  > section was followed, and (on an org) `project-automation.yml` then has no
+  > items whose `Status` it can sync. Four things the UI will not warn you about:
+  >
+  > - **Filter qualifiers AND together**, so `is:issue is:pr` matches *nothing*.
+  >   Leave the type unqualified — `is:open` alone already matches both issues
+  >   and PRs, which is what the board wants.
+  > - **One workflow targets one repo.** Every repo feeding the board needs its
+  >   own auto-add workflow: add a new one, never re-point an existing repo's, or
+  >   that repo silently stops feeding the board.
+  > - **It does not backfill.** Existing items are never added — the workflow
+  >   fires only when an item is created or updated afterwards. Adopting an
+  >   existing repo, add the current backlog to the project by hand, or the board
+  >   reads as complete while the backlog is missing.
+  > - **The workflows are capped per project** — 1 on Free, 5 on Pro/Team, 20 on
+  >   Enterprise. "Every repo feeds the one board" holds only under that cap;
+  >   past it a repo needs its own `actions/add-to-project` workflow, triggered
+  >   on that repo's `issues`/`pull_request` events (the action reads the item
+  >   out of the event payload, so a `schedule` trigger adds nothing).
+  >   The issue-form `projects:` key is not a substitute either: it covers only
+  >   form-created issues and hard-codes a project number.
+
 ### Org repos only (`github_org != author_git_provider_username`)
 
 The first two items apply only when `project_management: github` — the
