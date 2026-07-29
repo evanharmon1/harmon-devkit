@@ -62,14 +62,25 @@ confirm with the user before proceeding.
   Fallback: `git status -sb` and `gh pr list --repo "$repo" --state open`.
   Caution: `task` executes the checked-out Taskfile; on an untrusted branch
   use the raw commands.
-- Template provenance: if `.copier-answers.yml` exists at the repo root, read
-  it and report `_src_path` (the template repo) and `_commit` (the revision
-  this tree was rendered from) alongside the branch. §3's provenance check
-  needs both — `_src_path` says where to look for a canonical copy, and
-  `_commit` says which revision this tree matches, so an apparent local
-  difference can be read as real divergence rather than an un-applied update.
-  No `.copier-answers.yml` means the repo is not template-managed: say so
-  once and skip that check.
+- Template provenance: read `.copier-answers.yml` at the repo root when it
+  exists and report `_src_path` (the template repo) and `_commit` (the
+  revision this tree was rendered from). §3's provenance check needs both —
+  `_src_path` says where to look for a canonical copy, and `_commit` says
+  which revision this tree matches, so an apparent local difference reads as
+  real divergence rather than an un-applied update. **A template repo has no
+  answers file of its own**, having never been rendered from itself, so
+  absence is not "no provenance": a root `copier.yml` beside a `template/`
+  tree means this *is* the canonical source, and §3 still applies — in the
+  root-twin direction. Only a repo with neither is outside the check; say so
+  once and skip it.
+- The template's tree has to be readable before §3 can classify anything, and
+  `_src_path` is normally an HTTPS URL while `Read`/`Glob`/`Grep` see only the
+  local filesystem. So the check needs a local checkout of that repo at or
+  after `_commit`; this skill clones nothing. Without one, say so and ask the
+  user to supply a checkout or to accept the targets going unclassified.
+  Never let a search that could not run report "canonical here" — a
+  provenance check that fails open routes the fix to the wrong repo just as
+  surely as no check at all, and does it with false confidence.
 - The issue itself: `gh issue view <n> --repo "$repo" --comments`, plus its
   linked work —
   `gh issue view <n> --repo "$repo" --json state,assignees,closedByPullRequestsReferences`
@@ -114,8 +125,22 @@ explicit confirmation from the user. Then look for:
     `template/.claude/[% if use_foreman %]agents[% endif %]/foreman-preflight.md`
     — no literal path matches it, and unquoted, the brackets are read as a
     shell glob. Use `Glob` on the basename, or `Grep` for a distinctive line
-    of the file's body. See `copier-gotchas.md` §2 and §6 for why the names
-    look like that.
+    of the file's body. The `standardize-repo` skill's
+    `references/copier-gotchas.md` §2 and §6 explains why the names look like
+    that, where that skill is vendored alongside this one.
+  - **Presence upstream is necessary, not sufficient.** A file can sit under
+    `template/` and still be owned by the consumer, so confirm the template
+    actually renders *and keeps* it before routing anything upstream:
+    - `copier.yml`'s `_skip_if_exists` list freezes files after the first
+      render — harmon-init freezes `CHANGELOG.md`, `*.code-workspace`, and
+      `.github/CODEOWNERS` that way. Those are consumer-owned; an upstream
+      "fix" to one never reaches an existing repo, and for `CODEOWNERS` the
+      local edit is the access-control decision, not drift.
+    - A conditionally-named file is only rendered when its condition holds
+      for *this* repo's answers. `Glob` finds
+      `[% if use_foreman %]agents[% endif %]/…` regardless, so check the
+      gating answer in `.copier-answers.yml`; `use_foreman: false` means the
+      template never supplied the local file and something else owns it.
   - **Establish which way the file flows.** Finding the same content
     upstream does not make upstream canonical — a template repo may itself
     *vendor* the file from elsewhere (a `.skills-sync.yaml` pin, a submodule,
