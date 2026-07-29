@@ -224,7 +224,20 @@ read_body_or_die >"$before"
 # a full parser, from a checkbox nested under a list item, where ticking is
 # right. Prefer `--match` when a body carries either.
 items="$(awk '
-BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; prev_kind = "blank" }
+function advance(start, text,   i, c, out) {
+    # Column after rendering `text` starting at column `start`. A tab moves to
+    # the next four-column stop, so counting characters understates it — and a
+    # container column that is too small keeps later lines inside a container
+    # they have actually left.
+    out = start
+    for (i = 1; i <= length(text); i++) {
+        c = substr(text, i, 1)
+        if (c == "\t") out = out + 4 - (out % 4)
+        else out++
+    }
+    return out
+}
+BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; prev_kind = "blank"; raw_tag = "" }
 {
     # Walk the container prefix once, in the order it appears: indentation,
     # blockquote markers, and (for a possible opener) list markers, which nest in
@@ -252,8 +265,8 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; 
             continue
         }
         if (c == "\t") {
-            col += 4
-            sp += 4
+            sp += advance(col, "\t") - col
+            col = advance(col, "\t")
             rest_line = substr(rest_line, 2)
             continue
         }
@@ -272,6 +285,18 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; 
     }
     bare = rest_line
 
+    # A fence ends where its CONTAINER ends: the first non-blank line that does
+    # not reach the container content column, or that sits shallower than the
+    # opener blockquote depth, closes it implicitly the way CommonMark does. That
+    # line is then live again — it may be a new fence opener, or a criterion, so
+    # this runs BEFORE the opener scan below: a sibling `- ```text` both ends the
+    # previous item and opens its own fence, and a scan gated on the stale state
+    # would never reconsider it.
+    if (infence == 1 && $0 !~ /^[ \t]*$/ &&
+        (col < fence_col || quoted < fence_quoted)) {
+        infence = 0
+    }
+
     # A fence can also open as the content of a list item, where the delimiter
     # sits after the marker. Consume markers and any quotes they contain, in
     # encountered order. Only an opener may carry a marker: a marker on a later
@@ -285,7 +310,7 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; 
         while (1) {
             if (match(after_marker, /^([-*+]|[0-9]+[.)])[ \t]+/)) {
                 had_marker = 1
-                open_col += RLENGTH
+                open_col = advance(open_col, substr(after_marker, 1, RLENGTH))
                 open_sp = 0
                 after_marker = substr(after_marker, RLENGTH + 1)
                 continue
@@ -313,15 +338,6 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; 
             }
             break
         }
-    }
-
-    # A fence ends where its CONTAINER ends: the first non-blank line that does
-    # not reach the container content column, or that sits shallower than the
-    # opener blockquote depth, closes it implicitly the way CommonMark does. That
-    # line is then live again — it may be a new fence opener, or a criterion.
-    if (infence == 1 && $0 !~ /^[ \t]*$/ &&
-        (col < fence_col || quoted < fence_quoted)) {
-        infence = 0
     }
 
     opens = (infence == 0 && open_sp < 4 && match(after_marker, /^(```+|~~~+)/))
@@ -381,26 +397,42 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; 
                 incomment = 1
             }
         }
-        # Raw HTML renders its contents verbatim, so a task item inside <pre> is
-        # example text. <pre> only: the full set of CommonMark HTML blocks needs
-        # a real parser, and this is the one that carries code samples.
+        # Raw HTML renders its contents verbatim, so a task item inside one of
+        # these blocks is example text, never a criterion. These four are the
+        # CommonMark block type that suppresses Markdown parsing outright.
         rest_of_line = tolower($0)
         while (1) {
             if (inpre) {
-                at = index(rest_of_line, "</pre")
+                at = index(rest_of_line, "</" raw_tag)
                 if (at == 0) break
-                after = substr(rest_of_line, at + 5, 1)
-                rest_of_line = substr(rest_of_line, at + 5)
+                at_end = at + 2 + length(raw_tag)
+                after = substr(rest_of_line, at_end, 1)
+                rest_of_line = substr(rest_of_line, at_end)
                 # The tag name has to END there. Matched as a prefix, a sample
-                # mentioning </prevent> would leave preformatted mode early and
-                # expose the rest of the block.
-                if (after == ">" || after == "" || after == " " || after == "\t") inpre = 0
+                # mentioning </prevent> would leave the block early and expose
+                # the rest of it.
+                if (after == ">" || after == "" || after == " " || after == "\t") {
+                    inpre = 0
+                    raw_tag = ""
+                }
             } else {
-                at = index(rest_of_line, "<pre")
+                at = 0
+                raw_hit = ""
+                split("pre script style textarea", raw_names, " ")
+                for (ri = 1; ri <= 4; ri++) {
+                    ra = index(rest_of_line, "<" raw_names[ri])
+                    if (ra == 0) continue
+                    rafter = substr(rest_of_line, ra + 1 + length(raw_names[ri]), 1)
+                    if (rafter != ">" && rafter != "" && rafter != " " && rafter != "\t" && rafter != "/") continue
+                    if (at == 0 || ra < at) {
+                        at = ra
+                        raw_hit = raw_names[ri]
+                    }
+                }
                 if (at == 0) break
-                after = substr(rest_of_line, at + 4, 1)
-                rest_of_line = substr(rest_of_line, at + 4)
-                if (after == ">" || after == "" || after == " " || after == "\t" || after == "/") inpre = 1
+                rest_of_line = substr(rest_of_line, at + 1 + length(raw_hit))
+                inpre = 1
+                raw_tag = raw_hit
             }
         }
     }
@@ -414,6 +446,14 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; 
         this_kind = "blank"
     } else if (bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[ \t]/) {
         this_kind = "list"
+        # A marker that cannot interrupt a paragraph does not start a list, so
+        # the paragraph continues through it. Classified on syntax alone, one
+        # such line would hand the NEXT line a list context it never entered.
+        if (prev_kind == "para" && match(bare, /^[ \t]*[0-9]+/)) {
+            num_kind = substr(bare, RSTART, RLENGTH)
+            sub(/^[ \t]*/, "", num_kind)
+            if (num_kind + 0 != 1) this_kind = "para"
+        }
     } else {
         this_kind = "para"
     }

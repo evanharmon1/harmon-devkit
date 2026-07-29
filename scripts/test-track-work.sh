@@ -702,6 +702,52 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
+echo "==> a sibling list-item fence both ends the previous one and opens its own"
+write_issue 61 '- ```text
+  content
+- ```text
+  - [ ] example inside the sibling fence
+  ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 61 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 61 '- ```text
+  content
+- ```text
+  - [ ] example inside the sibling fence
+  ```
+
+- [x] the real criterion
+' || fail "the boundary line must be reconsidered as an opener"
+
+echo "==> a marker that cannot interrupt a paragraph keeps paragraph state"
+write_issue 62 'Some ordinary paragraph text.
+2. prose that cannot interrupt
+3. [ ] example prose
+
+- [ ] the real criterion
+'
+[ "$(run_tick 62 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 62 'Some ordinary paragraph text.
+2. prose that cannot interrupt
+3. [ ] example prose
+
+- [x] the real criterion
+' || fail "an ordered-looking line must not fabricate list context"
+
+echo "==> a tabbed list prefix is measured in rendered columns"
+printf -- '-\t```text\n\t- [ ] first example\n  ```\n- [ ] example in the outer fence\n  ```\n\n- [ ] the real criterion\n' >"$ticks/${repo//\//_}__63.md"
+[ "$(run_tick 63 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+[ "$(cat "$ticks/${repo//\//_}__63.md" | tail -1)" = '- [x] the real criterion' ] || fail "a tab must advance to the next four-column stop"
+
+echo "==> task text in script, style and textarea blocks is not a criterion"
+for raw in script style textarea; do
+    printf '<%s>\n- [ ] example in raw html\n</%s>\n\n- [ ] the real criterion\n' "$raw" "$raw" >"$ticks/${repo//\//_}__64.md"
+    [ "$(run_tick 64 --index 1)" = 0 ] || fail "--index 1 should address the real criterion (<$raw>)"
+    [ "$(cat "$ticks/${repo//\//_}__64.md" | tail -1)" = '- [x] the real criterion' ] || fail "a checkbox inside <$raw> must be left alone"
+done
+
 echo "==> an ordered marker other than 1 cannot interrupt a paragraph"
 write_issue 58 'Some ordinary paragraph text.
 2. [ ] example prose, still in the paragraph
