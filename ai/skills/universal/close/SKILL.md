@@ -92,10 +92,18 @@ read it in the UI) — never guess.
     # down with it and leaving the claim standing.
     gh issue edit <n> --repo <owner/repo> --remove-assignee @me          # only if the record says the claim added it
     gh issue edit <n> --repo <owner/repo> --remove-label agent:claude-code  # likewise
+    # If the record names a displaced label, put it back — the claim removed it:
+    gh issue edit <n> --repo <owner/repo> --add-label <displaced agent: label>
     <track-work-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
+      --project "<the board the claim comment recorded>" \
       --status "<the status the claim comment recorded>"
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```
+
+    **Pass `--project`.** The record names the board the claim actually moved.
+    An issue added to a second project since then makes the helper either
+    prefer `<owner> Project` or refuse as ambiguous — restoring the wrong card
+    while the claimed one stays at `In Progress`.
 
     **The hand-back comment must say it released the claim**, on its own line
     and verbatim, because the claim comment is never deleted and would

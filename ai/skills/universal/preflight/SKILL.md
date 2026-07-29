@@ -174,6 +174,18 @@ actually added.
   create the label here.** The label taxonomy belongs to
   `task setup:github-labels`, and inventing a label per repo is how vocabularies
   fork.
+
+  **If the user approved proceeding past another agent's label**, *replace* it
+  rather than adding alongside: `--add-label` alone leaves the issue advertising
+  two owners, which is worse than the conflict it was meant to resolve. Remove
+  the other one in the same edit and record it, so the hand-back can put it
+  back:
+
+  ```sh
+  gh issue edit <n> --repo "$repo" \
+    --add-label agent:claude-code --remove-label agent:codex
+  ```
+
 - **Board** — the assignee and the label are both invisible on the project
   board, which is where the work is actually watched, so move the card there
   too. `Status` only — not `Agent`, for the reason above. **Do this after the
@@ -218,9 +230,12 @@ actually added.
   Claiming — starting implementation on branch <branch> (session <name>).
 
   Claim record (for `/close` — undo only what this claim added):
+  - board: <board title from --show, so cleanup targets the same card>
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no, it was already assigned to me>
   - `agent:` label added by this claim: <yes|no|n/a, repo has no such label>
+  - `agent:` label displaced by this claim: <label removed on an approved
+    override, or "none">
   CLAIM_BODY_9f3k
 
   # 3. only now move the card
