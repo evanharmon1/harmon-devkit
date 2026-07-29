@@ -113,12 +113,18 @@ Keep them to things a reader can adjudicate. "Works well" is not a criterion.
 ```sh
 gh issue close <n> --repo <owner/repo> --reason completed
 gh issue close <n> --repo <owner/repo> --reason "not planned" --comment "Superseded by …"
+gh issue close <n> --repo <owner/repo> --reason duplicate --comment "Duplicate of owner/repo#<n>"
 ```
 
 | Reason | Means |
 | --- | --- |
 | `completed` | It was built. Every acceptance item is ticked. |
-| `not planned` | It won't be built — declined, duplicate, obsolete, **or superseded** |
+| `not planned` | It won't be built — declined, obsolete, **or superseded** |
+| `duplicate` | It *will* be done, tracked elsewhere. Name that issue in the comment — GitHub stores the reason, not the target. |
+
+`duplicate` is a reason in its own right, not a flavour of `not planned`: the
+work is live somewhere else rather than declined, and a later duplicate search
+reads `stateReason` and branches on exactly that difference (skill §3).
 
 **Superseded work closes `not planned`, with a comment naming what replaced
 it.** This is the case most often got wrong, because the work "went away" and

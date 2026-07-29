@@ -50,7 +50,7 @@ Never characterise an issue from memory, from a summary, or from earlier in this
 conversation.
 
 ```sh
-gh issue view <n> --repo <owner/repo> --json state,stateReason,title,body
+gh issue view <n> --repo <owner/repo> --json state,stateReason,title,body,comments
 ```
 
 `stateReason` is not decoration. `state` collapses every closed issue to
@@ -59,6 +59,10 @@ gh issue view <n> --repo <owner/repo> --json state,stateReason,title,body
 different responses (§3, §4). Reading `state` alone tells you an issue is shut
 and nothing about whether that was a decline, a delivery, or a pointer
 somewhere else.
+
+`comments` is here for the same reason: scope changes and the canonical issue a
+duplicate points at live in comments, not the body, so a body-only read of a
+closed issue can be confidently wrong about what it says.
 
 **Fail condition:** you are about to write a sentence about what issue N says,
 contains, or still needs, and you have not run this in the current turn.
@@ -306,7 +310,7 @@ for one of them. Branch on `state` *and* `stateReason` — §1 reads both, and
 | **Open** | live duplicate | Comment there. A second issue splits the reasoning across two places and leaves neither complete. |
 | Closed `NOT_PLANNED` | already declined | Engage that decision — say why it should be revisited. Do not refile as though it were new. |
 | Closed `COMPLETED`, defect is back | **regression** | It needs a live issue: reopen that one, or file a new one linking it. |
-| Closed `DUPLICATE` | a pointer, not an answer | Follow it to the canonical issue and start this table again there. The hit itself holds nothing; commenting on it is writing to a forwarding address. |
+| Closed `DUPLICATE` | a pointer, not an answer | Find the canonical issue in the comments and start this table again there. The hit itself holds nothing; commenting on it is writing to a forwarding address. If no comment names one, see below — do not guess. |
 
 The `COMPLETED` row is the one worth spelling out. A comment on a closed
 `COMPLETED` issue reads like a settled record with a footnote, and it puts the
@@ -314,6 +318,22 @@ work on no backlog at all — the "durable but invisible" failure this skill exi
 to prevent, reintroduced at exactly the moment you thought you had avoided a
 duplicate. Commenting is the *dedup* answer; it is not the *tracking* answer, and
 a recurrence needs both.
+
+**A `DUPLICATE` close does not store what it duplicates.** GitHub records the
+reason and nothing else: harmon-devkit#21 is `stateReason: DUPLICATE` with zero
+comments, no `MarkedAsDuplicateEvent`, and a `ClosedEvent` carrying only
+`state_reason` — there is no `duplicateOf` field to read, in the CLI or in
+GraphQL. So the pointer exists only if whoever closed it wrote one. Two
+consequences, and they pull in opposite directions:
+
+- **Writing:** `--reason duplicate` *without* naming the canonical issue is a
+  lossy close. Always pair it with the comment (§4). The reason alone tells the
+  next reader that an answer exists somewhere and not where.
+- **Reading:** a `DUPLICATE` hit with no pointer is a dead end, not a licence to
+  guess. Say so and treat the search as having returned nothing usable — then
+  file, referencing the dead-end issue by number so the next person inherits one
+  more clue than you did. Picking a plausible-looking "canonical" issue is how a
+  finding gets attached to the wrong thread.
 
 **If you filed a duplicate anyway**, the recovery is ordered. Comment your new
 evidence onto the canonical issue **first**, then close yours naming it —
@@ -349,11 +369,13 @@ gh issue close <n> --repo <owner/repo> --reason duplicate --comment "Duplicate o
   Superseded work closes here, with a comment naming what replaced it. Closing
   it `completed` is simply false, and it hides the real reason from anyone who
   finds the issue later.
-- **duplicate** — the work is real and tracked *somewhere else*. Name that issue
-  in the comment, qualified with its repo if it is not this one (§1). This is the
-  right close for the recovery in §3, and it is distinct from `not planned`:
-  `not planned` says nobody will do this, `duplicate` says somebody is already
-  tracking it. Reading these back is `stateReason`, not `state`.
+- **duplicate** — the work is real and tracked *somewhere else*. The comment is
+  **required, not decorative**: GitHub stores the reason and not the target, so a
+  bare `--reason duplicate` says "the answer is elsewhere" and destroys the only
+  copy of *where*. Name the issue, qualified with its repo if it is not this one
+  (§1). Distinct from `not planned`: that one says nobody will do this,
+  `duplicate` says somebody already is. Reading either back is `stateReason`, not
+  `state`.
 
 **Fail condition:** closing with `completed` while `gh issue view <n> --json
 body` still shows an unticked item (`- [ ]`, or the ordered `1. [ ]` form).

@@ -65,9 +65,14 @@ settled one. The three cases are tabulated in the skill's §3 — follow that ta
 rather than the one-line version, and do not reason about it from here.
 
 **If a duplicate lands anyway**, move the evidence before closing: comment
-whatever the canonical issue lacks onto it, *then* close yours `not planned`
-referencing it. Closing first strands the new evidence in an issue nobody will
-open again.
+whatever the canonical issue lacks onto it, *then* close yours with
+`--reason duplicate` **and a comment naming the canonical issue**. Both halves
+matter. Closing first strands the new evidence in an issue nobody will open
+again; closing without naming the target strands the pointer, because GitHub
+stores the reason and not what it duplicates (skill §3). And `not planned` is the
+wrong reason here — it makes the next duplicate search read this issue as a
+declined decision rather than a pointer, and send the finding down the wrong
+branch of §3's table.
 
 ## Filing it
 
