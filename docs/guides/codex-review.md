@@ -107,8 +107,9 @@ task challenge  # adversarial second model — adjudicate, fix, re-challenge
                 # until a CLEAN pass (no material findings), ≤5 rounds
 task review     # verification checkpoint — same clean-pass exit, ≤4 rounds
 task ci         # full CI mirror
-# → open the PR, then shepherd it: watch CI + reviews, adjudicate → fix →
-#   push, ≤4 rounds (independent of the loops above)
+# → open the PR, then /shepherd it: watch CI + reviews, adjudicate → fix →
+#   push, ≤5 rounds (independent of the loops above); checks green with
+#   reviews unpolled is not done — reviews land after checks settle
 # → merging stays a human decision
 ```
 
