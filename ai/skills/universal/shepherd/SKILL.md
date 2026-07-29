@@ -87,6 +87,9 @@ and compare against the local branch and HEAD. Requirements, all hard:
   work on the fork checkout at all: stop, report what the remote CI shows,
   and hand the fix decision to the maintainer.
 
+Once the PR is confirmed `OPEN` and the checkout matches, move the claimed
+issue's card to `In Review` — see [§7](#7-move-the-project-card).
+
 ## 2. Watch
 
 - Start every watch round by re-fetching the PR head
@@ -581,7 +584,8 @@ loops indefinitely:
    than over-claiming: `DRAFT`, `BLOCKED`, or `REVIEW_REQUIRED` mean
    "green but awaiting the maintainer/required approval" — say that, and
    list unresolved threads you answered with rejections (they stay
-   unresolved until the maintainer resolves them). Then stop.
+   unresolved until the maintainer resolves them). Move the claimed issue's
+   card to `Ready to Merge` ([§7](#7-move-the-project-card)), then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
    5 rounds: stop.
 3. **No progress** — the same failure signature or finding survives two
@@ -598,3 +602,44 @@ For every stop except Green, post a summary comment on the PR for the
 maintainer: what was fixed, what remains unresolved and why (including
 findings you dispute, with evidence), and what you recommend. Then end — do
 not keep iterating past a stop condition.
+
+## 7. Move the project card
+
+`/preflight` claimed the issue by moving its card to `In Progress`. A claim
+that is never released is worse than no claim at all: the board keeps showing
+an agent mid-flight on work that is finished or abandoned, and the next
+reader trusts it. So shepherd advances the same card as the PR moves.
+
+**Which issue.** `gh pr view <n> --repo "$repo" --json closingIssuesReferences`
+returns only issues linked by a *closing* keyword — and `Refs #N` is the
+default here, so that list is usually empty and is never sufficient on its
+own. Take the issue `/preflight` claimed this session; failing that, the
+`Refs`/`Closes` numbers in the PR body. If neither names an issue, there is
+nothing to move — skip the step rather than guessing. Never move a card for a
+`owner/repo#N` reference in another repo unless that repo is `$repo`.
+
+**When.** Two transitions, both using `track-work`'s asset (paths resolve as
+in `track-work`: `.claude/skills/track-work/assets/…` vendored,
+`ai/skills/universal/track-work/assets/…` in harmon-devkit):
+
+```sh
+# on entering shepherd, once step 1 confirms the PR is OPEN
+<track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --status "In Review"
+
+# at stop condition 1 (Green), before reporting
+<track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --status "Ready to Merge"
+```
+
+Exit **3** means the issue is on no board or the board lacks that option —
+benign, note it once and never retry. **1** and **2** are worth a line in the
+report; **2** is usually a missing token scope
+(`gh auth refresh -s read:project,project`). These are writes like any other:
+they need the user's go-ahead, and where `gh` cannot write, report the command
+instead of failing the round.
+
+Do **not** move the card to `Done` — merging is the maintainer's decision and
+`Done` is the terminal status. Ending at `Ready to Merge` says exactly what is
+true: the work is finished and waiting on a human. On an org, the repo's
+`project-automation.yml` may already sync `Status` from PR events; a
+second write to the same value is harmless, but say so in the report rather
+than claiming shepherd moved it.

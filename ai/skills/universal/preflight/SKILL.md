@@ -3,8 +3,8 @@ name: preflight
 description: >-
   Pre-implementation sanity check — verify the latest state of the target
   issue, related PRs, and recent merges against the live repo, surface
-  blockers, then claim the issue (assign, label, comment). Invoke as
-  /preflight [issue #].
+  blockers, then claim the issue (assign, label, move the project card to
+  In Progress, comment). Invoke as /preflight [issue #].
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(git remote), Bash(git remote get-url:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
 ---
@@ -120,11 +120,41 @@ the user's explicit go-ahead before running them, and if `gh` is
 unauthenticated or lacks write access, report the commands for the user to
 run instead of failing the flow:
 
-- `gh issue edit <n> --repo "$repo" --add-assignee @me`
-- Label only if the label exists (`--limit` matters — the default returns
-  only 30 labels):
-  `gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' | grep -qx in-progress && gh issue edit <n> --repo "$repo" --add-label in-progress`
-- Comment via stdin with a quoted heredoc so the branch/session values are
+- **Assign:** `gh issue edit <n> --repo "$repo" --add-assignee @me`
+- **Label** — the `agent:*` family names *which* agent has it, mirroring the
+  options of the `Agent` field. Apply it only if the repo actually has the
+  label (`--limit` matters — the default returns only 30 labels):
+
+  ```sh
+  gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' |
+    grep -qx agent:claude-code &&
+    gh issue edit <n> --repo "$repo" --add-label agent:claude-code
+  ```
+
+  A repo without the family — one seeded before it existed, or any repo with
+  `project_management: none` — skips this. Say so once and carry on; **do not
+  create the label here.** The label taxonomy belongs to
+  `task setup:github-labels`, and inventing a label per repo is how vocabularies
+  fork.
+- **Board** — the assignee and the label are both invisible on the project
+  board, which is where the work is actually watched. Move the card and stamp
+  which agent holds it. The script ships with `track-work`, so
+  `<track-work-dir>` is `.claude/skills/track-work` in a repo that vendors the
+  skills and `ai/skills/universal/track-work` in harmon-devkit itself:
+
+  ```sh
+  <track-work-dir>/assets/set-issue-status.sh \
+    --repo "$repo" --issue <n> --status "In Progress" --agent "Claude Code"
+  ```
+
+  Read the exit code rather than the noise: **0** applied, **3** nothing to do
+  (the issue is on no board, or the board lacks the field/option) — benign, note
+  it and move on, **1** the write failed, **2** it could not verify, usually a
+  missing token scope (`gh auth refresh -s read:project,project`). Only 1 and 2
+  are worth surfacing; never retry a 3. On an **organization** `Agent` is an org
+  *issue field* rather than a project field, so `--agent` reports a skip there
+  and the `agent:*` label carries that half of the signal.
+- **Comment** via stdin with a quoted heredoc so the branch/session values are
   never re-evaluated by the shell (a branch name can contain `$(…)`). Use a
   delimiter that cannot occur in the body — quoting disables expansion, not
   termination, so a body containing a literal `EOF` line would end a
@@ -140,6 +170,10 @@ After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):
 `--add-assignee` accumulates rather than arbitrates, so if someone else
 claimed concurrently, surface it and coordinate before implementing.
+
+A claim is a promise to release it. `/shepherd` advances the card as the PR
+moves, and `/close` flags a session that ends with an issue left at
+`In Progress` and nothing in flight.
 
 ## 6. Hand off
 

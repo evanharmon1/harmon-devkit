@@ -1,11 +1,12 @@
 ---
 name: close
 description: >-
-  Close-of-session ritual — check for uncommitted or unpushed work, list
-  anything left dangling, and emit the copy-pasteable
-  /rename done-<session-name> command for the user. Invoke as /close.
+  Close-of-session ritual — check for uncommitted or unpushed work, release
+  any issue claim left standing, list anything dangling, and emit the
+  copy-pasteable /rename done-<session-name> command for the user. Invoke as
+  /close.
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git status:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(gh issue view:*), Bash(gh pr list:*)
 ---
 
 # Close Session
@@ -26,6 +27,20 @@ read it in the UI) — never guess.
 - `git status -sb` for uncommitted work; `git log @{u}..HEAD --oneline` for
   unpushed commits (guard for branches with no upstream).
 - If `/reflect` has not run this session, offer to run it first.
+- **Release any claim this session made.** If `/preflight` claimed an issue
+  (assignee, `agent:*` label, card at `In Progress`), check what actually
+  became of it: `gh issue view <n> --repo <owner/repo> --json state,assignees`
+  plus whether a PR is open for it. A claim left standing over abandoned or
+  finished work is a lie the board tells the next reader, and it outlives the
+  session that told it. Three outcomes:
+  - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
+    Nothing to do.
+  - **Merged / issue closed** — nothing to release, but say so.
+  - **Neither** — the session stopped mid-flight. Surface it and offer the
+    commands to hand the work back: move the card off `In Progress` (to
+    `Todo`, or `Agent Queue` if it should stay queued for an agent), drop the
+    `agent:*` label, and comment why. Do not run them unasked — this is the
+    user's call, and they may be resuming tomorrow.
 - List anything left dangling as explicit handoff bullets for the next
   session.
 

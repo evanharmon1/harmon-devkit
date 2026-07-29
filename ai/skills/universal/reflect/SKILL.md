@@ -26,7 +26,12 @@ have dropped, and note that the tables may be incomplete. Do not trust
 remembered status — re-verify each one live:
 
 - `gh pr view <n> --json state,isDraft,mergedAt,reviewDecision,statusCheckRollup,url,title`
-- `gh issue view <n> --json state,stateReason,assignees,url,title`
+- `gh issue view <n> --json state,stateReason,assignees,labels,url,title`
+
+An open issue assigned to you and carrying an `agent:*` label is a **live
+claim** from `/preflight`. Report it as such — "open — claimed, in progress" —
+and check it is still true: a claim with no open PR and no work in flight is a
+loose end for §2, not a status. `/close` offers the commands to hand it back.
 
 Keep each reference's repository identity: a bare `#123` from another repo
 must be verified with `--repo owner/repo` (or by its full URL), never against

@@ -5,8 +5,10 @@ description: >-
   commit bodies that link them. Use when about to write "Closes #", "Fixes #",
   or "Refs #" in a PR description; file an issue or a follow-up discovered while
   doing something else; report whether tracked work is done; describe what an
-  issue says; tick or add acceptance criteria; or close an issue and pick a
-  close reason. Covers `gh issue create/edit/close/comment` and PR bodies alike,
+  issue says; tick or add acceptance criteria; mark an issue as being worked on
+  by an agent (claim it — label, `Agent` field, project card); or close an issue
+  and pick a close reason. Covers `gh issue create/edit/close/comment`,
+  `gh project`/Projects V2 field writes, and PR bodies alike,
   and applies to issues in other repos as much as this one. Trigger it even if
   the user doesn't say the word "skill".
 allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*)
@@ -28,6 +30,8 @@ untrusted input and must never be able to trigger a mutation on its own.
 `ai/skills/universal/track-work/assets/…` in harmon-devkit itself. Each script
 takes `--help` and each prints why it failed. Where a repo exposes
 `task guard:closing-keywords`, prefer it — same check, no path to resolve.
+`/preflight`, `/shepherd`, and `/close` resolve `assets/set-issue-status.sh`
+(§6) by the same two paths.
 
 ## 1. Before you describe an issue, re-read it
 
@@ -182,6 +186,50 @@ cannot rot, because the codebase evaluates it rather than the reader.
 Also on a new issue: put it in the repo that owns the code (§3), give acceptance
 criteria as `- [ ]` items so §2's check has something to read, and label it. More
 in [`references/issue-authoring.md`](references/issue-authoring.md).
+
+## 6. Making an agent's work visible while it happens
+
+An issue being *worked on right now* is a fact the tracker holds badly. The
+assignee is buried on the issue page, a claim comment is one entry in a thread,
+and neither appears on the board — which is where the work is actually watched.
+The result is the failure this section prevents: two agents, or an agent and a
+human, starting the same issue because nothing said it was taken.
+
+The taxonomy already answers this; nothing was writing it. Two axes, and the
+claim needs **both** because each is blind where the other sees:
+
+| Axis | Says | Visible in |
+| --- | --- | --- |
+| `Status` = `In Progress` | where it is in delivery | the board |
+| `Agent` = `Claude Code` | *which* agent holds it | the board |
+| `agent:claude-code` label | same, mirrored | `gh issue list --label`, the issue page, repos with no board at all |
+| assignee | a human-shaped "taken" | notifications, `gh issue list --assignee` |
+
+The `agent:*` labels mirror the `Agent` field's options exactly as the
+`domain:`/`layer:` families mirror theirs — and, exactly as there, **nothing
+syncs a label to a field value**. Write both or the two disagree.
+
+```sh
+<skill-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
+  --status "In Progress" --agent "Claude Code"
+```
+
+**Exit 0** applied. **Exit 3** nothing to do — the issue is on no board, or the
+board has no such field/option; benign, note it once and never retry.
+**Exit 1** the write failed. **Exit 2** it could not verify — usually a missing
+token scope (`gh auth refresh -s read:project,project`); treat as unsafe, not
+as clean.
+
+The script sets **project** fields only. On an organization, `Agent` is an org
+*issue field* instead, so `--agent` reports a skip there and the label carries
+that half. It never creates fields, options, or labels: the vocabulary belongs
+to `task setup:github-project` and `task setup:github-labels`, and minting one
+per repo is how vocabularies fork.
+
+**A claim must be released.** `In Progress` on finished or abandoned work is
+worse than no signal, because the next reader believes it. `/preflight` claims,
+`/shepherd` advances (`In Review` → `Ready to Merge`), `/close` catches what
+neither did. Never move a card to `Done` — merging is the maintainer's call.
 
 ## Scope
 
