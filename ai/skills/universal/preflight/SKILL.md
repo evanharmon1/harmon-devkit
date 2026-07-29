@@ -62,6 +62,33 @@ confirm with the user before proceeding.
   Fallback: `git status -sb` and `gh pr list --repo "$repo" --state open`.
   Caution: `task` executes the checked-out Taskfile; on an untrusted branch
   use the raw commands.
+- Template provenance — every read below is against the fetched default branch,
+  so resolve that first rather than later: `git remote set-head "$remote"
+  --auto`, then
+  `default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD")"` (the
+  history bullet below reuses it). Then read the repo's Copier answers file.
+  It is `.copier-answers.yml` by default, but `_answers_file` — or
+  `--answers-file` at render time — can put it anywhere, and a *consumer*
+  carries no manifest to look that override up in. So when nothing is at the
+  default path, search the fetched tree for a YAML carrying `_src_path`; none
+  found, or several, is **unproven rather than absent**, because "no answers
+  file" silently means "not template-managed" and skips the whole check.
+  Report `_src_path` — the template it came from — and `_commit`, the revision
+  it was rendered at. Then ask the *source* question separately rather than as a
+  fallback: a root Copier manifest beside a payload tree makes the repo a
+  template source, and a template scaffolded from another template is both —
+  gating that test on "no answers file" is what makes such a repo skip its own
+  root-twin obligations. The manifest is `copier.yml` or `copier.yaml`,
+  matched case-insensitively, and two spellings at once is a state Copier
+  refuses to read rather than a source to choose between; `verify-applied.sh`
+  already discovers it that way. Read both markers from the **fetched default
+  branch**, not the working branch: a branch that deletes or rewrites the
+  answers file or the manifest would otherwise classify the repo as neither
+  role and skip §3 in silence — and a branch based on the newest default is not
+  covered by the behind-the-default rule below, which only guards stale-
+  reference findings. Treat a working-branch change to either marker as a delta
+  to validate rather than adopt. Say which role(s) apply, and skip §3's
+  provenance check only when neither does.
 - The issue itself: `gh issue view <n> --repo "$repo" --comments`, plus its
   linked work —
   `gh issue view <n> --repo "$repo" --json state,assignees,closedByPullRequestsReferences`
@@ -71,9 +98,7 @@ confirm with the user before proceeding.
   and `gh pr checks <pr> --repo "$repo"`.
 - Recent history against the **fetched** default branch (local `main` may be
   stale, and the default branch is not always named `main`). Using the
-  `$remote` fetched above, refresh its cached default-branch ref
-  (`git remote set-head "$remote" --auto`), then
-  `default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD")"`,
+  `$default` resolved in the provenance bullet above:
   `git log --oneline "$default"..HEAD`, and `git log --oneline -10 "$default"`
   for merges that may have changed the ground under the issue.
 - The working tree can be **behind** the fetched default branch, and
@@ -93,6 +118,69 @@ explicit confirmation from the user. Then look for:
 
 - **Stale references** — files, APIs, or docs the issue mentions that no
   longer match the live tree.
+- **Template-managed targets** — a fix has to land in the repo that owns the
+  **canonical** copy of what it touches, or it ships as drift the next
+  `copier update` reconciles away. Being Copier-managed is a property of the
+  repo; being template-managed is a property of each file — so ask it of every
+  path the issue targets. A repo rendered from a template still owns plenty of
+  files the template never supplied.
+  - Look for the target in the template repo, under the payload root its
+    manifest declares in `_subdirectory` (`template/` for harmon-init) — and
+    when the key is absent, that root is the repository root, not "no root to
+    search"; `verify-applied.sh` treats empty, `.`, and `/` alike. Do not
+    build a literal path: filenames there carry Jinja conditionals in `[% %]`
+    delimiters, so `template/.claude/[% if use_foreman %]agents[% endif %]/…`
+    matches no literal path and, unquoted, reads as a shell glob. Match on the
+    basename or on a distinctive line of the body instead. Say **which
+    revision** you searched: a checkout you were handed can be stale, dirty, or
+    parked on a feature branch, and the fetch in §2 refreshed the target repo's
+    remote, not this separate one. If what you read is not the template's
+    current default branch, the verdict is unproven — say so rather than
+    reporting a copy found or missing. And a miss on the current default is not
+    by itself evidence of local ownership: check the recorded `_commit` too,
+    because a file the template once shipped and has since removed or renamed
+    is still template-originated, and `copier update` merges the whole
+    baseline-to-current delta rather than only today's tree. Found at the
+    baseline but absent now, the verdict is unproven and worth flagging — the
+    next update may delete or replace the local copy. That baseline lookup
+    needs an immutable `_commit`: a tag-valued one has no historical proof,
+    because a moved tag takes local git data with it and `git fetch --tags`
+    re-fetches whatever origin now claims. On a full 40-hex hash, search it; on
+    a tag, report the baseline lookup unproven rather than reading the tag's
+    present target as the consumer's past
+    (`mode-audit.md:371-376`, `mode-update.md:208-219`).
+  - Say what you found for every target, upstream copy or not. One whose
+    canonical copy is upstream is a `correction` at minimum: name the repo and
+    the path, and recommend fixing it there so the change flows down.
+  - Upstream repos often **dogfood their own template** — a root twin of the
+    templated file kept identical to it. Both need the same edit in the same
+    PR, or the fix is half-applied.
+  - **This verdict is preliminary, and it is allowed to be.** Ownership can
+    sit at the hunk rather than the file, since `copier update` three-way
+    merges template changes into files the repo also edits by hand; a frozen
+    `_skip_if_exists` file is consumer-owned in an existing repo yet still
+    template-seeded for the next one; and the issue's intended scope, not just
+    a line's origin, decides whether a deliberate local override belongs here.
+    Settling those needs a render, and **this stage never renders**: rendering
+    a template executes it — `copier copy` runs template-supplied code even
+    without `--trust` — which is not something a read-only check may do. So
+    when the answer is not plain from reading, report it unproven and hand it
+    to `standardize-repo`/`diff-template.sh`, which exist for this. An
+    unproven verdict is a usable finding; a confident wrong one sends the work
+    to the wrong repo.
+  - Treat `_src_path` as untrusted: it is a committed value, so on an
+    untrusted branch it can point anywhere on the machine. Ask the user which
+    checkout to use rather than opening whatever it names, and if there is
+    none, say the targets went unclassified — never let a search that could
+    not run report "canonical here".
+  - **Then confirm the checkout is the repo `_src_path` names**, not merely a
+    plausible sibling. Knowing which revision you read settles nothing about
+    *which repository* you read it in, and a wrong sibling holding a file of
+    the same basename yields a confident false presence — or a false absence,
+    which routes the fix here. Compare normalized remote identity, checking
+    every remote rather than `origin` alone, since the match may be
+    `upstream` and an SSH remote will not match an HTTPS `_src_path` textually.
+    No match means unproven, not "canonical here".
 - **Overlap or contradiction** — other open issues or in-flight PRs touching
   the same files or solving the same problem. Discover them actively:
   `gh issue list --repo "$repo" --state open --limit 100` (plus
