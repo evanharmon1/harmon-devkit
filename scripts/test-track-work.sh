@@ -542,6 +542,10 @@ if [ "${1:-}" = "api" ] && [ "${2:-}" = "user" ]; then
     printf '%s' "${STUB_LOGIN:-tester}"
     exit 0
 fi
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json state'; then
+    printf '%s' "${STUB_STATE_NAME:-OPEN}"
+    exit 0
+fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json assignees'; then
     printf '%s' "${STUB_ASSIGNEES-tester}"
     exit 0
@@ -659,6 +663,42 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_ASSIGNEES="someone-else tester" \
     "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "a co-assigned issue should tick (got $_rc)"
+
+echo "==> a closed issue is not tickable"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a closed issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "a closed issue must not be written to"
+
+echo "==> a multiline selector value cannot smuggle in a second selector"
+write_issue 36 "$body_three"
+[ "$(run_tick 36 --match "$(printf 'first\nindex:2')")" = 2 ] || fail "a multiline --match should exit 2"
+issue_is 36 "$body_three" || fail "a multiline --match must not write"
+
+echo "==> a blockquoted fence inside a fenced example does not close it"
+write_issue 37 '````
+> ```
+> - [ ] quoted example inside an outer fence
+> ```
+````
+
+- [ ] the real criterion
+'
+[ "$(run_tick 37 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 37 '````
+> ```
+> - [ ] quoted example inside an outer fence
+> ```
+````
+
+- [x] the real criterion
+' || fail "an inner quoted fence must not close the outer one"
 
 echo "==> a checkbox inside a blockquoted fence is not a criterion"
 write_issue 33 '> ```

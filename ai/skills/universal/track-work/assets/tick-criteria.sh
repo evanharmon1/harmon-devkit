@@ -56,6 +56,19 @@ repo="${GH_REPO:-}"
 issue=""
 dry_run=""
 selectors=""
+
+# Selectors are accumulated into a newline-delimited stream of `kind:value`
+# records, so a value containing a newline would parse as extra records — one
+# documented `--match` smuggling in a second selector and ticking a criterion
+# the caller never named.
+reject_multiline() {
+    case "$2" in
+    *$'\n'*)
+        echo "tick-criteria: $1 must be a single line" >&2
+        exit 2
+        ;;
+    esac
+}
 while [ "$#" -gt 0 ]; do
     case "$1" in
     -h | --help) usage ;;
@@ -77,11 +90,13 @@ while [ "$#" -gt 0 ]; do
             echo "tick-criteria: --match needs text; an empty pattern names no criterion" >&2
             exit 2
         }
+        reject_multiline --match "$2"
         selectors="${selectors}match:$2"$'\n'
         shift 2
         ;;
     --index)
         [ "$#" -ge 2 ] || usage
+        reject_multiline --index "$2"
         selectors="${selectors}index:$2"$'\n'
         shift 2
         ;;
@@ -151,6 +166,15 @@ assert_claimed() {
         echo "tick-criteria: could not resolve the authenticated user" >&2
         exit 2
     }
+    _state="$(gh issue view "$issue" --repo "$repo" --json state \
+        --jq '.state' 2>/dev/null || true)"
+    case "$_state" in
+    OPEN | open) ;;
+    *)
+        echo "tick-criteria: $repo#$issue is $_state, not open — nothing to tick during implementation" >&2
+        exit 1
+        ;;
+    esac
     _assignees="$(gh issue view "$issue" --repo "$repo" --json assignees \
         --jq '[.assignees[].login] | join(" ")' 2>/dev/null || true)"
     case " $_assignees " in
@@ -189,7 +213,11 @@ BEGIN { infence = 0 }
     # Strip indentation and any blockquote prefix before looking for a fence:
     # the item pattern below accepts `> - [ ]`, so a fence that only matched at
     # the margin would leave `> ``` … > - [ ] example` looking like a criterion.
+    # Whether the line was quoted is kept, because it is part of what identifies
+    # the fence — see the closer below. (No apostrophes in here: the awk program
+    # is single-quoted shell.)
     bare = $0
+    quoted = ($0 ~ /^[ \t]*>/) ? 1 : 0
     sub(/^[ \t]*(>[ \t]*)*/, "", bare)
     if (match(bare, /^(```+|~~~+)/)) {
         marker = substr(bare, RSTART, RLENGTH)
@@ -201,7 +229,10 @@ BEGIN { infence = 0 }
             infence = 1
             fence_ch = ch
             fence_len = len
-        } else if (ch == fence_ch && len >= fence_len && rest ~ /^[ \t]*$/) {
+            fence_quoted = quoted
+        } else if (quoted == fence_quoted && ch == fence_ch && len >= fence_len && rest ~ /^[ \t]*$/) {
+            # A closer has to sit in the same container as its opener: inside an
+            # unquoted fence, a literal `> ``` ` is example text, not the end.
             infence = 0
         }
         next
