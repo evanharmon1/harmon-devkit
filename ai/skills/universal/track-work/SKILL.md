@@ -66,7 +66,7 @@ Two things this does *not* replace:
 - Verifying an issue's claims against the code — that is `/preflight`, which
   also fetches the default branch first, because the working tree can be behind
   it and `Read`/`Grep` only see the working tree.
-- Reporting the status of work — re-verify each PR and issue live, as `/reflect`
+- Reporting the status of work — re-verify each PR and issue live, as `/retro`
   step 1 does. "I believe #328 is done" is not a status report.
 
 Bare `#123` means *this* repo. A number that came from another repo must carry

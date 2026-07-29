@@ -18,7 +18,7 @@ to distinguish in the session picker and the Claude mobile app.
 
 ## 1. Recover the session name
 
-Look for `/start`'s "Session name: `<name>`" line in the conversation. If it
+Look for `/orient`'s "Session name: `<name>`" line in the conversation. If it
 is not in context, **ask the user** for the current session name (they can
 read it in the UI) — never guess.
 
@@ -26,7 +26,7 @@ read it in the UI) — never guess.
 
 - `git status -sb` for uncommitted work; `git log @{u}..HEAD --oneline` for
   unpushed commits (guard for branches with no upstream).
-- If `/reflect` has not run this session, offer to run it first.
+- If `/retro` has not run this session, offer to run it first.
 - **Release any claim this session made.** If `/preflight` claimed an issue
   (assignee, `agent:*` label, card at `In Progress`), check what actually
   became of it — a claim left standing over abandoned or finished work is a lie
@@ -107,7 +107,7 @@ read it in the UI) — never guess.
 
     **The hand-back comment must say it released the claim**, on its own line
     and verbatim, because the claim comment is never deleted and would
-    otherwise keep reading as a live claim to every future `/start`:
+    otherwise keep reading as a live claim to every future `/orient`:
 
     ```text
     Claim released — <why>. (Supersedes the claim record above.)

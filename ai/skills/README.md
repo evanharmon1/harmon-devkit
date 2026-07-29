@@ -12,10 +12,11 @@ Skills are grouped into **category subdirectories**:
 ```text
 ai/skills/
 ├── universal/   # every repo gets these
-│   ├── start/SKILL.md       # /start — orient + name the session
+│   ├── orient/SKILL.md      # /orient — orient + name the session
 │   ├── preflight/SKILL.md   # /preflight — sanity-check + claim the issue
+│   ├── implement/SKILL.md   # /implement — claimed issue → open PR via the dev loop
 │   ├── shepherd/SKILL.md    # /shepherd — watch an open PR's CI/reviews to green
-│   ├── reflect/SKILL.md     # /reflect — end-of-session retro + status tables
+│   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables
 │   ├── close/SKILL.md       # /close — wrap up + rename done-<name>
 │   └── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
 ├── backend/     # server / data / Convex
@@ -26,7 +27,7 @@ ai/skills/
     └── standardize-repo/SKILL.md
 ```
 
-`universal/` ships the dev-workflow session suite — five user-invoked slash
+`universal/` ships the dev-workflow session suite — six user-invoked slash
 commands (`disable-model-invocation: true`) covering the phases of a working
 session, from naming it to shepherding its PR to green — plus `track-work`,
 which is deliberately **not** slash-only. Tracking

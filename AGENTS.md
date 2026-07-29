@@ -41,8 +41,8 @@ One of five repos in **harmon-platform** (Evan's developer & DevOps platform + h
   is the populated one (Agent Skills convention — a `SKILL.md` with
   `name`/`description` frontmatter); the standouts are `repo/standardize-repo`
   (applies harmon-init's conventions to a repo), the `design/` suite, and the
-  `universal/` dev-workflow session suite (`/start`, `/preflight`,
-  `/shepherd`, `/reflect`, `/close`).
+  `universal/` dev-workflow session suite (`/orient`, `/preflight`,
+  `/implement`, `/shepherd`, `/retro`, `/close`).
 - `snippets/` — small reusable code snippets (placeholder).
 - `docs/` — project docs (see [docs/README.md](docs/README.md)); the
   new-project [checklist](docs/CHECKLIST.md) lives here.
