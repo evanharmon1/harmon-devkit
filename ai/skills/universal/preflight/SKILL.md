@@ -216,8 +216,8 @@ actually added — all four markers, `Agent` included.
   Claiming — starting implementation on branch <branch> (session <name>).
 
   Claim record (for `/close` — undo only what this claim added):
-  - prior board status: <prior status, or "unknown">
-  - prior `Agent` value: <value, or "none">
+  - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
+  - prior `Agent` value: <value | "none" | "unknown">
   - assignee added by this claim: <yes|no, it was already assigned to me>
   - `agent:` label added by this claim: <yes|no|n/a, repo has no such label>
   - `Agent` field set by this claim: <yes|no, it already read Claude Code>
@@ -227,9 +227,14 @@ actually added — all four markers, `Agent` included.
   ```
 
   The comment is the durable record — it survives compaction, a lost session,
-  and a different agent doing the hand-back. If `--show` printed no `Status=`
-  line, or failed, write "unknown" rather than inventing a value; `/close` then
-  asks instead of guessing.
+  and a different agent doing the hand-back.
+
+  **"Unset" and "unknown" are different answers.** `--show` exiting 0 with no
+  `Status=` line is a successful read of a card whose `Status` is genuinely
+  empty — a real, restorable state. Only a *failed* call (exit 2) is unknown.
+  Record `none` for the first and `unknown` for the second: `/close` restores
+  an unset field by clearing it (manual, like `Agent` — `gh project item-edit
+  --clear`), and only has to ask the user in the second case.
 
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):

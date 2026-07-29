@@ -116,7 +116,10 @@ read it in the UI) — never guess.
     later decision is invisible unless you look. What you may restore depends
     on *who* last wrote the value:
 
-    - `In Progress` — this claim wrote it. Restore.
+    - `In Progress` — this claim wrote it. Restore. Where the record says the
+      prior status was `none`, restoring means *clearing* the field, not
+      picking a value: manual, like `Agent` (`gh project item-edit --clear`).
+      Only `unknown` — a read that actually failed — needs the user.
     - `Verifying`, `In Review`, `Ready to Merge` — `/shepherd` wrote these for
       a PR. If that PR is now closed unmerged or abandoned, they are this
       lifecycle's own leftovers and no work is in flight: restore. Refusing

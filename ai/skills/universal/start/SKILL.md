@@ -42,7 +42,17 @@ that made the claim:
 ```sh
 gh issue list --repo <owner/repo> --assignee @me --state all --limit 200 \
   --json number,title,state,labels,url
+# ...and by marker, because a claim can outlive its assignee:
+gh issue list --repo <owner/repo> --label agent:claude-code --state all --limit 200 \
+  --json number,title,state,assignees,url
 ```
+
+**Query both, and union the results.** `/close` runs its cleanup as separate
+commands on purpose — a combined `gh issue edit` fails wholesale when the repo
+lacks the label — so a partial cleanup that removes the assignee and then fails
+on the label, `Agent`, or `Status` is an expected outcome. An assignee-only
+query can never see exactly that leftover, which is the case this sweep is
+supposed to recover.
 
 `--state all`, not `open`: the motivating case is a *closing* PR merged after
 the session ended, which auto-closes the issue — so `--state open` filters out
