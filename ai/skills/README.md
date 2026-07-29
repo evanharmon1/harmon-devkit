@@ -14,7 +14,7 @@ ai/skills/
 ├── universal/   # every repo gets these
 │   ├── orient/SKILL.md      # /orient — orient + name the session
 │   ├── preflight/SKILL.md   # /preflight — sanity-check + claim the issue
-│   ├── implement/SKILL.md   # /implement — claimed issue → open PR via the dev loop
+│   ├── implement/SKILL.md   # /implement — claimed issue → green PR via the dev loop
 │   ├── shepherd/SKILL.md    # /shepherd — watch an open PR's CI/reviews to green
 │   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables
 │   ├── close/SKILL.md       # /close — wrap up + rename done-<name>
