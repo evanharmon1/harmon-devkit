@@ -40,8 +40,11 @@ skill at authoring time and by the **tracking guard**
   `squash_merge_commit_message` is `COMMIT_MESSAGES`, so commit messages become
   the squash body — plus they land verbatim under `rebase`/`merge`. The guard
   checks all three.
-- **An issue with unticked items must not be auto-closed.** Tick the ones the PR
-  genuinely satisfies, or use `Refs`. Editing the title or body re-runs the guard;
+- **An issue with unticked items must not be auto-closed.** Tick each criterion
+  as you verify it *during* implementation (`assets/tick-criteria.sh`), not when
+  writing the PR body — a PR that resolves its issue should reach `gh pr create`
+  already tick-complete, leaving `Refs` for genuinely partial work. Editing the
+  title or body re-runs the guard;
   ticking the issue's boxes does not (it watches pull-request events), so that
   path needs a manual re-run. Never bypass it.
 - **The guard is advisory, not blocking.** The ruleset requires only `verify` and

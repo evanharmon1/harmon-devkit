@@ -12,6 +12,7 @@ cd "$(dirname "$0")/.."
 
 closing="./ai/skills/universal/track-work/assets/check-closing-keywords.sh"
 rot="./ai/skills/universal/track-work/assets/check-issue-rot.sh"
+tick="$PWD/ai/skills/universal/track-work/assets/tick-criteria.sh"
 status_sh="./ai/skills/universal/track-work/assets/set-issue-status.sh"
 repo="evanharmon1/harmon-devkit"
 
@@ -416,6 +417,785 @@ _rc=0
 _rc=0
 printf 'x' | "$closing" --repo >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "--repo without a value should exit 2 (got $_rc)"
+
+# --- tick-criteria.sh -------------------------------------------------------
+#
+# The guarantee under test is narrowness: this is the one write the skill
+# pre-approves, so every path that could turn a tick into an arbitrary body
+# rewrite has to refuse instead. Fixtures double as the write destination when
+# $ISSUE_BODY_DIR is set, so the round trip stays offline.
+
+ticks="$fixtures/ticks"
+mkdir -p "$ticks"
+
+# write_issue NUM BODY — (re)create a tick fixture.
+write_issue() {
+    printf '%s' "$2" >"$ticks/${repo//\//_}__$1.md"
+}
+
+# issue_is NUM EXPECTED — is the fixture exactly EXPECTED? Both sides go through
+# command substitution so a trailing newline cannot decide a test.
+issue_is() {
+    [ "$(cat "$ticks/${repo//\//_}__$1.md")" = "$(printf '%s' "$2")" ]
+}
+
+# run_tick NUM ARGS... -> echoes the exit code.
+run_tick() {
+    _rc=0
+    _num="$1"
+    shift
+    env ISSUE_BODY_DIR="$ticks" GH_REPO="" \
+        "$tick" --repo "$repo" --issue "$_num" "$@" >/dev/null 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+body_three='## Acceptance
+
+- [ ] first criterion
+- [ ] second criterion
+- [x] already done
+'
+
+echo "==> a matched criterion is ticked and nothing else moves"
+write_issue 20 "$body_three"
+[ "$(run_tick 20 --match 'second')" = 0 ] || fail "a unique --match should tick"
+issue_is 20 '## Acceptance
+
+- [ ] first criterion
+- [x] second criterion
+- [x] already done
+' || fail "only the matched criterion should have changed"
+
+echo "==> --index counts unticked items, not body lines"
+write_issue 21 "$body_three"
+[ "$(run_tick 21 --index 2)" = 0 ] || fail "--index 2 should tick the second unticked item"
+issue_is 21 '## Acceptance
+
+- [ ] first criterion
+- [x] second criterion
+- [x] already done
+' || fail "--index should address unticked items in order"
+
+echo "==> several selectors tick several criteria in one write"
+write_issue 22 "$body_three"
+[ "$(run_tick 22 --index 1 --match 'second')" = 0 ] || fail "two selectors should both apply"
+issue_is 22 '## Acceptance
+
+- [x] first criterion
+- [x] second criterion
+- [x] already done
+' || fail "both selected criteria should be ticked"
+
+echo "==> an ambiguous selector refuses rather than guessing"
+write_issue 23 "$body_three"
+[ "$(run_tick 23 --match 'criterion')" = 1 ] || fail "a selector matching 2 items should exit 1"
+issue_is 23 "$body_three" || fail "an ambiguous selector must not write"
+
+echo "==> a selector matching nothing refuses instead of no-opping"
+write_issue 24 "$body_three"
+[ "$(run_tick 24 --match 'no such text')" = 1 ] || fail "an unmatched selector should exit 1"
+issue_is 24 "$body_three" || fail "an unmatched selector must not write"
+
+echo "==> an already-ticked criterion is not a match"
+write_issue 25 "$body_three"
+[ "$(run_tick 25 --match 'already done')" = 1 ] || fail "a ticked item should not be selectable"
+issue_is 25 "$body_three" || fail "a ticked selector must not write"
+
+echo "==> an issue with nothing left to tick exits 1"
+write_issue 26 '- [x] all done
+'
+[ "$(run_tick 26 --index 1)" = 1 ] || fail "a fully ticked issue should exit 1"
+
+echo "==> --dry-run writes nothing"
+write_issue 27 "$body_three"
+[ "$(run_tick 27 --match 'first' --dry-run)" = 0 ] || fail "--dry-run should succeed"
+issue_is 27 "$body_three" || fail "--dry-run must leave the body untouched"
+
+echo "==> the alternate checkbox spellings are tickable"
+write_issue 28 '> - [ ] quoted criterion
+1. [ ] ordered criterion
+*  [ ] loose marker
+'
+[ "$(run_tick 28 --index 1 --index 2 --index 3)" = 0 ] || fail "GFM spellings should tick"
+issue_is 28 '> - [x] quoted criterion
+1. [x] ordered criterion
+*  [x] loose marker
+' || fail "every GFM checkbox spelling should be ticked in place"
+
+echo "==> a literal [ ] inside the criterion text is left alone"
+write_issue 29 '- [ ] the parser accepts [ ] as input
+'
+[ "$(run_tick 29 --index 1)" = 0 ] || fail "should tick a criterion containing a bare box"
+issue_is 29 '- [x] the parser accepts [ ] as input
+' || fail "only the leading checkbox should flip"
+
+# The live path, with `gh` stubbed on PATH: $ticks is deliberately unset here so
+# the script takes its real read-modify-write branch. The stub serves the body
+# from $STUB_BODY_1 on the first `issue view` and $STUB_BODY_2 on the second,
+# which is what lets the race between the final read and the write be tested at
+# all — and records any `issue edit` body at $STUB_EDIT.
+# Its own directory: `$tmp/bin` already holds the closing-keyword stub, and two
+# suites writing a `gh` into one directory means whichever ran last decides what
+# the other sees.
+stub_bin="$tmp/tickbin"
+mkdir -p "$stub_bin"
+cat >"$stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[ -n "${STUB_LOG:-}" ] && printf '%s %s\n' "${1:-}" "${2:-}" >>"$STUB_LOG"
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "user" ]; then
+    [ -n "${STUB_FAIL_META:-}" ] && exit 1
+    printf '%s' "${STUB_LOGIN:-tester}"
+    exit 0
+fi
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json state'; then
+    printf '%s' "${STUB_STATE_NAME:-OPEN}"
+    exit 0
+fi
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json assignees'; then
+    printf '%s' "${STUB_ASSIGNEES-tester}"
+    exit 0
+fi
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
+    # Once an edit has been accepted, that is the server's state — which is what
+    # makes "the edit applied but the response was lost" testable.
+    if [ -f "${STUB_STATE:-/nonexistent}" ]; then cat "$STUB_STATE"; exit 0; fi
+    n=0
+    [ -f "$STUB_COUNT" ] && n="$(cat "$STUB_COUNT")"
+    n=$((n + 1))
+    printf '%s' "$n" >"$STUB_COUNT"
+    if [ "$n" -eq 1 ]; then cat "$STUB_BODY_1"; else cat "${STUB_BODY_2:-$STUB_BODY_1}"; fi
+    exit 0
+fi
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "edit" ]; then
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--body-file" ]; then
+            cp "$2" "$STUB_EDIT"
+            [ -n "${STUB_STATE:-}" ] && cp "$2" "$STUB_STATE"
+        fi
+        shift
+    done
+    # STUB_EDIT_LOST: the edit applied, then the response was lost.
+    [ -n "${STUB_EDIT_LOST:-}" ] && exit 1
+    exit 0
+fi
+exit 1
+STUB
+chmod +x "$stub_bin/gh"
+
+# run_tick_live ARGS... -> echoes the exit code, with the stub on PATH.
+run_tick_live() {
+    _rc=0
+    env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+        STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+        STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" \
+        "$tick" --repo "$repo" --issue 30 "$@" >/dev/null 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+echo "==> the live path sends the ticked body to gh issue edit"
+printf '%s' "$body_three" >"$tmp/b1"
+printf '%s' "$body_three" >"$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+[ "$(run_tick_live --match 'first')" = 0 ] || fail "the live path should tick"
+[ "$(cat "$tmp/edited")" = "$(printf '%s' '## Acceptance
+
+- [x] first criterion
+- [ ] second criterion
+- [x] already done
+')" ] || fail "gh issue edit should receive exactly the ticked body"
+
+echo "==> a body that moves between the final read and the write is refused"
+printf '%s' "$body_three" >"$tmp/b1"
+printf '%s' '## Acceptance
+
+- [ ] first criterion
+- [ ] second criterion, reworded by someone else
+- [x] already done
+' >"$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+[ "$(run_tick_live --match 'first')" = 1 ] || fail "a body that changed under us should exit 1"
+[ ! -f "$tmp/edited" ] || fail "a changed body must not be overwritten"
+
+echo "==> the body is written back byte for byte, with no newline added"
+# `gh issue view --jq` appends a newline the body does not have; read that way
+# and written back, every tick would grow the body by a blank line.
+printf '%s' '- [ ] no trailing newline here' >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+[ "$(run_tick_live --index 1)" = 0 ] || fail "should tick a body with no trailing newline"
+printf '%s' '- [x] no trailing newline here' >"$tmp/expected"
+cmp -s "$tmp/edited" "$tmp/expected" || fail "the written body must differ only by the marker"
+
+echo "==> an edit that applied but reported failure is recognised, not retried"
+printf '%s' "$body_three" >"$tmp/b1"
+printf '%s' "$body_three" >"$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_EDIT_LOST=1 \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "a lost response over an applied edit should succeed (got $_rc)"
+
+echo "==> an unreadable issue on the live path exits 2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/does-not-exist" \
+    STUB_EDIT="$tmp/edited" \
+    "$tick" --repo "$repo" --issue 30 --index 1 >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "an unreadable issue should exit 2 (got $_rc)"
+
+echo "==> a tick is refused on an issue this account has not claimed"
+# The allowlist cannot constrain arguments, so the claim is what scopes the
+# pre-approved write to work a human actually authorised.
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_ASSIGNEES="someone-else" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "an unclaimed issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "an unclaimed issue must not be written to"
+
+echo "==> an issue claimed alongside others is still tickable"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_ASSIGNEES="someone-else tester" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "a co-assigned issue should tick (got $_rc)"
+
+echo "==> a closed issue is not tickable"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a closed issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "a closed issue must not be written to"
+
+echo "==> a multiline selector value cannot smuggle in a second selector"
+write_issue 36 "$body_three"
+[ "$(run_tick 36 --match "$(printf 'first\nindex:2')")" = 2 ] || fail "a multiline --match should exit 2"
+issue_is 36 "$body_three" || fail "a multiline --match must not write"
+
+echo "==> a blockquoted fence inside a fenced example does not close it"
+write_issue 37 '````
+> ```
+> - [ ] quoted example inside an outer fence
+> ```
+````
+
+- [ ] the real criterion
+'
+[ "$(run_tick 37 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 37 '````
+> ```
+> - [ ] quoted example inside an outer fence
+> ```
+````
+
+- [x] the real criterion
+' || fail "an inner quoted fence must not close the outer one"
+
+echo "==> a sibling list-item fence both ends the previous one and opens its own"
+write_issue 61 '- ```text
+  content
+- ```text
+  - [ ] example inside the sibling fence
+  ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 61 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 61 '- ```text
+  content
+- ```text
+  - [ ] example inside the sibling fence
+  ```
+
+- [x] the real criterion
+' || fail "the boundary line must be reconsidered as an opener"
+
+echo "==> a marker that cannot interrupt a paragraph keeps paragraph state"
+write_issue 62 'Some ordinary paragraph text.
+2. prose that cannot interrupt
+3. [ ] example prose
+
+- [ ] the real criterion
+'
+[ "$(run_tick 62 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 62 'Some ordinary paragraph text.
+2. prose that cannot interrupt
+3. [ ] example prose
+
+- [x] the real criterion
+' || fail "an ordered-looking line must not fabricate list context"
+
+echo "==> a tabbed list prefix is measured in rendered columns"
+printf -- '-\t```text\n\t- [ ] first example\n  ```\n- [ ] example in the outer fence\n  ```\n\n- [ ] the real criterion\n' >"$ticks/${repo//\//_}__63.md"
+[ "$(run_tick 63 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+[ "$(cat "$ticks/${repo//\//_}__63.md" | tail -1)" = '- [x] the real criterion' ] || fail "a tab must advance to the next four-column stop"
+
+echo "==> task text in script, style and textarea blocks is not a criterion"
+for raw in script style textarea; do
+    printf '<%s>\n- [ ] example in raw html\n</%s>\n\n- [ ] the real criterion\n' "$raw" "$raw" >"$ticks/${repo//\//_}__64.md"
+    [ "$(run_tick 64 --index 1)" = 0 ] || fail "--index 1 should address the real criterion (<$raw>)"
+    [ "$(cat "$ticks/${repo//\//_}__64.md" | tail -1)" = '- [x] the real criterion' ] || fail "a checkbox inside <$raw> must be left alone"
+done
+
+echo "==> an ordered marker other than 1 cannot interrupt a paragraph"
+write_issue 58 'Some ordinary paragraph text.
+2. [ ] example prose, still in the paragraph
+
+- [ ] the real criterion
+'
+[ "$(run_tick 58 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 58 'Some ordinary paragraph text.
+2. [ ] example prose, still in the paragraph
+
+- [x] the real criterion
+' || fail "an ordered marker under prose must not be tickable"
+
+echo "==> an ordered marker continuing a list is still a criterion"
+write_issue 59 '1. [ ] first
+2. [ ] second continues the list
+'
+[ "$(run_tick 59 --index 2)" = 0 ] || fail "2. should tick inside a list"
+issue_is 59 '1. [ ] first
+2. [x] second continues the list
+' || fail "an ordered item in list context should tick"
+
+echo "==> fence indentation after a quote marker still opens the fence"
+write_issue 60 '- >   ```text
+  >   - [ ] example in an indented quoted fence
+  >   ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 60 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 60 '- >   ```text
+  >   - [ ] example in an indented quoted fence
+  >   ```
+
+- [x] the real criterion
+' || fail "permitted fence indentation after a quote must still open the fence"
+
+echo "==> an indented opener still caps its closer at three spaces"
+write_issue 54 ' ```
+    ```
+- [ ] example after the false closer
+ ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 54 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 54 ' ```
+    ```
+- [ ] example after the false closer
+ ```
+
+- [x] the real criterion
+' || fail "a four-space delimiter is content, not a closer"
+
+echo "==> mixed list and blockquote containers hide a fence"
+write_issue 55 '- > ```text
+  > - [ ] example in a quoted list fence
+  > ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 55 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 55 '- > ```text
+  > - [ ] example in a quoted list fence
+  > ```
+
+- [x] the real criterion
+' || fail "a fence inside a quote inside a list item must hide its contents"
+
+echo "==> a marker padded past four spaces is code, not a criterion"
+write_issue 56 '-     [ ] example indented into a code block
+
+- [ ] the real criterion
+'
+[ "$(run_tick 56 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 56 '-     [ ] example indented into a code block
+
+- [x] the real criterion
+' || fail "five spaces of padding must not be tickable"
+
+echo "==> four spaces of marker padding is still a criterion"
+write_issue 57 '-    [ ] four spaces is still a criterion
+'
+[ "$(run_tick 57 --index 1)" = 0 ] || fail "four spaces is within the limit"
+issue_is 57 '-    [x] four spaces is still a criterion
+' || fail "a four-space padded item should tick"
+
+echo "==> a fence under nested list markers hides its contents"
+write_issue 51 '- - ```text
+    - [ ] example in a nested list fence
+    ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 51 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 51 '- - ```text
+    - [ ] example in a nested list fence
+    ```
+
+- [x] the real criterion
+' || fail "nested list markers must not hide the fence"
+
+echo "==> an ordered marker over nine digits is prose, not a criterion"
+write_issue 52 '1234567890. [ ] example prose, not a list item
+
+- [ ] the real criterion
+'
+[ "$(run_tick 52 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 52 '1234567890. [ ] example prose, not a list item
+
+- [x] the real criterion
+' || fail "a ten-digit ordered marker must not be tickable"
+
+echo "==> a nine-digit ordered marker is still a criterion"
+write_issue 53 '123456789. [ ] a real ordered criterion
+'
+[ "$(run_tick 53 --index 1)" = 0 ] || fail "nine digits is within the GFM limit"
+issue_is 53 '123456789. [x] a real ordered criterion
+' || fail "a nine-digit ordered item should tick"
+
+echo "==> leaving a blockquote ends the fence it opened"
+write_issue 50 '> ```
+- [ ] the real criterion
+> ```
+> - [ ] example inside the new quoted fence
+'
+[ "$(run_tick 50 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 50 '> ```
+- [x] the real criterion
+> ```
+> - [ ] example inside the new quoted fence
+' || fail "an unquoted line must end a fence opened inside a blockquote"
+
+echo "==> a backtick line whose info string holds backticks is not an opener"
+write_issue 47 '``` `not an opener`
+```
+- [ ] example inside the real fence
+```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 47 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 47 '``` `not an opener`
+```
+- [ ] example inside the real fence
+```
+
+- [x] the real criterion
+' || fail "a non-opener must not shift the fence boundaries"
+
+echo "==> leaving a list container ends the fence it opened"
+write_issue 48 '- ```text
+  - [ ] indented example
+```
+- [ ] example in the new outer fence
+```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 48 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 48 '- ```text
+  - [ ] indented example
+```
+- [ ] example in the new outer fence
+```
+
+- [x] the real criterion
+' || fail "an unindented delimiter opens a new fence, it is not just a closer"
+
+echo "==> a closing-tag-shaped word does not end a <pre> block"
+write_issue 49 '<pre>
+sample text </prevent> more
+- [ ] example inside pre
+</pre>
+
+- [ ] the real criterion
+'
+[ "$(run_tick 49 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 49 '<pre>
+sample text </prevent> more
+- [ ] example inside pre
+</pre>
+
+- [x] the real criterion
+' || fail "</prevent> must not end preformatted mode"
+
+echo "==> a fence opened as a list item hides its contents"
+write_issue 45 '- ```text
+  - [ ] example inside a list-item fence
+  ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 45 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 45 '- ```text
+  - [ ] example inside a list-item fence
+  ```
+
+- [x] the real criterion
+' || fail "a checkbox inside a list-item fence must be left alone"
+
+echo "==> a list marker on a later line does not close a fence"
+# A marker starts a new item; only an opener may carry one. Failing to close is
+# the safe direction — the command refuses rather than ticking a code sample.
+write_issue 46 '```
+- ``` still inside
+- [ ] example
+```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 46 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 46 '```
+- ``` still inside
+- [ ] example
+```
+
+- [x] the real criterion
+' || fail "only the real criterion should tick"
+
+echo "==> a task item inside raw <pre> HTML is not a criterion"
+write_issue 44 '<pre>
+- [ ] example rendered verbatim
+</pre>
+
+- [ ] the real criterion
+'
+[ "$(run_tick 44 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 44 '<pre>
+- [ ] example rendered verbatim
+</pre>
+
+- [x] the real criterion
+' || fail "a task item inside <pre> must be left alone"
+
+echo "==> the closing-keyword guard points at the narrowed ticker"
+_out="$(printf '%s' 'Closes #5' |
+    env ISSUE_BODY_DIR="$fixtures" GH_REPO="" "$closing" --repo "$repo" 2>&1 || true)"
+case "$_out" in
+*/assets/tick-criteria.sh*) ;;
+*) fail "the guard should print a runnable path, not a bare command name" ;;
+esac
+case "$_out" in
+*"gh issue edit"*) fail "the guard should no longer recommend gh issue edit" ;;
+esac
+
+echo "==> the body comparison is the last thing before the write"
+# The claim re-check makes three API calls; between the comparison and the edit
+# they would widen the window the comparison exists to keep small.
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state" "$tmp/log"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_LOG="$tmp/log" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "the ordering probe should tick (got $_rc)"
+[ "$(grep -c . "$tmp/log")" -gt 2 ] || fail "the probe should have logged calls"
+[ "$(tail -2 "$tmp/log" | head -1)" = "issue view" ] || fail "the body read must be second to last"
+[ "$(tail -1 "$tmp/log")" = "issue edit" ] || fail "the edit must immediately follow the body read"
+
+echo "==> a fence delimiter indented four spaces does not close a block"
+write_issue 43 '```
+    ```
+- [ ] still inside the code block
+```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 43 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 43 '```
+    ```
+- [ ] still inside the code block
+```
+
+- [x] the real criterion
+' || fail "an over-indented delimiter must not close the fence"
+
+echo "==> a checklist hidden in an HTML comment is not a criterion"
+write_issue 41 '<!--
+- [ ] example from the issue template
+-->
+
+- [ ] the real criterion
+'
+[ "$(run_tick 41 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 41 '<!--
+- [ ] example from the issue template
+-->
+
+- [x] the real criterion
+' || fail "a commented-out example must be left alone"
+
+echo "==> a single-line HTML comment does not hide what follows it"
+write_issue 42 '<!-- guidance --> text
+
+- [ ] the real criterion
+'
+[ "$(run_tick 42 --index 1)" = 0 ] || fail "a closed comment must not swallow the rest"
+issue_is 42 '<!-- guidance --> text
+
+- [x] the real criterion
+' || fail "only the real criterion should tick"
+
+echo "==> text GFM does not render as a task item is not a criterion"
+# `- [ ]example` has no delimiter after the box, so GitHub renders it as prose.
+write_issue 39 '- [ ]example prose, not a checkbox
+
+- [ ] the real criterion
+'
+[ "$(run_tick 39 --match 'example')" = 1 ] || fail "un-rendered task text should not be selectable"
+[ "$(run_tick 39 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 39 '- [ ]example prose, not a checkbox
+
+- [x] the real criterion
+' || fail "prose that looks like a task item must be left alone"
+
+echo "==> an empty criterion at end of line is still a criterion"
+write_issue 40 '- [ ]
+'
+[ "$(run_tick 40 --index 1)" = 0 ] || fail "a bare box at end of line should tick"
+
+echo "==> a failed metadata lookup is an environment error, not 'unassigned'"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_FAIL_META=1 \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "a failed metadata lookup should exit 2 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "a failed metadata lookup must not write"
+
+echo "==> a deeper fence inside a quoted fenced block does not close it"
+write_issue 38 '> ```
+> > ```
+> > - [ ] example nested deeper
+> > ```
+> ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 38 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 38 '> ```
+> > ```
+> > - [ ] example nested deeper
+> > ```
+> ```
+
+- [x] the real criterion
+' || fail "a deeper fence must not close a shallower one"
+
+echo "==> a checkbox inside a blockquoted fence is not a criterion"
+write_issue 33 '> ```
+> - [ ] quoted example
+> ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 33 --index 1)" = 0 ] || fail "--index 1 should skip the quoted example"
+issue_is 33 '> ```
+> - [ ] quoted example
+> ```
+
+- [x] the real criterion
+' || fail "a checkbox inside a blockquoted fence must be left alone"
+
+echo "==> --match resolves on criterion text, never the line number"
+write_issue 34 '
+
+
+
+
+
+
+
+
+- [ ] alpha
+- [ ] beta
+'
+[ "$(run_tick 34 --match '9')" = 1 ] || fail "a line number must not resolve a --match"
+
+echo "==> an empty --match is a usage error, not a blind tick"
+write_issue 35 '- [ ] the only criterion
+'
+[ "$(run_tick 35 --match '')" = 2 ] || fail "an empty --match should exit 2"
+issue_is 35 '- [ ] the only criterion
+' || fail "an empty --match must not write"
+
+echo "==> a checkbox inside a fenced code block is not a criterion"
+write_issue 31 '## Verify
+
+```sh
+grep -n "^- \[ \] example" file.md
+```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 31 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 31 '## Verify
+
+```sh
+grep -n "^- \[ \] example" file.md
+```
+
+- [x] the real criterion
+' || fail "the fenced example must be left alone"
+
+echo "==> a longer or tilde fence is tracked too"
+write_issue 32 '~~~
+- [ ] tilde-fenced
+~~~
+
+````
+- [ ] backtick-fenced
+````
+
+- [ ] the real criterion
+'
+[ "$(run_tick 32 --index 1)" = 0 ] || fail "only one item should be selectable"
+issue_is 32 '~~~
+- [ ] tilde-fenced
+~~~
+
+````
+- [ ] backtick-fenced
+````
+
+- [x] the real criterion
+' || fail "checkboxes in either fence style must be left alone"
+
+echo "==> usage errors exit 2"
+[ "$(run_tick 20)" = 2 ] || fail "no selector should exit 2"
+[ "$(run_tick 20 --index 0)" = 2 ] || fail "--index 0 should exit 2"
+[ "$(run_tick 20 --index abc)" = 2 ] || fail "a non-numeric --index should exit 2"
+_rc=0
+env ISSUE_BODY_DIR="$ticks" GH_REPO="" "$tick" --repo "$repo" --issue x --index 1 >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "a non-numeric issue number should exit 2 (got $_rc)"
+_rc=0
+env ISSUE_BODY_DIR="$ticks" GH_REPO="" "$tick" --issue 20 --index 1 >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "a missing --repo should exit 2 (got $_rc)"
+[ "$(run_tick 999 --index 1)" = 2 ] || fail "an unreadable issue should exit 2"
 
 # --- set-issue-status.sh -----------------------------------------------------
 # Fully offline: a stubbed `gh` answers the two GraphQL reads and records the
