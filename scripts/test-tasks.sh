@@ -267,4 +267,14 @@ for category in SSH_KEY SSHKEY; do
     fi
 done
 
+if [ -x ./scripts/test-terraform-provider-locks.sh ]; then
+    echo "==> Terraform provider locks cover developer and CI platforms"
+    ./scripts/test-terraform-provider-locks.sh
+fi
+
+if [ -x ./scripts/test-terraform-changed.sh ]; then
+    echo "==> Terraform change detection drives the required terraform-verify check"
+    ./scripts/test-terraform-changed.sh
+fi
+
 echo "==> task targets OK (compile + bootstrap idempotency + path-safe formatting)"

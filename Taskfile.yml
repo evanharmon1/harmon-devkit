@@ -42,8 +42,10 @@ tasks:
   ci:
     # Full local mirror of the CI pipeline — run before (or instead of) opening
     # a PR to catch everything CI would, on demand, without waiting on a PR run.
-    # Builds on `verify` and adds the heavier security checks. The daemon-free
-    # devcontainer permission assertion remains in `verify` for this repo.
+    # Builds on `verify` and adds every OTHER check the build workflow runs, so
+    # the two cannot drift apart. The daemon-free devcontainer permission
+    # assertion is already inside `verify` for this repo, so it is covered here
+    # transitively rather than listed again.
     desc: Full CI mirror (verify → security)
     cmds:
       - task: verify
@@ -51,9 +53,10 @@ tasks:
 
   verify:
     # The definition-of-done gate — everything that must pass before a change
-    # is done. For the fast inner loop use `check`; heavier security checks stay
-    # in `ci`. The devcontainer permission assertion is daemon-free and
-    # subsecond, so it remains in this gate.
+    # is done. Foreman v2 calls this the "check + build + test" tier; the desc
+    # below lists this repo's exact steps. For the fast inner loop use `check`;
+    # heavier security checks stay in `ci`. The devcontainer permission
+    # assertion is daemon-free and subsecond, so it remains in this gate.
     desc: Definition-of-done gate (check → validate → guards → devcontainer → test)
     cmds:
       - task: check

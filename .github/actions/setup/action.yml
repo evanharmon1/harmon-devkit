@@ -23,7 +23,7 @@ runs:
   steps:
     - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
-        # renovate: datasource=node-version
+        # renovate: datasource=node-version depName=node
         node-version: "24"
     - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
       with:
@@ -35,10 +35,15 @@ runs:
         # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
         version: 3.51.1
         repo-token: ${{ github.token }}
-    - name: Install lint tools (shellcheck, shfmt, actionlint, yamllint)
+    - name: Install lint tools (file, shellcheck, shfmt, actionlint, yamllint)
       if: inputs.lint-tools == 'true'
       shell: bash
       run: |
+        # `file` backs lint-hygiene.sh's binary detection, which fails closed
+        # rather than silently scanning binaries as text. GitHub-hosted images
+        # ship it, but a self-hosted CI_RUNS_ON runner may not. The helper
+        # probes for a package manager rather than assuming apt-get.
+        ./scripts/ensure-file.sh
         # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
         SHELLCHECK_VERSION=0.10.0
         curl -fsSL --retry 3 -o /tmp/shellcheck.tar.xz \

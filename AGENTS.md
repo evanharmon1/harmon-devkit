@@ -80,9 +80,13 @@ task review      # Codex verification checkpoint before task ci
 AI agents can run it on every change without getting bogged down. `verify` is
 the definition-of-done gate — check + validate + test plus the quick
 Taskfile/hook guards (the Foreman v2 vocabulary: verify = check + build +
-test). `ci` is the full pipeline — everything CI runs (`verify` +
-`security` + the devcontainer permission assert) — so you can reproduce a CI
-run locally on demand instead of waiting on a PR.
+test). `ci` mirrors the CI pipeline locally (`verify`, `security`, the devcontainer permission assert) — so you can
+reproduce a CI run on demand instead of waiting on a PR. Keep it that way: a
+check the build workflow **gates on** and that can run locally belongs in `ci`
+too, or the "mirror" quietly stops being one. The one carve-out: a check that
+needs **CI-only infrastructure** (a browser install, a service container,
+credentials that only exist on a runner) stays out of `ci` and is documented as
+an exception here rather than being faked locally.
 
 ## Dev Loop
 
@@ -99,11 +103,22 @@ something to ask permission for.
 - **`task challenge`** — adversarial second-model review. Adjudicate per
   "Second-Model Review" below, fix confirmed findings, re-run `task verify`,
   then **re-run `task challenge`**. The stage passes only when a re-run comes
-  back with **no material findings** — fixing the findings is not the exit
-  condition, a clean pass is. Max **5** challenge → fix → re-challenge
-  rounds; if findings persist, stop and escalate to the maintainer.
-- **`task review`** — verification-checkpoint review; same adjudication and
-  same clean-pass exit condition, with its own max **4** rounds.
+  back with **no confirmed P0 or P1 findings** — fixing the findings is not
+  the exit condition, a clean pass is. **P2s do not gate this stage**: carry
+  them to the PR (see "Deferring P2s" below). Max **6** challenge → fix →
+  re-challenge
+  rounds; if P0/P1 findings persist, stop and escalate to the maintainer.
+  A `task challenge` round is long — 5–15 minutes is ordinary, past most
+  agents' tool-call timeouts — so **run it in the background and poll**
+  instead of blocking one call on it. Growing output means running, not hung;
+  relaunching a live run only doubles the cost. Commit each round's fixes
+  before re-challenging, or the re-run scopes to the fix alone instead of the
+  whole change. Details:
+  [docs/guides/codex-review.md](docs/guides/codex-review.md) ("Duration and
+  backgrounding").
+- **`task review`** — verification-checkpoint review; same adjudication, same
+  P0/P1 clean-pass exit condition, and the same background-and-poll handling,
+  with its own max **6** rounds.
 - **`task ci`** — the full CI mirror; fix anything it catches.
 - **Open the PR** — conventional commit, push the branch, `gh pr create` with
   a clear what/why/verification summary.
@@ -113,17 +128,25 @@ something to ask permission for.
   procedure, and like the rest of the session suite it is **user-invocable
   only** (`disable-model-invocation: true`), so an agent enters the stage by
   reading `.claude/skills/shepherd/SKILL.md` and following it — not by calling
-  a slash command it cannot call. Watch CI (`gh pr checks <n> --watch`) and incoming
-  bot/human reviews. When a check fails or a review lands findings, treat the
-  findings as hypotheses: verify them against the code, fix only what's
-  confirmed, explain rejections in a PR comment, push the fix commit, and
-  watch again. Shepherd-round fixes must pass `task ci` (the full local CI
-  mirror — it gates the same stages the remote pipeline judges) before each
-  push; the local challenge/review loops are not re-entered — the post-push
-  cloud/bot review is the second-model check at this stage. This cap is
-  independent of the other loop caps. If checks still fail or material
-  findings remain after 5 rounds, stop and summarize what's unresolved on the
-  PR for the maintainer.
+  a slash command it cannot call. Start by re-reading any **unsettled**
+  findings the PR description defers to this stage — they are open work, not a
+  changelog; mark each one off in the body as you settle it. Then watch CI
+  (`gh pr checks <n> --watch`) and incoming bot/human reviews. When a check
+  fails or a review lands findings, treat the findings as hypotheses: verify
+  them against the code, fix only what's confirmed, explain rejections in a PR
+  comment, push the fix commit, and watch again. **This is where
+  lower-priority findings are settled** — those the PR description defers here
+  plus anything the PR reviewers raise: fix, decline with reasoning, or file as
+  a follow-up issue, but do not leave them unaddressed. Shepherd-round fixes
+  must pass `task ci` (the full local CI mirror — it gates the same stages the
+  remote pipeline judges) before each push; the local challenge/review loops
+  are not re-entered — the post-push cloud/bot review is the second-model
+  check at this stage. This cap is independent of the other loop caps. If
+  checks still fail or findings remain after 5 rounds, stop and summarize
+  what's unresolved on the PR for the maintainer. Where the vendored
+  `/shepherd` skill states a different cap or exit condition, **this file
+  wins** — vendored skills are synced on their own release cadence and can lag
+  a policy change made here.
 - **Checks green is a non-terminal state.** Reporting "all checks pass"
   without having polled reviews and inline comments is not a handoff — it is
   the middle of the shepherd stage. Bot and human reviews land *after* checks
@@ -133,8 +156,8 @@ something to ask permission for.
   judging the PR done — `/shepherd` step 2 bounds the wait (let every check
   conclude, then give the reviewer ~10–15 minutes on the current head, and
   proceed on CI alone only if nothing lands in that window).
-- **Stop at green.** Once checks pass *and* no review findings are
-  unresolved, report that and stop — merging is always a human decision.
+- **Stop at green.** Once checks pass *and* no review findings are unresolved,
+  report that and stop — merging is always a human decision.
 
 ## Definition of Done
 
@@ -149,7 +172,7 @@ something to ask permission for.
   green with reviews unpolled is not the stopping point — then report and
   stop; merging is always a human decision.
 - **Reply to every inline PR review comment in its own thread** — bot
-  reviewers (Codex, CodeRabbit, …) and humans alike. Treat findings as
+  reviewers and humans alike. Treat findings as
   hypotheses: verify each against the code, fix what's confirmed, and post the
   rejection reasoning with evidence otherwise. Post replies with
   `gh api repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies -f body=…`
@@ -205,15 +228,85 @@ never resolves means the cloud run failed.
    appropriate.
 4. Explain why any rejected finding is incorrect or irrelevant.
 5. Re-run `task verify` (and the other relevant gates) after fixes.
-6. Finish with a concise adjudication table: finding → classification →
-   evidence → action taken.
+6. Finish with a concise adjudication table: finding → priority →
+   classification → evidence → action taken.
 
-**Loop cap and exit:** a stage exits only on a **clean re-run** (no material
-findings) — never on "findings fixed" alone — with at most **5** challenge
-iterations and **4** review iterations (challenge → fix → re-challenge, and
-likewise for review). If material disagreement persists at the cap, stop and
-surface it to the
-maintainer instead of iterating further.
+**Severity gating.** Both tasks ask Codex to label every finding `P0`
+(breaks correctness, security, or data integrity in ordinary use, or breaks
+an existing contract), `P1` (a real defect or materially wrong design
+decision with a plausible trigger), or `P2` (worth knowing, not
+merge-blocking: hardening, unlikely edge cases, maintainability, non-critical
+test gaps). The scale is defined in `scripts/codex-review.sh`, not inherited
+from the Codex CLI's own labels, so the gate keeps its meaning if Codex
+changes its output. **Only P0 and P1 gate the local loops.** Adjudicate P2s
+too — never suppress or ignore one — but carry them to the PR-shepherd stage
+rather than spending a local round on them. A P2 you judge worth fixing
+immediately may of course be fixed in place; it just does not hold the stage
+open.
+
+**Deferring P2s.** The handoff is the **PR description**: list every deferred
+P2 under a `## Deferred findings` heading as an unchecked task-list item —
+`- [ ] <file:line> — <finding>` — with enough detail to adjudicate it later.
+This is not bookkeeping: `task challenge` and `task review` run locally and
+their output is ephemeral, and the cloud reviewer reposts only high-priority
+findings, so a P2 that is not written into the PR body is simply lost.
+
+Record each one **the moment you defer it**. Challenge and review both run
+before `gh pr create`, so there is usually no PR body to write to yet: append
+it to the file
+`git rev-parse --git-path "deferred-findings/$(git branch --show-current)"`
+names (`mkdir -p` its directory first) — but only if that finding is not
+already listed. A stage exits on a *clean re-run*,
+so an unchanged P2 is reported again by design, in every remaining round and
+again by the next stage; appending blindly would hand the shepherd four copies
+of one finding to settle. Match on location plus substance, not exact
+wording — the same finding rarely comes back phrased identically. Then
+move the list into the description when you open the PR (then delete the
+file). Terminal scrollback is not a record — a context reset between
+`task challenge` and `gh pr create` would take the findings with it.
+
+**Sweep for orphans when you open the PR.** List the whole tree —
+`ls -R "$(git rev-parse --git-path deferred-findings)"` — and account for
+every file it holds, not just your branch's. Renaming a branch (`git branch
+-m`) or deleting one strands its notes under the old name, where nothing will
+ever look for them again; a rename mid-change is exactly when that happens.
+Adopt an orphan into this PR if it belongs to this work, otherwise leave it
+and say it is there. Listing costs one command; migration logic would cost a
+mechanism that then needs its own correctness argument.
+
+That path is not arbitrary. It sits in the **git directory**, so it is
+deterministic (any later session in this checkout finds it the same way, and
+`git rev-parse` resolves it correctly inside a linked worktree) and invisible
+to `git status`. It is keyed by **branch** because an ordinary clone switches
+branches in place: with one shared file, opening branch B's PR would sweep up
+branch A's findings and then delete A's only copy of them. The branch name
+becomes a *path*, verbatim and without a suffix — folding `/` to `-` would
+collide `feat/x` with `feat-x` and reintroduce exactly that loss, and adding
+an extension would make `foo` (a file) block `foo.md/bar` (needing a
+directory). Used as-is, the mapping is git's own ref namespace, and git
+already forbids one live branch from being a path prefix of another. A note in the *worktree* would be worse than none:
+`codex-review.sh` reviews the uncommitted diff whenever the tree is dirty, so
+the note would become the next bare `task challenge`'s entire scope — and the
+change it was supposed to review would get a clean pass it never earned.
+
+The shepherd stage settles every entry and **edits the PR body to tick it**
+(`- [x] … — fixed in <sha>` / `declined: <reason>` / `filed as #<n>`) in the
+same round. The checkbox is the resolution state: an entry left unchecked is
+open work, so a later round — or a different session — can tell at a glance
+what it still owes without re-adjudicating what is done. That obligation is
+stated here and in the Dev Loop above, and holds whether or not the optional
+`/shepherd` skill is installed to automate it.
+
+**Loop cap and exit:** a stage exits only on a **clean re-run** — no
+confirmed P0 or P1 findings — never on "findings fixed" alone, with at most
+**6** challenge iterations and **6** review iterations (challenge → fix →
+re-challenge, and likewise for review). If P0/P1 disagreement persists at the
+cap, stop and surface it to the maintainer instead of iterating further.
+
+One caveat on the automatic stop-gate: the codex plugin's Stop hook applies
+its **own** notion of a material finding and may BLOCK on something you have
+classified P2. Adjudicate it (fix it, or state the reasoning) — **never**
+disable the gate to get past a BLOCK.
 
 ## Conventions
 

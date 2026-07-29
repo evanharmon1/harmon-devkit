@@ -8,6 +8,8 @@ ARG TARGETARCH
 # can auto-PR new releases. See renovate.json for the regex manager config.
 # NODE_MAJOR is intentionally unmanaged — Node major bumps are deliberate.
 ARG NODE_MAJOR=24
+# renovate: datasource=github-releases depName=go-task/task extractVersion=^v?(?<version>.+)$
+ARG TASK_VERSION=3.52.0
 # renovate: datasource=github-releases depName=mvdan/sh extractVersion=^v?(?<version>.+)$
 ARG SHFMT_VERSION=3.13.1
 # renovate: datasource=github-releases depName=hadolint/hadolint extractVersion=^v?(?<version>.+)$
@@ -95,6 +97,7 @@ RUN apt-get update \
         eza \
         fd-find \
         ffmpeg \
+        file \
         fzf \
         git-crypt \
         git-delta \
@@ -186,6 +189,21 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 
 # Suppress Corepack's interactive download prompt so pnpm installs silently.
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+
+# ---------- task runner ----------
+# Pinned release rather than the go-task devcontainer Feature: with no `version`
+# option the Feature resolves "latest" through the ANONYMOUS GitHub API from
+# inside the build, and GitHub-hosted runners share egress IPs against a 60
+# req/hour/IP limit — so the required devcontainer build check 403s at random
+# (harmon-init#427). Every other release-downloaded tool here is pinned the same
+# way for the same reason.
+RUN case "${TARGETARCH}" in \
+        "amd64") export TASK_ARCH="amd64" ;; \
+        "arm64") export TASK_ARCH="arm64" ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_${TASK_ARCH}.tar.gz" \
+        | tar -xz -C /usr/local/bin task
 
 # ---------- code-quality linters ----------
 RUN case "${TARGETARCH}" in \
@@ -391,8 +409,13 @@ RUN install -d -m 0755 /home/vscode/.config/zellij \
 # Hook scripts referenced from managed-settings.json are installed alongside
 # at /etc/claude-code/hooks/ so they share the same image-baked, volume-proof
 # location. Source of truth: .devcontainer/config/claude-hooks/ (checked into git).
+#
+# statusline.sh lands here for the same reason: ~/.claude is a volume mount at
+# runtime, so a status line script shipped inside it would vanish on a volume
+# wipe. The `statusLine` key in claude-user-defaults.json points at this path.
 RUN install -d -m 0755 /etc/claude-code /etc/claude-code/hooks \
     && install -m 0644 /usr/local/share/devcontainer-config/claude-settings.json /etc/claude-code/managed-settings.json \
+    && install -m 0755 /usr/local/share/devcontainer-config/claude-statusline.sh /etc/claude-code/statusline.sh \
     && install -m 0755 /usr/local/share/devcontainer-config/claude-hooks/post-edit-format.sh             /etc/claude-code/hooks/post-edit-format.sh \
     && install -m 0755 /usr/local/share/devcontainer-config/claude-hooks/protect-files.sh               /etc/claude-code/hooks/protect-files.sh \
     && install -m 0755 /usr/local/share/devcontainer-config/claude-hooks/block-no-verify.sh             /etc/claude-code/hooks/block-no-verify.sh \

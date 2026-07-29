@@ -12,5 +12,6 @@
     "pull_requests": "write",
     "issues": "write",
     "workflows": "write",
-    "metadata": "read"  }
+    "metadata": "read"
+  }
 }

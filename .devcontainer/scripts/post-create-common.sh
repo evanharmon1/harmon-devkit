@@ -108,10 +108,11 @@ fi
 #
 #   2. ~/.claude/settings.json (user level) — seed-merged below from
 #      claude-user-defaults.json. Provides defaults the user CAN override
-#      (currently: model). Existing values in ~/.claude/settings.json always
-#      win on conflict, so /model and other in-app changes stick across
-#      post-create runs. On a fresh volume the defaults are populated; on a
-#      volume wipe + rebuild they come back automatically.
+#      (currently: model, plus the statusLine renderer baked at
+#      /etc/claude-code/statusline.sh). Existing values in ~/.claude/
+#      settings.json always win on conflict, so /model and other in-app changes
+#      stick across post-create runs. On a fresh volume the defaults are
+#      populated; on a volume wipe + rebuild they come back automatically.
 CLAUDE_DEFAULTS_SRC=/usr/local/share/devcontainer-config/claude-user-defaults.json
 CLAUDE_USER_SETTINGS="$HOME/.claude/settings.json"
 if [ -d "$HOME/.claude" ] && [ -f "$CLAUDE_DEFAULTS_SRC" ]; then

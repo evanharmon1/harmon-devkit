@@ -452,8 +452,13 @@ if [[ "${SECTION}" == "setup" ]]; then
             # PM setup surface — audit the results of the setup:github-* tasks the
             # repo actually ships (each script is the marker it opted in).
             if [ -f scripts/setup-github-labels.sh ]; then
-                (run_timeout "${NETWORK_TIMEOUT}" gh label list -R "${OWNER}/${REPO}" --json name \
-                    >"${d}/labels.json" 2>/dev/null || echo '[]' >"${d}/labels.json") &
+                # The REST endpoint with --paginate, not `gh label list`: the
+                # check below compares against the WHOLE starter set, so any
+                # fixed page cap (gh's default 30, or any --limit) can drop a
+                # real label on a label-heavy repo and report it as missing.
+                # One name per line — --paginate emits a document per page.
+                (run_timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}/labels" --paginate --jq '.[].name' \
+                    >"${d}/labels.txt" 2>/dev/null || : >"${d}/labels.txt") &
             fi
             if [ -f scripts/setup-github-issue-types.sh ]; then
                 (run_timeout "${NETWORK_TIMEOUT}" gh api "orgs/${OWNER}/issue-types" --paginate \
@@ -663,10 +668,26 @@ if [[ "${SECTION}" == "setup" ]]; then
                     checkline unknown "GitHub Project linked" "needs read:project scope"
                 fi
                 if [ -f scripts/setup-github-labels.sh ]; then
-                    if jq -e 'any(.[]?; .name == "needs-triage")' "${d}/labels.json" >/dev/null 2>&1; then
-                        checkline ok "Starter labels" "seeded"
-                    else
+                    # The expected set is read out of the setup script's own
+                    # `name|color|description` table rather than probed with one
+                    # sentinel label: a repo seeded before the set grew (a new
+                    # layer:/domain: value, say) has the sentinel and is missing
+                    # the rest, and a single probe would call that green.
+                    want_labels="$(sed -n -E 's/^([A-Za-z0-9:._-]+)\|[0-9A-Fa-f]{6}\|.*/\1/p' scripts/setup-github-labels.sh)"
+                    have_labels="$(cat "${d}/labels.txt" 2>/dev/null || true)"
+                    want_count=0
+                    missing_count=0
+                    for want in ${want_labels}; do
+                        want_count=$((want_count + 1))
+                        printf '%s\n' "${have_labels}" | grep -qxF "${want}" ||
+                            missing_count=$((missing_count + 1))
+                    done
+                    if [ -z "${have_labels}" ] || [ "${want_count}" -eq 0 ]; then
                         checkline no "Starter labels" "run task setup:github-labels"
+                    elif [ "${missing_count}" -eq 0 ]; then
+                        checkline ok "Starter labels" "all ${want_count} seeded"
+                    else
+                        checkline no "Starter labels" "${missing_count}/${want_count} missing — run task setup:github-labels"
                     fi
                 fi
                 if [ -f scripts/setup-github-issue-types.sh ]; then
@@ -680,13 +701,38 @@ if [[ "${SECTION}" == "setup" ]]; then
                     fi
                 fi
                 if [ -f scripts/setup-github-issue-fields.sh ]; then
-                    field_names="$(jq -r '(if type == "object" then (.issue_fields // []) elif type == "array" then . else [] end) | map(.name) | join(",")' "${d}/issue-fields.json" 2>/dev/null || echo "")"
-                    if [ -z "${field_names}" ]; then
+                    # One `name<TAB>data_type` per line, not a joined string:
+                    # `gh api --paginate` writes one JSON document per page, so jq
+                    # runs per page and any single-line delimiter trick breaks at a
+                    # page boundary.
+                    field_rows="$(jq -r '(if type == "object" then (.issue_fields // []) elif type == "array" then . else [] end) | .[] | "\(.name)\t\(.data_type // "")"' "${d}/issue-fields.json" 2>/dev/null || echo "")"
+                    # Every non-built-in field setup-github-issue-fields.sh creates
+                    # must be present AND of the right type: an org set up before
+                    # Domain and Layer joined the set already has Product + Agent,
+                    # and one that happens to own a text field named `Domain` can
+                    # never get the taxonomy options (GitHub cannot change a
+                    # field's data type in place). Reporting either as done would
+                    # hide exactly what the setup script warns about.
+                    missing_fields=""
+                    wrong_fields=""
+                    for want in Product:text Agent:single_select Domain:single_select Layer:single_select; do
+                        wname="${want%%:*}"
+                        wtype="${want##*:}"
+                        htype="$(printf '%s\n' "${field_rows}" | awk -F'\t' -v n="${wname}" '$1 == n { print $2; exit }')"
+                        if ! printf '%s\n' "${field_rows}" | cut -f1 | grep -qxF "${wname}"; then
+                            missing_fields="${missing_fields}${missing_fields:+, }${wname}"
+                        elif [ -n "${htype}" ] && [ "${htype}" != "${wtype}" ]; then
+                            wrong_fields="${wrong_fields}${wrong_fields:+, }${wname} is ${htype}"
+                        fi
+                    done
+                    if [ -z "${field_rows}" ]; then
                         checkline unknown "Org issue fields" "needs admin:org (public preview)"
-                    elif printf '%s' "${field_names}" | grep -q 'Agent'; then
-                        checkline ok "Org issue fields" "Product + Agent"
+                    elif [ -n "${wrong_fields}" ]; then
+                        checkline no "Org issue fields" "wrong type: ${wrong_fields} — rename/delete, then re-run task setup:github-issue-fields"
+                    elif [ -z "${missing_fields}" ]; then
+                        checkline ok "Org issue fields" "Product + Agent + Domain + Layer"
                     else
-                        checkline no "Org issue fields" "run task setup:github-issue-fields"
+                        checkline no "Org issue fields" "missing ${missing_fields} — run task setup:github-issue-fields"
                     fi
                 fi
                 if [ "${has_release_wf}" = 1 ]; then

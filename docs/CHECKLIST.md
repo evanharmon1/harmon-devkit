@@ -1,5 +1,15 @@
 # Post-Generation Checklist — Harmon DevKit
 
+<!--
+AI AGENTS: This checklist is a human-maintained record for humans to check off.
+Do not check, uncheck, rewrite, remove, reorder, normalize, reconcile, or
+otherwise update its items based on repository state. Do not try to keep it
+consistent with code, configuration, tags, releases, or external services.
+Read-only inspection and reporting are allowed when requested, but never mutate
+checklist state based on the findings. Only edit a checklist item when the human
+user clearly and explicitly asks for that specific checklist update.
+-->
+
 Work through this after generating the repo from harmon-init. Delete items
 that don't apply, then keep this file as a record of what was configured.
 
@@ -38,10 +48,10 @@ config, toolchain, devcontainer, and dev environment — against the items below
       checks, issues (including the Dependency Dashboard), or update/remediation
       PRs. This repo already has `renovate.json`; keep that configuration rather
       than replacing it with a generic onboarding config.
-- [ ] **[human-only] Remove CodeRabbit access** — remove this repository from
-      the CodeRabbit GitHub App installation and confirm the App no longer has
-      access. Deleting `.coderabbit.yaml` and bot trust does not revoke an
-      existing installation.
+- [ ] **[human-only] Confirm CodeRabbit has no access** — for a repository that
+      previously used it, remove this repo from the CodeRabbit GitHub App
+      installation. Deleting `.coderabbit.yaml` and bot trust does not revoke
+      existing App access.
 - [ ] Actions secret: `CLAUDE_CODE_OAUTH_TOKEN` (claude-* workflows) — generate
       with `claude setup-token`; the value must start **`sk-ant-oat01-`** (an OAuth
       token, billed to your Claude subscription), **not** `sk-ant-api03-` (a raw API

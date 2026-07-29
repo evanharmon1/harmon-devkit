@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier
-_commit: 617a309bdf1743cb3e258eaf75deae234178a52d
+_commit: eaffd8daf1729a516a22e2a612791c7488ae006c
 _src_path: https://github.com/evanharmon1/harmon-init
 bunch_add: false
 ci_runner: ubuntu-latest
@@ -15,8 +15,7 @@ include_ansible: false
 include_terraform: false
 license: mit
 obsidian_project_add: false
-project_description: 'My personal developer kit: reusable templates and boilerplates,
-    standalone scripts, and AI assets (skills, prompts, agents).'
+project_description: 'My personal developer kit: reusable templates and boilerplates, standalone scripts, and AI assets (skills, prompts, agents).'
 project_management: none
 project_name: Harmon DevKit
 project_slug: harmon-devkit
@@ -25,6 +24,7 @@ release_content_paths: ai/skills templates scripts
 run_task_install: false
 snyk_scan_schedule: 'off'
 use_codeql: false
+use_coderabbit: false
 use_codex_review: true
 use_foreman: false
 use_release_please: true

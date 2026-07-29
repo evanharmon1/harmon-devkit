@@ -20,10 +20,11 @@
     },
     {
       "customType": "regex",
-      "description": "Workflow tool pins, `version:` style",
+      "description": "Workflow tool pins — `version:`, `<tool>-version:` (e.g. setup-node's node-version) and `wranglerVersion:` styles",
       "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+version:\\s*(?<currentValue>\\S+)",
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[\\w-]+[-_]version: \"?(?<currentValue>[^\"\\s]+)\"?",
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+wranglerVersion:\\s*\"(?<currentValue>[^\"]+)\""
       ]
     },
@@ -45,7 +46,17 @@
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[A-Z_]+_VERSION: \"?(?<currentValue>[^\"\\s]+)\"?"
       ]
-    }  ],
+    },
+    {
+      "customType": "regex",
+      "description": "Composite-action tool pins — a bare `version:` (setup-task) or a `<tool>-version:`/`<tool>_version:` input (setup-node, setup-tflint). The workflow manager above only looks at .github/workflows, so without this manager every pin in .github/actions/ is invisible to Renovate and silently frozen.",
+      "managerFilePatterns": ["/^\\.github/actions/.*\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+version:\\s*(?<currentValue>\\S+)",
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[\\w-]+[-_]version: \"?(?<currentValue>[^\"\\s]+)\"?"
+      ]
+    }
+  ],
   "packageRules": [
     {
       "description": "Never auto-merge anything",
@@ -63,9 +74,9 @@
       "groupName": "GitHub Actions"
     },
     {
-      "description": "Batch regex-managed workflow updates into one PR",
+      "description": "Batch regex-managed workflow and composite-action updates into one PR — the composite action provisions the same CI toolchain the workflows do, so its pins belong in the same batch",
       "matchManagers": ["custom.regex"],
-      "matchFileNames": [".github/workflows/**"],
+      "matchFileNames": [".github/workflows/**", ".github/actions/**"],
       "groupName": "GitHub Actions"
     },
     {
@@ -80,8 +91,13 @@
       "groupName": "Docker images"
     },
     {
-      "description": "Batch all devcontainer updates (base image + annotated tools) into one PR — must come after the Docker images rule so the base image lands here instead",
-      "matchFileNames": [".devcontainer/**"],
+      "description": "Batch all devcontainer updates (base image + annotated tools) into one PR — must come after the Docker images rule so the base image lands here instead. The devcontainer-coupled scripts are listed explicitly (NOT scripts/** — that would couple unrelated pins like markdownlint-cli2 and pip-audit to this batch): the devcontainer CLI wrappers, plus run-semgrep.sh because semgrep is pinned in both the Dockerfile and that script and must move in one PR",
+      "matchFileNames": [
+        ".devcontainer/**",
+        "scripts/devcontainer-assert.sh",
+        "scripts/devcontainer-smoke.sh",
+        "scripts/run-semgrep.sh"
+      ],
       "groupName": "Devcontainer"
     }
   ]
