@@ -74,17 +74,30 @@ confirm with the user before proceeding.
   branch agrees with itself.
 - **The two Copier roles are independent; test for both.** A repo is a
   *consumer* if it has an answers file, and a *template source* if it has a
-  root manifest with a payload tree. Neither filename is fixed: the manifest
-  is `copier.yml` **or** `copier.yaml`, and the answers file defaults to
+  root manifest with a payload tree. Determine both from the **fetched default
+  branch**, not the branch under review, and validate any delta before
+  adopting it — the same rule the lineage tuple gets above, for the same
+  reason. Deciding roles from the branch lets it delete the manifest so a
+  source repo reads as neither and skips the root-twin check, or rewrite a
+  non-default answers file whose lineage nothing else validates. Neither filename is fixed: the manifest
+  is `copier.yml` or `copier.yaml` **matched case-insensitively** — a
+  `copier.YAML` is a real template, and two case-variants at once is a state
+  Copier rejects as ambiguous rather than a source to pick from, so surface
+  that instead of choosing (`verify-applied.sh` already behaves this way). The
+  answers file defaults to
   `.copier-answers.yml` but `_answers_file` (or `--answers-file` at render
   time) can put it anywhere. Do not look that override up in the local
   manifest: a consumer has no manifest, and a *source* repo's `_answers_file`
   describes where **its** consumers keep answers, not where this repo keeps
   its own. Identify an answers file by its content instead — a Copier answers
-  file is the YAML carrying `_src_path` and `_commit` — and if none turns up
-  where lineage is otherwise suspected, ask the user rather than concluding
-  there is none. Hard-coding the defaults makes an ordinary layout skip this
-  check in silence. A template repo has no
+  file is the YAML carrying `_src_path` and `_commit` — but content alone
+  does not make it *this repo's* lineage. Test fixtures and documentation
+  examples carry the same keys, and reading one as the real thing points the
+  whole analysis at an unrelated template or raises a false `blocker`.
+  Confirm the file you found is the repo's active answers file, and on nested
+  or multiple matches ask rather than picking. If none turns up where lineage
+  is otherwise suspected, ask too. Hard-coding the defaults makes an ordinary
+  layout skip this check in silence. A template repo has no
   answers file of its own, having never been rendered from itself — but a template
   repo that was scaffolded from some other template has both, and checking the
   second only when the first is absent would miss its root-twin obligations
