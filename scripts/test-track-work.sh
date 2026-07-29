@@ -12,6 +12,7 @@ cd "$(dirname "$0")/.."
 
 closing="./ai/skills/universal/track-work/assets/check-closing-keywords.sh"
 rot="./ai/skills/universal/track-work/assets/check-issue-rot.sh"
+status_sh="./ai/skills/universal/track-work/assets/set-issue-status.sh"
 repo="evanharmon1/harmon-devkit"
 
 fail() {
@@ -415,5 +416,169 @@ _rc=0
 _rc=0
 printf 'x' | "$closing" --repo >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "--repo without a value should exit 2 (got $_rc)"
+
+# --- set-issue-status.sh -----------------------------------------------------
+# Fully offline: a stubbed `gh` answers the two GraphQL reads and records the
+# mutation, so the field/option resolution is tested without a live board.
+
+echo "==> set-issue-status usage errors exit 2"
+for args in "--repo evanharmon1/harmon-devkit" "--issue 5 --status Todo" \
+    "--repo evanharmon1/harmon-devkit --issue 5" \
+    "--repo not-a-slug --issue 5 --status Todo" \
+    "--repo evanharmon1/harmon-devkit --issue abc --status Todo" \
+    "--repo evanharmon1/harmon-devkit --issue 5 --status"; do
+    _rc=0
+    # shellcheck disable=SC2086 # deliberate word splitting: each case is an argv
+    "$status_sh" $args >/dev/null 2>&1 || _rc=$?
+    [ "$_rc" = 2 ] || fail "'$args' should exit 2 (got $_rc)"
+done
+
+# board_stub ITEMS_JSON — a `gh` that returns ITEMS_JSON for the projectItems
+# query, a fixed field set for the fields query, and logs any mutation.
+board_stub() {
+    cat >"$stub/gh" <<STUB
+#!/bin/sh
+case "\$*" in
+*projectItems*) echo '$1' ;;
+*ProjectV2SingleSelectField*)
+    echo '{"data":{"node":{"fields":{"nodes":[{"id":"F_status","name":"Status","options":[{"id":"O_prog","name":"In Progress"},{"id":"O_todo","name":"Todo"}]},{"id":"F_agent","name":"Agent","options":[{"id":"O_cc","name":"Claude Code"}]}]}}}}'
+    ;;
+*updateProjectV2ItemFieldValue*)
+    echo "\$*" >>"$tmp/mutations.log"
+    echo '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"I_1"}}}}'
+    ;;
+*) exit 1 ;;
+esac
+STUB
+    chmod +x "$stub/gh"
+    : >"$tmp/mutations.log"
+}
+
+# run_status ARGS… -> echoes the exit code.
+run_status() {
+    _rc=0
+    env PATH="$stub:$PATH" "$status_sh" --repo "$repo" "$@" >/dev/null 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+on_board='{"data":{"repository":{"issue":{"projectItems":{"nodes":[{"id":"I_1","project":{"id":"P_1","title":"evanharmon1 Project"}}]}}}}}'
+
+echo "==> --show reports the card's current values without writing"
+cat >"$stub/gh" <<STUB
+#!/bin/sh
+case "\$*" in
+*projectItems*) echo '$on_board' ;;
+*fieldValues*)
+    echo '{"data":{"node":{"fieldValues":{"nodes":[{},{"name":"Ready","field":{"name":"Status"}},{"name":"Codex","field":{"name":"Agent"}}]}}}}'
+    ;;
+*) echo "\$*" >>"$tmp/mutations.log"; exit 1 ;;
+esac
+STUB
+chmod +x "$stub/gh"
+: >"$tmp/mutations.log"
+show_out=$(env PATH="$stub:$PATH" "$status_sh" --repo "$repo" --issue 5 --show 2>/dev/null)
+printf '%s\n' "$show_out" | grep -qx 'Status=Ready' || fail "--show must report the current Status (got: $show_out)"
+printf '%s\n' "$show_out" | grep -qx 'Agent=Codex' || fail "--show must report the current Agent"
+[ ! -s "$tmp/mutations.log" ] || fail "--show must not write"
+
+echo "==> --show refuses to be combined with a write"
+_rc=0
+env PATH="$stub:$PATH" "$status_sh" --repo "$repo" --issue 5 --show --status Todo >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "--show with --status should exit 2 (got $_rc)"
+
+echo "==> an issue on no board exits 3, not 1"
+board_stub '{"data":{"repository":{"issue":{"projectItems":{"nodes":[]}}}}}'
+[ "$(run_status --issue 5 --status "In Progress")" = 3 ] ||
+    fail "no board is benign and must exit 3"
+
+echo "==> a resolved field and option is written"
+board_stub "$on_board"
+[ "$(run_status --issue 5 --status "In Progress" --agent "Claude Code")" = 0 ] ||
+    fail "a resolvable field should apply"
+[ "$(grep -c 'F_status' "$tmp/mutations.log")" = 1 ] || fail "Status should be written once"
+[ "$(grep -c 'F_agent' "$tmp/mutations.log")" = 1 ] || fail "Agent should be written once"
+
+echo "==> option names match case-insensitively (boards differ on 'In progress')"
+board_stub "$on_board"
+[ "$(run_status --issue 5 --status "in progress")" = 0 ] ||
+    fail "option matching must be case-insensitive"
+
+echo "==> an option the board lacks is skipped, not invented"
+board_stub "$on_board"
+[ "$(run_status --issue 5 --status "Ready to Merge")" = 3 ] ||
+    fail "a missing option should exit 3"
+[ ! -s "$tmp/mutations.log" ] || fail "a missing option must write nothing"
+
+echo "==> a partial apply is exit 4, never 0 — a skipped Status must not hide behind a written Agent"
+board_stub "$on_board"
+[ "$(run_status --issue 5 --status "Ready to Merge" --agent "Claude Code")" = 4 ] ||
+    fail "a skipped Status with a written Agent must report partial, not success"
+grep -q 'F_agent' "$tmp/mutations.log" || fail "the resolvable half should still be written"
+if grep -q 'F_status' "$tmp/mutations.log"; then fail "the unresolvable Status must not be written"; fi
+
+echo "==> every requested field applying is exit 0"
+board_stub "$on_board"
+[ "$(run_status --issue 5 --status "Todo" --agent "Claude Code")" = 0 ] ||
+    fail "all requested fields applying should exit 0"
+
+echo "==> a write that fails AFTER one succeeded is partial (4), not a flat failure (1)"
+cat >"$stub/gh" <<STUB
+#!/bin/sh
+case "\$*" in
+*projectItems*) echo '$on_board' ;;
+*ProjectV2SingleSelectField*)
+    echo '{"data":{"node":{"fields":{"nodes":[{"id":"F_status","name":"Status","options":[{"id":"O_todo","name":"Todo"}]},{"id":"F_agent","name":"Agent","options":[{"id":"O_cc","name":"Claude Code"}]}]}}}}'
+    ;;
+# Status writes; the second mutation (Agent) fails, as a timeout would.
+*F_status*) echo '{"data":{}}' ;;
+*F_agent*) exit 1 ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "$stub/gh"
+[ "$(run_status --issue 5 --status "Todo" --agent "Claude Code")" = 4 ] ||
+    fail "a failed write after a successful one must report partial, not total failure"
+
+echo "==> a write that fails with nothing else applied is exit 1"
+cat >"$stub/gh" <<STUB
+#!/bin/sh
+case "\$*" in
+*projectItems*) echo '$on_board' ;;
+*ProjectV2SingleSelectField*)
+    echo '{"data":{"node":{"fields":{"nodes":[{"id":"F_status","name":"Status","options":[{"id":"O_todo","name":"Todo"}]}]}}}}'
+    ;;
+*F_status*) exit 1 ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "$stub/gh"
+[ "$(run_status --issue 5 --status "Todo")" = 1 ] ||
+    fail "a sole failed write should exit 1"
+
+echo "==> --dry-run resolves without mutating"
+board_stub "$on_board"
+[ "$(run_status --issue 5 --status "In Progress" --dry-run)" = 0 ] ||
+    fail "--dry-run should resolve cleanly"
+[ ! -s "$tmp/mutations.log" ] || fail "--dry-run must not write"
+
+echo "==> two boards without --project is ambiguous, not a guess"
+board_stub '{"data":{"repository":{"issue":{"projectItems":{"nodes":[{"id":"I_1","project":{"id":"P_1","title":"Board A"}},{"id":"I_2","project":{"id":"P_2","title":"Board B"}}]}}}}}'
+[ "$(run_status --issue 5 --status "Todo")" = 2 ] ||
+    fail "an ambiguous board must not be guessed"
+
+echo "==> the owner's default board wins when the issue is on several"
+board_stub '{"data":{"repository":{"issue":{"projectItems":{"nodes":[{"id":"I_1","project":{"id":"P_1","title":"Board A"}},{"id":"I_2","project":{"id":"P_2","title":"evanharmon1 Project"}}]}}}}}'
+[ "$(run_status --issue 5 --status "Todo")" = 0 ] ||
+    fail "the '<owner> Project' board should be preferred"
+grep -q 'P_2' "$tmp/mutations.log" || fail "the default board's item should be the one written"
+
+echo "==> an unreadable projectItems query is exit 2, never a silent pass"
+cat >"$stub/gh" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+chmod +x "$stub/gh"
+[ "$(run_status --issue 5 --status "Todo")" = 2 ] ||
+    fail "a failed read could not verify and must exit 2"
 
 echo "✓ track-work checks behave"

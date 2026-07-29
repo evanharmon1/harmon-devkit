@@ -3,8 +3,8 @@ name: preflight
 description: >-
   Pre-implementation sanity check — verify the latest state of the target
   issue, related PRs, and recent merges against the live repo, surface
-  blockers, then claim the issue (assign, label, comment). Invoke as
-  /preflight [issue #].
+  blockers, then claim the issue (assign, label, move the project card to
+  In Progress, comment). Invoke as /preflight [issue #].
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(git remote), Bash(git remote get-url:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
 ---
@@ -120,26 +120,148 @@ the user's explicit go-ahead before running them, and if `gh` is
 unauthenticated or lacks write access, report the commands for the user to
 run instead of failing the flow:
 
-- `gh issue edit <n> --repo "$repo" --add-assignee @me`
-- Label only if the label exists (`--limit` matters — the default returns
-  only 30 labels):
-  `gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' | grep -qx in-progress && gh issue edit <n> --repo "$repo" --add-label in-progress`
-- Comment via stdin with a quoted heredoc so the branch/session values are
+**First, note what is already there.** Step 3 blocks only on an assignment to
+*someone else*, so an issue already assigned to **you** — ordinary backlog
+ownership — is a supported path into this step. Every write below is
+add-if-missing, so on that path it changes nothing and there is nothing to undo.
+A hand-back that removes it anyway destroys state the session never created:
+
+```sh
+gh issue view <n> --repo "$repo" --json assignees,labels \
+  --jq '{assigned: ([.assignees[].login] | index("<your-login>") != null),
+         labelled: ([.labels[].name] | index("agent:claude-code") != null)}'
+# the board's own markers — the same --show that reads the prior status:
+<track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --show
+```
+
+**A claim never writes the `Agent` field.** It looks like the right place and
+is not: `Agent` says which agent *should* implement the issue — a planning
+assignment, set at triage, and the thing the board's **Agent queue** view
+filters on. The `agent:*` label says which agent *is* implementing it right
+now. Same vocabulary, different questions. Writing `Agent` at claim time
+destroys a planning decision and silently reassigns work planned for one agent
+to whichever one picked it up. The claim's identity signal is the **label**.
+
+That also makes the claim behave identically on both owner types: on an
+organization `Agent` is an org *issue field* the Projects V2 API cannot write
+at all, so a claim that depended on it was never going to work there.
+
+**An existing `agent:*` label naming a *different* agent is a `blocker`** —
+that one is a live claim, and adding a second agent's label would leave the
+issue claiming two owners. Stop and ask, exactly as for an issue assigned to
+someone else. An `Agent` *field* naming another agent is **not** a blocker: it
+is a plan, and picking up work planned for another agent is a legitimate,
+visible choice — note it in the findings and carry on. If the repo has no
+`agent:*` label family at all, ownership is **unverifiable** — say so and get
+the user's go-ahead rather than treating silence as "unclaimed".
+
+Carry every answer into the claim comment. `/close` undoes only what the claim
+actually added.
+
+- **Assign:** `gh issue edit <n> --repo "$repo" --add-assignee @me`
+- **Label** — the `agent:*` family names *which* agent has it, mirroring the
+  options of the `Agent` field. Apply it only if the repo actually has the
+  label (`--limit` matters — the default returns only 30 labels):
+
+  ```sh
+  gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' |
+    grep -qx agent:claude-code &&
+    gh issue edit <n> --repo "$repo" --add-label agent:claude-code
+  ```
+
+  A repo without the family — one seeded before it existed, or any repo with
+  `project_management: none` — skips this. Say so once and carry on; **do not
+  create the label here.** The label taxonomy belongs to
+  `task setup:github-labels`, and inventing a label per repo is how vocabularies
+  fork.
+
+  **If the user approved proceeding past another agent's label**, *replace* it
+  rather than adding alongside: `--add-label` alone leaves the issue advertising
+  two owners, which is worse than the conflict it was meant to resolve. Remove
+  the other one in the same edit and record it, so the hand-back can put it
+  back:
+
+  ```sh
+  gh issue edit <n> --repo "$repo" \
+    --add-label agent:claude-code --remove-label agent:codex
+  ```
+
+- **Board** — the assignee and the label are both invisible on the project
+  board, which is where the work is actually watched, so move the card there
+  too. `Status` only — not `Agent`, for the reason above. **Do this after the
+  comment below**, not here in list order: the comment is what preserves the
+  status this write destroys. The script ships with `track-work`, so
+  `<track-work-dir>` is `.claude/skills/track-work` in a repo that vendors the
+  skills and `ai/skills/universal/track-work` in harmon-devkit itself:
+
+  ```sh
+  <track-work-dir>/assets/set-issue-status.sh \
+    --repo "$repo" --issue <n> --status "In Progress"
+  ```
+
+  Read the exit code rather than the noise: **0** applied, **3** nothing to do
+  (the issue is on no board, or the board lacks the field/option) — benign,
+  note it and move on, **1** the write failed, **2** it could not verify,
+  usually a missing token scope (`gh auth refresh -s read:project,project`).
+  Never retry a 3. A card still sitting outside `In Progress` must not be
+  reported as moved.
+- **Comment** via stdin with a quoted heredoc so the branch/session values are
   never re-evaluated by the shell (a branch name can contain `$(…)`). Use a
   delimiter that cannot occur in the body — quoting disables expansion, not
   termination, so a body containing a literal `EOF` line would end a
   fixed-`EOF` heredoc early:
 
+  **Record the status you are overwriting, and record it first.**
+  `--status "In Progress"` destroys whatever the card held — `Ready`,
+  `Shaping`, `Next`, `Agent Queue` — and nothing anywhere else remembers it, so
+  an abandoned session cannot put the issue back and has to guess. Read it with
+  `--show` and write the comment **before** the board write. Ordered the other
+  way, an interruption or a failed `gh issue comment` between the two loses the
+  old value permanently:
+
   ```sh
+  # 1. read (writes nothing)
+  <track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --show
+  # -> Status=Ready
+  #    board=<owner> Project
+
+  # 2. persist it, still before touching the board
   gh issue comment <n> --repo "$repo" --body-file - <<'CLAIM_BODY_9f3k'
   Claiming — starting implementation on branch <branch> (session <name>).
+
+  Claim record (for `/close` — undo only what this claim added):
+  - board: <board title from --show, so cleanup targets the same card>
+  - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
+  - assignee added by this claim: <yes|no, it was already assigned to me>
+  - `agent:` label added by this claim: <yes|no|n/a, repo has no such label>
+  - `agent:` label displaced by this claim: <label removed on an approved
+    override, or "none">
   CLAIM_BODY_9f3k
+
+  # 3. only now move the card
   ```
+
+  The comment is the durable record — it survives compaction, a lost session,
+  and a different agent doing the hand-back.
+
+  **"Unset" and "unknown" are different answers.** `--show` exiting 0 with no
+  `Status=` line is a successful read of a card whose `Status` is genuinely
+  empty — a real, restorable state. Only a *failed* call (exit 2) is unknown.
+  Record `none` for the first and `unknown` for the second: `/close` restores
+  an unset field by clearing it (manual — `gh project item-edit --clear`), and only has to ask the user in the second case.
 
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):
 `--add-assignee` accumulates rather than arbitrates, so if someone else
-claimed concurrently, surface it and coordinate before implementing.
+claimed concurrently, surface it and coordinate before implementing. This
+catches a *different* GitHub identity and nothing more — another session
+running as the same user converges on the same assignee and label, and is
+invisible to this check. The claim is a signal, not a lock
+(`track-work` §6).
+
+A claim is a promise to release it. `/shepherd` advances the card as the PR
+moves, and `/close` flags a session that ends with an issue left at
+`In Progress` and nothing in flight.
 
 ## 6. Hand off
 
