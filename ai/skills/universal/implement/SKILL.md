@@ -89,10 +89,11 @@ issue, and two agents start implementing.
    user explicitly says to continue.
 3. **Claimed by you** — and the markers are **not equally good evidence of
    who**, so rank them rather than accepting any one:
-   - **Strong** — a claim comment naming *this* session or branch, not
-     superseded by a later `Claim released —`. `/preflight` writes exactly that
-     record, which is why it is the one marker that answers "who", not merely
-     "someone".
+   - **Strong** — a claim comment naming *this session*, not superseded by a
+     later `Claim released —`. `/preflight` writes exactly that record, which is
+     why it is the one marker that answers "who", not merely "someone". The
+     session name alone; the branch it records is **not** identity evidence, for
+     the reason below.
    - **Corroborating** — an `agent:*` label for this agent. It names the agent
      but not the session, and a repo with no such label family cannot have one
      at all (`/preflight` treats that as benign), so its absence proves nothing.
@@ -161,9 +162,25 @@ say which.
 ## 3. Branch
 
 Feature branch off the default branch, never a commit on `main` directly.
-Fetch first — the working tree can be behind, and `Read`/`Grep` only see the
-working tree. Name it after the work (`feat/<topic>`, `fix/<topic>`), matching
-whatever convention the repo's history already shows.
+Name it after the work (`feat/<topic>`, `fix/<topic>`), matching whatever
+convention the repo's history already shows.
+
+**Branch from the fetched ref, not from HEAD.** `git fetch` updates the
+remote-tracking ref and nothing else — it does not move local `main`, and it
+certainly does not move whatever branch you happen to be standing on. Branching
+implicitly therefore starts from a stale or unrelated base while appearing to
+follow the rule above, and the divergence surfaces later as conflicts nobody
+introduced. Resolve the ref and use it explicitly:
+
+```sh
+git fetch --prune "$remote"
+git remote set-head "$remote" --auto
+default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD")"
+git switch -c <branch> "$default"
+```
+
+The default branch is not always named `main`, which is why it is resolved
+rather than assumed.
 
 If the checkout is dirty, park the existing edits before starting; unrelated
 work riding into this change is how a PR grows a diff nobody reviewed.
