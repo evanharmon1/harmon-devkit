@@ -50,8 +50,15 @@ Never characterise an issue from memory, from a summary, or from earlier in this
 conversation.
 
 ```sh
-gh issue view <n> --repo <owner/repo> --json state,title,body
+gh issue view <n> --repo <owner/repo> --json state,stateReason,title,body
 ```
+
+`stateReason` is not decoration. `state` collapses every closed issue to
+`CLOSED`, and *why* it closed is a separate field carrying `COMPLETED`,
+`NOT_PLANNED`, or `DUPLICATE` — three different facts that call for three
+different responses (§3, §4). Reading `state` alone tells you an issue is shut
+and nothing about whether that was a decline, a delivery, or a pointer
+somewhere else.
 
 **Fail condition:** you are about to write a sentence about what issue N says,
 contains, or still needs, and you have not run this in the current turn.
@@ -291,25 +298,29 @@ had gone stale — so the duplicate filed past it (#460) did not just waste
 triage, it recommended reversing a deliberate earlier decision.
 
 Then act on **what state the hit is in**, because "add a comment" is only right
-for one of them:
+for one of them. Branch on `state` *and* `stateReason` — §1 reads both, and
+`state` alone is `CLOSED` for all three closed cases:
 
 | Hit | What it means | Do |
 | --- | --- | --- |
 | **Open** | live duplicate | Comment there. A second issue splits the reasoning across two places and leaves neither complete. |
-| Closed **`not planned`** | already declined | Engage that decision — say why it should be revisited. Do not refile as though it were new. |
-| Closed **`completed`**, defect is back | **regression** | It needs a live issue: reopen that one, or file a new one linking it. |
+| Closed `NOT_PLANNED` | already declined | Engage that decision — say why it should be revisited. Do not refile as though it were new. |
+| Closed `COMPLETED`, defect is back | **regression** | It needs a live issue: reopen that one, or file a new one linking it. |
+| Closed `DUPLICATE` | a pointer, not an answer | Follow it to the canonical issue and start this table again there. The hit itself holds nothing; commenting on it is writing to a forwarding address. |
 
-That last row is the one worth spelling out. A comment on a closed `completed`
-issue reads like a settled record with a footnote, and it puts the work on no
-backlog at all — the "durable but invisible" failure this skill exists to
-prevent, reintroduced at exactly the moment you thought you had avoided a
-duplicate. Commenting is the *dedup* answer; it is not the *tracking* answer,
-and a recurrence needs both.
+The `COMPLETED` row is the one worth spelling out. A comment on a closed
+`COMPLETED` issue reads like a settled record with a footnote, and it puts the
+work on no backlog at all — the "durable but invisible" failure this skill exists
+to prevent, reintroduced at exactly the moment you thought you had avoided a
+duplicate. Commenting is the *dedup* answer; it is not the *tracking* answer, and
+a recurrence needs both.
 
 **If you filed a duplicate anyway**, the recovery is ordered. Comment your new
-evidence onto the canonical issue **first**, then close yours `not planned`
-naming it (§4). A closed issue is where observations go to be unread, so closing
-before you have moved the evidence loses exactly the part that was worth having.
+evidence onto the canonical issue **first**, then close yours naming it —
+`--reason duplicate`, which is exactly what happened and what leaves the next
+reader a pointer (§4). A closed issue is where observations go to be unread, so
+closing before you have moved the evidence loses exactly the part that was worth
+having.
 
 Carry provenance when you relocate work, so the trail back survives:
 
@@ -330,6 +341,7 @@ true.
 ```sh
 gh issue close <n> --repo <owner/repo> --reason completed
 gh issue close <n> --repo <owner/repo> --reason "not planned" --comment "Superseded by …"
+gh issue close <n> --repo <owner/repo> --reason duplicate --comment "Duplicate of owner/repo#<n>"
 ```
 
 - **completed** — the thing was built. Every acceptance item is ticked.
@@ -337,6 +349,11 @@ gh issue close <n> --repo <owner/repo> --reason "not planned" --comment "Superse
   Superseded work closes here, with a comment naming what replaced it. Closing
   it `completed` is simply false, and it hides the real reason from anyone who
   finds the issue later.
+- **duplicate** — the work is real and tracked *somewhere else*. Name that issue
+  in the comment, qualified with its repo if it is not this one (§1). This is the
+  right close for the recovery in §3, and it is distinct from `not planned`:
+  `not planned` says nobody will do this, `duplicate` says somebody is already
+  tracking it. Reading these back is `stateReason`, not `state`.
 
 **Fail condition:** closing with `completed` while `gh issue view <n> --json
 body` still shows an unticked item (`- [ ]`, or the ordered `1. [ ]` form).
