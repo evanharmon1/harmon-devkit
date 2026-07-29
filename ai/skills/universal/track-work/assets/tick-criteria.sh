@@ -229,9 +229,12 @@ read_body_or_die >"$before"
 # Everywhere else this follows the CommonMark block algorithm, and a divergence
 # is a bug rather than an accepted limit. These are the KNOWN DEPARTURES, named
 # individually rather than waved at as "and other corners". State them this way
-# round on purpose: two rounds of adversarial review each produced container
-# kinds absent from an earlier attempt at an exhaustive list, so a claim that
-# the list below is complete would not survive contact with a third.
+# round on purpose: nine rounds of adversarial review, local and on the PR, each
+# produced constructs absent from an earlier attempt at an exhaustive list, so a
+# claim that the list below is complete would not survive contact with a tenth.
+# Several of those rounds found the same *class* of error one level deeper —
+# conflating "a list item is open" with "a paragraph is open", or a leaf block
+# with its inline spelling — which is the shape a residual bug here takes.
 #
 #   - HTML blocks of types 3 (`<?…?>`), 4 (`<!LETTER`) and 5 (`<![CDATA[`).
 #   - HTML block type 7 (any other complete tag alone on its line). Unlike
@@ -244,10 +247,6 @@ read_body_or_die >"$before"
 #     recognised as leaf blocks that close a paragraph; an `===` underline is
 #     still read as prose, so an ordered list starting above 1 directly under
 #     one does not open its container.
-#   - A fence whose interior is prose leaves that prose as the preceding line
-#     kind, so an indented block on the line after the closing delimiter reads
-#     as a lazy continuation instead of code. Both are hidden; only the ending
-#     differs.
 #
 # The first three over-enumerate — they offer a line GitHub renders as
 # something else — so prefer `--match` over `--index` on a body carrying one.
@@ -532,6 +531,21 @@ BEGIN {
         if (thematic_break(bare) == 0 && bare ~ /^([-*+]|[0-9]+[.)])([ \t]|$)/) {
             walk_containers(bare, col, quoted, col - sp)
         }
+        # A fence is a LEAF block, so no paragraph survives it. Returning with
+        # `prev_kind` untouched left the paragraph before the opener looking
+        # open: an item whose only block is a fence (`- ```text`) then granted
+        # lazy continuation to the unindented prose after it, the container
+        # stayed on the stack, and the indented code block after the next blank
+        # line measured as a nested criterion.
+        prev_kind = "leaf"
+        next
+    }
+    # Fence interior is code, not Markdown, so it reports no line kind of its
+    # own either — classifying it would let prose inside a fence decide how the
+    # line after the closing delimiter reads. Everything below is already gated
+    # on `infence == 0`, so this only settles `prev_kind`.
+    if (infence == 1) {
+        prev_kind = "leaf"
         next
     }
     # A live type-6 HTML block ends where its CONTAINER ends, not merely at a

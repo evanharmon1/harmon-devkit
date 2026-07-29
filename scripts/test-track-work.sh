@@ -1701,6 +1701,48 @@ issue_is 102 'Some prose <pre>
 - [x] the real criterion
 ' || fail "the block/inline distinction applies to raw tags as well"
 
+echo "==> a fence is a leaf block, so no paragraph survives it"
+write_issue 103 'Some prose
+- ```text
+  content
+  ```
+unindented prose
+
+    - [ ] example
+
+- [ ] the real criterion
+'
+[ "$(run_tick 103 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 103 'Some prose
+- ```text
+  content
+  ```
+unindented prose
+
+    - [ ] example
+
+- [x] the real criterion
+' || fail "an item holding only a fence grants no lazy continuation"
+
+echo "==> an unterminated fence swallows the rest of the body, and that is correct"
+write_issue 104 'Some prose
+- ```text
+content
+```
+unindented prose
+
+- [ ] not a criterion, this is inside the reopened fence
+'
+[ "$(run_tick 104 --index 1)" = 1 ] || fail "an unterminated fence should refuse, not guess"
+issue_is 104 'Some prose
+- ```text
+content
+```
+unindented prose
+
+- [ ] not a criterion, this is inside the reopened fence
+' || fail "a refusal must not write"
+
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
 - [ ] the real criterion
