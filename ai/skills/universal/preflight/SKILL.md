@@ -72,7 +72,13 @@ confirm with the user before proceeding.
   root-twin obligations. The manifest is `copier.yml` or `copier.yaml`,
   matched case-insensitively, and two spellings at once is a state Copier
   refuses to read rather than a source to choose between; `verify-applied.sh`
-  already discovers it that way. Say which role(s) apply, and skip §3's
+  already discovers it that way. Read both markers from the **fetched default
+  branch**, not the working branch: a branch that deletes or rewrites the
+  answers file or the manifest would otherwise classify the repo as neither
+  role and skip §3 in silence — and a branch based on the newest default is not
+  covered by the behind-the-default rule below, which only guards stale-
+  reference findings. Treat a working-branch change to either marker as a delta
+  to validate rather than adopt. Say which role(s) apply, and skip §3's
   provenance check only when neither does.
 - The issue itself: `gh issue view <n> --repo "$repo" --comments`, plus its
   linked work —
@@ -112,7 +118,9 @@ explicit confirmation from the user. Then look for:
   path the issue targets. A repo rendered from a template still owns plenty of
   files the template never supplied.
   - Look for the target in the template repo, under the payload root its
-    manifest declares in `_subdirectory` (`template/` for harmon-init). Do not
+    manifest declares in `_subdirectory` (`template/` for harmon-init) — and
+    when the key is absent, that root is the repository root, not "no root to
+    search"; `verify-applied.sh` treats empty, `.`, and `/` alike. Do not
     build a literal path: filenames there carry Jinja conditionals in `[% %]`
     delimiters, so `template/.claude/[% if use_foreman %]agents[% endif %]/…`
     matches no literal path and, unquoted, reads as a shell glob. Match on the
@@ -121,7 +129,13 @@ explicit confirmation from the user. Then look for:
     parked on a feature branch, and the fetch in §2 refreshed the target repo's
     remote, not this separate one. If what you read is not the template's
     current default branch, the verdict is unproven — say so rather than
-    reporting a copy found or missing.
+    reporting a copy found or missing. And a miss on the current default is not
+    by itself evidence of local ownership: check the recorded `_commit` too,
+    because a file the template once shipped and has since removed or renamed
+    is still template-originated, and `copier update` merges the whole
+    baseline-to-current delta rather than only today's tree. Found at the
+    baseline but absent now, the verdict is unproven and worth flagging — the
+    next update may delete or replace the local copy.
   - Say what you found for every target, upstream copy or not. One whose
     canonical copy is upstream is a `correction` at minimum: name the repo and
     the path, and recommend fixing it there so the change flows down.
