@@ -224,7 +224,7 @@ read_body_or_die >"$before"
 # a full parser, from a checkbox nested under a list item, where ticking is
 # right. Prefer `--match` when a body carries either.
 items="$(awk '
-BEGIN { infence = 0 }
+BEGIN { infence = 0; incomment = 0 }
 {
     # Strip indentation and any blockquote prefix before looking for a fence:
     # the item pattern below accepts `> - [ ]`, so a fence that only matched at
@@ -258,6 +258,30 @@ BEGIN { infence = 0 }
         }
         next
     }
+    # HTML comments hide their contents from every renderer, and issue templates
+    # routinely ship commented-out example checklists. A line that begins inside
+    # one is not a criterion — ticking it would edit invisible text and report
+    # success while the first real criterion stayed open. Comment state is not
+    # tracked inside a fence, where the delimiters are just characters.
+    starts_hidden = incomment
+    if (infence == 0) {
+        rest_of_line = $0
+        while (1) {
+            if (incomment) {
+                at = index(rest_of_line, "-->")
+                if (at == 0) break
+                rest_of_line = substr(rest_of_line, at + 3)
+                incomment = 0
+            } else {
+                at = index(rest_of_line, "<!--")
+                if (at == 0) break
+                rest_of_line = substr(rest_of_line, at + 4)
+                incomment = 1
+            }
+        }
+    }
+    if (starts_hidden) next
+
     if (infence == 0 && $0 ~ /^[[:space:]]*(>[[:space:]]*)*([-*+]|[0-9]+[.)])[[:space:]]+\[[ \t]\]([[:space:]]|$)/) {
         print NR ":" $0
     }

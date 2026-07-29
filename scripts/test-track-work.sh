@@ -701,6 +701,32 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
+echo "==> a checklist hidden in an HTML comment is not a criterion"
+write_issue 41 '<!--
+- [ ] example from the issue template
+-->
+
+- [ ] the real criterion
+'
+[ "$(run_tick 41 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 41 '<!--
+- [ ] example from the issue template
+-->
+
+- [x] the real criterion
+' || fail "a commented-out example must be left alone"
+
+echo "==> a single-line HTML comment does not hide what follows it"
+write_issue 42 '<!-- guidance --> text
+
+- [ ] the real criterion
+'
+[ "$(run_tick 42 --index 1)" = 0 ] || fail "a closed comment must not swallow the rest"
+issue_is 42 '<!-- guidance --> text
+
+- [x] the real criterion
+' || fail "only the real criterion should tick"
+
 echo "==> text GFM does not render as a task item is not a criterion"
 # `- [ ]example` has no delimiter after the box, so GitHub renders it as prose.
 write_issue 39 '- [ ]example prose, not a checkbox
