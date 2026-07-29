@@ -44,23 +44,34 @@ every `gh` command; a bare `#123` means *this* repo and nothing else
 Then confirm the claim exists — **read it, do not write it**:
 
 ```sh
-gh issue view <n> --repo "$repo" --json state,assignees,labels,comments
+gh issue view <n> --repo "$repo" \
+  --json state,assignees,labels,comments,closedByPullRequestsReferences
 ```
 
-Three outcomes:
+`closedByPullRequestsReferences` is in that read deliberately — the refusals
+below evaluate it, and a field you never fetched refuses nothing.
 
-- **Claimed by you** — an `agent:*` label, a card at `In Progress`, or a claim
-  comment not superseded by a later `Claim released —`. Proceed.
-- **Unclaimed** — stop and offer `/preflight`. It is not ceremony: preflight
-  verifies the issue's claims against the live tree, and its findings are
-  corrections to fold into the work. Implementing an issue nobody sanity-checked
-  is how a fix lands against a file that moved three releases ago.
-- **Claimed by someone else** — a different assignee, or an `agent:*` label
-  naming another agent. Stop and ask; two agents on one issue is a merge
-  conflict with extra steps.
+Read the outcomes **in this order**, and stop at the first that matches. The
+order is the whole point: markers are set independently and go stale
+independently, so an issue can carry a live `agent:claude-code` label *and* an
+assignee who is not you. Asking "is it mine?" first answers yes on exactly that
+issue, and two agents start implementing.
 
-Also refuse a **closed** issue, and one with an open PR already implementing it
-(`closedByPullRequestsReferences`), unless the user explicitly says to continue.
+1. **Claimed by someone else** — a different assignee, or an `agent:*` label
+   naming another agent. Stop and ask; two agents on one issue is a merge
+   conflict with extra steps. This is first because it is the only outcome that
+   *disqualifies* markers the later ones would accept.
+2. **Already implemented** — an open PR linked by a closing keyword
+   (`closedByPullRequestsReferences`), or a **closed** issue. Stop unless the
+   user explicitly says to continue.
+3. **Claimed by you** — a marker identifying *you* specifically: an `agent:*`
+   label for this agent, a card at `In Progress`, or a claim comment not
+   superseded by a later `Claim released —`, with no foreign owner from step 1.
+   Proceed.
+4. **Unclaimed** — stop and offer `/preflight`. It is not ceremony: preflight
+   verifies the issue's claims against the live tree, and its findings are
+   corrections to fold into the work. Implementing an issue nobody sanity-checked
+   is how a fix lands against a file that moved three releases ago.
 
 ## 2. Read the issue as a spec
 
@@ -100,9 +111,9 @@ Two obligations that are easy to defer and expensive to defer:
   same change. A gate that catches this catches it late; the cheap moment is
   now.
 - **Tick acceptance criteria as you verify them**, not at PR time — that is
-  `track-work`'s tick-criteria rule, and its asset does the edit safely.
-  Ticking at the end means ticking from memory, and a criterion you never
-  actually checked ticks just as easily as one you did.
+  `track-work` §2 *Tick as you go*, and its `assets/tick-criteria.sh` does the
+  edit safely. Ticking at the end means ticking from memory, and a criterion you
+  never actually checked ticks just as easily as one you did.
 
 ## 5. Definition-of-done gate
 
@@ -131,10 +142,14 @@ mirror. Follow the repo's own adjudication contract; the shape it is usually in:
   and relaunching a live run only doubles the cost.
 - Findings the loop does not gate on (in a P0/P1-gating repo, the P2s) are
   **deferred, not dropped**. Record each one the moment you defer it, in the
-  location the repo's `AGENTS.md` specifies — harmon-init and harmon-devkit use
-  a branch-keyed file under the git directory, because these loops run before
-  there is a PR body to write to and their output is otherwise ephemeral. Match
-  on location plus substance so a re-reported finding is not recorded twice.
+  location the repo's `AGENTS.md` specifies — harmon-init uses a branch-keyed
+  file under the git directory, because these loops run before there is a PR
+  body to write to and their output is otherwise ephemeral. Where the repo
+  names no location, keep your own note and carry it into the PR body all the
+  same; terminal scrollback is not a record, and a context reset between the
+  review and `gh pr create` takes the findings with it. Match on location plus
+  substance so a re-reported finding is not recorded twice — a stage exits on a
+  clean re-run, so an unchanged deferred finding is reported again by design.
 
 ## 7. CI mirror
 
@@ -142,6 +157,13 @@ Run the full local mirror (`task ci` where it exists) and fix what it catches.
 This is the last cheap failure; everything after it costs a round on the PR.
 
 ## 8. Open the PR
+
+**Re-read the issue immediately before `gh pr create`** — the same fields
+step 1 read, including `closedByPullRequestsReferences`. Implementation takes
+time, and a claim is a signal, not a lock (`preflight` §5): another session on
+the same account converges on identical markers and is invisible in all of
+them. If someone took ownership or opened a linked PR while you worked, a
+second PR is the expensive way to find out.
 
 - Conventional-commit message and PR title, per the repo's commitlint config.
   Watch for repo-specific title rules that gate a release — harmon-init
@@ -164,13 +186,22 @@ This is the last cheap failure; everything after it costs a round on the PR.
 
 ## 9. Hand off to shepherd
 
-`gh pr create` returning is the trigger for the next stage, not the end of the
-work. Enter `/shepherd` deliberately — watch CI *and* incoming bot/human
-reviews, settle the deferred findings, reply per thread.
+`gh pr create` returning is the trigger for the next stage, **not the end of
+this skill's work**. Continue into the shepherd stage — watch CI *and* incoming
+bot/human reviews, settle the deferred findings, reply per thread — and stop
+only when shepherd reaches one of its own terminal conditions. Where the repo's
+`AGENTS.md` mandates that stage (harmon-init does, and it is user-invocable
+only), entering it means **reading `/shepherd`'s `SKILL.md` and following it**,
+not calling a slash command an agent cannot call.
 
-"All checks pass" is not a handoff. Reviews land *after* checks settle, so an
-empty comment list read the moment `gh pr checks` returns means "not reviewed
-yet", not "nothing to answer".
+Do not treat "PR opened" as a stopping point. An open PR with unpolled checks
+is the middle of the work, and the deferred findings from step 6 are still
+open — nothing else in the lifecycle settles them.
 
-Report the PR URL, the gates that passed, and what was deferred into the
-shepherd stage. Then stop — merging is always the maintainer's decision.
+"All checks pass" is not a stopping point either. Reviews land *after* checks
+settle, so an empty comment list read the moment `gh pr checks` returns means
+"not reviewed yet", not "nothing to answer".
+
+The one thing that is never yours: **merging**. Report the PR URL, the gates
+that passed, and how each deferred finding was settled — then stop at green and
+let the maintainer merge.
