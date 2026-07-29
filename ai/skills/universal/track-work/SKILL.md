@@ -9,7 +9,7 @@ description: >-
   while implementing an issue; or close an issue and pick a close reason. Covers `gh issue create/edit/close/comment` and PR bodies alike,
   and applies to issues in other repos as much as this one. Trigger it even if
   the user doesn't say the word "skill".
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
 ---
 
 # Track Work
@@ -121,27 +121,47 @@ verify a criterion — the test passes, the file says what it should — tick th
 box:
 
 ```sh
-gh issue view <n> --repo <owner/repo> --json body --jq '.body' >/tmp/issue.md
-# tick only the criteria you just verified, then:
-gh issue edit <n> --repo <owner/repo> --body-file /tmp/issue.md
+<skill-dir>/assets/tick-criteria.sh --repo <owner/repo> --issue <n> \
+  --match '<distinctive words from the criterion>'
 ```
+
+`--index K` addresses the K-th *unticked* item instead, `--dry-run` shows what
+would change, and both selectors repeat to tick several at once.
 
 **Fail condition:** you are about to write a PR body for an issue whose
 criteria you satisfied and verified during this work, and its boxes are still
 `- [ ]`.
 
-Three cautions, the same ones `/shepherd` applies to deferred findings:
+**Use the script rather than `gh issue edit`.** Not convenience —
+`gh issue edit` replaces the **whole** body, so the command that ticks a box
+can also reword a criterion, drop a section, or retitle the issue. That is
+why it cannot be pre-approved, and why a rule that needs a tick per verified
+criterion cannot be built on it. The script does the one transition that is
+safe to authorise in advance and refuses everything else: it exits non-zero,
+writing nothing, unless every selector resolves to exactly one unticked item,
+the new body differs only on those lines and only by the marker, and the body
+is byte-identical to what it read. Exit 0 ticked, 1 refused, 2 usage.
 
-- **Only tick what is already true.** The change, its push, and the tick are
-  separate steps; a box ticked ahead of the work survives an interrupted
-  session as a false claim that nobody re-checks.
-- **Never reword a criterion while ticking it.** A tick asserts the criterion
-  *as written* was met; editing the text to fit what you built is how an issue
-  quietly revises its own definition of done.
-- **`gh issue edit` replaces the whole body**, so treat it as
-  read-modify-write: fetch, tick against that copy, then fetch again
-  immediately before writing and compare. If it changed, recompose on the
-  newer text rather than overwriting it.
+Three cautions it does **not** enforce for you:
+
+- **Only tick what is already true.** Verify, then tick — never the reverse.
+  A box ticked against an intention rather than a result outlives the session
+  that meant it: reset the branch, abandon the approach, or let a later commit
+  regress the behaviour, and the tick stays, now a false claim that §2's guard
+  reads as finished work.
+- **Re-check a tick the work moved under.** If you rework something you
+  already ticked, the tick is a claim about the old implementation. Re-verify
+  it before `gh pr create`, or untick it — the guard checks that boxes are
+  ticked, never that they are still true.
+- **Never reword a criterion while ticking it.** The script blocks this on the
+  body it writes, but nothing stops a separate edit. A tick asserts the
+  criterion *as written* was met; editing the text to fit what you built is
+  how an issue quietly revises its own definition of done.
+
+The window between the script's last read and its write is not detectable —
+GitHub offers no conditional update — so it keeps that gap to a single
+command rather than pretending to close it. If someone edited the issue in
+between, the write lands on their text; re-read before assuming otherwise.
 
 **Why the timing is the rule.** Both branches of "tick or `Refs`" are correct,
 so the choice is decided by when it surfaces. Deferred to PR-authoring time it
@@ -150,13 +170,24 @@ more write to get approved, and `Refs` is the cheap non-blocking answer. The
 PR merges; the issue stays open with every box unticked and no record the work
 was done.
 
-That is the *good* outcome. The bad one is that the issue closes anyway: a
-`Refs #N` trailer in a commit message rides the squash commit onto the default
-branch (the table above), and from there into changelog and release-commit
-text where a bare reference can be rendered or read as a closing one. The
-issue then closes with its criteria unticked, for a reason nobody chose —
-after which a stranded issue and a finished one are indistinguishable, because
-the ticks that would have told them apart are exactly what was deferred.
+That is the *good* outcome. The bad one is that the issue closes anyway, with
+its criteria still unticked, for a reason nobody chose. `Refs` itself is inert
+— GitHub closes on closing keywords only — but the reference does not stay
+where you put it: the table above is the list of ways text reaches the default
+branch, and downstream of that, changelog generators and release commits
+restate references in their own words. Anything that restates `Refs #N` as a
+closing keyword closes the issue on merge, and a released changelog is edited
+by tools and humans who never saw the criteria. After that a stranded issue and
+a finished one are indistinguishable, because the ticks that would have told
+them apart are exactly what was deferred.
+
+*How much of that is live here:* release-please, which both repos use, renders
+the commit **subject** and a PR link and drops trailers — `555e28a` carried
+`Refs #165` and the changelog entry shows no reference to #165 at all, and that
+issue was closed by hand rather than by a commit. So the auto-close path is a
+hazard of the shape, not a demonstrated failure in this configuration. It is
+worth naming because the ticks are the only thing that distinguishes the two
+outcomes, and they cost nothing at the moment you verify.
 
 Observed 2026-07-28 — harmon-init#427: all six criteria were satisfied and
 individually verified *during* implementation, PR #438 merged with 17/17

@@ -12,6 +12,7 @@ cd "$(dirname "$0")/.."
 
 closing="./ai/skills/universal/track-work/assets/check-closing-keywords.sh"
 rot="./ai/skills/universal/track-work/assets/check-issue-rot.sh"
+tick="$PWD/ai/skills/universal/track-work/assets/tick-criteria.sh"
 repo="evanharmon1/harmon-devkit"
 
 fail() {
@@ -415,5 +416,200 @@ _rc=0
 _rc=0
 printf 'x' | "$closing" --repo >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "--repo without a value should exit 2 (got $_rc)"
+
+# --- tick-criteria.sh -------------------------------------------------------
+#
+# The guarantee under test is narrowness: this is the one write the skill
+# pre-approves, so every path that could turn a tick into an arbitrary body
+# rewrite has to refuse instead. Fixtures double as the write destination when
+# $ISSUE_BODY_DIR is set, so the round trip stays offline.
+
+ticks="$fixtures/ticks"
+mkdir -p "$ticks"
+
+# write_issue NUM BODY — (re)create a tick fixture.
+write_issue() {
+    printf '%s' "$2" >"$ticks/${repo//\//_}__$1.md"
+}
+
+# issue_is NUM EXPECTED — is the fixture exactly EXPECTED? Both sides go through
+# command substitution so a trailing newline cannot decide a test.
+issue_is() {
+    [ "$(cat "$ticks/${repo//\//_}__$1.md")" = "$(printf '%s' "$2")" ]
+}
+
+# run_tick NUM ARGS... -> echoes the exit code.
+run_tick() {
+    _rc=0
+    _num="$1"
+    shift
+    env ISSUE_BODY_DIR="$ticks" GH_REPO="" \
+        "$tick" --repo "$repo" --issue "$_num" "$@" >/dev/null 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+body_three='## Acceptance
+
+- [ ] first criterion
+- [ ] second criterion
+- [x] already done
+'
+
+echo "==> a matched criterion is ticked and nothing else moves"
+write_issue 20 "$body_three"
+[ "$(run_tick 20 --match 'second')" = 0 ] || fail "a unique --match should tick"
+issue_is 20 '## Acceptance
+
+- [ ] first criterion
+- [x] second criterion
+- [x] already done
+' || fail "only the matched criterion should have changed"
+
+echo "==> --index counts unticked items, not body lines"
+write_issue 21 "$body_three"
+[ "$(run_tick 21 --index 2)" = 0 ] || fail "--index 2 should tick the second unticked item"
+issue_is 21 '## Acceptance
+
+- [ ] first criterion
+- [x] second criterion
+- [x] already done
+' || fail "--index should address unticked items in order"
+
+echo "==> several selectors tick several criteria in one write"
+write_issue 22 "$body_three"
+[ "$(run_tick 22 --index 1 --match 'second')" = 0 ] || fail "two selectors should both apply"
+issue_is 22 '## Acceptance
+
+- [x] first criterion
+- [x] second criterion
+- [x] already done
+' || fail "both selected criteria should be ticked"
+
+echo "==> an ambiguous selector refuses rather than guessing"
+write_issue 23 "$body_three"
+[ "$(run_tick 23 --match 'criterion')" = 1 ] || fail "a selector matching 2 items should exit 1"
+issue_is 23 "$body_three" || fail "an ambiguous selector must not write"
+
+echo "==> a selector matching nothing refuses instead of no-opping"
+write_issue 24 "$body_three"
+[ "$(run_tick 24 --match 'no such text')" = 1 ] || fail "an unmatched selector should exit 1"
+issue_is 24 "$body_three" || fail "an unmatched selector must not write"
+
+echo "==> an already-ticked criterion is not a match"
+write_issue 25 "$body_three"
+[ "$(run_tick 25 --match 'already done')" = 1 ] || fail "a ticked item should not be selectable"
+issue_is 25 "$body_three" || fail "a ticked selector must not write"
+
+echo "==> an issue with nothing left to tick exits 1"
+write_issue 26 '- [x] all done
+'
+[ "$(run_tick 26 --index 1)" = 1 ] || fail "a fully ticked issue should exit 1"
+
+echo "==> --dry-run writes nothing"
+write_issue 27 "$body_three"
+[ "$(run_tick 27 --match 'first' --dry-run)" = 0 ] || fail "--dry-run should succeed"
+issue_is 27 "$body_three" || fail "--dry-run must leave the body untouched"
+
+echo "==> the alternate checkbox spellings are tickable"
+write_issue 28 '> - [ ] quoted criterion
+1. [ ] ordered criterion
+*  [ ] loose marker
+'
+[ "$(run_tick 28 --index 1 --index 2 --index 3)" = 0 ] || fail "GFM spellings should tick"
+issue_is 28 '> - [x] quoted criterion
+1. [x] ordered criterion
+*  [x] loose marker
+' || fail "every GFM checkbox spelling should be ticked in place"
+
+echo "==> a literal [ ] inside the criterion text is left alone"
+write_issue 29 '- [ ] the parser accepts [ ] as input
+'
+[ "$(run_tick 29 --index 1)" = 0 ] || fail "should tick a criterion containing a bare box"
+issue_is 29 '- [x] the parser accepts [ ] as input
+' || fail "only the leading checkbox should flip"
+
+# The live path, with `gh` stubbed on PATH: $ticks is deliberately unset here so
+# the script takes its real read-modify-write branch. The stub serves the body
+# from $STUB_BODY_1 on the first `issue view` and $STUB_BODY_2 on the second,
+# which is what lets the race between the final read and the write be tested at
+# all — and records any `issue edit` body at $STUB_EDIT.
+stub_bin="$tmp/bin"
+mkdir -p "$stub_bin"
+cat >"$stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
+    n=0
+    [ -f "$STUB_COUNT" ] && n="$(cat "$STUB_COUNT")"
+    n=$((n + 1))
+    printf '%s' "$n" >"$STUB_COUNT"
+    if [ "$n" -eq 1 ]; then cat "$STUB_BODY_1"; else cat "${STUB_BODY_2:-$STUB_BODY_1}"; fi
+    exit 0
+fi
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "edit" ]; then
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--body-file" ]; then cp "$2" "$STUB_EDIT"; fi
+        shift
+    done
+    exit 0
+fi
+exit 1
+STUB
+chmod +x "$stub_bin/gh"
+
+# run_tick_live ARGS... -> echoes the exit code, with the stub on PATH.
+run_tick_live() {
+    _rc=0
+    env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+        STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+        STUB_EDIT="$tmp/edited" \
+        "$tick" --repo "$repo" --issue 30 "$@" >/dev/null 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+echo "==> the live path sends the ticked body to gh issue edit"
+printf '%s' "$body_three" >"$tmp/b1"
+printf '%s' "$body_three" >"$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited"
+[ "$(run_tick_live --match 'first')" = 0 ] || fail "the live path should tick"
+[ "$(cat "$tmp/edited")" = "$(printf '%s' '## Acceptance
+
+- [x] first criterion
+- [ ] second criterion
+- [x] already done
+')" ] || fail "gh issue edit should receive exactly the ticked body"
+
+echo "==> a body that moves between the final read and the write is refused"
+printf '%s' "$body_three" >"$tmp/b1"
+printf '%s' '## Acceptance
+
+- [ ] first criterion
+- [ ] second criterion, reworded by someone else
+- [x] already done
+' >"$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited"
+[ "$(run_tick_live --match 'first')" = 1 ] || fail "a body that changed under us should exit 1"
+[ ! -f "$tmp/edited" ] || fail "a changed body must not be overwritten"
+
+echo "==> an unreadable issue on the live path exits 2"
+rm -f "$tmp/count" "$tmp/edited"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/does-not-exist" \
+    STUB_EDIT="$tmp/edited" \
+    "$tick" --repo "$repo" --issue 30 --index 1 >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "an unreadable issue should exit 2 (got $_rc)"
+
+echo "==> usage errors exit 2"
+[ "$(run_tick 20)" = 2 ] || fail "no selector should exit 2"
+[ "$(run_tick 20 --index 0)" = 2 ] || fail "--index 0 should exit 2"
+[ "$(run_tick 20 --index abc)" = 2 ] || fail "a non-numeric --index should exit 2"
+_rc=0
+env ISSUE_BODY_DIR="$ticks" GH_REPO="" "$tick" --repo "$repo" --issue x --index 1 >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "a non-numeric issue number should exit 2 (got $_rc)"
+_rc=0
+env ISSUE_BODY_DIR="$ticks" GH_REPO="" "$tick" --issue 20 --index 1 >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "a missing --repo should exit 2 (got $_rc)"
+[ "$(run_tick 999 --index 1)" = 2 ] || fail "an unreadable issue should exit 2"
 
 echo "✓ track-work checks behave"
