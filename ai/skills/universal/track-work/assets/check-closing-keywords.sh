@@ -200,6 +200,13 @@ unchecked_boxes() {
     printf '%s\n' "$1" | grep -cE "$UNCHECKED_RE" || true
 }
 
+# The ticker ships beside this script, and neither is on PATH — a bare name in
+# the remediation below is a command the reader cannot run. Resolve it from this
+# script location so the suggestion is copy-pasteable from anywhere.
+_here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _here=""
+tick_cmd="${_here:+${_here}/}tick-criteria.sh"
+[ -x "$tick_cmd" ] || tick_cmd="<skill-dir>/assets/tick-criteria.sh"
+
 violations=""
 unreadable=""
 seen=""
@@ -297,7 +304,7 @@ Fix, either way:
   * drop the closing keyword — replace "Closes #<n>" with "Refs #<n>". Editing the
     PR title or body re-runs this check by itself.
   * or tick the items this PR genuinely satisfies:
-        tick-criteria.sh --repo ${default_repo} --issue <n> --match '<criterion text>'
+        ${tick_cmd} --repo ${default_repo} --issue <n> --match '<criterion text>'
     then RE-RUN this check by hand. It watches pull-request events, not issues, so
     editing an issue does not clear a red check on its own.
     Reaching this point means the ticks were left until PR time. They belong at

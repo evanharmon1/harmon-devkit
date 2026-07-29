@@ -702,6 +702,19 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
+echo "==> leaving a blockquote ends the fence it opened"
+write_issue 50 '> ```
+- [ ] the real criterion
+> ```
+> - [ ] example inside the new quoted fence
+'
+[ "$(run_tick 50 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 50 '> ```
+- [x] the real criterion
+> ```
+> - [ ] example inside the new quoted fence
+' || fail "an unquoted line must end a fence opened inside a blockquote"
+
 echo "==> a backtick line whose info string holds backticks is not an opener"
 write_issue 47 '``` `not an opener`
 ```
@@ -808,8 +821,8 @@ echo "==> the closing-keyword guard points at the narrowed ticker"
 _out="$(printf '%s' 'Closes #5' |
     env ISSUE_BODY_DIR="$fixtures" GH_REPO="" "$closing" --repo "$repo" 2>&1 || true)"
 case "$_out" in
-*tick-criteria.sh*) ;;
-*) fail "the guard should recommend tick-criteria.sh" ;;
+*/assets/tick-criteria.sh*) ;;
+*) fail "the guard should print a runnable path, not a bare command name" ;;
 esac
 case "$_out" in
 *"gh issue edit"*) fail "the guard should no longer recommend gh issue edit" ;;

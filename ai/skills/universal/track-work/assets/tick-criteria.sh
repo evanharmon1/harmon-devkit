@@ -260,11 +260,15 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_in_list = 0 
         after_marker = substr(bare, RLENGTH + 1)
     }
 
-    # A fence that opened inside a list item ends where the item does: the first
-    # non-blank line indented less than the item content column leaves the
-    # container, and CommonMark ends the fence with it. That line is then live
-    # again — it may be a new fence opener, or a criterion.
-    if (infence == 1 && fence_in_list && $0 !~ /^[ \t]*$/ && fence_indent < fence_col) {
+    # A fence ends where its CONTAINER ends, in either direction of nesting: the
+    # first non-blank line that leaves the list item (indented less than the item
+    # content column) or leaves the blockquote (shallower than the opener depth)
+    # closes it implicitly, exactly as CommonMark does. That line is then live
+    # again — it may be a new fence opener, or a criterion. Without the
+    # blockquote half, a later `> ``` ` reads as the old opener closer and the
+    # sample inside the new quoted block becomes selectable.
+    if (infence == 1 && $0 !~ /^[ \t]*$/ &&
+        ((fence_in_list && fence_indent < fence_col) || quoted < fence_quoted)) {
         infence = 0
     }
 
