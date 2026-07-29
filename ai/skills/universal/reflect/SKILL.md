@@ -26,7 +26,25 @@ have dropped, and note that the tables may be incomplete. Do not trust
 remembered status — re-verify each one live:
 
 - `gh pr view <n> --json state,isDraft,mergedAt,reviewDecision,statusCheckRollup,url,title`
-- `gh issue view <n> --json state,stateReason,assignees,url,title`
+- `gh issue view <n> --json state,stateReason,assignees,labels,url,title`
+
+**Read the claim off the markers, not off the issue.** A live claim is an
+`agent:*` label, a card at `In Progress`, or a claim comment **not superseded by
+a later `Claim released —` comment** (the claim comment outlives its own
+release, so on its own it proves nothing about now).
+
+Neither `state` nor `assignees` may gate that check. Both exclude real stale
+claims: a closing PR auto-closes the issue while the label and card stay set,
+and a `/close` that removed the assignee before failing on the label or status
+leaves a claim with nobody assigned. Gating on either is how the claim this
+step exists to surface becomes invisible. Do not require the label
+specifically, either — `/preflight` treats a missing `agent:*` family as benign
+and claims anyway, so demanding it would miss every claim in an older repo or
+one with `project_management: none`, which are exactly the repos where the
+label cannot exist. Report it as "open — claimed,
+in progress", then check it is still true: a claim with no open PR and no work
+in flight is a loose end for §2, not a status. `/close` offers the commands to
+hand it back.
 
 Keep each reference's repository identity: a bare `#123` from another repo
 must be verified with `--repo owner/repo` (or by its full URL), never against

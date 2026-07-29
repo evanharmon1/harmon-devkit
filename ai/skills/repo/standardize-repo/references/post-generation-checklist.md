@@ -241,9 +241,15 @@ Both owner types — the org-only follow-ups are in the next section.
   task setup:github-project
   ```
 
-  > It looks the project up by title, so it is safe to re-run and safe to run from
-  > any of the owner's repos (the first run creates it, later runs only
-  > reconcile). It seeds the full `Status` pipeline plus the **`Size`** number
+  > It looks the project up by title and can be run from any of the owner's repos
+  > (the first run creates it, later runs only reconcile). **Title lookup is not
+  > identity**, though: it takes the first match and creates a new board when
+  > nothing matches, then overwrites `ORG_PROJECT_ID` with whatever it picked. If
+  > the owner already has boards — a renamed one, duplicate titles, or an obsolete
+  > closed board holding the canonical title — run the identity preflight in
+  > [`mode-update.md`](./mode-update.md) §6a **first**. On a genuinely fresh owner
+  > with no boards, creation is the expected outcome and there is nothing to check.
+  > It seeds the full `Status` pipeline plus the **`Size`** number
   > field — `Size` is the numeric estimate, because only project number fields sum
   > in view group headers — and never deletes existing options or fields.
   > **On an org** it also records the project id in the `ORG_PROJECT_ID` org
@@ -262,9 +268,11 @@ Both owner types — the org-only follow-ups are in the next section.
       options in the Project UI — the script seeds `auth`/`billing`/`platform`
       only, so add this product's real domains (from your ERD entities). `Layer`
       (`ui`/`logic`/`data`/`integration`) is product-independent and normally needs
-      no edits. Adding an option to an already-created field is manual — re-running
-      the setup task will not do it. Org repos do this in the org's issue-field
-      settings instead (next section).
+      no edits. A re-run appends any missing *starter* option, but never your
+      repo-specific ones and never a **removal** — retiring an option is manual
+      too, and only after re-mapping (deleting an assigned option clears those
+      values). Org repos do this in the org's issue-field settings instead (next
+      section).
 
 - [ ] **[scriptable via gh]** Seed this repo's **labels** — the five starter
       families (concerns / source / workflow / `layer:` / `domain:`). Labels are
@@ -279,6 +287,57 @@ Both owner types — the org-only follow-ups are in the next section.
   > `layer:backend`, `layer:infra` labels — stays manual. Whenever you add a
   > `domain:` option, add it to `scripts/setup-github-labels.sh` **and re-run this
   > task**: editing the script alone does not touch the live labels.
+
+- [ ] **[manual — GitHub UI]** Create the project's **starter views** — **Board**,
+      **Triage**, **Agent queue**, **Planning**, **Mine**. Projects V2 has no view
+      API, so no task can do this and re-running the setup tasks will not create
+      them. The filter and layout for each view are in the generated repo's
+      `docs/project-management.md`; keep the saved set small and slice the one
+      board for everything else.
+
+  > **`Triage` cannot be built exactly as specified** — build the closest
+  > workable form and move on. Its spec groups by **`Type`**, which is an
+  > org-level issue field a personal account does not have, and filters on
+  > "missing a `Priority`" **or** `needs-triage`, a union across two qualifiers
+  > that Projects cannot express (distinct qualifiers AND). On a personal
+  > account, group by something you do have (`Priority`); either way pick one
+  > half of the filter and know the other half of the inbox is not in this view.
+  > Tracked upstream as evanharmon1/harmon-init#444.
+
+- [ ] **[manual — GitHub UI]** Turn on the project's built-in **"Auto-add to
+      project"** workflow — this is what puts **every** issue and PR on the board.
+      In the Project's **Settings → Workflows**, enable *Auto-add to project*,
+      point it at this repo, and set the filter to `is:open`.
+
+  > It is GitHub's native built-in — no Actions, no tokens — and the only
+  > mechanism that catches an item however it was created. A repo that skips it
+  > silently never reaches the project however completely the rest of this
+  > section was followed, and (on an org) `project-automation.yml` then has no
+  > items whose `Status` it can sync. Four things the UI will not warn you about:
+  >
+  > - **Filter qualifiers AND together**, so `is:issue is:pr` matches *nothing*.
+  >   Leave the type unqualified — `is:open` alone already matches both issues
+  >   and PRs, which is what the board wants.
+  > - **One workflow targets one repo.** Every repo feeding the board needs its
+  >   own auto-add workflow: add a new one, never re-point an existing repo's, or
+  >   that repo silently stops feeding the board.
+  > - **It does not backfill.** Existing items are never added — the workflow
+  >   fires only when an item is created or updated afterwards. Adopting an
+  >   existing repo, add the current backlog to the project by hand, or the board
+  >   reads as complete while the backlog is missing.
+  > - **The workflows are capped per project** — 1 on Free, 5 on Pro/Team, 20 on
+  >   Enterprise. "Every repo feeds the one board" holds only under that cap, and
+  >   **no fallback is specified here** — past it, treat board coverage as
+  >   knowingly incomplete rather than assumed. This is not a gap to close on the
+  >   spot with an `actions/add-to-project` workflow: it needs a Projects-write
+  >   token that the repo `GITHUB_TOKEN` does not have and the bot PAT
+  >   deliberately withholds (org-**read**-only), and fork-PR coverage would
+  >   require a fork-influenced trigger — which the CI App key must never be read
+  >   from (`docs/architecture/security.md`: not fork `pull_request`, not
+  >   `pull_request_target`, not `workflow_run`). Design it deliberately, or
+  >   accept the gap; do not improvise it here. The issue-form `projects:` key is
+  >   not a substitute either: it covers only form-created issues and hard-codes
+  >   a project number.
 
 ### Org repos only (`github_org != author_git_provider_username`)
 
@@ -295,10 +354,15 @@ answering `linear`/`none` has no such task and should skip them.
   ```
 
   > Adds the org's **Product**, **Agent**, **Domain**, and **Layer** issue fields
-  > (public preview). Idempotent and non-destructive: an existing field is left
-  > as-is, options and all, and the script warns when a name already exists with
-  > the wrong data type — GitHub cannot change a field's data type in place, so
-  > rename or delete it in the org's issue-field settings and re-run.
+  > (public preview). Idempotent and additive: an existing field keeps every
+  > option it has and gains any missing *starter* one, and nothing is ever
+  > removed. It warns and exits 0 rather than failing when it cannot reconcile a
+  > field — wrong data type (GitHub cannot change a type in place, and deleting
+  > the field destroys every issue's value for it org-wide: **rename** it in the
+  > org's issue-field settings, re-run to create the correctly-typed replacement,
+  > migrate the values, and only then delete the original), option cap reached,
+  > or a `PATCH` the preview rejected — so read the WARNING lines rather than
+  > trusting the exit code.
 
 - [ ] **[manual — GitHub UI; `project_management: github` only]** Customize the
       **`Domain`** options. The script
@@ -308,8 +372,10 @@ answering `linear`/`none` has no such task and should skip them.
       for the domains it actually uses: add those to
       `scripts/setup-github-labels.sh` and re-run `task setup:github-labels` in
       that repo. `Layer` (`ui`/`logic`/`data`/`integration`) is product-independent
-      and normally needs no edits. Adding an option to an already-created field is
-      manual — re-running the setup task will not do it.
+      and normally needs no edits. A re-run appends any missing *starter* option,
+      but never your repo-specific ones and never a **removal** — retiring an
+      option is manual too, and only after re-mapping (deleting an assigned option
+      clears those values).
 
 - [ ] **[scriptable via gh]** Add the bot machine account
       (`<author_git_provider_username>-bot`) as a **Write** collaborator (it does
