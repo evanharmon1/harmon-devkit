@@ -36,7 +36,6 @@
     },
     "ghcr.io/tailscale/codespace/tailscale": {},
     "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers-extra/features/go-task:1": {},
     "ghcr.io/itsmechlark/features/1password:1.5.0": {}
   },
   "mounts": [

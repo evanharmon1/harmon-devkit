@@ -8,6 +8,38 @@ you can tell quickly whether the guard failed or you have found something new.
 For everyday problems see [troubleshooting.md](troubleshooting.md); this file is
 the deep end.
 
+## The image build fails with `403: rate limit exceeded`
+
+**Symptom.** A devcontainer build fails part-way through a Feature install, and
+a rerun of the identical commit succeeds. The log carries:
+
+```text
+urllib.error.HTTPError: HTTP Error 403: rate limit exceeded
+nanolayer.utils.invoker.Invoker.InvokerException: … VERSION="latest" … ./install.sh' failed
+ERROR: Feature "…" failed to install!
+```
+
+**Cause.** A devcontainer Feature given no `version` option resolves `latest` by
+calling `api.github.com` **from inside the build**. Unauthenticated, that API
+allows 60 requests/hour/IP, and GitHub-hosted runners share egress IPs — so the
+call fails unpredictably regardless of your own usage. The build is fine; the
+lookup is not.
+
+The tell is that it is **flaky rather than deterministic**, and that a rerun
+with no code change goes green. Do not go looking for a defect in the diff.
+
+Shipped fix: tools are installed in the `Dockerfile` from pinned
+`https://github.com/<owner>/<repo>/releases/download/v${FOO_VERSION}/…` URLs
+carrying `# renovate: datasource=github-releases` annotations, not from
+Features that resolve a version at build time. `task` was the last holdout
+(harmon-init#427); `scripts/devcontainer-assert.sh unit` — which `task ci`
+runs — now fails if the Feature returns or the pin goes missing.
+
+**Generalize this one.** Any build-time call to an unauthenticated public API
+is a flake waiting to happen. Pinning the Feature's own version does *not* fix
+it: the lookup happens inside the Feature's install script whichever version of
+it runs. Remove the lookup, don't version it.
+
 ## The conductor and Telegram bridge do not start
 
 **Symptom.** After launching the container, the agent-deck conductor reports

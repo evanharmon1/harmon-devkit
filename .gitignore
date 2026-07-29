@@ -13,8 +13,16 @@ Thumbs.db
 *~
 # VS Code: commit the curated shared project config, ignore everything else
 # (extensions auto-write machine-specific files into .vscode/). The broad ignore
-# MUST come before the `!` whitelist — later rules win in .gitignore.
+# MUST come before the `!` whitelist — later rules win in .gitignore. `!/.vscode/`
+# re-includes the DIRECTORY first: a global excludesFile with a bare `.vscode/`
+# is common, and git never descends into an ignored directory, so without it the
+# file-level whitelist below silently does nothing for those users. Anchored with
+# a leading slash so it only re-includes the ROOT .vscode/ — an unanchored
+# `!.vscode/` would also un-ignore nested ones (e.g. packages/foo/.vscode/ in a
+# monorepo) whose machine-specific files the root-anchored `.vscode/*` above
+# does not cover.
 .vscode/*
+!/.vscode/
 !.vscode/settings.json
 !.vscode/extensions.json
 !.vscode/tasks.json
@@ -60,6 +68,10 @@ settings.local.json
 
 # Devcontainer env files (injected locally via 1Password, never committed)
 .devcontainer/**/devcontainer.env
+
+# Devcontainer feature lockfile — regenerated on each container build (pins
+# resolved feature digests); a local build artifact, never committed.
+.devcontainer/**/devcontainer-lock.json
 
 #             .env
 #------------------------------------------------------------------------------

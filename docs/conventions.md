@@ -17,7 +17,8 @@ it points here.
   major bump.
 - **Feature branches only.** Direct commits to `main` are blocked by the
   `guard:no-commit-to-main` pre-commit hook and the branch ruleset. Land changes
-  via a PR; code-owner review and the `verify` + `security` checks are required.
+  via a PR; code-owner review and the `verify` + `security`
+  checks are required.
 - **Never bypass hooks** (`--no-verify` is forbidden) — fix the underlying issue.
   In the devcontainer a Claude Code hook actively blocks `--no-verify` and
   validates commit messages.
@@ -81,8 +82,12 @@ skill at authoring time and by the **tracking guard**
   `yaml:lint`).
 - Pipeline order is **`check → build → validate → test → security`**, with
   `verify` (the definition-of-done gate — check + validate + test) and
-  `ci` (full — verify + security) as the aggregates. `check` is the fast
-  inner-loop/hook gate.
+  `ci` (full — verify + security) as the aggregates. `check` is the
+  fast inner-loop/hook gate.
+- **`task ci` mirrors CI** — every check the build workflow *gates on* that can
+  run locally belongs there. The one exception is a check that needs **CI-only
+  infrastructure**: document it in `AGENTS.md` as an exception instead of faking
+  it locally.
 - **`lint:*` and `check` are read-only gates** — they report and fail, never
   modify files. All auto-fixing lives in **`task format`**, **`task format:file
   -- <path>`**, and **`task fix`** (= format then lint). Pre-commit hooks run the

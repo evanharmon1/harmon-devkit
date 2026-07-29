@@ -52,6 +52,34 @@ assert_unit() {
     [ -f "$bot_config" ] || fail "bot devcontainer.json not found at ${bot_config}"
     [ -f "$dev_config" ] || fail "dev devcontainer.json not found at ${dev_config}"
 
+    # `task` must come from the Dockerfile's PINNED release, never a
+    # devcontainer Feature: the Feature resolved "latest" through the anonymous
+    # GitHub API from inside the build, and GitHub-hosted runners share egress
+    # IPs against a 60 req/hour/IP limit, so the required build check 403'd at
+    # random (harmon-init#427). Asserted here, in unit mode, because this is the
+    # gated path — `task ci` runs it with no container. The container-mode check
+    # below proves the binary actually landed, but it needs a built image and so
+    # runs only from the manual smoke tasks.
+    local dockerfile cfg
+    dockerfile="${repo_root}/.devcontainer/Dockerfile"
+    [ -f "$dockerfile" ] || fail "devcontainer Dockerfile not found at ${dockerfile}"
+    for cfg in "$bot_config" "$dev_config"; do
+        if grep -q 'features/go-task' "$cfg"; then
+            fail "${cfg} installs task via a devcontainer Feature — pin it in the Dockerfile instead (harmon-init#427)"
+        fi
+    done
+    grep -q '^ARG TASK_VERSION=' "$dockerfile" ||
+        fail "no 'ARG TASK_VERSION=' pin found in ${dockerfile}"
+    grep -q '# renovate: datasource=github-releases depName=go-task/task' "$dockerfile" ||
+        fail "the TASK_VERSION pin in ${dockerfile} carries no '# renovate:' annotation, so it would never be bumped"
+    # Match the URL through `v${TASK_VERSION}` (fixed-string, so the literal
+    # shell expansion in the Dockerfile is compared verbatim): a URL that merely
+    # mentions go-task would also be satisfied by a hardcoded version or a
+    # "latest" path, which is the exact failure being fixed — and would leave
+    # Renovate dutifully bumping an ARG that nothing reads.
+    grep -qF 'go-task/task/releases/download/v${TASK_VERSION}/task_linux_' "$dockerfile" ||
+        fail "${dockerfile} does not install task from the pinned \${TASK_VERSION} release URL"
+
     # Run from a non-repo temp dir so `git rev-parse --is-inside-work-tree`
     # inside init-env.sh is false and the rebuild `git pull` never fires.
     local work_dir env_file
@@ -176,6 +204,33 @@ assert_container() {
         fail "could not read git user.name in container"
     git_email="$(docker exec -u vscode "$container_id" git config --global user.email)" ||
         fail "could not read git user.email in container"
+
+    # `task` ships from the Dockerfile's pinned release, NOT a devcontainer
+    # Feature: the Feature resolved "latest" through the anonymous GitHub API
+    # from inside the build and 403'd at random on shared runner IPs. With the
+    # Feature gone, nothing else would notice if that RUN block were dropped —
+    # the image would silently lose the one binary every task target runs
+    # through. The expected version is read from the Dockerfile rather than
+    # hardcoded here: a Renovate bump then moves the pin and this assertion's
+    # source of truth in ONE file, so it cannot split across a twin.
+    local script_dir repo_root pinned_task actual_task
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
+    pinned_task="$(sed -n 's/^ARG TASK_VERSION=//p' "${repo_root}/.devcontainer/Dockerfile")"
+    [ -n "$pinned_task" ] ||
+        fail "no 'ARG TASK_VERSION=' pin found in ${repo_root}/.devcontainer/Dockerfile"
+    actual_task="$(docker exec -u vscode "$container_id" sh -c 'task --version' 2>/dev/null)" ||
+        fail "task is not runnable in the ${profile} container"
+    # Compare EXACTLY, not as a substring: `*3.5.2*` also matches the output
+    # "3.5.20", which would wave through a binary that is not the pinned one.
+    # `task --version` prints a bare "3.52.0"; older builds printed
+    # "Task version: v3.52.0" — reduce both shapes to the bare version first.
+    local actual_version
+    actual_version="$(printf '%s' "$actual_task" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    [ -n "$actual_version" ] ||
+        fail "could not parse a version out of 'task --version' output '${actual_task}' in the ${profile} container"
+    [ "$actual_version" = "$pinned_task" ] ||
+        fail "task version '${actual_version}' in the ${profile} container does not match the pin '${pinned_task}'"
 
     if [ "$profile" = "bot" ]; then
         # Assert the bot identity RELATIONSHIP, not literal values, so the

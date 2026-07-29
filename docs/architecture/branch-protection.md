@@ -8,8 +8,11 @@ This document explains the branch protection ruleset applied to `main` and how i
 
 An importable copy of the ruleset ships in this repo at
 `.github/Branch Protection Ruleset - Protect Main.json`. Apply it through the
-GitHub **UI import** (do this once `build.yml` is on `main`, so the required
-`verify`/`security` checks resolve):
+GitHub **UI import** — do this only once `build.yml` are on
+`main`, so the required
+`verify`/`security` checks can actually report.
+Importing first wedges the repository: a required check with no workflow to emit
+it stays pending forever and blocks every pull request.
 
 > Settings → Rules → Rulesets → **New ruleset ▸ Import a ruleset** → select
 > `.github/Branch Protection Ruleset - Protect Main.json`.
@@ -17,8 +20,23 @@ GitHub **UI import** (do this once `build.yml` is on `main`, so the required
 To change the ruleset later, **edit the existing one in the UI** (Settings →
 Rules → Rulesets → Protect Main) — don't re-import.
 
-**Why the UI for a one-time import:** a blind REST `POST` is **not idempotent**
-(every run creates another "Protect Main" ruleset — silent duplicates). The
+**When a template update adds a required check** (this file is an import
+template, not live configuration — a `copier update` changes the JSON here and
+nothing on GitHub), apply it by hand in that order:
+
+1. **Merge the workflow first.** The job that emits the check must already be on
+   `main`.
+2. **Then** add the context under Settings → Rules → Rulesets → Protect Main →
+   Require status checks to pass.
+
+Doing it the other way round wedges the repository: a required check that has
+never reported blocks every pull request, including the one that would add the
+workflow. If that happens, remove the context from the ruleset, land the
+workflow, and add it back.
+
+**Why the UI, not `gh api … rulesets`:** a blind REST `POST` is **not
+idempotent** (every run creates another "Protect Main" ruleset — silent
+duplicates). The
 [REST ruleset API](https://docs.github.com/en/rest/repos/rules?apiVersion=2022-11-28)
 now supports `merge_queue`, but safe automation must first discover exactly one
 matching live ruleset and then `PUT` its id. The UI import keeps the initial
