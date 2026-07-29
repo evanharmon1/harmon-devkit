@@ -224,7 +224,7 @@ read_body_or_die >"$before"
 # a full parser, from a checkbox nested under a list item, where ticking is
 # right. Prefer `--match` when a body carries either.
 items="$(awk '
-BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0 }
+BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; prev_kind = "blank" }
 {
     # Walk the container prefix once, in the order it appears: indentation,
     # blockquote markers, and (for a possible opener) list markers, which nest in
@@ -278,6 +278,7 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0 }
     # line starts a new item, it does not close anything.
     had_marker = 0
     open_col = col
+    open_sp = sp
     open_quoted = quoted
     after_marker = bare
     if (infence == 0) {
@@ -285,17 +286,29 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0 }
             if (match(after_marker, /^([-*+]|[0-9]+[.)])[ \t]+/)) {
                 had_marker = 1
                 open_col += RLENGTH
+                open_sp = 0
                 after_marker = substr(after_marker, RLENGTH + 1)
                 continue
             }
             if (substr(after_marker, 1, 1) == ">") {
                 open_quoted++
                 open_col++
+                open_sp = 0
                 after_marker = substr(after_marker, 2)
                 if (substr(after_marker, 1, 1) == " ") {
                     open_col++
                     after_marker = substr(after_marker, 2)
                 }
+                continue
+            }
+            # A container marker consumes one following space; the rest is the
+            # fence indentation, which still counts toward the three-space cap.
+            # Left unconsumed, the anchored delimiter match simply failed and a
+            # perfectly valid `- >   ``` ` never opened.
+            if (substr(after_marker, 1, 1) == " ") {
+                open_col++
+                open_sp++
+                after_marker = substr(after_marker, 2)
                 continue
             }
             break
@@ -311,7 +324,7 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0 }
         infence = 0
     }
 
-    opens = (infence == 0 && sp < 4 && match(after_marker, /^(```+|~~~+)/))
+    opens = (infence == 0 && open_sp < 4 && match(after_marker, /^(```+|~~~+)/))
     # A backtick fence cannot carry backticks in its info string, so a line like
     # ``` followed by `quoted text` is not an opener at all. Treated as one, the
     # NEXT real fence reads as its closer and the sample inside becomes live.
@@ -339,7 +352,7 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0 }
             fence_quoted = open_quoted
             # The container content column, not the delimiter column: a document
             # fence indented one space still contains lines at column 0.
-            fence_col = had_marker ? open_col : open_col - sp
+            fence_col = open_col - open_sp
         } else if (quoted == fence_quoted && ch == fence_ch && len >= fence_len && rest_after ~ /^[ \t]*$/) {
             # A closer has to sit in the same container as its opener: inside an
             # unquoted fence, a literal `> ``` ` is example text, not the end.
@@ -395,6 +408,16 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0 }
 
     # `bare` is $0 with the blockquote prefix and leading spaces already removed,
     # so the item pattern only has to describe the marker and the box.
+    # Classify this line for the next one: blank, a list item (which keeps an
+    # ordered marker in list context), or paragraph text.
+    if ($0 ~ /^[ \t]*$/) {
+        this_kind = "blank"
+    } else if (bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[ \t]/) {
+        this_kind = "list"
+    } else {
+        this_kind = "para"
+    }
+
     if (infence == 0 && bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[[:space:]]+\[[ \t]\]([[:space:]]|$)/) {
         # GFM caps an ordered marker at nine digits; beyond that the line is not
         # a list item at all, so `1234567890. [ ] text` is prose. Counted here
@@ -416,8 +439,18 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0 }
             }
             if (pad > 4) item_ok = 0
         }
+        # Only an ordered marker starting at 1 may interrupt a paragraph, so
+        # `2. [ ] text` directly under prose stays part of that prose. Tracked
+        # with the previous line kind rather than a full block parse: inside a
+        # list, `2.` continues the list and is a criterion as usual.
+        if (item_ok && prev_kind == "para" && match(bare, /^[ \t]*[0-9]+/)) {
+            num = substr(bare, RSTART, RLENGTH)
+            sub(/^[ \t]*/, "", num)
+            if (num + 0 != 1) item_ok = 0
+        }
         if (item_ok) print NR ":" $0
     }
+    prev_kind = this_kind
 }' "$before")"
 [ -n "$items" ] || {
     echo "tick-criteria: $repo#$issue has no unticked items" >&2

@@ -702,6 +702,43 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
+echo "==> an ordered marker other than 1 cannot interrupt a paragraph"
+write_issue 58 'Some ordinary paragraph text.
+2. [ ] example prose, still in the paragraph
+
+- [ ] the real criterion
+'
+[ "$(run_tick 58 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 58 'Some ordinary paragraph text.
+2. [ ] example prose, still in the paragraph
+
+- [x] the real criterion
+' || fail "an ordered marker under prose must not be tickable"
+
+echo "==> an ordered marker continuing a list is still a criterion"
+write_issue 59 '1. [ ] first
+2. [ ] second continues the list
+'
+[ "$(run_tick 59 --index 2)" = 0 ] || fail "2. should tick inside a list"
+issue_is 59 '1. [ ] first
+2. [x] second continues the list
+' || fail "an ordered item in list context should tick"
+
+echo "==> fence indentation after a quote marker still opens the fence"
+write_issue 60 '- >   ```text
+  >   - [ ] example in an indented quoted fence
+  >   ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 60 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 60 '- >   ```text
+  >   - [ ] example in an indented quoted fence
+  >   ```
+
+- [x] the real criterion
+' || fail "permitted fence indentation after a quote must still open the fence"
+
 echo "==> an indented opener still caps its closer at three spaces"
 write_issue 54 ' ```
     ```
