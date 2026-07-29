@@ -118,8 +118,9 @@ read it in the UI) — never guess.
 
     - `In Progress` — this claim wrote it. Restore. Where the record says the
       prior status was `none`, restoring means *clearing* the field, not
-      picking a value: manual, like `Agent` (`gh project item-edit --clear`).
-      Only `unknown` — a read that actually failed — needs the user.
+      picking a value — `set-issue-status.sh` only sets options, so that is
+      manual (`gh project item-edit --clear`, or the board UI). Only
+      `unknown` — a read that actually failed — needs the user.
     - `Verifying`, `In Review`, `Ready to Merge` — `/shepherd` wrote these for
       a PR. If that PR is now closed unmerged or abandoned, they are this
       lifecycle's own leftovers and no work is in flight: restore. Refusing
@@ -128,18 +129,11 @@ read it in the UI) — never guess.
     - Anything else — `Icebox`, `Next`, `Shaping`, a status this lifecycle
       never writes — someone else moved it. Leave it and say what you found.
 
-    The `Agent` field is the fourth marker, and it follows the same rule —
-    but **restore, don't just clear.** The record holds both whether the claim
-    set it and what it held before, so use both: if the claim overwrote
-    another agent's name (`/preflight` blocks on that, and the user can
-    explicitly approve proceeding anyway), put that name back rather than
-    clearing the field, which would lose ownership information the claim
-    borrowed. Clear only when the recorded prior value was `none`. If the
-    claim did not set it at all, leave it entirely alone. `set-issue-status.sh` only *sets* single-select options, so
-    clearing is manual (`gh project item-edit --clear` on the item, or the
-    board UI); say so rather than leaving a claim-set value standing, because
-    an `Agent` value with no `In Progress` status still reads as "an agent has
-    this".
+    **Leave the `Agent` field alone.** A claim never writes it — it records
+    which agent *should* implement the issue, set at planning, while the
+    `agent:*` label records which one *is*. Clearing it here would delete a
+    planning decision the claim never made and the board's Agent-queue view
+    depends on.
 
     Do not run any of it unasked — this is the user's call, and they may be
     resuming tomorrow.

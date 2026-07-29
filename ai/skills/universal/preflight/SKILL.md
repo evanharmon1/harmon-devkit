@@ -134,24 +134,29 @@ gh issue view <n> --repo "$repo" --json assignees,labels \
 <track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --show
 ```
 
-**An existing `Agent` value naming a *different* agent is a `blocker`**, not
-something to overwrite. The board is saying another agent holds this work, and
-`--agent "Claude Code"` would silently take it. Stop and ask, exactly as for an
-issue assigned to someone else. An existing `Claude Code` value is a no-op
-write, so it has nothing to undo either.
+**A claim never writes the `Agent` field.** It looks like the right place and
+is not: `Agent` says which agent *should* implement the issue — a planning
+assignment, set at triage, and the thing the board's **Agent queue** view
+filters on. The `agent:*` label says which agent *is* implementing it right
+now. Same vocabulary, different questions. Writing `Agent` at claim time
+destroys a planning decision and silently reassigns work planned for one agent
+to whichever one picked it up. The claim's identity signal is the **label**.
 
-**On an organization, `--show` cannot answer this question.** There `Agent` is
-an org *issue field*, and the script reads project fields only — so it returns
-no `Agent=` line whether the field is empty or says `Codex`, and a blocker that
-trusts it would silently never fire in exactly the setup that has the field.
-Use the `agent:*` label instead: it mirrors the same vocabulary and *is*
-readable, which is why the family exists. A label naming another agent is the
-same blocker. If the repo has neither a readable `Agent` value nor the label
-family, ownership is **unverifiable** — say so and get the user's go-ahead
-rather than treating silence as "unclaimed".
+That also makes the claim behave identically on both owner types: on an
+organization `Agent` is an org *issue field* the Projects V2 API cannot write
+at all, so a claim that depended on it was never going to work there.
+
+**An existing `agent:*` label naming a *different* agent is a `blocker`** —
+that one is a live claim, and adding a second agent's label would leave the
+issue claiming two owners. Stop and ask, exactly as for an issue assigned to
+someone else. An `Agent` *field* naming another agent is **not** a blocker: it
+is a plan, and picking up work planned for another agent is a legitimate,
+visible choice — note it in the findings and carry on. If the repo has no
+`agent:*` label family at all, ownership is **unverifiable** — say so and get
+the user's go-ahead rather than treating silence as "unclaimed".
 
 Carry every answer into the claim comment. `/close` undoes only what the claim
-actually added — all four markers, `Agent` included.
+actually added.
 
 - **Assign:** `gh issue edit <n> --repo "$repo" --add-assignee @me`
 - **Label** — the `agent:*` family names *which* agent has it, mirroring the
@@ -170,27 +175,24 @@ actually added — all four markers, `Agent` included.
   `task setup:github-labels`, and inventing a label per repo is how vocabularies
   fork.
 - **Board** — the assignee and the label are both invisible on the project
-  board, which is where the work is actually watched. Move the card and stamp
-  which agent holds it. **Do this after the comment below**, not here in list
-  order: the comment is what preserves the status this write destroys. The script ships with `track-work`, so
+  board, which is where the work is actually watched, so move the card there
+  too. `Status` only — not `Agent`, for the reason above. **Do this after the
+  comment below**, not here in list order: the comment is what preserves the
+  status this write destroys. The script ships with `track-work`, so
   `<track-work-dir>` is `.claude/skills/track-work` in a repo that vendors the
   skills and `ai/skills/universal/track-work` in harmon-devkit itself:
 
   ```sh
   <track-work-dir>/assets/set-issue-status.sh \
-    --repo "$repo" --issue <n> --status "In Progress" --agent "Claude Code"
+    --repo "$repo" --issue <n> --status "In Progress"
   ```
 
-  Read the exit code rather than the noise: **0** every requested field applied,
-  **3** nothing to do (the issue is on no board, or the board lacks the
-  field/option) — benign, note it and move on, **4** partial, **1** the write
-  failed, **2** it could not verify, usually a missing token scope
-  (`gh auth refresh -s read:project,project`). Never retry a 3. On **4**, say
-  which half landed — "claimed" is only true of what actually applied, and a
-  card still sitting outside `In Progress` must not be reported as moved. On an
-  **organization** `Agent` is an org *issue field* rather than a project field,
-  so `--agent` is the expected skip there (a 4 with `Status` applied) and the
-  `agent:*` label carries that half of the signal.
+  Read the exit code rather than the noise: **0** applied, **3** nothing to do
+  (the issue is on no board, or the board lacks the field/option) — benign,
+  note it and move on, **1** the write failed, **2** it could not verify,
+  usually a missing token scope (`gh auth refresh -s read:project,project`).
+  Never retry a 3. A card still sitting outside `In Progress` must not be
+  reported as moved.
 - **Comment** via stdin with a quoted heredoc so the branch/session values are
   never re-evaluated by the shell (a branch name can contain `$(…)`). Use a
   delimiter that cannot occur in the body — quoting disables expansion, not
@@ -217,10 +219,8 @@ actually added — all four markers, `Agent` included.
 
   Claim record (for `/close` — undo only what this claim added):
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
-  - prior `Agent` value: <value | "none" | "unknown">
   - assignee added by this claim: <yes|no, it was already assigned to me>
   - `agent:` label added by this claim: <yes|no|n/a, repo has no such label>
-  - `Agent` field set by this claim: <yes|no, it already read Claude Code>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card
@@ -233,16 +233,15 @@ actually added — all four markers, `Agent` included.
   `Status=` line is a successful read of a card whose `Status` is genuinely
   empty — a real, restorable state. Only a *failed* call (exit 2) is unknown.
   Record `none` for the first and `unknown` for the second: `/close` restores
-  an unset field by clearing it (manual, like `Agent` — `gh project item-edit
-  --clear`), and only has to ask the user in the second case.
+  an unset field by clearing it (manual — `gh project item-edit --clear`), and only has to ask the user in the second case.
 
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):
 `--add-assignee` accumulates rather than arbitrates, so if someone else
 claimed concurrently, surface it and coordinate before implementing. This
 catches a *different* GitHub identity and nothing more — another session
-running as the same user converges on the same assignee, label, and `Agent`
-value, and is invisible to this check. The claim is a signal, not a lock
+running as the same user converges on the same assignee and label, and is
+invisible to this check. The claim is a signal, not a lock
 (`track-work` §6).
 
 A claim is a promise to release it. `/shepherd` advances the card as the PR
