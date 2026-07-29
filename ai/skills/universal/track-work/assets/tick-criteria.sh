@@ -240,6 +240,10 @@ read_body_or_die >"$before"
 #   - Blockquote lazy continuation: an unquoted line directly under a quoted
 #     paragraph continues it, and is enumerated here as if it had left the
 #     quote. Lazy continuation inside a LIST item is modelled.
+#   - Setext heading underlines (`===`). ATX headings and thematic breaks are
+#     recognised as leaf blocks that close a paragraph; an `===` underline is
+#     still read as prose, so an ordered list starting above 1 directly under
+#     one does not open its container.
 #   - A fence whose interior is prose leaves that prose as the preceding line
 #     kind, so an indented block on the line after the closing delimiter reads
 #     as a lazy continuation instead of code. Both are hidden; only the ending
@@ -599,11 +603,14 @@ BEGIN {
     # (which keeps an ordered marker in list context), or paragraph text.
     if (blank) {
         this_kind = "blank"
-    } else if (thematic_break(bare)) {
-        # Its own kind, because a rule closes any open paragraph the way a blank
-        # line does — but unlike a blank line it is content, and unlike a list
-        # item it opens nothing.
-        this_kind = "break"
+    } else if (thematic_break(bare) || bare ~ /^#{1,6}([ \t]|$)/) {
+        # Leaf blocks: a thematic break and an ATX heading both close any open
+        # paragraph the way a blank line does, while being content a blank line
+        # is not, and opening no container a list item would. Reading a heading
+        # as a paragraph is what made `2.` under one fail to start its list —
+        # the rule below only withholds a non-1 marker from interrupting a
+        # PARAGRAPH, and a heading is not one.
+        this_kind = "leaf"
     } else if (bare ~ /^[ \t]*([-*+]|[0-9]+[.)])([ \t]|$)/) {
         # A marker alone on its line is an EMPTY list item, and it still opens a
         # container: the indented line under a bare `-` is a child of that item,

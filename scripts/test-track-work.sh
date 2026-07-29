@@ -1562,6 +1562,32 @@ issue_is 91 '1234567890. text
 - [x] the real criterion
 ' || fail "a ten-digit marker is prose, so it seeds no container"
 
+echo "==> a heading is a leaf block, so an ordered list under it starts a list"
+write_issue 92 '# Heading
+2. parent
+    - [ ] child
+'
+[ "$(run_tick 92 --index 1)" = 0 ] || fail "a list under a heading should open its container"
+issue_is 92 '# Heading
+2. parent
+    - [x] child
+' || fail "a heading is not a paragraph a marker has to interrupt"
+
+echo "==> under a real paragraph the non-1 marker rule still holds"
+write_issue 93 'Some prose
+2. not a list, the paragraph continues
+    - [ ] still prose
+
+- [ ] the real criterion
+'
+[ "$(run_tick 93 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 93 'Some prose
+2. not a list, the paragraph continues
+    - [ ] still prose
+
+- [x] the real criterion
+' || fail "only an ordered marker at 1 may interrupt a paragraph"
+
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
 - [ ] the real criterion
