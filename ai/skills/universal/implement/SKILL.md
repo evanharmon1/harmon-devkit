@@ -41,6 +41,22 @@ number — prefer it. Bind `$repo` from the target and pass `--repo "$repo"` on
 every `gh` command; a bare `#123` means *this* repo and nothing else
 (`track-work` §1). If the target is ambiguous, ask.
 
+**Then bind the checkout to `$repo`, before anything else.** `/preflight` only
+*reads* the code, so a mismatched checkout costs it accuracy; this skill
+branches, edits, commits, and pushes, so a mismatch means implementing the
+right issue in the wrong repository — and every gate downstream passes, because
+the code it verifies is real code, just not this issue's:
+
+```sh
+git remote -v          # find the remote whose URL is $repo
+gh repo view "$(git remote get-url <remote>)" --json nameWithOwner -q .nameWithOwner
+```
+
+No remote matching `$repo` is a **hard stop**, exactly as in `/preflight` §2.
+Do not "work here and move it later": ask the user for the matching checkout,
+or to confirm which repository they actually meant. Where the match exists but
+is not the current worktree, switch to it first.
+
 Then confirm the claim exists — **read it, do not write it**:
 
 ```sh
@@ -64,10 +80,25 @@ issue, and two agents start implementing.
 2. **Already implemented** — an open PR linked by a closing keyword
    (`closedByPullRequestsReferences`), or a **closed** issue. Stop unless the
    user explicitly says to continue.
-3. **Claimed by you** — a marker identifying *you* specifically: an `agent:*`
-   label for this agent, a card at `In Progress`, or a claim comment not
-   superseded by a later `Claim released —`, with no foreign owner from step 1.
-   Proceed.
+3. **Claimed by you** — and the markers are **not equally good evidence of
+   who**, so rank them rather than accepting any one:
+   - **Strong** — a claim comment naming *this* session or branch, not
+     superseded by a later `Claim released —`. `/preflight` writes exactly that
+     record, which is why it is the one marker that answers "who", not merely
+     "someone".
+   - **Corroborating** — an `agent:*` label for this agent. It names the agent
+     but not the session, and a repo with no such label family cannot have one
+     at all (`/preflight` treats that as benign), so its absence proves nothing.
+   - **Not ownership on its own** — a card at `In Progress`. `Status` is the
+     delivery stage, not an identity; a human triaging the board sets it too.
+     Never proceed on this marker alone.
+
+   Proceed when a strong marker matches this session, or a corroborating one
+   does and the user confirms it is theirs. **Say plainly what this cannot
+   detect**: a second session on the same GitHub account converges on the same
+   assignee, the same label, and the same card, and is invisible in every one of
+   them (`/preflight` §5 — the claim is a signal, not a lock). If the claim
+   comment names a branch that is not yours, treat it as outcome 1 and stop.
 4. **Unclaimed** — stop and offer `/preflight`. It is not ceremony: preflight
    verifies the issue's claims against the live tree, and its findings are
    corrections to fold into the work. Implementing an issue nobody sanity-checked
@@ -104,7 +135,12 @@ Small units, fast feedback. Run the repo's fast lint gate — `task check` where
 it exists — constantly, and fix what it reports immediately rather than
 batching it to the end.
 
-Two obligations that are easy to defer and expensive to defer:
+**Commit as you go**, in conventional-commit units — don't carry the whole
+change as a working-tree diff to the end. The second-model review in step 6
+scopes to the committed diff, so uncommitted work is reviewed as a fragment or
+not at all, and step 8 has nothing to push.
+
+Two further obligations that are easy to defer and expensive to defer:
 
 - **Twin files.** Where the repo maintains parallel copies (harmon-init's
   root ↔ `template/` dogfood parity is the canonical case), edit both in the
@@ -165,6 +201,16 @@ the same account converges on identical markers and is invisible in all of
 them. If someone took ownership or opened a linked PR while you worked, a
 second PR is the expensive way to find out.
 
+- **Commit the work first.** On the clean path — both review stages passing
+  first time — nothing upstream of here has necessarily committed anything, so
+  a `git push` would carry an empty branch and `gh pr create` would open a PR
+  with no changes in it (or fail outright). Stage the change, commit it with a
+  conventional message, and confirm the tree is clean before pushing. Never
+  `--no-verify`: the commit hooks are part of the gate.
+- **Gate the exact commit that will travel.** Where fixes landed after the last
+  gate run, re-run `task verify` (or `task ci`) with a **clean tree**, so it
+  cannot pass on the strength of uncommitted or untracked files the push would
+  then omit.
 - Conventional-commit message and PR title, per the repo's commitlint config.
   Watch for repo-specific title rules that gate a release — harmon-init
   requires a `fix:`/`feat:` title on any PR touching `template/`, and its
