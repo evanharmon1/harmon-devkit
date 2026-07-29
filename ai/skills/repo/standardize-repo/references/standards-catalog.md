@@ -802,8 +802,14 @@ artifacts; the prose rules are guidance, not lint):
   What a re-run still will not do: add **repo-specific** options (the scripts ship
   only the `auth`/`billing`/`platform` floor — this product's real domains are
   yours to add), or fix anything the script *warned and continued* past. Both
-  warn-and-exit-0 rather than abort a half-reconciled project, so read the WARNING
-  lines: a field that already exists with the **wrong data type** (GitHub can't
+  warn-and-exit-0 rather than abort a half-reconciled project — with one known
+  upstream gap: `setup-github-project.sh` routes only the **custom** fields
+  through its `field_exists` data-type guard, so a reused project carrying a
+  non-single-select field named **`Status`** goes straight to `append_options`
+  and the task fails there instead of warning (possibly after `ORG_PROJECT_ID`
+  was already written). Treat that one as a hard stop, not a warning. Otherwise
+  read the WARNING lines: a field that already exists with the **wrong data type**
+  (GitHub can't
   change a type in place, and deleting the field destroys every issue's value for
   it org-wide — rename it, let the re-run create the replacement, migrate the
   values, then delete the original), one **at the

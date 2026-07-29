@@ -13,7 +13,10 @@ Routing:
 - **v2 repo or never templated** → [`mode-adopt-existing.md`](./mode-adopt-existing.md)
   (v2→v3 was a breaking redesign; re-template via its Path B).
 - **Just want a drift report, no changes** → run §1 and stop, or see
-  [`mode-audit.md`](./mode-audit.md).
+  [`mode-audit.md`](./mode-audit.md). Both read local/template state only, so on
+  a `project_management: github` repo add §6a's and §6c's **read-only** queries
+  to cover live labels, project fields, and org issue fields — a drift report
+  without them is silently blind to the whole GitHub side.
 
 The target repo is a **plain repo** — there is no special structure, no
 "template-owned vs custom" split a developer must learn. Customizations live
@@ -1573,20 +1576,34 @@ recognize — before running anything:
 gh project view <number> --owner <owner> --web   # <number> from the 6a query
 ```
 
-Zero matches has two very different meanings, so do not treat it as pass or fail
-on its own. Re-read the full listing from the query above:
+Zero matches is ambiguous — it can mean drift *or* a legitimate first run. The
+query above cannot tell you which: its `select(...)` filters out every other
+title. List the owner's boards **unfiltered** before deciding:
 
-- **The owner has other boards** — the intended one was renamed, or this repo's
-  title answer drifted. The script would **create a fresh empty board** and point
-  automation at it. Stop and resolve as below.
-- **The owner genuinely has no matching project** — `project_management: github`
-  was answered but `setup:github-project` was never run here. Creation is the
-  script's supported first-run path and the correct outcome; go ahead.
+```bash
+gh api graphql --paginate -F l='<owner>' -f query='
+  query($l:String!,$endCursor:String){
+    repositoryOwner(login:$l){ ... on ProjectV2Owner{
+      projectsV2(first:100,after:$endCursor){
+        pageInfo{hasNextPage endCursor}
+        nodes{id number title closed}}}}}' \
+  --jq '.data.repositoryOwner.projectsV2.nodes[] | "\(.number)\t\(.closed)\t\(.title)"'
+```
 
-**Re-pointing `ORG_PROJECT_ID` is not a fix.** The script never *reads* that
-variable — it resolves by title and then overwrites the variable with whatever it
-picked. So setting it by hand and then running the task just gets it clobbered
-again. There are only two valid resolutions, and both come before the task runs:
+Then judge what you see — presence of other boards is not itself drift:
+
+- **A board that is plainly this owner's harmon-init board under another name**
+  (the Status pipeline, the repo's items) → title drift. The script would create
+  a fresh empty board and point automation at it. Resolve before running.
+- **No matching board, and the other boards are unrelated** (or there are none)
+  → valid first run. `project_management: github` was answered but
+  `setup:github-project` was never run for this owner. Creation is the script's
+  supported path; go ahead.
+
+For the drift case, note that **re-pointing `ORG_PROJECT_ID` is not a fix**: the
+script never *reads* that variable — it resolves by title and overwrites the
+variable with whatever it picked, so a hand-set value is clobbered on the next
+run. Two resolutions, both before the task runs:
 
 1. Make the intended board the **unique title match** — rename the obsolete or
    duplicate board so the canonical title belongs to the board actually in use.
@@ -1718,6 +1735,13 @@ gh api "orgs/<org>/issue-fields" -H "X-GitHub-Api-Version: <pin>" --paginate |
 gh api "orgs/<org>/issue-types" --paginate \
   --jq '.[] | {name, is_enabled, color, description}'
 ```
+
+A type that comes back `is_enabled: false`, or with a color/description that does
+not match, is drift the script will never correct — it matches by name and leaves
+the existing type alone. There is no task for it: compare against the `desired`
+list at the top of `scripts/setup-github-issue-types.sh` (the authority for the
+expected color and description) and fix it in the org's issue-type settings by
+hand. **[manual]**
 
 Expect the two halves to **agree where they overlap, not to be equal**. On an org
 the `Domain` issue field is the union across every repo, while a repo's `domain:`
