@@ -224,7 +224,7 @@ read_body_or_die >"$before"
 # a full parser, from a checkbox nested under a list item, where ticking is
 # right. Prefer `--match` when a body carries either.
 items="$(awk '
-BEGIN { infence = 0; incomment = 0; inpre = 0 }
+BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0 }
 {
     # Strip indentation and any blockquote prefix before looking for a fence:
     # the item pattern below accepts `> - [ ]`, so a fence that only matched at
@@ -248,17 +248,39 @@ BEGIN { infence = 0; incomment = 0; inpre = 0 }
         bare = substr(bare, 2)
     }
     if (substr(bare, 1, 1) == "\t") fence_indent = 4
-    if (fence_indent < 4 && match(bare, /^(```+|~~~+)/)) {
-        marker = substr(bare, RSTART, RLENGTH)
+
+    # A fence can also open as the content of a list item — `- ``` ` — where the
+    # delimiter sits after the marker and the block indents to match. Only an
+    # opener may carry a marker: a marker on a later line starts a new item, it
+    # does not close anything.
+    marker_width = 0
+    after_marker = bare
+    if (infence == 0 && match(bare, /^([-*+]|[0-9]+[.)])[ \t]+/)) {
+        marker_width = RLENGTH
+        after_marker = substr(bare, RLENGTH + 1)
+    }
+
+    opens = (fence_indent < 4 && match(after_marker, /^(```+|~~~+)/))
+    # A closer is measured against the column its opener started in, and may be
+    # indented up to three further spaces. Unclosable is the safe direction: the
+    # enumeration ends, selectors stop resolving, and the command refuses — where
+    # closing too early would expose a code sample to a tick.
+    closes = (infence == 1 && marker_width == 0 && fence_indent <= fence_col + 3 &&
+        match(bare, /^(```+|~~~+)/))
+    if (opens || closes) {
+        scan = closes ? bare : after_marker
+        match(scan, /^(```+|~~~+)/)
+        marker = substr(scan, RSTART, RLENGTH)
         gsub(/[ \t]/, "", marker)
         ch = substr(marker, 1, 1)
         len = length(marker)
-        rest = substr(bare, RSTART + RLENGTH)
+        rest = substr(scan, RSTART + RLENGTH)
         if (infence == 0) {
             infence = 1
             fence_ch = ch
             fence_len = len
             fence_quoted = quoted
+            fence_col = fence_indent + marker_width
         } else if (quoted == fence_quoted && ch == fence_ch && len >= fence_len && rest ~ /^[ \t]*$/) {
             # A closer has to sit in the same container as its opener: inside an
             # unquoted fence, a literal `> ``` ` is example text, not the end.

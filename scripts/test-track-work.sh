@@ -702,6 +702,40 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
+echo "==> a fence opened as a list item hides its contents"
+write_issue 45 '- ```text
+  - [ ] example inside a list-item fence
+  ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 45 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 45 '- ```text
+  - [ ] example inside a list-item fence
+  ```
+
+- [x] the real criterion
+' || fail "a checkbox inside a list-item fence must be left alone"
+
+echo "==> a list marker on a later line does not close a fence"
+# A marker starts a new item; only an opener may carry one. Failing to close is
+# the safe direction — the command refuses rather than ticking a code sample.
+write_issue 46 '```
+- ``` still inside
+- [ ] example
+```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 46 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 46 '```
+- ``` still inside
+- [ ] example
+```
+
+- [x] the real criterion
+' || fail "only the real criterion should tick"
+
 echo "==> a task item inside raw <pre> HTML is not a criterion"
 write_issue 44 '<pre>
 - [ ] example rendered verbatim
