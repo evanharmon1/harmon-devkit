@@ -22,6 +22,10 @@
 #     and the write is not detectable — GitHub offers no conditional update — so
 #     this keeps it to a single command rather than pretending to close it.
 #
+# Checkboxes inside fenced code blocks are not criteria and are never touched.
+# A failed edit is read back before it is reported, because GitHub can apply one
+# and lose the response, and a retry would then find nothing left to tick.
+#
 # Usage:
 #   tick-criteria.sh --repo owner/repo --issue N [--match TEXT]... [--index K]...
 #                    [--dry-run]
@@ -99,26 +103,29 @@ if [ -n "${ISSUE_BODY_DIR:-}" ]; then
     fixture="${ISSUE_BODY_DIR}/$(printf '%s' "$repo" | tr '/' '_')__${issue}.md"
 fi
 
-# read_body — print the issue body exactly as stored.
+# read_body — print the issue body exactly as stored. Returns non-zero instead
+# of exiting so the post-write reconciliation can read without dying.
+#
+# `--template` rather than `--jq`: jq terminates its output with a newline that
+# is not in the body, and a body read that way and written back grows one blank
+# line per tick — which is exactly the "changed more than the marker" this
+# script exists to prevent. A Go template emits the field bytes and nothing else.
 read_body() {
     if [ -n "$fixture" ]; then
-        [ -f "$fixture" ] || {
-            echo "tick-criteria: no fixture: $fixture" >&2
-            exit 2
-        }
+        [ -f "$fixture" ] || return 1
         cat "$fixture"
         return 0
     fi
-    gh issue view "$issue" --repo "$repo" --json body --jq '.body // ""' || {
+    gh issue view "$issue" --repo "$repo" --json body --template '{{.body}}'
+}
+
+# read_body_or_die — read_body, but a failed read is an environment error.
+read_body_or_die() {
+    read_body || {
         echo "tick-criteria: could not read $repo#$issue" >&2
         exit 2
     }
 }
-
-# The unticked-item spelling GFM actually renders, kept identical to
-# check-closing-keywords.sh: unordered and ordered markers, any indentation, any
-# run of whitespace before the box, any depth of blockquote prefix.
-UNCHECKED_RE='^[[:space:]]*(>[[:space:]]*)*([-*+]|[0-9]+[.)])[[:space:]]+\[[[:space:]]\]'
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -126,10 +133,43 @@ before="$tmp/before.md"
 after="$tmp/after.md"
 recheck="$tmp/recheck.md"
 
-read_body >"$before"
+read_body_or_die >"$before"
 
 # Enumerate the unticked items as "lineno:text", in body order.
-items="$(grep -nE "$UNCHECKED_RE" "$before" || true)"
+#
+# The item pattern is the one check-closing-keywords.sh counts — unordered and
+# ordered markers, any indentation, any whitespace run before the box, any depth
+# of blockquote prefix — but fenced blocks are skipped, where that guard
+# deliberately scans them. The bias inverts with the operation: a read-only guard
+# is fail-closed, so a checkbox in an example counts as unfinished work; a
+# command that writes must not treat an example as a criterion, or `--index 1`
+# ticks a code sample and reports success while the real criterion stays open.
+#
+# Four-space-indented code blocks are *not* excluded: indistinguishable, without
+# a full parser, from a checkbox nested under a list item, where ticking is
+# right. Prefer `--match` when a body carries either.
+items="$(awk '
+BEGIN { infence = 0 }
+{
+    if (match($0, /^[ \t]*(```+|~~~+)/)) {
+        marker = substr($0, RSTART, RLENGTH)
+        gsub(/[ \t]/, "", marker)
+        ch = substr(marker, 1, 1)
+        len = length(marker)
+        rest = substr($0, RSTART + RLENGTH)
+        if (infence == 0) {
+            infence = 1
+            fence_ch = ch
+            fence_len = len
+        } else if (ch == fence_ch && len >= fence_len && rest ~ /^[ \t]*$/) {
+            infence = 0
+        }
+        next
+    }
+    if (infence == 0 && $0 ~ /^[[:space:]]*(>[[:space:]]*)*([-*+]|[0-9]+[.)])[[:space:]]+\[[ \t]\]/) {
+        print NR ":" $0
+    }
+}' "$before")"
 [ -n "$items" ] || {
     echo "tick-criteria: $repo#$issue has no unticked items" >&2
     exit 1
@@ -182,6 +222,13 @@ BEGIN {
 }
 ' "$before" >"$after"
 
+# awk terminates its last line whether or not the input did, so a body that did
+# not end in a newline would come back one byte longer. Put it back as it was.
+if [ -s "$before" ] && [ -n "$(tail -c1 "$before")" ]; then
+    head -c "$(($(wc -c <"$after") - 1))" "$after" >"$after.trimmed"
+    mv "$after.trimmed" "$after"
+fi
+
 # Prove the diff is only the ticks. This is the guarantee that lets the command
 # be pre-approved: no reworded criterion, no dropped section, no new line.
 if [ "$(wc -l <"$before")" -ne "$(wc -l <"$after")" ]; then
@@ -214,7 +261,7 @@ fi
 
 # Re-read and compare immediately before writing. A body that moved since the
 # read has to be re-composed against the newer text, not overwritten.
-read_body >"$recheck"
+read_body_or_die >"$recheck"
 if ! cmp -s "$before" "$recheck"; then
     echo "tick-criteria: refusing to write — $repo#$issue changed since it was read; re-run" >&2
     exit 1
@@ -226,8 +273,19 @@ if [ -n "$fixture" ]; then
     exit 0
 fi
 
-gh issue edit "$issue" --repo "$repo" --body-file "$after" >/dev/null || {
-    echo "tick-criteria: gh issue edit failed for $repo#$issue" >&2
-    exit 1
-}
-echo "tick-criteria: ticked $expected criterion(s) on $repo#$issue"
+if gh issue edit "$issue" --repo "$repo" --body-file "$after" >/dev/null; then
+    echo "tick-criteria: ticked $expected criterion(s) on $repo#$issue"
+    exit 0
+fi
+
+# A failed edit is ambiguous: GitHub may have applied it and lost the response.
+# Left as a plain failure it is also unrecoverable, because a retry's selectors
+# would find the criteria already ticked and refuse. So read back and say which
+# happened. (This is the one read after our own write that proves something —
+# it is asking "did my change land", not "did I overwrite someone".)
+if read_body >"$recheck" && cmp -s "$after" "$recheck"; then
+    echo "tick-criteria: gh reported a failure but the tick is present on $repo#$issue"
+    exit 0
+fi
+echo "tick-criteria: gh issue edit failed for $repo#$issue — nothing was ticked" >&2
+exit 1

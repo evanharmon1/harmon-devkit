@@ -539,6 +539,9 @@ cat >"$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
+    # Once an edit has been accepted, that is the server's state — which is what
+    # makes "the edit applied but the response was lost" testable.
+    if [ -f "${STUB_STATE:-/nonexistent}" ]; then cat "$STUB_STATE"; exit 0; fi
     n=0
     [ -f "$STUB_COUNT" ] && n="$(cat "$STUB_COUNT")"
     n=$((n + 1))
@@ -548,9 +551,14 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
 fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "edit" ]; then
     while [ "$#" -gt 0 ]; do
-        if [ "$1" = "--body-file" ]; then cp "$2" "$STUB_EDIT"; fi
+        if [ "$1" = "--body-file" ]; then
+            cp "$2" "$STUB_EDIT"
+            [ -n "${STUB_STATE:-}" ] && cp "$2" "$STUB_STATE"
+        fi
         shift
     done
+    # STUB_EDIT_LOST: the edit applied, then the response was lost.
+    [ -n "${STUB_EDIT_LOST:-}" ] && exit 1
     exit 0
 fi
 exit 1
@@ -562,7 +570,7 @@ run_tick_live() {
     _rc=0
     env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
         STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
-        STUB_EDIT="$tmp/edited" \
+        STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" \
         "$tick" --repo "$repo" --issue 30 "$@" >/dev/null 2>&1 || _rc=$?
     echo "$_rc"
 }
@@ -570,7 +578,7 @@ run_tick_live() {
 echo "==> the live path sends the ticked body to gh issue edit"
 printf '%s' "$body_three" >"$tmp/b1"
 printf '%s' "$body_three" >"$tmp/b2"
-rm -f "$tmp/count" "$tmp/edited"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
 [ "$(run_tick_live --match 'first')" = 0 ] || fail "the live path should tick"
 [ "$(cat "$tmp/edited")" = "$(printf '%s' '## Acceptance
 
@@ -587,18 +595,81 @@ printf '%s' '## Acceptance
 - [ ] second criterion, reworded by someone else
 - [x] already done
 ' >"$tmp/b2"
-rm -f "$tmp/count" "$tmp/edited"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
 [ "$(run_tick_live --match 'first')" = 1 ] || fail "a body that changed under us should exit 1"
 [ ! -f "$tmp/edited" ] || fail "a changed body must not be overwritten"
 
+echo "==> the body is written back byte for byte, with no newline added"
+# `gh issue view --jq` appends a newline the body does not have; read that way
+# and written back, every tick would grow the body by a blank line.
+printf '%s' '- [ ] no trailing newline here' >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+[ "$(run_tick_live --index 1)" = 0 ] || fail "should tick a body with no trailing newline"
+printf '%s' '- [x] no trailing newline here' >"$tmp/expected"
+cmp -s "$tmp/edited" "$tmp/expected" || fail "the written body must differ only by the marker"
+
+echo "==> an edit that applied but reported failure is recognised, not retried"
+printf '%s' "$body_three" >"$tmp/b1"
+printf '%s' "$body_three" >"$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_EDIT_LOST=1 \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "a lost response over an applied edit should succeed (got $_rc)"
+
 echo "==> an unreadable issue on the live path exits 2"
-rm -f "$tmp/count" "$tmp/edited"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
 _rc=0
 env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/does-not-exist" \
     STUB_EDIT="$tmp/edited" \
     "$tick" --repo "$repo" --issue 30 --index 1 >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "an unreadable issue should exit 2 (got $_rc)"
+
+echo "==> a checkbox inside a fenced code block is not a criterion"
+write_issue 31 '## Verify
+
+```sh
+grep -n "^- \[ \] example" file.md
+```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 31 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 31 '## Verify
+
+```sh
+grep -n "^- \[ \] example" file.md
+```
+
+- [x] the real criterion
+' || fail "the fenced example must be left alone"
+
+echo "==> a longer or tilde fence is tracked too"
+write_issue 32 '~~~
+- [ ] tilde-fenced
+~~~
+
+````
+- [ ] backtick-fenced
+````
+
+- [ ] the real criterion
+'
+[ "$(run_tick 32 --index 1)" = 0 ] || fail "only one item should be selectable"
+issue_is 32 '~~~
+- [ ] tilde-fenced
+~~~
+
+````
+- [ ] backtick-fenced
+````
+
+- [x] the real criterion
+' || fail "checkboxes in either fence style must be left alone"
 
 echo "==> usage errors exit 2"
 [ "$(run_tick 20)" = 2 ] || fail "no selector should exit 2"
