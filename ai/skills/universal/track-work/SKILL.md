@@ -288,9 +288,23 @@ gh issue list --repo <target-owner/target-repo> --state all --limit 200 \
 the reason the obvious fix is wrong. harmon-init#412 recorded that the
 devcontainer lockfile ignore rule came from #375 *because* a tracked lockfile
 had gone stale — so the duplicate filed past it (#460) did not just waste
-triage, it recommended reversing a deliberate earlier decision. Add what you
-found as a **comment on that issue**; a second issue splits the reasoning across
-two places and leaves neither complete.
+triage, it recommended reversing a deliberate earlier decision.
+
+Then act on **what state the hit is in**, because "add a comment" is only right
+for one of them:
+
+| Hit | What it means | Do |
+| --- | --- | --- |
+| **Open** | live duplicate | Comment there. A second issue splits the reasoning across two places and leaves neither complete. |
+| Closed **`not planned`** | already declined | Engage that decision — say why it should be revisited. Do not refile as though it were new. |
+| Closed **`completed`**, defect is back | **regression** | It needs a live issue: reopen that one, or file a new one linking it. |
+
+That last row is the one worth spelling out. A comment on a closed `completed`
+issue reads like a settled record with a footnote, and it puts the work on no
+backlog at all — the "durable but invisible" failure this skill exists to
+prevent, reintroduced at exactly the moment you thought you had avoided a
+duplicate. Commenting is the *dedup* answer; it is not the *tracking* answer,
+and a recurrence needs both.
 
 **If you filed a duplicate anyway**, the recovery is ordered. Comment your new
 evidence onto the canonical issue **first**, then close yours `not planned`
