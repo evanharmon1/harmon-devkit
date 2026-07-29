@@ -130,10 +130,18 @@ A hand-back that removes it anyway destroys state the session never created:
 gh issue view <n> --repo "$repo" --json assignees,labels \
   --jq '{assigned: ([.assignees[].login] | index("<your-login>") != null),
          labelled: ([.labels[].name] | index("agent:claude-code") != null)}'
+# the board's own markers — the same --show that reads the prior status:
+<track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --show
 ```
 
-Carry both answers into the claim comment. `/close` undoes only what the claim
-actually added.
+**An existing `Agent` value naming a *different* agent is a `blocker`**, not
+something to overwrite. The board is saying another agent holds this work, and
+`--agent "Claude Code"` would silently take it. Stop and ask, exactly as for an
+issue assigned to someone else. An existing `Claude Code` value is a no-op
+write, so it has nothing to undo either.
+
+Carry every answer into the claim comment. `/close` undoes only what the claim
+actually added — all four markers, `Agent` included.
 
 - **Assign:** `gh issue edit <n> --repo "$repo" --add-assignee @me`
 - **Label** — the `agent:*` family names *which* agent has it, mirroring the
@@ -199,8 +207,10 @@ actually added.
 
   Claim record (for `/close` — undo only what this claim added):
   - prior board status: <prior status, or "unknown">
+  - prior `Agent` value: <value, or "none">
   - assignee added by this claim: <yes|no, it was already assigned to me>
   - `agent:` label added by this claim: <yes|no|n/a, repo has no such label>
+  - `Agent` field set by this claim: <yes|no, it already read Claude Code>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card

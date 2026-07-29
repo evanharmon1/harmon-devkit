@@ -103,15 +103,27 @@ read it in the UI) — never guess.
     says "unknown" or no comment survives, ask the user instead of picking —
     `Todo` and `Agent Queue` are guesses, not defaults.
 
-    **Check the card first** (`set-issue-status.sh … --show`). If its `Status`
-    is no longer `In Progress`, someone moved it after the claim, and writing
-    the recorded value would erase a newer decision that is invisible in the
-    issue's own history — project-field edits leave no trace on the issue.
-    Restore only from `In Progress`; otherwise leave it and say what you found.
+    **Check the card first** (`set-issue-status.sh … --show`), because
+    project-field edits leave no trace in the issue's history — a human's
+    later decision is invisible unless you look. What you may restore depends
+    on *who* last wrote the value:
 
-    The `Agent` field is the fourth marker. `set-issue-status.sh` only *sets*
-    single-select options, so clearing it is manual — `gh project item-edit
-    --clear` on the item, or the board UI. Say so rather than leaving it set;
+    - `In Progress` — this claim wrote it. Restore.
+    - `Verifying`, `In Review`, `Ready to Merge` — `/shepherd` wrote these for
+      a PR. If that PR is now closed unmerged or abandoned, they are this
+      lifecycle's own leftovers and no work is in flight: restore. Refusing
+      here just strands the card mid-pipeline forever, which is the failure
+      this whole step exists to prevent.
+    - Anything else — `Icebox`, `Next`, `Shaping`, a status this lifecycle
+      never writes — someone else moved it. Leave it and say what you found.
+
+    The `Agent` field is the fourth marker, and it follows the same rule: the
+    record says whether the claim set it, and what it held before. Clear it
+    only if the claim set it; if the card already read `Claude Code`, or held
+    another agent's name, leave it — that is someone else's marker, not this
+    session's. `set-issue-status.sh` only *sets* single-select options, so
+    clearing is manual (`gh project item-edit --clear` on the item, or the
+    board UI); say so rather than leaving a claim-set value standing, because
     an `Agent` value with no `In Progress` status still reads as "an agent has
     this".
 
