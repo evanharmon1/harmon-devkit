@@ -128,11 +128,14 @@ read it in the UI) — never guess.
     - Anything else — `Icebox`, `Next`, `Shaping`, a status this lifecycle
       never writes — someone else moved it. Leave it and say what you found.
 
-    The `Agent` field is the fourth marker, and it follows the same rule: the
-    record says whether the claim set it, and what it held before. Clear it
-    only if the claim set it; if the card already read `Claude Code`, or held
-    another agent's name, leave it — that is someone else's marker, not this
-    session's. `set-issue-status.sh` only *sets* single-select options, so
+    The `Agent` field is the fourth marker, and it follows the same rule —
+    but **restore, don't just clear.** The record holds both whether the claim
+    set it and what it held before, so use both: if the claim overwrote
+    another agent's name (`/preflight` blocks on that, and the user can
+    explicitly approve proceeding anyway), put that name back rather than
+    clearing the field, which would lose ownership information the claim
+    borrowed. Clear only when the recorded prior value was `none`. If the
+    claim did not set it at all, leave it entirely alone. `set-issue-status.sh` only *sets* single-select options, so
     clearing is manual (`gh project item-edit --clear` on the item, or the
     board UI); say so rather than leaving a claim-set value standing, because
     an `Agent` value with no `In Progress` status still reads as "an agent has
