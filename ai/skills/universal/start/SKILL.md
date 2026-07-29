@@ -31,6 +31,22 @@ commands otherwise:
 Keep this bounded — if `gh` hangs or is unauthenticated, note it and move on
 rather than blocking the session start.
 
+**Sweep for stale claims.** The claim `/preflight` makes has no owner once its
+session ends: `/shepherd` stops before the merge, `/close` leaves an open PR
+alone, and a personal-account board has no automation — so when the maintainer
+merges later, the assignee, `agent:*` label, `Agent` field, and card status all
+survive with nobody left to clear them. Session start is where that gets
+caught, because it is the one step that runs without depending on the session
+that made the claim:
+
+```sh
+gh issue list --repo <owner/repo> --assignee @me --state open --json number,title,labels,url
+```
+
+Report any whose work has finished or stalled — a merged or closed linked PR,
+or no PR at all — as a loose end, and point at `/close` for the release
+commands. Do not clear anything here: this step orients, it does not mutate.
+
 ## 2. Compose the session name
 
 Kebab-case, at most ~40 characters, most-specific-first. Pick the source in

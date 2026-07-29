@@ -463,6 +463,29 @@ run_status() {
 
 on_board='{"data":{"repository":{"issue":{"projectItems":{"nodes":[{"id":"I_1","project":{"id":"P_1","title":"evanharmon1 Project"}}]}}}}}'
 
+echo "==> --show reports the card's current values without writing"
+cat >"$stub/gh" <<STUB
+#!/bin/sh
+case "\$*" in
+*projectItems*) echo '$on_board' ;;
+*fieldValues*)
+    echo '{"data":{"node":{"fieldValues":{"nodes":[{},{"name":"Ready","field":{"name":"Status"}},{"name":"Codex","field":{"name":"Agent"}}]}}}}'
+    ;;
+*) echo "\$*" >>"$tmp/mutations.log"; exit 1 ;;
+esac
+STUB
+chmod +x "$stub/gh"
+: >"$tmp/mutations.log"
+show_out=$(env PATH="$stub:$PATH" "$status_sh" --repo "$repo" --issue 5 --show 2>/dev/null)
+printf '%s\n' "$show_out" | grep -qx 'Status=Ready' || fail "--show must report the current Status (got: $show_out)"
+printf '%s\n' "$show_out" | grep -qx 'Agent=Codex' || fail "--show must report the current Agent"
+[ ! -s "$tmp/mutations.log" ] || fail "--show must not write"
+
+echo "==> --show refuses to be combined with a write"
+_rc=0
+env PATH="$stub:$PATH" "$status_sh" --repo "$repo" --issue 5 --show --status Todo >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "--show with --status should exit 2 (got $_rc)"
+
 echo "==> an issue on no board exits 3, not 1"
 board_stub '{"data":{"repository":{"issue":{"projectItems":{"nodes":[]}}}}}'
 [ "$(run_status --issue 5 --status "In Progress")" = 3 ] ||

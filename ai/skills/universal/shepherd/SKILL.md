@@ -676,8 +676,20 @@ the command instead of failing the round.
 
 **On an organization, prefer doing nothing.** `project-automation.yml` already
 syncs `Status` from PR and CI events — it sets `Verifying` on open/synchronize
-and advances after CI. Writing the same field from here races it, and the
-final value is decided by whichever wrote last. Where that workflow is present
-(`.github/workflows/project-automation.yml` exists and the repo is org-owned),
-leave these transitions to it and say so in the report; only write the card
-yourself when nothing is automating it.
+and advances after CI. Writing the same field from here races it, and the final
+value is decided by whichever wrote last. Where that workflow is active, leave
+these transitions to it and say so in the report; only write the card yourself
+when nothing is automating it.
+
+Check for it on the **base** revision, never the checkout:
+
+```sh
+gh api repos/"$repo"/contents/.github/workflows/project-automation.yml \
+  --jq .name >/dev/null 2>&1 && echo active
+```
+
+The checkout is the PR head (step 1 requires it), so reading the file there
+lets the PR under review decide the answer: a PR that *adds* the workflow would
+suppress manual writes although nothing is running yet, and a PR that *deletes*
+it would authorize them although the base workflow is still live and still
+racing. What matters is what runs on the base branch today.

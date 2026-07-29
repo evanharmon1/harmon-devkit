@@ -25,6 +25,12 @@
 #   set-issue-status.sh --repo owner/repo --issue N
 #                       [--status NAME] [--agent NAME]
 #                       [--project TITLE] [--dry-run]
+#   set-issue-status.sh --repo owner/repo --issue N --show
+#
+# --show reads instead of writing: it prints the card's current single-select
+# values as `<field>=<value>` lines (plus `board=<title>`) and exits. Call it
+# BEFORE a claim — the write destroys the previous Status and nothing else
+# records it, so a hand-back cannot restore what was never read.
 #
 # At least one of --status / --agent is required. Names match case-insensitively
 # ("In Progress" and "In progress" are the same option) because boards differ.
@@ -47,6 +53,7 @@ set -euo pipefail
 
 usage() {
     echo "Usage: $0 --repo owner/repo --issue N [--status NAME] [--agent NAME] [--project TITLE] [--dry-run]" >&2
+    echo "       $0 --repo owner/repo --issue N --show" >&2
     exit 2
 }
 
@@ -56,6 +63,7 @@ status=""
 agent=""
 project_title=""
 dry_run=0
+show=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --repo)
@@ -87,13 +95,21 @@ while [ "$#" -gt 0 ]; do
         dry_run=1
         shift
         ;;
+    --show)
+        show=1
+        shift
+        ;;
     -h | --help) usage ;;
     *) usage ;;
     esac
 done
 
 [ -n "$repo" ] && [ -n "$issue" ] || usage
-[ -n "$status" ] || [ -n "$agent" ] || usage
+if [ "$show" -eq 1 ]; then
+    { [ -n "$status" ] || [ -n "$agent" ] || [ "$dry_run" -eq 1 ]; } && usage
+else
+    [ -n "$status" ] || [ -n "$agent" ] || usage
+fi
 case "$issue" in
 '' | *[!0-9]*)
     echo "--issue must be a number, got: $issue" >&2
@@ -168,6 +184,29 @@ fi
 item_id=$(printf '%s' "$selected" | jq -r '.[0].id')
 project_id=$(printf '%s' "$selected" | jq -r '.[0].project.id')
 board=$(printf '%s' "$selected" | jq -r '.[0].project.title')
+
+# ── --show: report what the card holds now, and stop ─────────────────────────
+# A claim overwrites Status, and nothing else remembers what was there. Without
+# a way to read the current value first, "restore it on hand-back" is not
+# implementable — so this mode exists to be called before the write.
+if [ "$show" -eq 1 ]; then
+    # shellcheck disable=SC2016 # $i is a GraphQL variable, not shell
+    if ! values=$(gh api graphql \
+        -f query='query($i:ID!){node(id:$i){... on ProjectV2Item{fieldValues(first:50){nodes{... on ProjectV2ItemFieldSingleSelectValue{name field{... on ProjectV2FieldCommon{name}}}}}}}}' \
+        -F i="$item_id" 2>&1); then
+        echo "could not read the current field values of $repo#$issue:" >&2
+        echo "$values" >&2
+        exit 2
+    fi
+    # `<field>=<value>` per line, so a caller can read one without parsing JSON.
+    # A field the card has not been given a value for simply does not appear.
+    printf '%s' "$values" | jq -r '
+        .data.node.fieldValues.nodes[]?
+        | select(.field?.name? and .name?)
+        | "\(.field.name)=\(.name)"'
+    echo "board=$board"
+    exit 0
+fi
 
 # shellcheck disable=SC2016 # $p is a GraphQL variable, not shell
 if ! fields=$(gh api graphql \

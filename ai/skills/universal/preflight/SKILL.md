@@ -138,7 +138,8 @@ run instead of failing the flow:
   fork.
 - **Board** — the assignee and the label are both invisible on the project
   board, which is where the work is actually watched. Move the card and stamp
-  which agent holds it. The script ships with `track-work`, so
+  which agent holds it. **Do this after the comment below**, not here in list
+  order: the comment is what preserves the status this write destroys. The script ships with `track-work`, so
   `<track-work-dir>` is `.claude/skills/track-work` in a repo that vendors the
   skills and `ai/skills/universal/track-work` in harmon-devkit itself:
 
@@ -163,25 +164,34 @@ run instead of failing the flow:
   termination, so a body containing a literal `EOF` line would end a
   fixed-`EOF` heredoc early:
 
-  **Record the status you are overwriting.** `--status "In Progress"` destroys
-  whatever the card held — `Ready`, `Shaping`, `Next`, `Agent Queue` — and
-  nothing anywhere else remembers it, so an abandoned session cannot put the
-  issue back where it was and has to guess. Read it before the board write
-  (`--dry-run` reports the board and field without touching them; the value
-  itself comes from the item's current `Status`) and name it in the comment.
-  The comment is the right place: it survives compaction, a lost session, and
-  a different agent doing the hand-back.
+  **Record the status you are overwriting, and record it first.**
+  `--status "In Progress"` destroys whatever the card held — `Ready`,
+  `Shaping`, `Next`, `Agent Queue` — and nothing anywhere else remembers it, so
+  an abandoned session cannot put the issue back and has to guess. Read it with
+  `--show` and write the comment **before** the board write. Ordered the other
+  way, an interruption or a failed `gh issue comment` between the two loses the
+  old value permanently:
 
   ```sh
+  # 1. read (writes nothing)
+  <track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --show
+  # -> Status=Ready
+  #    board=<owner> Project
+
+  # 2. persist it, still before touching the board
   gh issue comment <n> --repo "$repo" --body-file - <<'CLAIM_BODY_9f3k'
   Claiming — starting implementation on branch <branch> (session <name>).
   Board status was <prior status> before this claim; restore it if the work is
   handed back.
   CLAIM_BODY_9f3k
+
+  # 3. only now move the card
   ```
 
-  If the prior status could not be read, say "unknown" rather than inventing
-  one — `/close` then asks instead of guessing.
+  The comment is the durable record — it survives compaction, a lost session,
+  and a different agent doing the hand-back. If `--show` printed no `Status=`
+  line, or failed, write "unknown" rather than inventing a value; `/close` then
+  asks instead of guessing.
 
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):
