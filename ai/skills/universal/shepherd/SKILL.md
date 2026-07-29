@@ -615,22 +615,26 @@ that is never released is worse than no claim at all: the board keeps showing
 an agent mid-flight on work that is finished or abandoned, and the next
 reader trusts it. So shepherd advances the same card as the PR moves.
 
-**Which issue — this is the part that goes wrong.** Move a card only for an
-issue that is *both* this PR's and fully resolved by it. Exactly two sources
-qualify:
+**Which issue — this is the part that goes wrong.** Two separate questions,
+and collapsing them is the bug:
 
-1. The issue `/preflight` claimed **this session**. You know it is claimed
-   because you claimed it.
-2. An issue linked by a **closing keyword** —
-   `gh pr view <n> --repo "$repo" --json closingIssuesReferences`. The keyword
-   is the author's assertion that this PR resolves the issue entirely.
+1. **Is this issue mine to touch?** Only if `/preflight` claimed it this
+   session, or a closing keyword links it
+   (`gh pr view <n> --repo "$repo" --json closingIssuesReferences`). Anything
+   else — a `Refs #N` you did not claim, an issue mentioned in a comment — is
+   not yours. Skip it; do not guess from the body.
+2. **May it advance past `In Progress`?** Only if a **closing keyword** links
+   it. `Verifying`, `In Review`, and `Ready to Merge` each assert this PR
+   carries the whole issue, and only the closing keyword makes that claim.
 
-A bare **`Refs #N` does not qualify**, and it is the default here precisely
-because it means *related, not resolved* (`track-work` §2). One green partial
-PR advancing a half-finished issue to `Ready to Merge` is a worse lie than
-never moving it. If neither source names an issue, skip the step — do not
-guess from the body. Never move a card in another repo, whatever the
-`owner/repo#N` reference says, unless that repo is `$repo`.
+So a claimed issue whose PR says `Refs #N` **stays at `In Progress`** — which
+is exactly true, because the PR does not finish it. `Refs` is the default here
+precisely because it means *related, not resolved* (`track-work` §2), and an
+umbrella issue advanced to `Ready to Merge` by one partial PR is a worse lie
+than never moving it. Having claimed an issue is not evidence of resolving it.
+
+Never move a card in another repo, whatever the `owner/repo#N` reference says,
+unless that repo is `$repo`.
 
 Before the first write, re-read the issue's live state
 (`gh issue view <n> --repo "$repo" --json state,assignees,labels`). A closed
@@ -643,9 +647,10 @@ pipeline distinguishes these three, so do not collapse them:
 
 | Condition | Status |
 | --- | --- |
-| PR open, checks still running | `Verifying` |
-| Checks green, awaiting human review | `In Review` |
-| `reviewDecision` is `APPROVED` and step 6's Green conditions hold | `Ready to Merge` |
+| Claimed, but the PR only `Refs` it | leave at `In Progress` |
+| Closing-keyword linked, checks still running | `Verifying` |
+| Closing-keyword linked, checks green, awaiting human review | `In Review` |
+| …and `reviewDecision` is `APPROVED` with step 6's Green conditions | `Ready to Merge` |
 
 ```sh
 <track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --status "Verifying"
@@ -657,8 +662,9 @@ description on the board. So a PR that is green but `DRAFT`, `BLOCKED`, or
 what `In Review` says and what `Ready to Merge` would deny. Report the
 distinction rather than rounding it up.
 
-Do **not** move the card to `Done` — merging is the maintainer's decision and
-`Done` is the terminal status.
+Do **not** move the card to `Done` — shepherd stops *before* the merge, so
+from here `Done` is a prediction rather than a record. Once a merge has
+actually been observed, `/close` offers it.
 
 Exit **3** means the issue is on no board or the board lacks that option —
 benign, note it once and never retry. **4** is partial (some fields applied,

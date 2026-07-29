@@ -35,7 +35,14 @@ read it in the UI) — never guess.
   session that told it. Three outcomes:
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
     Nothing to do.
-  - **Merged / issue closed** — nothing to release, but say so.
+  - **Merged / issue closed** — this is *not* "nothing to release". GitHub
+    clears none of the four markers on merge, and a personal-account project
+    has no automation to move the card either, so the work finishes and the
+    board keeps showing an agent holding it at `Ready to Merge` forever. Offer
+    the same cleanup as below, plus `--status Done` — the one place `Done` is
+    correct, because the merge already happened and is being recorded, not
+    predicted. (`/shepherd` must never set it: it stops *before* the merge, so
+    for it `Done` would be a prediction.)
   - **Neither** — the session stopped mid-flight. Surface it and offer the
     commands to hand the work back. `/preflight` set **four** markers, and a
     hand-back that clears only some leaves the issue still advertising itself

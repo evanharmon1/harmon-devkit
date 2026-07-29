@@ -240,7 +240,8 @@ per repo is how vocabularies fork.
 **A claim must be released.** `In Progress` on finished or abandoned work is
 worse than no signal, because the next reader believes it. `/preflight` claims,
 `/shepherd` advances (`In Review` → `Ready to Merge`), `/close` catches what
-neither did. Never move a card to `Done` — merging is the maintainer's call.
+neither did. `Done` records an *observed* merge — never predict it, and never
+set it to mean "I finished my part".
 
 ## Scope
 
