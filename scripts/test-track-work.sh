@@ -702,6 +702,39 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
+echo "==> a fence under nested list markers hides its contents"
+write_issue 51 '- - ```text
+    - [ ] example in a nested list fence
+    ```
+
+- [ ] the real criterion
+'
+[ "$(run_tick 51 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 51 '- - ```text
+    - [ ] example in a nested list fence
+    ```
+
+- [x] the real criterion
+' || fail "nested list markers must not hide the fence"
+
+echo "==> an ordered marker over nine digits is prose, not a criterion"
+write_issue 52 '1234567890. [ ] example prose, not a list item
+
+- [ ] the real criterion
+'
+[ "$(run_tick 52 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
+issue_is 52 '1234567890. [ ] example prose, not a list item
+
+- [x] the real criterion
+' || fail "a ten-digit ordered marker must not be tickable"
+
+echo "==> a nine-digit ordered marker is still a criterion"
+write_issue 53 '123456789. [ ] a real ordered criterion
+'
+[ "$(run_tick 53 --index 1)" = 0 ] || fail "nine digits is within the GFM limit"
+issue_is 53 '123456789. [x] a real ordered criterion
+' || fail "a nine-digit ordered item should tick"
+
 echo "==> leaving a blockquote ends the fence it opened"
 write_issue 50 '> ```
 - [ ] the real criterion

@@ -255,9 +255,13 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_in_list = 0 
     # does not close anything.
     marker_width = 0
     after_marker = bare
-    if (infence == 0 && match(bare, /^([-*+]|[0-9]+[.)])[ \t]+/)) {
-        marker_width = RLENGTH
-        after_marker = substr(bare, RLENGTH + 1)
+    if (infence == 0) {
+        # Every marker, not just the first: `- - ```text` nests two containers,
+        # and stopping at one leaves the fence unopened and its sample live.
+        while (match(after_marker, /^([-*+]|[0-9]+[.)])[ \t]+/)) {
+            marker_width += RLENGTH
+            after_marker = substr(after_marker, RLENGTH + 1)
+        }
     }
 
     # A fence ends where its CONTAINER ends, in either direction of nesting: the
@@ -353,8 +357,19 @@ BEGIN { infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_in_list = 0 
     }
     if (starts_hidden) next
 
-    if (infence == 0 && $0 ~ /^[[:space:]]*(>[[:space:]]*)*([-*+]|[0-9]+[.)])[[:space:]]+\[[ \t]\]([[:space:]]|$)/) {
-        print NR ":" $0
+    # `bare` is $0 with the blockquote prefix and leading spaces already removed,
+    # so the item pattern only has to describe the marker and the box.
+    if (infence == 0 && bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[[:space:]]+\[[ \t]\]([[:space:]]|$)/) {
+        # GFM caps an ordered marker at nine digits; beyond that the line is not
+        # a list item at all, so `1234567890. [ ] text` is prose. Counted here
+        # rather than with a bounded repeat, which not every awk supports.
+        ordered_ok = 1
+        if (match(bare, /^[ \t]*[0-9]+/)) {
+            digits = RLENGTH
+            if (substr(bare, 1, 1) == " " || substr(bare, 1, 1) == "\t") digits--
+            if (digits > 9) ordered_ok = 0
+        }
+        if (ordered_ok) print NR ":" $0
     }
 }' "$before")"
 [ -n "$items" ] || {
