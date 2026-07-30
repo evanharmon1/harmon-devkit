@@ -74,7 +74,13 @@ read it in the UI) — never guess.
   board restore that failed on a missing `project` scope, say — tells every
   future sweep the claim is settled while stale state remains, which is worse
   than no comment. If any write fails, report the partial cleanup to the user
-  instead of posting the release line.
+  instead of posting the release line. The converse failure — markers cleared
+  but the release comment refusing to post — must not end silent either:
+  retry the post, and if it still fails **re-add the `agent:*` label** (any
+  marker `/orient`'s sweep queries) before reporting, so the half-released
+  claim stays findable instead of surviving only as a card and an
+  unsuperseded comment. If that restore also fails, nothing was writable —
+  say exactly that; the user is present on this path.
 
   Three outcomes:
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
@@ -172,9 +178,14 @@ read it in the UI) — never guess.
     # assignee and `agent:*` label are what /orient's stale-claim sweep
     # queries — clear them before a failed board write and the leftover card
     # becomes undiscoverable (the board-only gap, harmon-devkit#183).
+    # The recorded board title and status are external data — a project title
+    # can contain `$(…)` or backticks, and pasting it inside double quotes
+    # executes it before the helper runs. Paste both inside single quotes
+    # exactly as recorded (a title containing a single quote must go through
+    # an env var instead, e.g. TITLE=… and "$TITLE").
     <track-work-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
-      --project "<the board the claim comment recorded>" \
-      --status "<the status the claim comment recorded>"
+      --project '<the board the claim comment recorded>' \
+      --status '<the status the claim comment recorded>'
     # If the record names a displaced label, put it back — the claim removed it:
     gh issue edit <n> --repo <owner/repo> --add-label <displaced agent: label>
     gh issue edit <n> --repo <owner/repo> --remove-label agent:claude-code  # only if the record says the claim added it
