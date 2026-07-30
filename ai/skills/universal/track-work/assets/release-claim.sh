@@ -212,6 +212,7 @@ fetch_claim() {
             | if $ci == null then {found: false}
               else {found: true,
                     id: .[$ci].id,
+                    updated: (.[$ci].updated_at // ""),
                     author: .[$ci].user.login,
                     body: .[$ci].body,
                     too_new: ($cutoff != "" and .[$ci].created_at >= $cutoff),
@@ -396,27 +397,34 @@ fi
 # ── Re-bind the claim immediately before writing ─────────────────────────────
 # The fetch-to-write window is where a concurrent re-claim lands, and the
 # markers converge (same account, same label), so only the comment stream can
-# show it. A changed claim of record means this event's decision is stale.
-if ! recheck_json="$(fetch_claim)"; then
-    echo "$repo#$issue: pre-write re-read failed — cannot verify, treat as unsafe" >&2
-    exit 2
-fi
-recheck_id="$(jq -r 'if .found then (.id | tostring) else "" end' <<<"$recheck_json")"
-if [ "$recheck_id" != "$claim_id" ] ||
-    [ "$(jq -r '.superseded' <<<"$recheck_json")" = "true" ]; then
-    echo "$repo#$issue: the claim of record changed between read and write — leaving it for the next event" >&2
-    exit 3
-fi
-# The issue itself can flip too: a close-then-reopen would sneak past
-# --require-closed judged on the first read, and an open-then-close would
-# restore a displaced label onto a closed issue. Same rule as the comments:
-# changed ground is the next event's problem.
+# show it. Order matters: re-read the ISSUE first — a close-then-reopen would
+# sneak past --require-closed judged on the first read, and an unassignment
+# changes who is trusted — then rebuild the trust list from that fresh read,
+# and only then re-bind the claim under it. Compared on id AND updated_at:
+# an EDITED claim comment keeps its id, and acting on the stale body parsed
+# earlier would honour a record its author just corrected.
 if ! recheck_issue="$(gh api "repos/$repo/issues/$issue")"; then
     echo "$repo#$issue: pre-write issue re-read failed — cannot verify, treat as unsafe" >&2
     exit 2
 fi
 if [ "$(jq -r '.state' <<<"$recheck_issue")" != "$issue_state" ]; then
     echo "$repo#$issue: issue state changed between read and write — leaving it for the next event" >&2
+    exit 3
+fi
+trusted_json="$(jq --arg owner "$owner" \
+    '[$owner] + [.assignees[].login] | map(ascii_downcase) | unique' \
+    <<<"$recheck_issue")"
+if ! recheck_json="$(fetch_claim)"; then
+    echo "$repo#$issue: pre-write re-read failed — cannot verify, treat as unsafe" >&2
+    exit 2
+fi
+recheck_id="$(jq -r 'if .found then (.id | tostring) else "" end' <<<"$recheck_json")"
+recheck_updated="$(jq -r '.updated // ""' <<<"$recheck_json")"
+claim_updated="$(jq -r '.updated // ""' <<<"$claim_json")"
+if [ "$recheck_id" != "$claim_id" ] ||
+    [ "$recheck_updated" != "$claim_updated" ] ||
+    [ "$(jq -r '.superseded' <<<"$recheck_json")" = "true" ]; then
+    echo "$repo#$issue: the claim of record changed between read and write — leaving it for the next event" >&2
     exit 3
 fi
 

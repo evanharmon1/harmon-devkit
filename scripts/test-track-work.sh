@@ -2025,12 +2025,13 @@ run_release() {
 
 # Comment-page JSON builders (the --slurp shape: an array of pages).
 rc_page() { jq -n '[$ARGS.positional]' --jsonargs "$@"; }
-# rc_comment LOGIN BODY [ID] [CREATED_AT] [ASSOCIATION]
+# rc_comment LOGIN BODY [ID] [CREATED_AT] [ASSOCIATION] [UPDATED_AT]
 rc_comment() {
+    _c="${4:-2026-01-01T00:00:00Z}"
     jq -n --arg l "$1" --arg b "$2" --arg i "${3:-1}" \
-        --arg c "${4:-2026-01-01T00:00:00Z}" --arg a "${5:-OWNER}" \
-        '{id: ($i | tonumber), created_at: $c, author_association: $a,
-          user: {login: $l}, body: $b}'
+        --arg c "$_c" --arg a "${5:-OWNER}" --arg u "${6:-$_c}" \
+        '{id: ($i | tonumber), created_at: $c, updated_at: $u,
+          author_association: $a, user: {login: $l}, body: $b}'
 }
 
 body_v1='Claiming — starting implementation on branch b (session s).
@@ -2166,6 +2167,24 @@ _rc1="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
 [ "$_rc1" = 1 ] || fail "a failed supersede post should exit 1 (got $_rc1)"
 grep -q -- '--add-assignee evanharmon1' "$rc_log" ||
     fail "the compensation must re-add the removed assignee so the retry stays trusted"
+
+echo "==> a claim EDITED between read and write aborts with exit 3 (same id, new updated_at)"
+comments_orig="$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")"
+printf '%s' "$(rc_page "$(rc_comment evanharmon1 "$body_noassign" 1 '2026-01-01T00:00:00Z' OWNER '2026-07-01T00:00:00Z')")" \
+    >"$tmp/rc-comments-edited.json"
+rc_scenario "$comments_orig" "$issue_closed_full"
+_rce="$(RC_COMMENTS_FILE2="$tmp/rc-comments-edited.json" run_release --reason r)"
+[ "$_rce" = 3 ] || fail "an edited claim body must not be acted on from the stale parse (got $_rce)"
+[ ! -s "$rc_log" ] || fail "an edited claim must trigger zero writes"
+
+echo "==> a claimant unassigned between read and write aborts with exit 3"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:00:00Z' COLLABORATOR)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"}]}'
+printf '%s' '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[]}' \
+    >"$tmp/rc-issue-unassigned.json"
+_rcu="$(RC_ISSUE_FILE2="$tmp/rc-issue-unassigned.json" run_release --reason r)"
+[ "$_rcu" = 3 ] || fail "a mid-run unassignment must drop trust before writing (got $_rcu)"
+[ ! -s "$rc_log" ] || fail "a mid-run unassignment must trigger zero writes"
 
 echo "==> an issue whose state flips between read and write aborts with exit 3"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
