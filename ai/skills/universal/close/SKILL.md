@@ -91,13 +91,25 @@ read it in the UI) — never guess.
 
     - the claim record survives and accounts for every marker the cleanup
       would touch, and
-    - the issue is closed `completed` (`stateReason`) or a merged PR linked it
-      with a *closing keyword* (`closedByPullRequestsReferences`).
+    - the issue is **currently closed**, the closure postdates this claim's
+      comment, and either it is closed `completed` (`stateReason`) or the
+      closing-keyword PR that closed it is actually **merged** — verify
+      `mergedAt` is non-null with `gh pr view <pr> --json state,mergedAt`,
+      because `closedByPullRequestsReferences` also lists closing-keyword PRs
+      that were closed *unmerged*, and a reopened issue keeps its historical
+      closers in that list forever. An abandoned PR or a stale merge from a
+      previous claim is not delivery evidence.
 
     Otherwise **stop and ask** — in particular when no claim record survives,
     the record says `prior board status: unknown`, another agent's `agent:*`
     label is present, another open PR still references the issue, or the card
     sits at a status this lifecycle never writes.
+
+    **Skip the displaced-label restore line on this path.** The record's
+    displaced label exists so a mid-flight hand-back can return the issue to
+    the agent it was taken from; putting another agent's label back onto
+    finished, closed work would advertise a live claim over nothing — the
+    exact state this cleanup removes.
 
     Add `--status Done` **only with evidence
     the issue is actually finished**: it is closed as `completed`
