@@ -50,7 +50,13 @@ read it in the UI) — never guess.
   the same GitHub identity is invisible in all of them. Another open PR
   referencing the issue, or activity newer than this session's claim comment,
   means the claim may not be yours alone to release — say so and let the user
-  decide rather than presenting cleanup as obviously safe.
+  decide rather than presenting cleanup as obviously safe. One exemption: the
+  closing PR's own trail. A merged PR that delivered this claim's work
+  necessarily leaves cross-reference, merge, and closure events newer than the
+  claim comment — that is the claim's expected end of life, not somebody
+  else's work, and counting it would make the merged path below ask every
+  time. What counts is *unrelated* newer activity: another open PR, a claim
+  comment you did not write, someone else's hands on the markers.
 
   **Every path that clears a marker must say it released the claim.**
   Whichever outcome applies below, any cleanup that removes or restores a
@@ -63,7 +69,12 @@ read it in the UI) — never guess.
   The claim comment is never deleted, so without this supersede line the
   issue keeps reading as a live claim to every future `/orient` and `/retro`
   — clearing the markers without it recreates exactly the state this step
-  exists to prevent.
+  exists to prevent. Post it **last, and only when every applicable marker
+  write succeeded**: a supersede comment over a marker that survived — a
+  board restore that failed on a missing `project` scope, say — tells every
+  future sweep the claim is settled while stale state remains, which is worse
+  than no comment. If any write fails, report the partial cleanup to the user
+  instead of posting the release line.
 
   Three outcomes:
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
