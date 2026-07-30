@@ -13,12 +13,17 @@
 # ../references/claim-lifecycle.md.
 #
 # What it does, in order:
-#   1. Finds the latest `Claiming —` comment on the issue. No claim comment,
-#      or a later `Claim released —` comment already superseding it — exit 3.
-#   2. Trusts the claim only when its author is the repo owner or a current
-#      assignee of the issue. A claim-shaped comment from anyone else is
-#      ignored (exit 3): comments are attacker-writable on a public repo, and
-#      this script must never let one strip a real assignee.
+#   1. Reads the issue (state, labels, assignees) — also the trust anchor:
+#      only comments authored by the repo owner or a CURRENT assignee count,
+#      when selecting the claim AND when deciding it was already released.
+#      Comments are attacker-writable on a public repo; a forged `Claiming —`
+#      must not shadow the real claim, and a forged `Claim released —` must
+#      not suppress its cleanup.
+#   2. Finds the latest trusted `Claiming —` comment. None, or a later
+#      trusted `Claim released —` already superseding it — exit 3. With
+#      --not-after, a claim NEWER than the triggering event also exits 3:
+#      replacement work that reclaimed the issue after the event is not this
+#      event's to release.
 #   3. Parses the comment's "Claim record" and undoes ONLY what it says the
 #      claim added: the `agent:*` label (v1 records name it; a legacy `yes`
 #      falls back to every live `agent:*` label), the claim author's own
@@ -26,41 +31,50 @@
 #      displaced `agent:*` label. A claim with no record at all releases by
 #      comment only and touches no marker. Record values are data: labels and
 #      logins are validated before they become arguments, never executed.
-#   4. Always posts the supersede comment. The comment IS the release — every
-#      reader (orient/retro/implement) treats a claim as live until a later
-#      `Claim released —` comment supersedes it — so it is posted even when
-#      there was no marker left to remove.
+#   4. Re-reads the comments immediately before writing and aborts (exit 3)
+#      if the claim of record changed — the fetch-to-write window is where a
+#      concurrent re-claim lands.
+#   5. Posts the supersede comment ONLY when every marker write succeeded.
+#      The comment IS the release — posting it over a surviving marker would
+#      tell every future sweep the claim is settled while stale state
+#      remains. A partial release exits 4 with no comment, the Actions job
+#      goes red, and a re-run retries the whole release.
 #
 # Usage:
-#   release-claim.sh --repo owner/repo --issue N --reason TEXT [--dry-run]
+#   release-claim.sh --repo owner/repo --issue N --reason TEXT
+#                    [--not-after ISO8601] [--dry-run]
 #
 # --reason lands verbatim in the fixed first line:
 #   Claim released — <reason>. (Supersedes the claim record above.)
+# --not-after is the triggering event's timestamp (e.g. the PR's closed_at):
+#   a trusted claim created after it is left alone.
 #
 # Auth: GH_TOKEN with `issues: write` suffices (assignee and label edits are
 # ordinary issue writes). No project scope — this script never touches boards;
 # see claim-lifecycle.md for why event-driven Status was declined.
 #
-# Exit: 0 = released: supersede comment posted, every applicable marker
-#           cleared (or fully resolved under --dry-run),
-#       1 = the supersede comment failed to post — the release is NOT
-#           recorded, whatever markers moved; safe to re-run,
+# Exit: 0 = released: every applicable marker cleared and the supersede
+#           comment posted (or fully resolved under --dry-run),
+#       1 = markers cleared but the supersede comment failed to post — the
+#           release is NOT recorded; safe to re-run,
 #       2 = usage/environment error, or a trusted claim whose record is
 #           present but unreadable — could not verify, fail closed,
-#       3 = nothing to do: no claim comment, already superseded, or the
-#           claim's author is untrusted (stderr says which). Benign.
-#       4 = partial: the comment posted but some marker write failed; the
-#           comment says which, so a re-run or a human can finish the job.
+#       3 = nothing to do: no trusted claim, already superseded, newer than
+#           --not-after, or the ground shifted mid-run (stderr says which),
+#       4 = partial: a marker write failed; the supersede comment is
+#           deliberately NOT posted, so a re-run retries the release instead
+#           of reading it as already settled.
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --repo owner/repo --issue N --reason TEXT [--dry-run]" >&2
+    echo "Usage: $0 --repo owner/repo --issue N --reason TEXT [--not-after ISO8601] [--dry-run]" >&2
     exit 2
 }
 
 repo="${GH_REPO:-}"
 issue=""
 reason=""
+not_after=""
 dry_run=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -77,6 +91,11 @@ while [ "$#" -gt 0 ]; do
     --reason)
         [ "$#" -ge 2 ] || usage
         reason="$2"
+        shift 2
+        ;;
+    --not-after)
+        [ "$#" -ge 2 ] || usage
+        not_after="$2"
         shift 2
         ;;
     --dry-run)
@@ -128,58 +147,67 @@ valid_login() {
     esac
 }
 
-# ── Find the claim ───────────────────────────────────────────────────────────
-# --paginate --slurp: an array of pages; `add` flattens. The latest `Claiming —`
-# comment is the claim; anything after it starting `Claim released —` has
-# already superseded it (the same predicate orient/retro/implement read).
+# ── Live issue state — also the trust anchor ─────────────────────────────────
+if ! issue_json="$(gh api "repos/$repo/issues/$issue")"; then
+    echo "could not fetch $repo#$issue — cannot verify, treat as unsafe" >&2
+    exit 2
+fi
+issue_state="$(jq -r '.state' <<<"$issue_json")"
+# Trusted comment authors: the repo owner plus every CURRENT assignee. An
+# attacker cannot self-assign, so a claim- or release-shaped comment from
+# anyone else is invisible to the selection below.
+trusted_json="$(jq --arg owner "$owner" \
+    '[$owner] + [.assignees[].login] | map(ascii_downcase) | unique' \
+    <<<"$issue_json")"
+
+# ── Find the claim (trusted comments only) ───────────────────────────────────
+# --paginate --slurp: an array of pages; `add` flattens. The latest trusted
+# `Claiming —` comment is the claim of record; a later trusted
+# `Claim released —` has already superseded it (the same predicate
+# orient/retro/implement read). With a cutoff, a claim newer than the
+# triggering event refuses (too_new) rather than releasing work the event
+# does not cover.
 # shellcheck disable=SC2016 # single quotes hold a jq program, not shell
-if ! claim_json="$(gh api --paginate --slurp "repos/$repo/issues/$issue/comments" |
-    jq 'add // []
-        | map(select(.body != null))
-        | (map(.body | startswith("Claiming —")) | rindex(true)) as $ci
-        | if $ci == null then {found: false}
-          else {found: true,
-                author: .[$ci].user.login,
-                body: .[$ci].body,
-                superseded: ([.[($ci + 1):][]
-                              | select(.body | startswith("Claim released —"))]
-                             | length > 0)}
-          end')"; then
+fetch_claim() {
+    gh api --paginate --slurp "repos/$repo/issues/$issue/comments" |
+        jq --argjson trusted "$trusted_json" --arg cutoff "$not_after" '
+            add // []
+            | map(select(.body != null)
+                  | select((.user.login | ascii_downcase) as $l
+                           | $trusted | index($l) != null))
+            | (map(.body | startswith("Claiming —")) | rindex(true)) as $ci
+            | if $ci == null then {found: false}
+              else {found: true,
+                    id: .[$ci].id,
+                    author: .[$ci].user.login,
+                    body: .[$ci].body,
+                    too_new: ($cutoff != "" and .[$ci].created_at > $cutoff),
+                    superseded: ([.[($ci + 1):][]
+                                  | select(.body
+                                           | startswith("Claim released —"))]
+                                 | length > 0)}
+              end'
+}
+
+if ! claim_json="$(fetch_claim)"; then
     echo "could not fetch comments for $repo#$issue — cannot verify, treat as unsafe" >&2
     exit 2
 fi
 
 if [ "$(jq -r '.found' <<<"$claim_json")" != "true" ]; then
-    echo "$repo#$issue has no claim comment — nothing to release" >&2
+    echo "$repo#$issue has no trusted claim comment — nothing to release" >&2
     exit 3
 fi
 if [ "$(jq -r '.superseded' <<<"$claim_json")" = "true" ]; then
     echo "$repo#$issue: latest claim already superseded by a 'Claim released —' comment" >&2
     exit 3
 fi
-claim_author="$(jq -r '.author // empty' <<<"$claim_json")"
-
-# ── Live issue state (also the trust anchor) ─────────────────────────────────
-if ! issue_json="$(gh api "repos/$repo/issues/$issue")"; then
-    echo "could not fetch $repo#$issue — cannot verify, treat as unsafe" >&2
-    exit 2
-fi
-issue_state="$(jq -r '.state' <<<"$issue_json")"
-
-trusted=0
-if [ "$(lower "$claim_author")" = "$(lower "$owner")" ]; then
-    trusted=1
-else
-    while IFS= read -r a; do
-        if [ -n "$a" ] && [ "$(lower "$claim_author")" = "$(lower "$a")" ]; then
-            trusted=1
-        fi
-    done <<<"$(jq -r '.assignees[].login' <<<"$issue_json")"
-fi
-if [ "$trusted" -ne 1 ]; then
-    echo "$repo#$issue: claim comment author '$claim_author' is neither the repo owner nor an assignee — ignoring it" >&2
+if [ "$(jq -r '.too_new' <<<"$claim_json")" = "true" ]; then
+    echo "$repo#$issue: the latest claim postdates the triggering event (--not-after $not_after) — it belongs to newer work, leaving it" >&2
     exit 3
 fi
+claim_id="$(jq -r '.id' <<<"$claim_json")"
+claim_author="$(jq -r '.author // empty' <<<"$claim_json")"
 if ! valid_login "$claim_author"; then
     echo "$repo#$issue: claim author '$claim_author' is not a plausible login — refusing to act on it" >&2
     exit 2
@@ -290,6 +318,21 @@ if [ -n "$label_displaced" ]; then
     fi
 fi
 
+# ── Re-bind the claim immediately before writing ─────────────────────────────
+# The fetch-to-write window is where a concurrent re-claim lands, and the
+# markers converge (same account, same label), so only the comment stream can
+# show it. A changed claim of record means this event's decision is stale.
+if ! recheck_json="$(fetch_claim)"; then
+    echo "$repo#$issue: pre-write re-read failed — cannot verify, treat as unsafe" >&2
+    exit 2
+fi
+recheck_id="$(jq -r 'if .found then (.id | tostring) else "" end' <<<"$recheck_json")"
+if [ "$recheck_id" != "$claim_id" ] ||
+    [ "$(jq -r '.superseded' <<<"$recheck_json")" = "true" ]; then
+    echo "$repo#$issue: the claim of record changed between read and write — leaving it for the next event" >&2
+    exit 3
+fi
+
 # ── Execute ──────────────────────────────────────────────────────────────────
 run_write() {
     if [ "$dry_run" -eq 1 ]; then
@@ -310,7 +353,7 @@ if [ -n "$labels_to_remove" ]; then
             note "\`$l\` label: removed"
         else
             marker_failed=1
-            note "\`$l\` label: removal FAILED — remove it by hand"
+            echo "$repo#$issue: failed to remove label '$l'" >&2
         fi
     done <<<"$labels_to_remove"
 elif [ "$record_present" -eq 1 ]; then
@@ -322,7 +365,7 @@ if [ "$remove_assignee" -eq 1 ]; then
         note "assignee \`$claim_author\`: removed"
     else
         marker_failed=1
-        note "assignee \`$claim_author\`: removal FAILED — remove it by hand"
+        echo "$repo#$issue: failed to remove assignee '$claim_author'" >&2
     fi
 elif [ "$record_present" -eq 1 ]; then
     note "assignee: left in place (the claim record says the claim did not add it, or it is already gone)"
@@ -333,7 +376,7 @@ if [ -n "$restore_displaced" ]; then
         note "displaced label \`$restore_displaced\`: restored"
     else
         marker_failed=1
-        note "displaced label \`$restore_displaced\`: restore FAILED — restore it by hand"
+        echo "$repo#$issue: failed to restore displaced label '$restore_displaced'" >&2
     fi
 fi
 if [ -n "$displaced_note" ]; then
@@ -342,6 +385,14 @@ fi
 
 if [ "$record_present" -eq 0 ]; then
     note "no claim record survived in the claim comment — markers left untouched; this comment alone records the release"
+fi
+
+# The supersede comment is posted ONLY when every marker write succeeded: a
+# release comment over a surviving marker reads as settled to every sweep,
+# and a re-run would exit 3 instead of retrying the failed write.
+if [ "$marker_failed" -eq 1 ]; then
+    echo "$repo#$issue: partial release — supersede comment withheld; re-run to retry the failed writes" >&2
+    exit 4
 fi
 
 body="Claim released — $reason. (Supersedes the claim record above.)
@@ -358,8 +409,4 @@ elif ! printf '%s\n' "$body" | gh issue comment "$issue" --repo "$repo" --body-f
     exit 1
 fi
 
-if [ "$marker_failed" -eq 1 ]; then
-    echo "$repo#$issue: released with failures — the supersede comment lists what still needs a hand" >&2
-    exit 4
-fi
 echo "$repo#$issue: claim released"

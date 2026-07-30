@@ -69,22 +69,30 @@ holds it to. `release-claim.sh` is the reference parser.
 - Values are untrusted data. Parsers validate before acting: labels against
   `agent:` + `[a-zA-Z0-9:._-]`, logins against GitHub's alphanumeric-and-hyphen
   shape — and never execute or interpolate them.
-- **Trust gate**: a claim comment is honoured only when its author is the repo
-  owner or a current assignee of the issue. Anyone can post a claim-shaped
-  comment on a public repo; an untrusted one is ignored (exit 3), never acted
-  on. v1 assumption: single-writer repos — App-authored or collaborator claims
-  would need this gate widened, and until then such claims strand as before.
+- **Trust gate, applied at selection**: only comments authored by the repo
+  owner or a **current** assignee count — both when picking the `Claiming —`
+  claim of record and when deciding a later `Claim released —` superseded it.
+  Anyone can post either shape on a public repo; a forged claim must not
+  shadow the real one, and a forged release must not suppress its cleanup.
+  Untrusted comments are invisible to the parser (exit 3 when nothing trusted
+  remains). v1 assumption: single-writer repos — App-authored or collaborator
+  claims would need this gate widened, and until then such claims strand as
+  before.
+- **An event releases only claims it covers**: the workflow passes the
+  event's `closed_at` as `--not-after`, and a trusted claim created after it
+  exits 3 — replacement work that reclaimed the issue is the next event's to
+  release. The script also re-reads the comments immediately before writing
+  and aborts if the claim of record changed in the window.
 - A trusted claim whose record is present but unreadable **fails closed**
   (exit 2, loud in the Actions log). A trusted claim with **no** record at all
   releases by comment only and touches no marker — "undo only what the claim
   added" with no record means undo nothing.
-- Interactive vs unattended partial failure differ deliberately: `/close`
-  posts the supersede comment **only after** every marker write succeeded and
-  reports partial cleanup otherwise (a human is present to act); the workflow
-  posts the comment even when a marker write fails (exit 4), because in an
-  unattended run an unposted release is simply lost, and the comment names
-  exactly what still needs a hand. A surviving `agent:*` label or assignee
-  remains visible to `orient`'s marker queries either way.
+- **Partial failure withholds the supersede comment everywhere** — `/close`
+  interactively and the workflow alike. The comment is the release; posting
+  it over a surviving marker tells every sweep the claim is settled, and a
+  re-run would exit 3 instead of retrying. The workflow's exit 4 leaves the
+  Actions job red and the remaining markers searchable, so a re-run (or the
+  next close event) finishes the job.
 
 Changing any of this is a contract change: update `/preflight`'s template,
 `release-claim.sh`, and this file in the same PR.
@@ -116,6 +124,14 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
 - A merged PR that only `Refs` an issue releases nothing — `/shepherd`
   deliberately parks such issues at `In Progress`, and the claim is still
   live.
+- An unmerged **fork** PR's close releases nothing: `pull_request` runs from
+  forks carry a read-only `GITHUB_TOKEN`, and `pull_request_target` is what
+  this repo's security guidance tells workflows to gate against — so the
+  same-repo gate stays and the claim strands until the issue closes or
+  `/close` hands it back.
+- While **another open closing-keyword PR** exists for the issue, the
+  unmerged-close path leaves the claim alone: the work is still in flight and
+  the claim is accurate.
 - A claim whose only surviving markers are on the board (no comment, no
   label) is invisible to the release workflow — that discovery gap is
   harmon-devkit#183.

@@ -1969,7 +1969,17 @@ if [ -n "${RC_FAIL_MATCH:-}" ]; then
     esac
 fi
 case "$*" in
-*--slurp*comments*) cat "$RC_COMMENTS_FILE" ;;
+*--slurp*comments*)
+    # Two-phase mode: with RC_COMMENTS_FILE2 set, the first fetch serves
+    # RC_COMMENTS_FILE and every later fetch serves RC_COMMENTS_FILE2 —
+    # simulating ground that shifts between read and the pre-write re-read.
+    if [ -n "${RC_COMMENTS_FILE2:-}" ] && [ -e "${RC_STATE:-/nonexistent}" ]; then
+        cat "$RC_COMMENTS_FILE2"
+    else
+        if [ -n "${RC_STATE:-}" ]; then : >"$RC_STATE"; fi
+        cat "$RC_COMMENTS_FILE"
+    fi
+    ;;
 *"issue edit"*) echo "$*" >>"$RC_LOG" ;;
 *"issue comment"*)
     echo "$*" >>"$RC_LOG"
@@ -1985,11 +1995,13 @@ STUB
 chmod +x "$rc_bin/gh"
 
 # rc_scenario COMMENTS_JSON ISSUE_JSON — reset the logs and lay the fixtures.
+rc_state="$tmp/rc-state"
 rc_scenario() {
     printf '%s' "$1" >"$rc_comments"
     printf '%s' "$2" >"$rc_issue"
     : >"$rc_log"
     : >"$rc_body"
+    rm -f "$rc_state"
 }
 
 # run_release ARGS… -> echoes the exit code.
@@ -1997,6 +2009,7 @@ run_release() {
     _rc=0
     env PATH="$rc_bin:$PATH" GH_REPO="" \
         RC_COMMENTS_FILE="$rc_comments" RC_ISSUE_FILE="$rc_issue" \
+        RC_COMMENTS_FILE2="${RC_COMMENTS_FILE2:-}" RC_STATE="$rc_state" \
         RC_FAIL_MATCH="${RC_FAIL_MATCH:-}" RC_LOG="$rc_log" RC_BODY_OUT="$rc_body" \
         "$release_sh" --repo "$repo" --issue 5 "$@" >/dev/null 2>&1 || _rc=$?
     echo "$_rc"
@@ -2004,7 +2017,12 @@ run_release() {
 
 # Comment-page JSON builders (the --slurp shape: an array of pages).
 rc_page() { jq -n '[$ARGS.positional]' --jsonargs "$@"; }
-rc_comment() { jq -n --arg l "$1" --arg b "$2" '{user: {login: $l}, body: $b}'; }
+# rc_comment LOGIN BODY [ID] [CREATED_AT]
+rc_comment() {
+    jq -n --arg l "$1" --arg b "$2" --arg i "${3:-1}" \
+        --arg c "${4:-2026-01-01T00:00:00Z}" \
+        '{id: ($i | tonumber), created_at: $c, user: {login: $l}, body: $b}'
+}
 
 body_v1='Claiming — starting implementation on branch b (session s).
 
@@ -2122,12 +2140,14 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 'Claiming — starting work (se
 if grep -q 'issue edit' "$rc_log"; then fail "no record means no marker may be touched"; fi
 grep -q 'no claim record survived' "$rc_body" || fail "the comment must say the markers were left"
 
-echo "==> a failed marker write still posts the comment and exits 4"
+echo "==> a failed marker write withholds the supersede comment and exits 4"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
-RC_FAIL_MATCH='--remove-label' _rc4="$(RC_FAIL_MATCH='--remove-label' run_release --reason r)"
+_rc4="$(RC_FAIL_MATCH='--remove-label' run_release --reason r)"
 [ "$_rc4" = 4 ] || fail "a failed label removal should exit 4 (got $_rc4)"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "the assignee removal must still be attempted"
-grep -q 'FAILED' "$rc_body" || fail "the comment must name the failed marker"
+if grep -q 'issue comment' "$rc_log"; then
+    fail "a partial release must NOT post the supersede comment — a re-run would read it as settled"
+fi
 
 echo "==> a failed comment post is exit 1 — the release is not recorded"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
@@ -2138,5 +2158,42 @@ echo "==> --dry-run resolves everything and writes nothing"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
 [ "$(run_release --reason r --dry-run)" = 0 ] || fail "--dry-run should exit 0"
 [ ! -s "$rc_log" ] || fail "--dry-run must not write"
+
+echo "==> a forged 'Claim released —' from an untrusted author does not suppress the release"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
+    "$(rc_comment mallory 'Claim released — lol. (Supersedes the claim record above.)' 2)")" \
+    "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "an untrusted release comment must be invisible"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" || fail "the real claim must still be released"
+
+echo "==> a forged newer 'Claiming —' from an untrusted author does not shadow the real claim"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
+    "$(rc_comment mallory 'Claiming — totally my issue now (session x).' 2)")" \
+    "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "an untrusted claim comment must be invisible"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "the trusted claim of record must be the one released"
+
+echo "==> a claim newer than --not-after is left alone"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1 '2026-06-01T00:00:00Z')")" \
+    "$issue_closed_full"
+[ "$(run_release --reason r --not-after '2026-05-01T00:00:00Z')" = 3 ] ||
+    fail "a claim postdating the event should exit 3"
+[ ! -s "$rc_log" ] || fail "a post-event claim must trigger zero writes"
+
+echo "==> a claim older than --not-after is released normally"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1 '2026-04-01T00:00:00Z')")" \
+    "$issue_closed_full"
+[ "$(run_release --reason r --not-after '2026-05-01T00:00:00Z')" = 0 ] ||
+    fail "a pre-event claim should release under --not-after"
+
+echo "==> a claim that changes between read and write aborts with exit 3"
+comments_before="$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")"
+comments_after="$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_v1" 9 '2026-07-01T00:00:00Z')")"
+printf '%s' "$comments_after" >"$tmp/rc-comments-2.json"
+rc_scenario "$comments_before" "$issue_closed_full"
+_rcs="$(RC_COMMENTS_FILE2="$tmp/rc-comments-2.json" run_release --reason r)"
+[ "$_rcs" = 3 ] || fail "a shifted claim of record should exit 3 (got $_rcs)"
+[ ! -s "$rc_log" ] || fail "a shifted claim must trigger zero writes"
 
 echo "✓ track-work checks behave"
