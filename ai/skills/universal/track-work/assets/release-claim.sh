@@ -153,12 +153,17 @@ if ! issue_json="$(gh api "repos/$repo/issues/$issue")"; then
     exit 2
 fi
 issue_state="$(jq -r '.state' <<<"$issue_json")"
-# Trusted comment authors: the repo owner plus every CURRENT assignee. An
-# attacker cannot self-assign, so a claim- or release-shaped comment from
-# anyone else is invisible to the selection below.
+# Trusted CLAIM authors: the repo owner plus every CURRENT assignee. An
+# attacker cannot self-assign, so a claim-shaped comment from anyone else is
+# invisible to the selection below. RELEASE comments additionally trust
+# github-actions[bot] — this script's own supersede comments are authored by
+# it when run under a workflow's GITHUB_TOKEN, and a re-run that could not
+# see them would release the same claim twice instead of exiting 3.
 trusted_json="$(jq --arg owner "$owner" \
     '[$owner] + [.assignees[].login] | map(ascii_downcase) | unique' \
     <<<"$issue_json")"
+release_trusted_json="$(jq '. + ["github-actions[bot]"] | unique' \
+    <<<"$trusted_json")"
 
 # ── Find the claim (trusted comments only) ───────────────────────────────────
 # --paginate --slurp: an array of pages; `add` flattens. The latest trusted
@@ -170,12 +175,19 @@ trusted_json="$(jq --arg owner "$owner" \
 # shellcheck disable=SC2016 # single quotes hold a jq program, not shell
 fetch_claim() {
     gh api --paginate --slurp "repos/$repo/issues/$issue/comments" |
-        jq --argjson trusted "$trusted_json" --arg cutoff "$not_after" '
+        jq --argjson trusted "$trusted_json" \
+            --argjson rtrusted "$release_trusted_json" \
+            --arg cutoff "$not_after" '
+            def dl: (.user.login | ascii_downcase);
             add // []
-            | map(select(.body != null)
-                  | select((.user.login | ascii_downcase) as $l
-                           | $trusted | index($l) != null))
-            | (map(.body | startswith("Claiming —")) | rindex(true)) as $ci
+            | map(select(.body != null))
+            | map(select(
+                  (dl as $l | $trusted | index($l) != null)
+                  or ((dl as $l | $rtrusted | index($l) != null)
+                      and (.body | startswith("Claim released —")))))
+            | (map((.body | startswith("Claiming —"))
+                   and (dl as $l | $trusted | index($l) != null))
+               | rindex(true)) as $ci
             | if $ci == null then {found: false}
               else {found: true,
                     id: .[$ci].id,
@@ -360,17 +372,6 @@ elif [ "$record_present" -eq 1 ]; then
     note "agent label: none to remove (the claim record says the claim did not add one, or it is already gone)"
 fi
 
-if [ "$remove_assignee" -eq 1 ]; then
-    if run_write gh issue edit "$issue" --repo "$repo" --remove-assignee "$claim_author" >/dev/null; then
-        note "assignee \`$claim_author\`: removed"
-    else
-        marker_failed=1
-        echo "$repo#$issue: failed to remove assignee '$claim_author'" >&2
-    fi
-elif [ "$record_present" -eq 1 ]; then
-    note "assignee: left in place (the claim record says the claim did not add it, or it is already gone)"
-fi
-
 if [ -n "$restore_displaced" ]; then
     if run_write gh issue edit "$issue" --repo "$repo" --add-label "$restore_displaced" >/dev/null; then
         note "displaced label \`$restore_displaced\`: restored"
@@ -381,6 +382,24 @@ if [ -n "$restore_displaced" ]; then
 fi
 if [ -n "$displaced_note" ]; then
     note "$displaced_note"
+fi
+
+# Assignee LAST among the marker writes: for a claim authored by a non-owner
+# assignee, that assignment is also the trust anchor a re-run needs — remove
+# it only once everything else has succeeded, so a failed earlier write stays
+# retryable (see claim-lifecycle.md's residual-gap note for the one write
+# this cannot protect).
+if [ "$remove_assignee" -eq 1 ]; then
+    if [ "$marker_failed" -eq 1 ]; then
+        note "assignee \`$claim_author\`: left in place — an earlier write failed and the assignment keeps the retry trusted"
+    elif run_write gh issue edit "$issue" --repo "$repo" --remove-assignee "$claim_author" >/dev/null; then
+        note "assignee \`$claim_author\`: removed"
+    else
+        marker_failed=1
+        echo "$repo#$issue: failed to remove assignee '$claim_author'" >&2
+    fi
+elif [ "$record_present" -eq 1 ]; then
+    note "assignee: left in place (the claim record says the claim did not add it, or it is already gone)"
 fi
 
 if [ "$record_present" -eq 0 ]; then

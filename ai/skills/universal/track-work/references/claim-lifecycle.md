@@ -69,15 +69,16 @@ holds it to. `release-claim.sh` is the reference parser.
 - Values are untrusted data. Parsers validate before acting: labels against
   `agent:` + `[a-zA-Z0-9:._-]`, logins against GitHub's alphanumeric-and-hyphen
   shape — and never execute or interpolate them.
-- **Trust gate, applied at selection**: only comments authored by the repo
-  owner or a **current** assignee count — both when picking the `Claiming —`
-  claim of record and when deciding a later `Claim released —` superseded it.
-  Anyone can post either shape on a public repo; a forged claim must not
-  shadow the real one, and a forged release must not suppress its cleanup.
-  Untrusted comments are invisible to the parser (exit 3 when nothing trusted
-  remains). v1 assumption: single-writer repos — App-authored or collaborator
-  claims would need this gate widened, and until then such claims strand as
-  before.
+- **Trust gate, applied at selection**: a `Claiming —` comment counts only
+  from the repo owner or a **current** assignee; a `Claim released —` comment
+  counts from those plus `github-actions[bot]`, because the workflow's own
+  supersede comments are authored by it and a re-run that could not see them
+  would release the same claim twice. Anyone can post either shape on a
+  public repo; a forged claim must not shadow the real one, and a forged
+  release must not suppress its cleanup. Untrusted comments are invisible to
+  the parser (exit 3 when nothing trusted remains). v1 assumption:
+  single-writer repos — App-authored or collaborator claims would need this
+  gate widened, and until then such claims strand as before.
 - **An event releases only claims it covers**: the workflow passes the
   event's `closed_at` as `--not-after`, and a trusted claim created after it
   exits 3 — replacement work that reclaimed the issue is the next event's to
@@ -131,7 +132,21 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
   `/close` hands it back.
 - While **another open closing-keyword PR** exists for the issue, the
   unmerged-close path leaves the claim alone: the work is still in flight and
-  the claim is accurate.
+  the claim is accurate. More than 100 closing references (unenumerable in
+  one page) is treated the same way — unknown means leave it.
+- For a claim authored by a **non-owner assignee**, the assignment is also
+  the trust anchor, so the script removes it last — but if the supersede
+  comment itself then fails, the retry finds the author untrusted and exits
+  3, stranding a half-released claim for `/orient` to surface and the owner
+  to settle. Unreachable in the v1 single-writer norm (the owner prong keeps
+  the owner's claims trusted forever).
+- The write window after the script's final pre-write re-read is **not**
+  race-free: a reopen-and-reclaim landing inside those seconds can lose
+  markers or be superseded by the in-flight release comment. GitHub offers
+  no transaction over comments and issue edits; the re-read and `--not-after`
+  bound the window, the global concurrency queue serializes the workflow's
+  own runs, and the residue is accepted (`track-work` §6: a claim is a
+  signal, not a lock).
 - A claim whose only surviving markers are on the board (no comment, no
   label) is invisible to the release workflow — that discovery gap is
   harmon-devkit#183.

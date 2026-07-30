@@ -2140,11 +2140,13 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 'Claiming — starting work (se
 if grep -q 'issue edit' "$rc_log"; then fail "no record means no marker may be touched"; fi
 grep -q 'no claim record survived' "$rc_body" || fail "the comment must say the markers were left"
 
-echo "==> a failed marker write withholds the supersede comment and exits 4"
+echo "==> a failed marker write withholds the comment AND the assignee removal"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
 _rc4="$(RC_FAIL_MATCH='--remove-label' run_release --reason r)"
 [ "$_rc4" = 4 ] || fail "a failed label removal should exit 4 (got $_rc4)"
-grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "the assignee removal must still be attempted"
+if grep -q -- '--remove-assignee' "$rc_log"; then
+    fail "the assignee is the retry's trust anchor — it must be left when an earlier write failed"
+fi
 if grep -q 'issue comment' "$rc_log"; then
     fail "a partial release must NOT post the supersede comment — a re-run would read it as settled"
 fi
@@ -2185,6 +2187,20 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1 '2026-04-01T00:00:
     "$issue_closed_full"
 [ "$(run_release --reason r --not-after '2026-05-01T00:00:00Z')" = 0 ] ||
     fail "a pre-event claim should release under --not-after"
+
+echo "==> the workflow's own bot-authored release comment supersedes on re-run"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
+    "$(rc_comment 'github-actions[bot]' 'Claim released — issue closed (completed). (Supersedes the claim record above.)' 2)")" \
+    "$issue_closed_full"
+_rcb="$(run_release --reason r)"
+[ "$_rcb" = 3 ] || fail "a bot-authored release must be seen by the re-run (got $_rcb)"
+[ ! -s "$rc_log" ] || fail "an already-released claim must trigger zero writes on re-run"
+
+echo "==> a bot-authored 'Claiming —' comment is still not a trusted claim"
+rc_scenario "$(rc_page "$(rc_comment 'github-actions[bot]' "$body_v1" 1)")" \
+    '{"state":"closed","labels":[],"assignees":[]}'
+[ "$(run_release --reason r)" = 3 ] || fail "bot trust is scoped to release comments only"
+[ ! -s "$rc_log" ] || fail "a bot claim must trigger zero writes"
 
 echo "==> a claim that changes between read and write aborts with exit 3"
 comments_before="$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")"
