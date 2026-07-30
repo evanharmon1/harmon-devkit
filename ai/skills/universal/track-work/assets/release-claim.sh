@@ -505,8 +505,13 @@ elif ! printf '%s\n' "$body" | gh issue comment "$issue" --repo "$repo" --body-f
     # Compensate: the removed assignment may be the claim's only trust
     # anchor (a non-owner claimant, or any organization repo, where the
     # owner prong never matches a user). Without it a re-run would find the
-    # claim untrusted and exit 3, permanently stranding the release.
-    if [ "$assignee_removed" -eq 1 ]; then
+    # claim untrusted and exit 3, permanently stranding the release. But
+    # only while the claim is still live: a concurrent run may have posted
+    # the release between our recheck and this failure, and re-adding the
+    # assignee over a completed release would strand a stale assignment.
+    if [ "$assignee_removed" -eq 1 ] &&
+        post_fail_json="$(fetch_claim)" &&
+        [ "$(jq -r '.superseded' <<<"$post_fail_json")" != "true" ]; then
         if gh issue edit "$issue" --repo "$repo" --add-assignee "$claim_author" >/dev/null; then
             echo "$repo#$issue: re-added assignee '$claim_author' so the retry stays trusted and the claim stays findable" >&2
         else

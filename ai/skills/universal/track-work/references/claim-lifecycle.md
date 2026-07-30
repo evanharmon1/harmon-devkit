@@ -150,10 +150,19 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
 - For a claim authored by a **non-owner assignee** (the norm on organization
   repos, where the owner prong never matches a user), the assignment is also
   the trust anchor: the script removes it last, skips it when an earlier
-  write failed, and **re-adds it if the supersede post then fails**, so a
-  retry stays trusted. The residue is the compensation itself failing —
-  two consecutive write failures — which strands a findable, assigned claim
-  for `/orient` to surface.
+  write failed, and **re-adds it if the supersede post then fails** — after
+  first re-checking that no concurrent run released in the meantime, so the
+  compensation cannot resurrect an assignee over a completed release. The
+  residue is the compensation itself failing — two consecutive write
+  failures — which strands a findable, assigned claim for `/orient` to
+  surface.
+- **Org-repo v1 limitation**: trust requires the claim author to be the repo
+  owner or a *current* assignee (with write-shaped association). On an
+  organization repo the owner prong never matches a user, so a maintainer
+  unassigning or reassigning the claimant before the close event strands
+  that claim (exit 3) until `/close` or a re-assignment. Widening trust to
+  association alone would admit read-only collaborators' forged claims, so
+  the narrow gate stays until an org actually consumes this workflow.
 - The write window after the script's final pre-write re-read is **not**
   race-free: a reopen-and-reclaim landing inside those seconds can lose
   markers or be superseded by the in-flight release comment. GitHub offers
