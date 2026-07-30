@@ -54,9 +54,12 @@ rather than reporting both as loose ends:
   review, or awaiting merge. The release is owed to the close event
   (`claim-release.yml` where installed) or to `/close`, not overdue. Report
   it as part of the work's normal state, not as a loose end.
-- **Stale** — the claim outlived its session: nothing is in flight, the
-  claiming session is not this one, or the issue is already **closed** with
-  the label or assignee still standing. That last case means the release
+- **Stale** — the claim outlived its work: **nothing is in flight** (no open
+  PR, no fresh activity), whichever session made it, or the issue is already
+  **closed** with the label or assignee still standing. A session-name
+  mismatch alone proves nothing — a claim from a different session with work
+  in flight is *another session's active claim*: report it, never treat it
+  as cleanup material. That last case means the release
   workflow failed or is not installed — say which, because "the automation
   missed one" and "there is no automation" call for different fixes
   (`track-work/references/claim-lifecycle.md`). One shape is *neither*: a

@@ -1985,7 +1985,14 @@ case "$*" in
     echo "$*" >>"$RC_LOG"
     cat >"$RC_BODY_OUT"
     ;;
-*"api repos/"*) cat "$RC_ISSUE_FILE" ;;
+*"api repos/"*)
+    # Same two-phase trick for the issue itself (state flips mid-run).
+    if [ -n "${RC_ISSUE_FILE2:-}" ] && [ -e "${RC_STATE:-/nonexistent}" ]; then
+        cat "$RC_ISSUE_FILE2"
+    else
+        cat "$RC_ISSUE_FILE"
+    fi
+    ;;
 *)
     echo "stub: unexpected gh $*" >&2
     exit 1
@@ -2009,7 +2016,8 @@ run_release() {
     _rc=0
     env PATH="$rc_bin:$PATH" GH_REPO="" \
         RC_COMMENTS_FILE="$rc_comments" RC_ISSUE_FILE="$rc_issue" \
-        RC_COMMENTS_FILE2="${RC_COMMENTS_FILE2:-}" RC_STATE="$rc_state" \
+        RC_COMMENTS_FILE2="${RC_COMMENTS_FILE2:-}" \
+        RC_ISSUE_FILE2="${RC_ISSUE_FILE2:-}" RC_STATE="$rc_state" \
         RC_FAIL_MATCH="${RC_FAIL_MATCH:-}" RC_LOG="$rc_log" RC_BODY_OUT="$rc_body" \
         "$release_sh" --repo "$repo" --issue 5 "$@" >/dev/null 2>&1 || _rc=$?
     echo "$_rc"
@@ -2152,10 +2160,20 @@ if grep -q 'issue comment' "$rc_log"; then
     fail "a partial release must NOT post the supersede comment — a re-run would read it as settled"
 fi
 
-echo "==> a failed comment post is exit 1 — the release is not recorded"
+echo "==> a failed comment post is exit 1 and re-adds the assignee (trust anchor)"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
 _rc1="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
 [ "$_rc1" = 1 ] || fail "a failed supersede post should exit 1 (got $_rc1)"
+grep -q -- '--add-assignee evanharmon1' "$rc_log" ||
+    fail "the compensation must re-add the removed assignee so the retry stays trusted"
+
+echo "==> an issue whose state flips between read and write aborts with exit 3"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+printf '%s' '{"state":"open","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}' \
+    >"$tmp/rc-issue-2.json"
+_rcf="$(RC_ISSUE_FILE2="$tmp/rc-issue-2.json" run_release --reason r)"
+[ "$_rcf" = 3 ] || fail "a state flip between read and write should exit 3 (got $_rcf)"
+[ ! -s "$rc_log" ] || fail "a state flip must trigger zero writes"
 
 echo "==> --dry-run resolves everything and writes nothing"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"

@@ -407,6 +407,18 @@ if [ "$recheck_id" != "$claim_id" ] ||
     echo "$repo#$issue: the claim of record changed between read and write — leaving it for the next event" >&2
     exit 3
 fi
+# The issue itself can flip too: a close-then-reopen would sneak past
+# --require-closed judged on the first read, and an open-then-close would
+# restore a displaced label onto a closed issue. Same rule as the comments:
+# changed ground is the next event's problem.
+if ! recheck_issue="$(gh api "repos/$repo/issues/$issue")"; then
+    echo "$repo#$issue: pre-write issue re-read failed — cannot verify, treat as unsafe" >&2
+    exit 2
+fi
+if [ "$(jq -r '.state' <<<"$recheck_issue")" != "$issue_state" ]; then
+    echo "$repo#$issue: issue state changed between read and write — leaving it for the next event" >&2
+    exit 3
+fi
 
 # ── Execute ──────────────────────────────────────────────────────────────────
 run_write() {
@@ -452,10 +464,12 @@ fi
 # it only once everything else has succeeded, so a failed earlier write stays
 # retryable (see claim-lifecycle.md's residual-gap note for the one write
 # this cannot protect).
+assignee_removed=0
 if [ "$remove_assignee" -eq 1 ]; then
     if [ "$marker_failed" -eq 1 ]; then
         note "assignee \`$claim_author\`: left in place — an earlier write failed and the assignment keeps the retry trusted"
     elif run_write gh issue edit "$issue" --repo "$repo" --remove-assignee "$claim_author" >/dev/null; then
+        assignee_removed=1
         note "assignee \`$claim_author\`: removed"
     else
         marker_failed=1
@@ -488,6 +502,17 @@ if [ "$dry_run" -eq 1 ]; then
     echo "BODY"
 elif ! printf '%s\n' "$body" | gh issue comment "$issue" --repo "$repo" --body-file - >/dev/null; then
     echo "$repo#$issue: failed to post the supersede comment — the release is NOT recorded; re-run to retry" >&2
+    # Compensate: the removed assignment may be the claim's only trust
+    # anchor (a non-owner claimant, or any organization repo, where the
+    # owner prong never matches a user). Without it a re-run would find the
+    # claim untrusted and exit 3, permanently stranding the release.
+    if [ "$assignee_removed" -eq 1 ]; then
+        if gh issue edit "$issue" --repo "$repo" --add-assignee "$claim_author" >/dev/null; then
+            echo "$repo#$issue: re-added assignee '$claim_author' so the retry stays trusted and the claim stays findable" >&2
+        else
+            echo "$repo#$issue: could not re-add assignee '$claim_author' — a retry may need the owner's hand" >&2
+        fi
+    fi
     exit 1
 fi
 

@@ -141,16 +141,19 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
   this repo's security guidance tells workflows to gate against — so the
   same-repo gate stays and the claim strands until the issue closes or
   `/close` hands it back.
-- While **another open closing-keyword PR** exists for the issue, the
-  unmerged-close path leaves the claim alone: the work is still in flight and
-  the claim is accurate. More than 100 closing references (unenumerable in
-  one page) is treated the same way — unknown means leave it.
-- For a claim authored by a **non-owner assignee**, the assignment is also
-  the trust anchor, so the script removes it last — but if the supersede
-  comment itself then fails, the retry finds the author untrusted and exits
-  3, stranding a half-released claim for `/orient` to surface and the owner
-  to settle. Unreachable in the v1 single-writer norm (the owner prong keeps
-  the owner's claims trusted forever).
+- The unmerged-close path deliberately has **no open-PR guards**: counting
+  open references would let any unrelated PR that mentioned the issue —
+  including a fork PR from an untrusted user — suppress the release forever.
+  The `--branch` binding is the ownership test instead: only the claim
+  naming the closed PR's head branch releases, and everything else exits 3
+  untouched.
+- For a claim authored by a **non-owner assignee** (the norm on organization
+  repos, where the owner prong never matches a user), the assignment is also
+  the trust anchor: the script removes it last, skips it when an earlier
+  write failed, and **re-adds it if the supersede post then fails**, so a
+  retry stays trusted. The residue is the compensation itself failing —
+  two consecutive write failures — which strands a findable, assigned claim
+  for `/orient` to surface.
 - The write window after the script's final pre-write re-read is **not**
   race-free: a reopen-and-reclaim landing inside those seconds can lose
   markers or be superseded by the in-flight release comment. GitHub offers
