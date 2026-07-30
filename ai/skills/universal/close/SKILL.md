@@ -73,17 +73,22 @@ read it in the UI) — never guess.
   write succeeded**: a supersede comment over a marker that survived — a
   board restore that failed on a missing `project` scope, say — tells every
   future sweep the claim is settled while stale state remains, which is worse
-  than no comment. If any write fails, report the partial cleanup to the user
+  than no comment. For the board write, "succeeded" means the card actually
+  reached the intended status (`set-issue-status.sh` exit 0): a card that
+  exists but whose board lacks the target option comes back exit 3 without
+  moving, and that is an *incomplete* cleanup for this rule — only "the
+  issue is on no board at all" is genuinely nothing-to-do. If any write fails, report the partial cleanup to the user
   instead of posting the release line. The converse failure — markers cleared
   but the release comment refusing to post — must not end silent either:
   retry the post, and if it still fails restore **a searchable marker that
-  actually existed** — the `agent:*` label where the repo has the family,
-  otherwise the assignee you just removed (a record marked `n/a` means the
-  label cannot be re-added, but the assignee always can) — so the
-  half-released claim stays findable by `/orient`'s sweep instead of
-  surviving only as a card and an unsuperseded comment. If that restore also
-  fails, nothing was writable — say exactly that; the user is present on
-  this path.
+  actually existed and fabricates no ownership** — re-add the assignee you
+  just removed (always writable, even where the record marks the label
+  `n/a`); a displaced label you already restored counts too, and never
+  re-add your own `agent:*` label beside it, which would leave the issue
+  claiming two owners. The point is that the half-released claim stays
+  findable by `/orient`'s sweep instead of surviving only as a card and an
+  unsuperseded comment. If that restore also fails, nothing was writable —
+  say exactly that; the user is present on this path.
 
   Three outcomes:
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
@@ -91,12 +96,15 @@ read it in the UI) — never guess.
   - **Merged / issue closed** — *not* "nothing to release". GitHub clears no
     marker on merge, and a personal-account project has no automation to move
     the card, so the work finishes and the board shows an agent still holding
-    it. This outcome **performs the cleanup rather than offering it**: nothing
-    is being resumed, the markers are provably stale, and every write is one
-    command to undo. Run the cleanup block below — including its "undo only
-    what the claim added" rule, which binds here too — and finish with the
-    `Claim released —` supersede comment above. Act unasked only when **both**
-    hold:
+    it. This outcome does not stop at describing the problem: **assemble the
+    full cleanup — the block below, under its "undo only what the claim
+    added" rule, finishing with the `Claim released —` supersede comment
+    above — and run it on a single confirmation**, presented as the default
+    next action, not a question about whether cleanup is wanted. One
+    keystroke is the whole cost, and it is what bounds the residual races a
+    multi-command release can never close on its own (`track-work` §6:
+    markers are non-atomic and same-identity sessions converge). Streamline
+    to that single confirmation only when **both** hold:
 
     - the claim record survives, is **authored by the account you are
       authenticated as** (`gh api user --jq .login` — the same authority
@@ -127,11 +135,12 @@ read it in the UI) — never guess.
     label is present, another open PR still references the issue, or the card
     sits at a status this lifecycle never writes.
 
-    ("Performs" is about *judgment*, not tool permissions: the agent does not
-    ask whether cleanup is wanted, but every write below still runs under the
-    harness's normal permission prompting — this skill's `allowed-tools`
-    deliberately pre-approves only reads, and widening it would silently
-    auto-approve mutations everywhere the skill is vendored.)
+    (The single confirmation is about *judgment*, not tool permissions: the
+    agent does not debate whether cleanup is wanted, and every write below
+    still runs under the harness's normal permission prompting — this
+    skill's `allowed-tools` deliberately pre-approves only reads, and
+    widening it would silently auto-approve mutations everywhere the skill
+    is vendored.)
 
     **Skip the displaced-label restore line on this path.** The record's
     displaced label exists so a mid-flight hand-back can return the issue to
@@ -185,7 +194,9 @@ read it in the UI) — never guess.
     #   IFS= read -r TITLE <<'RECORDED_TITLE_EOF'
     #   <paste the title verbatim>
     #   RECORDED_TITLE_EOF
-    # and use --project "$TITLE".
+    # and use --project "$TITLE". Status options are custom text too — the
+    # same form (a second heredoc into STATUS) covers a recorded status
+    # containing a quote.
     <track-work-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
       --project '<the board the claim comment recorded>' \
       --status '<the status the claim comment recorded>'
@@ -238,8 +249,9 @@ read it in the UI) — never guess.
     Do not run any of this mid-flight hand-back unasked — the work is being
     handed back, not finished, so it is the user's call: they may be resuming
     tomorrow. (That caution is scoped to this branch on purpose. The merged
-    path above acts without asking — nothing is being resumed there, and its
-    two conditions already route every ambiguous case to a question.)
+    path above needs only its single go-ahead — nothing is being resumed
+    there, and its two conditions already route every ambiguous case to a
+    full stop-and-ask.)
 - List anything left dangling as explicit handoff bullets for the next
   session.
 
