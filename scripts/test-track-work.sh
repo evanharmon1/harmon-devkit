@@ -2017,11 +2017,12 @@ run_release() {
 
 # Comment-page JSON builders (the --slurp shape: an array of pages).
 rc_page() { jq -n '[$ARGS.positional]' --jsonargs "$@"; }
-# rc_comment LOGIN BODY [ID] [CREATED_AT]
+# rc_comment LOGIN BODY [ID] [CREATED_AT] [ASSOCIATION]
 rc_comment() {
     jq -n --arg l "$1" --arg b "$2" --arg i "${3:-1}" \
-        --arg c "${4:-2026-01-01T00:00:00Z}" \
-        '{id: ($i | tonumber), created_at: $c, user: {login: $l}, body: $b}'
+        --arg c "${4:-2026-01-01T00:00:00Z}" --arg a "${5:-OWNER}" \
+        '{id: ($i | tonumber), created_at: $c, author_association: $a,
+          user: {login: $l}, body: $b}'
 }
 
 body_v1='Claiming — starting implementation on branch b (session s).
@@ -2200,6 +2201,27 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" \
 [ "$(run_release --reason r --require-closed)" = 3 ] ||
     fail "a reopened issue means the close event is stale — exit 3"
 [ ! -s "$rc_log" ] || fail "a stale close event must trigger zero writes"
+
+echo "==> an assignee WITHOUT write association is not trusted"
+rc_scenario "$(rc_page "$(rc_comment outsider "$body_v1" 1 '2026-01-01T00:00:00Z' NONE)")" \
+    '{"state":"closed","labels":[],"assignees":[{"login":"outsider"}]}'
+[ "$(run_release --reason r)" = 3 ] || fail "assignment without write access must not be trusted"
+[ ! -s "$rc_log" ] || fail "an unauthorized claim must trigger zero writes"
+
+echo "==> --branch releases only the claim the closing PR owns"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+[ "$(run_release --reason r --branch other-branch)" = 3 ] ||
+    fail "a claim for a different branch is not this PR's to release"
+[ ! -s "$rc_log" ] || fail "a branch mismatch must trigger zero writes"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+[ "$(run_release --reason r --branch b)" = 0 ] ||
+    fail "the matching branch's claim should release"
+
+echo "==> a record missing a field line fails closed"
+body_truncated="$(printf '%s' "$body_v1" | grep -v 'label added by this claim')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_truncated")")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 2 ] || fail "an incomplete record is unreadable provenance — exit 2"
+[ ! -s "$rc_log" ] || fail "an incomplete record must trigger zero writes"
 
 echo "==> the workflow's own bot-authored release comment supersedes on re-run"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \

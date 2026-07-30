@@ -105,8 +105,12 @@ jobs:
           GH_REPO_OWNER: ${{ github.repository_owner }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           CLOSED_AT: ${{ github.event.pull_request.closed_at }}
+          # Untrusted text (a branch name is author-chosen): env only, passed
+          # to the script as data — it compares equality and never evaluates.
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           repo_name="${GH_REPO#*/}"
+          job_rc=0
           issues="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" \
             --json closingIssuesReferences \
             --jq '.closingIssuesReferences[]
@@ -140,9 +144,17 @@ jobs:
               continue
             fi
             rc=0
+            # --branch: release only the claim this PR owns — a claim naming
+            # a different branch belongs to replacement work.
             ./ai/skills/universal/track-work/assets/release-claim.sh \
               --repo "$GH_REPO" --issue "$n" \
               --reason "PR #${PR_NUMBER} closed without merging" \
-              --not-after "$CLOSED_AT" || rc=$?
-            [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit "$rc"
+              --not-after "$CLOSED_AT" --branch "$HEAD_REF" || rc=$?
+            # Keep going on failure: one malformed claim must not starve the
+            # releases of the PR's other linked issues; fail the job after.
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+              echo "issue #$n: release failed with exit $rc — continuing to the rest"
+              job_rc="$rc"
+            fi
           done
+          exit "$job_rc"

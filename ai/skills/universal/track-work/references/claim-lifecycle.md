@@ -70,15 +70,26 @@ holds it to. `release-claim.sh` is the reference parser.
   `agent:` + `[a-zA-Z0-9:._-]`, logins against GitHub's alphanumeric-and-hyphen
   shape — and never execute or interpolate them.
 - **Trust gate, applied at selection**: a `Claiming —` comment counts only
-  from the repo owner or a **current** assignee; a `Claim released —` comment
-  counts from those plus `github-actions[bot]`, because the workflow's own
-  supersede comments are authored by it and a re-run that could not see them
-  would release the same claim twice. Anyone can post either shape on a
-  public repo; a forged claim must not shadow the real one, and a forged
-  release must not suppress its cleanup. Untrusted comments are invisible to
-  the parser (exit 3 when nothing trusted remains). v1 assumption:
-  single-writer repos — App-authored or collaborator claims would need this
-  gate widened, and until then such claims strand as before.
+  from the repo owner or a **current** assignee **whose per-comment
+  `author_association` is `OWNER`, `MEMBER`, or `COLLABORATOR`** — assignment
+  without write access must not steer a write-capable token. A
+  `Claim released —` comment counts from those plus `github-actions[bot]`,
+  because the workflow's own supersede comments are authored by it and a
+  re-run that could not see them would release the same claim twice. Anyone
+  can post either shape on a public repo; a forged claim must not shadow the
+  real one, and a forged release must not suppress its cleanup. Untrusted
+  comments are invisible to the parser (exit 3 when nothing trusted
+  remains). v1 assumption: single-writer repos — App-authored claims would
+  need this gate widened, and until then such claims strand as before.
+- **The claim's first line is parsed too**: `Claiming — starting
+  implementation on branch <branch> (session <name>).` On the unmerged-PR
+  path the workflow passes the PR's head branch as `--branch`, and a claim
+  naming a different branch exits 3 — replacement work claimed before an
+  obsolete PR was closed is not that PR's to release. Keep the line's shape.
+- **An incomplete record fails closed**: `Claim record` present but any of
+  the three `by this claim:` lines missing or valueless is unreadable
+  provenance (exit 2), never a no-op — releasing around it would clear some
+  markers and then block retries with the supersede comment.
 - **An event releases only claims it covers**: the workflow passes the
   event's `closed_at` as `--not-after`, and a trusted claim created after it
   exits 3 — replacement work that reclaimed the issue is the next event's to

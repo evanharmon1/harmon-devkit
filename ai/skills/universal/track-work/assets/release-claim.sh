@@ -67,7 +67,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --repo owner/repo --issue N --reason TEXT [--not-after ISO8601] [--require-closed] [--dry-run]" >&2
+    echo "Usage: $0 --repo owner/repo --issue N --reason TEXT [--not-after ISO8601] [--require-closed] [--branch NAME] [--dry-run]" >&2
     exit 2
 }
 
@@ -76,6 +76,7 @@ issue=""
 reason=""
 not_after=""
 require_closed=0
+match_branch=""
 dry_run=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -102,6 +103,11 @@ while [ "$#" -gt 0 ]; do
     --require-closed)
         require_closed=1
         shift
+        ;;
+    --branch)
+        [ "$#" -ge 2 ] || usage
+        match_branch="$2"
+        shift 2
         ;;
     --dry-run)
         dry_run=1
@@ -165,17 +171,17 @@ if [ "$require_closed" -eq 1 ] && [ "$issue_state" != "closed" ]; then
     echo "$repo#$issue is open again — the triggering close event is stale, leaving the claim" >&2
     exit 3
 fi
-# Trusted CLAIM authors: the repo owner plus every CURRENT assignee. An
-# attacker cannot self-assign, so a claim-shaped comment from anyone else is
-# invisible to the selection below. RELEASE comments additionally trust
-# github-actions[bot] — this script's own supersede comments are authored by
-# it when run under a workflow's GITHUB_TOKEN, and a re-run that could not
-# see them would release the same claim twice instead of exiting 3.
+# Trusted CLAIM authors: the repo owner plus every CURRENT assignee — and in
+# either case only with write-shaped author_association (OWNER, MEMBER, or
+# COLLABORATOR, checked per comment in fetch_claim): a maintainer can assign
+# an outside commenter without granting write access, and assignment alone
+# must not let that commenter steer a write-capable token. RELEASE comments
+# additionally trust github-actions[bot] — this script's own supersede
+# comments are authored by it under a workflow's GITHUB_TOKEN, and a re-run
+# that could not see them would release the same claim twice.
 trusted_json="$(jq --arg owner "$owner" \
     '[$owner] + [.assignees[].login] | map(ascii_downcase) | unique' \
     <<<"$issue_json")"
-release_trusted_json="$(jq '. + ["github-actions[bot]"] | unique' \
-    <<<"$trusted_json")"
 
 # ── Find the claim (trusted comments only) ───────────────────────────────────
 # --paginate --slurp: an array of pages; `add` flattens. The latest trusted
@@ -188,17 +194,20 @@ release_trusted_json="$(jq '. + ["github-actions[bot]"] | unique' \
 fetch_claim() {
     gh api --paginate --slurp "repos/$repo/issues/$issue/comments" |
         jq --argjson trusted "$trusted_json" \
-            --argjson rtrusted "$release_trusted_json" \
             --arg cutoff "$not_after" '
             def dl: (.user.login | ascii_downcase);
+            def writeauth:
+                (.author_association // "") as $a
+                | (["OWNER", "MEMBER", "COLLABORATOR"] | index($a)) != null;
+            def trusted_claimant:
+                (dl as $l | $trusted | index($l) != null) and writeauth;
+            def trusted_release:
+                (.body | startswith("Claim released —"))
+                and (trusted_claimant or dl == "github-actions[bot]");
             add // []
             | map(select(.body != null))
-            | map(select(
-                  (dl as $l | $trusted | index($l) != null)
-                  or ((dl as $l | $rtrusted | index($l) != null)
-                      and (.body | startswith("Claim released —")))))
-            | (map((.body | startswith("Claiming —"))
-                   and (dl as $l | $trusted | index($l) != null))
+            | map(select(trusted_claimant or trusted_release))
+            | (map((.body | startswith("Claiming —")) and trusted_claimant)
                | rindex(true)) as $ci
             | if $ci == null then {found: false}
               else {found: true,
@@ -232,6 +241,25 @@ if [ "$(jq -r '.too_new' <<<"$claim_json")" = "true" ]; then
 fi
 claim_id="$(jq -r '.id' <<<"$claim_json")"
 claim_author="$(jq -r '.author // empty' <<<"$claim_json")"
+
+# With --branch (the unmerged-PR path), release only the claim that PR owns:
+# the claim's first line names its branch, and a claim for a different
+# branch — replacement work claimed before the obsolete PR was closed, say —
+# is not this event's to release. Compared as data, exact equality only.
+if [ -n "$match_branch" ]; then
+    claim_first="$(jq -r '.body' <<<"$claim_json" | head -n 1)"
+    claim_branch=""
+    case "$claim_first" in
+    *"on branch "*)
+        claim_branch="${claim_first#*on branch }"
+        claim_branch="${claim_branch%% (session*}"
+        ;;
+    esac
+    if [ -z "$claim_branch" ] || [ "$claim_branch" != "$match_branch" ]; then
+        echo "$repo#$issue: claim of record is for branch '${claim_branch:-unknown}', not '$match_branch' — this close does not own it" >&2
+        exit 3
+    fi
+fi
 if ! valid_login "$claim_author"; then
     echo "$repo#$issue: claim author '$claim_author' is not a plausible login — refusing to act on it" >&2
     exit 2
@@ -244,6 +272,9 @@ fi
 # clause ("n/a, repo has no such label" -> "n/a"). Contract:
 # ../references/claim-lifecycle.md.
 record_present=0
+saw_assignee=0
+saw_label=0
+saw_displaced=0
 assignee_added=""
 label_added=""
 label_displaced=""
@@ -260,13 +291,33 @@ extract_value() {
 while IFS= read -r line; do
     case "$line" in
     *"Claim record"*) record_present=1 ;;
-    *"assignee added by this claim:"*) assignee_added="$(lower "$(extract_value "$line")")" ;;
-    *"label added by this claim:"*) label_added="$(extract_value "$line")" ;;
-    *"label displaced by this claim:"*) label_displaced="$(extract_value "$line")" ;;
+    *"assignee added by this claim:"*)
+        saw_assignee=1
+        assignee_added="$(lower "$(extract_value "$line")")"
+        ;;
+    *"label added by this claim:"*)
+        saw_label=1
+        label_added="$(extract_value "$line")"
+        ;;
+    *"label displaced by this claim:"*)
+        saw_displaced=1
+        label_displaced="$(extract_value "$line")"
+        ;;
     esac
 done <<<"$(jq -r '.body' <<<"$claim_json")"
 
 if [ "$record_present" -eq 1 ]; then
+    # A record with a missing or truncated field is unreadable provenance,
+    # not a no-op: releasing around it would clear some markers, leave
+    # others, and then a supersede comment would block every retry.
+    if [ "$saw_assignee" -ne 1 ] || [ "$saw_label" -ne 1 ] || [ "$saw_displaced" -ne 1 ]; then
+        echo "$repo#$issue: claim record present but incomplete (missing field lines) — fail closed" >&2
+        exit 2
+    fi
+    if [ -z "$assignee_added" ] || [ -z "$label_added" ] || [ -z "$label_displaced" ]; then
+        echo "$repo#$issue: claim record present but a field has no value — fail closed" >&2
+        exit 2
+    fi
     case "$assignee_added" in
     yes | no) ;;
     *)
