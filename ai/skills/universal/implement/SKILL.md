@@ -205,6 +205,16 @@ default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD")"
 git switch -c <branch> "$default"
 ```
 
+**If the branch you just created differs from the branch the claim comment
+recorded, refresh the claim.** `/preflight` usually ran before this step
+existed, so its comment names the default branch or an intended name — and
+that line is a parsed contract now: the claim-release workflow releases an
+unmerged PR's claim only when the PR's head matches it
+(`track-work/references/claim-lifecycle.md`). Post a new `Claiming —` comment
+with the real branch and the same record values (latest trusted claim wins,
+so this becomes the claim of record; nothing else changed, so the record
+lines carry over verbatim). Skip this when the names already match.
+
 The default branch is not always named `main`, which is why it is resolved
 rather than assumed.
 
