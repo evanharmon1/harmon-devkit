@@ -98,7 +98,11 @@ read it in the UI) — never guess.
       comment, and either it is closed `completed` (`stateReason`) or the
       closing-keyword PR that closed it is actually **merged with `mergedAt`
       later than the claim comment** — verify with
-      `gh pr view <pr> --json state,mergedAt`, because
+      `gh pr view <pr> --repo <owner/repo> --json state,mergedAt`, binding
+      `--repo` to the repository that produced
+      `closedByPullRequestsReferences` (a bare number in a fork checkout
+      queries the fork, where a same-number PR supplies unrelated evidence),
+      because
       `closedByPullRequestsReferences` also lists closing-keyword PRs that
       were closed *unmerged*, and a reopened issue keeps its historical
       closers in that list forever. An abandoned PR, or a merge that predates
@@ -106,11 +110,13 @@ read it in the UI) — never guess.
 
     **Re-read the ground immediately before the first write** — the probes
     above may be minutes old, and the analysis between them and the cleanup
-    is exactly where a reopen or a fresh claim lands unseen. Re-fetch
-    `state,stateReason,assignees,labels` (and the card with `--show`); any
-    change from what the conditions were judged on returns this to
-    stop-and-ask, the same pre-write re-read `/preflight` performs before
-    claiming.
+    is exactly where a reopen or a fresh claim lands unseen. Re-run *both*
+    §2 probes (`state,stateReason,assignees,labels` plus the timeline
+    cross-references) **and** re-fetch the comments and the card (`--show`):
+    a second session on the same GitHub identity is visible only in a new
+    claim comment or a new PR, never in the converging markers. Any change
+    from what the conditions were judged on returns this to stop-and-ask,
+    the same pre-write re-read `/preflight` performs before claiming.
 
     Otherwise **stop and ask** — in particular when no claim record survives,
     the record says `prior board status: unknown`, another agent's `agent:*`
