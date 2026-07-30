@@ -89,21 +89,39 @@ read it in the UI) — never guess.
     `Claim released —` supersede comment above. Act unasked only when **both**
     hold:
 
-    - the claim record survives and accounts for every marker the cleanup
-      would touch, and
+    - the claim record survives, is **authored by the account you are
+      authenticated as** (`gh api user --jq .login` — the same authority
+      check `/implement` §1 applies, because on a public repo anyone can post
+      a claim-shaped comment and a forged record must not steer marker
+      writes), and accounts for every marker the cleanup would touch, and
     - the issue is **currently closed**, the closure postdates this claim's
       comment, and either it is closed `completed` (`stateReason`) or the
-      closing-keyword PR that closed it is actually **merged** — verify
-      `mergedAt` is non-null with `gh pr view <pr> --json state,mergedAt`,
-      because `closedByPullRequestsReferences` also lists closing-keyword PRs
-      that were closed *unmerged*, and a reopened issue keeps its historical
-      closers in that list forever. An abandoned PR or a stale merge from a
-      previous claim is not delivery evidence.
+      closing-keyword PR that closed it is actually **merged with `mergedAt`
+      later than the claim comment** — verify with
+      `gh pr view <pr> --json state,mergedAt`, because
+      `closedByPullRequestsReferences` also lists closing-keyword PRs that
+      were closed *unmerged*, and a reopened issue keeps its historical
+      closers in that list forever. An abandoned PR, or a merge that predates
+      this claim, is not delivery evidence for it.
+
+    **Re-read the ground immediately before the first write** — the probes
+    above may be minutes old, and the analysis between them and the cleanup
+    is exactly where a reopen or a fresh claim lands unseen. Re-fetch
+    `state,stateReason,assignees,labels` (and the card with `--show`); any
+    change from what the conditions were judged on returns this to
+    stop-and-ask, the same pre-write re-read `/preflight` performs before
+    claiming.
 
     Otherwise **stop and ask** — in particular when no claim record survives,
     the record says `prior board status: unknown`, another agent's `agent:*`
     label is present, another open PR still references the issue, or the card
     sits at a status this lifecycle never writes.
+
+    ("Performs" is about *judgment*, not tool permissions: the agent does not
+    ask whether cleanup is wanted, but every write below still runs under the
+    harness's normal permission prompting — this skill's `allowed-tools`
+    deliberately pre-approves only reads, and widening it would silently
+    auto-approve mutations everywhere the skill is vendored.)
 
     **Skip the displaced-label restore line on this path.** The record's
     displaced label exists so a mid-flight hand-back can return the issue to
