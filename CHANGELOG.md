@@ -10,6 +10,11 @@ automatically on merge).
 ## [0.13.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.13.0...v0.13.1) (2026-07-30)
 
 
+### Features
+
+* **track-work:** event-driven claim release ([#213](https://github.com/evanharmon1/harmon-devkit/issues/213)) ([c0ff86d](https://github.com/evanharmon1/harmon-devkit/commit/c0ff86d139c0fee50667085f3f8d48423af93421)) — the release cut raced this merge, so the `v0.13.1` tag ships it although the generated notes omitted it
+
+
 ### Bug Fixes
 
 * **close:** release the claim on the merged path too ([#212](https://github.com/evanharmon1/harmon-devkit/issues/212)) ([c0d88e5](https://github.com/evanharmon1/harmon-devkit/commit/c0d88e5d1d5e6a2614027564ffd15d072bfc5646))
