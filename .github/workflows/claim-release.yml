@@ -109,6 +109,15 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           job_rc=0
+          # A queued event whose PR was reopened before this ran is stale —
+          # the work is active again and its claim is accurate (the issues
+          # path has the same guard via --require-closed).
+          pr_state="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" \
+            --json state --jq .state)"
+          if [ "$pr_state" != "CLOSED" ]; then
+            echo "PR #$PR_NUMBER is $pr_state again — the close event is stale, leaving claims alone"
+            exit 0
+          fi
           issues="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" \
             --json closingIssuesReferences \
             --jq '.closingIssuesReferences[]

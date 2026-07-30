@@ -86,6 +86,13 @@ holds it to. `release-claim.sh` is the reference parser.
   path the workflow passes the PR's head branch as `--branch`, and a claim
   naming a different branch exits 3 — replacement work claimed before an
   obsolete PR was closed is not that PR's to release. Keep the line's shape.
+  The line is kept *true* by `/implement` §3: when the feature branch it
+  creates differs from the branch the claim recorded (the normal case —
+  `/preflight` runs before the branch exists), it posts a refreshed
+  `Claiming —` comment naming the real branch, which becomes the claim of
+  record. A mismatch at PR-close therefore means the claim is genuinely not
+  that PR's; worst case it releases when the issue closes (no `--branch`
+  there).
 - **An incomplete record fails closed**: `Claim record` present but any of
   the three `by this claim:` lines missing or valueless is unreadable
   provenance (exit 2), never a no-op — releasing around it would clear some
