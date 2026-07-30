@@ -96,7 +96,12 @@ read it in the UI) — never guess.
   - **Merged / issue closed** — *not* "nothing to release". GitHub clears no
     marker on merge, and a personal-account project has no automation to move
     the card, so the work finishes and the board shows an agent still holding
-    it. This outcome does not stop at describing the problem: **assemble the
+    it. (Where the `claim-release.yml` workflow is installed, the close event
+    already released the label, assignee, and claim comment — the probes
+    above will show a `Claim released —` supersede; what remains for this
+    step is the board, which the workflow never touches. See
+    `track-work/references/claim-lifecycle.md`.) This outcome does not stop
+    at describing the problem: **assemble the
     full cleanup — the block below, under its "undo only what the claim
     added" rule, finishing with the `Claim released —` supersede comment
     above — and run it on a single confirmation**, presented as the default
@@ -178,7 +183,9 @@ read it in the UI) — never guess.
     # Separate commands on purpose: the label is optional (/preflight skips it
     # where the family does not exist), and `--remove-label` on a label the
     # repo lacks fails the whole `gh issue edit` — taking the assignee removal
-    # down with it and leaving the claim standing.
+    # down with it and leaving the claim standing. A marker already released
+    # by /shepherd's green stop or the claim-release workflow makes its
+    # command a harmless no-op — skip its line rather than re-releasing.
     #
     # Board FIRST, searchable markers LAST. The board write is the one that
     # fails for environmental reasons (missing `project` scope), and the

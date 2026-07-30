@@ -1,0 +1,108 @@
+name: Claim Release
+run-name: releasing claim markers after a close event
+
+# A /preflight claim is written by a session, but its release is owed after
+# the merge — an event no session is guaranteed to witness (/shepherd stops
+# before the merge on policy). This workflow is the release: it undoes the
+# markers the claim record says the claim added and posts the `Claim
+# released —` supersede comment. Contract, design record, and accepted gaps:
+# ai/skills/universal/track-work/references/claim-lifecycle.md.
+#
+# Merged PRs are deliberately NOT handled here: a merge whose PR carries a
+# closing keyword closes the linked issue, and the issues-closed job releases
+# the claim then (which also covers `gh issue close` and closed-by-hand).
+# Only an unmerged close leaves a stale claim with no issues event coming.
+#
+# Repo-local on purpose (like tracking-guard.yml): the name does not exist in
+# the harmon-init template, so `copier update` never touches it. The release
+# logic ships inside the track-work skill so consumers vendor it alongside
+# the claim convention it undoes.
+#
+# Security: this workflow holds a write-capable token and reads
+# attacker-writable comment bodies, so — one deliberate divergence from
+# tracking-guard.yml — it always checks out and runs DEFAULT-BRANCH code,
+# never a PR head. The script treats every comment value as data (trust gate
+# on the claim author, regex validation before anything becomes an argument),
+# and the blast radius of a fooled parse is availability only. Loop-safety:
+# comments posted with GITHUB_TOKEN never trigger workflow runs, and the
+# claude-*.yml issue_comment jobs additionally gate on an allowlisted sender —
+# a future workflow adding a PAT/App token on issue_comment must keep such a
+# gate.
+
+on:
+  issues:
+    types: [closed]
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: >-
+    claim-release-${{ github.event_name }}-${{
+    github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false # never cancel mid-write; queue instead
+
+permissions:
+  contents: read
+  issues: write # remove label/assignee, post the supersede comment
+  pull-requests: read # closingIssuesReferences
+
+jobs:
+  on-issue-closed:
+    if: github.event_name == 'issues'
+    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
+    # default; set it to a JSON runner spec to override without a commit.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Release any live claim on the closed issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          STATE_REASON: ${{ github.event.issue.state_reason }}
+        run: |
+          rc=0
+          ./ai/skills/universal/track-work/assets/release-claim.sh \
+            --repo "$GH_REPO" --issue "$ISSUE_NUMBER" \
+            --reason "issue closed (${STATE_REASON:-closed})" || rc=$?
+          # 3 = no live claim / untrusted claim — benign, the common case.
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit "$rc"
+
+  on-pr-closed-unmerged:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Release claims on the issues this PR would have closed
+        # closingIssuesReferences is GitHub's own closing-keyword resolution
+        # and persists on closed PRs; filtered to same-repo issues (the skill
+        # bans cross-repo closing keywords, and this token could not write
+        # elsewhere anyway).
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          issues="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" \
+            --json closingIssuesReferences \
+            --jq '.closingIssuesReferences[]
+                  | select(.url | startswith("https://github.com/" + env.GH_REPO + "/"))
+                  | .number')"
+          for n in $issues; do
+            rc=0
+            ./ai/skills/universal/track-work/assets/release-claim.sh \
+              --repo "$GH_REPO" --issue "$n" \
+              --reason "PR #${PR_NUMBER} closed without merging" || rc=$?
+            [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit "$rc"
+          done

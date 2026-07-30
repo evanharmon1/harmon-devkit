@@ -46,6 +46,21 @@ in progress", then check it is still true: a claim with no open PR and no work
 in flight is a loose end for §2, not a status. `/close` offers the commands to
 hand it back.
 
+**A claim awaiting release is not a stale claim.** Two live claims read
+identically off the markers and mean opposite things — distinguish them
+rather than reporting both as loose ends:
+
+- **Pending release** — *this session* claimed it, and its PR is open, in
+  review, or awaiting merge. The release is owed to the close event
+  (`claim-release.yml` where installed) or to `/close`, not overdue. Report
+  it as part of the work's normal state, not as a loose end.
+- **Stale** — the claim outlived its session: nothing is in flight, the
+  claiming session is not this one, or the issue is already **closed** with
+  markers still standing. The last case now also means the release workflow
+  failed or is not installed — say which, because "the automation missed
+  one" and "there is no automation" call for different fixes
+  (`track-work/references/claim-lifecycle.md`). These are §2 loose ends.
+
 Keep each reference's repository identity: a bare `#123` from another repo
 must be verified with `--repo owner/repo` (or by its full URL), never against
 the current repo's numbering.

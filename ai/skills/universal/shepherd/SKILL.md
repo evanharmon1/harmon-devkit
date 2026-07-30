@@ -614,6 +614,26 @@ loops indefinitely:
    card ([§7](#7-move-the-project-card)) — `Ready to Merge` only when
    `reviewDecision` is `APPROVED`, otherwise `In Review`, because a `DRAFT`,
    `BLOCKED`, or `REVIEW_REQUIRED` PR is green *and still waiting on a human*.
+   **Release the `agent:*` label** as part of this stop: the label asserts an
+   agent is implementing the issue *right now*, which becomes false the
+   moment the work is handed to a human — leaving it is the misleading board
+   state harmon-devkit#210 exists to remove. Remove it only when it is
+   currently on the issue **and** the claim comment's record says this claim
+   added it (read the record — shepherd is routinely a different session
+   from the one that claimed, so "I know I added it" is session memory, not
+   evidence; the record grammar is in
+   `track-work/references/claim-lifecycle.md`):
+
+   ```sh
+   gh issue edit <n> --repo "$repo" --remove-label agent:claude-code
+   ```
+
+   If the record is missing or unreadable, leave the label and say so in the
+   report instead of guessing. Do **not** post a release comment — the claim
+   as a whole is still live (assignee, card) until the close event or
+   `/close` releases it; only the label's "right now" assertion has expired.
+   Report the release in the green summary, e.g. `released agent:claude-code
+   — green, awaiting the maintainer; the close event releases the rest.`
    Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
    5 rounds: stop.
@@ -633,6 +653,10 @@ findings you dispute, with evidence), and what you recommend. Then end — do
 not keep iterating past a stop condition.
 
 ## 7. Move the project card
+
+(Who writes which claim marker, and when, is recorded in
+`track-work/references/claim-lifecycle.md` — this section is the
+session-written half.)
 
 `/preflight` claimed the issue by moving its card to `In Progress`. A claim
 that is never released is worse than no claim at all: the board keeps showing

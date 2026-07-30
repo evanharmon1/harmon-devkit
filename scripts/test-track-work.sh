@@ -1943,4 +1943,200 @@ chmod +x "$stub/gh"
 [ "$(run_status --issue 5 --status "Todo")" = 2 ] ||
     fail "a failed read could not verify and must exit 2"
 
+# --- release-claim.sh --------------------------------------------------------
+# Fully offline: a stubbed `gh` serves comment/issue JSON from scenario files
+# and logs every write, so the claim parsing, trust gate, and provenance
+# honouring are tested without touching a live issue.
+
+release_sh="./ai/skills/universal/track-work/assets/release-claim.sh"
+rc_bin="$tmp/rcbin"
+mkdir -p "$rc_bin"
+rc_comments="$tmp/rc-comments.json"
+rc_issue="$tmp/rc-issue.json"
+rc_log="$tmp/rc-writes.log"
+rc_body="$tmp/rc-body.txt"
+cat >"$rc_bin/gh" <<'STUB'
+#!/bin/sh
+# Scenario knobs via env: RC_COMMENTS_FILE (comment pages JSON), RC_ISSUE_FILE
+# (issue JSON), RC_FAIL_MATCH (substring that forces a failure), RC_LOG,
+# RC_BODY_OUT (where a posted comment body lands).
+if [ -n "${RC_FAIL_MATCH:-}" ]; then
+    case "$*" in
+    *"$RC_FAIL_MATCH"*)
+        echo "stub: forced failure for: $*" >&2
+        exit 1
+        ;;
+    esac
+fi
+case "$*" in
+*--slurp*comments*) cat "$RC_COMMENTS_FILE" ;;
+*"issue edit"*) echo "$*" >>"$RC_LOG" ;;
+*"issue comment"*)
+    echo "$*" >>"$RC_LOG"
+    cat >"$RC_BODY_OUT"
+    ;;
+*"api repos/"*) cat "$RC_ISSUE_FILE" ;;
+*)
+    echo "stub: unexpected gh $*" >&2
+    exit 1
+    ;;
+esac
+STUB
+chmod +x "$rc_bin/gh"
+
+# rc_scenario COMMENTS_JSON ISSUE_JSON — reset the logs and lay the fixtures.
+rc_scenario() {
+    printf '%s' "$1" >"$rc_comments"
+    printf '%s' "$2" >"$rc_issue"
+    : >"$rc_log"
+    : >"$rc_body"
+}
+
+# run_release ARGS… -> echoes the exit code.
+run_release() {
+    _rc=0
+    env PATH="$rc_bin:$PATH" GH_REPO="" \
+        RC_COMMENTS_FILE="$rc_comments" RC_ISSUE_FILE="$rc_issue" \
+        RC_FAIL_MATCH="${RC_FAIL_MATCH:-}" RC_LOG="$rc_log" RC_BODY_OUT="$rc_body" \
+        "$release_sh" --repo "$repo" --issue 5 "$@" >/dev/null 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+# Comment-page JSON builders (the --slurp shape: an array of pages).
+rc_page() { jq -n '[$ARGS.positional]' --jsonargs "$@"; }
+rc_comment() { jq -n --arg l "$1" --arg b "$2" '{user: {login: $l}, body: $b}'; }
+
+body_v1='Claiming — starting implementation on branch b (session s).
+
+Claim record (for `/close` — undo only what this claim added):
+- board: none
+- prior board status: none
+- assignee added by this claim: yes
+- `agent:` label added by this claim: agent:claude-code
+- `agent:` label displaced by this claim: none'
+
+issue_closed_full='{"state":"closed","labels":[{"name":"bug"},{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+
+echo "==> release-claim usage errors exit 2"
+for args in "--repo $repo" "--repo $repo --issue 5" "--repo bad --issue 5 --reason r" \
+    "--repo $repo --issue abc --reason r"; do
+    _rc=0
+    # shellcheck disable=SC2086 # deliberate word splitting: each case is an argv
+    "$release_sh" $args >/dev/null 2>&1 || _rc=$?
+    [ "$_rc" = 2 ] || fail "release-claim '$args' should exit 2 (got $_rc)"
+done
+
+echo "==> a v1 record releases label, assignee, and posts the supersede comment"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+[ "$(run_release --reason 'issue closed (completed)')" = 0 ] || fail "v1 full release should exit 0"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" || fail "v1 release must remove the recorded label"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "v1 release must remove the claim author's assignment"
+grep -q 'issue comment' "$rc_log" || fail "the supersede comment must be posted"
+
+echo "==> the supersede comment's first line is the exact contract literal"
+head -1 "$rc_body" | grep -Fxq 'Claim released — issue closed (completed). (Supersedes the claim record above.)' ||
+    fail "release comment first line must match the contract (got: $(head -1 "$rc_body"))"
+
+echo "==> a legacy 'yes' record removes the live agent:* labels"
+body_legacy="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/yes/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_legacy")")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"},{"name":"agent:codex"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "legacy release should exit 0"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" || fail "legacy release must remove live agent labels"
+grep -q -- '--remove-label agent:codex' "$rc_log" || fail "legacy release must remove every live agent label"
+
+echo "==> 'assignee added: no' leaves the assignee in place"
+body_noassign="$(printf '%s' "$body_v1" | sed 's/^- assignee added by this claim: yes/- assignee added by this claim: no/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_noassign")")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "no-assignee release should exit 0"
+if grep -q -- '--remove-assignee' "$rc_log"; then fail "an assignee the claim did not add must stay"; fi
+
+echo "==> 'label added: n/a' touches no label"
+body_nolabel="$(printf '%s' "$body_v1" | sed 's/^- `agent:` label added by this claim: agent:claude-code/- `agent:` label added by this claim: n\/a, repo has no such label/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_nolabel")")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "n/a-label release should exit 0"
+if grep -q -- '--remove-label' "$rc_log"; then fail "n/a label must remove nothing"; fi
+
+echo "==> an already-superseded claim is exit 3 with zero writes"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")" \
+    "$(rc_comment evanharmon1 'Claim released — merged. (Supersedes the claim record above.)')")" \
+    "$issue_closed_full"
+[ "$(run_release --reason r)" = 3 ] || fail "superseded claim should exit 3"
+[ ! -s "$rc_log" ] || fail "superseded claim must write nothing"
+
+echo "==> no claim comment at all is exit 3"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 'just a normal comment')")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 3 ] || fail "no claim should exit 3"
+
+echo "==> claim -> release -> re-claim acts on the latest claim's record only"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")" \
+    "$(rc_comment evanharmon1 'Claim released — done. (Supersedes the claim record above.)')" \
+    "$(rc_comment evanharmon1 "$body_noassign")")" \
+    "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "re-claimed release should exit 0"
+if grep -q -- '--remove-assignee' "$rc_log"; then
+    fail "the second claim's record (assignee: no) must win over the first's"
+fi
+
+echo "==> a displaced label is restored while the issue is open"
+body_displaced="$(printf '%s' "$body_v1" | sed 's/^- `agent:` label displaced by this claim: none/- `agent:` label displaced by this claim: agent:codex/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_displaced")")" \
+    '{"state":"open","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason 'PR #9 closed without merging')" = 0 ] || fail "open-issue release should exit 0"
+grep -q -- '--add-label agent:codex' "$rc_log" || fail "the displaced label must be restored on an open issue"
+
+echo "==> a displaced label is NOT restored onto a closed issue"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_displaced")")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "closed-issue release should exit 0"
+if grep -q -- '--add-label' "$rc_log"; then fail "restoring a label onto a closed issue recreates the stale state"; fi
+grep -q 'skipped restoring' "$rc_body" || fail "the skip must be recorded in the release comment"
+
+echo "==> a claim authored by neither the owner nor an assignee is ignored"
+rc_scenario "$(rc_page "$(rc_comment mallory "$body_v1")")" \
+    '{"state":"closed","labels":[],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 3 ] || fail "an untrusted claim should exit 3"
+[ ! -s "$rc_log" ] || fail "an untrusted claim must trigger zero writes"
+
+echo "==> a claim authored by a non-owner assignee IS trusted"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1")")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "an assignee's claim should be honoured"
+grep -q -- '--remove-assignee collaborator' "$rc_log" || fail "the claim author, not the runner, is unassigned"
+
+echo "==> hostile record values fail closed with zero writes"
+body_hostile="$(printf '%s' "$body_v1" | sed 's/^- `agent:` label added by this claim: agent:claude-code/- `agent:` label added by this claim: agent:x;rm -rf ~/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_hostile")")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 2 ] || fail "an implausible label should fail closed with exit 2"
+[ ! -s "$rc_log" ] || fail "a hostile record must trigger zero writes"
+
+echo "==> a record with no parsable assignee line fails closed"
+body_broken="$(printf '%s' "$body_v1" | sed 's/^- assignee added by this claim: yes/- assignee added by this claim: maybe/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_broken")")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 2 ] || fail "an unreadable record should exit 2"
+[ ! -s "$rc_log" ] || fail "an unreadable record must trigger zero writes"
+
+echo "==> a claim with no record at all releases by comment only"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 'Claiming — starting work (session old).')")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "a recordless claim should release by comment"
+[ "$(grep -c 'issue comment' "$rc_log")" = 1 ] || fail "exactly the comment should be written"
+if grep -q 'issue edit' "$rc_log"; then fail "no record means no marker may be touched"; fi
+grep -q 'no claim record survived' "$rc_body" || fail "the comment must say the markers were left"
+
+echo "==> a failed marker write still posts the comment and exits 4"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+RC_FAIL_MATCH='--remove-label' _rc4="$(RC_FAIL_MATCH='--remove-label' run_release --reason r)"
+[ "$_rc4" = 4 ] || fail "a failed label removal should exit 4 (got $_rc4)"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "the assignee removal must still be attempted"
+grep -q 'FAILED' "$rc_body" || fail "the comment must name the failed marker"
+
+echo "==> a failed comment post is exit 1 — the release is not recorded"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+_rc1="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
+[ "$_rc1" = 1 ] || fail "a failed supersede post should exit 1 (got $_rc1)"
+
+echo "==> --dry-run resolves everything and writes nothing"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+[ "$(run_release --reason r --dry-run)" = 0 ] || fail "--dry-run should exit 0"
+[ ! -s "$rc_log" ] || fail "--dry-run must not write"
+
 echo "✓ track-work checks behave"

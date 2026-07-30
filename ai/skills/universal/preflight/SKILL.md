@@ -318,12 +318,11 @@ actually added.
   Claiming — starting implementation on branch <branch> (session <name>).
 
   Claim record (for `/close` — undo only what this claim added):
-  - board: <board title from --show, so cleanup targets the same card>
+  - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
-  - assignee added by this claim: <yes|no, it was already assigned to me>
-  - `agent:` label added by this claim: <yes|no|n/a, repo has no such label>
-  - `agent:` label displaced by this claim: <label removed on an approved
-    override, or "none">
+  - assignee added by this claim: <yes|no>
+  - `agent:` label added by this claim: <agent:claude-code | no | n/a>
+  - `agent:` label displaced by this claim: <agent:codex | none>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card
@@ -331,6 +330,18 @@ actually added.
 
   The comment is the durable record — it survives compaction, a lost session,
   and a different agent doing the hand-back.
+
+  **The record is a parsed contract, not prose.** The `Claim released —`
+  workflow (`.github/workflows/claim-release.yml` where installed) machine-
+  reads these lines to undo the claim after a close event, so their shape is
+  fixed: one line per field, values exactly as the template shows — the label
+  fields name the **actual label** (`agent:claude-code`, not `yes`) so the
+  release does not have to guess which label to remove, and every value stays
+  on its own single line. Do not reword the field labels or wrap a value; the
+  grammar and its parser live in
+  `track-work/references/claim-lifecycle.md` and
+  `track-work/assets/release-claim.sh`. Explanatory clauses go after a comma
+  (`n/a, repo has no such label`) — parsers stop at the first comma.
 
   **"Unset" and "unknown" are different answers.** `--show` exiting 0 with no
   `Status=` line is a successful read of a card whose `Status` is genuinely
@@ -348,8 +359,10 @@ invisible to this check. The claim is a signal, not a lock
 (`track-work` §6).
 
 A claim is a promise to release it. `/shepherd` advances the card as the PR
-moves, and `/close` flags a session that ends with an issue left at
-`In Progress` and nothing in flight.
+moves and releases the `agent:*` label at its stop-at-green; where the
+claim-release workflow is installed, the close event releases the rest; and
+`/close` flags a session that ends with an issue left at `In Progress` and
+nothing in flight (see `track-work/references/claim-lifecycle.md`).
 
 ## 6. Hand off
 
