@@ -166,13 +166,19 @@ read it in the UI) — never guess.
     # where the family does not exist), and `--remove-label` on a label the
     # repo lacks fails the whole `gh issue edit` — taking the assignee removal
     # down with it and leaving the claim standing.
-    gh issue edit <n> --repo <owner/repo> --remove-assignee @me          # only if the record says the claim added it
-    gh issue edit <n> --repo <owner/repo> --remove-label agent:claude-code  # likewise
-    # If the record names a displaced label, put it back — the claim removed it:
-    gh issue edit <n> --repo <owner/repo> --add-label <displaced agent: label>
+    #
+    # Board FIRST, searchable markers LAST. The board write is the one that
+    # fails for environmental reasons (missing `project` scope), and the
+    # assignee and `agent:*` label are what /orient's stale-claim sweep
+    # queries — clear them before a failed board write and the leftover card
+    # becomes undiscoverable (the board-only gap, harmon-devkit#183).
     <track-work-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
       --project "<the board the claim comment recorded>" \
       --status "<the status the claim comment recorded>"
+    # If the record names a displaced label, put it back — the claim removed it:
+    gh issue edit <n> --repo <owner/repo> --add-label <displaced agent: label>
+    gh issue edit <n> --repo <owner/repo> --remove-label agent:claude-code  # only if the record says the claim added it
+    gh issue edit <n> --repo <owner/repo> --remove-assignee @me          # likewise
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```
 
