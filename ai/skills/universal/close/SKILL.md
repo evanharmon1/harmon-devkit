@@ -52,14 +52,43 @@ read it in the UI) — never guess.
   means the claim may not be yours alone to release — say so and let the user
   decide rather than presenting cleanup as obviously safe.
 
+  **Every path that clears a marker must say it released the claim.**
+  Whichever outcome applies below, any cleanup that removes or restores a
+  marker ends with a comment carrying, on its own line and verbatim:
+
+  ```text
+  Claim released — <why>. (Supersedes the claim record above.)
+  ```
+
+  The claim comment is never deleted, so without this supersede line the
+  issue keeps reading as a live claim to every future `/orient` and `/retro`
+  — clearing the markers without it recreates exactly the state this step
+  exists to prevent.
+
   Three outcomes:
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
     Nothing to do.
   - **Merged / issue closed** — *not* "nothing to release". GitHub clears no
     marker on merge, and a personal-account project has no automation to move
     the card, so the work finishes and the board shows an agent still holding
-    it. Offer the cleanup below — including its "undo only what the claim
-    added" rule, which binds here too. Add `--status Done` **only with evidence
+    it. This outcome **performs the cleanup rather than offering it**: nothing
+    is being resumed, the markers are provably stale, and every write is one
+    command to undo. Run the cleanup block below — including its "undo only
+    what the claim added" rule, which binds here too — and finish with the
+    `Claim released —` supersede comment above. Act unasked only when **both**
+    hold:
+
+    - the claim record survives and accounts for every marker the cleanup
+      would touch, and
+    - the issue is closed `completed` (`stateReason`) or a merged PR linked it
+      with a *closing keyword* (`closedByPullRequestsReferences`).
+
+    Otherwise **stop and ask** — in particular when no claim record survives,
+    the record says `prior board status: unknown`, another agent's `agent:*`
+    label is present, another open PR still references the issue, or the card
+    sits at a status this lifecycle never writes.
+
+    Add `--status Done` **only with evidence
     the issue is actually finished**: it is closed as `completed`
     (`stateReason`), or a merged PR linked it with a *closing keyword*
     (`closedByPullRequestsReferences`). A merged PR that only says `Refs #N`
@@ -105,13 +134,9 @@ read it in the UI) — never guess.
     prefer `<owner> Project` or refuse as ambiguous — restoring the wrong card
     while the claimed one stays at `In Progress`.
 
-    **The hand-back comment must say it released the claim**, on its own line
-    and verbatim, because the claim comment is never deleted and would
-    otherwise keep reading as a live claim to every future `/orient`:
-
-    ```text
-    Claim released — <why>. (Supersedes the claim record above.)
-    ```
+    **The hand-back comment is the release comment** — it must carry the
+    `Claim released —` supersede line above, verbatim, like every other path
+    that clears a marker.
 
     **Restore, don't reset.** The claim comment records the status the claim
     overwrote; put that back. Sending a shaped, prioritized issue to `Todo`
@@ -143,8 +168,11 @@ read it in the UI) — never guess.
     planning decision the claim never made and the board's Agent-queue view
     depends on.
 
-    Do not run any of it unasked — this is the user's call, and they may be
-    resuming tomorrow.
+    Do not run any of this mid-flight hand-back unasked — the work is being
+    handed back, not finished, so it is the user's call: they may be resuming
+    tomorrow. (That caution is scoped to this branch on purpose. The merged
+    path above acts without asking — nothing is being resumed there, and its
+    two conditions already route every ambiguous case to a question.)
 - List anything left dangling as explicit handoff bullets for the next
   session.
 
