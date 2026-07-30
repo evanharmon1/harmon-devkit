@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.13.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.13.0...v0.13.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **close:** release the claim on the merged path too ([#212](https://github.com/evanharmon1/harmon-devkit/issues/212)) ([c0d88e5](https://github.com/evanharmon1/harmon-devkit/commit/c0d88e5d1d5e6a2614027564ffd15d072bfc5646))
+* **implement:** make the strong claim-ownership check executable ([#211](https://github.com/evanharmon1/harmon-devkit/issues/211)) ([8eb558d](https://github.com/evanharmon1/harmon-devkit/commit/8eb558dd237f7e4e3c4ac1efca6dadce17602189))
+
 ## [0.13.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.12.0...v0.13.0) (2026-07-29)
 
 
