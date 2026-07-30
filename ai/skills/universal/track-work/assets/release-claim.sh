@@ -423,7 +423,9 @@ fi
 # ── Execute ──────────────────────────────────────────────────────────────────
 run_write() {
     if [ "$dry_run" -eq 1 ]; then
-        echo "DRY-RUN: $*"
+        # To stderr: callers redirect the wrapped command's stdout to
+        # /dev/null, which would swallow the plan line this exists to show.
+        echo "DRY-RUN: $*" >&2
         return 0
     fi
     "$@"
