@@ -632,6 +632,10 @@ loops indefinitely:
    report instead of guessing. Do **not** post a release comment — the claim
    as a whole is still live (assignee, card) until the close event or
    `/close` releases it; only the label's "right now" assertion has expired.
+   And the release is not one-way: if review activity later pulls shepherd
+   back into §5 fix rounds, **re-add the label first** (same guard — the
+   record said the claim added it), because "implementing right now" has
+   become true again and coordination checks read the label as exactly that.
    Report the release in the green summary, e.g. `released agent:claude-code
    — green, awaiting the maintainer; the close event releases the rest.`
    Then stop.

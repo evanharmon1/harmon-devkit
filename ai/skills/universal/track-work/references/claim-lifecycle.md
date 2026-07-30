@@ -143,10 +143,16 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
 - The write window after the script's final pre-write re-read is **not**
   race-free: a reopen-and-reclaim landing inside those seconds can lose
   markers or be superseded by the in-flight release comment. GitHub offers
-  no transaction over comments and issue edits; the re-read and `--not-after`
-  bound the window, the global concurrency queue serializes the workflow's
-  own runs, and the residue is accepted (`track-work` §6: a claim is a
-  signal, not a lock).
+  no transaction over comments and issue edits; the re-read, `--not-after`
+  (which fails safe on equal second-precision timestamps), and
+  `--require-closed` bound the window, and the residue is accepted
+  (`track-work` §6: a claim is a signal, not a lock).
+- The workflow deliberately declares **no concurrency group**: a group holds
+  only one pending run, so a burst of close events would silently cancel the
+  middle one — a permanently dropped release. Overlapping runs converge
+  instead: the script re-reads before writing, recognizes its own
+  bot-authored supersede comments, and withholds the comment on partial
+  failure, so the worst interleaving is a duplicate release comment.
 - A claim whose only surviving markers are on the board (no comment, no
   label) is invisible to the release workflow — that discovery gap is
   harmon-devkit#183.

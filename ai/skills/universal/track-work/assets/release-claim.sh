@@ -67,7 +67,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --repo owner/repo --issue N --reason TEXT [--not-after ISO8601] [--dry-run]" >&2
+    echo "Usage: $0 --repo owner/repo --issue N --reason TEXT [--not-after ISO8601] [--require-closed] [--dry-run]" >&2
     exit 2
 }
 
@@ -75,6 +75,7 @@ repo="${GH_REPO:-}"
 issue=""
 reason=""
 not_after=""
+require_closed=0
 dry_run=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -97,6 +98,10 @@ while [ "$#" -gt 0 ]; do
         [ "$#" -ge 2 ] || usage
         not_after="$2"
         shift 2
+        ;;
+    --require-closed)
+        require_closed=1
+        shift
         ;;
     --dry-run)
         dry_run=1
@@ -153,6 +158,13 @@ if ! issue_json="$(gh api "repos/$repo/issues/$issue")"; then
     exit 2
 fi
 issue_state="$(jq -r '.state' <<<"$issue_json")"
+# A queued issues-closed event whose issue was reopened before this ran is
+# stale: an accidental close/reopen continues the existing claim, and
+# releasing it would strip active work.
+if [ "$require_closed" -eq 1 ] && [ "$issue_state" != "closed" ]; then
+    echo "$repo#$issue is open again — the triggering close event is stale, leaving the claim" >&2
+    exit 3
+fi
 # Trusted CLAIM authors: the repo owner plus every CURRENT assignee. An
 # attacker cannot self-assign, so a claim-shaped comment from anyone else is
 # invisible to the selection below. RELEASE comments additionally trust
@@ -193,7 +205,7 @@ fetch_claim() {
                     id: .[$ci].id,
                     author: .[$ci].user.login,
                     body: .[$ci].body,
-                    too_new: ($cutoff != "" and .[$ci].created_at > $cutoff),
+                    too_new: ($cutoff != "" and .[$ci].created_at >= $cutoff),
                     superseded: ([.[($ci + 1):][]
                                   | select(.body
                                            | startswith("Claim released —"))]

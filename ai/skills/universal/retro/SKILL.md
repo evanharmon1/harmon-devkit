@@ -56,10 +56,15 @@ rather than reporting both as loose ends:
   it as part of the work's normal state, not as a loose end.
 - **Stale** — the claim outlived its session: nothing is in flight, the
   claiming session is not this one, or the issue is already **closed** with
-  markers still standing. The last case now also means the release workflow
-  failed or is not installed — say which, because "the automation missed
-  one" and "there is no automation" call for different fixes
-  (`track-work/references/claim-lifecycle.md`). These are §2 loose ends.
+  the label or assignee still standing. That last case means the release
+  workflow failed or is not installed — say which, because "the automation
+  missed one" and "there is no automation" call for different fixes
+  (`track-work/references/claim-lifecycle.md`). One shape is *neither*: a
+  closed issue whose card still sits at `In Progress` **under a trusted
+  `Claim released —` comment** is a successful release awaiting board
+  cleanup — the workflow has no Projects permission by design — so report
+  it as a pending `/close` chore, not a workflow failure. These are §2
+  loose ends.
 
 Keep each reference's repository identity: a bare `#123` from another repo
 must be verified with `--repo owner/repo` (or by its full URL), never against

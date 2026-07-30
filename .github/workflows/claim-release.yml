@@ -35,12 +35,14 @@ on:
   pull_request:
     types: [closed]
 
-# One global queue, not per-event-number: two unmerged PRs closing the same
-# issue (or an issue-close racing a PR-close) must not interleave marker
-# writes on one claim. Releases are rare; serializing them all is free.
-concurrency:
-  group: claim-release
-  cancel-in-progress: false # never cancel mid-write; queue instead
+# Deliberately NO concurrency group: a group keeps one running and ONE
+# pending run, so a burst of three close events silently cancels the middle
+# one — and a dropped event is a permanently stranded claim, the exact
+# failure this workflow exists to remove. Overlapping runs are safe instead:
+# the script re-reads before writing, recognizes its own bot-authored
+# supersede comments (a duplicate run exits 3), and withholds the comment on
+# partial failure — the worst interleaving is a duplicate release comment,
+# which every reader of the predicate tolerates.
 
 permissions:
   contents: read
@@ -70,10 +72,13 @@ jobs:
           rc=0
           # --not-after: a claim created after this close belongs to newer
           # work (a reopen-and-reclaim) and is not this event's to release.
+          # --require-closed: a queued event whose issue was reopened before
+          # this ran is stale — an accidental close/reopen continues the
+          # existing claim, and releasing it would strip active work.
           ./ai/skills/universal/track-work/assets/release-claim.sh \
             --repo "$GH_REPO" --issue "$ISSUE_NUMBER" \
             --reason "issue closed (${STATE_REASON:-closed})" \
-            --not-after "$CLOSED_AT" || rc=$?
+            --not-after "$CLOSED_AT" --require-closed || rc=$?
           # 3 = no live claim / untrusted claim — benign, the common case.
           [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit "$rc"
 
@@ -121,6 +126,17 @@ jobs:
                       + (if .pageInfo.hasNextPage then 1 else 0 end)')"
             if [ "${open_closers:-0}" -gt 0 ]; then
               echo "issue #$n has open (or unenumerated) closing PR(s) — leaving its claim"
+              continue
+            fi
+            # A Refs-only PR never appears in closing references, but
+            # /shepherd deliberately keeps such claimed issues active — any
+            # OPEN cross-referenced PR means the claim may still be working.
+            open_refs="$(gh api --paginate "repos/$GH_REPO/issues/$n/timeline" \
+              --jq '[.[] | select(.event == "cross-referenced")
+                     | .source.issue | select(.pull_request != null)
+                     | select(.state == "open")] | length' | awk '{s+=$1} END {print s+0}')"
+            if [ "${open_refs:-0}" -gt 0 ]; then
+              echo "issue #$n has $open_refs open PR(s) referencing it — leaving its claim"
               continue
             fi
             rc=0

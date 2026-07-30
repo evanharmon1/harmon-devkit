@@ -2188,6 +2188,19 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1 '2026-04-01T00:00:
 [ "$(run_release --reason r --not-after '2026-05-01T00:00:00Z')" = 0 ] ||
     fail "a pre-event claim should release under --not-after"
 
+echo "==> a claim in the SAME second as --not-after fails safe (timestamps are second-precision)"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1 '2026-05-01T00:00:00Z')")" \
+    "$issue_closed_full"
+[ "$(run_release --reason r --not-after '2026-05-01T00:00:00Z')" = 3 ] ||
+    fail "an equal-timestamp claim could postdate the event — it must be left"
+
+echo "==> --require-closed refuses a stale close event on a reopened issue"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" \
+    '{"state":"open","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r --require-closed)" = 3 ] ||
+    fail "a reopened issue means the close event is stale — exit 3"
+[ ! -s "$rc_log" ] || fail "a stale close event must trigger zero writes"
+
 echo "==> the workflow's own bot-authored release comment supersedes on re-run"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
     "$(rc_comment 'github-actions[bot]' 'Claim released — issue closed (completed). (Supersedes the claim record above.)' 2)")" \
