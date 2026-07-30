@@ -106,9 +106,13 @@ issue, and two agents start implementing.
      ```sh
      me="$(gh api user --jq .login)"
      [ -n "$me" ] || { echo 'identity lookup failed — treat as unclaimed'; exit 1; }
-     gh issue view <n> --repo "$repo" --json comments \
-       --jq --arg me "$me" '.comments[] | select(.author.login == $me)'
+     gh issue view <n> --repo "$repo" --json comments |
+       jq -r --arg me "$me" '.comments[] | select(.author.login == $me)'
      ```
+
+     (Pipe into external `jq` — `gh`'s own `--jq` takes a single expression
+     and does not forward jq options like `--arg`, so the inline form cannot
+     run at all.)
 
      A failed identity lookup is *unknown*, never *mine* — fall through to
      outcome 4 and offer `/preflight` rather than proceeding on an unverified
