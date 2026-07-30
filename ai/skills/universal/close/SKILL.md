@@ -76,11 +76,14 @@ read it in the UI) — never guess.
   than no comment. If any write fails, report the partial cleanup to the user
   instead of posting the release line. The converse failure — markers cleared
   but the release comment refusing to post — must not end silent either:
-  retry the post, and if it still fails **re-add the `agent:*` label** (any
-  marker `/orient`'s sweep queries) before reporting, so the half-released
-  claim stays findable instead of surviving only as a card and an
-  unsuperseded comment. If that restore also fails, nothing was writable —
-  say exactly that; the user is present on this path.
+  retry the post, and if it still fails restore **a searchable marker that
+  actually existed** — the `agent:*` label where the repo has the family,
+  otherwise the assignee you just removed (a record marked `n/a` means the
+  label cannot be re-added, but the assignee always can) — so the
+  half-released claim stays findable by `/orient`'s sweep instead of
+  surviving only as a card and an unsuperseded comment. If that restore also
+  fails, nothing was writable — say exactly that; the user is present on
+  this path.
 
   Three outcomes:
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
@@ -100,19 +103,14 @@ read it in the UI) — never guess.
       check `/implement` §1 applies, because on a public repo anyone can post
       a claim-shaped comment and a forged record must not steer marker
       writes), and accounts for every marker the cleanup would touch, and
-    - the issue is **currently closed**, the closure postdates this claim's
-      comment, and either it is closed `completed` (`stateReason`) or the
-      closing-keyword PR that closed it is actually **merged with `mergedAt`
-      later than the claim comment** — verify with
-      `gh pr view <pr> --repo <owner/repo> --json state,mergedAt`, binding
-      `--repo` to the repository that produced
-      `closedByPullRequestsReferences` (a bare number in a fork checkout
-      queries the fork, where a same-number PR supplies unrelated evidence),
-      because
-      `closedByPullRequestsReferences` also lists closing-keyword PRs that
-      were closed *unmerged*, and a reopened issue keeps its historical
-      closers in that list forever. An abandoned PR, or a merge that predates
-      this claim, is not delivery evidence for it.
+    - the issue is **currently closed `completed`** (`stateReason`), with the
+      closure postdating this claim's comment (read `closedAt` alongside
+      `stateReason`). `completed` is deliberately the *only* accepted reason:
+      it is what a closing-keyword merge sets, so a merged delivery always
+      qualifies — while `not planned` and duplicate closes never do, whatever
+      historical closers `closedByPullRequestsReferences` retains from before
+      a reopen. Do not treat that list as delivery evidence on its own: it
+      keeps unmerged and pre-reopen PRs forever.
 
     **Re-read the ground immediately before the first write** — the probes
     above may be minutes old, and the analysis between them and the cleanup
@@ -181,8 +179,13 @@ read it in the UI) — never guess.
     # The recorded board title and status are external data — a project title
     # can contain `$(…)` or backticks, and pasting it inside double quotes
     # executes it before the helper runs. Paste both inside single quotes
-    # exactly as recorded (a title containing a single quote must go through
-    # an env var instead, e.g. TITLE=… and "$TITLE").
+    # exactly as recorded. A title that itself contains a single quote cannot
+    # be single-quoted: load it without any shell evaluation via a quoted
+    # heredoc, then pass the variable —
+    #   IFS= read -r TITLE <<'RECORDED_TITLE_EOF'
+    #   <paste the title verbatim>
+    #   RECORDED_TITLE_EOF
+    # and use --project "$TITLE".
     <track-work-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
       --project '<the board the claim comment recorded>' \
       --status '<the status the claim comment recorded>'
