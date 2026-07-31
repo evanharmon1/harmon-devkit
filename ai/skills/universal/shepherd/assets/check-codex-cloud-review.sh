@@ -36,6 +36,7 @@ need() {
 
 need gh
 need jq
+need perl
 
 command_name="${1:-}"
 [ -n "$command_name" ] || usage
@@ -95,8 +96,40 @@ valid_time() {
 }
 
 provider_head() {
-    gh pr view "$1" --repo "$2" --json headRefOid,state |
+    run_gh pr view "$1" --repo "$2" --json headRefOid,state |
         jq -er 'select(.state == "OPEN") | .headRefOid'
+}
+
+run_gh() {
+    call_timeout=60
+    if [ -n "${state_requested:-}" ] && valid_time "$state_requested"; then
+        requested_epoch=$(jq -nr \
+            --arg value "$state_requested" '$value | fromdateiso8601') ||
+            return 1
+        current_epoch=$(date -u '+%s')
+        remaining=$((requested_epoch + timeout_min * 60 - current_epoch))
+        if [ "$remaining" -le 0 ]; then
+            call_timeout=1
+        elif [ "$remaining" -lt "$call_timeout" ]; then
+            call_timeout=$remaining
+        fi
+    fi
+    perl -e '
+      $seconds = shift;
+      $pid = fork;
+      defined $pid or exit 127;
+      if (!$pid) { exec @ARGV; exit 127 }
+      $SIG{ALRM} = sub {
+        kill 9, $pid;
+        waitpid $pid, 0;
+        exit 124;
+      };
+      alarm $seconds;
+      waitpid $pid, 0;
+      alarm 0;
+      $status = $?;
+      exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
+    ' "$call_timeout" gh "$@"
 }
 
 write_state() {
@@ -195,7 +228,7 @@ fetch_pages() {
     endpoint=$1
     destination=$2
     raw="${destination}.pages"
-    if ! gh api --paginate --slurp "$endpoint" >"$raw"; then
+    if ! run_gh api --paginate --slurp "$endpoint" >"$raw"; then
         return 1
     fi
     flatten_pages "$raw" "$destination" 2>/dev/null || return 2
@@ -310,7 +343,7 @@ attach)
     [ "$live_head" = "$state_head" ] ||
         die "PR head changed before trigger attachment"
 
-    comment=$(gh api "repos/$state_repo/issues/comments/$trigger_id") ||
+    comment=$(run_gh api "repos/$state_repo/issues/comments/$trigger_id") ||
         die "cannot fetch exact trigger comment $trigger_id"
     printf '%s' "$comment" | jq -e \
         --argjson id "$trigger_id" \
@@ -380,7 +413,7 @@ check)
     workdir=$(mktemp -d -t codex-cloud-review-XXXXXX)
     trap 'rm -rf "$workdir"' EXIT
 
-    actor=$(gh api "users/$actor_login") || {
+    actor=$(run_gh api "users/$actor_login") || {
         bounded_wait "cannot authenticate the configured Codex actor"
     }
     printf '%s' "$actor" | jq -e \
@@ -392,7 +425,7 @@ check)
         exit 2
     }
 
-    trigger=$(gh api "repos/$state_repo/issues/comments/$state_trigger") || {
+    trigger=$(run_gh api "repos/$state_repo/issues/comments/$state_trigger") || {
         bounded_wait "cannot re-fetch the exact trigger comment"
     }
     printf '%s' "$trigger" | jq -e \
@@ -457,11 +490,9 @@ check)
 
     inline_findings=$(jq \
         --argjson id "$actor_id" \
-        --arg requested "$cycle_requested" \
         --arg head "$state_head" '
           [.[] | select(
             .user.id? == $id and
-            (.created_at? >= $requested) and
             (.commit_id? == $head)
           )] | length
         ' "$workdir/inline.json")
@@ -472,7 +503,6 @@ check)
 
     review_result=$(jq -r \
         --argjson id "$actor_id" \
-        --arg requested "$cycle_requested" \
         --arg head "$state_head" '
           def clean_result:
             ((.body // "") | split("\n")[0] |
@@ -481,7 +511,6 @@ check)
             "codex review: didn\u0027t find any major issues.";
           [.[] | select(
             .user.id? == $id and
-            (.submitted_at? >= $requested) and
             (.commit_id? == $head)
           ) | if clean_result then "clean" else "findings" end
           ] |
@@ -496,14 +525,13 @@ check)
 
     comment_candidates="$workdir/comment-candidates.tsv"
     jq -r \
-        --argjson id "$actor_id" \
-        --arg requested "$cycle_requested" '
+        --argjson id "$actor_id" '
           def clean_result:
             ((.body // "") | split("\n")[0] |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") |
               ascii_downcase) ==
             "codex review: didn\u0027t find any major issues.";
-          .[] | select(.user.id? == $id and (.created_at? >= $requested)) |
+          .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(
               "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
@@ -527,7 +555,7 @@ check)
         prefix_lower=$(printf '%s' "$prefix" | tr '[:upper:]' '[:lower:]')
         head_lower=$(printf '%s' "$state_head" | tr '[:upper:]' '[:lower:]')
         case "$head_lower" in "$prefix_lower"*) ;; *) continue ;; esac
-        resolved_payload=$(gh api "repos/$state_repo/commits/$prefix") ||
+        resolved_payload=$(run_gh api "repos/$state_repo/commits/$prefix") ||
             bounded_wait "cannot resolve a reviewed commit prefix through GitHub"
         resolved=$(printf '%s' "$resolved_payload" | jq -er '.sha') || {
             emit indeterminate "GitHub returned malformed commit-prefix data"

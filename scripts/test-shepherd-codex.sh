@@ -49,6 +49,10 @@ if [ -f "$GH_FIXTURES/fail-endpoint" ] &&
     grep -Fq "$(cat "$GH_FIXTURES/fail-endpoint")" <<<"$endpoint"; then
     exit 92
 fi
+if [ -f "$GH_FIXTURES/slow-endpoint" ] &&
+    grep -Fq "$(cat "$GH_FIXTURES/slow-endpoint")" <<<"$endpoint"; then
+    sleep 5
+fi
 
 case "$endpoint" in
 users/*) file=actor.json ;;
@@ -96,6 +100,7 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     rm -f "${fixtures}/fail-endpoint"
+    rm -f "${fixtures}/slow-endpoint"
     : >"$log"
 }
 
@@ -174,6 +179,24 @@ jq -cn \
         id:77,user:{id:$id,login:$login},
         created_at:"2026-07-31T08:00:02Z",
         body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> exact-head evidence remains valid after local state loss"
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[
+      {
+        id:76,user:{id:$id,login:$login},
+        created_at:"2026-07-31T07:00:00Z",
+        body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" +
+          $prefix + "`")
       }
     ]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:01:00Z'
@@ -357,6 +380,12 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 11 pending
 run_check '2026-07-31T08:16:00Z'
 assert_status 12 retry
+
+echo "==> a stalled GitHub call is bounded by the attempt deadline"
+new_cycle
+printf '%s\n' '/reviews' >"${fixtures}/slow-endpoint"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
 
 echo "==> unexpected actor identity is indeterminate"
 new_cycle
