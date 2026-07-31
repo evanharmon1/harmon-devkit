@@ -527,8 +527,15 @@ expect_ok "standardization setup disables Codex Automatic reviews" \
 expect_ok "standardization hands off only a ready-for-review PR" \
     sh -c 'grep -qF "open a draft PR" "$1" &&
         grep -qF "pre- and post-promotion checks/review gate" "$1" &&
+        grep -qF "If the target has no vendored shepherd" "$1" &&
+        grep -qF "gh pr ready --undo" "$1" &&
         grep -qF "ready-triggered automation also settles cleanly" "$1"' sh \
     "$STANDARDIZE_SKILL"
+expect_ok "root policy waits for ready-triggered automation" \
+    sh -c 'grep -qF "pull_request.ready_for_review" "$1" &&
+        grep -qF "Only a clean" "$1" &&
+        grep -qF "post-promotion gate is the human handoff" "$1"' sh \
+    "$repo/AGENTS.md"
 expect_ok "standardization modes use the draft-workbench handoff" \
     sh -c 'grep -qF "open a draft PR" "$1/mode-audit.md" &&
         grep -qF "open a draft PR" "$1/mode-update.md" &&

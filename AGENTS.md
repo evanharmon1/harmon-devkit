@@ -167,7 +167,11 @@ something to ask permission for.
   leave the PR draft, stop, and summarize what's unresolved on the PR for the
   maintainer. Once the complete readiness gate is clean for the unchanged
   current head, run `gh pr ready`, confirm the PR is no longer draft and the
-  head did not change, then hand it to the human reviewer. Where the
+  head did not change, then repeat the complete bounded checks/reviews/thread
+  gate on that same head. Wait for automation triggered by
+  `pull_request.ready_for_review` to settle; if it fails or needs remediation,
+  return the unchanged PR to draft before working on it. Only a clean
+  post-promotion gate is the human handoff. Where the
   vendored `/shepherd` skill states a different cap or exit condition, **this
   file wins** — vendored skills are synced on their own release cadence and
   can lag a policy change made here.
@@ -182,9 +186,10 @@ something to ask permission for.
   terminal current-head result after its two bounded attempts is an
   escalation, never permission to proceed on CI alone.
 - **Stop at ready for review.** Once checks pass and no review findings are
-  unresolved, promote the unchanged draft with `gh pr ready`, report the human
-  handoff, and stop. A failed or indeterminate gate stays draft. Merging is
-  always a human decision.
+  unresolved, promote the unchanged draft with `gh pr ready`, repeat the full
+  bounded gate for ready-triggered automation, then report the human handoff
+  and stop. A failed or indeterminate gate stays draft (or returns to draft
+  before remediation). Merging is always a human decision.
 
 ## Definition of Done
 

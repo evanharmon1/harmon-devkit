@@ -168,9 +168,26 @@ It confirms the expected files/tooling landed and then runs the repo's own gate
 `task install:hooks` to wire lefthook). Report what passed and surface any gaps
 against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
 prohibited); commit on a feature branch and open a draft PR — no direct commits to
-`main`. When the work includes a PR, follow the repository's vendored shepherd
-procedure through its complete pre- and post-promotion checks/review gate. At
-both stages, watch every required check to a terminal green result and inspect
+`main`. When the work includes a PR and the target has a vendored shepherd,
+follow that procedure through its complete
+pre- and post-promotion checks/review gate.
+
+If the target has no vendored shepherd, use this fallback instead: keep the PR
+draft while work is active; after each push, bounded-poll every required check
+to a terminal result and inspect reviews, top-level comments, and every inline
+thread. Settle every finding and deferred PR-body checkbox, run the target's
+full local gate on the exact clean commit before each fix push, and repeat until
+the unchanged head is clean. Freeze one final snapshot of the head, draft state,
+checks, reviews, mergeability, deferred findings, and unanswered threads before
+promotion. Promote that head with `gh pr ready`, then repeat the same complete
+bounded gate so checks or review apps triggered by
+`pull_request.ready_for_review` cannot escape observation. Wait for newly
+started automation to finish; its presence alone is not a failure. If the
+post-promotion gate fails or needs remediation, run `gh pr ready --undo`, verify
+the unchanged PR is draft again, and work there. Never merge, and never report
+the human handoff from a failed or indeterminate gate.
+
+At both stages, watch every required check to a terminal green result and inspect
 every review thread.
 Apply feedback you agree with and reply with a concrete repository-specific
 rationale when you disagree. Never merge; promote only the unchanged clean draft.
