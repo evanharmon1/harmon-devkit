@@ -367,6 +367,19 @@ mv "${state}.next" "$state"
 [ "$(jq -r '.trigger_comment_id' "$state")" = "$trigger_id" ] ||
     fail "clock-skewed exact trigger was not attached"
 
+echo "==> pending window uses the local reservation clock"
+request_time='2026-07-31T08:01:01Z'
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq '.reserved_at = "2026-07-31T08:00:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+run_check '2026-07-31T08:00:01Z'
+assert_status 11 pending
+
 echo "==> an existing state lock serializes reservations"
 write_defaults
 rm -f "$state"

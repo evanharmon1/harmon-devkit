@@ -190,13 +190,14 @@ bounded_wait() {
         now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     fi
     valid_time "$now" || die "--now must be an ISO-8601 UTC second"
-    requested_epoch=$(jq -nr \
-        --arg value "$state_requested" '$value | fromdateiso8601') ||
-        die "cannot parse request time"
+    reserved_epoch=$(jq -nr \
+        --arg value "$state_reserved" '$value | fromdateiso8601') ||
+        die "cannot parse reservation time"
     now_epoch=$(jq -nr --arg value "$now" '$value | fromdateiso8601') ||
         die "cannot parse current time"
-    [ "$now_epoch" -ge "$requested_epoch" ] || die "--now predates the request"
-    elapsed=$((now_epoch - requested_epoch))
+    [ "$now_epoch" -ge "$reserved_epoch" ] ||
+        die "--now predates the local reservation"
+    elapsed=$((now_epoch - reserved_epoch))
     timeout_seconds=$((timeout_min * 60))
     if [ "$elapsed" -lt "$timeout_seconds" ]; then
         emit pending "$detail"
@@ -286,17 +287,20 @@ reserve)
     previous_trigger_id=null
     if [ "$attempt" = "2" ]; then
         cycle_requested_at=$(jq -r '.cycle_requested_at' "$state_file")
+        previous_reserved_at=$(jq -r '.reserved_at' "$state_file")
         previous_trigger_id=$(jq -r '.trigger_comment_id' "$state_file")
         valid_time "$cycle_requested_at" ||
             die "attempt 1 state has an invalid cycle request time"
+        valid_time "$previous_reserved_at" ||
+            die "attempt 1 state has an invalid reservation time"
         valid_uint "$previous_trigger_id" ||
             die "attempt 1 state has an invalid trigger ID"
-        cycle_requested_epoch=$(jq -nr \
-            --arg value "$cycle_requested_at" '$value | fromdateiso8601') ||
-            die "cannot parse attempt 1 request time"
+        previous_reserved_epoch=$(jq -nr \
+            --arg value "$previous_reserved_at" '$value | fromdateiso8601') ||
+            die "cannot parse attempt 1 reservation time"
         current_epoch=$(date -u '+%s')
         [ "$current_epoch" -ge \
-            "$((cycle_requested_epoch + timeout_min * 60))" ] ||
+            "$((previous_reserved_epoch + timeout_min * 60))" ] ||
             die "attempt 1 window has not elapsed"
     fi
     payload=$(jq -cn \
@@ -391,10 +395,12 @@ check)
         exit 2
     }
     state_trigger=$(jq -r '.trigger_comment_id' "$state_file")
+    state_reserved=$(jq -r '.reserved_at' "$state_file")
     state_requested=$(jq -r '.requested_at' "$state_file")
     cycle_requested=$(jq -r '.cycle_requested_at' "$state_file")
     previous_trigger=$(jq -r '.previous_trigger_comment_id // empty' "$state_file")
     valid_uint "$state_trigger" || die "state has an invalid trigger ID"
+    valid_time "$state_reserved" || die "state has an invalid reservation time"
     valid_time "$state_requested" || die "state has an invalid request time"
     valid_time "$cycle_requested" || die "state has an invalid cycle request time"
     [ -z "$previous_trigger" ] || valid_uint "$previous_trigger" ||
