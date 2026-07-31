@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.14.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.13.2...v0.14.0) (2026-07-31)
+
+
+### Features
+
+* make draft PRs the agent workbench ([#230](https://github.com/evanharmon1/harmon-devkit/issues/230)) ([bac3036](https://github.com/evanharmon1/harmon-devkit/commit/bac3036533b3be732323ac056b645308b56c0f7e))
+
 ## [0.13.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.13.1...v0.13.2) (2026-07-31)
 
 
