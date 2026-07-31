@@ -52,6 +52,7 @@ actor_id=
 actor_login='chatgpt-codex-connector[bot]'
 timeout_min=15
 now=
+lock_dir=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -128,6 +129,21 @@ read_state() {
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
 
+acquire_state_lock() {
+    parent=$(dirname "$state_file")
+    mkdir -p "$parent"
+    lock_dir="${state_file}.lock"
+    mkdir "$lock_dir" 2>/dev/null ||
+        die "state is locked by another shepherd; inspect before retrying"
+    trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+}
+
+release_state_lock() {
+    rmdir "$lock_dir" 2>/dev/null || true
+    lock_dir=
+    trap - EXIT
+}
+
 emit() {
     result=$1
     detail=$2
@@ -164,6 +180,7 @@ reserve)
     valid_uint "$pr" || die "invalid PR number: $pr"
     valid_sha "$head" || die "head must be a full 40-hex commit"
     case "$attempt" in 1 | 2) ;; *) die "attempt must be 1 or 2" ;; esac
+    acquire_state_lock
 
     live_head=$(provider_head "$pr" "$repo") ||
         die "cannot confirm the open PR head"
@@ -206,12 +223,14 @@ reserve)
           trigger_comment_id:null,requested_at:null
         }')
     write_state "$state_file" "$payload"
+    release_state_lock
     printf '%s\n' "$payload"
     ;;
 
 attach)
     [ -n "$trigger_id" ] || usage
     valid_uint "$trigger_id" || die "invalid trigger comment ID"
+    acquire_state_lock
     read_state
     phase=$(jq -r '.phase' "$state_file")
     if [ "$phase" = "attached" ]; then
@@ -225,6 +244,8 @@ attach)
     state_repo=$(jq -r '.repo' "$state_file")
     state_pr=$(jq -r '.pr' "$state_file")
     state_head=$(jq -r '.head' "$state_file")
+    state_reserved=$(jq -r '.reserved_at' "$state_file")
+    valid_time "$state_reserved" || die "state has an invalid reservation time"
     live_head=$(provider_head "$state_pr" "$state_repo") ||
         die "cannot re-confirm the open PR head"
     [ "$live_head" = "$state_head" ] ||
@@ -242,6 +263,9 @@ attach)
         ' >/dev/null || die "comment $trigger_id is not this PR's exact review trigger"
     requested_at=$(printf '%s' "$comment" | jq -er '.created_at')
     valid_time "$requested_at" || die "trigger has a malformed creation time"
+    [ "$requested_at" \> "$state_reserved" ] ||
+        [ "$requested_at" = "$state_reserved" ] ||
+        die "trigger predates this reservation"
 
     payload=$(jq \
         --argjson id "$trigger_id" \
@@ -251,6 +275,7 @@ attach)
           .requested_at = $requested_at
         ' "$state_file")
     write_state "$state_file" "$payload"
+    release_state_lock
     printf '%s\n' "$payload"
     ;;
 
@@ -438,10 +463,11 @@ check)
             exit 2
         }
         resolved=$(git rev-parse --verify "${prefix}^{commit}" 2>/dev/null || true)
-        [ "$resolved" = "$state_head" ] || {
+        [ -n "$resolved" ] || {
             emit indeterminate "bot review comment is not unambiguously bound to the current head"
             exit 2
         }
+        [ "$resolved" = "$state_head" ] || continue
         if [ "$classification" = "findings" ]; then
             comment_result=findings
         elif [ "$comment_result" = "none" ]; then

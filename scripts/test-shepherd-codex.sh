@@ -93,6 +93,9 @@ new_cycle() {
     "$helper" reserve \
         --state "$state" --repo example/repo --pr 493 \
         --head "$head_sha" --attempt 1 >/dev/null
+    jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+        "$state" >"${state}.next"
+    mv "${state}.next" "$state"
     "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
 }
 
@@ -222,6 +225,9 @@ jq -cn \
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 2 >/dev/null
+jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
 printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
 run_check '2026-07-31T08:32:01Z'
@@ -250,6 +256,38 @@ reserved_rc=$?
 set -e
 [ "$reserved_rc" -eq 2 ] ||
     fail "ambiguous reserved attempt should fail closed: $reserved_out"
+
+echo "==> a trigger older than its reservation cannot be attached"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq '.reserved_at = "2026-07-31T08:00:01Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+old_trigger_out="$("$helper" attach \
+    --state "$state" --trigger-id "$trigger_id" 2>&1)"
+old_trigger_rc=$?
+set -e
+[ "$old_trigger_rc" -eq 2 ] ||
+    fail "old trigger attachment should fail closed: $old_trigger_out"
+
+echo "==> an existing state lock serializes reservations"
+write_defaults
+rm -f "$state"
+mkdir "${state}.lock"
+set +e
+locked_out="$("$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)"
+locked_rc=$?
+set -e
+rmdir "${state}.lock"
+[ "$locked_rc" -eq 2 ] ||
+    fail "locked reservation should fail closed: $locked_out"
 
 echo "==> API failure is indeterminate"
 trigger_id=123
@@ -284,7 +322,25 @@ printf '%040d\n' 0 >"${fixtures}/head"
 run_check '2026-07-31T08:01:00Z'
 assert_status 2 head-changed
 
-echo "==> non-current Reviewed commit prefix is indeterminate"
+echo "==> a delayed previous-head Reviewed commit is ignored"
+new_cycle
+old_head="$(git -C "$repo_root" rev-parse HEAD^)"
+bad_prefix="${old_head:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$bad_prefix" \
+    '[[
+      {
+        id:101,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: no major issues\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> an unresolvable Reviewed commit prefix is indeterminate"
 new_cycle
 bad_prefix=deadbeef00
 jq -cn \
@@ -293,7 +349,7 @@ jq -cn \
     --arg prefix "$bad_prefix" \
     '[[
       {
-        id:101,user:{id:$id,login:$login},
+        id:102,user:{id:$id,login:$login},
         created_at:"2026-07-31T08:00:02Z",
         body:("Codex Review: no major issues\n\n**Reviewed commit:** `" + $prefix + "`")
       }

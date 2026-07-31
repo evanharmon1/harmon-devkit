@@ -467,11 +467,21 @@ expect_ok "new-repo guidance exposes the explicit CodeQL language matrix" \
 expect_ok "new-repo guidance exposes CodeRabbit as default off" \
     grep -qF '| `use_coderabbit` | bool | `false` |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo guidance exposes Codex cloud review as default off" \
+    grep -qF '| `use_codex_cloud_review` | bool | `false` |' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "update guidance passes one frozen reviewed-data file to preview and apply" \
     test "$(grep -Fc -- '--data-file="$REVIEWED_DATA"' \
         "$STANDARDIZE_REFS/mode-update.md")" -eq 2
 expect_ok "update guidance starts from the recorded CodeRabbit answer" \
     grep -qF ".use_coderabbit // false' .copier-answers.yml" \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance starts from the recorded Codex cloud answer" \
+    grep -qF ".use_codex_cloud_review // false' .copier-answers.yml" \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance reviews the Codex controller and conditional option" \
+    sh -c 'grep -qF "use_foreman use_codex_review use_codex_cloud_review" "$1" &&
+        grep -qF "use_foreman use_codex_review use_coderabbit" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance reads the reviewed CodeQL language matrix" \
     grep -qF "'.codeql_languages' \"\$REVIEWED_DATA\"" \
