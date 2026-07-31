@@ -45,7 +45,10 @@ fi
 # Mirrors the host dotfiles policy (harmon-dotfiles ADR 0002).
 # insteadOf is multi-valued, so reset then re-add: a plain scalar set exits 5
 # ("cannot overwrite multiple values") on re-run and would fail post-create.
-git config --global --unset-all url."https://github.com/".insteadOf || true
+# Unset with --fixed-value so only the two managed values are removed — a
+# whole-key --unset-all would delete user-defined aliases (e.g. github:).
+git config --global --fixed-value --unset-all url."https://github.com/".insteadOf "git@github.com:" || true
+git config --global --fixed-value --unset-all url."https://github.com/".insteadOf "ssh://git@github.com/" || true
 git config --global --add url."https://github.com/".insteadOf "git@github.com:"
 git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
 
