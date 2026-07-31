@@ -12,7 +12,14 @@ bin_dir="${test_tmp}/bin"
 fixtures="${test_tmp}/fixtures"
 state="${test_tmp}/state.json"
 log="${test_tmp}/gh.log"
+test_repo="${test_tmp}/repo"
 mkdir -p "$bin_dir" "$fixtures"
+git init -q "$test_repo"
+git -C "$test_repo" config user.name "Shepherd Test"
+git -C "$test_repo" config user.email "shepherd-test@example.invalid"
+git -C "$test_repo" commit -q --allow-empty -m "previous head"
+git -C "$test_repo" commit -q --allow-empty -m "current head"
+cd "$test_repo"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -60,7 +67,7 @@ export PATH="${bin_dir}:$PATH"
 export GH_FIXTURES="$fixtures"
 export GH_LOG="$log"
 
-head_sha="$(git -C "$repo_root" rev-parse HEAD)"
+head_sha="$(git rev-parse HEAD)"
 actor_id=199175422
 actor_login='chatgpt-codex-connector[bot]'
 request_time='2026-07-31T08:00:00Z'
@@ -324,7 +331,7 @@ assert_status 2 head-changed
 
 echo "==> a delayed previous-head Reviewed commit is ignored"
 new_cycle
-old_head="$(git -C "$repo_root" rev-parse HEAD^)"
+old_head="$(git rev-parse HEAD^)"
 bad_prefix="${old_head:0:10}"
 jq -cn \
     --argjson id "$actor_id" \
