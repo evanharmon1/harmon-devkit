@@ -43,7 +43,10 @@ fi
 # forwarded into human ones). HTTPS auth comes from gh (GH_TOKEN, above) in
 # bot/Coder profiles, or VS Code's forwarded host credential helper on attach.
 # Mirrors the host dotfiles policy (harmon-dotfiles ADR 0002).
-git config --global url."https://github.com/".insteadOf "git@github.com:"
+# insteadOf is multi-valued, so reset then re-add: a plain scalar set exits 5
+# ("cannot overwrite multiple values") on re-run and would fail post-create.
+git config --global --unset-all url."https://github.com/".insteadOf || true
+git config --global --add url."https://github.com/".insteadOf "git@github.com:"
 git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
 
 echo "Git user: $(git config --global user.name)"
