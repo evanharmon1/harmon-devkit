@@ -431,6 +431,7 @@ done
 echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+SHEPHERD_SKILL="$repo/ai/skills/universal/shepherd/SKILL.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
     grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
@@ -470,6 +471,9 @@ expect_ok "new-repo guidance exposes CodeRabbit as default off" \
 expect_ok "new-repo guidance exposes Codex cloud review as default off" \
     grep -qF '| `use_codex_cloud_review` | bool | `false` |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo guidance requires the Codex classifier prerequisites" \
+    grep -qF '`use_skills_sync=true`, `universal` in `skill_categories`' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "update guidance passes one frozen reviewed-data file to preview and apply" \
     test "$(grep -Fc -- '--data-file="$REVIEWED_DATA"' \
         "$STANDARDIZE_REFS/mode-update.md")" -eq 2
@@ -481,8 +485,15 @@ expect_ok "update guidance starts from the recorded Codex cloud answer" \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance reviews the Codex controller and conditional option" \
     sh -c 'grep -qF "use_foreman use_codex_review use_codex_cloud_review" "$1" &&
-        grep -qF "use_foreman use_codex_review use_coderabbit" "$1"' sh \
+        grep -qF "use_foreman use_codex_review use_skills_sync" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance rejects missing Codex classifier prerequisites" \
+    sh -c 'grep -qF "use_codex_cloud_review requires use_skills_sync" "$1" &&
+        grep -qF "use_codex_cloud_review requires the universal skill category" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "shepherd starts Codex attempts only after checks settle" \
+    grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
+    "$SHEPHERD_SKILL"
 expect_ok "update guidance reads the reviewed CodeQL language matrix" \
     grep -qF "'.codeql_languages' \"\$REVIEWED_DATA\"" \
     "$STANDARDIZE_REFS/mode-update.md"

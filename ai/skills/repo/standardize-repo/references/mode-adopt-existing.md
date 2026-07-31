@@ -80,7 +80,9 @@ Defaults worth knowing so you only override what's wrong (from `copier.yml`):
   deliberately retaining the CodeRabbit GitHub App.
 - `use_codex_cloud_review` defaults to **no**. Keep it false unless the
   maintainer deliberately opts into the Codex GitHub integration, has suitable
-  plan availability, and grants explicit connector access for a private repo.
+  plan availability, grants explicit connector access for a private repo, and
+  also selects `use_skills_sync=true` with `universal` in `skill_categories` so
+  the required shepherd classifier is installed.
 - **All side-effect answers must stay `no`** when adopting: `git_init`,
   `github_remote_create`, `github_release_init`, `bunch_add`,
   `obsidian_project_add`, `run_task_install`. The repo already exists and has a

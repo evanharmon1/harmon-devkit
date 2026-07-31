@@ -146,9 +146,11 @@ something to ask permission for.
   finding, a top-level result naming an unambiguous prefix of that head, or a
   👍 on the exact `@codex review` trigger comment reserved for that head.
   Stale verdicts never transfer across pushes. Trigger at most twice per head,
-  waiting 10–15 minutes after checks settle for each attempt; after the second
-  unavailable or indeterminate attempt, stop and escalate rather than falling
-  back to CI alone. Persist the head, attempt, and exact trigger-comment ID so
+  waiting 10–15 minutes after checks settle for each attempt. Do not reserve or
+  post an attempt before every required check has settled. After the second
+  unavailable attempt, or immediately on an indeterminate condition that needs
+  reconciliation, stop and escalate rather than falling back to CI alone.
+  Persist the head, attempt, and exact trigger-comment ID so
   a resumed session cannot duplicate a request. This cap is independent of
   the other loop caps. **Only one active shepherd may own a PR at a time.**
   The persisted state prevents duplicate requests across interrupted or resumed

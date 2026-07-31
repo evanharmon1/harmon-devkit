@@ -295,7 +295,8 @@ finding.
 **G4. Codex cloud review selection drift.** Read
 `use_codex_cloud_review` from `.copier-answers.yml`; for legacy answers that
 omit it, use `false`. When true, `use_codex_review` must also be true and the
-rendered `AGENTS.md` plus shepherd skill must require a terminal result
+repository must set `use_skills_sync=true` with `universal` in
+`skill_categories`. The rendered `AGENTS.md` plus shepherd skill must require a terminal result
 attributable to every current PR head, preserve exact trigger-attempt state,
 and escalate after two unavailable attempts without a CI-only fallback. The
 repository cannot prove external connector access or plan/quota availability,

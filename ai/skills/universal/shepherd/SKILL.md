@@ -344,6 +344,10 @@ issue may be moved at all.
   Persist each attempt under the git directory so branch switches and resumed
   sessions cannot duplicate it:
 
+  Do not reserve or post the trigger until every required check has settled.
+  The attempt window starts when the trigger is created, so posting during CI
+  would consume the reviewer's promised post-CI response window.
+
   ```bash
   helper="$skill_dir/assets/check-codex-cloud-review.sh"
   state="$(git rev-parse --git-path "shepherd-codex/$repo/<n>.json")"
