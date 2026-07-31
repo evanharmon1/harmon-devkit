@@ -365,6 +365,13 @@ issue may be moved at all.
   comment before any new write. This separation keeps classification
   write-incapable while making the one external write explicit.
 
+  Exactly one active shepherd must own a PR at a time. The git-directory state
+  and its lock protect interrupted or concurrent work in this checkout; they
+  are not a distributed lock across separate clones, worktrees with separate
+  git directories, or machines. Never shepherd the same PR concurrently from
+  another checkout. If ownership is unclear, stop and reconcile the remote
+  trigger comments before reserving or writing anything.
+
   `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
   and 2 indeterminate. Transient read failures consume the same bounded window:
   they return pending, then retry after attempt 1 or escalate after attempt 2.

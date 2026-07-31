@@ -265,8 +265,21 @@ jq -cn \
 run_check '2026-07-31T08:16:00Z'
 assert_status 12 retry
 
+echo "==> attempt 2 cannot be reserved before attempt 1 expires"
+request_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+new_cycle
+set +e
+early_retry_out="$("$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 2>&1)"
+early_retry_rc=$?
+set -e
+[ "$early_retry_rc" -eq 2 ] ||
+    fail "early attempt-2 reservation should fail closed: $early_retry_out"
+
 trigger_id=124
 request_time='2026-07-31T08:16:01Z'
+new_cycle
 jq -cn \
     --argjson id "$trigger_id" \
     --arg created "$request_time" \
@@ -339,7 +352,7 @@ set -e
 [ "$(jq -r '.head' "$state")" = "$old_recorded_head" ] ||
     fail "head-change reservation overwrote unresolved state"
 
-echo "==> a trigger older than its reservation cannot be attached"
+echo "==> a trigger outside clock-skew tolerance cannot be attached"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 write_defaults
@@ -347,7 +360,7 @@ rm -f "$state"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >/dev/null
-jq '.reserved_at = "2026-07-31T08:00:01Z"' "$state" >"${state}.next"
+jq '.reserved_at = "2026-07-31T08:01:01Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 set +e
 old_trigger_out="$("$helper" attach \
@@ -383,6 +396,15 @@ assert_status 12 retry
 
 echo "==> a stalled GitHub call is bounded by the attempt deadline"
 new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        user:{id:$id,login:$login},
+        content:"+1",created_at:"2026-07-31T08:00:01Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
 printf '%s\n' '/reviews' >"${fixtures}/slow-endpoint"
 run_check '2026-07-31T08:01:00Z'
 assert_status 11 pending

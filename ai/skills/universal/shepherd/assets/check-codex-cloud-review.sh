@@ -53,6 +53,7 @@ actor_login='chatgpt-codex-connector[bot]'
 timeout_min=15
 now=
 lock_dir=
+clock_skew_seconds=60
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -257,6 +258,7 @@ reserve)
     valid_repo "$repo" || die "invalid repository: $repo"
     valid_uint "$pr" || die "invalid PR number: $pr"
     valid_sha "$head" || die "head must be a full 40-hex commit"
+    valid_uint "$timeout_min" || die "timeout must be a positive integer"
     case "$attempt" in 1 | 2) ;; *) die "attempt must be 1 or 2" ;; esac
     acquire_state_lock
 
@@ -297,6 +299,13 @@ reserve)
             die "attempt 1 state has an invalid cycle request time"
         valid_uint "$previous_trigger_id" ||
             die "attempt 1 state has an invalid trigger ID"
+        cycle_requested_epoch=$(jq -nr \
+            --arg value "$cycle_requested_at" '$value | fromdateiso8601') ||
+            die "cannot parse attempt 1 request time"
+        current_epoch=$(date -u '+%s')
+        [ "$current_epoch" -ge \
+            "$((cycle_requested_epoch + timeout_min * 60))" ] ||
+            die "attempt 1 window has not elapsed"
     fi
     payload=$(jq -cn \
         --arg repo "$repo" \
@@ -355,8 +364,13 @@ attach)
         ' >/dev/null || die "comment $trigger_id is not this PR's exact review trigger"
     requested_at=$(printf '%s' "$comment" | jq -er '.created_at')
     valid_time "$requested_at" || die "trigger has a malformed creation time"
-    [ "$requested_at" \> "$state_reserved" ] ||
-        [ "$requested_at" = "$state_reserved" ] ||
+    requested_epoch=$(jq -nr \
+        --arg value "$requested_at" '$value | fromdateiso8601') ||
+        die "cannot parse trigger creation time"
+    reserved_epoch=$(jq -nr \
+        --arg value "$state_reserved" '$value | fromdateiso8601') ||
+        die "cannot parse reservation time"
+    [ "$((requested_epoch + clock_skew_seconds))" -ge "$reserved_epoch" ] ||
         die "trigger predates this reservation"
 
     payload=$(jq \

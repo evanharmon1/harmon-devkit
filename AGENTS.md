@@ -150,7 +150,12 @@ something to ask permission for.
   unavailable or indeterminate attempt, stop and escalate rather than falling
   back to CI alone. Persist the head, attempt, and exact trigger-comment ID so
   a resumed session cannot duplicate a request. This cap is independent of
-  the other loop caps. If checks still fail or findings remain after 5 rounds,
+  the other loop caps. **Only one active shepherd may own a PR at a time.**
+  The persisted state prevents duplicate requests across interrupted or resumed
+  sessions in the same checkout; it is not a distributed lock across separate
+  checkouts or machines. Do not shepherd the same PR concurrently elsewhere.
+  If ownership is ambiguous, stop and reconcile the remote trigger history
+  before continuing. If checks still fail or findings remain after 5 rounds,
   stop and summarize what's unresolved on the PR for the maintainer. Where the
   vendored `/shepherd` skill states a different cap or exit condition, **this
   file wins** — vendored skills are synced on their own release cadence and
