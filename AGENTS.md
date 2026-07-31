@@ -141,21 +141,30 @@ something to ask permission for.
   must pass `task ci` (the full local CI mirror — it gates the same stages the
   remote pipeline judges) before each push; the local challenge/review loops
   are not re-entered — the post-push cloud/bot review is the second-model
-  check at this stage. This cap is independent of the other loop caps. If
-  checks still fail or findings remain after 5 rounds, stop and summarize
-  what's unresolved on the PR for the maintainer. Where the vendored
-  `/shepherd` skill states a different cap or exit condition, **this file
-  wins** — vendored skills are synced on their own release cadence and can lag
-  a policy change made here.
+  check at this stage. When Codex cloud review is enabled, every pushed head
+  needs its own terminal authenticated result: an exact-head review or inline
+  finding, a top-level result naming an unambiguous prefix of that head, or a
+  👍 on the exact `@codex review` trigger comment reserved for that head.
+  Stale verdicts never transfer across pushes. Trigger at most twice per head,
+  waiting 10–15 minutes after checks settle for each attempt; after the second
+  unavailable or indeterminate attempt, stop and escalate rather than falling
+  back to CI alone. Persist the head, attempt, and exact trigger-comment ID so
+  a resumed session cannot duplicate a request. This cap is independent of
+  the other loop caps. If checks still fail or findings remain after 5 rounds,
+  stop and summarize what's unresolved on the PR for the maintainer. Where the
+  vendored `/shepherd` skill states a different cap or exit condition, **this
+  file wins** — vendored skills are synced on their own release cadence and
+  can lag a policy change made here.
 - **Checks green is a non-terminal state.** Reporting "all checks pass"
   without having polled reviews and inline comments is not a handoff — it is
   the middle of the shepherd stage. Bot and human reviews land *after* checks
   settle, so `gh pr checks --watch` returns at exactly the moment the review
   has not run yet: an empty comment list read at that instant means "not
   reviewed yet", not "nothing to answer". Wait for **both** signals before
-  judging the PR done — `/shepherd` step 2 bounds the wait (let every check
-  conclude, then give the reviewer ~10–15 minutes on the current head, and
-  proceed on CI alone only if nothing lands in that window).
+  judging the PR done. `/shepherd` step 2 bounds the wait and defines the
+  current-head classifier. If Codex cloud review is enabled, absence of a
+  terminal current-head result after its two bounded attempts is an
+  escalation, never permission to proceed on CI alone.
 - **Stop at green.** Once checks pass *and* no review findings are unresolved,
   report that and stop — merging is always a human decision.
 
@@ -214,10 +223,10 @@ Setup and mechanics: [docs/guides/codex-review.md](docs/guides/codex-review.md).
   past a BLOCK** — adjudicate the finding or escalate to the maintainer instead.
 
 These tasks slot into the **Dev Loop** above: after `task verify` goes green,
-before `task ci`. If Codex cloud review is also connected to the repo, it
-reviews PRs too — it posts inline comments only for high-priority findings;
-a bare 👍 reaction from the Codex bot is its clean pass, and a lone 👀 that
-never resolves means the cloud run failed.
+before `task ci`. If Codex cloud review is enabled for the repo, shepherding
+also requires a terminal result attributable to the current PR head. The
+canonical `/shepherd` skill owns the exact classifier and persistent
+two-attempt procedure; PR-level or stale reactions do not satisfy it.
 
 **Treat Codex findings as hypotheses, not authority.** For every finding:
 

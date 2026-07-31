@@ -17,7 +17,8 @@ Verify before running anything:
       authenticated: `gh auth status`).
 - [ ] **Released template ref chosen.** Production scaffolds use the canonical
       GitHub source and a deliberately selected release tag whose template
-      defines `use_coderabbit`. A local checkout is needed only to inspect source
+      defines `use_coderabbit` and `use_codex_cloud_review`. A local checkout is
+      needed only to inspect source
       or preview unreleased work.
 - [ ] **Destination does not already exist / is empty.** Copier writes into
       `<dest>`; pick a path that is free.
@@ -35,7 +36,7 @@ The `--trust` flag is required: it allows copier to run the `_tasks` (git init,
 commit, etc.) defined in `copier.yml`.
 
 ```bash
-: "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit}"
+: "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit and use_codex_cloud_review}"
 HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
 git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
   '+refs/heads/main:refs/remotes/origin/main' --tags ||
@@ -54,13 +55,17 @@ HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{comm
 git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
+  grep -q '^use_codex_cloud_review:' ||
+  { echo "HARMON_INIT_REF does not support the Codex cloud review choice" >&2; exit 1; }
 copier copy "$HARMON_INIT_SOURCE" <dest> \
   --trust --vcs-ref="$HARMON_INIT_COMMIT"
 ```
 
-Choose `use_coderabbit=false` at the prompt unless this repository is
-deliberately retaining the CodeRabbit App. Do not use a moving branch for
-production lineage. The guard resolves the remote-verified release tag to
+Choose `use_codex_cloud_review=false` and `use_coderabbit=false` at the prompts
+unless this repository is deliberately opting into those external services.
+Do not use a moving branch for production lineage. The guard resolves the
+remote-verified release tag to
 `HARMON_INIT_COMMIT` before Copier runs, so a later retag cannot change which
 trusted template tasks execute.
 For an unreleased template preview only, a developer may render a local checkout
@@ -77,7 +82,7 @@ questions all default to `no`, so omitting them is safe in CI. Add `--defaults`
 to accept the default for any key you do not pass.
 
 ```bash
-: "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit}"
+: "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit and use_codex_cloud_review}"
 HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
 git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
   '+refs/heads/main:refs/remotes/origin/main' --tags ||
@@ -96,6 +101,9 @@ HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{comm
 git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
+  grep -q '^use_codex_cloud_review:' ||
+  { echo "HARMON_INIT_REF does not support the Codex cloud review choice" >&2; exit 1; }
 copier copy "$HARMON_INIT_SOURCE" <dest> \
   --trust --vcs-ref="$HARMON_INIT_COMMIT" --defaults \
   --data project_name="My Project" \
@@ -106,6 +114,7 @@ copier copy "$HARMON_INIT_SOURCE" <dest> \
   --data include_terraform=false \
   --data include_ansible=false \
   --data use_codeql=false \
+  --data use_codex_cloud_review=false \
   --data use_coderabbit=false \
   --data ci_runner="ubuntu-latest" \
   --data license="mit" \
@@ -119,7 +128,8 @@ copier copy "$HARMON_INIT_SOURCE" <dest> \
   --data run_task_install=false
 ```
 
-The `use_coderabbit` answer is introduced by the companion harmon-init change.
+The `use_codex_cloud_review` and `use_coderabbit` answers are introduced by
+companion harmon-init changes.
 Release this skill first so harmon-init can refresh its pinned vendored copy,
 then merge and release the harmon-init change. Until that supporting template
 release exists, this command intentionally stops at the guard above. Do not
@@ -140,6 +150,7 @@ predate the question and render CodeRabbit unconditionally.
 | `use_codeql` | bool | `true` for `web-astro` / `web-app`; otherwise `false` | Includes CodeQL SAST. Public repositories have Code Security by default; for a private/internal repo, enable GitHub Code Security first or answer `false`. |
 | `codeql_languages` | multiselect | JS/TS for web; Python for supported Python/IaC selections when CodeQL is enabled | Exact CodeQL matrix; must be nonempty when `use_codeql=true` and should match real first-party source. |
 | `use_codex_review` | bool | `false` | Adds local, advisory Codex review/challenge tasks and the optional Claude → Codex stop-gate. |
+| `use_codex_cloud_review` | bool | `false` | Requires a terminal current-head Codex cloud result during shepherding. Requires `use_codex_review=true`, a maintainer-connected GitHub integration, and explicit private-repository connector permission; availability and quotas depend on the maintainer's ChatGPT plan, so free-tier access is not assumed. |
 | `use_coderabbit` | bool | `false` | Adds `.coderabbit.yaml`, App setup instructions, and CodeRabbit bot trust. Requires an account/App install; public OSS hosted reviews are free with rate limits, while private hosted code reviews require a paid plan after the trial. |
 | `ci_runner` | str | `ubuntu-latest` | `ubuntu-latest` \| `self-hosted`. |
 | `license` | str | `mit` | `mit` \| `private`. |

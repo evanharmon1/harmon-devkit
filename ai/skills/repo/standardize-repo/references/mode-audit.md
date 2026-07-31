@@ -47,7 +47,8 @@ canonical remote itself — and it refuses to run at all on a repo with no
      [copier-gotchas.md](./copier-gotchas.md) gotcha 8 / [mode-update.md](./mode-update.md) §2).
    - Absent → it was never templated (or was adopted by a raw `copier copy`).
      Reconciling the templated bits means a fresh adopt, but only from a released
-     harmon-init tag whose `copier.yml` defines `use_coderabbit`. Use the
+     harmon-init tag whose `copier.yml` defines `use_coderabbit` and
+     `use_codex_cloud_review`. Use the
      `HARMON_INIT_REF` guard and explicit answer in
      [mode-adopt-existing.md](./mode-adopt-existing.md), Path B; older releases
      render CodeRabbit unconditionally. Treat every catalog area as
@@ -290,6 +291,19 @@ files cannot prove or revoke external App access, so record that live access
 check as `?` until a human confirms it. Stale local config/trust is a
 **should** finding; an omitted App-access confirmation is a **should** manual
 finding.
+
+**G4. Codex cloud review selection drift.** Read
+`use_codex_cloud_review` from `.copier-answers.yml`; for legacy answers that
+omit it, use `false`. When true, `use_codex_review` must also be true and the
+rendered `AGENTS.md` plus shepherd skill must require a terminal result
+attributable to every current PR head, preserve exact trigger-attempt state,
+and escalate after two unavailable attempts without a CI-only fallback. The
+repository cannot prove external connector access or plan/quota availability,
+so record those as human-verifiable `?` items (including explicit connector
+permission for private repositories). When false, the required Codex cloud
+signal and its setup instructions must be absent. Stale policy or an
+unreviewed legacy opt-in is a **should** finding; an unsatisfiable required
+signal is a blocker.
 
 **H. lint-hygiene script portability to macOS bash 3.2.** `scripts/lint-hygiene.sh`
 must be portable: **no `mapfile`, no `grep -P`** (both Linux/bash-4-only), and it
@@ -549,13 +563,15 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
      - Generated from the template (has `.copier-answers.yml`):
 
        Follow [`mode-update.md`](./mode-update.md) end to end so the release and
-       explicit CodeRabbit choice are identical in preview and apply.
+       explicit Codex cloud review and CodeRabbit choices are identical in
+       preview and apply.
 
      - Never templated / adopting fresh:
 
        Follow Path B in
        [`mode-adopt-existing.md`](./mode-adopt-existing.md), including its
-       remote-tag validation and explicit `use_coderabbit` answer.
+       remote-tag validation and explicit `use_codex_cloud_review` and
+       `use_coderabbit` answers.
 
      A local `--vcs-ref=HEAD` render is appropriate for a disposable pre-release
      preview, not the production adoption, because dirty work can record an

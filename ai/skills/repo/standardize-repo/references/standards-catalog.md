@@ -742,6 +742,10 @@ install the Renovate GitHub App on the repo. Conventions:
   to main.** **[manual]** to actually cut a release.
 - Other root files: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`
   (mit/private), `<slug>.code-workspace`, `.vscode/{settings,extensions}.json`,
+  the current-head Codex cloud shepherd contract only when
+  `use_codex_cloud_review=true` (requires `use_codex_review=true`; **[manual]**
+  connect the GitHub integration, confirm plan/quota availability, and grant
+  explicit connector permission for a private repository),
   `.coderabbit.yaml` only when `use_coderabbit=true` (CodeRabbit reviews —
   [manual] install the app),
   `.github/PULL_REQUEST_TEMPLATE.md`, the `.github/ISSUE_TEMPLATE/` YAML **Issue

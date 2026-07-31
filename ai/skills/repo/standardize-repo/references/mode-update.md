@@ -196,6 +196,9 @@ git -C ~/git/harmon-init merge-base --is-ancestor \
 git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "latest harmon-init release does not support the CodeRabbit choice" >&2; exit 1; }
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
+  grep -q '^use_codex_cloud_review:' ||
+  { echo "latest harmon-init release does not support the Codex cloud review choice" >&2; exit 1; }
 git -C ~/git/harmon-init diff \
   "$RECORDED_COMMIT".."$HARMON_INIT_COMMIT" -- copier.yml
 ```
@@ -371,6 +374,14 @@ important for a feature with a material footprint or an external capability:
   retaining CodeRabbit. The false path removes `.coderabbit.yaml` and bot trust,
   but a human must also remove the repository from the CodeRabbit App
   installation because deleting repository files does not revoke App access.
+- `use_codex_cloud_review` adds a required external shepherd signal and defaults
+  off. It is active only when `use_codex_review=true`; when active, review it
+  explicitly and keep it false unless the maintainer has connected Codex cloud
+  review, accepts plan-dependent availability/quotas, and has granted explicit
+  connector permission for a private repository. Legacy omission starts false.
+  Enabling it changes the PR exit contract: a current-head terminal Codex result
+  is required, with escalation after two unavailable attempts rather than a
+  CI-only fallback.
 - `use_codeql` includes CodeQL only when the matrix corresponds to planned/actual
   first-party JS/TS/Python source. `use_node` / `use_python` are tooling flags,
   not source evidence; review and persist the explicit `codeql_languages`

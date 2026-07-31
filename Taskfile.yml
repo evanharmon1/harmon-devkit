@@ -64,6 +64,7 @@ tasks:
       - task: test:tasks
       - task: test:ci-results
       - task: test:codex-review
+      - task: test:shepherd-codex
       - task: test:release-title
       - task: test:notify-release
       - task: test:hooks
@@ -240,6 +241,11 @@ tasks:
     desc: Unit-test codex-review.sh target selection (offline, stubbed codex)
     cmds:
       - ./scripts/test-codex-review.sh
+
+  test:shepherd-codex:
+    desc: Unit-test current-head Codex cloud-review evidence (offline, stubbed gh)
+    cmds:
+      - ./scripts/test-shepherd-codex.sh
 
   test:release-title:
     desc: Unit-test the release-content title guard (require-release-title.sh)
