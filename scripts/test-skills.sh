@@ -497,6 +497,9 @@ expect_fail "update guidance does not preseed reviewed skill categories" \
 expect_ok "shepherd starts Codex attempts only after checks settle" \
     grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
     "$SHEPHERD_SKILL"
+expect_fail "Codex classifier does not add an undeclared Perl dependency" \
+    grep -qF 'need perl' \
+    "$repo/ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
 expect_ok "update guidance reads the reviewed CodeQL language matrix" \
     grep -qF "'.codeql_languages' \"\$REVIEWED_DATA\"" \
     "$STANDARDIZE_REFS/mode-update.md"

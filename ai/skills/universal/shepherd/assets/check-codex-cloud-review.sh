@@ -36,7 +36,15 @@ need() {
 
 need gh
 need jq
-need perl
+
+timeout_bin=
+if command -v timeout >/dev/null 2>&1; then
+    timeout_bin=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin=gtimeout
+else
+    die "GNU timeout is required (coreutils; gtimeout on macOS)"
+fi
 
 command_name="${1:-}"
 [ -n "$command_name" ] || usage
@@ -115,28 +123,7 @@ run_gh() {
             call_timeout=$remaining
         fi
     fi
-    perl -e '
-      $seconds = shift;
-      $pid = fork;
-      defined $pid or exit 127;
-      if (!$pid) { exec @ARGV; exit 127 }
-      setpgrp($pid, $pid) or do {
-        kill 9, $pid;
-        waitpid $pid, 0;
-        exit 127;
-      };
-      $SIG{ALRM} = sub {
-        kill 9, -$pid;
-        kill 9, $pid;
-        waitpid $pid, 0;
-        exit 124;
-      };
-      alarm $seconds;
-      waitpid $pid, 0;
-      alarm 0;
-      $status = $?;
-      exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
-    ' "$call_timeout" gh "$@"
+    "$timeout_bin" -k 1 "$call_timeout" gh "$@"
 }
 
 write_state() {
