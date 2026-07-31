@@ -366,11 +366,15 @@ issue may be moved at all.
   write-incapable while making the one external write explicit.
 
   `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
-  and 2 indeterminate. Poll pending within a bounded 10–15-minute window
-  after checks settle. On retry, repeat reserve/write/attach once with
-  `--attempt 2`; on escalate or indeterminate, stop for the maintainer. Every
-  push creates a new head and resets this procedure to attempt 1. There is no
-  CI-only fallback when this option is enabled.
+  and 2 indeterminate. Transient read failures consume the same bounded window:
+  they return pending, then retry after attempt 1 or escalate after attempt 2.
+  Exit 2 is reserved for invalid state, identity, metadata, or a changed head;
+  stop and reconcile that condition rather than spending another trigger.
+  Poll pending within a bounded 10–15-minute window after checks settle. On
+  retry, repeat reserve/write/attach once with `--attempt 2`; on escalate or
+  indeterminate, stop for the maintainer. Every push creates a new head and
+  resets this procedure to attempt 1. There is no CI-only fallback when this
+  option is enabled.
 - Wait for **both** signals before deciding anything: let every check
   conclude (bounded — if a check hangs past ~30 minutes, treat it as a
   failure to diagnose, not something to wait on forever), and finish the

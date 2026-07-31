@@ -125,7 +125,11 @@ read_state() {
       (.pr | type == "number") and
       (.head | type == "string") and
       (.attempt == 1 or .attempt == 2) and
-      (.phase == "reserved" or .phase == "attached")
+      (.phase == "reserved" or .phase == "attached") and
+      (.cycle_requested_at == null or
+        (.cycle_requested_at | type == "string")) and
+      (.previous_trigger_comment_id == null or
+        (.previous_trigger_comment_id | type == "number"))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
 
@@ -155,6 +159,32 @@ emit() {
         '{status:$status,detail:$detail,head:$head,attempt:$attempt}'
 }
 
+bounded_wait() {
+    detail=$1
+    if [ -z "$now" ]; then
+        now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    fi
+    valid_time "$now" || die "--now must be an ISO-8601 UTC second"
+    requested_epoch=$(jq -nr \
+        --arg value "$state_requested" '$value | fromdateiso8601') ||
+        die "cannot parse request time"
+    now_epoch=$(jq -nr --arg value "$now" '$value | fromdateiso8601') ||
+        die "cannot parse current time"
+    [ "$now_epoch" -ge "$requested_epoch" ] || die "--now predates the request"
+    elapsed=$((now_epoch - requested_epoch))
+    timeout_seconds=$((timeout_min * 60))
+    if [ "$elapsed" -lt "$timeout_seconds" ]; then
+        emit pending "$detail"
+        exit 11
+    fi
+    if [ "$state_attempt" = "1" ]; then
+        emit retry "$detail; attempt 1 window elapsed"
+        exit 12
+    fi
+    emit escalate "$detail; both attempt windows elapsed"
+    exit 13
+}
+
 flatten_pages() {
     source_file=$1
     destination_file=$2
@@ -169,7 +199,23 @@ fetch_pages() {
     if ! gh api --paginate --slurp "$endpoint" >"$raw"; then
         return 1
     fi
-    flatten_pages "$raw" "$destination" 2>/dev/null || return 1
+    flatten_pages "$raw" "$destination" 2>/dev/null || return 2
+}
+
+fetch_evidence() {
+    endpoint=$1
+    destination=$2
+    label=$3
+    fetch_status=0
+    fetch_pages "$endpoint" "$destination" || fetch_status=$?
+    case "$fetch_status" in
+    0) return ;;
+    1) bounded_wait "cannot fetch paginated $label" ;;
+    *)
+        emit indeterminate "paginated $label data is malformed"
+        exit 2
+        ;;
+    esac
 }
 
 case "$command_name" in
@@ -211,16 +257,31 @@ reserve)
     fi
 
     reserved_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    cycle_requested_at=
+    previous_trigger_id=null
+    if [ "$attempt" = "2" ]; then
+        cycle_requested_at=$(jq -r '.cycle_requested_at' "$state_file")
+        previous_trigger_id=$(jq -r '.trigger_comment_id' "$state_file")
+        valid_time "$cycle_requested_at" ||
+            die "attempt 1 state has an invalid cycle request time"
+        valid_uint "$previous_trigger_id" ||
+            die "attempt 1 state has an invalid trigger ID"
+    fi
     payload=$(jq -cn \
         --arg repo "$repo" \
         --argjson pr "$pr" \
         --arg head "$head" \
         --argjson attempt "$attempt" \
         --arg reserved_at "$reserved_at" \
+        --arg cycle_requested_at "$cycle_requested_at" \
+        --argjson previous_trigger_id "$previous_trigger_id" \
         '{
           version:1,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
-          trigger_comment_id:null,requested_at:null
+          trigger_comment_id:null,requested_at:null,
+          cycle_requested_at:
+            (if $cycle_requested_at == "" then null else $cycle_requested_at end),
+          previous_trigger_comment_id:$previous_trigger_id
         }')
     write_state "$state_file" "$payload"
     release_state_lock
@@ -272,7 +333,8 @@ attach)
         --arg requested_at "$requested_at" '
           .phase = "attached" |
           .trigger_comment_id = $id |
-          .requested_at = $requested_at
+          .requested_at = $requested_at |
+          .cycle_requested_at = (.cycle_requested_at // $requested_at)
         ' "$state_file")
     write_state "$state_file" "$payload"
     release_state_lock
@@ -301,12 +363,16 @@ check)
     }
     state_trigger=$(jq -r '.trigger_comment_id' "$state_file")
     state_requested=$(jq -r '.requested_at' "$state_file")
+    cycle_requested=$(jq -r '.cycle_requested_at' "$state_file")
+    previous_trigger=$(jq -r '.previous_trigger_comment_id // empty' "$state_file")
     valid_uint "$state_trigger" || die "state has an invalid trigger ID"
     valid_time "$state_requested" || die "state has an invalid request time"
+    valid_time "$cycle_requested" || die "state has an invalid cycle request time"
+    [ -z "$previous_trigger" ] || valid_uint "$previous_trigger" ||
+        die "state has an invalid previous trigger ID"
 
     first_head=$(provider_head "$state_pr" "$state_repo") || {
-        emit indeterminate "cannot fetch the current open PR head"
-        exit 2
+        bounded_wait "cannot fetch the current open PR head"
     }
     [ "$first_head" = "$state_head" ] || {
         emit head-changed "recorded evidence belongs to an older PR head"
@@ -317,8 +383,7 @@ check)
     trap 'rm -rf "$workdir"' EXIT
 
     actor=$(gh api "users/$actor_login") || {
-        emit indeterminate "cannot authenticate the configured Codex actor"
-        exit 2
+        bounded_wait "cannot authenticate the configured Codex actor"
     }
     printf '%s' "$actor" | jq -e \
         --argjson id "$actor_id" \
@@ -330,8 +395,7 @@ check)
     }
 
     trigger=$(gh api "repos/$state_repo/issues/comments/$state_trigger") || {
-        emit indeterminate "cannot re-fetch the exact trigger comment"
-        exit 2
+        bounded_wait "cannot re-fetch the exact trigger comment"
     }
     printf '%s' "$trigger" | jq -e \
         --argjson id "$state_trigger" \
@@ -345,35 +409,32 @@ check)
         exit 2
     }
 
-    fetch_pages \
+    fetch_evidence \
         "repos/$state_repo/issues/comments/$state_trigger/reactions?per_page=100" \
-        "$workdir/reactions.json" ||
-        {
-            emit indeterminate "cannot fetch paginated exact-trigger reactions"
-            exit 2
-        }
-    fetch_pages "repos/$state_repo/issues/$state_pr/comments?per_page=100" \
-        "$workdir/comments.json" ||
-        {
-            emit indeterminate "cannot fetch paginated PR conversation comments"
-            exit 2
-        }
-    fetch_pages "repos/$state_repo/pulls/$state_pr/reviews?per_page=100" \
-        "$workdir/reviews.json" ||
-        {
-            emit indeterminate "cannot fetch paginated PR reviews"
-            exit 2
-        }
-    fetch_pages "repos/$state_repo/pulls/$state_pr/comments?per_page=100" \
-        "$workdir/inline.json" ||
-        {
-            emit indeterminate "cannot fetch paginated inline comments"
-            exit 2
-        }
+        "$workdir/current-reactions.json" \
+        "exact-trigger reactions"
+    printf '%s\n' '[]' >"$workdir/previous-reactions.json"
+    if [ -n "$previous_trigger" ]; then
+        fetch_evidence \
+            "repos/$state_repo/issues/comments/$previous_trigger/reactions?per_page=100" \
+            "$workdir/previous-reactions.json" \
+            "previous-trigger reactions"
+    fi
+    jq -s 'add' \
+        "$workdir/current-reactions.json" \
+        "$workdir/previous-reactions.json" >"$workdir/reactions.json"
+    fetch_evidence \
+        "repos/$state_repo/issues/$state_pr/comments?per_page=100" \
+        "$workdir/comments.json" "PR conversation comments"
+    fetch_evidence \
+        "repos/$state_repo/pulls/$state_pr/reviews?per_page=100" \
+        "$workdir/reviews.json" "PR reviews"
+    fetch_evidence \
+        "repos/$state_repo/pulls/$state_pr/comments?per_page=100" \
+        "$workdir/inline.json" "inline comments"
 
     second_head=$(provider_head "$state_pr" "$state_repo") || {
-        emit indeterminate "cannot re-fetch the PR head before verdict"
-        exit 2
+        bounded_wait "cannot re-fetch the PR head before verdict"
     }
     [ "$second_head" = "$state_head" ] || {
         emit head-changed "PR head changed while evidence was being fetched"
@@ -398,7 +459,7 @@ check)
 
     inline_findings=$(jq \
         --argjson id "$actor_id" \
-        --arg requested "$state_requested" \
+        --arg requested "$cycle_requested" \
         --arg head "$state_head" '
           [.[] | select(
             .user.id? == $id and
@@ -413,17 +474,18 @@ check)
 
     review_result=$(jq -r \
         --argjson id "$actor_id" \
-        --arg requested "$state_requested" \
+        --arg requested "$cycle_requested" \
         --arg head "$state_head" '
+          def clean_result:
+            ((.body // "") | split("\n")[0] |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "") |
+              ascii_downcase) ==
+            "codex review: didn\u0027t find any major issues.";
           [.[] | select(
             .user.id? == $id and
             (.submitted_at? >= $requested) and
             (.commit_id? == $head)
-          ) |
-            if ((.body // "") | test(
-              "didn.t find any major issues|no major issues|no findings";
-              "i"
-            )) then "clean" else "findings" end
+          ) | if clean_result then "clean" else "findings" end
           ] |
           if index("findings") then "findings"
           elif index("clean") then "clean"
@@ -437,7 +499,12 @@ check)
     comment_candidates="$workdir/comment-candidates.tsv"
     jq -r \
         --argjson id "$actor_id" \
-        --arg requested "$state_requested" '
+        --arg requested "$cycle_requested" '
+          def clean_result:
+            ((.body // "") | split("\n")[0] |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "") |
+              ascii_downcase) ==
+            "codex review: didn\u0027t find any major issues.";
           .[] | select(.user.id? == $id and (.created_at? >= $requested)) |
           ((.body // "") |
             try match(
@@ -447,10 +514,7 @@ check)
           select($prefix != "") |
           [
             $prefix,
-            (if ((.body // "") | test(
-              "didn.t find any major issues|no major issues|no findings";
-              "i"
-            )) then "clean" else "findings" end),
+            (if clean_result then "clean" else "findings" end),
             (.id | tostring)
           ] | @tsv
         ' "$workdir/comments.json" >"$comment_candidates"
@@ -462,6 +526,9 @@ check)
             emit indeterminate "bot review comment contains a malformed commit prefix"
             exit 2
         }
+        prefix_lower=$(printf '%s' "$prefix" | tr '[:upper:]' '[:lower:]')
+        head_lower=$(printf '%s' "$state_head" | tr '[:upper:]' '[:lower:]')
+        case "$head_lower" in "$prefix_lower"*) ;; *) continue ;; esac
         resolved=$(git rev-parse --verify "${prefix}^{commit}" 2>/dev/null || true)
         [ -n "$resolved" ] || {
             emit indeterminate "bot review comment is not unambiguously bound to the current head"
@@ -487,7 +554,7 @@ check)
 
     exact_like=$(jq \
         --argjson id "$actor_id" \
-        --arg requested "$state_requested" '
+        --arg requested "$cycle_requested" '
           [.[] | select(
             .user.id? == $id and
             .content? == "+1" and
@@ -499,27 +566,7 @@ check)
         exit 0
     fi
 
-    if [ -z "$now" ]; then
-        now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-    fi
-    valid_time "$now" || die "--now must be an ISO-8601 UTC second"
-    requested_epoch=$(jq -nr --arg value "$state_requested" '$value | fromdateiso8601') ||
-        die "cannot parse request time"
-    now_epoch=$(jq -nr --arg value "$now" '$value | fromdateiso8601') ||
-        die "cannot parse current time"
-    [ "$now_epoch" -ge "$requested_epoch" ] || die "--now predates the request"
-    elapsed=$((now_epoch - requested_epoch))
-    timeout_seconds=$((timeout_min * 60))
-    if [ "$elapsed" -lt "$timeout_seconds" ]; then
-        emit pending "no terminal current-head evidence yet"
-        exit 11
-    fi
-    if [ "$state_attempt" = "1" ]; then
-        emit retry "attempt 1 completed without terminal current-head evidence"
-        exit 12
-    fi
-    emit escalate "two attempts completed without terminal current-head evidence"
-    exit 13
+    bounded_wait "no terminal current-head evidence yet"
     ;;
 
 *) usage ;;

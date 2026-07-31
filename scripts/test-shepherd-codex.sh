@@ -206,6 +206,23 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
 
+echo "==> a finding that quotes clean-result text remains a finding"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:100,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"P1: code can emit Codex Review: Didn\u0027t find any major issues."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
 echo "==> incomplete attempt retries once, then escalates"
 new_cycle
 jq -cn \
@@ -237,6 +254,21 @@ jq --arg reserved "$request_time" '.reserved_at = $reserved' \
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
 printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:78,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:10:00Z",
+        body:("P1: late attempt-one finding\n\n**Reviewed commit:** `" +
+          ($head[0:10]) + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:17:00Z'
+assert_status 10 findings
+printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:32:01Z'
 assert_status 13 escalate
 
@@ -296,13 +328,15 @@ rmdir "${state}.lock"
 [ "$locked_rc" -eq 2 ] ||
     fail "locked reservation should fail closed: $locked_out"
 
-echo "==> API failure is indeterminate"
+echo "==> transient API failure stays within the attempt budget"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 new_cycle
 printf '%s\n' '/reviews' >"${fixtures}/fail-endpoint"
 run_check '2026-07-31T08:01:00Z'
-assert_status 2 indeterminate
+assert_status 11 pending
+run_check '2026-07-31T08:16:00Z'
+assert_status 12 retry
 
 echo "==> unexpected actor identity is indeterminate"
 new_cycle
@@ -347,7 +381,7 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 11 pending
 
-echo "==> an unresolvable Reviewed commit prefix is indeterminate"
+echo "==> an unresolvable clearly stale Reviewed commit prefix is ignored"
 new_cycle
 bad_prefix=deadbeef00
 jq -cn \
@@ -362,6 +396,6 @@ jq -cn \
       }
     ]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:01:00Z'
-assert_status 2 indeterminate
+assert_status 11 pending
 
 echo "shepherd Codex cloud-review classifier: PASS"
