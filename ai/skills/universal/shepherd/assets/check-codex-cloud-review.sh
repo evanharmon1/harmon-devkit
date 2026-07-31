@@ -110,12 +110,12 @@ provider_head() {
 
 run_gh() {
     call_timeout=60
-    if [ -n "${state_requested:-}" ] && valid_time "$state_requested"; then
-        requested_epoch=$(jq -nr \
-            --arg value "$state_requested" '$value | fromdateiso8601') ||
+    if [ -n "${state_reserved:-}" ] && valid_time "$state_reserved"; then
+        reserved_epoch=$(jq -nr \
+            --arg value "$state_reserved" '$value | fromdateiso8601') ||
             return 1
         current_epoch=$(date -u '+%s')
-        remaining=$((requested_epoch + timeout_min * 60 - current_epoch))
+        remaining=$((reserved_epoch + timeout_min * 60 - current_epoch))
         if [ "$remaining" -le 0 ]; then
             call_timeout=1
         elif [ "$remaining" -lt "$call_timeout" ]; then

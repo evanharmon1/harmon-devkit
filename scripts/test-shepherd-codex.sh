@@ -423,6 +423,22 @@ assert_status 11 pending
 [ "$elapsed_seconds" -lt 4 ] ||
     fail "stalled descendant outlived the call deadline (${elapsed_seconds}s)"
 
+echo "==> API budget uses the local reservation clock"
+new_cycle
+local_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+jq --arg reserved "$local_time" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s\n' '/reviews' >"${fixtures}/slow-endpoint"
+start_seconds=$SECONDS
+run_check "$local_time"
+elapsed_seconds=$((SECONDS - start_seconds))
+assert_status 11 pending
+[ "$elapsed_seconds" -ge 4 ] ||
+    fail "GitHub time incorrectly shortened the local API budget (${elapsed_seconds}s)"
+[ "$elapsed_seconds" -lt 15 ] ||
+    fail "slow API fixture exceeded its expected budget (${elapsed_seconds}s)"
+
 echo "==> unexpected actor identity is indeterminate"
 new_cycle
 jq -cn \
