@@ -431,6 +431,7 @@ done
 echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 SHEPHERD_SKILL="$repo/ai/skills/universal/shepherd/SKILL.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
@@ -497,6 +498,30 @@ expect_fail "update guidance does not preseed reviewed skill categories" \
 expect_ok "shepherd starts Codex attempts only after checks settle" \
     grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
     "$SHEPHERD_SKILL"
+expect_ok "implement creates the normal PR as a draft" \
+    grep -qF 'gh pr create --draft --repo "$repo"' "$IMPLEMENT_SKILL"
+expect_ok "implement confirms the pushed draft head" \
+    sh -c 'grep -qF "headRefOid,isDraft" "$1" &&
+        grep -qF "isDraft == true" "$1"' sh "$IMPLEMENT_SKILL"
+expect_ok "shepherd records draft state on entry" \
+    grep -qF 'state,isDraft,headRepositoryOwner' "$SHEPHERD_SKILL"
+expect_ok "shepherd promotes only the unchanged ready head" \
+    sh -c 'grep -qF "gh pr ready <n>" "$1" &&
+        grep -qF "changed head invalidates the gate" "$1" &&
+        grep -qF "must not be called again" "$1"' sh "$SHEPHERD_SKILL"
+expect_ok "shepherd blockers preserve the draft workbench" \
+    grep -qF 'For every stop except Ready for human review, leave the PR draft' \
+    "$SHEPHERD_SKILL"
+expect_ok "shepherd documents the external Automatic-review prerequisite" \
+    sh -c 'grep -qF "Codex Automatic reviews" "$1" &&
+        grep -qF "must be disabled in the external integration" "$1"' sh \
+    "$SHEPHERD_SKILL"
+expect_ok "standardization setup disables Codex Automatic reviews" \
+    sh -c 'grep -qF "Disable **Codex Automatic reviews**" "$1/post-generation-checklist.md" &&
+        grep -qF "human-confirmed disabled" "$1/mode-audit.md"' sh "$STANDARDIZE_REFS"
+expect_ok "standardization hands off only a ready-for-review PR" \
+    sh -c 'grep -qF "open a draft PR" "$1" &&
+        grep -qF "promote the unchanged clean draft" "$1"' sh "$STANDARDIZE_SKILL"
 expect_fail "Codex classifier does not add an undeclared Perl dependency" \
     grep -qF 'need perl' \
     "$repo/ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"

@@ -650,7 +650,9 @@ install the Renovate GitHub App on the repo. Conventions:
   and `infra` when Terraform/Ansible or the iac type applies. The generated
   `use_codex_cloud_review=true` option overrides that ordinary freedom: it
   requires skills sync and the `universal` category because that category ships
-  the mandatory current-head shepherd classifier.
+  the mandatory current-head shepherd classifier. Its human setup also disables
+  Codex Automatic reviews so the explicit draft-time cycle remains authoritative
+  when the PR is promoted to ready for review.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
   `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
   (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
@@ -749,7 +751,8 @@ install the Renovate GitHub App on the repo. Conventions:
   `use_codex_cloud_review=true` (requires `use_codex_review=true`,
   `use_skills_sync=true`, and `universal` in `skill_categories`; **[manual]**
   connect the GitHub integration, confirm plan/quota availability, and grant
-  explicit connector permission for a private repository),
+  explicit connector permission for a private repository, and disable Codex
+  Automatic reviews so ready promotion does not launch an untracked cycle),
   `.coderabbit.yaml` only when `use_coderabbit=true` (CodeRabbit reviews —
   [manual] install the app),
   `.github/PULL_REQUEST_TEMPLATE.md`, the `.github/ISSUE_TEMPLATE/` YAML **Issue

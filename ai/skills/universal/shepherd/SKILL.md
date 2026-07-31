@@ -1,7 +1,7 @@
 ---
 name: shepherd
 description: >-
-  Shepherd an open PR to green — watch CI and incoming bot/human reviews,
+  Shepherd a draft PR to ready for review — watch CI and incoming bot/human reviews,
   treat findings as hypotheses (verify, fix only what's confirmed, explain
   rejections in per-thread replies), push, and re-watch, for at most 5
   rounds. Invoke as /shepherd [PR # or URL].
@@ -13,12 +13,26 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-curr
 
 **Arguments:** $ARGUMENTS
 
-Opening a PR is not the end. Shepherd it: watch CI **and** incoming
+Opening a draft PR is not the end. Shepherd it: watch CI **and** incoming
 bot/human reviews, adjudicate what lands, fix what's confirmed, and re-watch
 — for at most **5 rounds**. Both signals matter and both must end green: a
 PR is not done until CI/CD workflows pass *and* no unresolved review findings
 remain. This cap is independent of any other loop caps used earlier in the
 dev flow.
+
+**Draft is the workbench; ready is the human handoff.** The normal entry from
+`/implement` is a draft PR. Keep it draft while checks, explicit bot reviews,
+fixes, and adjudication are active. A failed or indeterminate gate stays draft.
+Only step 6's complete readiness gate may promote the unchanged head with
+`gh pr ready`; ready-for-review requests human review and never authorizes a
+merge.
+
+This skill may be re-entered on a non-draft PR. Treat that as an idempotent
+audit of an existing human handoff: if the unchanged head is still green, do
+not call `gh pr ready` again. If new work or a blocker appears, convert it back
+to draft with `gh pr ready --undo` before posting fixes or starting another
+review cycle, and verify `isDraft == true`. If that transition is unavailable,
+stop as blocked rather than doing active agent work on a ready PR.
 
 **The repository's own policy outranks this file.** Where its `AGENTS.md`
 states a different shepherd cap or exit condition, follow `AGENTS.md` — it is
@@ -61,10 +75,13 @@ happens to track. Pass `--repo "$repo"` on every `gh` command — never rely
 on `gh`'s default repo. If the target is ambiguous, ask the user.
 
 Then verify the checkout **is** the PR before touching anything: fetch
-`gh pr view <n> --repo "$repo" --json state,headRepositoryOwner,headRepository,headRefName,headRefOid`
+`gh pr view <n> --repo "$repo" --json state,isDraft,headRepositoryOwner,headRepository,headRefName,headRefOid`
 and compare against the local branch and HEAD. Requirements, all hard:
 
 - The PR `state` is `OPEN` — never shepherd a closed or merged PR.
+- Record `isDraft`. A draft is the normal active-work state. A non-draft PR
+  follows the idempotent re-entry rule above and must return to draft before
+  any new fix or review cycle.
 - The local branch and HEAD match the PR's head repo/branch/OID; if not,
   stop and switch to (or ask for) the matching checkout — inspecting,
   gating, or pushing from an unrelated checkout is how the wrong code gets
@@ -641,7 +658,7 @@ is optional in addition, never a substitute for per-thread replies.
 Every shepherd session ends at exactly one of these — there is no path that
 loops indefinitely:
 
-1. **Green** — all workflows pass, `reviewDecision` is not
+1. **Ready for human review** — all workflows pass, `reviewDecision` is not
    `CHANGES_REQUESTED`, `mergeStateStatus` is not `DIRTY` or `BEHIND`
    (conflicts and an out-of-date head are yours to resolve — a merge/update
    with the base plus re-verification is a round), and no findings remain
@@ -660,15 +677,39 @@ loops indefinitely:
    when a comment arrived relative to your pushes, and memory does. A
    finding carried in the PR body has no inline thread to answer, so its
    decline reasoning belongs in the ticked entry itself (and, when it
-   deserves more than one line, a PR comment it points to). `UNKNOWN` means GitHub is still computing mergeability — re-poll
-   briefly rather than classifying it. Report the state honestly rather
-   than over-claiming: `DRAFT`, `BLOCKED`, or `REVIEW_REQUIRED` mean
-   "green but awaiting the maintainer/required approval" — say that, and
+   deserves more than one line, a PR comment it points to). `UNKNOWN` means
+   GitHub is still computing mergeability — re-poll briefly rather than
+   classifying it.
+
+   Before promotion, fetch `state,isDraft,headRefOid,reviewDecision,
+   mergeStateStatus,statusCheckRollup` again and repeat every readiness check
+   against that one snapshot. The `headRefOid` must equal the head whose CI,
+   Codex result, comments, and deferred findings were just adjudicated. A
+   changed head invalidates the gate and returns to step 2.
+
+   If the snapshot is draft, run `gh pr ready <n> --repo "$repo"`, then fetch
+   `state,isDraft,headRefOid` once more. Success requires the same head, an open
+   PR, and `isDraft == false`; otherwise stop as blocked without claiming a
+   handoff. If the snapshot was already non-draft, promotion is idempotently
+   complete and `gh pr ready` must not be called again.
+
+   When current-head Codex cloud review is enabled, **Codex Automatic reviews
+   must be disabled in the external integration before the first promotion**.
+   Otherwise `gh pr ready` can start a new asynchronous review after the gate
+   that supposedly completed automated work. GitHub does not expose a reliable
+   repository API for this setting, so treat it honestly as a human-configured
+   prerequisite: use the repository setup record or maintainer confirmation,
+   never claim it was mechanically verified. If its state is unknown, stop
+   blocked and ask rather than promote.
+
+   Report the post-promotion state honestly rather than over-claiming:
+   `BLOCKED` or `REVIEW_REQUIRED` mean "ready for review and awaiting the
+   maintainer/required approval" — say that, and
    list unresolved threads you answered with rejections (they stay
    unresolved until the maintainer resolves them). Move the claimed issue's
    card ([§7](#7-move-the-project-card)) — `Ready to Merge` only when
-   `reviewDecision` is `APPROVED`, otherwise `In Review`, because a `DRAFT`,
-   `BLOCKED`, or `REVIEW_REQUIRED` PR is green *and still waiting on a human*.
+   `reviewDecision` is `APPROVED`, otherwise `In Review`, because a `BLOCKED`
+   or `REVIEW_REQUIRED` PR is ready *and still waiting on a human*.
    **Release the `agent:*` label** as part of this stop: the label asserts an
    agent is implementing the issue *right now*, which becomes false the
    moment the work is handed to a human — leaving it is the misleading board
@@ -691,8 +732,9 @@ loops indefinitely:
    back into §5 fix rounds, **re-add the label first** (same guard — the
    record said the claim added it), because "implementing right now" has
    become true again and coordination checks read the label as exactly that.
-   Report the release in the green summary, e.g. `released agent:claude-code
-   — green, awaiting the maintainer; the close event releases the rest.`
+   Report the release in the ready summary, e.g. `released agent:claude-code
+   — ready for review, awaiting the maintainer; the close event releases the
+   rest.`
    Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
    5 rounds: stop.
@@ -706,8 +748,9 @@ loops indefinitely:
    permissions, external-service action, or a decision only the maintainer
    can make: stop immediately, whatever the round count.
 
-For every stop except Green, post a summary comment on the PR for the
-maintainer: what was fixed, what remains unresolved and why (including
+For every stop except Ready for human review, leave the PR draft and post a
+summary comment on the PR for the maintainer: what was fixed, what remains
+unresolved and why (including
 findings you dispute, with evidence), and what you recommend. Then end — do
 not keep iterating past a stop condition.
 
@@ -757,17 +800,17 @@ pipeline distinguishes these three, so do not collapse them:
 | Claimed, but the PR only `Refs` it | leave at `In Progress` |
 | Closing-keyword linked, checks still running | `Verifying` |
 | Closing-keyword linked, checks green, awaiting human review | `In Review` |
-| …and `reviewDecision` is `APPROVED` with step 6's Green conditions | `Ready to Merge` |
+| …and `reviewDecision` is `APPROVED` with step 6's readiness conditions | `Ready to Merge` |
 
 ```sh
 <track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --status "Verifying"
 ```
 
 `Ready to Merge` means *approved, awaiting merge* — that is the option's own
-description on the board. So a PR that is green but `DRAFT`, `BLOCKED`, or
-`REVIEW_REQUIRED` stays at `In Review`: it is waiting on a human, which is
-what `In Review` says and what `Ready to Merge` would deny. Report the
-distinction rather than rounding it up.
+description on the board. A draft that has not passed readiness stays
+`Verifying`; after promotion, a `BLOCKED` or `REVIEW_REQUIRED` PR stays at
+`In Review`: it is waiting on a human, which is what `In Review` says and what
+`Ready to Merge` would deny. Report the distinction rather than rounding it up.
 
 Do **not** move the card to `Done` — shepherd stops *before* the merge, so
 from here `Done` is a prediction rather than a record. Once a merge has

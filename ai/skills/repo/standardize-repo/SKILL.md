@@ -167,8 +167,8 @@ It confirms the expected files/tooling landed and then runs the repo's own gate
 (`task verify` = the repo's fast check/build/validate/guard set; `task check` for lint only;
 `task install:hooks` to wire lefthook). Report what passed and surface any gaps
 against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
-prohibited); commit on a feature branch and open a PR — no direct commits to `main`.
-When the work includes a PR, watch every required check to a terminal green result
+prohibited); commit on a feature branch and open a draft PR — no direct commits to
+`main`. When the work includes a PR, watch every required check to a terminal green result
 and inspect every review thread after each push. Apply feedback you agree with and
 reply with a concrete repository-specific rationale when you disagree. Never merge;
-report the reviewed, green PR for human handoff.
+promote the unchanged clean draft to ready for review and report the human handoff.

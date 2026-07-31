@@ -301,7 +301,10 @@ attributable to every current PR head, preserve exact trigger-attempt state,
 and escalate after two unavailable attempts without a CI-only fallback. The
 repository cannot prove external connector access or plan/quota availability,
 so record those as human-verifiable `?` items (including explicit connector
-permission for private repositories). When false, the required Codex cloud
+permission for private repositories). Also require a human-confirmed disabled
+state for Codex Automatic reviews: explicit draft-time requests are the
+authoritative cycles, and ready-for-review promotion must not trigger another
+untracked review. When false, the required Codex cloud
 signal and its setup instructions must be absent. Stale policy or an
 unreviewed legacy opt-in is a **should** finding; an unsatisfiable required
 signal is a blocker.

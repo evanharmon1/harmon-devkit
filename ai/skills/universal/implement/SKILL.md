@@ -1,7 +1,7 @@
 ---
 name: implement
 description: >-
-  Drive a claimed issue to a green PR — read the issue as a spec, work the
+  Drive a claimed issue to a ready-for-review PR — read the issue as a spec, work the
   repo's own dev loop (inner lint gate, definition-of-done gate, second-model
   review, CI mirror), tick acceptance criteria as they are verified, open the
   PR, then continue through the shepherd stage until it reaches a terminal
@@ -14,9 +14,9 @@ allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branc
 
 **Arguments:** $ARGUMENTS
 
-Turn a claimed issue into a **green PR**. `/preflight` verified and claimed the
-issue; this skill owns everything from there until the PR is green and the
-maintainer can merge it.
+Turn a claimed issue into a **ready-for-review PR**. `/preflight` verified and
+claimed the issue; this skill owns everything from there until the draft has
+passed shepherd's readiness gate and is handed to the maintainer for review.
 
 That span deliberately includes the shepherd stage. Opening the PR is a
 milestone inside this skill, not its exit — an open PR with unpolled checks and
@@ -284,7 +284,7 @@ mirror. Follow the repo's own adjudication contract; the shape it is usually in:
 Run the full local mirror (`task ci` where it exists) and fix what it catches.
 This is the last cheap failure; everything after it costs a round on the PR.
 
-## 8. Open the PR
+## 8. Open the draft PR
 
 **Re-read the issue immediately before `gh pr create`** — the same fields
 step 1 read, including `closedByPullRequestsReferences`. Implementation takes
@@ -330,12 +330,14 @@ second PR is the expensive way to find out.
 
   ```sh
   git push -u <writable-remote> HEAD:<branch>
-  gh pr create --repo "$repo" --head <owner>:<branch>   # owner: prefix only for a fork
+  gh pr create --draft --repo "$repo" --head <owner>:<branch>   # owner: prefix only for a fork
   ```
 
   Where the checkout is not a fork, the writable remote and `$repo`'s remote are
   the same one — naming it explicitly costs nothing and removes the ambiguity.
-- `gh pr create`, then confirm the PR's head SHA matches what you pushed.
+- `gh pr create --draft`, then fetch `headRefOid,isDraft` and require both the
+  pushed SHA and `isDraft == true`. A non-draft result is not the normal
+  publication path; stop and reconcile it before shepherding.
 - **Delete the scratch file last** — only once `gh pr create` has returned a URL
   *and* you have re-read the PR body and confirmed the findings are in it. The
   file is the sole durable copy: a push rejected for auth, a validation error, a
@@ -344,24 +346,30 @@ second PR is the expensive way to find out.
   it cannot know is short. Deleting is bookkeeping; do it after the thing it is
   bookkeeping for actually exists.
 
-## 9. Hand off to shepherd
+## 9. Shepherd the draft to ready for review
 
-`gh pr create` returning is the trigger for the next stage, **not the end of
-this skill's work**. Continue into the shepherd stage — watch CI *and* incoming
+`gh pr create --draft` returning is the trigger for the next stage, **not the
+end of this skill's work**. Continue into the shepherd stage while the PR stays
+draft — watch CI *and* incoming
 bot/human reviews, settle the deferred findings, reply per thread — and stop
 only when shepherd reaches one of its own terminal conditions. Where the repo's
 `AGENTS.md` mandates that stage (harmon-init does, and it is user-invocable
 only), entering it means **reading `/shepherd`'s `SKILL.md` and following it**,
 not calling a slash command an agent cannot call.
 
-Do not treat "PR opened" as a stopping point. An open PR with unpolled checks
-is the middle of the work, and the deferred findings from step 6 are still
-open — nothing else in the lifecycle settles them.
+Do not treat "draft PR opened" as a stopping point. A draft with unpolled
+checks is the middle of the work, and the deferred findings from step 6 are
+still open — nothing else in the lifecycle settles them. A failed,
+unavailable, stale, or indeterminate shepherd gate leaves the PR draft and is
+reported as a blocker. Only shepherd's complete readiness gate may run
+`gh pr ready`, and it must re-confirm that the head did not change before and
+after promotion.
 
 "All checks pass" is not a stopping point either. Reviews land *after* checks
 settle, so an empty comment list read the moment `gh pr checks` returns means
 "not reviewed yet", not "nothing to answer".
 
 The one thing that is never yours: **merging**. Report the PR URL, the gates
-that passed, and how each deferred finding was settled — then stop at green and
-let the maintainer merge.
+that passed, and how each deferred finding was settled — then stop after the
+clean draft is promoted to ready for human review and let the maintainer decide
+whether to approve and merge.

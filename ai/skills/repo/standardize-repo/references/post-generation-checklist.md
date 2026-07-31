@@ -82,9 +82,14 @@ push so the remote exists.
       maintainer's ChatGPT plan has Codex cloud-review availability, connect the
       Codex GitHub integration, and grant it access to this repository. Private
       repositories require an explicit connector permission; do not infer access
-      from local Codex CLI authentication. On a draft PR, post `@codex review`
-      and verify the generated shepherd classifier accepts an authenticated
-      terminal result for that exact PR head before treating setup as complete.
+      from local Codex CLI authentication. Disable **Codex Automatic reviews**:
+      the draft-workbench lifecycle uses explicit `@codex review` cycles, and
+      marking a clean draft ready must not start a second asynchronous review.
+      GitHub exposes no reliable repository API for that setting, so record the
+      human confirmation rather than reporting it as mechanically verified. On
+      a draft PR, post `@codex review` and verify the generated shepherd
+      classifier accepts an authenticated terminal result for that exact PR head
+      before treating setup as complete.
 
 - [ ] **[human-only; only when `use_coderabbit=true`]** Install the
       **CodeRabbit** GitHub App — <https://github.com/apps/coderabbitai>. The
