@@ -212,11 +212,31 @@ jq -cn \
       {
         id:88,user:{id:$id,login:$login},
         created_at:"2026-07-31T08:00:03Z",
-        commit_id:$head,body:"P1: confirmed issue"
+        commit_id:$head,original_commit_id:$head,
+        body:"P1: confirmed issue"
       }
     ]]' >"${fixtures}/inline.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
+
+echo "==> a remapped previous-head inline comment stays stale"
+new_cycle
+previous_head="$(git rev-parse HEAD^)"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    --arg previous "$previous_head" \
+    '[[
+      {
+        id:89,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$previous,
+        body:"P1: fixed on a previous head"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
 
 echo "==> current-head review with findings remains non-clean"
 new_cycle

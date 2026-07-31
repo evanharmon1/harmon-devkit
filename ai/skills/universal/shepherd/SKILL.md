@@ -335,8 +335,10 @@ issue may be moved at all.
   - a 👍 by that actor on the exact `@codex review` trigger comment recorded
     for this head.
 
-  An authenticated current-head inline comment or non-clean review is a
-  finding. A 👀 is pending, never clean. PR-level reactions, timestamps,
+  An authenticated inline comment is attributed by its immutable
+  `original_commit_id` (GitHub rewrites `commit_id` as the diff advances); a
+  current-head inline comment or non-clean review is a finding. A 👀 is
+  pending, never clean. PR-level reactions, timestamps,
   previous-head verdicts, and reactions on any other comment do not count.
   Actor ambiguity, malformed or incomplete API data, a changed head, and an
   ambiguous commit prefix fail closed.

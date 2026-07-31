@@ -498,7 +498,7 @@ check)
         --arg head "$state_head" '
           [.[] | select(
             .user.id? == $id and
-            (.commit_id? == $head)
+            (.original_commit_id? == $head)
           )] | length
         ' "$workdir/inline.json")
     if [ "$inline_findings" -gt 0 ]; then
