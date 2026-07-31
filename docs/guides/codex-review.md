@@ -184,9 +184,14 @@ task ci         # full CI mirror
 ```
 
 The full staged loop — including the PR-shepherding rounds — is defined in
-AGENTS.md ("Dev Loop"). If Codex cloud review is connected to the repo, PRs
-get a cloud pass too: inline comments only for high-priority findings, a
-bare 👍 reaction as the clean pass.
+AGENTS.md ("Dev Loop"). When Codex cloud review is enabled, every pushed PR
+head needs an authenticated terminal result attributable to that exact head:
+an exact-head review or inline finding, a top-level result naming an
+unambiguous prefix of the head, or a 👍 on the exact `@codex review` trigger
+reserved for it. Stale or PR-level reactions do not count. The shepherd
+persists each trigger and waits 10–15 minutes after checks settle, tries at
+most twice per head, and escalates if neither attempt produces a terminal
+result.
 
 ## Finding priorities
 

@@ -120,7 +120,13 @@ run_gh() {
       $pid = fork;
       defined $pid or exit 127;
       if (!$pid) { exec @ARGV; exit 127 }
+      setpgrp($pid, $pid) or do {
+        kill 9, $pid;
+        waitpid $pid, 0;
+        exit 127;
+      };
       $SIG{ALRM} = sub {
+        kill 9, -$pid;
         kill 9, $pid;
         waitpid $pid, 0;
         exit 124;

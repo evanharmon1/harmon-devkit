@@ -406,8 +406,12 @@ jq -cn \
       }
     ]]' >"${fixtures}/reactions.pages.json"
 printf '%s\n' '/reviews' >"${fixtures}/slow-endpoint"
+start_seconds=$SECONDS
 run_check '2026-07-31T08:01:00Z'
+elapsed_seconds=$((SECONDS - start_seconds))
 assert_status 11 pending
+[ "$elapsed_seconds" -lt 4 ] ||
+    fail "stalled descendant outlived the call deadline (${elapsed_seconds}s)"
 
 echo "==> unexpected actor identity is indeterminate"
 new_cycle

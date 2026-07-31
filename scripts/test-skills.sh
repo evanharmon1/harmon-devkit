@@ -694,6 +694,10 @@ expect_fail "orphan sweep does not ask the reader to un-gate raw names by hand" 
 expect_ok "post-generation guidance requires Renovate Scan and Alert mode" \
     grep -qF '**Scan and Alert** mode' \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "post-generation guidance requires Codex connector verification" \
+    sh -c 'grep -qF "only when \`use_codex_cloud_review=true\`" "$1" &&
+        grep -qF "exact PR head" "$1"' sh \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
 expect_ok "post-generation guidance requires external CodeRabbit access removal" \
     grep -qF 'deleting the config alone does not revoke App' \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
