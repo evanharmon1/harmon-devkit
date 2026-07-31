@@ -617,8 +617,13 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
    to manually re-walking the gap report's Reconciliation plan.)
 
 5. **Hand back.** Leave the changes committed on the feature branch with a
-   Conventional-Commits message (e.g. `chore: standardize against harmon-init`)
-   and open a draft PR. Shepherd the unchanged head through every required
-   check and review, promote it to ready for human + code-owner review only
-   after the complete readiness gate passes, and then stop — releases and
-   merges stay intentional; do not merge or tag.
+   Conventional-Commits message (e.g. `chore: standardize against harmon-init`).
+   Read the rendered target `AGENTS.md`: open a draft PR and use the
+   draft-workbench lifecycle only when that authoritative policy defines
+   ready-for-review as the human handoff. If it still defines an ordinary PR or
+   stop-at-green handoff, select a compatible harmon-init release or follow the
+   target policy and report the lifecycle upgrade as blocked. On a compatible
+   target, shepherd the unchanged head through every required check and review,
+   promote it to ready for human + code-owner review only after the complete
+   readiness gate passes, and then stop — releases and merges stay intentional;
+   do not merge or tag.

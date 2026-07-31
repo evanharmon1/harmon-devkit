@@ -687,6 +687,15 @@ loops indefinitely:
    Codex result, comments, and deferred findings were just adjudicated. A
    changed head invalidates the gate and returns to step 2.
 
+   Freeze a stable content fingerprint from fresh, paginated reads of the PR
+   body, reviews, top-level comments, inline comments (including replies), and
+   GraphQL review-thread resolution. Include IDs, bodies, update times, authors,
+   review states, and resolution state; exclude volatile ordering and the draft
+   flag itself. Re-fetch and compare that fingerprint as the last read before
+   `gh pr ready`. Any difference means a body edit, finding, reply, review, or
+   resolution change arrived after adjudication, so return to step 2 without
+   promoting. A fetch error is unknown and also cannot promote.
+
    Before promotion, identify required workflows and review apps that react only
    to `pull_request.ready_for_review`. Promotion can notify CODEOWNERS and other
    requested reviewers immediately, so it cannot be used as an automation
@@ -697,17 +706,21 @@ loops indefinitely:
    the automation rather than promoting speculatively.
 
    If the snapshot is draft, run `gh pr ready <n> --repo "$repo"`, then bounded-
-   fetch `state,isDraft,headRefOid` once more. Reconcile the state even when the
-   promotion command failed: its response can be lost after GitHub accepted the
-   mutation. Success requires the verified head, an open PR, and
-   `isDraft == false`. If the open PR is non-draft on a changed head, or any
-   other confirmation result cannot prove that exact successful transition,
-   run `gh pr ready --undo <n> --repo "$repo"` and bounded-fetch again until the
-   current open PR is confirmed draft. A changed head then returns to step 2;
-   another failed transition stops blocked. If repeated reads cannot establish
-   the remote state, attempt the undo once because this session initiated the
-   transition, then stop as indeterminate without claiming either a handoff or
-   a confirmed draft—the report must name that unresolved remote-state risk.
+   fetch `state,isDraft,headRefOid` and the same stable content fingerprint once
+   more. Reconcile the state even when the promotion command failed: its
+   response can be lost after GitHub accepted the mutation. Success requires
+   the verified head, an open PR, `isDraft == false`, and a content fingerprint
+   identical to the last pre-promotion read.
+   If the open PR is non-draft on a changed head or content snapshot, or any
+   other confirmation result cannot
+   prove that exact successful transition, run
+   `gh pr ready --undo <n> --repo "$repo"` and bounded-fetch again until the
+   current open PR is confirmed draft. A changed head or content snapshot then
+   returns to step 2; another failed transition stops blocked. If repeated reads
+   cannot establish the remote state, attempt the undo once because this session
+   initiated the transition, then stop as indeterminate without claiming either
+   a handoff or a confirmed draft—the report must name that unresolved
+   remote-state risk.
    This confirmation is the final lifecycle transition: ready-for-review is the
    human handoff, not another automated workbench. After it, perform only this
    stop condition's coordination cleanup (project-card state, guarded

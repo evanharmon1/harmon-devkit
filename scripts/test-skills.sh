@@ -513,7 +513,14 @@ expect_ok "shepherd reconciles partial or raced promotion" \
     sh -c 'grep -qF "response can be lost" "$1" &&
         grep -qF "gh pr ready --undo <n> --repo" "$1" &&
         grep -qF "non-draft on a changed head" "$1" &&
-        grep -qF "unresolved remote-state risk" "$1"' sh "$SHEPHERD_SKILL"
+        grep -qF "report must name that unresolved" "$1" &&
+        grep -qF "remote-state risk" "$1"' sh "$SHEPHERD_SKILL"
+expect_ok "shepherd freezes review content across promotion" \
+    sh -c 'grep -qF "stable content fingerprint" "$1" &&
+        grep -qF "top-level comments, inline comments" "$1" &&
+        grep -qF "GraphQL review-thread resolution" "$1" &&
+        grep -qF "identical to the last pre-promotion read" "$1"' sh \
+    "$SHEPHERD_SKILL"
 expect_ok "shepherd settles automation before final ready promotion" \
     sh -c 'grep -qF "cannot be used as an automation" "$1" &&
         grep -qF "pull_request.ready_for_review" "$1" &&
@@ -544,6 +551,8 @@ expect_ok "standardization hands off only a ready-for-review PR" \
     "$STANDARDIZE_SKILL"
 expect_ok "standardization modes gate staged lifecycle compatibility" \
     sh -c 'grep -qF "rendered target `AGENTS.md`" "$1/mode-update.md" &&
+        grep -qF "rendered target `AGENTS.md`" "$1/mode-audit.md" &&
+        grep -qF "generated target `AGENTS.md`" "$1/mode-new-repo.md" &&
         grep -qF "reviews.auto_review.drafts: true" "$1/post-generation-checklist.md" &&
         grep -qF "older target policy remains" "$1/standards-catalog.md"' sh \
     "$STANDARDIZE_REFS"
@@ -555,7 +564,7 @@ expect_ok "root policy keeps ready as the final human handoff" \
 expect_ok "standardization modes use the draft-workbench handoff" \
     sh -c 'grep -qF "open a draft PR" "$1/mode-audit.md" &&
         grep -qF "open a draft PR" "$1/mode-update.md" &&
-        grep -qF "open a draft PR" "$1/mode-new-repo.md" &&
+        grep -qF "draft-workbench lifecycle" "$1/mode-new-repo.md" &&
         grep -qF "open a draft PR" "$1/standards-catalog.md"' sh "$STANDARDIZE_REFS"
 expect_fail "Codex classifier does not add an undeclared Perl dependency" \
     grep -qF 'need perl' \

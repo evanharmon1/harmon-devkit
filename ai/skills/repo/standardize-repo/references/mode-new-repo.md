@@ -259,6 +259,13 @@ this runs, so the frozen tuple has to reach history too. Which side effects you
 enabled decides how — all three cases below are real, and the `_tasks` ordering
 in `copier.yml` is what separates them:
 
+Before publishing any branch, read the generated target `AGENTS.md`. Open a
+draft PR and use the draft-workbench lifecycle only when that authoritative
+policy defines ready-for-review as the human handoff. If it still defines an
+ordinary PR or stop-at-green handoff, the selected harmon-init release predates
+the lifecycle; select a compatible release or follow the generated target
+policy and report lifecycle adoption as blocked.
+
 - **Recommended path** (every side-effect answer at its `no` default). Nothing is
   published and no hooks are installed yet — Copier makes the scaffold commit
   *before* `task install` precisely so nothing intercepts it. Amend, and the
@@ -271,8 +278,8 @@ in `copier.yml` is what separates them:
 - **`run_task_install=yes`.** `task install` runs *before* this section and
   installs lefthook while the repo is still on `main`, so the generated
   `guard:no-commit-to-main` pre-commit hook blocks any commit here. `--no-verify`
-  is prohibited; put the freeze on a feature branch and open a draft PR, exactly as the
-  generated repo's own conventions require.
+  is prohibited; put the freeze on a feature branch and use the generated
+  repo's own PR lifecycle.
 
 ```bash
 if git rev-parse --verify HEAD >/dev/null 2>&1 &&
@@ -282,7 +289,7 @@ if git rev-parse --verify HEAD >/dev/null 2>&1 &&
   if test -x .git/hooks/pre-commit &&
     test "$(git rev-parse --abbrev-ref HEAD)" = main; then
     echo "lefthook is installed and HEAD is main: commit the lineage freeze on a" >&2
-    echo "feature branch and open a draft PR — never --no-verify" >&2
+    echo "feature branch and follow AGENTS.md's PR lifecycle — never --no-verify" >&2
     exit 1
   fi
   git add -- .copier-answers.yml ||

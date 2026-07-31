@@ -172,9 +172,12 @@ something to ask permission for.
   blocker, because promotion can notify CODEOWNERS before its result exists.
   Then run `gh pr ready`, confirm the PR is no longer draft and the head did
   not change, and hand it to the human reviewer. Treat promotion as a
-  reconciled transition: even when the command or confirmation fails, bounded-
-  fetch the remote state; if the open PR is ready on any unverified head,
-  return it to draft and confirm that state before resuming or stopping. Where the
+  reconciled transition: fingerprint the PR body, reviews, top-level and inline
+  comments, and thread resolution immediately before and after promotion. Any
+  content change invalidates the gate. Even when the command or confirmation
+  fails, bounded-fetch the remote state; if the open PR is ready on any
+  unverified head or content snapshot, return it to draft and confirm that
+  state before resuming or stopping. Where the
   vendored `/shepherd` skill states a different cap or exit condition, **this
   file wins** — vendored skills are synced on their own release cadence and
   can lag a policy change made here.
