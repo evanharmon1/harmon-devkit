@@ -169,7 +169,9 @@ It confirms the expected files/tooling landed and then runs the repo's own gate
 against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
 prohibited); commit on a feature branch and open a draft PR — no direct commits to
 `main`. When the work includes a PR, follow the repository's vendored shepherd
-procedure through its complete pre- and post-promotion checks/review gate. Apply
-feedback you agree with and reply with a concrete repository-specific rationale
-when you disagree. Never merge; promote only the unchanged clean draft and report
-the human handoff only after ready-triggered automation also settles cleanly.
+procedure through its complete pre- and post-promotion checks/review gate: watch
+every required check to a terminal green result and inspect every review thread.
+Apply feedback you agree with and reply with a concrete repository-specific
+rationale when you disagree. Never merge; promote only the unchanged clean draft
+and report the human handoff only after ready-triggered automation also settles
+cleanly.
