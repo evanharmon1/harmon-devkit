@@ -687,23 +687,24 @@ loops indefinitely:
    Codex result, comments, and deferred findings were just adjudicated. A
    changed head invalidates the gate and returns to step 2.
 
+   Before promotion, identify required workflows and review apps that react only
+   to `pull_request.ready_for_review`. Promotion can notify CODEOWNERS and other
+   requested reviewers immediately, so it cannot be used as an automation
+   probe and then undone without already starting the human handoff. Every
+   required automated gate must instead run on drafts or be explicitly
+   dispatched against this exact head and settle before the final snapshot. If
+   that cannot be established, stop blocked and leave the PR draft; reconfigure
+   the automation rather than promoting speculatively.
+
    If the snapshot is draft, run `gh pr ready <n> --repo "$repo"`, then fetch
    `state,isDraft,headRefOid` once more. Success requires the same head, an open
    PR, and `isDraft == false`; otherwise stop as blocked without claiming a
-   handoff. Promotion is not the handoff yet: repeat step 2's **complete**
-   checks, reviewer, deferred-finding, and unanswered-thread gate after a
-   bounded post-promotion window. This catches workflows or review apps that
-   react only to `pull_request.ready_for_review`. Wait for newly started checks
-   and reviews to reach terminal results; their mere presence is not a reason
-   to revert the PR. If the post-promotion gate fails or produces a finding
-   that needs remediation, run `gh pr ready --undo <n> --repo "$repo"`, verify
-   the unchanged PR is draft again, and adjudicate it there. A component that
-   fails on every promotion is a configuration blocker; one that starts on
-   every promotion and passes is ordinary post-ready evidence.
+   handoff. This confirmation is the final agent action: ready-for-review is the
+   human handoff, not another automated workbench.
 
    If the snapshot was already non-draft, promotion is idempotently complete
-   and `gh pr ready` must not be called again, but the same full post-ready gate
-   still runs before reporting the handoff.
+   and `gh pr ready` must not be called again. Audit the existing handoff on the
+   current head, but do not manufacture another ready event.
 
    When current-head Codex cloud review is enabled, **Codex Automatic reviews
    must be disabled in the external integration before the first promotion**.
@@ -714,7 +715,7 @@ loops indefinitely:
    never claim it was mechanically verified. If its state is unknown, stop
    blocked and ask rather than promote.
 
-   Report the post-promotion state honestly rather than over-claiming:
+   Report the ready state honestly rather than over-claiming:
    `BLOCKED` or `REVIEW_REQUIRED` mean "ready for review and awaiting the
    maintainer/required approval" — say that, and
    list unresolved threads you answered with rejections (they stay

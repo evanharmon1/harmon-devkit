@@ -509,11 +509,13 @@ expect_ok "shepherd promotes only the unchanged ready head" \
     sh -c 'grep -qF "gh pr ready <n>" "$1" &&
         grep -qF "changed head invalidates the gate" "$1" &&
         grep -qF "must not be called again" "$1"' sh "$SHEPHERD_SKILL"
-expect_ok "shepherd re-runs the full gate after ready promotion" \
-    sh -c 'grep -qF "bounded post-promotion window" "$1" &&
+expect_ok "shepherd settles automation before final ready promotion" \
+    sh -c 'grep -qF "cannot be used as an automation" "$1" &&
         grep -qF "pull_request.ready_for_review" "$1" &&
-        grep -qF "gh pr ready --undo <n> --repo" "$1" &&
-        grep -qF "mere presence is not a reason" "$1"' sh "$SHEPHERD_SKILL"
+        grep -qF "final agent action" "$1" &&
+        grep -qF "leave the PR draft" "$1"' sh "$SHEPHERD_SKILL"
+expect_fail "shepherd has no post-ready automation workbench" \
+    grep -qF "bounded post-promotion window" "$SHEPHERD_SKILL"
 expect_ok "shepherd blockers preserve the draft workbench" \
     grep -qF 'For every stop except Ready for human review, leave the PR draft' \
     "$SHEPHERD_SKILL"
@@ -526,15 +528,15 @@ expect_ok "standardization setup disables Codex Automatic reviews" \
         grep -qF "human-confirmed disabled" "$1/mode-audit.md"' sh "$STANDARDIZE_REFS"
 expect_ok "standardization hands off only a ready-for-review PR" \
     sh -c 'grep -qF "open a draft PR" "$1" &&
-        grep -qF "pre- and post-promotion checks/review gate" "$1" &&
+        grep -qF "draft-time checks/review gate and final promotion" "$1" &&
         grep -qF "If the target has no vendored shepherd" "$1" &&
-        grep -qF "gh pr ready --undo" "$1" &&
-        grep -qF "ready-triggered automation also settles cleanly" "$1"' sh \
+        grep -qF "or five rounds when it states none" "$1" &&
+        grep -qF "final ready promotion is confirmed" "$1"' sh \
     "$STANDARDIZE_SKILL"
-expect_ok "root policy waits for ready-triggered automation" \
+expect_ok "root policy keeps ready as the final human handoff" \
     sh -c 'grep -qF "pull_request.ready_for_review" "$1" &&
-        grep -qF "Only a clean" "$1" &&
-        grep -qF "post-promotion gate is the human handoff" "$1"' sh \
+        grep -qF "configuration" "$1" &&
+        grep -qF "Then run `gh pr ready`" "$1"' sh \
     "$repo/AGENTS.md"
 expect_ok "standardization modes use the draft-workbench handoff" \
     sh -c 'grep -qF "open a draft PR" "$1/mode-audit.md" &&

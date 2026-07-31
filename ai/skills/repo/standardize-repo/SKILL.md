@@ -170,25 +170,31 @@ against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
 prohibited); commit on a feature branch and open a draft PR — no direct commits to
 `main`. When the work includes a PR and the target has a vendored shepherd,
 follow that procedure through its complete
-pre- and post-promotion checks/review gate.
+draft-time checks/review gate and final promotion.
 
 If the target has no vendored shepherd, use this fallback instead: keep the PR
 draft while work is active; after each push, bounded-poll every required check
 to a terminal result and inspect reviews, top-level comments, and every inline
 thread. Settle every finding and deferred PR-body checkbox, run the target's
 full local gate on the exact clean commit before each fix push, and repeat until
-the unchanged head is clean. Freeze one final snapshot of the head, draft state,
-checks, reviews, mergeability, deferred findings, and unanswered threads before
-promotion. Promote that head with `gh pr ready`, then repeat the same complete
-bounded gate so checks or review apps triggered by
-`pull_request.ready_for_review` cannot escape observation. Wait for newly
-started automation to finish; its presence alone is not a failure. If the
-post-promotion gate fails or needs remediation, run `gh pr ready --undo`, verify
-the unchanged PR is draft again, and work there. Never merge, and never report
-the human handoff from a failed or indeterminate gate.
+the unchanged head is clean. Use the shepherd-round cap in the target's policy,
+or five rounds when it states none: one fix push or one no-change adjudication
+cycle is a round. Stop early when the sole blocker survives two consecutive
+rounds unchanged, or immediately for a permission, secret, external-service, or
+maintainer-decision blocker; every non-success stop remains draft.
+
+Before promotion, establish that every required workflow and review app runs on
+drafts or was explicitly dispatched and settled on the exact head. Treat
+automation available only through `pull_request.ready_for_review` as a
+configuration blocker: ready can notify human reviewers immediately and is not
+a reversible automation probe. Freeze one final snapshot of the head, draft
+state, checks, reviews, mergeability, deferred findings, and unanswered threads.
+Promote that head with `gh pr ready`, confirm it is still the same open head and
+is no longer draft, then stop. Never merge, and never report the human handoff
+from a failed or indeterminate gate.
 
 At both stages, watch every required check to a terminal green result and inspect
 every review thread.
 Apply feedback you agree with and reply with a concrete repository-specific
 rationale when you disagree. Never merge; promote only the unchanged clean draft.
-Report the human handoff only after ready-triggered automation also settles cleanly.
+Report the human handoff only after the final ready promotion is confirmed.
