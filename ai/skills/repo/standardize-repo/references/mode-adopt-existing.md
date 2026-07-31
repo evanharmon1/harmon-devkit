@@ -78,6 +78,11 @@ Defaults worth knowing so you only override what's wrong (from `copier.yml`):
 - `use_release_please` and `devcontainer` default to **yes**.
 - `use_coderabbit` defaults to **no**. Keep it false unless this repository is
   deliberately retaining the CodeRabbit GitHub App.
+- `use_codex_cloud_review` defaults to **no**. Keep it false unless the
+  maintainer deliberately opts into the Codex GitHub integration, has suitable
+  plan availability, grants explicit connector access for a private repo, and
+  also selects `use_skills_sync=true` with `universal` in `skill_categories` so
+  the required shepherd classifier is installed.
 - **All side-effect answers must stay `no`** when adopting: `git_init`,
   `github_remote_create`, `github_release_init`, `bunch_add`,
   `obsidian_project_add`, `run_task_install`. The repo already exists and has a
@@ -103,8 +108,9 @@ If a `.copier-answers.yml` exists at the repo root, the repo is already linked t
 the template. Update in place; copier performs a three-way merge between the old
 template output, the new template output, and your current files. Follow
 [`mode-update.md`](./mode-update.md) end to end: it remote-verifies and pins the
-target release, collects the CodeRabbit decision (including for legacy answer
-files), and passes the identical reviewed answers to preview and apply.
+target release, collects the Codex cloud review and CodeRabbit decisions
+(including for legacy answer files), and passes the identical reviewed answers
+to preview and apply.
 
 ```bash
 ls .copier-answers.yml # present → use mode-update.md
@@ -119,8 +125,8 @@ lineage tuple (see [copier-gotchas.md](./copier-gotchas.md) gotcha 8; never
 normalize only a local path unless the recorded commit is reachable from the
 canonical remote). **Always do a full update to the deliberately selected latest
 release** and pass that same ref to preview and apply. Override stale answers
-with `--data key=value` as needed (e.g. `use_coderabbit` or a changed
-`github_org`).
+with `--data key=value` as needed (e.g. `use_codex_cloud_review`,
+`use_coderabbit`, or a changed `github_org`).
 (`--vcs-ref=HEAD` is only for a *template developer* testing unreleased local
 changes — never for a normal update.)
 
@@ -137,7 +143,7 @@ write `.copier-answers.yml` so future runs can use `copier update`:
 ```bash
 ls .copier-answers.yml          # absent → adopt fresh
 : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
-: "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit}"
+: "${HARMON_INIT_REF:?set to a released harmon-init tag whose copier.yml defines use_coderabbit and use_codex_cloud_review}"
 HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
 git -C ~/git/harmon-init fetch "$HARMON_INIT_SOURCE" \
   '+refs/heads/main:refs/remotes/origin/main' --tags ||
@@ -156,6 +162,9 @@ HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{comm
 git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
+  grep -q '^use_codex_cloud_review:' ||
+  { echo "HARMON_INIT_REF does not support the Codex cloud review choice" >&2; exit 1; }
 copier copy --trust "$HARMON_INIT_SOURCE" . \
   --vcs-ref="$HARMON_INIT_COMMIT" --defaults --overwrite \
   --data project_type="$PROJECT_TYPE" \
@@ -164,6 +173,7 @@ copier copy --trust "$HARMON_INIT_SOURCE" . \
   --data github_org="<org-or-user>" \
   --data use_codeql="$USE_CODEQL" \
   --data codeql_languages="$CODEQL_LANGUAGES" \
+  --data use_codex_cloud_review=false \
   --data use_coderabbit=false \
   --data git_init=false \
   --data github_remote_create=false --data github_release_init=false \
@@ -172,7 +182,8 @@ copier copy --trust "$HARMON_INIT_SOURCE" . \
   #   defaults from the stale .copier-answers.yml, so they do NOT "default to no".
 ```
 
-The `use_coderabbit` answer is introduced by the companion harmon-init change.
+The `use_codex_cloud_review` and `use_coderabbit` answers are introduced by
+companion harmon-init changes.
 Release this skill first so harmon-init can refresh its pinned vendored copy,
 then merge and release harmon-init. Until that supporting template release
 exists, the guard above intentionally blocks adoption. Older releases (including

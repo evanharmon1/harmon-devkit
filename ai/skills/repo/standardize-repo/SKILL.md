@@ -134,7 +134,8 @@ The asked questions live in `~/git/harmon-init/copier.yml` (e.g. `project_name`,
 [general / web-astro / web-app / iac / docs], `snyk_scan_schedule`
 [off / weekly / daily], `include_terraform`, `include_ansible`, `ci_runner`,
 `license`, `use_codeql`, `codeql_languages`, `use_release_please`, `devcontainer`,
-`use_codex_review`, `use_coderabbit`, `git_init`). Read that file to
+`use_codex_review`, `use_codex_cloud_review`, `use_coderabbit`, `git_init`).
+Read that file to
 confirm names/choices/defaults before scaffolding — do not invent answers.
 
 ## Standards catalog

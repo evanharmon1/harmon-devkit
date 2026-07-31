@@ -323,22 +323,77 @@ issue may be moved at all.
   above. Thread `isResolved` state comes from the GraphQL query and is a
   separate question: resolution is the maintainer's act, never evidence that
   you replied.
-- Bot-reaction semantics where the Codex cloud connector is installed: read
-  the PR-level reactions explicitly —
-  `gh api --paginate repos/"$repo"/issues/<n>/reactions` (they are not in
-  the `gh pr view` fields, and without `--paginate` a busy PR can hide the
-  bot's latest reaction behind older pages). Reactions are **not scoped to
-  a commit**: after a push, an earlier 👍 still sits on the PR, so a
-  verdict only counts for the current head if its `created_at` postdates
-  the head's push — otherwise wait for a fresh reaction/review cycle. A bare 👍 from the bot is its clean pass; a lone 👀
-  that never resolves means the cloud run failed (re-trigger or note it —
-  it is not a finding).
+- Where Codex cloud review is enabled, require one terminal result attributable
+  to the **exact current head**. Use
+  `assets/check-codex-cloud-review.sh`; it is deliberately read-only toward
+  GitHub and classifies all paginated evidence from the immutable Codex bot
+  actor ID `199175422`. A clean result is exactly one of:
+
+  - an authenticated review for the full current commit;
+  - an authenticated top-level result whose `Reviewed commit` value is an
+    unambiguous prefix of the current commit;
+  - a 👍 by that actor on the exact `@codex review` trigger comment recorded
+    for this head.
+
+  An authenticated inline comment is attributed by its immutable
+  `original_commit_id` (GitHub rewrites `commit_id` as the diff advances); a
+  current-head inline comment or non-clean review is a finding. A 👀 is
+  pending, never clean. PR-level reactions, timestamps,
+  previous-head verdicts, and reactions on any other comment do not count.
+  Actor ambiguity, malformed or incomplete API data, a changed head, and an
+  ambiguous commit prefix fail closed.
+
+  Persist each attempt under the git directory so branch switches and resumed
+  sessions cannot duplicate it:
+
+  Do not reserve or post the trigger until every required check has settled.
+  The attempt window starts when the trigger is created, so posting during CI
+  would consume the reviewer's promised post-CI response window.
+
+  ```bash
+  helper="$skill_dir/assets/check-codex-cloud-review.sh"
+  state="$(git rev-parse --git-path "shepherd-codex/$repo/<n>.json")"
+  head="$(gh pr view <n> --repo "$repo" --json headRefOid --jq .headRefOid)"
+  "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
+    --head "$head" --attempt 1
+  trigger_id="$(
+    gh api "repos/$repo/issues/<n>/comments" \
+      -f body='@codex review' --jq .id
+  )"
+  "$helper" attach --state "$state" --trigger-id "$trigger_id"
+  "$helper" check --state "$state" --actor-id 199175422
+  ```
+
+  Resolve `$skill_dir` to this skill's directory before running the snippet.
+  `reserve` must happen **before** the external comment write. If state for
+  this head is already attached, resume `check`; do not trigger again. If it
+  is reserved without a trigger ID, stop and reconcile the possibly-created
+  comment before any new write. This separation keeps classification
+  write-incapable while making the one external write explicit.
+
+  Exactly one active shepherd must own a PR at a time. The git-directory state
+  and its lock protect interrupted or concurrent work in this checkout; they
+  are not a distributed lock across separate clones, worktrees with separate
+  git directories, or machines. Never shepherd the same PR concurrently from
+  another checkout. If ownership is unclear, stop and reconcile the remote
+  trigger comments before reserving or writing anything.
+
+  `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
+  and 2 indeterminate. Transient read failures consume the same bounded window:
+  they return pending, then retry after attempt 1 or escalate after attempt 2.
+  Exit 2 is reserved for invalid state, identity, metadata, or a changed head;
+  stop and reconcile that condition rather than spending another trigger.
+  Poll pending within a bounded 10–15-minute window after checks settle. On
+  retry, repeat reserve/write/attach once with `--attempt 2`; on escalate or
+  indeterminate, stop for the maintainer. Every push creates a new head and
+  resets this procedure to attempt 1. There is no CI-only fallback when this
+  option is enabled.
 - Wait for **both** signals before deciding anything: let every check
   conclude (bounded — if a check hangs past ~30 minutes, treat it as a
-  failure to diagnose, not something to wait on forever), and give the
-  reviewer a chance to post on the current head commit (a bounded wait,
-  ~10–15 minutes after checks conclude, is enough; if no review lands in
-  that window, proceed on CI alone and say so).
+  failure to diagnose, not something to wait on forever), and finish the
+  configured reviewer procedure for the current head. When Codex cloud review
+  is disabled, give other reviewers a bounded ~10–15-minute window after
+  checks conclude; when it is enabled, use the two-attempt contract above.
 - A round begins when a check fails or a review lands findings. All
   workflows green and no unresolved findings → **stop at
   green**: report that checks pass and any review verdicts, then stop.

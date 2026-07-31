@@ -648,6 +648,9 @@ install the Renovate GitHub App on the repo. Conventions:
   `true` and need an explicit review. When enabled, `skill_categories` starts with
   `universal`, adds `frontend` for both web types, `backend` for `web-app`,
   and `infra` when Terraform/Ansible or the iac type applies. The generated
+  `use_codex_cloud_review=true` option overrides that ordinary freedom: it
+  requires skills sync and the `universal` category because that category ships
+  the mandatory current-head shepherd classifier.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
   `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
   (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
@@ -742,6 +745,11 @@ install the Renovate GitHub App on the repo. Conventions:
   to main.** **[manual]** to actually cut a release.
 - Other root files: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`
   (mit/private), `<slug>.code-workspace`, `.vscode/{settings,extensions}.json`,
+  the current-head Codex cloud shepherd contract only when
+  `use_codex_cloud_review=true` (requires `use_codex_review=true`,
+  `use_skills_sync=true`, and `universal` in `skill_categories`; **[manual]**
+  connect the GitHub integration, confirm plan/quota availability, and grant
+  explicit connector permission for a private repository),
   `.coderabbit.yaml` only when `use_coderabbit=true` (CodeRabbit reviews —
   [manual] install the app),
   `.github/PULL_REQUEST_TEMPLATE.md`, the `.github/ISSUE_TEMPLATE/` YAML **Issue

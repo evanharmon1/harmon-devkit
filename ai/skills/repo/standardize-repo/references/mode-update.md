@@ -196,6 +196,9 @@ git -C ~/git/harmon-init merge-base --is-ancestor \
 git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "latest harmon-init release does not support the CodeRabbit choice" >&2; exit 1; }
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
+  grep -q '^use_codex_cloud_review:' ||
+  { echo "latest harmon-init release does not support the Codex cloud review choice" >&2; exit 1; }
 git -C ~/git/harmon-init diff \
   "$RECORDED_COMMIT".."$HARMON_INIT_COMMIT" -- copier.yml
 ```
@@ -371,6 +374,16 @@ important for a feature with a material footprint or an external capability:
   retaining CodeRabbit. The false path removes `.coderabbit.yaml` and bot trust,
   but a human must also remove the repository from the CodeRabbit App
   installation because deleting repository files does not revoke App access.
+- `use_codex_cloud_review` adds a required external shepherd signal and defaults
+  off. It is active only when `use_codex_review=true`; when active, require
+  `use_skills_sync=true` and `universal` in `skill_categories` so the classifier
+  is installed. Review it explicitly and keep it false unless the maintainer has
+  connected Codex cloud review, accepts plan-dependent availability/quotas, and
+  has granted explicit connector permission for a private repository. Legacy
+  omission starts false.
+  Enabling it changes the PR exit contract: a current-head terminal Codex result
+  is required, with escalation after two unavailable attempts rather than a
+  CI-only fallback.
 - `use_codeql` includes CodeQL only when the matrix corresponds to planned/actual
   first-party JS/TS/Python source. `use_node` / `use_python` are tooling flags,
   not source evidence; review and persist the explicit `codeql_languages`
@@ -433,6 +446,11 @@ if test -e "$REVIEWED_DATA"; then
       exit 1
     }
   USE_FOREMAN="$(yq -r '.use_foreman' "$REVIEWED_DATA")"
+  USE_CODEX_REVIEW="$(yq -r '.use_codex_review' "$REVIEWED_DATA")"
+  USE_CODEX_CLOUD_REVIEW="$(
+    yq -r '.use_codex_cloud_review // false' "$REVIEWED_DATA"
+  )"
+  USE_SKILLS_SYNC="$(yq -r '.use_skills_sync' "$REVIEWED_DATA")"
   USE_CODERABBIT="$(yq -r '.use_coderabbit' "$REVIEWED_DATA")"
   USE_CODEQL="$(yq -r '.use_codeql' "$REVIEWED_DATA")"
   CODEQL_LANGUAGES="$(yq -o=json -I=0 '.codeql_languages' "$REVIEWED_DATA")"
@@ -440,9 +458,19 @@ else
   : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
   : "${CODEQL_LANGUAGES:=$(yq -o=json -I=0 '.codeql_languages // []' .copier-answers.yml)}"
   : "${USE_FOREMAN:=$(yq -r '.use_foreman // false' .copier-answers.yml)}"
+  : "${USE_CODEX_REVIEW:=$(yq -r '.use_codex_review // false' .copier-answers.yml)}"
+  : "${USE_CODEX_CLOUD_REVIEW:=$(yq -r '.use_codex_cloud_review // false' .copier-answers.yml)}"
+  : "${USE_SKILLS_SYNC:=$(yq -r '.use_skills_sync // false' .copier-answers.yml)}"
   : "${USE_CODERABBIT:=$(yq -r '.use_coderabbit // false' .copier-answers.yml)}"
 fi
 case "$USE_FOREMAN" in true | false) ;; *) echo "USE_FOREMAN must be true or false" >&2; exit 1 ;; esac
+case "$USE_CODEX_REVIEW" in true | false) ;; *) echo "USE_CODEX_REVIEW must be true or false" >&2; exit 1 ;; esac
+case "$USE_CODEX_CLOUD_REVIEW" in true | false) ;; *) echo "USE_CODEX_CLOUD_REVIEW must be true or false" >&2; exit 1 ;; esac
+case "$USE_SKILLS_SYNC" in true | false) ;; *) echo "USE_SKILLS_SYNC must be true or false" >&2; exit 1 ;; esac
+[ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_CODEX_REVIEW" = "true" ] ||
+  { echo "use_codex_cloud_review requires use_codex_review" >&2; exit 1; }
+[ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_SKILLS_SYNC" = "true" ] ||
+  { echo "use_codex_cloud_review requires use_skills_sync" >&2; exit 1; }
 case "$USE_CODERABBIT" in true | false) ;; *) echo "USE_CODERABBIT must be true or false" >&2; exit 1 ;; esac
 if [ "$USE_CODEQL" = "false" ]; then
   CODEQL_LANGUAGES='[]'
@@ -527,20 +555,32 @@ comm -12 \
   { echo "failed to derive active new questions" >&2; exit 1; }
 {
   cat "$GUARDED_STATE/active-new-questions"
-  printf '%s\n' use_foreman use_coderabbit use_codeql codeql_languages
+  printf '%s\n' \
+    use_foreman use_codex_review use_codex_cloud_review use_skills_sync \
+    use_coderabbit use_codeql codeql_languages
+  if [ "$USE_CODEX_CLOUD_REVIEW" = "true" ]; then
+    printf '%s\n' skill_categories
+  fi
 } |
   LC_ALL=C sort -u |
   comm -12 - "$GUARDED_STATE/active-target-questions" \
     >"$GUARDED_STATE/reviewed-keys" ||
   { echo "failed to derive the complete active review set" >&2; exit 1; }
 for CAPABILITY_KEY in \
-  use_foreman use_coderabbit use_codeql codeql_languages; do
+  use_foreman use_codex_review use_skills_sync use_coderabbit use_codeql codeql_languages; do
   grep -qxF "$CAPABILITY_KEY" "$GUARDED_STATE/reviewed-keys" ||
     {
       echo "required capability question is not active: $CAPABILITY_KEY" >&2
       exit 1
     }
 done
+if [ "$USE_CODEX_CLOUD_REVIEW" = "true" ]; then
+  grep -qxF skill_categories "$GUARDED_STATE/reviewed-keys" ||
+    {
+      echo "required skill_categories question is not active" >&2
+      exit 1
+    }
+fi
 find "$TARGET_DISCOVERY" \( -type f -o -type l \) -print |
   sed "s#^$TARGET_DISCOVERY/##" |
   LC_ALL=C sort -u >"$GUARDED_STATE/target-managed-paths" ||
@@ -574,17 +614,32 @@ if ! test -e "$REVIEWED_DATA" ||
     fi
   done <"$GUARDED_STATE/reviewed-keys"
   if ! USE_FOREMAN="$USE_FOREMAN" \
+    USE_CODEX_REVIEW="$USE_CODEX_REVIEW" \
+    USE_CODEX_CLOUD_REVIEW="$USE_CODEX_CLOUD_REVIEW" \
+    USE_SKILLS_SYNC="$USE_SKILLS_SYNC" \
     USE_CODERABBIT="$USE_CODERABBIT" \
     USE_CODEQL="$USE_CODEQL" \
     CODEQL_LANGUAGES="$CODEQL_LANGUAGES" \
     yq -i \
       '.use_foreman = (strenv(USE_FOREMAN) == "true") |
+       .use_codex_review = (strenv(USE_CODEX_REVIEW) == "true") |
+       .use_skills_sync = (strenv(USE_SKILLS_SYNC) == "true") |
        .use_coderabbit = (strenv(USE_CODERABBIT) == "true") |
        .use_codeql = (strenv(USE_CODEQL) == "true") |
        .codeql_languages = (strenv(CODEQL_LANGUAGES) | from_json)' \
       "$REVIEWED_CANDIDATE"; then
     rm -f "$REVIEWED_CANDIDATE"
     echo "failed to seed reviewed capability answers" >&2
+    exit 1
+  fi
+  if grep -qxF use_codex_cloud_review "$GUARDED_STATE/reviewed-keys" &&
+    ! USE_CODEX_CLOUD_REVIEW="$USE_CODEX_CLOUD_REVIEW" \
+      yq -i \
+        '.use_codex_cloud_review =
+          (strenv(USE_CODEX_CLOUD_REVIEW) == "true")' \
+        "$REVIEWED_CANDIDATE"; then
+    rm -f "$REVIEWED_CANDIDATE"
+    echo "failed to seed reviewed Codex cloud answer" >&2
     exit 1
   fi
   mv "$REVIEWED_CANDIDATE" "$REVIEWED_DATA" ||
@@ -607,10 +662,26 @@ while IFS= read -r REVIEWED_KEY; do
     }
 done <"$GUARDED_STATE/reviewed-keys"
 USE_FOREMAN="$(yq -r '.use_foreman' "$REVIEWED_DATA")"
+USE_CODEX_REVIEW="$(yq -r '.use_codex_review' "$REVIEWED_DATA")"
+USE_CODEX_CLOUD_REVIEW="$(
+  yq -r '.use_codex_cloud_review // false' "$REVIEWED_DATA"
+)"
+USE_SKILLS_SYNC="$(yq -r '.use_skills_sync' "$REVIEWED_DATA")"
+SKILL_CATEGORIES="$(yq -o=json -I=0 '.skill_categories // []' "$REVIEWED_DATA")"
 USE_CODERABBIT="$(yq -r '.use_coderabbit' "$REVIEWED_DATA")"
 USE_CODEQL="$(yq -r '.use_codeql' "$REVIEWED_DATA")"
 CODEQL_LANGUAGES="$(yq -o=json -I=0 '.codeql_languages' "$REVIEWED_DATA")"
 case "$USE_FOREMAN" in true | false) ;; *) echo "reviewed use_foreman must be boolean" >&2; exit 1 ;; esac
+case "$USE_CODEX_REVIEW" in true | false) ;; *) echo "reviewed use_codex_review must be boolean" >&2; exit 1 ;; esac
+case "$USE_CODEX_CLOUD_REVIEW" in true | false) ;; *) echo "reviewed use_codex_cloud_review must be boolean" >&2; exit 1 ;; esac
+case "$USE_SKILLS_SYNC" in true | false) ;; *) echo "reviewed use_skills_sync must be boolean" >&2; exit 1 ;; esac
+[ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_CODEX_REVIEW" = "true" ] ||
+  { echo "use_codex_cloud_review requires use_codex_review" >&2; exit 1; }
+[ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_SKILLS_SYNC" = "true" ] ||
+  { echo "use_codex_cloud_review requires use_skills_sync" >&2; exit 1; }
+[ "$USE_CODEX_CLOUD_REVIEW" != "true" ] ||
+  printf '%s\n' "$SKILL_CATEGORIES" | yq -e 'contains(["universal"])' - >/dev/null ||
+  { echo "use_codex_cloud_review requires the universal skill category" >&2; exit 1; }
 case "$USE_CODERABBIT" in true | false) ;; *) echo "reviewed use_coderabbit must be boolean" >&2; exit 1 ;; esac
 case "$USE_CODEQL" in true | false) ;; *) echo "reviewed use_codeql must be boolean" >&2; exit 1 ;; esac
 if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
@@ -685,10 +756,13 @@ run_guarded_copier update --trust --defaults --pretend \
 
 The existing Foreman answer is the starting point, not an instruction to retain
 it blindly. Review that substantial per-repo choice and override `USE_FOREMAN`
-deliberately when the repository should change posture. The existing CodeRabbit
-answer is handled the same way; legacy omission starts at the fleet's `false`
-default, while an explicit opt-in stays true unless the maintainer deliberately
-opts out. `CODEQL_LANGUAGES` is a serialized YAML list such as
+deliberately when the repository should change posture. The existing local
+Codex and CodeRabbit answers are handled the same way. Enabling local Codex
+review activates `use_codex_cloud_review` for a second discovery pass; legacy
+cloud omission starts at `false`, and the option remains absent from the
+payload when its controller is false. An explicit CodeRabbit opt-in stays true
+unless the maintainer deliberately opts out. `CODEQL_LANGUAGES` is a serialized
+YAML list such as
 `["javascript-typescript","python"]`; the existing matrix is only a starting
 point and must be reviewed against actual first-party source. Disabling CodeQL
 records an empty matrix.
@@ -708,6 +782,14 @@ instead of recomputing defaults:
 ```bash
 REVIEWED_DATA="$GUARDED_STATE/reviewed-data.yml"
 USE_FOREMAN="$(yq -r '.use_foreman' "$REVIEWED_DATA")"
+USE_CODEX_REVIEW="$(yq -r '.use_codex_review' "$REVIEWED_DATA")"
+USE_CODEX_CLOUD_REVIEW="$(
+  yq -r '.use_codex_cloud_review // false' "$REVIEWED_DATA"
+)"
+USE_SKILLS_SYNC="$(yq -r '.use_skills_sync' "$REVIEWED_DATA")"
+SKILL_CATEGORIES="$(
+  yq -o=json -I=0 '.skill_categories // []' "$REVIEWED_DATA"
+)"
 USE_CODERABBIT="$(yq -r '.use_coderabbit' "$REVIEWED_DATA")"
 USE_CODEQL="$(yq -r '.use_codeql' "$REVIEWED_DATA")"
 CODEQL_LANGUAGES="$(

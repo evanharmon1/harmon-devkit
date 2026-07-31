@@ -78,6 +78,14 @@ push so the remote exists.
       Dashboard), or update/remediation PRs. Keep the generated
       `renovate.json`; do not replace it with a generic onboarding config.
 
+- [ ] **[human-only; only when `use_codex_cloud_review=true`]** Confirm the
+      maintainer's ChatGPT plan has Codex cloud-review availability, connect the
+      Codex GitHub integration, and grant it access to this repository. Private
+      repositories require an explicit connector permission; do not infer access
+      from local Codex CLI authentication. On a draft PR, post `@codex review`
+      and verify the generated shepherd classifier accepts an authenticated
+      terminal result for that exact PR head before treating setup as complete.
+
 - [ ] **[human-only; only when `use_coderabbit=true`]** Install the
       **CodeRabbit** GitHub App — <https://github.com/apps/coderabbitai>. The
       generated `.coderabbit.yaml` is pre-configured.

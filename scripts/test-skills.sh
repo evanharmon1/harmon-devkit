@@ -431,6 +431,7 @@ done
 echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+SHEPHERD_SKILL="$repo/ai/skills/universal/shepherd/SKILL.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
     grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
@@ -467,12 +468,38 @@ expect_ok "new-repo guidance exposes the explicit CodeQL language matrix" \
 expect_ok "new-repo guidance exposes CodeRabbit as default off" \
     grep -qF '| `use_coderabbit` | bool | `false` |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo guidance exposes Codex cloud review as default off" \
+    grep -qF '| `use_codex_cloud_review` | bool | `false` |' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_ok "new-repo guidance requires the Codex classifier prerequisites" \
+    grep -qF '`use_skills_sync=true`, `universal` in `skill_categories`' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "update guidance passes one frozen reviewed-data file to preview and apply" \
     test "$(grep -Fc -- '--data-file="$REVIEWED_DATA"' \
         "$STANDARDIZE_REFS/mode-update.md")" -eq 2
 expect_ok "update guidance starts from the recorded CodeRabbit answer" \
     grep -qF ".use_coderabbit // false' .copier-answers.yml" \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance starts from the recorded Codex cloud answer" \
+    grep -qF ".use_codex_cloud_review // false' .copier-answers.yml" \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance reviews the Codex controller and conditional option" \
+    sh -c 'grep -qF "use_foreman use_codex_review use_codex_cloud_review" "$1" &&
+        grep -qF "use_foreman use_codex_review use_skills_sync" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance rejects missing Codex classifier prerequisites" \
+    sh -c 'grep -qF "use_codex_cloud_review requires use_skills_sync" "$1" &&
+        grep -qF "use_codex_cloud_review requires the universal skill category" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "update guidance does not preseed reviewed skill categories" \
+    grep -qF 'failed to seed reviewed skill categories' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "shepherd starts Codex attempts only after checks settle" \
+    grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
+    "$SHEPHERD_SKILL"
+expect_fail "Codex classifier does not add an undeclared Perl dependency" \
+    grep -qF 'need perl' \
+    "$repo/ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
 expect_ok "update guidance reads the reviewed CodeQL language matrix" \
     grep -qF "'.codeql_languages' \"\$REVIEWED_DATA\"" \
     "$STANDARDIZE_REFS/mode-update.md"
@@ -683,6 +710,10 @@ expect_fail "orphan sweep does not ask the reader to un-gate raw names by hand" 
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "post-generation guidance requires Renovate Scan and Alert mode" \
     grep -qF '**Scan and Alert** mode' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "post-generation guidance requires Codex connector verification" \
+    sh -c 'grep -qF "only when \`use_codex_cloud_review=true\`" "$1" &&
+        grep -qF "exact PR head" "$1"' sh \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
 expect_ok "post-generation guidance requires external CodeRabbit access removal" \
     grep -qF 'deleting the config alone does not revoke App' \
@@ -2728,6 +2759,19 @@ rm "$GU_TEMPLATE/template/.vscode/legacy.json"
 printf '%s\n' '{"new":"target"}' \
     >"$GU_TEMPLATE/template/.vscode/new.json"
 cat >>"$GU_TEMPLATE/copier.yml" <<'EOF'
+use_codex_review:
+  type: bool
+  default: false
+use_codex_cloud_review:
+  type: bool
+  default: false
+  when: "{{ use_codex_review }}"
+use_skills_sync:
+  type: bool
+  default: false
+skill_categories:
+  type: yaml
+  default: []
 deploy_preview:
   type: bool
   default: false
@@ -2795,18 +2839,25 @@ comm -12 \
     >"$GU_TARGET/.copier-guarded-update/active-new-questions"
 {
     cat "$GU_TARGET/.copier-guarded-update/active-new-questions"
-    printf '%s\n' use_foreman use_coderabbit use_codeql codeql_languages
+    printf '%s\n' use_foreman use_coderabbit use_codeql codeql_languages \
+        use_codex_review use_skills_sync skill_categories
 } |
     LC_ALL=C sort -u |
     comm -12 - \
         "$GU_TARGET/.copier-guarded-update/active-target-questions" \
         >"$GU_TARGET/.copier-guarded-update/reviewed-keys"
 USE_FOREMAN=true USE_CODERABBIT=false USE_CODEQL=true \
+    USE_CODEX_REVIEW=true USE_CODEX_CLOUD_REVIEW=true \
+    USE_SKILLS_SYNC=true SKILL_CATEGORIES='["universal"]' \
     CODEQL_LANGUAGES='["javascript-typescript"]' DEPLOY_PREVIEW=true \
     yq -n -o=yaml \
     '{"use_foreman": (strenv(USE_FOREMAN) == "true"),
       "use_coderabbit": (strenv(USE_CODERABBIT) == "true"),
       "use_codeql": (strenv(USE_CODEQL) == "true"),
+      "use_codex_review": (strenv(USE_CODEX_REVIEW) == "true"),
+      "use_codex_cloud_review": (strenv(USE_CODEX_CLOUD_REVIEW) == "true"),
+      "use_skills_sync": (strenv(USE_SKILLS_SYNC) == "true"),
+      "skill_categories": (strenv(SKILL_CATEGORIES) | from_json),
       "codeql_languages": (strenv(CODEQL_LANGUAGES) | from_json),
       "deploy_preview": (strenv(DEPLOY_PREVIEW) == "true")}' \
     >"$GU_TARGET/.copier-guarded-update/reviewed-data.yml"
@@ -2833,7 +2884,8 @@ comm -12 \
     >"$GU_TARGET/.copier-guarded-update/active-new-questions"
 {
     cat "$GU_TARGET/.copier-guarded-update/active-new-questions"
-    printf '%s\n' use_foreman use_coderabbit use_codeql codeql_languages
+    printf '%s\n' use_foreman use_coderabbit use_codeql codeql_languages \
+        use_codex_review use_skills_sync skill_categories
 } |
     LC_ALL=C sort -u |
     comm -12 - \
@@ -2917,6 +2969,13 @@ expect_ok "guarded review data covers every required reviewed question" \
     done <"$2"' sh \
     "$GU_TARGET/.copier-guarded-update/reviewed-data.yml" \
     "$GU_TARGET/.copier-guarded-update/reviewed-keys"
+expect_ok "guarded update carries valid Codex classifier prerequisites" \
+    sh -c 'test "$(yq -r ".use_codex_cloud_review" "$1")" = true &&
+        test "$(yq -r ".use_codex_review" "$1")" = true &&
+        test "$(yq -r ".use_skills_sync" "$1")" = true &&
+        yq -e ".skill_categories | contains([\"universal\"])" "$1" \
+            >/dev/null' sh \
+    "$GU_TARGET/.copier-guarded-update/reviewed-data.yml"
 while IFS= read -r managed_path; do
     if git -C "$GU_TARGET" check-ignore -q -- "$managed_path"; then
         printf '%s\n' "$managed_path"
@@ -3040,6 +3099,11 @@ expect_ok "guarded Copier update applies the exact reviewed answers" \
     sh -c 'test "$(yq -r ".use_foreman" "$1/.copier-answers.yml")" = true &&
         test "$(yq -r ".use_coderabbit" "$1/.copier-answers.yml")" = false &&
         test "$(yq -r ".use_codeql" "$1/.copier-answers.yml")" = true &&
+        test "$(yq -r ".use_codex_review" "$1/.copier-answers.yml")" = true &&
+        test "$(yq -r ".use_codex_cloud_review" "$1/.copier-answers.yml")" = true &&
+        test "$(yq -r ".use_skills_sync" "$1/.copier-answers.yml")" = true &&
+        test "$(yq -o=json -I=0 ".skill_categories" \
+            "$1/.copier-answers.yml")" = "[\"universal\"]" &&
         test "$(yq -o=json -I=0 ".codeql_languages" \
             "$1/.copier-answers.yml")" = "[\"javascript-typescript\"]" &&
         test "$(yq -r ".deploy_preview" "$1/.copier-answers.yml")" = true &&
