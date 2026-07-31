@@ -35,7 +35,6 @@ need() {
 }
 
 need gh
-need git
 need jq
 
 command_name="${1:-}"
@@ -241,10 +240,9 @@ reserve)
         old_phase=$(jq -r '.phase' "$state_file")
         [ "$old_repo" = "$repo" ] && [ "$old_pr" = "$pr" ] ||
             die "state belongs to a different PR"
+        [ "$old_phase" != "reserved" ] ||
+            die "an unresolved reservation must be reconciled before replacing its head"
         if [ "$old_head" = "$head" ]; then
-            if [ "$old_attempt" = "$attempt" ] && [ "$old_phase" = "reserved" ]; then
-                die "attempt is already reserved; reconcile the external comment before retrying"
-            fi
             [ "$old_attempt" = "1" ] && [ "$attempt" = "2" ] &&
                 [ "$old_phase" = "attached" ] ||
                 die "refusing an uncontrolled duplicate trigger for this head"
@@ -529,12 +527,20 @@ check)
         prefix_lower=$(printf '%s' "$prefix" | tr '[:upper:]' '[:lower:]')
         head_lower=$(printf '%s' "$state_head" | tr '[:upper:]' '[:lower:]')
         case "$head_lower" in "$prefix_lower"*) ;; *) continue ;; esac
-        resolved=$(git rev-parse --verify "${prefix}^{commit}" 2>/dev/null || true)
-        [ -n "$resolved" ] || {
-            emit indeterminate "bot review comment is not unambiguously bound to the current head"
+        resolved_payload=$(gh api "repos/$state_repo/commits/$prefix") ||
+            bounded_wait "cannot resolve a reviewed commit prefix through GitHub"
+        resolved=$(printf '%s' "$resolved_payload" | jq -er '.sha') || {
+            emit indeterminate "GitHub returned malformed commit-prefix data"
             exit 2
         }
-        [ "$resolved" = "$state_head" ] || continue
+        valid_sha "$resolved" || {
+            emit indeterminate "GitHub returned an invalid resolved commit"
+            exit 2
+        }
+        [ "$resolved" = "$state_head" ] || {
+            emit indeterminate "reviewed commit prefix does not resolve to the current head"
+            exit 2
+        }
         if [ "$classification" = "findings" ]; then
             comment_result=findings
         elif [ "$comment_result" = "none" ]; then

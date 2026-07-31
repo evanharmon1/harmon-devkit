@@ -57,6 +57,10 @@ repos/*/issues/comments/*) file=trigger.json ;;
 repos/*/issues/*/comments?per_page=100) file=comments.pages.json ;;
 repos/*/pulls/*/reviews?per_page=100) file=reviews.pages.json ;;
 repos/*/pulls/*/comments?per_page=100) file=inline.pages.json ;;
+repos/*/commits/*)
+    jq -cn --arg sha "$(cat "$GH_FIXTURES/resolved-head")" '{sha:$sha}'
+    exit 0
+    ;;
 *) exit 93 ;;
 esac
 cat "$GH_FIXTURES/$file"
@@ -75,6 +79,7 @@ trigger_id=123
 
 write_defaults() {
     printf '%s\n' "$head_sha" >"${fixtures}/head"
+    printf '%s\n' "$head_sha" >"${fixtures}/resolved-head"
     jq -cn \
         --argjson id "$actor_id" \
         --arg login "$actor_login" \
@@ -296,6 +301,21 @@ set -e
 [ "$reserved_rc" -eq 2 ] ||
     fail "ambiguous reserved attempt should fail closed: $reserved_out"
 
+echo "==> a head change cannot overwrite an unresolved reservation"
+old_recorded_head="$(jq -r '.head' "$state")"
+new_live_head="$(printf '%040d' 0)"
+printf '%s\n' "$new_live_head" >"${fixtures}/head"
+set +e
+changed_reserve_out="$("$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$new_live_head" --attempt 1 2>&1)"
+changed_reserve_rc=$?
+set -e
+[ "$changed_reserve_rc" -eq 2 ] ||
+    fail "head-change reservation should fail closed: $changed_reserve_out"
+[ "$(jq -r '.head' "$state")" = "$old_recorded_head" ] ||
+    fail "head-change reservation overwrote unresolved state"
+
 echo "==> a trigger older than its reservation cannot be attached"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
@@ -397,5 +417,25 @@ jq -cn \
     ]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 11 pending
+
+echo "==> GitHub must resolve a matching prefix to the current head"
+new_cycle
+prefix="${head_sha:0:10}"
+old_head="$(git rev-parse HEAD^)"
+printf '%s\n' "$old_head" >"${fixtures}/resolved-head"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[
+      {
+        id:103,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" +
+          $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
 
 echo "shepherd Codex cloud-review classifier: PASS"
