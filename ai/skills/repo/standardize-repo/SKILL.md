@@ -190,8 +190,10 @@ configuration blocker: ready can notify human reviewers immediately and is not
 a reversible automation probe. Freeze one final snapshot of the head, draft
 state, checks, reviews, mergeability, deferred findings, and unanswered threads.
 Promote that head with `gh pr ready`, confirm it is still the same open head and
-is no longer draft, then stop. Never merge, and never report the human handoff
-from a failed or indeterminate gate.
+is no longer draft, then stop. Reconcile the remote state even if promotion or
+confirmation fails; if an open PR is ready on an unverified head, run
+`gh pr ready --undo` and confirm it is draft before resuming or stopping. Never
+merge, and never report the human handoff from a failed or indeterminate gate.
 
 At both stages, watch every required check to a terminal green result and inspect
 every review thread.

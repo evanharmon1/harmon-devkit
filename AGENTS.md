@@ -171,7 +171,10 @@ something to ask permission for.
   available only through `pull_request.ready_for_review` is a configuration
   blocker, because promotion can notify CODEOWNERS before its result exists.
   Then run `gh pr ready`, confirm the PR is no longer draft and the head did
-  not change, and hand it to the human reviewer. Where the
+  not change, and hand it to the human reviewer. Treat promotion as a
+  reconciled transition: even when the command or confirmation fails, bounded-
+  fetch the remote state; if the open PR is ready on any unverified head,
+  return it to draft and confirm that state before resuming or stopping. Where the
   vendored `/shepherd` skill states a different cap or exit condition, **this
   file wins** — vendored skills are synced on their own release cadence and
   can lag a policy change made here.
@@ -188,8 +191,9 @@ something to ask permission for.
 - **Stop at ready for review.** Once checks pass and no review findings are
   unresolved, confirm all required automation settled while the PR was draft,
   promote the unchanged draft with `gh pr ready`, report the human handoff, and
-  stop. A failed or indeterminate gate stays draft. Merging is always a human
-  decision.
+  stop. A failed or indeterminate gate stays draft; reconcile a partial
+  promotion and return any open unverified PR to draft. Merging is always a
+  human decision.
 
 ## Definition of Done
 

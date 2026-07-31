@@ -696,11 +696,20 @@ loops indefinitely:
    that cannot be established, stop blocked and leave the PR draft; reconfigure
    the automation rather than promoting speculatively.
 
-   If the snapshot is draft, run `gh pr ready <n> --repo "$repo"`, then fetch
-   `state,isDraft,headRefOid` once more. Success requires the same head, an open
-   PR, and `isDraft == false`; otherwise stop as blocked without claiming a
-   handoff. This confirmation is the final agent action: ready-for-review is the
-   human handoff, not another automated workbench.
+   If the snapshot is draft, run `gh pr ready <n> --repo "$repo"`, then bounded-
+   fetch `state,isDraft,headRefOid` once more. Reconcile the state even when the
+   promotion command failed: its response can be lost after GitHub accepted the
+   mutation. Success requires the verified head, an open PR, and
+   `isDraft == false`. If the open PR is non-draft on a changed head, or any
+   other confirmation result cannot prove that exact successful transition,
+   run `gh pr ready --undo <n> --repo "$repo"` and bounded-fetch again until the
+   current open PR is confirmed draft. A changed head then returns to step 2;
+   another failed transition stops blocked. If repeated reads cannot establish
+   the remote state, attempt the undo once because this session initiated the
+   transition, then stop as indeterminate without claiming either a handoff or
+   a confirmed draft—the report must name that unresolved remote-state risk.
+   This confirmation is the final agent action: ready-for-review is the human
+   handoff, not another automated workbench.
 
    If the snapshot was already non-draft, promotion is idempotently complete
    and `gh pr ready` must not be called again. Audit the existing handoff on the

@@ -509,6 +509,11 @@ expect_ok "shepherd promotes only the unchanged ready head" \
     sh -c 'grep -qF "gh pr ready <n>" "$1" &&
         grep -qF "changed head invalidates the gate" "$1" &&
         grep -qF "must not be called again" "$1"' sh "$SHEPHERD_SKILL"
+expect_ok "shepherd reconciles partial or raced promotion" \
+    sh -c 'grep -qF "response can be lost" "$1" &&
+        grep -qF "gh pr ready --undo <n> --repo" "$1" &&
+        grep -qF "non-draft on a changed head" "$1" &&
+        grep -qF "unresolved remote-state risk" "$1"' sh "$SHEPHERD_SKILL"
 expect_ok "shepherd settles automation before final ready promotion" \
     sh -c 'grep -qF "cannot be used as an automation" "$1" &&
         grep -qF "pull_request.ready_for_review" "$1" &&
@@ -531,6 +536,7 @@ expect_ok "standardization hands off only a ready-for-review PR" \
         grep -qF "draft-time checks/review gate and final promotion" "$1" &&
         grep -qF "If the target has no vendored shepherd" "$1" &&
         grep -qF "or five rounds when it states none" "$1" &&
+        grep -qF "ready on an unverified head" "$1" &&
         grep -qF "final ready promotion is confirmed" "$1"' sh \
     "$STANDARDIZE_SKILL"
 expect_ok "root policy keeps ready as the final human handoff" \
