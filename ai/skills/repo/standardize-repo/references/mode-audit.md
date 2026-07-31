@@ -618,5 +618,7 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
 
 5. **Hand back.** Leave the changes committed on the feature branch with a
    Conventional-Commits message (e.g. `chore: standardize against harmon-init`)
-   and open a PR for human + code-owner review — releases and merges stay
-   intentional; do not merge or tag.
+   and open a draft PR. Shepherd the unchanged head through every required
+   check and review, promote it to ready for human + code-owner review only
+   after the complete readiness gate passes, and then stop — releases and
+   merges stay intentional; do not merge or tag.

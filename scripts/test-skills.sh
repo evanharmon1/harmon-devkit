@@ -509,6 +509,10 @@ expect_ok "shepherd promotes only the unchanged ready head" \
     sh -c 'grep -qF "gh pr ready <n>" "$1" &&
         grep -qF "changed head invalidates the gate" "$1" &&
         grep -qF "must not be called again" "$1"' sh "$SHEPHERD_SKILL"
+expect_ok "shepherd re-runs the full gate after ready promotion" \
+    sh -c 'grep -qF "bounded post-promotion window" "$1" &&
+        grep -qF "pull_request.ready_for_review" "$1" &&
+        grep -qF "gh pr ready --undo" "$1"' sh "$SHEPHERD_SKILL"
 expect_ok "shepherd blockers preserve the draft workbench" \
     grep -qF 'For every stop except Ready for human review, leave the PR draft' \
     "$SHEPHERD_SKILL"
@@ -522,6 +526,11 @@ expect_ok "standardization setup disables Codex Automatic reviews" \
 expect_ok "standardization hands off only a ready-for-review PR" \
     sh -c 'grep -qF "open a draft PR" "$1" &&
         grep -qF "promote the unchanged clean draft" "$1"' sh "$STANDARDIZE_SKILL"
+expect_ok "standardization modes use the draft-workbench handoff" \
+    sh -c 'grep -qF "open a draft PR" "$1/mode-audit.md" &&
+        grep -qF "open a draft PR" "$1/mode-update.md" &&
+        grep -qF "open a draft PR" "$1/mode-new-repo.md" &&
+        grep -qF "open a draft PR" "$1/standards-catalog.md"' sh "$STANDARDIZE_REFS"
 expect_fail "Codex classifier does not add an undeclared Perl dependency" \
     grep -qF 'need perl' \
     "$repo/ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"

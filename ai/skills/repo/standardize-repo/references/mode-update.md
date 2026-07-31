@@ -1530,9 +1530,11 @@ un-expose a committed key).
 ## 5. Hand off
 
 Commit on the branch with a Conventional-Commits message
-(`chore: update to harmon-init <version>`) and open a PR. Never bypass hooks; never
-merge to `main` directly. Re-import the branch ruleset via the GitHub UI only if the
-ruleset JSON changed (see [`post-generation-checklist.md`](./post-generation-checklist.md)).
+(`chore: update to harmon-init <version>`) and open a draft PR. Never bypass
+hooks; shepherd the unchanged head through the complete readiness gate, promote
+it to ready for human review, and then stop. Never merge to `main` directly.
+Re-import the branch ruleset via the GitHub UI only if the ruleset JSON changed
+(see [`post-generation-checklist.md`](./post-generation-checklist.md)).
 
 The update has one more part on two kinds of repo, and it lands **after the PR
 merges**: §6. It applies to any `project_management: github` repo, *and* to any

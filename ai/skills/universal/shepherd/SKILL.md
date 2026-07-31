@@ -411,10 +411,10 @@ issue may be moved at all.
   configured reviewer procedure for the current head. When Codex cloud review
   is disabled, give other reviewers a bounded ~10–15-minute window after
   checks conclude; when it is enabled, use the two-attempt contract above.
-- A round begins when a check fails or a review lands findings. All
-  workflows green and no unresolved findings → **stop at
-  green**: report that checks pass and any review verdicts, then stop.
-  Never merge — merging is always the maintainer's decision.
+- A round begins when a check fails or a review lands findings. All workflows
+  green and no unresolved findings means the candidate head may proceed to
+  step 6's readiness gate; **do not stop or report a handoff here**. Never
+  merge — merging is always the maintainer's decision.
 
 ## 3. Adjudicate findings (hypotheses, not authority)
 
@@ -690,8 +690,17 @@ loops indefinitely:
    If the snapshot is draft, run `gh pr ready <n> --repo "$repo"`, then fetch
    `state,isDraft,headRefOid` once more. Success requires the same head, an open
    PR, and `isDraft == false`; otherwise stop as blocked without claiming a
-   handoff. If the snapshot was already non-draft, promotion is idempotently
-   complete and `gh pr ready` must not be called again.
+   handoff. Promotion is not the handoff yet: repeat step 2's **complete**
+   checks, reviewer, deferred-finding, and unanswered-thread gate after a
+   bounded post-promotion window. This catches workflows or review apps that
+   react only to `pull_request.ready_for_review`. If any new check or finding
+   appears, run `gh pr ready --undo`, verify the unchanged PR is draft again,
+   and adjudicate it there. Treat a component that fires on every promotion as
+   a configuration blocker instead of cycling ready/draft indefinitely.
+
+   If the snapshot was already non-draft, promotion is idempotently complete
+   and `gh pr ready` must not be called again, but the same full post-ready gate
+   still runs before reporting the handoff.
 
    When current-head Codex cloud review is enabled, **Codex Automatic reviews
    must be disabled in the external integration before the first promotion**.

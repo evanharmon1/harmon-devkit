@@ -271,7 +271,7 @@ in `copier.yml` is what separates them:
 - **`run_task_install=yes`.** `task install` runs *before* this section and
   installs lefthook while the repo is still on `main`, so the generated
   `guard:no-commit-to-main` pre-commit hook blocks any commit here. `--no-verify`
-  is prohibited; put the freeze on a feature branch and open a PR, exactly as the
+  is prohibited; put the freeze on a feature branch and open a draft PR, exactly as the
   generated repo's own conventions require.
 
 ```bash
@@ -282,7 +282,7 @@ if git rev-parse --verify HEAD >/dev/null 2>&1 &&
   if test -x .git/hooks/pre-commit &&
     test "$(git rev-parse --abbrev-ref HEAD)" = main; then
     echo "lefthook is installed and HEAD is main: commit the lineage freeze on a" >&2
-    echo "feature branch and open a PR — never --no-verify" >&2
+    echo "feature branch and open a draft PR — never --no-verify" >&2
     exit 1
   fi
   git add -- .copier-answers.yml ||

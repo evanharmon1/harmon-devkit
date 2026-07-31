@@ -635,7 +635,9 @@ install the Renovate GitHub App on the repo. Conventions:
 - **Agents never merge to main.** AGENTS.md Definition of Done carries the rule
   (harmon-init ≥3.18.0, init #221): no `gh pr merge`/`git merge`/push to `main`
   without the maintainer's explicit per-merge approval, even with green CI and
-  a permissive ruleset — open the PR, report checks, stop. The settings `ask`
+  a permissive ruleset — open a draft PR, shepherd the unchanged head, promote
+  it to ready for human review only after the complete gate passes, and stop.
+  The settings `ask`
   rules above are the harness backstop (note: `ask` is skipped under
   `bypassPermissions`, e.g. the devcontainer bot profile — the AGENTS.md rule
   is the binding convention there). **[copier]**
