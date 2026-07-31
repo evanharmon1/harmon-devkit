@@ -512,7 +512,8 @@ expect_ok "shepherd promotes only the unchanged ready head" \
 expect_ok "shepherd re-runs the full gate after ready promotion" \
     sh -c 'grep -qF "bounded post-promotion window" "$1" &&
         grep -qF "pull_request.ready_for_review" "$1" &&
-        grep -qF "gh pr ready --undo" "$1"' sh "$SHEPHERD_SKILL"
+        grep -qF "gh pr ready --undo <n> --repo" "$1" &&
+        grep -qF "mere presence is not a reason" "$1"' sh "$SHEPHERD_SKILL"
 expect_ok "shepherd blockers preserve the draft workbench" \
     grep -qF 'For every stop except Ready for human review, leave the PR draft' \
     "$SHEPHERD_SKILL"
@@ -525,7 +526,9 @@ expect_ok "standardization setup disables Codex Automatic reviews" \
         grep -qF "human-confirmed disabled" "$1/mode-audit.md"' sh "$STANDARDIZE_REFS"
 expect_ok "standardization hands off only a ready-for-review PR" \
     sh -c 'grep -qF "open a draft PR" "$1" &&
-        grep -qF "promote the unchanged clean draft" "$1"' sh "$STANDARDIZE_SKILL"
+        grep -qF "pre- and post-promotion checks/review gate" "$1" &&
+        grep -qF "ready-triggered automation also settles cleanly" "$1"' sh \
+    "$STANDARDIZE_SKILL"
 expect_ok "standardization modes use the draft-workbench handoff" \
     sh -c 'grep -qF "open a draft PR" "$1/mode-audit.md" &&
         grep -qF "open a draft PR" "$1/mode-update.md" &&

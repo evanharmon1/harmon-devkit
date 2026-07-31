@@ -168,7 +168,8 @@ It confirms the expected files/tooling landed and then runs the repo's own gate
 `task install:hooks` to wire lefthook). Report what passed and surface any gaps
 against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
 prohibited); commit on a feature branch and open a draft PR — no direct commits to
-`main`. When the work includes a PR, watch every required check to a terminal green result
-and inspect every review thread after each push. Apply feedback you agree with and
-reply with a concrete repository-specific rationale when you disagree. Never merge;
-promote the unchanged clean draft to ready for review and report the human handoff.
+`main`. When the work includes a PR, follow the repository's vendored shepherd
+procedure through its complete pre- and post-promotion checks/review gate. Apply
+feedback you agree with and reply with a concrete repository-specific rationale
+when you disagree. Never merge; promote only the unchanged clean draft and report
+the human handoff only after ready-triggered automation also settles cleanly.

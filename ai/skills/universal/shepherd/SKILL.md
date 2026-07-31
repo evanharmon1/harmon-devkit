@@ -693,10 +693,13 @@ loops indefinitely:
    handoff. Promotion is not the handoff yet: repeat step 2's **complete**
    checks, reviewer, deferred-finding, and unanswered-thread gate after a
    bounded post-promotion window. This catches workflows or review apps that
-   react only to `pull_request.ready_for_review`. If any new check or finding
-   appears, run `gh pr ready --undo`, verify the unchanged PR is draft again,
-   and adjudicate it there. Treat a component that fires on every promotion as
-   a configuration blocker instead of cycling ready/draft indefinitely.
+   react only to `pull_request.ready_for_review`. Wait for newly started checks
+   and reviews to reach terminal results; their mere presence is not a reason
+   to revert the PR. If the post-promotion gate fails or produces a finding
+   that needs remediation, run `gh pr ready --undo <n> --repo "$repo"`, verify
+   the unchanged PR is draft again, and adjudicate it there. A component that
+   fails on every promotion is a configuration blocker; one that starts on
+   every promotion and passes is ordinary post-ready evidence.
 
    If the snapshot was already non-draft, promotion is idempotently complete
    and `gh pr ready` must not be called again, but the same full post-ready gate
