@@ -451,7 +451,6 @@ if test -e "$REVIEWED_DATA"; then
     yq -r '.use_codex_cloud_review // false' "$REVIEWED_DATA"
   )"
   USE_SKILLS_SYNC="$(yq -r '.use_skills_sync' "$REVIEWED_DATA")"
-  SKILL_CATEGORIES="$(yq -o=json -I=0 '.skill_categories // []' "$REVIEWED_DATA")"
   USE_CODERABBIT="$(yq -r '.use_coderabbit' "$REVIEWED_DATA")"
   USE_CODEQL="$(yq -r '.use_codeql' "$REVIEWED_DATA")"
   CODEQL_LANGUAGES="$(yq -o=json -I=0 '.codeql_languages' "$REVIEWED_DATA")"
@@ -462,7 +461,6 @@ else
   : "${USE_CODEX_REVIEW:=$(yq -r '.use_codex_review // false' .copier-answers.yml)}"
   : "${USE_CODEX_CLOUD_REVIEW:=$(yq -r '.use_codex_cloud_review // false' .copier-answers.yml)}"
   : "${USE_SKILLS_SYNC:=$(yq -r '.use_skills_sync // false' .copier-answers.yml)}"
-  : "${SKILL_CATEGORIES:=$(yq -o=json -I=0 '.skill_categories // []' .copier-answers.yml)}"
   : "${USE_CODERABBIT:=$(yq -r '.use_coderabbit // false' .copier-answers.yml)}"
 fi
 case "$USE_FOREMAN" in true | false) ;; *) echo "USE_FOREMAN must be true or false" >&2; exit 1 ;; esac
@@ -473,9 +471,6 @@ case "$USE_SKILLS_SYNC" in true | false) ;; *) echo "USE_SKILLS_SYNC must be tru
   { echo "use_codex_cloud_review requires use_codex_review" >&2; exit 1; }
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_SKILLS_SYNC" = "true" ] ||
   { echo "use_codex_cloud_review requires use_skills_sync" >&2; exit 1; }
-[ "$USE_CODEX_CLOUD_REVIEW" != "true" ] ||
-  printf '%s\n' "$SKILL_CATEGORIES" | yq -e 'index("universal") != null' - >/dev/null ||
-  { echo "use_codex_cloud_review requires the universal skill category" >&2; exit 1; }
 case "$USE_CODERABBIT" in true | false) ;; *) echo "USE_CODERABBIT must be true or false" >&2; exit 1 ;; esac
 if [ "$USE_CODEQL" = "false" ]; then
   CODEQL_LANGUAGES='[]'
@@ -645,15 +640,6 @@ if ! test -e "$REVIEWED_DATA" ||
         "$REVIEWED_CANDIDATE"; then
     rm -f "$REVIEWED_CANDIDATE"
     echo "failed to seed reviewed Codex cloud answer" >&2
-    exit 1
-  fi
-  if grep -qxF skill_categories "$GUARDED_STATE/reviewed-keys" &&
-    ! SKILL_CATEGORIES="$SKILL_CATEGORIES" \
-      yq -i \
-        '.skill_categories = (strenv(SKILL_CATEGORIES) | from_json)' \
-        "$REVIEWED_CANDIDATE"; then
-    rm -f "$REVIEWED_CANDIDATE"
-    echo "failed to seed reviewed skill categories" >&2
     exit 1
   fi
   mv "$REVIEWED_CANDIDATE" "$REVIEWED_DATA" ||

@@ -491,6 +491,9 @@ expect_ok "update guidance rejects missing Codex classifier prerequisites" \
     sh -c 'grep -qF "use_codex_cloud_review requires use_skills_sync" "$1" &&
         grep -qF "use_codex_cloud_review requires the universal skill category" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "update guidance does not preseed reviewed skill categories" \
+    grep -qF 'failed to seed reviewed skill categories' \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "shepherd starts Codex attempts only after checks settle" \
     grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
     "$SHEPHERD_SKILL"
