@@ -394,6 +394,20 @@ rmdir "${state}.lock"
 [ "$locked_rc" -eq 2 ] ||
     fail "locked reservation should fail closed: $locked_out"
 
+echo "==> state lock serializes checks with reservations"
+new_cycle
+mkdir "${state}.lock"
+set +e
+locked_check_out="$("$helper" check \
+    --state "$state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" --timeout-min 15 \
+    --now '2026-07-31T08:01:00Z' 2>&1)"
+locked_check_rc=$?
+set -e
+rmdir "${state}.lock"
+[ "$locked_check_rc" -eq 2 ] ||
+    fail "locked check should fail closed: $locked_check_out"
+
 echo "==> transient API failure stays within the attempt budget"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'

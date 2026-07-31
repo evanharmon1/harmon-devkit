@@ -383,6 +383,7 @@ check)
     [ -n "$actor_id" ] || usage
     valid_uint "$actor_id" || die "invalid actor ID"
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
+    acquire_state_lock
     read_state
 
     state_repo=$(jq -r '.repo' "$state_file")
@@ -415,7 +416,7 @@ check)
     }
 
     workdir=$(mktemp -d -t codex-cloud-review-XXXXXX)
-    trap 'rm -rf "$workdir"' EXIT
+    trap 'rm -rf "$workdir"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
     actor=$(run_gh api "users/$actor_login") || {
         bounded_wait "cannot authenticate the configured Codex actor"
