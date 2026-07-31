@@ -120,9 +120,11 @@ something to ask permission for.
   P0/P1 clean-pass exit condition, and the same background-and-poll handling,
   with its own max **6** rounds.
 - **`task ci`** — the full CI mirror; fix anything it catches.
-- **Open the PR** — conventional commit, push the branch, `gh pr create` with
-  a clear what/why/verification summary.
-- **Shepherd the PR (`/shepherd`, max 5 rounds).** `gh pr create` returning is
+- **Open the draft PR** — conventional commit, push the branch, `gh pr create
+  --draft` with a clear what/why/verification summary. Draft is the agent
+  workbench: implementation and automated review are still active.
+- **Shepherd the draft (`/shepherd`, max 5 rounds).** `gh pr create --draft`
+  returning is
   the trigger for this stage, not the end of the work — enter it deliberately
   instead of judging for yourself when the PR is finished. `/shepherd` is the
   procedure, and like the rest of the session suite it is **user-invocable
@@ -152,13 +154,30 @@ something to ask permission for.
   reconciliation, stop and escalate rather than falling back to CI alone.
   Persist the head, attempt, and exact trigger-comment ID so
   a resumed session cannot duplicate a request. This cap is independent of
-  the other loop caps. **Only one active shepherd may own a PR at a time.**
+  the other loop caps. Codex Automatic reviews must be disabled as a
+  human-configured external prerequisite: draft-time `@codex review` cycles
+  are the authoritative signal, and `gh pr ready` must not launch a new
+  asynchronous review after the readiness gate. **Only one active shepherd may
+  own a PR at a time.**
   The persisted state prevents duplicate requests across interrupted or resumed
   sessions in the same checkout; it is not a distributed lock across separate
   checkouts or machines. Do not shepherd the same PR concurrently elsewhere.
   If ownership is ambiguous, stop and reconcile the remote trigger history
   before continuing. If checks still fail or findings remain after 5 rounds,
-  stop and summarize what's unresolved on the PR for the maintainer. Where the
+  leave the PR draft, stop, and summarize what's unresolved on the PR for the
+  maintainer. Once the complete readiness gate is clean for the unchanged
+  current head, confirm that every required workflow and review app can run on
+  drafts (or was explicitly dispatched and settled on that head). Automation
+  available only through `pull_request.ready_for_review` is a configuration
+  blocker, because promotion can notify CODEOWNERS before its result exists.
+  Then run `gh pr ready`, confirm the PR is no longer draft and the head did
+  not change, and hand it to the human reviewer. Treat promotion as a
+  reconciled transition: fingerprint the PR body, reviews, top-level and inline
+  comments, and thread resolution immediately before and after promotion. Any
+  content change invalidates the gate. Even when the command or confirmation
+  fails, bounded-fetch the remote state; if the open PR is ready on any
+  unverified head or content snapshot, return it to draft and confirm that
+  state before resuming or stopping. Where the
   vendored `/shepherd` skill states a different cap or exit condition, **this
   file wins** — vendored skills are synced on their own release cadence and
   can lag a policy change made here.
@@ -172,8 +191,12 @@ something to ask permission for.
   current-head classifier. If Codex cloud review is enabled, absence of a
   terminal current-head result after its two bounded attempts is an
   escalation, never permission to proceed on CI alone.
-- **Stop at green.** Once checks pass *and* no review findings are unresolved,
-  report that and stop — merging is always a human decision.
+- **Stop at ready for review.** Once checks pass and no review findings are
+  unresolved, confirm all required automation settled while the PR was draft,
+  promote the unchanged draft with `gh pr ready`, report the human handoff, and
+  stop. A failed or indeterminate gate stays draft; reconcile a partial
+  promotion and return any open unverified PR to draft. Merging is always a
+  human decision.
 
 ## Definition of Done
 
@@ -185,8 +208,9 @@ something to ask permission for.
 - **Never merge to main yourself** — no `gh pr merge`, `git merge`, or push to
   `main` without the maintainer's explicit, per-merge approval, even when CI is
   green and the ruleset would allow it. Open the PR and shepherd it — checks
-  green with reviews unpolled is not the stopping point — then report and
-  stop; merging is always a human decision.
+  green with reviews unpolled is not the stopping point — promote the clean
+  unchanged draft to ready for review, then report and stop; merging is always
+  a human decision.
 - **Reply to every inline PR review comment in its own thread** — bot
   reviewers and humans alike. Treat findings as
   hypotheses: verify each against the code, fix what's confirmed, and post the

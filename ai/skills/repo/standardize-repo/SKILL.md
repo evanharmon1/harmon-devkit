@@ -167,8 +167,49 @@ It confirms the expected files/tooling landed and then runs the repo's own gate
 (`task verify` = the repo's fast check/build/validate/guard set; `task check` for lint only;
 `task install:hooks` to wire lefthook). Report what passed and surface any gaps
 against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
-prohibited); commit on a feature branch and open a PR — no direct commits to `main`.
-When the work includes a PR, watch every required check to a terminal green result
-and inspect every review thread after each push. Apply feedback you agree with and
-reply with a concrete repository-specific rationale when you disagree. Never merge;
-report the reviewed, green PR for human handoff.
+prohibited); commit on a feature branch — no direct commits to `main`.
+
+**Gate the staged rollout against the target policy.** Before publication, read
+the generated target's `AGENTS.md`. Use the draft-workbench lifecycle only when
+that authoritative file defines draft publication and ready-for-review as the
+human handoff. If it still defines an ordinary PR or stop-at-green handoff, the
+selected harmon-init release predates this lifecycle. Do not let a newer
+vendored shepherd override it: select a compatible harmon-init release, or
+follow the target policy and report that lifecycle adoption remains blocked.
+When `.coderabbit.yaml` is present, also require
+`reviews.auto_review.drafts: true` before relying on CodeRabbit as a gate; an
+older generated `false` value is the same upgrade blocker, not permission to
+promote early.
+
+On a compatible target, open a draft PR. When the target has a vendored shepherd,
+follow that procedure through its complete
+draft-time checks/review gate and final promotion.
+
+If the target has no vendored shepherd, use this fallback instead: keep the PR
+draft while work is active; after each push, bounded-poll every required check
+to a terminal result and inspect reviews, top-level comments, and every inline
+thread. Settle every finding and deferred PR-body checkbox, run the target's
+full local gate on the exact clean commit before each fix push, and repeat until
+the unchanged head is clean. Use the shepherd-round cap in the target's policy,
+or five rounds when it states none: one fix push or one no-change adjudication
+cycle is a round. Stop early when the sole blocker survives two consecutive
+rounds unchanged, or immediately for a permission, secret, external-service, or
+maintainer-decision blocker; every non-success stop remains draft.
+
+Before promotion, establish that every required workflow and review app runs on
+drafts or was explicitly dispatched and settled on the exact head. Treat
+automation available only through `pull_request.ready_for_review` as a
+configuration blocker: ready can notify human reviewers immediately and is not
+a reversible automation probe. Freeze one final snapshot of the head, draft
+state, checks, reviews, mergeability, deferred findings, and unanswered threads.
+Promote that head with `gh pr ready`, confirm it is still the same open head and
+is no longer draft, then stop. Reconcile the remote state even if promotion or
+confirmation fails; if an open PR is ready on an unverified head, run
+`gh pr ready --undo` and confirm it is draft before resuming or stopping. Never
+merge, and never report the human handoff from a failed or indeterminate gate.
+
+At both stages, watch every required check to a terminal green result and inspect
+every review thread.
+Apply feedback you agree with and reply with a concrete repository-specific
+rationale when you disagree. Never merge; promote only the unchanged clean draft.
+Report the human handoff only after the final ready promotion is confirmed.

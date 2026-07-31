@@ -379,8 +379,9 @@ important for a feature with a material footprint or an external capability:
   `use_skills_sync=true` and `universal` in `skill_categories` so the classifier
   is installed. Review it explicitly and keep it false unless the maintainer has
   connected Codex cloud review, accepts plan-dependent availability/quotas, and
-  has granted explicit connector permission for a private repository. Legacy
-  omission starts false.
+  has granted explicit connector permission for a private repository. The
+  maintainer must also disable Codex Automatic reviews so ready-for-review
+  promotion cannot start an untracked review. Legacy omission starts false.
   Enabling it changes the PR exit contract: a current-head terminal Codex result
   is required, with escalation after two unavailable attempts rather than a
   CI-only fallback.
@@ -1529,9 +1530,17 @@ un-expose a committed key).
 ## 5. Hand off
 
 Commit on the branch with a Conventional-Commits message
-(`chore: update to harmon-init <version>`) and open a PR. Never bypass hooks; never
-merge to `main` directly. Re-import the branch ruleset via the GitHub UI only if the
-ruleset JSON changed (see [`post-generation-checklist.md`](./post-generation-checklist.md)).
+(`chore: update to harmon-init <version>`). Before publication, read the
+rendered target `AGENTS.md`: open a draft PR and use the draft-workbench
+lifecycle only when that authoritative policy defines ready-for-review as the
+human handoff. If it still requires an ordinary PR or stopping at green, the
+selected harmon-init release predates this lifecycle; select a compatible
+release or follow the target policy and report the lifecycle upgrade as
+blocked. Never bypass hooks; on a compatible target, shepherd the unchanged
+draft through the complete readiness gate, promote it to ready for human
+review, and then stop. Never merge to `main` directly.
+Re-import the branch ruleset via the GitHub UI only if the ruleset JSON changed
+(see [`post-generation-checklist.md`](./post-generation-checklist.md)).
 
 The update has one more part on two kinds of repo, and it lands **after the PR
 merges**: §6. It applies to any `project_management: github` repo, *and* to any

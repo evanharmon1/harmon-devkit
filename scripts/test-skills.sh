@@ -431,6 +431,7 @@ done
 echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 SHEPHERD_SKILL="$repo/ai/skills/universal/shepherd/SKILL.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
@@ -497,6 +498,74 @@ expect_fail "update guidance does not preseed reviewed skill categories" \
 expect_ok "shepherd starts Codex attempts only after checks settle" \
     grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
     "$SHEPHERD_SKILL"
+expect_ok "implement creates the normal PR as a draft" \
+    grep -qF 'gh pr create --draft --repo "$repo"' "$IMPLEMENT_SKILL"
+expect_ok "implement confirms the pushed draft head" \
+    sh -c 'grep -qF "headRefOid,isDraft" "$1" &&
+        grep -qF "isDraft == true" "$1"' sh "$IMPLEMENT_SKILL"
+expect_ok "shepherd records draft state on entry" \
+    grep -qF 'state,isDraft,headRepositoryOwner' "$SHEPHERD_SKILL"
+expect_ok "shepherd promotes only the unchanged ready head" \
+    sh -c 'grep -qF "gh pr ready <n>" "$1" &&
+        grep -qF "changed head invalidates the gate" "$1" &&
+        grep -qF "must not be called again" "$1"' sh "$SHEPHERD_SKILL"
+expect_ok "shepherd reconciles partial or raced promotion" \
+    sh -c 'grep -qF "response can be lost" "$1" &&
+        grep -qF "gh pr ready --undo <n> --repo" "$1" &&
+        grep -qF "non-draft on a changed head" "$1" &&
+        grep -qF "report must name that unresolved" "$1" &&
+        grep -qF "remote-state risk" "$1"' sh "$SHEPHERD_SKILL"
+expect_ok "shepherd freezes review content across promotion" \
+    sh -c 'grep -qF "stable content fingerprint" "$1" &&
+        grep -qF "top-level comments, inline comments" "$1" &&
+        grep -qF "GraphQL review-thread resolution" "$1" &&
+        grep -qF "identical to the last pre-promotion read" "$1"' sh \
+    "$SHEPHERD_SKILL"
+expect_ok "shepherd settles automation before final ready promotion" \
+    sh -c 'grep -qF "cannot be used as an automation" "$1" &&
+        grep -qF "pull_request.ready_for_review" "$1" &&
+        grep -qF "final lifecycle transition" "$1" &&
+        grep -qF "coordination cleanup" "$1" &&
+        grep -qF "leave the PR draft" "$1"' sh "$SHEPHERD_SKILL"
+expect_fail "shepherd has no post-ready automation workbench" \
+    grep -qF "bounded post-promotion window" "$SHEPHERD_SKILL"
+expect_ok "shepherd blockers preserve the draft workbench" \
+    grep -qF 'For every stop except Ready for human review, leave the PR draft' \
+    "$SHEPHERD_SKILL"
+expect_ok "shepherd documents the external Automatic-review prerequisite" \
+    sh -c 'grep -qF "Codex Automatic reviews" "$1" &&
+        grep -qF "must be disabled in the external integration" "$1"' sh \
+    "$SHEPHERD_SKILL"
+expect_ok "standardization setup disables Codex Automatic reviews" \
+    sh -c 'grep -qF "Disable **Codex Automatic reviews**" "$1/post-generation-checklist.md" &&
+        grep -qF "human-confirmed disabled" "$1/mode-audit.md"' sh "$STANDARDIZE_REFS"
+expect_ok "standardization hands off only a ready-for-review PR" \
+    sh -c 'grep -qF "open a draft PR" "$1" &&
+        grep -qF "Gate the staged rollout against the target policy" "$1" &&
+        grep -qF "reviews.auto_review.drafts: true" "$1" &&
+        grep -qF "draft-time checks/review gate and final promotion" "$1" &&
+        grep -qF "If the target has no vendored shepherd" "$1" &&
+        grep -qF "or five rounds when it states none" "$1" &&
+        grep -qF "ready on an unverified head" "$1" &&
+        grep -qF "final ready promotion is confirmed" "$1"' sh \
+    "$STANDARDIZE_SKILL"
+expect_ok "standardization modes gate staged lifecycle compatibility" \
+    sh -c 'grep -qF "rendered target `AGENTS.md`" "$1/mode-update.md" &&
+        grep -qF "rendered target `AGENTS.md`" "$1/mode-audit.md" &&
+        grep -qF "generated target `AGENTS.md`" "$1/mode-new-repo.md" &&
+        grep -qF "reviews.auto_review.drafts: true" "$1/post-generation-checklist.md" &&
+        grep -qF "older target policy remains" "$1/standards-catalog.md"' sh \
+    "$STANDARDIZE_REFS"
+expect_ok "root policy keeps ready as the final human handoff" \
+    sh -c 'grep -qF "pull_request.ready_for_review" "$1" &&
+        grep -qF "configuration" "$1" &&
+        grep -qF "Then run `gh pr ready`" "$1"' sh \
+    "$repo/AGENTS.md"
+expect_ok "standardization modes use the draft-workbench handoff" \
+    sh -c 'grep -qF "open a draft PR" "$1/mode-audit.md" &&
+        grep -qF "open a draft PR" "$1/mode-update.md" &&
+        grep -qF "draft-workbench lifecycle" "$1/mode-new-repo.md" &&
+        grep -qF "open a draft PR" "$1/standards-catalog.md"' sh "$STANDARDIZE_REFS"
 expect_fail "Codex classifier does not add an undeclared Perl dependency" \
     grep -qF 'need perl' \
     "$repo/ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"

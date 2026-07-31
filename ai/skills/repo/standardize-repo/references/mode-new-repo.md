@@ -150,7 +150,7 @@ predate the question and render CodeRabbit unconditionally.
 | `use_codeql` | bool | `true` for `web-astro` / `web-app`; otherwise `false` | Includes CodeQL SAST. Public repositories have Code Security by default; for a private/internal repo, enable GitHub Code Security first or answer `false`. |
 | `codeql_languages` | multiselect | JS/TS for web; Python for supported Python/IaC selections when CodeQL is enabled | Exact CodeQL matrix; must be nonempty when `use_codeql=true` and should match real first-party source. |
 | `use_codex_review` | bool | `false` | Adds local, advisory Codex review/challenge tasks and the optional Claude → Codex stop-gate. |
-| `use_codex_cloud_review` | bool | `false` | Requires a terminal current-head Codex cloud result during shepherding. Requires `use_codex_review=true`, `use_skills_sync=true`, `universal` in `skill_categories`, a maintainer-connected GitHub integration, and explicit private-repository connector permission; availability and quotas depend on the maintainer's ChatGPT plan, so free-tier access is not assumed. |
+| `use_codex_cloud_review` | bool | `false` | Requires a terminal current-head Codex cloud result during draft shepherding. Requires `use_codex_review=true`, `use_skills_sync=true`, `universal` in `skill_categories`, a maintainer-connected GitHub integration, disabled Codex Automatic reviews, and explicit private-repository connector permission; availability and quotas depend on the maintainer's ChatGPT plan, so free-tier access is not assumed. |
 | `use_coderabbit` | bool | `false` | Adds `.coderabbit.yaml`, App setup instructions, and CodeRabbit bot trust. Requires an account/App install; public OSS hosted reviews are free with rate limits, while private hosted code reviews require a paid plan after the trial. |
 | `ci_runner` | str | `ubuntu-latest` | `ubuntu-latest` \| `self-hosted`. |
 | `license` | str | `mit` | `mit` \| `private`. |
@@ -259,6 +259,13 @@ this runs, so the frozen tuple has to reach history too. Which side effects you
 enabled decides how — all three cases below are real, and the `_tasks` ordering
 in `copier.yml` is what separates them:
 
+Before publishing any branch, read the generated target `AGENTS.md`. Open a
+draft PR and use the draft-workbench lifecycle only when that authoritative
+policy defines ready-for-review as the human handoff. If it still defines an
+ordinary PR or stop-at-green handoff, the selected harmon-init release predates
+the lifecycle; select a compatible release or follow the generated target
+policy and report lifecycle adoption as blocked.
+
 - **Recommended path** (every side-effect answer at its `no` default). Nothing is
   published and no hooks are installed yet — Copier makes the scaffold commit
   *before* `task install` precisely so nothing intercepts it. Amend, and the
@@ -271,8 +278,8 @@ in `copier.yml` is what separates them:
 - **`run_task_install=yes`.** `task install` runs *before* this section and
   installs lefthook while the repo is still on `main`, so the generated
   `guard:no-commit-to-main` pre-commit hook blocks any commit here. `--no-verify`
-  is prohibited; put the freeze on a feature branch and open a PR, exactly as the
-  generated repo's own conventions require.
+  is prohibited; put the freeze on a feature branch and use the generated
+  repo's own PR lifecycle.
 
 ```bash
 if git rev-parse --verify HEAD >/dev/null 2>&1 &&
@@ -282,7 +289,7 @@ if git rev-parse --verify HEAD >/dev/null 2>&1 &&
   if test -x .git/hooks/pre-commit &&
     test "$(git rev-parse --abbrev-ref HEAD)" = main; then
     echo "lefthook is installed and HEAD is main: commit the lineage freeze on a" >&2
-    echo "feature branch and open a PR — never --no-verify" >&2
+    echo "feature branch and follow AGENTS.md's PR lifecycle — never --no-verify" >&2
     exit 1
   fi
   git add -- .copier-answers.yml ||

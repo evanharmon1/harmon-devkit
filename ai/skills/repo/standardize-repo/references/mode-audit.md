@@ -301,7 +301,10 @@ attributable to every current PR head, preserve exact trigger-attempt state,
 and escalate after two unavailable attempts without a CI-only fallback. The
 repository cannot prove external connector access or plan/quota availability,
 so record those as human-verifiable `?` items (including explicit connector
-permission for private repositories). When false, the required Codex cloud
+permission for private repositories). Also require a human-confirmed disabled
+state for Codex Automatic reviews: explicit draft-time requests are the
+authoritative cycles, and ready-for-review promotion must not trigger another
+untracked review. When false, the required Codex cloud
 signal and its setup instructions must be absent. Stale policy or an
 unreviewed legacy opt-in is a **should** finding; an unsatisfiable required
 signal is a blocker.
@@ -614,6 +617,13 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
    to manually re-walking the gap report's Reconciliation plan.)
 
 5. **Hand back.** Leave the changes committed on the feature branch with a
-   Conventional-Commits message (e.g. `chore: standardize against harmon-init`)
-   and open a PR for human + code-owner review — releases and merges stay
-   intentional; do not merge or tag.
+   Conventional-Commits message (e.g. `chore: standardize against harmon-init`).
+   Read the rendered target `AGENTS.md`: open a draft PR and use the
+   draft-workbench lifecycle only when that authoritative policy defines
+   ready-for-review as the human handoff. If it still defines an ordinary PR or
+   stop-at-green handoff, select a compatible harmon-init release or follow the
+   target policy and report the lifecycle upgrade as blocked. On a compatible
+   target, shepherd the unchanged head through every required check and review,
+   promote it to ready for human + code-owner review only after the complete
+   readiness gate passes, and then stop — releases and merges stay intentional;
+   do not merge or tag.

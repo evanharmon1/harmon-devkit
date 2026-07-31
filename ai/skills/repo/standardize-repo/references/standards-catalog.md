@@ -635,7 +635,15 @@ install the Renovate GitHub App on the repo. Conventions:
 - **Agents never merge to main.** AGENTS.md Definition of Done carries the rule
   (harmon-init ≥3.18.0, init #221): no `gh pr merge`/`git merge`/push to `main`
   without the maintainer's explicit per-merge approval, even with green CI and
-  a permissive ruleset — open the PR, report checks, stop. The settings `ask`
+  a permissive ruleset — open a draft PR, shepherd the unchanged head, promote
+  it to ready for human review only after the complete gate passes, and stop.
+  During the staged rollout, this lifecycle applies only when the rendered
+  target `AGENTS.md` contains that contract; an older target policy remains
+  authoritative until a compatible harmon-init release is selected. When
+  CodeRabbit is enabled, `.coderabbit.yaml` must also set
+  `reviews.auto_review.drafts: true`, or automated review cannot settle before
+  the human handoff.
+  The settings `ask`
   rules above are the harness backstop (note: `ask` is skipped under
   `bypassPermissions`, e.g. the devcontainer bot profile — the AGENTS.md rule
   is the binding convention there). **[copier]**
@@ -650,7 +658,9 @@ install the Renovate GitHub App on the repo. Conventions:
   and `infra` when Terraform/Ansible or the iac type applies. The generated
   `use_codex_cloud_review=true` option overrides that ordinary freedom: it
   requires skills sync and the `universal` category because that category ships
-  the mandatory current-head shepherd classifier.
+  the mandatory current-head shepherd classifier. Its human setup also disables
+  Codex Automatic reviews so the explicit draft-time cycle remains authoritative
+  when the PR is promoted to ready for review.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
   `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
   (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
@@ -749,7 +759,8 @@ install the Renovate GitHub App on the repo. Conventions:
   `use_codex_cloud_review=true` (requires `use_codex_review=true`,
   `use_skills_sync=true`, and `universal` in `skill_categories`; **[manual]**
   connect the GitHub integration, confirm plan/quota availability, and grant
-  explicit connector permission for a private repository),
+  explicit connector permission for a private repository, and disable Codex
+  Automatic reviews so ready promotion does not launch an untracked cycle),
   `.coderabbit.yaml` only when `use_coderabbit=true` (CodeRabbit reviews —
   [manual] install the app),
   `.github/PULL_REQUEST_TEMPLATE.md`, the `.github/ISSUE_TEMPLATE/` YAML **Issue
