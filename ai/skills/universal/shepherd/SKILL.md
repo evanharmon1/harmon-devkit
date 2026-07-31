@@ -503,6 +503,23 @@ is optional in addition, never a substitute for per-thread replies.
   never weaken a gate to get through it.
 - Do **not** re-enter the local challenge/review loops — the post-push
   cloud/bot review is the second-model check at this stage.
+- **Git transport is HTTPS authenticated by `gh`**, not SSH: on
+  dotfiles-managed hosts and in the platform's devcontainers,
+  `credential.helper` is `gh auth git-credential` and SSH GitHub URLs are
+  rewritten to HTTPS via `url.insteadOf` (harmon-dotfiles ADR 0002), so a
+  locked or absent SSH agent must never block a push. Two corollaries:
+  - **Never work around an SSH failure by pushing to a raw `https://…`
+    URL.** A URL push bypasses the named remote, so the remote-tracking ref
+    is not updated and `git status` reports a phantom "ahead N" after a
+    successful push. If a checkout somehow lacks the rewrite (an
+    unprovisioned host) and an SSH push fails, push to the **named remote**
+    with the helper forced:
+    `git -c credential.helper= -c credential.helper='!gh auth git-credential' push <remote> …`
+    — the empty assignment resets the helper chain first, so a stale or
+    hanging store (e.g. osxkeychain) is never consulted.
+  - The push-URL safety checks below compare against `https` and SSH forms
+    alike; an SSH-form remote is a normal, expected configuration, not a
+    finding — the rewrite handles it at transport time.
 - Push the fix commit (conventional message) **explicitly to the PR head**:
   derive the remote whose **push** URL matches `headRepositoryOwner` **and**
   `headRepository` — owner and name both, since forks usually keep the

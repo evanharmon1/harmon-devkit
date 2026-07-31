@@ -130,7 +130,9 @@ repo** (one template serves every repo). To stand this repo up in Coder:
 
 To work across several repos in one container, list them in
 `.devcontainer/related-repos.txt` (one `owner/repo` per line; `@branch`, full
-URLs, and ssh URLs also work). They are:
+URLs, and ssh URLs also work — ssh URLs are rewritten to https by the
+container gitconfig, which `post-create-common.sh` sets up so in-container
+git operations never depend on an SSH agent). They are:
 
 - **cloned** into `/workspaces/`, beside this repo, on container **create**
   (`scripts/bootstrap-related-repos.sh`) — so a rebuilt or persistence-lost

@@ -38,6 +38,14 @@ else
     echo "GitHub CLI is not authenticated; skipping gh auth setup."
 fi
 
+# Rewrite GitHub SSH URLs to HTTPS for fetch AND push: in-container git ops
+# never depend on an SSH agent (absent in bot containers; lockout-prone when
+# forwarded into human ones). HTTPS auth comes from gh (GH_TOKEN, above) in
+# bot/Coder profiles, or VS Code's forwarded host credential helper on attach.
+# Mirrors the host dotfiles policy (harmon-dotfiles ADR 0002).
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
+
 echo "Git user: $(git config --global user.name)"
 echo "GitHub auth status:"
 gh auth status || true
