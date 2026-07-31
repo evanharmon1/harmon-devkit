@@ -680,7 +680,7 @@ case "$USE_SKILLS_SYNC" in true | false) ;; *) echo "reviewed use_skills_sync mu
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_SKILLS_SYNC" = "true" ] ||
   { echo "use_codex_cloud_review requires use_skills_sync" >&2; exit 1; }
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] ||
-  printf '%s\n' "$SKILL_CATEGORIES" | yq -e 'index("universal") != null' - >/dev/null ||
+  printf '%s\n' "$SKILL_CATEGORIES" | yq -e 'contains(["universal"])' - >/dev/null ||
   { echo "use_codex_cloud_review requires the universal skill category" >&2; exit 1; }
 case "$USE_CODERABBIT" in true | false) ;; *) echo "reviewed use_coderabbit must be boolean" >&2; exit 1 ;; esac
 case "$USE_CODEQL" in true | false) ;; *) echo "reviewed use_codeql must be boolean" >&2; exit 1 ;; esac

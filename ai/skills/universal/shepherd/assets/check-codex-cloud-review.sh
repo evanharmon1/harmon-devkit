@@ -61,7 +61,6 @@ actor_login='chatgpt-codex-connector[bot]'
 timeout_min=15
 now=
 lock_dir=
-clock_skew_seconds=60
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -357,14 +356,6 @@ attach)
         ' >/dev/null || die "comment $trigger_id is not this PR's exact review trigger"
     requested_at=$(printf '%s' "$comment" | jq -er '.created_at')
     valid_time "$requested_at" || die "trigger has a malformed creation time"
-    requested_epoch=$(jq -nr \
-        --arg value "$requested_at" '$value | fromdateiso8601') ||
-        die "cannot parse trigger creation time"
-    reserved_epoch=$(jq -nr \
-        --arg value "$state_reserved" '$value | fromdateiso8601') ||
-        die "cannot parse reservation time"
-    [ "$((requested_epoch + clock_skew_seconds))" -ge "$reserved_epoch" ] ||
-        die "trigger predates this reservation"
 
     payload=$(jq \
         --argjson id "$trigger_id" \

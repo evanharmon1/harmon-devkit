@@ -352,7 +352,7 @@ set -e
 [ "$(jq -r '.head' "$state")" = "$old_recorded_head" ] ||
     fail "head-change reservation overwrote unresolved state"
 
-echo "==> a trigger outside clock-skew tolerance cannot be attached"
+echo "==> server clock skew does not reject the exact trigger"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 write_defaults
@@ -362,13 +362,10 @@ rm -f "$state"
     --head "$head_sha" --attempt 1 >/dev/null
 jq '.reserved_at = "2026-07-31T08:01:01Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
-set +e
-old_trigger_out="$("$helper" attach \
-    --state "$state" --trigger-id "$trigger_id" 2>&1)"
-old_trigger_rc=$?
-set -e
-[ "$old_trigger_rc" -eq 2 ] ||
-    fail "old trigger attachment should fail closed: $old_trigger_out"
+"$helper" attach \
+    --state "$state" --trigger-id "$trigger_id" >/dev/null
+[ "$(jq -r '.trigger_comment_id' "$state")" = "$trigger_id" ] ||
+    fail "clock-skewed exact trigger was not attached"
 
 echo "==> an existing state lock serializes reservations"
 write_defaults
