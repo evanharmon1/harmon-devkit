@@ -708,8 +708,11 @@ loops indefinitely:
    the remote state, attempt the undo once because this session initiated the
    transition, then stop as indeterminate without claiming either a handoff or
    a confirmed draft—the report must name that unresolved remote-state risk.
-   This confirmation is the final agent action: ready-for-review is the human
-   handoff, not another automated workbench.
+   This confirmation is the final lifecycle transition: ready-for-review is the
+   human handoff, not another automated workbench. After it, perform only this
+   stop condition's coordination cleanup (project-card state, guarded
+   `agent:*` label release, and the final report); do not restart code changes,
+   gates, or automated review on the ready PR.
 
    If the snapshot was already non-draft, promotion is idempotently complete
    and `gh pr ready` must not be called again. Audit the existing handoff on the

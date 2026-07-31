@@ -167,8 +167,21 @@ It confirms the expected files/tooling landed and then runs the repo's own gate
 (`task verify` = the repo's fast check/build/validate/guard set; `task check` for lint only;
 `task install:hooks` to wire lefthook). Report what passed and surface any gaps
 against `references/standards-catalog.md`. Never bypass hooks (`--no-verify` is
-prohibited); commit on a feature branch and open a draft PR — no direct commits to
-`main`. When the work includes a PR and the target has a vendored shepherd,
+prohibited); commit on a feature branch — no direct commits to `main`.
+
+**Gate the staged rollout against the target policy.** Before publication, read
+the generated target's `AGENTS.md`. Use the draft-workbench lifecycle only when
+that authoritative file defines draft publication and ready-for-review as the
+human handoff. If it still defines an ordinary PR or stop-at-green handoff, the
+selected harmon-init release predates this lifecycle. Do not let a newer
+vendored shepherd override it: select a compatible harmon-init release, or
+follow the target policy and report that lifecycle adoption remains blocked.
+When `.coderabbit.yaml` is present, also require
+`reviews.auto_review.drafts: true` before relying on CodeRabbit as a gate; an
+older generated `false` value is the same upgrade blocker, not permission to
+promote early.
+
+On a compatible target, open a draft PR. When the target has a vendored shepherd,
 follow that procedure through its complete
 draft-time checks/review gate and final promotion.
 

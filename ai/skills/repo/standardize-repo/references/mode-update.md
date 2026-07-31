@@ -1530,9 +1530,15 @@ un-expose a committed key).
 ## 5. Hand off
 
 Commit on the branch with a Conventional-Commits message
-(`chore: update to harmon-init <version>`) and open a draft PR. Never bypass
-hooks; shepherd the unchanged head through the complete readiness gate, promote
-it to ready for human review, and then stop. Never merge to `main` directly.
+(`chore: update to harmon-init <version>`). Before publication, read the
+rendered target `AGENTS.md`: open a draft PR and use the draft-workbench
+lifecycle only when that authoritative policy defines ready-for-review as the
+human handoff. If it still requires an ordinary PR or stopping at green, the
+selected harmon-init release predates this lifecycle; select a compatible
+release or follow the target policy and report the lifecycle upgrade as
+blocked. Never bypass hooks; on a compatible target, shepherd the unchanged
+draft through the complete readiness gate, promote it to ready for human
+review, and then stop. Never merge to `main` directly.
 Re-import the branch ruleset via the GitHub UI only if the ruleset JSON changed
 (see [`post-generation-checklist.md`](./post-generation-checklist.md)).
 

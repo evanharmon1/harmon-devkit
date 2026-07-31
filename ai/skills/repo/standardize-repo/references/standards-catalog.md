@@ -637,6 +637,12 @@ install the Renovate GitHub App on the repo. Conventions:
   without the maintainer's explicit per-merge approval, even with green CI and
   a permissive ruleset — open a draft PR, shepherd the unchanged head, promote
   it to ready for human review only after the complete gate passes, and stop.
+  During the staged rollout, this lifecycle applies only when the rendered
+  target `AGENTS.md` contains that contract; an older target policy remains
+  authoritative until a compatible harmon-init release is selected. When
+  CodeRabbit is enabled, `.coderabbit.yaml` must also set
+  `reviews.auto_review.drafts: true`, or automated review cannot settle before
+  the human handoff.
   The settings `ask`
   rules above are the harness backstop (note: `ask` is skipped under
   `bypassPermissions`, e.g. the devcontainer bot profile — the AGENTS.md rule

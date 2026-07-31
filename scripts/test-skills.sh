@@ -517,7 +517,8 @@ expect_ok "shepherd reconciles partial or raced promotion" \
 expect_ok "shepherd settles automation before final ready promotion" \
     sh -c 'grep -qF "cannot be used as an automation" "$1" &&
         grep -qF "pull_request.ready_for_review" "$1" &&
-        grep -qF "final agent action" "$1" &&
+        grep -qF "final lifecycle transition" "$1" &&
+        grep -qF "coordination cleanup" "$1" &&
         grep -qF "leave the PR draft" "$1"' sh "$SHEPHERD_SKILL"
 expect_fail "shepherd has no post-ready automation workbench" \
     grep -qF "bounded post-promotion window" "$SHEPHERD_SKILL"
@@ -533,12 +534,19 @@ expect_ok "standardization setup disables Codex Automatic reviews" \
         grep -qF "human-confirmed disabled" "$1/mode-audit.md"' sh "$STANDARDIZE_REFS"
 expect_ok "standardization hands off only a ready-for-review PR" \
     sh -c 'grep -qF "open a draft PR" "$1" &&
+        grep -qF "Gate the staged rollout against the target policy" "$1" &&
+        grep -qF "reviews.auto_review.drafts: true" "$1" &&
         grep -qF "draft-time checks/review gate and final promotion" "$1" &&
         grep -qF "If the target has no vendored shepherd" "$1" &&
         grep -qF "or five rounds when it states none" "$1" &&
         grep -qF "ready on an unverified head" "$1" &&
         grep -qF "final ready promotion is confirmed" "$1"' sh \
     "$STANDARDIZE_SKILL"
+expect_ok "standardization modes gate staged lifecycle compatibility" \
+    sh -c 'grep -qF "rendered target `AGENTS.md`" "$1/mode-update.md" &&
+        grep -qF "reviews.auto_review.drafts: true" "$1/post-generation-checklist.md" &&
+        grep -qF "older target policy remains" "$1/standards-catalog.md"' sh \
+    "$STANDARDIZE_REFS"
 expect_ok "root policy keeps ready as the final human handoff" \
     sh -c 'grep -qF "pull_request.ready_for_review" "$1" &&
         grep -qF "configuration" "$1" &&

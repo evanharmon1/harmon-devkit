@@ -93,7 +93,12 @@ push so the remote exists.
 
 - [ ] **[human-only; only when `use_coderabbit=true`]** Install the
       **CodeRabbit** GitHub App — <https://github.com/apps/coderabbitai>. The
-      generated `.coderabbit.yaml` is pre-configured.
+      generated `.coderabbit.yaml` must set
+      `reviews.auto_review.drafts: true` so its required review settles before
+      ready-for-review triggers the human handoff. Verify that value before
+      connecting the App. A generated `false` means the selected harmon-init
+      release predates the draft lifecycle; upgrade it rather than promoting a
+      PR early to trigger CodeRabbit.
 
 - [ ] **[human-only; default `use_coderabbit=false`]** Confirm CodeRabbit has no
       access to this repository. For a repository that previously used it,
