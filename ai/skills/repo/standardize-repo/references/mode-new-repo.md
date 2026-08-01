@@ -255,9 +255,12 @@ fi
 ```
 
 With `git_init=true`, Copier's `_tasks` already made the scaffold commit before
-this runs, so the frozen tuple has to reach history too. Which side effects you
-enabled decides how — all three cases below are real, and the `_tasks` ordering
-in `copier.yml` is what separates them:
+this runs, so the frozen tuple has to reach history too. The **bootstrap
+boundary** is separate from ordinary agent-authored changes: the **initial
+base** is the commit that establishes `main` on the remote, and how it is built
+— and whether the freeze folds into it or rides a draft PR — is decided by the
+remote-creation profile, not by preference. The `_tasks` ordering in
+`copier.yml` is what separates the cases below.
 
 Before publishing any branch, read the generated target `AGENTS.md`. Open a
 draft PR and use the draft-workbench lifecycle only when that authoritative
@@ -266,20 +269,38 @@ ordinary PR or stop-at-green handoff, the selected harmon-init release predates
 the lifecycle; select a compatible release or follow the generated target
 policy and report lifecycle adoption as blocked.
 
-- **Recommended path** (every side-effect answer at its `no` default). Nothing is
-  published and no hooks are installed yet — Copier makes the scaffold commit
-  *before* `task install` precisely so nothing intercepts it. Amend, and the
-  lineage is correct from the very first commit.
-- **`github_remote_create=yes` / `github_release_init=yes`.** `gh repo create
-  --push` published the scaffold and `task release:init` may have tagged it.
-  Never rewrite that — record a follow-up commit **and push it**. Left local, the
-  remote default branch keeps the tag-valued tuple and a fresh clone still enters
-  legacy recovery on its first update, which defeats the whole point.
-- **`run_task_install=yes`.** `task install` runs *before* this section and
-  installs lefthook while the repo is still on `main`, so the generated
-  `guard:no-commit-to-main` pre-commit hook blocks any commit here. `--no-verify`
-  is prohibited; put the freeze on a feature branch and use the generated
-  repo's own PR lifecycle.
+- **No remote yet — `github_remote_create=false` (the recommended default).**
+  Nothing is published and no hooks are installed yet — Copier makes the scaffold
+  commit *before* `task install` precisely so nothing intercepts it. The freeze
+  **amends** the scaffold commit, so the lineage is correct from the very first
+  commit. The scaffold + freeze together are the **initial base**; publish it
+  directly (`gh repo create` + push `main`) when you set up the remote in §6. A
+  PR cannot predate its base branch — until `main` exists on the remote there is
+  nothing for a PR to target — so the bootstrap base is published directly, not
+  via a PR. Only after `main` is published does the draft-workbench lifecycle
+  begin: every later agent-authored commit (post-generation checklist work,
+  framework scaffolding) branches off `main` and opens a draft PR.
+- **Remote already created — `github_remote_create=true`.** Copier's `_tasks`
+  already ran `gh repo create --push`, so the scaffold (still carrying the
+  tag-valued tuple) is **already published on `main`**; `github_release_init` may
+  also have tagged it. That published commit is the initial base — **never
+  rewrite it, and never push an agent-authored follow-up directly to `main`.**
+  The freeze is the first such follow-up: **branch from `main` before committing
+  it, push the branch, and open a draft PR.** `main` temporarily carries the
+  tag-valued tuple until that PR merges — the deliberate cost of never rewriting
+  published history; the freeze PR is the immediate next step, so the window is
+  short. (Contrast the no-remote path, where the freeze lands in the unpublished
+  base before anyone clones it.) Continue the §5/§6 post-generation work on the
+  same draft PR — it is the agent workbench — and shepherd it through the target
+  policy's draft-workbench lifecycle.
+- **Hooks installed before the freeze — `run_task_install=true`** (orthogonal to
+  either profile above). `task install` runs *before* this section and installs
+  lefthook while the repo is still on `main`, so the generated
+  `guard:no-commit-to-main` pre-commit hook blocks any commit here — amend
+  included. `--no-verify` is prohibited. The freeze goes on a feature branch with
+  a draft PR (the remote-created profile's model). If there is no remote yet,
+  publish the base first (`gh repo create` + push `main`), then branch for the
+  freeze — the unpublished base cannot be amended behind an installed hook.
 
 ```bash
 if git rev-parse --verify HEAD >/dev/null 2>&1 &&
@@ -289,23 +310,38 @@ if git rev-parse --verify HEAD >/dev/null 2>&1 &&
   if test -x .git/hooks/pre-commit &&
     test "$(git rev-parse --abbrev-ref HEAD)" = main; then
     echo "lefthook is installed and HEAD is main: commit the lineage freeze on a" >&2
-    echo "feature branch and follow AGENTS.md's PR lifecycle — never --no-verify" >&2
+    echo "feature branch and open a draft PR — never --no-verify, never push to main" >&2
     exit 1
   fi
   git add -- .copier-answers.yml ||
     { echo "failed to stage the frozen lineage tuple" >&2; exit 1; }
   if git rev-parse --verify '@{upstream}' >/dev/null 2>&1 ||
     test -n "$(git tag --points-at HEAD)"; then
-    # Already pushed and/or tagged — never rewrite published history.
+    # github_remote_create=yes published the scaffold (and github_release_init
+    # may have tagged it) before this section. That commit is the initial base —
+    # never rewrite published history, and never push an agent-authored
+    # follow-up to main. A PR cannot predate its base branch, and main already
+    # exists, so branch, commit the freeze, push the branch, open a draft PR.
+    FREEZE_BRANCH=chore/freeze-copier-lineage
+    git switch -c "$FREEZE_BRANCH" ||
+      { echo "failed to create the lineage-freeze branch" >&2; exit 1; }
     git commit -m 'chore: freeze copier lineage to the verified template commit' ||
       { echo "failed to record the frozen lineage tuple" >&2; exit 1; }
-    git push ||
+    git push -u origin "$FREEZE_BRANCH" ||
       {
         echo "freeze commit is local only — the remote still carries the" >&2
-        echo "tag-valued tuple; push it before the first update" >&2
+        echo "tag-valued tuple; push the branch before the first update" >&2
         exit 1
       }
+    gh pr create --draft \
+      --title 'chore: freeze copier lineage to the verified template commit' \
+      --body 'Freeze the .copier-answers.yml lineage tuple to the verified template commit (full 40-hex hash) so the first copier update does not enter legacy-baseline recovery. See references/mode-new-repo.md §4a.' ||
+      { echo "failed to open the lineage-freeze draft PR" >&2; exit 1; }
   else
+    # No remote, no tag, no installed hooks: the scaffold is still private to
+    # this machine. Fold the freeze into the unpublished initial base so the
+    # first published commit carries the correct lineage. (A PR cannot predate
+    # its base branch.)
     git commit --amend --no-edit ||
       { echo "failed to record the frozen lineage tuple" >&2; exit 1; }
   fi

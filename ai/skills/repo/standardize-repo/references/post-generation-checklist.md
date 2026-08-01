@@ -425,7 +425,16 @@ answering `linear`/`none` has no such task and should skip them.
   > are unreachable regardless of permissions.
   >
   > **Organization permissions are org-scoped — the selected-repo list does not
-  > bound them.** Grant read, never write.
+  > bound them.** A repository permission stops at the repos you selected; an
+  > organization permission reaches every project and variable in the org,
+  > including repos deliberately left off that list. Grant **Variables:
+  > Read-only**. For an org repo using GitHub project management, grant
+  > **Projects: Read and write** deliberately — so the claim lifecycle can move
+  > cards through the `Status` pipeline (a personal-account repo grants no
+  > Projects permission at all; that row is org-scoped). The cost is that a
+  > compromised token can write to every board the org owns, not just this
+  > repo's; revisit the day the org holds a repo the bot should not see. Read
+  > is cheap; write is the line — and Projects crosses it deliberately.
   >
   > Permissions table and rationale: the generated repo's
   > `docs/architecture/branch-protection.md`. Full procedure (creating the

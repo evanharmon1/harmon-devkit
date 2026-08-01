@@ -787,6 +787,17 @@ expect_ok "post-generation guidance requires Codex connector verification" \
 expect_ok "post-generation guidance requires external CodeRabbit access removal" \
     grep -qF 'deleting the config alone does not revoke App' \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
+# harmon-init#475/#485 grant the bot PAT Projects: Read and write for org repos
+# so the claim lifecycle can move cards through the Status pipeline; the vendored
+# checklist must match the canonical template (no stale "read, never write").
+expect_ok "post-generation checklist grants the bot Projects write for the org claim lifecycle" \
+    sh -c 'grep -qF "Projects: Read and write" "$1" &&
+        grep -qF "claim lifecycle" "$1" &&
+        grep -qF "Status" "$1"' sh \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_fail "post-generation checklist no longer blanket-prohibits org PAT write" \
+    grep -qF 'Grant read, never write' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
 expect_ok "audit guidance reconciles CodeRabbit answers and external access" \
     grep -qF '**G3. CodeRabbit selection drift.**' \
     "$STANDARDIZE_REFS/mode-audit.md"
@@ -906,10 +917,31 @@ expect_ok "adopt freeze refuses a tuple from an aborted or stale render" \
     grep -qF 'did the adoption render complete in this shell?' \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
 # A published scaffold keeps the tag-valued tuple on the remote until the
-# follow-up freeze commit is pushed, so the local-only path is not a fix.
-expect_ok "new-repo freeze pushes the follow-up commit on a published scaffold" \
-    sh -c 'grep -qF "git push ||" "$1" &&
-        grep -qF "freeze commit is local only" "$1"' sh \
+# follow-up freeze commit reaches a branch + draft PR — the local-only path is
+# not a fix, and a direct push to main is forbidden (it is an agent-authored
+# follow-up, not the bootstrap base).
+expect_ok "new-repo freeze pushes the follow-up to a branch and opens a draft PR" \
+    sh -c 'grep -qF "git push -u origin" "$1" &&
+        grep -qF "freeze commit is local only" "$1" &&
+        grep -qF "gh pr create --draft" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+# The freeze is an agent-authored follow-up on a published scaffold, so it must
+# branch before the commit — never push the follow-up directly to main.
+expect_ok "new-repo freeze branches before the follow-up on a published scaffold" \
+    sh -c 'switch_line="$(grep -nF "git switch -c" "$1" | head -1 | cut -d: -f1)"
+        commit_line="$(grep -nF "chore: freeze copier lineage" "$1" |
+            head -1 | cut -d: -f1)"
+        test -n "$switch_line" && test -n "$commit_line" &&
+        test "$switch_line" -lt "$commit_line"' sh \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+expect_fail "new-repo freeze never pushes a follow-up directly to main" \
+    grep -qF 'git push ||' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+# The no-remote recommended path folds the freeze into the unpublished initial
+# base and publishes it directly — a PR cannot predate its base branch.
+expect_ok "new-repo no-remote path publishes the initial base directly" \
+    sh -c 'grep -qF "A PR cannot predate its base branch" "$1" &&
+        grep -qF "initial base" "$1"' sh \
     "$STANDARDIZE_REFS/mode-new-repo.md"
 # run_task_install=yes installs lefthook before the freeze runs, so committing on
 # main trips guard:no-commit-to-main. Branch and PR — never --no-verify.
