@@ -274,9 +274,14 @@ policy and report lifecycle adoption as blocked.
   commit *before* `task install` precisely so nothing intercepts it. The freeze
   **amends** the scaffold commit, so the lineage is correct from the very first
   commit. The scaffold + freeze together are the **initial base**; publish it
-  directly when you set up the remote in §6 — `post-generation-checklist.md`
-  owns the mechanics, including scaffolding a web framework **before** the first
-  push when a pre-push gate would fail on a bare repo. A PR cannot predate its
+  directly. Because `github_remote_create=false` skipped §4 step 3, create the
+  remote and make the first push yourself — `gh repo create
+  <github_org>/<project_slug> --private --source=. --push` (the §4 step 3
+  command) — then work through §6. `post-generation-checklist.md` picks up
+  *after* that first push and owns the GitHub *settings* (it assumes the remote
+  already exists — it does not create it); for a `web-astro` repo whose pre-push
+  gate would fail on a bare repo, scaffold the framework **before** the first
+  push, per its §3. A PR cannot predate its
   base branch — until `main` exists on the remote there is nothing for a PR to
   target — so the bootstrap base is published directly, not via a PR. Only after
   `main` is published does the draft-workbench lifecycle begin: every later
@@ -308,9 +313,12 @@ policy and report lifecycle adoption as blocked.
   `guard:no-commit-to-main` pre-commit hook blocks any commit here — amend
   included. `--no-verify` is prohibited. The freeze goes on a feature branch with
   a draft PR (the remote-created profile's model). If there is no remote yet,
-  publish the base first via §6 (`post-generation-checklist.md` owns the
-  mechanics, including scaffolding a web framework before the first push when a
-  pre-push gate requires it), then branch for the freeze — the unpublished base
+  publish the base first — create the remote and make the first push yourself
+  (`gh repo create <github_org>/<project_slug> --private --source=. --push`, the
+  §4 step 3 command, since `github_remote_create=false` skipped it; for a
+  `web-astro` repo whose pre-push gate would fail on a bare repo, scaffold the
+  framework first, per `post-generation-checklist.md` §3), then branch for the
+  freeze — the unpublished base
   cannot be amended behind an installed hook.
 
 ```bash
@@ -327,12 +335,18 @@ if git rev-parse --verify HEAD >/dev/null 2>&1 &&
   git add -- .copier-answers.yml ||
     { echo "failed to stage the frozen lineage tuple" >&2; exit 1; }
   if git rev-parse --verify '@{upstream}' >/dev/null 2>&1 ||
-    test -n "$(git tag --points-at HEAD)"; then
+    test -n "$(git tag --points-at HEAD)" ||
+    git rev-parse --verify refs/remotes/origin/main >/dev/null 2>&1; then
     # github_remote_create=yes published the scaffold (and github_release_init
     # may have tagged it) before this section. That commit is the initial base —
     # never rewrite published history, and never push an agent-authored
     # follow-up to main. A PR cannot predate its base branch, and main already
     # exists, so branch, commit the freeze, push the branch, open a draft PR.
+    # origin/main is a third publication signal: run_task_install=yes installs
+    # lefthook, the hook guard above exits on main, and the operator reruns this
+    # on a feature branch where @{upstream} is unset; with github_release_init=no
+    # no tag points at HEAD either, so without origin/main the freeze would
+    # wrongly take the amend arm and leave main on the tag-valued tuple.
     FREEZE_BRANCH=chore/freeze-copier-lineage
     git switch -c "$FREEZE_BRANCH" ||
       { echo "failed to create the lineage-freeze branch" >&2; exit 1; }

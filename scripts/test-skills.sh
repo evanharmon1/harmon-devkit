@@ -884,6 +884,14 @@ expect_ok "new-repo freeze never rewrites a published scaffold commit" \
         grep -qF "git tag --points-at HEAD" "$1" &&
         grep -qF "never rewrite published history" "$1"' sh \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+# run_task_install=yes installs lefthook; the hook guard exits on main, so the
+# operator reruns the freeze on a feature branch where @{upstream} is unset and
+# (with github_release_init=no) no tag points at HEAD. Reachability must also
+# detect a published origin/main, or the freeze wrongly amends and leaves main
+# on the tag-valued tuple.
+expect_ok "new-repo freeze detects a published main after a hook-driven branch switch" \
+    grep -qF 'refs/remotes/origin/main' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "new-repo freeze offers a follow-up commit for published scaffolds" \
     grep -qF "chore: freeze copier lineage to the verified template commit" \
     "$STANDARDIZE_REFS/mode-new-repo.md"
@@ -942,6 +950,13 @@ expect_fail "new-repo freeze never pushes a follow-up directly to main" \
 expect_ok "new-repo no-remote path publishes the initial base directly" \
     sh -c 'grep -qF "A PR cannot predate its base branch" "$1" &&
         grep -qF "initial base" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+# github_remote_create=false skips §4 step 3, and post-generation-checklist.md
+# starts after the first push (it does not create the remote), so the no-remote
+# path must give the first-push command explicitly — otherwise the references
+# reach a circular prerequisite with no remote main to target a draft PR at.
+expect_ok "new-repo no-remote path gives the first-push command explicitly" \
+    grep -qF 'make the first push yourself' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
 # run_task_install=yes installs lefthook before the freeze runs, so committing on
 # main trips guard:no-commit-to-main. Branch and PR — never --no-verify.
