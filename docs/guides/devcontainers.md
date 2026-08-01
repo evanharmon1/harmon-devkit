@@ -97,18 +97,24 @@ it Fable can end up **unselectable in `/model`** here while working fine on
 the host, on an account that is entitled to it.
 
 `config/claude-hooks/seed-fable-consent.sh` records it for the signed-in
-account, from postStart (covers restarts) and from interactive shell startup
-(covers the first login on a fresh volume, when no account exists yet at
-postStart time).
+account, from postStart (covers container starts) and from a `claude` shell
+wrapper that runs it immediately before each launch.
 
-It deliberately does **not** run from inside Claude Code. The CLI caches
-`.claude.json` in memory at startup and never re-reads it, so a write from
-within a session cannot affect that session — and the CLI's next config write
-serializes its stale copy back over the file, dropping the record. Writing
-between sessions is what makes it both visible and durable. The honest
-residual: on a brand-new container the **first** authenticated session still
-cannot select Fable, because the account it is keyed to does not exist until
-that session authenticates. Every session after it can, with no restart.
+The launch-time call site is forced by how Claude Code handles its config. The
+CLI caches `.claude.json` in memory at startup and never re-reads it, so a
+write from **inside** a session cannot affect that session — and the CLI's next
+config write serializes its stale copy back over the file, dropping the record.
+That rules out a `SessionStart` hook. Seeding once at shell startup is the
+opposite failure: too early on a fresh volume (no account exists yet), and too
+rare, since a second `claude` in the same terminal never re-sources the
+profile. Immediately before each launch is the one moment that is both after a
+previous session wrote `.oauthAccount` and before the next CLI reads its
+config, with no session live to overwrite it.
+
+The honest residual: on a brand-new container the **first** authenticated
+session still cannot select Fable, because the account the key is derived from
+does not exist until that session authenticates. Every session after it can,
+with no container restart and no new terminal.
 
 It is **off unless you opt in**, because the flag is a
 billing authorization and the hook is image-baked — it would otherwise grant

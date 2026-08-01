@@ -47,8 +47,8 @@ fi
 # is documented in the hook script itself. Two call sites, because neither
 # alone covers the fresh-container case: this one runs on every container
 # start but, on an empty volume, before any login has happened — so
-# .oauthAccount does not exist yet and the script no-ops. Interactive shell
-# startup (config/shell-aliases.sh) catches it after the first login, while no
+# .oauthAccount does not exist yet and the script no-ops. The `claude` shell
+# wrapper (config/shell-aliases.sh) catches it before each launch, while no
 # Claude session is live — which is the only time the write is both visible to
 # the next session and safe from the CLI overwriting it from its cached copy.
 #

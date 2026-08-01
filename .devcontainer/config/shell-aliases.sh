@@ -30,18 +30,28 @@ fi
 # Fable 5 usage-credit consent, opt-in (DEVCONTAINER_FABLE_CONSENT=true).
 # Rationale and revocation: docs/guides/devcontainers.md.
 #
-# Shell startup is the call site because it is the last thing that runs BEFORE
-# `claude` does. Claude Code caches .claude.json in memory at startup and never
-# re-reads it, so a write from inside a running session — a SessionStart hook,
-# say — is invisible to that session, and the CLI's next config write
-# serializes its stale in-memory copy back over the file, dropping the record.
-# Seeding here means the file already carries the consent when the CLI loads
-# it, and the write happens while no session is live.
+# Wrapping `claude` rather than seeding once at shell startup, because the
+# record can only be written in the window this wrapper occupies. Claude Code
+# caches .claude.json in memory at startup and never re-reads it, so a write
+# from inside a session cannot reach that session, and the CLI's next config
+# write serializes its stale copy back over the file and drops the record —
+# which rules out a SessionStart hook. Seeding at shell startup instead is
+# too early and happens too rarely: on a fresh volume no account exists yet,
+# and a second `claude` in the SAME terminal never re-sources this file, so
+# every later session in that terminal would stay unseeded.
 #
-# The gate is tested inline so an opted-out shell spawns no process at all.
+# Running immediately before each launch is the one point that is both after
+# a previous session wrote .oauthAccount and before the next CLI loads its
+# config, with no session live to overwrite it.
+#
+# The gate is tested before defining the function, so an opted-out shell
+# neither defines it nor spawns anything.
 if [ "${DEVCONTAINER_FABLE_CONSENT:-}" = "true" ] &&
     [ -x /etc/claude-code/hooks/seed-fable-consent.sh ]; then
-    /etc/claude-code/hooks/seed-fable-consent.sh || true
+    claude() {
+        /etc/claude-code/hooks/seed-fable-consent.sh || true
+        command claude "$@"
+    }
 fi
 
 # workmux: short alias and zsh completions.

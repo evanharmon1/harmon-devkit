@@ -19,8 +19,11 @@
 #   * postStart — covers every container start, but on a FRESH volume it runs
 #     before any login has happened, so .oauthAccount does not exist yet and
 #     this exits without writing.
-#   * interactive shell startup (config/shell-aliases.sh) — the first moment
-#     after a login where an account exists AND no Claude session is live.
+#   * a `claude` shell wrapper (config/shell-aliases.sh) — runs immediately
+#     before each launch, the one moment that is both after a previous session
+#     wrote .oauthAccount and before the next CLI reads its config. Seeding
+#     once at shell startup instead would miss a second `claude` in the same
+#     terminal, which never re-sources the profile.
 #
 # It must NOT run from inside Claude Code (a SessionStart hook, say). The CLI
 # caches .claude.json in memory at startup and never re-reads it, so a write
