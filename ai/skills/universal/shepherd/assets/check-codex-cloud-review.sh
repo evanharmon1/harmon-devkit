@@ -520,17 +520,23 @@ check)
     # Review: Didn't find any major issues.") does not begin with it and is
     # still a finding. That case is pinned by a test.
     #
-    # The trailing clause is constrained rather than trusted wholesale: what
-    # follows the sentence may contain no colon and no digit. Praise clauses
-    # ("Keep it up!", "Nice work!") satisfy that; a qualifier that carries a
-    # finding on the same line ("… Didn't find any major issues. P1: …", "…
-    # However, 2 concerns:") does not, and falls through to `findings`. This is
-    # the direction a gate should fail in — an unrecognised suffix costs an
-    # escalation, whereas trusting arbitrary text from an external bot could
-    # promote a PR that Codex actually flagged. Allowlisting the two observed
-    # praise strings would instead reintroduce the exact brittleness this
-    # function is being fixed for: the next new phrasing would silently jam
-    # the gate shut again.
+    # The trailing clause is recognised by PRAISE STRUCTURE — a short,
+    # all-alphabetic exclamation — rather than screened for suspicious
+    # characters. A blacklist ("no colon, no digit") is not a boundary: it
+    # admits "… Didn't find any major issues. However a race remains", a
+    # qualifier carrying a finding on the verdict's own line, which would
+    # promote a PR Codex actually flagged.
+    #
+    # Anything unrecognised falls through to `findings`, which is the direction
+    # a gate must fail in — an unfamiliar suffix costs one escalation, whereas
+    # trusting arbitrary text from an external bot costs a false green.
+    #
+    # Structure, not an allowlist of the two observed praise strings: praise is
+    # conventionally a brief exclamation, so a new phrasing ("Great job!")
+    # keeps working, while an allowlist would jam the gate shut on it — the
+    # exact brittleness this function is being fixed for. A future praise
+    # string that is not exclamatory would fail closed and need this widened;
+    # that is the trade being made deliberately.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
@@ -541,7 +547,9 @@ check)
               gsub("^[[:space:]]+|[[:space:]]+$"; "") |
               ascii_downcase) as $line |
             ($line | startswith(clean_sentence)) and
-            (($line | ltrimstr(clean_sentence)) | test("^[^:0-9]*$"));
+            (($line | ltrimstr(clean_sentence) |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+             . == "" or test("^[a-z][a-z ]{0,23}!$"));
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head)
@@ -566,7 +574,9 @@ check)
               gsub("^[[:space:]]+|[[:space:]]+$"; "") |
               ascii_downcase) as $line |
             ($line | startswith(clean_sentence)) and
-            (($line | ltrimstr(clean_sentence)) | test("^[^:0-9]*$"));
+            (($line | ltrimstr(clean_sentence) |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+             . == "" or test("^[a-z][a-z ]{0,23}!$"));
           .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(

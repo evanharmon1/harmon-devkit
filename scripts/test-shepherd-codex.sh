@@ -211,6 +211,23 @@ for suffix in "Keep it up!" "Nice work!"; do
     assert_status 0 clean
 done
 
+echo "==> an unobserved praise phrasing is still clean (not an allowlist)"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues. Great job everyone!"
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
 echo "==> a clean-shaped review body with a praise clause is clean"
 new_cycle
 jq -cn \
@@ -228,10 +245,14 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 
-# The trailing clause is constrained, not trusted: no colon, no digit. A
-# qualifier that smuggles a finding onto the clean sentence's own line must not
-# read as clean, or the gate would promote a PR Codex actually flagged.
-for tail in "P1: the retry path is unguarded" "However, 2 concerns:" "See item 3"; do
+# The trailing clause is recognised by PRAISE STRUCTURE, not merely screened
+# for suspicious characters: a short all-alphabetic exclamation. A character
+# blacklist (no colon, no digit) let "However a race remains" through — a
+# qualifier that smuggles a finding onto the clean sentence's own line, which
+# would promote a PR Codex actually flagged. Anything unrecognised fails
+# closed into `findings`, costing an escalation rather than a false green.
+for tail in "P1: the retry path is unguarded" "However, 2 concerns:" "See item 3" \
+    "However a race remains" "However a race remains." "but see the note below"; do
     echo "==> a verdict line trailed by '${tail}' is a finding, not clean"
     new_cycle
     jq -cn \
