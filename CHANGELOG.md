@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.15.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.14.0...v0.15.0) (2026-08-01)
+
+
+### Features
+
+* rewrite GitHub SSH URLs to HTTPS in devcontainers ([#225](https://github.com/evanharmon1/harmon-devkit/issues/225)) ([25e836c](https://github.com/evanharmon1/harmon-devkit/commit/25e836c833ad4ad102ca7b0c41f010b53642b8f8))
+
+
+### Bug Fixes
+
+* include all four SSH endpoint mappings in the shepherd fallback ([#233](https://github.com/evanharmon1/harmon-devkit/issues/233)) ([020bf70](https://github.com/evanharmon1/harmon-devkit/commit/020bf70a6085fff0bcef306d60670c3275558b88))
+
 ## [0.14.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.13.2...v0.14.0) (2026-07-31)
 
 
