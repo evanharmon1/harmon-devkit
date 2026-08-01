@@ -340,6 +340,21 @@ function thematic_break(s,   t) {
     gsub(/[ \t]/, "", t)
     return (t ~ /^(---+|\*\*\*+|___+)$/)
 }
+function atx_heading(s) {
+    # An ATX heading: one to six `#` then a space, a tab, or end of line.
+    #
+    # Spelled as an alternation rather than the obvious `^#{1,6}([ \t]|$)`
+    # because mawk 1.3.4 aborts compiling that interval outright — `REcompile()
+    # - panic: values still on machine stack` — taking the whole script down
+    # with exit 100. mawk is the default awk on Debian and Ubuntu, so the
+    # interval form left this asset working under gawk and dead everywhere
+    # else; it ships as a skill asset to machines whose awk we do not choose.
+    #
+    # The two forms accept exactly the same lines. Seven or more `#` match
+    # neither: after any one-to-six-hash prefix the next character is a `#`,
+    # which is not a space, a tab, or end of line.
+    return (s ~ /^(#|##|###|####|#####|######)([ \t]|$)/)
+}
 function html_block_tag(s,   t, n, r) {
     # True when `s` opens a CommonMark HTML block of type 6 — `<tag`, or
     # `</tag`, from the known block-level set.
@@ -663,7 +678,7 @@ BEGIN {
     # (which keeps an ordered marker in list context), or paragraph text.
     if (blank) {
         this_kind = "blank"
-    } else if (thematic_break(bare) || bare ~ /^#{1,6}([ \t]|$)/) {
+    } else if (thematic_break(bare) || atx_heading(bare)) {
         # Leaf blocks: a thematic break and an ATX heading both close any open
         # paragraph the way a blank line does, while being content a blank line
         # is not, and opening no container a list item would. Reading a heading
@@ -774,7 +789,7 @@ BEGIN {
             # as still open kept a stale container that made the indented code
             # block after the next blank line look like a nested criterion.
             if (push_rest ~ /^[ \t]*$/ || over ||
-                thematic_break(push_rest) || push_rest ~ /^#{1,6}([ \t]|$)/) {
+                thematic_break(push_rest) || atx_heading(push_rest)) {
                 this_kind = "leaf"
             }
         }
