@@ -31,6 +31,55 @@ devcontainer_cli() {
     fi
 }
 
+# The shared toolchain image every consumer Dockerfile must extend. The
+# package is public and identical for all generated repos, so the literal
+# name stays verbatim-portable.
+HARMON_IMAGE="ghcr.io/evanharmon1/harmon-devcontainer"
+HARMON_IMAGE_MANIFEST="/usr/local/share/harmon-devcontainer/manifest.json"
+
+# assert_image_pin <dockerfile>
+# The Dockerfile must extend exactly one approved immutable reference —
+# the public package pinned by BOTH the sha-<40-hex-source-commit> tag and
+# the sha256 manifest-list digest. Floating tags (latest, main, release
+# aliases) or digestless tags could silently change bytes under every
+# consumer, so any other FROM shape fails (harmon-init#489).
+assert_image_pin() {
+    # Dockerfile instructions are case-insensitive and tolerate leading
+    # whitespace, so match by uppercased first token — a lowercase `from` or
+    # trailing `user root` must not slip past the pin/permission checks.
+    local dockerfile="$1" from_count ref source digest last_user
+    from_count="$(awk 'toupper($1) == "FROM" { n++ } END { print n + 0 }' "$dockerfile")"
+    [ "$from_count" = "1" ] ||
+        fail "${dockerfile} must have exactly one FROM line extending the shared image (found ${from_count})"
+    ref="$(awk 'toupper($1) == "FROM" { print $2; exit }' "$dockerfile")"
+    case "$ref" in
+    "${HARMON_IMAGE}:sha-"*"@sha256:"*) ;;
+    *) fail "${dockerfile} FROM '${ref}' is not the approved immutable '${HARMON_IMAGE}:sha-<source-commit>@sha256:<manifest-digest>' reference" ;;
+    esac
+    source="${ref#"${HARMON_IMAGE}:sha-"}"
+    source="${source%%@*}"
+    digest="${ref##*@sha256:}"
+    case "$source" in
+    ????????????????????????????????????????)
+        case "$source" in *[!0-9a-f]*) fail "${dockerfile} image tag 'sha-${source}' is not a 40-hex source commit" ;; esac
+        ;;
+    *) fail "${dockerfile} image tag 'sha-${source}' is not a 40-hex source commit" ;;
+    esac
+    case "$digest" in
+    ????????????????????????????????????????????????????????????????)
+        case "$digest" in *[!0-9a-f]*) fail "${dockerfile} image digest 'sha256:${digest}' is not a 64-hex manifest digest" ;; esac
+        ;;
+    *) fail "${dockerfile} image digest 'sha256:${digest}' is not a 64-hex manifest digest" ;;
+    esac
+    awk 'toupper($1) == "RUN" && $2 == "/usr/local/sbin/install-harmon-repo-config" && NF == 2 { found = 1 }
+        END { exit !found }' "$dockerfile" ||
+        fail "${dockerfile} does not invoke the image's install-harmon-repo-config overlay installer"
+    last_user="$(awk 'toupper($1) == "USER" { user = $2 } END { print user }' "$dockerfile")"
+    [ "$last_user" = "vscode" ] ||
+        fail "${dockerfile} does not finish as USER vscode (last USER is '${last_user}')"
+    printf '%s\n' "$source"
+}
+
 # ── unit mode ─────────────────────────────────────────────────────────
 assert_unit() {
     # Resolve the repo root from the script's own location BEFORE we cd away,
@@ -52,33 +101,23 @@ assert_unit() {
     [ -f "$bot_config" ] || fail "bot devcontainer.json not found at ${bot_config}"
     [ -f "$dev_config" ] || fail "dev devcontainer.json not found at ${dev_config}"
 
-    # `task` must come from the Dockerfile's PINNED release, never a
-    # devcontainer Feature: the Feature resolved "latest" through the anonymous
-    # GitHub API from inside the build, and GitHub-hosted runners share egress
-    # IPs against a 60 req/hour/IP limit, so the required build check 403'd at
-    # random (harmon-init#427). Asserted here, in unit mode, because this is the
-    # gated path — `task ci` runs it with no container. The container-mode check
-    # below proves the binary actually landed, but it needs a built image and so
-    # runs only from the manual smoke tasks.
+    # `task` and the rest of the shared toolchain come from the pinned public
+    # image, never a devcontainer Feature: the go-task Feature resolved
+    # "latest" through the anonymous GitHub API from inside the build and
+    # 403'd at random on shared runner IPs (harmon-init#427). Asserted here,
+    # in unit mode, because this is the gated path — `task ci` runs it with no
+    # container. The container-mode check below proves the binary actually
+    # landed, but it needs a built image and so runs only from the manual
+    # smoke tasks.
     local dockerfile cfg
     dockerfile="${repo_root}/.devcontainer/Dockerfile"
     [ -f "$dockerfile" ] || fail "devcontainer Dockerfile not found at ${dockerfile}"
     for cfg in "$bot_config" "$dev_config"; do
         if grep -q 'features/go-task' "$cfg"; then
-            fail "${cfg} installs task via a devcontainer Feature — pin it in the Dockerfile instead (harmon-init#427)"
+            fail "${cfg} installs task via a devcontainer Feature — the pinned shared image ships it (harmon-init#427)"
         fi
     done
-    grep -q '^ARG TASK_VERSION=' "$dockerfile" ||
-        fail "no 'ARG TASK_VERSION=' pin found in ${dockerfile}"
-    grep -q '# renovate: datasource=github-releases depName=go-task/task' "$dockerfile" ||
-        fail "the TASK_VERSION pin in ${dockerfile} carries no '# renovate:' annotation, so it would never be bumped"
-    # Match the URL through `v${TASK_VERSION}` (fixed-string, so the literal
-    # shell expansion in the Dockerfile is compared verbatim): a URL that merely
-    # mentions go-task would also be satisfied by a hardcoded version or a
-    # "latest" path, which is the exact failure being fixed — and would leave
-    # Renovate dutifully bumping an ARG that nothing reads.
-    grep -qF 'go-task/task/releases/download/v${TASK_VERSION}/task_linux_' "$dockerfile" ||
-        fail "${dockerfile} does not install task from the pinned \${TASK_VERSION} release URL"
+    assert_image_pin "$dockerfile" >/dev/null
 
     # Run from a non-repo temp dir so `git rev-parse --is-inside-work-tree`
     # inside init-env.sh is false and the rebuild `git pull` never fires.
@@ -205,20 +244,25 @@ assert_container() {
     git_email="$(docker exec -u vscode "$container_id" git config --global user.email)" ||
         fail "could not read git user.email in container"
 
-    # `task` ships from the Dockerfile's pinned release, NOT a devcontainer
-    # Feature: the Feature resolved "latest" through the anonymous GitHub API
-    # from inside the build and 403'd at random on shared runner IPs. With the
-    # Feature gone, nothing else would notice if that RUN block were dropped —
-    # the image would silently lose the one binary every task target runs
-    # through. The expected version is read from the Dockerfile rather than
-    # hardcoded here: a Renovate bump then moves the pin and this assertion's
-    # source of truth in ONE file, so it cannot split across a twin.
-    local script_dir repo_root pinned_task actual_task
+    # `task` ships from the pinned shared image, NOT a devcontainer Feature
+    # (harmon-init#427 history). The expected version comes from the image's
+    # own machine-readable manifest, and the manifest's revision must match
+    # the Dockerfile's pinned source commit — proving the running container
+    # was really built from the approved immutable reference, not a stale or
+    # floating image that happens to have the binaries.
+    local script_dir repo_root pinned_source manifest manifest_revision pinned_task actual_task
     script_dir="$(cd "$(dirname "$0")" && pwd)"
     repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
-    pinned_task="$(sed -n 's/^ARG TASK_VERSION=//p' "${repo_root}/.devcontainer/Dockerfile")"
+    pinned_source="$(assert_image_pin "${repo_root}/.devcontainer/Dockerfile")"
+    manifest="$(docker exec -u vscode "$container_id" cat "$HARMON_IMAGE_MANIFEST" 2>/dev/null)" ||
+        fail "image manifest ${HARMON_IMAGE_MANIFEST} is missing in the ${profile} container"
+    manifest_revision="$(printf '%s' "$manifest" | jq -r '.image.revision // empty')" ||
+        fail "image manifest in the ${profile} container is not valid JSON"
+    [ "$manifest_revision" = "$pinned_source" ] ||
+        fail "container image revision '${manifest_revision}' does not match the Dockerfile pin '${pinned_source}' in the ${profile} container"
+    pinned_task="$(printf '%s' "$manifest" | jq -r '.tools.task // empty')"
     [ -n "$pinned_task" ] ||
-        fail "no 'ARG TASK_VERSION=' pin found in ${repo_root}/.devcontainer/Dockerfile"
+        fail "image manifest lists no task version in the ${profile} container"
     actual_task="$(docker exec -u vscode "$container_id" sh -c 'task --version' 2>/dev/null)" ||
         fail "task is not runnable in the ${profile} container"
     # Compare EXACTLY, not as a substring: `*3.5.2*` also matches the output

@@ -49,13 +49,33 @@ is volume-backed because Claude Code writes your in-app changes there. Every
 `/model` and friends stick, and a wiped volume gets the defaults back. What the
 volume never holds is the code those settings point at.
 
-`config/claude-statusline.sh` renders a two-line status line matching the one a
+`config/claude-statusline.sh` renders a four-line status line matching the one a
 host session shows:
 
 ```text
-📁 ~/git/harmon-devkit  🌿 main  🤖 Opus 5  📟 v2.1.220  🎨 default
-🧠 Context Remaining: 60% [======----]
+📁 ~/git/harmon-devkit  🌿 main  🔀 #512 ✓  ▪ session name  · a1b2c3d4
+🧠 ▕████░░░░░░░░░░░░▏ 24%  760k left  🤖 Opus 5 1M · medium · ⚡ · 💭  📟 v2.1.220
+💰 $0.43  ✎ +120/-45  ⏱ 11m session
+🚦 5h ▕█░░░░░░▏ 🔄 2h13m   ·   7d ▕░░░░░░░▏ 🔄 4d20h
 ```
+
+Reading down: where you are, how much room and horsepower are left, what the
+session has cost, and how close the 5-hour and 7-day subscription limits are to
+biting (`🔄` is time until that window resets). Segments that would say nothing
+are omitted rather than shown empty — the PR only appears on a branch that has
+one, `⚡` and `💭` only when fast mode and extended thinking are on, and the
+launch directory only when it differs from the one you are in.
+
+Both gauges fill as they are consumed and shift mint → peach → coral past 60%
+and 80%; the limit bars run the same scale at under half the width in a muted
+palette, so they read as the same thing at lower priority. `NO_COLOR` is
+honored, and `STATUSLINE_CTX_WIDTH`, `STATUSLINE_RL_WIDTH`, `STATUSLINE_RL_PCT`
+(exact limit percentages) and `STATUSLINE_HYPERLINK` (the OSC-8 link behind the
+PR number) tune the rest.
+
+It is built to be cheap, because it re-renders constantly: two forks per render
+(`jq` and `date`), no `git` subprocess — the branch is read from `.git/HEAD`
+directly, worktrees included — and nothing written to disk.
 
 To use your own instead, point `statusLine.command` in `~/.claude/settings.json`
 at it — the seed merge will not overwrite it.
@@ -115,16 +135,16 @@ repo** (one template serves every repo). To stand this repo up in Coder:
 2. Create a workspace from it and set the parameters:
    - **repo** → `https://github.com/evanharmon1/harmon-devkit`
    - secrets → `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_DECK_TELEGRAM_KEY`
-     (+ `TS_AUTHKEY` if you want Tailscale). Coder passes these into the
-     workspace's host environment, where `init-env.sh` picks them up.
+     (+ `TS_AUTHKEY` if you want Tailscale). Coder passes these
+     into the workspace's host environment, where `init-env.sh` picks them up.
 3. The build pulls `ghcr.io/evanharmon1/harmon-devkit-devcontainer` from GHCR as a cache. If that
    package is private, give the Coder builder a read token (or make the package
    public); a cache miss only makes the first build slower.
 
-> Unlike harmon-infra, this repo's `Dockerfile` uses the **public** Microsoft
-> base image, so the classic-PAT / private-base-image (`ghcr_read_token`)
-> complication does not apply here — only the repo's own `-devcontainer` cache
-> image matters.
+> This repo's `Dockerfile` is a thin overlay on the **public** shared
+> `ghcr.io/evanharmon1/harmon-devcontainer` toolchain image (pinned by
+> immutable `tag@digest`), so no registry credential is needed for the base —
+> only the repo's own `-devcontainer` cache image matters.
 
 ## Working on related repos
 

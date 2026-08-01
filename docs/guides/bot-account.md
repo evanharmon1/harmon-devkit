@@ -155,7 +155,8 @@ rebuild the devcontainer so the env-file re-reads it. Nothing else references th
 value, which is the point of keeping it in exactly one place.
 
 A leaked bot PAT is bounded but not harmless: it can push branches and open PRs
-on the selected repos. It **cannot** merge `main`, edit workflows, or change repo
+on the selected repos.
+It **cannot** merge `main`, edit workflows, or change repo
 settings. Revoke, re-issue, and check the repos' branch and PR lists for anything
 you did not create.
 

@@ -12,12 +12,17 @@ SECTION="${1:-}"
 TMPDIR_STATUS="$(mktemp -d)"
 trap 'rm -rf "${TMPDIR_STATUS}"' EXIT
 
-NETWORK_TIMEOUT=5
+# Overridable so a test can drive the deadline path without waiting on it.
+NETWORK_TIMEOUT="${NETWORK_TIMEOUT:-5}"
 
 # ── Tool detection ──────────────────────────────────────────────────────────
 
+# NO_COLOR (https://no-color.org/) turns off gum styling as well as ANSI, which
+# makes the board's output plain, stable text — greppable, diffable, and
+# assertable by scripts/test-status.sh without matching around escape sequences
+# or box drawing.
 HAS_GUM=false
-command -v gum &>/dev/null && HAS_GUM=true
+[[ -z "${NO_COLOR:-}" ]] && command -v gum &>/dev/null && HAS_GUM=true
 
 # Network probes below are bounded so a hung `gh` call cannot wedge the board.
 # Stock macOS ships no `timeout` — it comes from coreutils, which also provides
@@ -89,7 +94,7 @@ should_show() {
 # ANSI only — no extra dependency. Detected here at top level because inside the
 # section's `| section_box` pipe, stdout reads as a non-TTY.
 USE_COLOR=false
-{ [ -t 1 ] || $HAS_GUM; } && USE_COLOR=true
+[[ -z "${NO_COLOR:-}" ]] && { [ -t 1 ] || $HAS_GUM; } && USE_COLOR=true
 
 # c SGR TEXT — wrap TEXT in an ANSI SGR sequence when color is enabled.
 c() {
@@ -161,6 +166,53 @@ has_cred() {
     jq -e --arg n "$2" 'any(.[]; .name == $n)' "$1" >/dev/null 2>&1
 }
 
+# has_scope LINE NAME — true if NAME is present as a quoted scope in a
+# `gh auth status` "Token scopes:" line (`… 'gist', 'project', 'repo'`).
+# Matching on the quotes is what keeps `project` from also matching
+# `read:project` (and vice versa) — the two are different grants and the
+# caller decides which ones satisfy it.
+has_scope() {
+    case "$1" in
+    *"'$2'"*) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+# gh_target_host — the host gh will actually use for THIS repository.
+#
+# Narrowing `gh auth status --hostname` is only safe against the same host the
+# repo-aware calls use. Forcing github.com disowns a valid Enterprise login
+# (`gh auth login --hostname ghe.example.com`, no GH_HOST exported): the probe
+# exits non-zero, which this script reads as "not authenticated" and skips the
+# whole GitHub section — while `gh pr list` and `gh run list` would have worked
+# fine against that remote. So resolve it the way gh documents: GH_HOST is the
+# override for when a host "cannot be determined from repository context", which
+# means repository context comes first when GH_HOST is unset.
+#
+# Local and network-free — the remote URL is the context. github.com only as a
+# last resort, when there is no remote to read.
+gh_target_host() {
+    local url host=""
+    if [[ -n "${GH_HOST:-}" ]]; then
+        printf '%s' "${GH_HOST}"
+        return 0
+    fi
+    url="$(git config --get remote.origin.url 2>/dev/null || true)"
+    case "${url}" in
+    *://*)                 # scheme://[user@]host[:port]/path
+        host="${url#*://}" # drop the scheme
+        host="${host#*@}"  # drop any userinfo
+        host="${host%%/*}" # drop the path
+        host="${host%%:*}" # drop any port
+        ;;
+    *@*:*) # scp-like: user@host:owner/repo
+        host="${url#*@}"
+        host="${host%%:*}"
+        ;;
+    esac
+    printf '%s' "${host:-github.com}"
+}
+
 # ── Parallel data collection ────────────────────────────────────────────────
 
 PID_PRS=""
@@ -169,7 +221,89 @@ PID_TOKEI=""
 
 CURRENT_BRANCH="$(git branch --show-current 2>/dev/null || echo "detached")"
 
-if should_show "gh" && gh auth status &>/dev/null 2>&1; then
+# Resolve auth once and keep the output: it is both the gate for the GitHub
+# section and the only place the token's scopes are reported, and re-running it
+# per use would spend an extra API call to learn the same thing. Captured with
+# `2>&1` because gh has moved this report between stdout and stderr across
+# versions, and bounded by run_timeout — the bare `gh auth status` calls it
+# replaces were the section's only unbounded network probes.
+GH_AUTH_FILE="${TMPDIR_STATUS}/auth.txt"
+: >"${GH_AUTH_FILE}"
+GH_AUTHED=false
+GH_AUTH_TIMEDOUT=false
+# The setup section needs this too — it reports the same credential's ability to
+# read the board, and used to run its own `gh auth status` to decide whether to
+# render at all. One probe, two consumers.
+if should_show "gh" || [[ "${SECTION}" == "setup" ]]; then
+    gh_auth_rc=0
+    # `gh auth status` reports every account on every host, and the scope line
+    # read below cannot tell them apart — so narrow it to one credential from
+    # both directions: --active (not a second, inactive account on this host)
+    # and --hostname (not an unrelated host's account, whose scopes say nothing
+    # about the API calls this repo makes). The host comes from the repository,
+    # not a github.com assumption — see gh_target_host.
+    gh_host="$(gh_target_host)"
+    run_timeout "${NETWORK_TIMEOUT}" gh auth status --active \
+        --hostname "${gh_host}" >"${GH_AUTH_FILE}" 2>&1 ||
+        gh_auth_rc=$?
+    if grep -qi 'unknown flag' "${GH_AUTH_FILE}" 2>/dev/null; then
+        # gh predates --active (added in 2.40). Fall back rather than read a
+        # usage error as a failed login — and keep --hostname, which is far
+        # older. Multi-account per host arrived WITH 2.40, so on a gh this old
+        # one host means one account and the narrowing is complete anyway.
+        gh_auth_rc=0
+        run_timeout "${NETWORK_TIMEOUT}" gh auth status \
+            --hostname "${gh_host}" >"${GH_AUTH_FILE}" 2>&1 ||
+            gh_auth_rc=$?
+    fi
+    # 124 is `timeout`'s own "deadline hit" code. Distinguished from a real
+    # failure because bounding this probe made a slow network indistinguishable
+    # from a missing login, and reporting "not authenticated" for a timeout
+    # sends the reader to fix the wrong thing.
+    case "${gh_auth_rc}" in
+    0) GH_AUTHED=true ;;
+    124) GH_AUTH_TIMEDOUT=true ;;
+    esac
+fi
+
+# The token's scope line, and how to give THIS credential Projects write access.
+# Derived once, because every call site below would otherwise guess — and a
+# remedy that cannot work is worse than none. `gh auth refresh` edits only the
+# STORED classic credential: it cannot touch an env-provided token (which
+# overrides the stored one, on github.com and Enterprise alike) and cannot add a
+# fine-grained or App token's permissions, which are not OAuth scopes at all.
+GH_SCOPES_LINE=""
+GH_REMEDY="run: gh auth refresh -s project"
+if [[ -s "${GH_AUTH_FILE}" ]]; then
+    GH_SCOPES_LINE="$(grep -i 'token scopes:' "${GH_AUTH_FILE}" 2>/dev/null || true)"
+    case "$(<"${GH_AUTH_FILE}")" in
+    *"(GH_TOKEN)"*)
+        GH_REMEDY="reissue GH_TOKEN with Projects write — an env token overrides gh auth refresh"
+        ;;
+    *"(GITHUB_TOKEN)"*)
+        GH_REMEDY="reissue GITHUB_TOKEN with Projects write — an env token overrides gh auth refresh"
+        ;;
+    *"(GH_ENTERPRISE_TOKEN)"*)
+        GH_REMEDY="reissue GH_ENTERPRISE_TOKEN with Projects write — an env token overrides gh auth refresh"
+        ;;
+    *"(GITHUB_ENTERPRISE_TOKEN)"*)
+        GH_REMEDY="reissue GITHUB_ENTERPRISE_TOKEN with Projects write — an env token overrides gh auth refresh"
+        ;;
+    *)
+        # Not an env token. A scope line with no scopes in it is a fine-grained
+        # PAT or an App installation token — a permission, granted at the source.
+        if [[ -n "${GH_SCOPES_LINE}" && "${GH_SCOPES_LINE}" != *"'"* ]]; then
+            GH_REMEDY="set its Projects permission where the token was issued"
+        fi
+        ;;
+    esac
+fi
+
+# `should_show "gh"` as well as the auth flag: the auth probe above now also runs
+# for the setup section, and these two lists are read only by the GitHub section.
+# Without the guard, `task status:setup` would spend two network calls fetching
+# data nothing displays.
+if [[ "${GH_AUTHED}" == true ]] && should_show "gh"; then
     run_timeout "${NETWORK_TIMEOUT}" gh pr list --limit 10 \
         --json number,title,headRefName \
         >"${TMPDIR_STATUS}/prs.json" 2>/dev/null &
@@ -243,7 +377,9 @@ fi
 if should_show "gh"; then
     section_header "GitHub Status"
 
-    if ! gh auth status &>/dev/null 2>&1; then
+    if [[ "${GH_AUTH_TIMEDOUT}" == true ]]; then
+        echo "  (gh auth status timed out after ${NETWORK_TIMEOUT}s -- skipping)" | section_box
+    elif [[ "${GH_AUTHED}" != true ]]; then
         echo "  (gh not authenticated -- skipping)" | section_box
     else
         {
@@ -271,6 +407,71 @@ if should_show "gh"; then
                     "$checks_file"
             else
                 echo "  Recent CI runs: none"
+            fi
+
+            # ── Board writes ────────────────────────────────────────────────
+            # The claim lifecycle moves an issue's project `Status` (a claim
+            # sets In Progress, the PR stages advance it, the hand-back
+            # restores it), and that write needs a token scope `gh auth login`
+            # does not grant by default. Without it every board write exits 2
+            # ("could not verify") and no card moves — and each step handles
+            # that correctly on its own, so nothing escalates: the agent
+            # reports the issue claimed, the board says nothing was started,
+            # and neither is wrong from where it stands.
+            #
+            # `status:setup` has always checked this. It is repeated here
+            # because this section is what session-start orientation runs, and
+            # a tracking surface that has silently stopped tracking has to
+            # surface BEFORE a claim is made, not after a human notices the
+            # board is stale. The cost is nil: the scopes come from the auth
+            # probe above, not a second call.
+            #
+            # Reported in both directions on purpose. A check that prints only
+            # on failure is indistinguishable from a check that is not running
+            # — which is the very bug this one exists to catch.
+            # Gated on the board tooling itself, NOT on the presence of the
+            # track-work skill: `project_management: none` is the default and
+            # `use_skills_sync` is on, so the universal skill set (track-work
+            # included) is vendored into repos that have no board at all.
+            # Keying on the skill would demand the `project` scope from every
+            # one of them. setup-github-project.sh is generated only for
+            # `project_management: github`, which makes it a proxy for "this
+            # repo is configured to have a board".
+            #
+            # The accepted cost, deliberately chosen: a repo on
+            # `project_management: none` whose issues someone adds to a board by
+            # hand gets no session-start warning, and learns from the claim's own
+            # exit 2 instead. Nothing on disk can distinguish that repo from one
+            # that simply opted out — board membership is remote state — so the
+            # gate can only pick which error to make. A red line in every
+            # opted-out repo, every session, is the worse one: it is universal
+            # rather than conditional, and a check that cries wolf everywhere
+            # stops being read where it matters.
+            if [[ -f scripts/setup-github-project.sh ]]; then
+                echo ""
+                if [[ -z "${GH_SCOPES_LINE}" ]]; then
+                    checkline unknown "Project board writes" \
+                        "could not read token scopes from gh auth status"
+                elif [[ "${GH_SCOPES_LINE}" != *"'"* ]]; then
+                    # A fine-grained PAT or App token carries permissions, not
+                    # OAuth scopes, and gh reports the line with no scopes in
+                    # it. Such a token may well be able to write Projects — so
+                    # this is genuinely unknown rather than a failure. The
+                    # generated bot credential is exactly this case.
+                    checkline unknown "Project board writes" \
+                        "no OAuth scopes reported (fine-grained or App token) — ${GH_REMEDY}"
+                elif has_scope "${GH_SCOPES_LINE}" project; then
+                    checkline ok "Project board writes" "token has 'project'"
+                elif has_scope "${GH_SCOPES_LINE}" read:project; then
+                    # Called out separately because it is the state most easily
+                    # mistaken for working: `--show` reads the card fine, so the
+                    # board looks reachable right up to the write that moves it.
+                    checkline no "Project board writes" \
+                        "'read:project' is read-only — claims cannot move the board; ${GH_REMEDY}"
+                else
+                    checkline no "Project board writes" \
+                        "token lacks 'project' — claims cannot move the board; ${GH_REMEDY}"
+                fi
             fi
         } | section_box
     fi
@@ -388,7 +589,14 @@ if [[ "${SECTION}" == "setup" ]]; then
         fi
     } | section_box
 
-    if ! gh auth status &>/dev/null 2>&1; then
+    # Reuses the single bounded probe above rather than making a second,
+    # unbounded `gh auth status` call to learn the same thing. Sharing that probe
+    # means sharing its distinctions too: bounding it made a slow network look
+    # exactly like a missing login, and telling an authenticated user to run
+    # `gh auth login` because GitHub was slow sends them to fix the wrong thing.
+    if [[ "${GH_AUTH_TIMEDOUT}" == true ]]; then
+        echo "  (gh auth status timed out after ${NETWORK_TIMEOUT}s -- skipping)" | section_box
+    elif [[ "${GH_AUTHED}" != true ]]; then
         echo "  (gh not authenticated -- run 'gh auth login')" | section_box
     else
         d="${TMPDIR_STATUS}"
@@ -665,7 +873,8 @@ if [[ "${SECTION}" == "setup" ]]; then
                         checkline no "GitHub Project linked" "link a Project v2 to the repo"
                     fi
                 else
-                    checkline unknown "GitHub Project linked" "needs read:project scope"
+                    checkline unknown "GitHub Project linked" \
+                        "unreadable — ${GH_REMEDY}"
                 fi
                 if [ -f scripts/setup-github-labels.sh ]; then
                     # The expected set is read out of the setup script's own

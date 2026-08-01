@@ -160,8 +160,8 @@ if [ -n "${AGENT_DECK_TELEGRAM_KEY:-}" ]; then
 fi
 
 # Ensure bridge dependencies are installed for the runtime Python.
-# The Dockerfile installs toml/aiogram for the base system Python, but the
-# devcontainer Python feature (3.14) replaces python3 on the PATH.
+# The shared toolchain image installs toml/aiogram for the base system Python,
+# but the devcontainer Python feature (3.14) replaces python3 on the PATH.
 pip install --quiet toml aiogram 2>/dev/null || true
 
 # Set up conductor if not already present (named after this repo)
