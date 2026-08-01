@@ -420,7 +420,8 @@ RUN install -d -m 0755 /etc/claude-code /etc/claude-code/hooks \
     && install -m 0755 /usr/local/share/devcontainer-config/claude-hooks/protect-files.sh               /etc/claude-code/hooks/protect-files.sh \
     && install -m 0755 /usr/local/share/devcontainer-config/claude-hooks/block-no-verify.sh             /etc/claude-code/hooks/block-no-verify.sh \
     && install -m 0755 /usr/local/share/devcontainer-config/claude-hooks/enforce-conventional-commits.sh /etc/claude-code/hooks/enforce-conventional-commits.sh \
-    && install -m 0755 /usr/local/share/devcontainer-config/claude-hooks/session-start-context.sh       /etc/claude-code/hooks/session-start-context.sh
+    && install -m 0755 /usr/local/share/devcontainer-config/claude-hooks/session-start-context.sh       /etc/claude-code/hooks/session-start-context.sh \
+    && install -m 0755 /usr/local/share/devcontainer-config/claude-hooks/seed-fable-consent.sh         /etc/claude-code/hooks/seed-fable-consent.sh
 
 # ---------- Node.js global packages (volatile) ----------
 # Packages with Renovate-managed version pins that change frequently. This layer
