@@ -40,8 +40,8 @@ fi
 
 # Rewrite every GitHub SSH URL form to HTTPS for fetch AND push: in-container
 # git ops never depend on an SSH agent (absent in bot containers; lockout-
-# prone when forwarded into human ones). Covers the scp form, both ssh://
-# forms, and the explicit port-443 endpoint. HTTPS auth comes from gh
+# prone when forwarded into human ones). Covers the scp form (git@github.com:)
+# plus all three ssh:// forms, including the explicit port-443 endpoint. HTTPS auth comes from gh
 # (GH_TOKEN, above) in bot/Coder profiles, or VS Code's forwarded host
 # credential helper on attach. Mirrors the host dotfiles policy
 # (harmon-dotfiles ADR 0002).
