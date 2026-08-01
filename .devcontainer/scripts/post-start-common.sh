@@ -42,6 +42,42 @@ if command -v jq &>/dev/null; then
     fi
 fi
 
+# --- Record Fable 5's usage-credit consent for the signed-in account ---
+# Fable 5 needs a one-time "draws from usage credits" consent, stored per machine
+# in ~/.claude.json under .fableOverageConsentV2, keyed by the signed-in account's
+# organizationUuid (or "acct:<accountUuid>"). ~/.claude is a container-local
+# volume, so the host's consent never reaches it. Without the record Claude Code
+# arms a credits gate on the first API response that reports overage-in-use, and
+# accepting the resulting prompt dead-ends whenever the account's cached
+# extra-usage state is out_of_credits — leaving Fable unselectable in /model.
+#
+# This lives here rather than beside post-create-common.sh's onboarding seed
+# because that block only fires on an empty volume, before any login has
+# happened, so the account UUIDs this key is built from do not exist yet. Reading
+# them from the live oauthAccount keeps the record correct for whichever account
+# is signed in, and re-applies it if the file is ever reset. No-op until first
+# login. Idempotent.
+if command -v jq &>/dev/null && [ -f "$CLAUDE_JSON" ]; then
+    CONSENT_KEY=$(jq -r '.oauthAccount // {}
+        | if .organizationUuid then .organizationUuid
+          elif .accountUuid then "acct:" + .accountUuid
+          else empty end' "$CLAUDE_JSON" 2>/dev/null || true)
+    if [ -n "$CONSENT_KEY" ] &&
+        [ "$(jq -r --arg k "$CONSENT_KEY" '.fableOverageConsentV2[$k] // false' \
+            "$CLAUDE_JSON" 2>/dev/null || true)" != "true" ]; then
+        consent_tmp=$(mktemp)
+        if jq --arg k "$CONSENT_KEY" \
+            '.fableOverageConsentV2 = ((.fableOverageConsentV2 // {}) | .[$k] = true)' \
+            "$CLAUDE_JSON" >"$consent_tmp"; then
+            mv "$consent_tmp" "$CLAUDE_JSON"
+            echo "==> Recorded Fable 5 usage-credit consent for the signed-in account"
+        else
+            rm -f "$consent_tmp"
+            echo "==> Warning: failed to update $CLAUDE_JSON; leaving existing value unchanged" >&2
+        fi
+    fi
+fi
+
 # --- Freshen related repos in the background (non-destructive git fetch) ---
 # Reads .devcontainer/related-repos.txt and git-fetches already-cloned siblings
 # in /workspaces/ so they track their remotes. NEVER pulls/merges/checks out —
