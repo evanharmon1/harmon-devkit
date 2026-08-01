@@ -122,10 +122,10 @@ env DEVCONTAINER_FABLE_CONSENT=true CLAUDE_JSON="$tmpdir/does-not-exist.json" \
 [ "$_rc" -eq 0 ] || fail "a missing state file exited $_rc, expected 0"
 [ ! -f "$tmpdir/does-not-exist.json" ] || fail "the hook created a state file"
 
-# --- SessionStart quietness --------------------------------------------------
+# --- quietness ---------------------------------------------------------------
 echo "==> the hook is silent without --verbose"
-# SessionStart stdout is injected into the session's context, so a success
-# message here would be noise in every session in every container.
+# It runs from every interactive shell startup, so a success message without
+# --verbose would print on shells that are not doing anything interesting.
 printf '%s' '{"oauthAccount":{"organizationUuid":"org-q"}}' >"$tmpdir/claude.json"
 out="$(env DEVCONTAINER_FABLE_CONSENT=true CLAUDE_JSON="$tmpdir/claude.json" \
     "$hook" 2>/dev/null)"

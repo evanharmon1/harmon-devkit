@@ -19,9 +19,19 @@
 #   * postStart — covers every container start, but on a FRESH volume it runs
 #     before any login has happened, so .oauthAccount does not exist yet and
 #     this exits without writing.
-#   * Claude Code's SessionStart hook — runs after authentication, which is the
-#     only point where the account UUIDs this key is built from are knowable on
-#     a first-run container.
+#   * interactive shell startup (config/shell-aliases.sh) — the first moment
+#     after a login where an account exists AND no Claude session is live.
+#
+# It must NOT run from inside Claude Code (a SessionStart hook, say). The CLI
+# caches .claude.json in memory at startup and never re-reads it, so a write
+# from within a session cannot affect that session — and the CLI's next config
+# write serializes its stale in-memory copy back over the file, dropping the
+# record entirely. Writing between sessions is what makes the record both
+# visible and durable.
+#
+# The honest residual: on a brand-new container the very first authenticated
+# session still cannot select Fable, because the account it would be keyed to
+# does not exist until that session authenticates. Every session after it can.
 #
 # Deriving the key from the live .oauthAccount rather than hardcoding one keeps
 # this correct for whichever account is signed in.

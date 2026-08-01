@@ -97,9 +97,20 @@ it Fable can end up **unselectable in `/model`** here while working fine on
 the host, on an account that is entitled to it.
 
 `config/claude-hooks/seed-fable-consent.sh` records it for the signed-in
-account, from postStart (covers restarts) and Claude Code's `SessionStart`
-hook (covers the first login on a fresh volume, when no account exists yet at
-postStart time). It is **off unless you opt in**, because the flag is a
+account, from postStart (covers restarts) and from interactive shell startup
+(covers the first login on a fresh volume, when no account exists yet at
+postStart time).
+
+It deliberately does **not** run from inside Claude Code. The CLI caches
+`.claude.json` in memory at startup and never re-reads it, so a write from
+within a session cannot affect that session — and the CLI's next config write
+serializes its stale copy back over the file, dropping the record. Writing
+between sessions is what makes it both visible and durable. The honest
+residual: on a brand-new container the **first** authenticated session still
+cannot select Fable, because the account it is keyed to does not exist until
+that session authenticates. Every session after it can, with no restart.
+
+It is **off unless you opt in**, because the flag is a
 billing authorization and the hook is image-baked — it would otherwise grant
 it silently for whichever account signs in, including in repos templated from
 here. Set it for your own account only:

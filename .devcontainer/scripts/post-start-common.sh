@@ -47,9 +47,10 @@ fi
 # is documented in the hook script itself. Two call sites, because neither
 # alone covers the fresh-container case: this one runs on every container
 # start but, on an empty volume, before any login has happened — so
-# .oauthAccount does not exist yet and the script no-ops. Claude Code's
-# SessionStart hook (wired in config/claude-settings.json) runs after
-# authentication and catches that first run.
+# .oauthAccount does not exist yet and the script no-ops. Interactive shell
+# startup (config/shell-aliases.sh) catches it after the first login, while no
+# Claude session is live — which is the only time the write is both visible to
+# the next session and safe from the CLI overwriting it from its cached copy.
 #
 # Tolerates absence: the script is image-baked, so a container built before it
 # existed simply skips this until the next rebuild.

@@ -27,6 +27,23 @@ if [ "${DEVCONTAINER_TAILSCALE:-}" = "true" ]; then
     alias ts-up='bash .devcontainer/scripts/tailscale-connect.sh'
 fi
 
+# Fable 5 usage-credit consent, opt-in (DEVCONTAINER_FABLE_CONSENT=true).
+# Rationale and revocation: docs/guides/devcontainers.md.
+#
+# Shell startup is the call site because it is the last thing that runs BEFORE
+# `claude` does. Claude Code caches .claude.json in memory at startup and never
+# re-reads it, so a write from inside a running session — a SessionStart hook,
+# say — is invisible to that session, and the CLI's next config write
+# serializes its stale in-memory copy back over the file, dropping the record.
+# Seeding here means the file already carries the consent when the CLI loads
+# it, and the write happens while no session is live.
+#
+# The gate is tested inline so an opted-out shell spawns no process at all.
+if [ "${DEVCONTAINER_FABLE_CONSENT:-}" = "true" ] &&
+    [ -x /etc/claude-code/hooks/seed-fable-consent.sh ]; then
+    /etc/claude-code/hooks/seed-fable-consent.sh || true
+fi
+
 # workmux: short alias and zsh completions.
 alias wm=workmux
 command -v workmux &>/dev/null && eval "$(workmux completions zsh)"
