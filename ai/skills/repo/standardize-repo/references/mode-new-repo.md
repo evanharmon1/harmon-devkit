@@ -312,7 +312,11 @@ policy and report lifecycle adoption as blocked.
   lefthook while the repo is still on `main`, so the generated
   `guard:no-commit-to-main` pre-commit hook blocks any commit here — amend
   included. `--no-verify` is prohibited. The freeze goes on a feature branch with
-  a draft PR (the remote-created profile's model). If there is no remote yet,
+  a draft PR (the remote-created profile's model). For a `web-astro` repo,
+  scaffold the framework first, per `post-generation-checklist.md` §3,
+  before pushing that branch — `task install` left the pre-push hook
+  active, so the freeze push runs `astro check`, which fails on a bare
+  repo with no app. If there is no remote yet,
   publish the base first — create the remote and make the first push yourself
   (`gh repo create <github_org>/<project_slug> --private --source=. --push`, the
   §4 step 3 command, since `github_remote_create=false` skipped it; for a

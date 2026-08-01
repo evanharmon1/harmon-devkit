@@ -957,6 +957,14 @@ expect_ok "new-repo freeze detects a staged tuple on rerun, not just an unstaged
 expect_ok "new-repo freeze branches from main, not the current HEAD" \
     grep -qF 'git switch -c "$FREEZE_BRANCH" main' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+# web-astro + github_remote_create=true + run_task_install=true: the freeze
+# branch push is the first push subject to the pre-push hook (task install ran
+# after Copier's step-3 --push), so it runs `astro check` on a bare repo and
+# fails. The remote-created arm must extend the scaffolding exception the
+# no-remote first-push caveat already has.
+expect_ok "new-repo freeze extends the web-astro scaffolding caveat to the remote-created push" \
+    grep -qF 'freeze push runs `astro check`' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_fail "new-repo freeze never pushes a follow-up directly to main" \
     grep -qF 'git push ||' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
