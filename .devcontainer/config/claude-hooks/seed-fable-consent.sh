@@ -82,8 +82,8 @@ fi
 #
 # What this does NOT do — and cannot — is serialize against Claude Code itself,
 # which rewrites ~/.claude.json from its own in-memory state without taking any
-# lock. A CLI write landing between the read and the mv below is still lost.
-# Two things bound that: the mv is an atomic rename, so the file is never torn
+# lock. A CLI write landing between the read and the rename below is still
+# lost. Two things bound that: the rename is atomic, so the file is never torn
 # — the failure mode is a lost update, never corruption — and postStart runs
 # this while no CLI is live, which re-applies the record on the next container
 # start. The residual window is one session's worth of consent, self-healing.
@@ -92,7 +92,15 @@ if command -v flock >/dev/null 2>&1; then
     flock -w 5 9 2>/dev/null || exit 0
 fi
 
-consent_tmp="$(mktemp)"
+# The temp file MUST be a sibling of the target, not a bare `mktemp`. ~/.claude
+# is a mounted volume while $TMPDIR is not, so a bare mktemp puts the temp file
+# on a different filesystem and `mv` degrades from a rename into a copy over
+# the destination — non-atomic, and a SessionStart run interrupted mid-copy (or
+# a full volume) would leave Claude Code reading a truncated settings file.
+# That is strictly worse than never writing, and it would invalidate the
+# atomicity the paragraph above relies on. Same directory keeps it a rename.
+consent_tmp="$(mktemp "${CLAUDE_JSON}.XXXXXX")" || exit 0
+trap 'rm -f "$consent_tmp"' EXIT
 if jq --arg k "$consent_key" \
     '.fableOverageConsentV2 = ((.fableOverageConsentV2 // {}) | .[$k] = true)' \
     "$CLAUDE_JSON" >"$consent_tmp"; then
