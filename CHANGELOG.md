@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.15.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.15.0...v0.15.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* standardize-repo draft-PR bootstrap boundary + bot PAT Projects write ([#234](https://github.com/evanharmon1/harmon-devkit/issues/234)) ([4227145](https://github.com/evanharmon1/harmon-devkit/commit/42271452e6405d8dfceb3e73e3612873c293a6aa))
+
 ## [0.15.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.14.0...v0.15.0) (2026-08-01)
 
 
