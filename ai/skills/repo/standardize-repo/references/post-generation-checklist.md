@@ -347,10 +347,12 @@ Both owner types — the org-only follow-ups are in the next section.
   >   Enterprise. "Every repo feeds the one board" holds only under that cap, and
   >   **no fallback is specified here** — past it, treat board coverage as
   >   knowingly incomplete rather than assumed. This is not a gap to close on the
-  >   spot with an `actions/add-to-project` workflow: it needs a Projects-write
-  >   token that the repo `GITHUB_TOKEN` does not have and the bot PAT
-  >   deliberately withholds (org-**read**-only), and fork-PR coverage would
-  >   require a fork-influenced trigger — which the CI App key must never be read
+  >   spot with an `actions/add-to-project` workflow: the repo `GITHUB_TOKEN`
+  >   has no Projects permission, and although the bot PAT now grants Projects
+  >   write for org repos, routing that org-scoped token into a workflow is a
+  >   deliberate blast-radius decision, not a default — and fork-PR coverage
+  >   would still require a fork-influenced trigger, which the CI App key must
+  >   never be read
   >   from (`docs/architecture/security.md`: not fork `pull_request`, not
   >   `pull_request_target`, not `workflow_run`). Design it deliberately, or
   >   accept the gap; do not improvise it here. The issue-form `projects:` key is

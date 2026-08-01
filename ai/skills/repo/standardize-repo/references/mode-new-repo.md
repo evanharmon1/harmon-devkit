@@ -274,12 +274,14 @@ policy and report lifecycle adoption as blocked.
   commit *before* `task install` precisely so nothing intercepts it. The freeze
   **amends** the scaffold commit, so the lineage is correct from the very first
   commit. The scaffold + freeze together are the **initial base**; publish it
-  directly (`gh repo create` + push `main`) when you set up the remote in §6. A
-  PR cannot predate its base branch — until `main` exists on the remote there is
-  nothing for a PR to target — so the bootstrap base is published directly, not
-  via a PR. Only after `main` is published does the draft-workbench lifecycle
-  begin: every later agent-authored commit (post-generation checklist work,
-  framework scaffolding) branches off `main` and opens a draft PR.
+  directly when you set up the remote in §6 — `post-generation-checklist.md`
+  owns the mechanics, including scaffolding a web framework **before** the first
+  push when a pre-push gate would fail on a bare repo. A PR cannot predate its
+  base branch — until `main` exists on the remote there is nothing for a PR to
+  target — so the bootstrap base is published directly, not via a PR. Only after
+  `main` is published does the draft-workbench lifecycle begin: every later
+  agent-authored commit (post-generation checklist work) branches off `main`
+  and opens a draft PR.
 - **Remote already created — `github_remote_create=true`.** Copier's `_tasks`
   already ran `gh repo create --push`, so the scaffold (still carrying the
   tag-valued tuple) is **already published on `main`**; `github_release_init` may
@@ -290,17 +292,26 @@ policy and report lifecycle adoption as blocked.
   tag-valued tuple until that PR merges — the deliberate cost of never rewriting
   published history; the freeze PR is the immediate next step, so the window is
   short. (Contrast the no-remote path, where the freeze lands in the unpublished
-  base before anyone clones it.) Continue the §5/§6 post-generation work on the
-  same draft PR — it is the agent workbench — and shepherd it through the target
-  policy's draft-workbench lifecycle.
+  base before anyone clones it.) Keep this PR narrow — the lineage tuple only —
+  so it merges fast and closes the window; it is not the workbench for the rest
+  of post-generation. The §5/§6 work (local setup, GitHub handoff, framework
+  scaffolding) is not folded onto it: it proceeds normally, with any
+  agent-authored commits branching off `main` into their own draft PRs per the
+  target policy's draft-workbench lifecycle. The freeze is a lineage-only
+  bootstrap commit, not feature work — the §5 gates (`task verify`,
+  `verify-applied.sh`) verify tooling that already landed in Copier's `_tasks`
+  and are unaffected by the tuple edit, so opening the freeze draft before §5
+  bypasses no gate material to it.
 - **Hooks installed before the freeze — `run_task_install=true`** (orthogonal to
   either profile above). `task install` runs *before* this section and installs
   lefthook while the repo is still on `main`, so the generated
   `guard:no-commit-to-main` pre-commit hook blocks any commit here — amend
   included. `--no-verify` is prohibited. The freeze goes on a feature branch with
   a draft PR (the remote-created profile's model). If there is no remote yet,
-  publish the base first (`gh repo create` + push `main`), then branch for the
-  freeze — the unpublished base cannot be amended behind an installed hook.
+  publish the base first via §6 (`post-generation-checklist.md` owns the
+  mechanics, including scaffolding a web framework before the first push when a
+  pre-push gate requires it), then branch for the freeze — the unpublished base
+  cannot be amended behind an installed hook.
 
 ```bash
 if git rev-parse --verify HEAD >/dev/null 2>&1 &&
