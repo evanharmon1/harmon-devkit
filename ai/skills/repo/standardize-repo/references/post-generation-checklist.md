@@ -347,10 +347,12 @@ Both owner types — the org-only follow-ups are in the next section.
   >   Enterprise. "Every repo feeds the one board" holds only under that cap, and
   >   **no fallback is specified here** — past it, treat board coverage as
   >   knowingly incomplete rather than assumed. This is not a gap to close on the
-  >   spot with an `actions/add-to-project` workflow: it needs a Projects-write
-  >   token that the repo `GITHUB_TOKEN` does not have and the bot PAT
-  >   deliberately withholds (org-**read**-only), and fork-PR coverage would
-  >   require a fork-influenced trigger — which the CI App key must never be read
+  >   spot with an `actions/add-to-project` workflow: the repo `GITHUB_TOKEN`
+  >   has no Projects permission, and although the bot PAT now grants Projects
+  >   write for org repos, routing that org-scoped token into a workflow is a
+  >   deliberate blast-radius decision, not a default — and fork-PR coverage
+  >   would still require a fork-influenced trigger, which the CI App key must
+  >   never be read
   >   from (`docs/architecture/security.md`: not fork `pull_request`, not
   >   `pull_request_target`, not `workflow_run`). Design it deliberately, or
   >   accept the gap; do not improvise it here. The issue-form `projects:` key is
@@ -425,7 +427,16 @@ answering `linear`/`none` has no such task and should skip them.
   > are unreachable regardless of permissions.
   >
   > **Organization permissions are org-scoped — the selected-repo list does not
-  > bound them.** Grant read, never write.
+  > bound them.** A repository permission stops at the repos you selected; an
+  > organization permission reaches every project and variable in the org,
+  > including repos deliberately left off that list. Grant **Variables:
+  > Read-only**. For an org repo using GitHub project management, grant
+  > **Projects: Read and write** deliberately — so the claim lifecycle can move
+  > cards through the `Status` pipeline (a personal-account repo grants no
+  > Projects permission at all; that row is org-scoped). The cost is that a
+  > compromised token can write to every board the org owns, not just this
+  > repo's; revisit the day the org holds a repo the bot should not see. Read
+  > is cheap; write is the line — and Projects crosses it deliberately.
   >
   > Permissions table and rationale: the generated repo's
   > `docs/architecture/branch-protection.md`. Full procedure (creating the
