@@ -531,15 +531,13 @@ is optional in addition, never a substitute for per-thread replies.
     successful push. If a checkout somehow lacks the rewrite (an
     unprovisioned host) and an SSH push fails, push to the **named remote**
     with the helper forced **and the URL rewritten**:
-    `git -c credential.helper= -c credential.helper='!gh auth git-credential' -c url."https://github.com/".insteadOf="git@github.com:" -c url."https://github.com/".insteadOf="ssh://git@github.com/" push <remote> …`
+    `git -c credential.helper= -c credential.helper='!gh auth git-credential' -c url."https://github.com/".insteadOf="git@github.com:" -c url."https://github.com/".insteadOf="ssh://git@github.com/" -c url."https://github.com/".insteadOf="ssh://git@ssh.github.com:443/" -c url."https://github.com/".insteadOf="ssh://git@ssh.github.com/" push <remote> …`
     — the empty assignment resets the helper chain first, so a stale or
     hanging store (e.g. osxkeychain) is never consulted, and the
-    `insteadOf` pair is what actually moves the push off SSH: a credential
+    `insteadOf` set is what actually moves the push off SSH: a credential
     helper only applies to HTTPS, so forcing it without rewriting an
-    SSH-form remote changes nothing. Both SSH forms need a mapping —
-    `insteadOf` is prefix matching, so `git@github.com:` alone does not
-    catch `ssh://git@github.com/…`; for the explicit port-443 endpoint
-    (`ssh://git@ssh.github.com:443/…`) add the corresponding mapping too.
+    SSH-form remote changes nothing, and prefix matching means every SSH
+    form needs its own mapping, hence all four.
   - The push-URL safety checks below compare against `https` and SSH forms
     alike; an SSH-form remote is a normal, expected configuration, not a
     finding — the rewrite handles it at transport time.
