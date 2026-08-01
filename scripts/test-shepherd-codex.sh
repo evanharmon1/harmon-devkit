@@ -228,6 +228,29 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 
+# The trailing clause is constrained, not trusted: no colon, no digit. A
+# qualifier that smuggles a finding onto the clean sentence's own line must not
+# read as clean, or the gate would promote a PR Codex actually flagged.
+for tail in "P1: the retry path is unguarded" "However, 2 concerns:" "See item 3"; do
+    echo "==> a verdict line trailed by '${tail}' is a finding, not clean"
+    new_cycle
+    jq -cn \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" \
+        --arg head "$head_sha" \
+        --arg tail "$tail" \
+        '[[
+      {
+        id:103,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("Codex Review: Didn\u0027t find any major issues. " + $tail)
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+    run_check '2026-07-31T08:01:00Z'
+    assert_status 10 findings
+done
+
 echo "==> a finding whose body merely CONTAINS the verdict is still a finding"
 # The guard on prefix matching: the sentence has to START the line. Without
 # this, relaxing equality to a prefix could be relaxed further by accident.

@@ -519,14 +519,29 @@ check)
     # line: a finding that merely quotes the sentence ("P1: code can emit Codex
     # Review: Didn't find any major issues.") does not begin with it and is
     # still a finding. That case is pinned by a test.
+    #
+    # The trailing clause is constrained rather than trusted wholesale: what
+    # follows the sentence may contain no colon and no digit. Praise clauses
+    # ("Keep it up!", "Nice work!") satisfy that; a qualifier that carries a
+    # finding on the same line ("… Didn't find any major issues. P1: …", "…
+    # However, 2 concerns:") does not, and falls through to `findings`. This is
+    # the direction a gate should fail in — an unrecognised suffix costs an
+    # escalation, whereas trusting arbitrary text from an external bot could
+    # promote a PR that Codex actually flagged. Allowlisting the two observed
+    # praise strings would instead reintroduce the exact brittleness this
+    # function is being fixed for: the next new phrasing would silently jam
+    # the gate shut again.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
+          def clean_sentence:
+            "codex review: didn\u0027t find any major issues.";
           def clean_result:
             ((.body // "") | split("\n")[0] |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") |
-              ascii_downcase) |
-            startswith("codex review: didn\u0027t find any major issues.");
+              ascii_downcase) as $line |
+            ($line | startswith(clean_sentence)) and
+            (($line | ltrimstr(clean_sentence)) | test("^[^:0-9]*$"));
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head)
@@ -544,11 +559,14 @@ check)
     comment_candidates="$workdir/comment-candidates.tsv"
     jq -r \
         --argjson id "$actor_id" '
+          def clean_sentence:
+            "codex review: didn\u0027t find any major issues.";
           def clean_result:
             ((.body // "") | split("\n")[0] |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") |
-              ascii_downcase) |
-            startswith("codex review: didn\u0027t find any major issues.");
+              ascii_downcase) as $line |
+            ($line | startswith(clean_sentence)) and
+            (($line | ltrimstr(clean_sentence)) | test("^[^:0-9]*$"));
           .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(
