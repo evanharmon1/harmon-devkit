@@ -44,8 +44,8 @@
 # Exits 0 in all of those cases — it must never fail a container start or block
 # a Claude session.
 #
-# Quiet by default: SessionStart hook stdout is injected into the session's
-# context, so only --verbose (used by postStart) prints on success.
+# Quiet by default: it runs in front of every `claude` launch, so only
+# --verbose (used by postStart) prints on success.
 #
 # OPT-IN ONLY, and that is not incidental. `.fableOverageConsentV2` is a
 # BILLING authorization: it records that Fable 5 may draw on usage credits past
@@ -87,11 +87,12 @@ if [ "$already" = "true" ]; then
     exit 0
 fi
 
-# Serialize against other copies of this hook. agent-deck starts several Claude
-# sessions at once, so concurrent SessionStart runs are ordinary here, and the
-# read/modify/write below would otherwise let one overwrite the other. Losing
-# the lock race means another instance is performing the identical write, so
-# skipping is correct rather than merely safe.
+# Serialize against other copies of this script. agent-deck starts several
+# Claude sessions at once, so concurrent launches — each running this first —
+# are ordinary here, and the read/modify/write below would otherwise let one
+# overwrite the other. Losing the lock race means another instance is
+# performing the identical write, so skipping is correct rather than merely
+# safe.
 #
 # What this does NOT do — and cannot — is serialize against Claude Code itself,
 # which rewrites ~/.claude.json from its own in-memory state without taking any
@@ -108,8 +109,8 @@ fi
 # The temp file MUST be a sibling of the target, not a bare `mktemp`. ~/.claude
 # is a mounted volume while $TMPDIR is not, so a bare mktemp puts the temp file
 # on a different filesystem and `mv` degrades from a rename into a copy over
-# the destination — non-atomic, and a SessionStart run interrupted mid-copy (or
-# a full volume) would leave Claude Code reading a truncated settings file.
+# the destination — non-atomic, and a run interrupted mid-copy (or a full
+# volume) would leave Claude Code reading a truncated settings file.
 # That is strictly worse than never writing, and it would invalidate the
 # atomicity the paragraph above relies on. Same directory keeps it a rename.
 consent_tmp="$(mktemp "${CLAUDE_JSON}.XXXXXX")" || exit 0

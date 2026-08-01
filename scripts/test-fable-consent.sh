@@ -4,9 +4,9 @@
 #
 # The hook writes a BILLING authorization (.fableOverageConsentV2 records that
 # Fable 5 may draw on usage credits past plan limits) into Claude Code's shared
-# state file, from an image-baked SessionStart hook that runs for whichever
-# account is signed in. Three properties therefore have to hold, and none of
-# them is visible by reading the diff:
+# state file, from an image-baked script that postStart and a `claude` shell
+# wrapper both invoke for whichever account is signed in. Three properties
+# therefore have to hold, and none of them is visible by reading the diff:
 #
 #   * the opt-in gate fails CLOSED — anything but the exact string "true"
 #     writes nothing, so a checkout never grants consent for someone's account;
@@ -36,8 +36,9 @@ fail() {
 }
 
 # run GATE BODY -> writes $tmpdir/claude.json, runs the hook, echoes its exit
-# code. The hook must never exit non-zero: a failing SessionStart hook is a
-# failing Claude session, and a failing postStart is a failing container start.
+# code. The hook must never exit non-zero: it runs in front of every `claude`
+# launch and on every container start, so a non-zero exit would break the thing
+# it is trying to help.
 run() {
     printf '%s' "$2" >"$tmpdir/claude.json"
     _rc=0
@@ -86,7 +87,7 @@ run true '{"oauthAccount":{"accountUuid":"acct-9"}}' >/dev/null
 # --- no account yet ---------------------------------------------------------
 echo "==> a fresh volume with no oauthAccount writes nothing"
 # postStart runs before any login on a fresh volume. This must no-op rather
-# than invent a key — the SessionStart hook covers it once an account exists.
+# than invent a key — the `claude` wrapper covers it once an account exists.
 run true '{"hasCompletedOnboarding":true}' >/dev/null
 [ "$(consent)" = '"absent"' ] || fail "recorded consent with no account present"
 
@@ -124,8 +125,8 @@ env DEVCONTAINER_FABLE_CONSENT=true CLAUDE_JSON="$tmpdir/does-not-exist.json" \
 
 # --- quietness ---------------------------------------------------------------
 echo "==> the hook is silent without --verbose"
-# It runs from every interactive shell startup, so a success message without
-# --verbose would print on shells that are not doing anything interesting.
+# It runs in front of every `claude` launch, so a success message without
+# --verbose would print on launches that changed nothing.
 printf '%s' '{"oauthAccount":{"organizationUuid":"org-q"}}' >"$tmpdir/claude.json"
 out="$(env DEVCONTAINER_FABLE_CONSENT=true CLAUDE_JSON="$tmpdir/claude.json" \
     "$hook" 2>/dev/null)"
@@ -136,7 +137,7 @@ out="$(env DEVCONTAINER_FABLE_CONSENT=true CLAUDE_JSON="$tmpdir/claude.json" \
 echo "==> the temp file is a sibling of the target, so the rename is atomic"
 # A bare mktemp lands in $TMPDIR (tmpfs) while ~/.claude is a mounted volume,
 # which turns `mv` into a cross-filesystem copy — non-atomic, and an
-# interrupted SessionStart run would leave a truncated .claude.json.
+# interrupted run would leave a truncated .claude.json.
 grep -q 'mktemp "${CLAUDE_JSON}\.XXXXXX"' "$hook" ||
     fail "the hook no longer creates its temp file beside CLAUDE_JSON"
 
