@@ -20,13 +20,17 @@ FILES=(
 # Each is a grep -iE regex.
 REJECTED=(
     'green PR'
-    'to green'
+    '(PR|pull request).* to green|to green.*(PR|pull request)'
     '→ green'
 )
 
 fail=0
 for f in "${FILES[@]}"; do
-    [ -f "$f" ] || continue
+    if [ ! -f "$f" ]; then
+        echo "  ✗ guarded index missing: $f" >&2
+        fail=1
+        continue
+    fi
     for pat in "${REJECTED[@]}"; do
         if grep -qiE "$pat" "$f"; then
             echo "  ✗ $f contains stale lifecycle language: '$pat'" >&2
