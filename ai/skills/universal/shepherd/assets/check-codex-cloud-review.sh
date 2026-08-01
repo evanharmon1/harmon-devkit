@@ -531,12 +531,23 @@ check)
     # a gate must fail in — an unfamiliar suffix costs one escalation, whereas
     # trusting arbitrary text from an external bot costs a false green.
     #
-    # Structure, not an allowlist of the two observed praise strings: praise is
-    # conventionally a brief exclamation, so a new phrasing ("Great job!")
-    # keeps working, while an allowlist would jam the gate shut on it — the
-    # exact brittleness this function is being fixed for. A future praise
-    # string that is not exclamatory would fail closed and need this widened;
-    # that is the trade being made deliberately.
+    # Structure, not an allowlist of observed praise strings: an allowlist jams
+    # the gate shut on the next new phrasing, which is the exact brittleness
+    # this function is being fixed for.
+    #
+    # The shape is deliberately wider than "short exclamation". A first pass
+    # required a trailing `!` and letters only; #239 then drew the real reply
+    # "Codex Review: Didn't find any major issues. Chef's kiss." — an
+    # apostrophe and a full stop — which that pass would have called a finding.
+    # Observed praise so far: "Keep it up!", "Nice work!", "Chef's kiss.".
+    # Hence letters, spaces and apostrophes, ending in `.` or `!`, and short.
+    #
+    # The length bound is what keeps prose out: "however a race remains." is
+    # otherwise the same shape. That makes the boundary empirical rather than
+    # principled — a short qualifier ("but a race remains.") would slip
+    # through, and a long compliment would fail closed. Both directions are
+    # documented rather than hidden, and the second is the cheaper one: an
+    # unrecognised suffix costs an escalation, not a false green.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
@@ -549,7 +560,7 @@ check)
             ($line | startswith(clean_sentence)) and
             (($line | ltrimstr(clean_sentence) |
               gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
-             . == "" or test("^[a-z][a-z ]{0,23}!$"));
+             . == "" or test("^[a-z][a-z\u0027 ]{0,18}[.!]$"));
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head)
@@ -576,7 +587,7 @@ check)
             ($line | startswith(clean_sentence)) and
             (($line | ltrimstr(clean_sentence) |
               gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
-             . == "" or test("^[a-z][a-z ]{0,23}!$"));
+             . == "" or test("^[a-z][a-z\u0027 ]{0,18}[.!]$"));
           .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(
