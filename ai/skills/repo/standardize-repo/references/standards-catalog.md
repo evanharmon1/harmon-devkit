@@ -682,13 +682,24 @@ install the Renovate GitHub App on the repo. Conventions:
   need an engine update plus one deliberate re-sync, not merely a ref edit.
   **[copier]**
 - **Foreman** — milestone/issue-driven agent dispatch, gated on the
-  **`use_foreman`** Copier answer. When enabled it adds `.foreman.toml`,
-  `taskfiles/foreman.yml`, `scripts/foreman/`, three `.claude/agents/`, the
-  architecture doc, Taskfile targets, hooks, and Python tooling. The v3.26
-  release introduced it default-on; current template source now deliberately
-  defaults to `no`. Always pass an explicit per-repo answer on update because
-  this is a substantial operational subsystem, not a passive lint config.
-  Absence is deliberate when `use_foreman: false`. **[copier]**
+  **`use_foreman`** Copier answer. Foreman v2 is a **thin integration**
+  (ponderousdev/foreman#12): when enabled the template adds only
+  `taskfiles/foreman.yml` — a wrapper whose `FOREMAN` var is
+  `uvx --from git+https://github.com/ponderousdev/foreman@v{{.FOREMAN_VERSION}} foreman`,
+  with a renovate-annotated `FOREMAN_VERSION` tag pin
+  (`datasource=github-tags depName=ponderousdev/foreman`) — and
+  `.foreman.toml` (consumer config: `runner`, `required_capabilities`, the
+  `[verify]` table, `trusted_actors`). Consumers hold **no Foreman source**:
+  no vendored `scripts/foreman/`, no `.claude/agents/foreman-*.md`, no
+  architecture doc — source updates arrive as Renovate pin bumps, verified by
+  `task foreman:plan` resolving the pinned version. The v3.26 release
+  introduced it default-on (and vendored the full source tree);
+  current template source now deliberately defaults to `no`. Always pass an
+  explicit per-repo answer on update because this is a deliberate operational
+  opt-in, not a passive lint config. A repo scaffolded before the v2 flip must drop
+  its vendored tree per foreman's migration guide (`git rm -r scripts/foreman`
+  plus a `test ! -d scripts/foreman` CI guard). Absence is deliberate when
+  `use_foreman: false`. **[copier]**
 - Devcontainer ships richer `config/claude-settings.json` as managed settings (see
   1.6). **[copier]**
 - **`DESIGN.md`** — AI-facing statement of design intent (the *why*/prose rules);
