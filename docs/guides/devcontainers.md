@@ -109,9 +109,17 @@ DEVCONTAINER_FABLE_CONSENT=true
 ```
 
 Add it to your 1Password Environment alongside the variables above (it is not
-a secret, but that is what generates the env-file), or set it in
-`containerEnv` if you want it per-profile the way `DEVCONTAINER_TAILSCALE` is.
-It is not in `ALL_MANAGED_VARS`, so `init-env.sh` leaves it alone.
+a secret, but that is what generates the env-file). It is not in
+`ALL_MANAGED_VARS`, so `init-env.sh` leaves it alone.
+
+**Keep it out of `containerEnv`.** That lives in the checked-in
+`devcontainer.json`, which is templated downstream by harmon-init — setting it
+there would grant the billing consent for whichever account signs into that
+profile, in every repo built from it, which is the exact thing the opt-in
+gate exists to prevent. This is why it is unlike `DEVCONTAINER_TAILSCALE`,
+which is a per-profile capability switch rather than an authorization. The
+opt-in must stay with the account owner: the gitignored env-file, or an
+explicit local override you do not commit.
 
 To revoke: delete the `fableOverageConsentV2` key from
 `~/.claude/.claude.json` and unset the variable.

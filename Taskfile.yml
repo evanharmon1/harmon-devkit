@@ -226,6 +226,7 @@ tasks:
       - test:hygiene
       - test:archive-hook
       - test:track-work
+      - test:fable-consent
 
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)
@@ -276,6 +277,11 @@ tasks:
     desc: Unit-assert devcontainer permission invariants (no container needed)
     cmds:
       - ./scripts/devcontainer-assert.sh unit
+
+  test:fable-consent:
+    desc: Check the Fable usage-credit consent hook (opt-in gate, key, preservation)
+    cmds:
+      - ./scripts/test-fable-consent.sh
 
   test:hooks:
     desc: Round-trip the Taskfile targets the Claude hooks delegate to

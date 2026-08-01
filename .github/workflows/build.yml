@@ -61,6 +61,7 @@ jobs:
       - run: task test:track-work
       - run: task test:notify-release
       - run: task test:hooks
+      - run: task test:fable-consent
       - run: task test:skills
       - run: task test:hygiene
       - run: task test:archive-hook
