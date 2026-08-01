@@ -218,7 +218,7 @@ task review     # verification checkpoint — same clean-pass exit, ≤4 rounds
 task ci         # full CI mirror
 # → open the PR, then /shepherd it: watch CI + reviews, settle the deferred
 #   P2s, adjudicate → fix → push, ≤4 rounds (independent of the loops above);
-#   checks green with reviews unpolled is not done — reviews land after checks
+#   checks pass with reviews unpolled is not done — reviews land after checks
 #   settle
 # → merging stays a human decision
 ```
@@ -314,7 +314,7 @@ part of the change to adjudicate.
 
 The shepherd stage settles every entry and ticks it off in the body as it
 goes, so the checkbox — not anyone's memory — is what says whether a finding
-is still open. The PR is not green while an unchecked entry remains.
+is still open. The PR is not ready for review while an unchecked entry remains.
 AGENTS.md ("Dev Loop") carries that obligation, so it holds even where the
 optional `/shepherd` skill that automates it is not installed.
 
