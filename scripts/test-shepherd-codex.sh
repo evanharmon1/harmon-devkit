@@ -184,6 +184,69 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 
+# Codex does not emit the bare sentence — it appends a praise clause, and the
+# clause varies. Both of these are verbatim from this repo's own PR history
+# (#239 and #225). The fixture above uses the bare form, so on its own it
+# pinned a phrasing Codex has never actually produced: the classifier compared
+# for equality, every real clean verdict fell through to "findings", and the
+# cloud gate could not go green for any PR. Pin the shapes that occur.
+for suffix in "Keep it up!" "Nice work!"; do
+    echo "==> a clean verdict with the trailing '${suffix}' is still clean"
+    new_cycle
+    prefix="${head_sha:0:10}"
+    jq -cn \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" \
+        --arg prefix "$prefix" \
+        --arg suffix "$suffix" \
+        '[[],[
+      {
+        id:78,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. " + $suffix +
+          "\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+    run_check '2026-07-31T08:01:00Z'
+    assert_status 0 clean
+done
+
+echo "==> a clean-shaped review body with a praise clause is clean"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:101,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues. Keep it up!"
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> a finding whose body merely CONTAINS the verdict is still a finding"
+# The guard on prefix matching: the sentence has to START the line. Without
+# this, relaxing equality to a prefix could be relaxed further by accident.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:102,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"Unlike the clean case, Codex Review: Didn\u0027t find any major issues. is quoted here as P1 evidence."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
 echo "==> exact-head evidence remains valid after local state loss"
 new_cycle
 prefix="${head_sha:0:10}"

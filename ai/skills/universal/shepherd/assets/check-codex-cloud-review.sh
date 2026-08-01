@@ -506,14 +506,27 @@ check)
         exit 10
     fi
 
+    # clean_result matches the verdict sentence as a PREFIX of the first line,
+    # not as the whole line. Codex appends a variable praise clause to it —
+    # "Keep it up!" and "Nice work!" are both observed in this repo's history —
+    # so an equality test never matched a real clean verdict, and every clean
+    # review classified as a finding. That failed closed, which is the right
+    # direction, but it also meant no PR could ever satisfy the Codex cloud
+    # gate and reach the shepherd's readiness step.
+    #
+    # Prefix matching stays safe because a body only reaches here after the
+    # inline-findings check above, and because the anchor is the START of the
+    # line: a finding that merely quotes the sentence ("P1: code can emit Codex
+    # Review: Didn't find any major issues.") does not begin with it and is
+    # still a finding. That case is pinned by a test.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
           def clean_result:
             ((.body // "") | split("\n")[0] |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") |
-              ascii_downcase) ==
-            "codex review: didn\u0027t find any major issues.";
+              ascii_downcase) |
+            startswith("codex review: didn\u0027t find any major issues.");
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head)
@@ -534,8 +547,8 @@ check)
           def clean_result:
             ((.body // "") | split("\n")[0] |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") |
-              ascii_downcase) ==
-            "codex review: didn\u0027t find any major issues.";
+              ascii_downcase) |
+            startswith("codex review: didn\u0027t find any major issues.");
           .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(
