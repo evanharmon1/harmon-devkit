@@ -33,12 +33,29 @@
 #
 # Quiet by default: SessionStart hook stdout is injected into the session's
 # context, so only --verbose (used by postStart) prints on success.
+#
+# OPT-IN ONLY, and that is not incidental. `.fableOverageConsentV2` is a
+# BILLING authorization: it records that Fable 5 may draw on usage credits past
+# plan limits. This hook is baked into the image and runs for whichever account
+# happens to be signed in, so seeding it unconditionally would turn opening a
+# repo checkout into a billing-affecting authorization for someone else's
+# account — and this dev container config is templated to other repos via
+# harmon-init. Granting that silently is not a decision a shared default may
+# make, so the gate defaults to off and the account owner opts in per machine:
+#
+#   echo 'DEVCONTAINER_FABLE_CONSENT=true' >> .devcontainer/devcontainer.env
+#
+# devcontainer.env is gitignored and personal, and init-env.sh leaves unmanaged
+# vars alone, so the opt-in stays with the account owner and never rides along
+# in the image or in git. Same shape as DEVCONTAINER_TAILSCALE.
 
 set -euo pipefail
 
 CLAUDE_JSON="${CLAUDE_JSON:-$HOME/.claude/.claude.json}"
 verbose=""
 [ "${1:-}" = "--verbose" ] && verbose=1
+
+[ "${DEVCONTAINER_FABLE_CONSENT:-}" = "true" ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
 [ -f "$CLAUDE_JSON" ] || exit 0
@@ -55,6 +72,24 @@ already="$(jq -r --arg k "$consent_key" '.fableOverageConsentV2[$k] // false' \
     "$CLAUDE_JSON" 2>/dev/null || true)"
 if [ "$already" = "true" ]; then
     exit 0
+fi
+
+# Serialize against other copies of this hook. agent-deck starts several Claude
+# sessions at once, so concurrent SessionStart runs are ordinary here, and the
+# read/modify/write below would otherwise let one overwrite the other. Losing
+# the lock race means another instance is performing the identical write, so
+# skipping is correct rather than merely safe.
+#
+# What this does NOT do — and cannot — is serialize against Claude Code itself,
+# which rewrites ~/.claude.json from its own in-memory state without taking any
+# lock. A CLI write landing between the read and the mv below is still lost.
+# Two things bound that: the mv is an atomic rename, so the file is never torn
+# — the failure mode is a lost update, never corruption — and postStart runs
+# this while no CLI is live, which re-applies the record on the next container
+# start. The residual window is one session's worth of consent, self-healing.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"${CLAUDE_JSON}.fable-consent.lock" 2>/dev/null || exit 0
+    flock -w 5 9 2>/dev/null || exit 0
 fi
 
 consent_tmp="$(mktemp)"

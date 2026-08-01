@@ -87,6 +87,35 @@ Variables per profile:
 `ANTHROPIC_API_KEY` is deliberately **forbidden** — it silently overrides
 `CLAUDE_CODE_OAUTH_TOKEN`, so `init-env.sh` strips it from the env-file.
 
+### Opting in to Fable 5 (`DEVCONTAINER_FABLE_CONSENT`)
+
+Fable 5 needs a one-time "draws from usage credits" consent, and Claude Code
+stores it **per machine** in `~/.claude.json` (`.fableOverageConsentV2`, keyed
+by your account's org UUID). `~/.claude` is a container-local volume, so the
+consent you granted on your host never reaches a dev container — and without
+it Fable can end up **unselectable in `/model`** here while working fine on
+the host, on an account that is entitled to it.
+
+`config/claude-hooks/seed-fable-consent.sh` records it for the signed-in
+account, from postStart (covers restarts) and Claude Code's `SessionStart`
+hook (covers the first login on a fresh volume, when no account exists yet at
+postStart time). It is **off unless you opt in**, because the flag is a
+billing authorization and the hook is image-baked — it would otherwise grant
+it silently for whichever account signs in, including in repos templated from
+here. Set it for your own account only:
+
+```sh
+DEVCONTAINER_FABLE_CONSENT=true
+```
+
+Add it to your 1Password Environment alongside the variables above (it is not
+a secret, but that is what generates the env-file), or set it in
+`containerEnv` if you want it per-profile the way `DEVCONTAINER_TAILSCALE` is.
+It is not in `ALL_MANAGED_VARS`, so `init-env.sh` leaves it alone.
+
+To revoke: delete the `fableOverageConsentV2` key from
+`~/.claude/.claude.json` and unset the variable.
+
 ### What `init-env.sh` does
 
 On container init the devcontainer runs `.devcontainer/scripts/init-env.sh` on
