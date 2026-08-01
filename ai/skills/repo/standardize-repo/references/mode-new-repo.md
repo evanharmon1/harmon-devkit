@@ -323,7 +323,7 @@ policy and report lifecycle adoption as blocked.
 
 ```bash
 if git rev-parse --verify HEAD >/dev/null 2>&1 &&
-  ! git diff --quiet -- .copier-answers.yml; then
+  ! git diff --quiet HEAD -- .copier-answers.yml; then
   git add -- .copier-answers.yml ||
     { echo "failed to stage the frozen lineage tuple" >&2; exit 1; }
   if git rev-parse --verify '@{upstream}' >/dev/null 2>&1 ||
@@ -334,18 +334,18 @@ if git rev-parse --verify HEAD >/dev/null 2>&1 &&
     # never rewrite published history, and never push an agent-authored
     # follow-up to main. A PR cannot predate its base branch, and main already
     # exists, so branch from main before committing the freeze, push the branch,
-    # open a draft PR. Commit on the freeze branch (not main) so an installed
-    # pre-commit hook does not trip: run_task_install=yes left lefthook in place,
-    # but guard:no-commit-to-main blocks only commits to main, and HEAD is the
-    # freeze branch once git switch -c runs — so branching here handles the
-    # hooks-installed case itself, with no manual switch to a feature branch
-    # first (that manual switch was what stranded the freeze on an operator
-    # branch and let git switch -c branch from it, contaminating the PR).
-    # origin/main is a third publication signal for the case where @{upstream}
-    # is unset on the current branch (a detached or non-tracking checkout) but
-    # main is published.
+    # open a draft PR. git switch -c anchors to main, not the current HEAD, so
+    # the lineage-only PR cannot drag in unrelated commits from a non-main
+    # checkout — run this block on main (the ordinary state right after
+    # generation or the first push). Commit lands on the freeze branch, not
+    # main, so an installed pre-commit hook does not trip: run_task_install=yes
+    # left lefthook in place, but guard:no-commit-to-main blocks only commits to
+    # main, and HEAD is the freeze branch once git switch -c runs — so branching
+    # here handles the hooks-installed case itself, with no manual switch to a
+    # feature branch first. origin/main is a third publication signal for when
+    # @{upstream} is unset on the current branch but main is published.
     FREEZE_BRANCH=chore/freeze-copier-lineage
-    git switch -c "$FREEZE_BRANCH" ||
+    git switch -c "$FREEZE_BRANCH" main ||
       { echo "failed to create the lineage-freeze branch" >&2; exit 1; }
     git commit -m 'chore: freeze copier lineage to the verified template commit' ||
       { echo "failed to record the frozen lineage tuple" >&2; exit 1; }

@@ -944,6 +944,19 @@ expect_ok "new-repo freeze branches before the follow-up on a published scaffold
         test -n "$switch_line" && test -n "$commit_line" &&
         test "$switch_line" -lt "$commit_line"' sh \
     "$STANDARDIZE_REFS/mode-new-repo.md"
+# The no-remote + hooks path stages the freeze, exits to publish the base, then
+# reruns. A plain `git diff --quiet` sees no unstaged change (the tuple is
+# staged) and skips the block — leaving main on the tag-valued tuple. The entry
+# guard must diff against HEAD so a staged freeze is still committed on rerun.
+expect_ok "new-repo freeze detects a staged tuple on rerun, not just an unstaged one" \
+    grep -qF 'git diff --quiet HEAD -- .copier-answers.yml' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
+# git switch -c without a start-point branches from the current HEAD, so a
+# non-main checkout would drag unrelated commits into the lineage-only PR. Anchor
+# to main (the published initial base) explicitly.
+expect_ok "new-repo freeze branches from main, not the current HEAD" \
+    grep -qF 'git switch -c "$FREEZE_BRANCH" main' \
+    "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_fail "new-repo freeze never pushes a follow-up directly to main" \
     grep -qF 'git push ||' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
