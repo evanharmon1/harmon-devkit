@@ -19,9 +19,11 @@ FILES=(
 # Patterns that should not appear in skill/workflow descriptions.
 # Each is a grep -iE regex.
 REJECTED=(
-    'green PR'
-    '(PR|pull request).* to green|to green.*(PR|pull request)'
+    'green \bPR\b'
+    '\bPR\b.* to green|to green.*\bPR\b'
     '→ green'
+    '\bnot green\b'
+    '\bchecks green\b'
 )
 
 fail=0
