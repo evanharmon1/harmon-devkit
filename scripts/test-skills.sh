@@ -884,12 +884,14 @@ expect_ok "new-repo freeze never rewrites a published scaffold commit" \
         grep -qF "git tag --points-at HEAD" "$1" &&
         grep -qF "never rewrite published history" "$1"' sh \
     "$STANDARDIZE_REFS/mode-new-repo.md"
-# run_task_install=yes installs lefthook; the hook guard exits on main, so the
-# operator reruns the freeze on a feature branch where @{upstream} is unset and
-# (with github_release_init=no) no tag points at HEAD. Reachability must also
-# detect a published origin/main, or the freeze wrongly amends and leaves main
-# on the tag-valued tuple.
-expect_ok "new-repo freeze detects a published main after a hook-driven branch switch" \
+# The branch arm commits on the freeze branch (not main), so the hook guard
+# lives in the amend arm, not before the reachability check — there is no
+# hook-driven manual switch to a feature branch first. @{upstream} covers the
+# ordinary case (main tracks origin/main after gh repo create --push), but it is
+# unset on a detached or non-tracking checkout. A published origin/main is a
+# third publication signal so the freeze still branches + PRs there instead of
+# wrongly amending and leaving main on the tag-valued tuple.
+expect_ok "new-repo freeze detects a published main when the current branch lacks an upstream" \
     grep -qF 'refs/remotes/origin/main' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "new-repo freeze offers a follow-up commit for published scaffolds" \

@@ -324,14 +324,6 @@ policy and report lifecycle adoption as blocked.
 ```bash
 if git rev-parse --verify HEAD >/dev/null 2>&1 &&
   ! git diff --quiet -- .copier-answers.yml; then
-  # run_task_install=yes installs lefthook before this point; committing on main
-  # then trips guard:no-commit-to-main. Branch instead of bypassing the hook.
-  if test -x .git/hooks/pre-commit &&
-    test "$(git rev-parse --abbrev-ref HEAD)" = main; then
-    echo "lefthook is installed and HEAD is main: commit the lineage freeze on a" >&2
-    echo "feature branch and open a draft PR — never --no-verify, never push to main" >&2
-    exit 1
-  fi
   git add -- .copier-answers.yml ||
     { echo "failed to stage the frozen lineage tuple" >&2; exit 1; }
   if git rev-parse --verify '@{upstream}' >/dev/null 2>&1 ||
@@ -341,12 +333,17 @@ if git rev-parse --verify HEAD >/dev/null 2>&1 &&
     # may have tagged it) before this section. That commit is the initial base —
     # never rewrite published history, and never push an agent-authored
     # follow-up to main. A PR cannot predate its base branch, and main already
-    # exists, so branch, commit the freeze, push the branch, open a draft PR.
-    # origin/main is a third publication signal: run_task_install=yes installs
-    # lefthook, the hook guard above exits on main, and the operator reruns this
-    # on a feature branch where @{upstream} is unset; with github_release_init=no
-    # no tag points at HEAD either, so without origin/main the freeze would
-    # wrongly take the amend arm and leave main on the tag-valued tuple.
+    # exists, so branch from main before committing the freeze, push the branch,
+    # open a draft PR. Commit on the freeze branch (not main) so an installed
+    # pre-commit hook does not trip: run_task_install=yes left lefthook in place,
+    # but guard:no-commit-to-main blocks only commits to main, and HEAD is the
+    # freeze branch once git switch -c runs — so branching here handles the
+    # hooks-installed case itself, with no manual switch to a feature branch
+    # first (that manual switch was what stranded the freeze on an operator
+    # branch and let git switch -c branch from it, contaminating the PR).
+    # origin/main is a third publication signal for the case where @{upstream}
+    # is unset on the current branch (a detached or non-tracking checkout) but
+    # main is published.
     FREEZE_BRANCH=chore/freeze-copier-lineage
     git switch -c "$FREEZE_BRANCH" ||
       { echo "failed to create the lineage-freeze branch" >&2; exit 1; }
@@ -363,10 +360,23 @@ if git rev-parse --verify HEAD >/dev/null 2>&1 &&
       --body 'Freeze the .copier-answers.yml lineage tuple to the verified template commit (full 40-hex hash) so the first copier update does not enter legacy-baseline recovery. See references/mode-new-repo.md §4a.' ||
       { echo "failed to open the lineage-freeze draft PR" >&2; exit 1; }
   else
-    # No remote, no tag, no installed hooks: the scaffold is still private to
-    # this machine. Fold the freeze into the unpublished initial base so the
-    # first published commit carries the correct lineage. (A PR cannot predate
-    # its base branch.)
+    # No remote, no tag: the scaffold is still private to this machine. Fold the
+    # freeze into the unpublished initial base so the first published commit
+    # carries the correct lineage. (A PR cannot predate its base branch.) But if
+    # run_task_install=yes installed lefthook while HEAD is main, amending here
+    # trips guard:no-commit-to-main — the unpublished base cannot be amended
+    # behind an installed hook. Publish the base first (create the remote and
+    # make the first push yourself, the §4 step 3 command that
+    # github_remote_create=false skipped), then branch for the freeze — never
+    # --no-verify, never push to main.
+    if test -x .git/hooks/pre-commit &&
+      test "$(git rev-parse --abbrev-ref HEAD)" = main; then
+      echo "lefthook is installed and HEAD is main: the scaffold is unpublished," >&2
+      echo "so the freeze cannot amend it behind the hook. Publish the base first" >&2
+      echo "(create the remote + first push, §4 step 3), then branch for the freeze" >&2
+      echo "— never --no-verify, never push to main" >&2
+      exit 1
+    fi
     git commit --amend --no-edit ||
       { echo "failed to record the frozen lineage tuple" >&2; exit 1; }
   fi
