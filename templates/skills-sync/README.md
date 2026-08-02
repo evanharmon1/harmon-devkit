@@ -21,6 +21,41 @@ files).
 - **Pinned tag.** The manifest pins a git tag, so updates are a deliberate manifest bump — never a surprise from upstream `main`.
 - **Shared destination — local skills are first-class.** The dest (`.claude/skills`) is shared between vendored and local skills. The sync manages **only** the dirs it vendored (recorded on the provenance `# managed:` line); any other directory is a local skill the repo owns — the sync and both verify modes never touch or report it. If a local dir's name collides with an incoming vendored skill, the sync fails loudly **before deleting anything** (rename the local skill or drop the category).
 - **Provenance.** Every synced destination gets a `.SKILLS_PROVENANCE` stamp recording the source, ref, resolved commit SHA, and the `# managed:` list of vendored dirs, with a do-not-edit marker for the managed skills.
+- **Agents ride along, optionally.** An `agents:` block vendors shared subagents (single `<name>.md` files) into their own dest, at the **same pinned ref**, in the same `task sync:skills` run. Omit the block and nothing about the sync changes.
+
+## Agents
+
+Shared subagents live in harmon-devkit under `ai/agents/<name>.md` — flat, no categories. Add an `agents:` block to request them:
+
+```yaml
+agents:
+  names: [implementer] # or ["*"] for every agent at the pin
+  dest: .claude/agents # must differ from the skills dest
+```
+
+> **Requires an engine with agents support.** `scripts/sync-skills.sh` from a
+> release older than this feature does not know the `agents:` key exists — it
+> vendors your skills, exits 0, and never mentions that the block was ignored,
+> and its `verify` is silent about it too. There is no version handshake that
+> could warn you: an old program cannot recognise a future key. If the block is
+> in your manifest and `.AGENTS_PROVENANCE` never appears in `agents.dest`, your
+> engine is too old — re-fetch it per step 1 of the adoption steps below.
+
+Everything the skills pass guarantees, the agents pass guarantees too: pinned ref, flattened dest shared with your local agents, a `.AGENTS_PROVENANCE` stamp whose `# managed:` line is the only thing the sync will replace or delete, a collision that fails **before** any deletion, and both drift checks (`verify` and `verify:skills:offline`).
+
+Three things are specific to agents:
+
+- **One ref for both.** Agents and skills are pinned by the same `source.ref`, and that is deliberate rather than incidental. A shared agent is thin: it defers to a skill by _reading_ it (`.claude/skills/<name>/SKILL.md`). Pinning the two separately would let an agent follow a procedure that no longer exists at the other pin.
+- **`names`, not categories.** Agents are few and flat, so a consumer names them — or asks for all of them with `["*"]`. Mixing `"*"` with explicit names is a manifest error, not a union.
+- **Separate dest, always.** `agents.dest` must differ from `dest`. Two independent managed sets over one directory would each have to reason about the other's deletions; the sync refuses the arrangement instead.
+
+`README.md` in the source agents directory documents that directory and is never vendored as an agent.
+
+### Stopping
+
+Delete the `agents:` block and re-run `task sync:skills`. The vendored agents and their stamp are removed; your local agents in the same directory are not. Until you run that sync, `verify` reports the leftovers rather than ignoring them.
+
+That works because the skills stamp records `# agents-dest:`. It has to: `agents.dest` lives _inside_ the block you just deleted, so without the breadcrumb nothing would know where the agents had been put — they would sit there indefinitely, still stamped do-not-edit, pinned to a ref nothing will bump, invisible to both drift checks.
 
 ## What's in this bundle
 
@@ -32,21 +67,30 @@ files).
 
 ## Adopt it in a consumer repo
 
-1. **Copy the engine** into your repo (it is maintained and unit-tested in harmon-devkit):
+1. **Copy the engine** into your repo (it is maintained and unit-tested in harmon-devkit). Resolve the newest release rather than hard-coding a tag — see the warning below:
 
    ```sh
    mkdir -p scripts
+   engine="$(gh release view --repo evanharmon1/harmon-devkit --json tagName -q .tagName)"
    curl -fsSL -o scripts/sync-skills.sh \
-     https://raw.githubusercontent.com/evanharmon1/harmon-devkit/v0.5.0/scripts/sync-skills.sh
+     "https://raw.githubusercontent.com/evanharmon1/harmon-devkit/${engine}/scripts/sync-skills.sh"
    chmod +x scripts/sync-skills.sh
    ```
+
+   > **The engine version and the manifest `ref` are different things.** The
+   > `ref` pins _what content you vendor_ and is a deliberate choice. The engine
+   > is _the program doing the vendoring_, and should simply be current — an
+   > engine older than a manifest feature **ignores that feature silently**. An
+   > engine predating `agents:` support, handed a manifest with an `agents:`
+   > block, exits 0 having vendored only skills; its `verify` ignores agents
+   > too, so nothing ever reports the omission. Take the newest engine.
 
 2. **Add the manifest.** Copy `.skills-sync.yaml` to your repo root and edit `categories`, `ref`, and `dest`:
 
    ```yaml
    source:
      repo: https://github.com/evanharmon1/harmon-devkit.git
-     ref: v0.5.0
+     ref: v0.17.0 # a deliberate content pin — bump when you want new assets
    categories:
      - universal
      - frontend
@@ -60,10 +104,15 @@ files).
    ```sh
    task sync:skills
    git add .skills-sync.yaml .claude/skills scripts/sync-skills.sh
+   git add .claude/agents # only if your manifest has an `agents:` block
    git commit -m "chore: vendor shared agent skills from harmon-devkit"
    ```
 
-Requires `yq` ([mikefarah/yq](https://github.com/mikefarah/yq)) and `git` on `PATH`.
+   Stage the agents dest too, or the committed manifest requests agents that no
+   commit contains — and the drift check fails on the next clone or CI run,
+   correctly, for a reason that looks nothing like "you forgot to `git add`".
+
+Requires `yq` ([mikefarah/yq](https://github.com/mikefarah/yq)) and `git` on `PATH`. Step 1 also uses `gh` to resolve the newest release; without it, open the [releases page](https://github.com/evanharmon1/harmon-devkit/releases/latest) and substitute the tag by hand — just don't reuse your manifest `ref` for it, which is the mistake the warning above describes.
 
 ## CI drift check
 
@@ -106,12 +155,18 @@ pre-push:
 
 `verify:skills:offline` fails fast if the manifest ref and the vendored provenance disagree (i.e. you bumped the ref but forgot to re-sync). Renovate can automate the ref bump, but it cannot run the re-sync half — never merge a ref bump without the accompanying `task sync:skills` result.
 
-## Adding a new skill
+## Adding a new skill or agent
 
-Skills are authored in harmon-devkit, not here. See
-[`ai/skills/README.md`](../../ai/skills/README.md) for the layout, the
-unique-name-across-categories rule, and how to add one. After it ships in a
-harmon-devkit release, bump your `ref` and re-sync.
+Both are authored in harmon-devkit, not here. See
+[`ai/skills/README.md`](../../ai/skills/README.md) for the skill layout and the
+unique-name-across-categories rule, and
+[`ai/agents/README.md`](../../ai/agents/README.md) for the agent layout and the
+portability contract. After it ships in a harmon-devkit release, bump your `ref`
+and re-sync.
+
+A new **skill** arrives automatically if it lands in a category you already
+request. A new **agent** does not: `names` is an explicit list, so add it there
+first — unless you use `["*"]`, which picks up every agent at the new pin.
 
 ## Auth
 
