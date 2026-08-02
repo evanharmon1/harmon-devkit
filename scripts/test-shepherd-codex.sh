@@ -194,7 +194,7 @@ assert_status 0 clean
 #
 # "Chef's kiss." is why the accepted shape is not just a short exclamation —
 # it carries an apostrophe and ends in a full stop. Pin the shapes that occur.
-for suffix in "Keep it up!" "Nice work!" "Chef's kiss." "Nicely done."; do
+for suffix in "Keep it up!" "Nice work!" "Chef's kiss."; do
     echo "==> a clean verdict with the trailing '${suffix}' is still clean"
     new_cycle
     prefix="${head_sha:0:10}"
@@ -215,7 +215,7 @@ for suffix in "Keep it up!" "Nice work!" "Chef's kiss." "Nicely done."; do
     assert_status 0 clean
 done
 
-echo "==> an unobserved praise phrasing is still clean (not an allowlist)"
+echo "==> an UNOBSERVED praise phrasing escalates rather than passing"
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
@@ -230,7 +230,11 @@ jq -cn \
       }
     ]]' >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:01:00Z'
-assert_status 0 clean
+# Deliberately NOT clean. No pattern over characters separates "Great job
+# everyone!" from "but a race remains." — both are short and alphabetic — so
+# the tail is matched against observed strings only, and anything else asks a
+# human. Being unlisted costs one escalation; being wrong costs a false green.
+assert_status 2 indeterminate
 
 echo "==> a clean-shaped review body with a praise clause is clean"
 new_cycle
@@ -285,7 +289,8 @@ done
 # qualifier smuggled onto the verdict line from passing as clean.
 for tail in "However a race remains" "However a race remains." \
     "but see the note below" "See item 3" "However, 2 concerns:" \
-    "an unusually long and effusive compliment"; do
+    "an unusually long and effusive compliment" \
+    "but a race remains." "one concern."; do
     echo "==> a verdict line trailed by '${tail}' is indeterminate, not clean"
     new_cycle
     jq -cn \

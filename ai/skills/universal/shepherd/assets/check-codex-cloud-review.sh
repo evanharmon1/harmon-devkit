@@ -528,15 +528,24 @@ check)
     #
     #   * does not open with the verdict sentence   -> findings
     #   * carries a P0/P1/P2 marker anywhere        -> findings
-    #   * tail empty, or short praise               -> clean
+    #   * tail is empty or an OBSERVED praise string -> clean
     #   * anything else                             -> INDETERMINATE
     #
-    # The last branch is the point. The tail pattern no longer decides
-    # correctness — only whether a human is asked. A novel long compliment
-    # stops the shepherd and says the shape was unrecognized, instead of
-    # claiming Codex found something; a qualifier smuggled onto the verdict
-    # line lands in the same branch rather than passing as clean. Observed
-    # praise so far: "Keep it up!", "Nice work!", "Chef's kiss.".
+    # The tail is matched against a literal list, not a shape. Every shape
+    # rule tried here admitted a negative qualifier of the same shape: "but a
+    # race remains." and "one concern." are as short and as alphabetic as
+    # "Chef's kiss.", so no pattern over characters can separate them. Only
+    # positive recognition can.
+    #
+    # An allowlist is normally the brittle choice, and it was: while the
+    # outcome was binary, an unlisted praise string had to be called
+    # `findings`, which jammed a clean PR's gate and asserted something false.
+    # The third branch is what makes it safe now — an unlisted tail is
+    # `indeterminate`, so the shepherd stops and a human either recognises new
+    # praise (add it below) or finds a real qualifier. The list is allowed to
+    # be incomplete; it is not allowed to be wrong.
+    #
+    # Add a string here only after seeing Codex actually emit it.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
@@ -551,11 +560,19 @@ check)
               gsub("^[[:space:]]+|[[:space:]]+$"; ""));
           def has_severity_marker:
             (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
+          def observed_praise: [
+            "keep it up!",
+            "nice work!",
+            "chef\u0027s kiss."
+          ];
           def verdict_class:
+            # Bind the tail before the membership test: index/1 evaluates its
+            # argument with the ARRAY as input, so an inline verdict_tail
+            # would resolve .body against observed_praise and error.
+            verdict_tail as $tail |
             if (first_line | startswith(clean_sentence) | not) then "findings"
             elif has_severity_marker then "findings"
-            elif (verdict_tail == "" or
-                  (verdict_tail | test("^[a-z][a-z\u0027 ]{0,18}[.!]$")))
+            elif ($tail == "" or (observed_praise | index($tail) != null))
             then "clean"
             else "unrecognized" end;
           [.[] | select(
@@ -591,11 +608,19 @@ check)
               gsub("^[[:space:]]+|[[:space:]]+$"; ""));
           def has_severity_marker:
             (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
+          def observed_praise: [
+            "keep it up!",
+            "nice work!",
+            "chef\u0027s kiss."
+          ];
           def verdict_class:
+            # Bind the tail before the membership test: index/1 evaluates its
+            # argument with the ARRAY as input, so an inline verdict_tail
+            # would resolve .body against observed_praise and error.
+            verdict_tail as $tail |
             if (first_line | startswith(clean_sentence) | not) then "findings"
             elif has_severity_marker then "findings"
-            elif (verdict_tail == "" or
-                  (verdict_tail | test("^[a-z][a-z\u0027 ]{0,18}[.!]$")))
+            elif ($tail == "" or (observed_praise | index($tail) != null))
             then "clean"
             else "unrecognized" end;
           .[] | select(.user.id? == $id) |
