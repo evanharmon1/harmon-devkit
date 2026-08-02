@@ -353,8 +353,26 @@ agents_dest() {
     _ad="$(manifest_get '.agents.dest')"
     [ -n "$_ad" ] && [ "$_ad" != "null" ] || die "manifest: agents.dest is required when an 'agents:' block is present"
     assert_safe_dest "$_ad" "agents"
-    [ "$_ad" != "$(manifest_get '.dest')" ] ||
-        die "manifest: agents.dest must differ from the skills dest ('$_ad') — each pass owns its own directory"
+    # Not just inequality — NON-OVERLAP. Either dest containing the other is the
+    # same hazard as sharing one: the skills pass does `rm -rf` on a managed
+    # skill directory, so an agents dest nested inside one is deleted wholesale
+    # (stamp, managed agents, and any LOCAL agent parked there) on every sync,
+    # and agent files inside a skill directory fail skill verification anyway.
+    # Trailing slashes are stripped so `vend/skills/` and `vend/skills` cannot
+    # spell the same directory two ways and slip past a string compare.
+    _ad="${_ad%/}"
+    _sd="$(manifest_get '.dest')"
+    _sd="${_sd%/}"
+    case "$_ad" in
+    "$_sd" | "$_sd"/*)
+        die "manifest: agents.dest ('$_ad') must not be the skills dest or live inside it — each pass owns its own directory"
+        ;;
+    esac
+    case "$_sd" in
+    "$_ad"/*)
+        die "manifest: the skills dest ('$_sd') lives inside agents.dest ('$_ad') — each pass owns its own directory"
+        ;;
+    esac
     echo "$_ad"
 }
 
@@ -370,9 +388,42 @@ orphaned_agents_dest() {
     [ -f "$1" ] || return 0
     _oad="$(prov_field "$1" "agents-dest")"
     [ -n "$_oad" ] || return 0
-    assert_safe_dest "$_oad" "orphaned agents"
+    _oad="${_oad%/}"
     [ -f "$_oad/.AGENTS_PROVENANCE" ] || return 0
     echo "$_oad"
+}
+
+# assert_orphan_usable DEST — validate a de-vendor target, in PARENT context.
+#
+# Deliberately not inside orphaned_agents_dest, which runs inside `$( )`. `die`
+# there exits only the subshell: the message prints, the caller's `[ -n "$x" ]
+# || return 0` reads the empty result as "nothing to do", and the run continues
+# reporting success. Observed exactly that — a damaged orphan stamp printed its
+# error, the sync exited 0, and the skills stamp was rewritten with an empty
+# breadcrumb, leaving agents no later run could find.
+#
+# So the checks that must ABORT live here, where the shell is the parent and
+# `die` means what it says, and they run before the skills pass mutates
+# anything.
+assert_orphan_usable() {
+    assert_safe_dest "$1" "orphaned agents"
+    agents_managed_names "$1/.AGENTS_PROVENANCE" >/dev/null
+}
+
+# stale_agents_dest PROV CURRENT — the agents dest a previous sync used and this
+# one no longer will, when agents are still vendored there. Empty when there is
+# nothing to clean up. CURRENT is the dest this run will use, or empty when the
+# manifest no longer requests agents at all.
+#
+# Moving `agents.dest` is the same stranding bug as deleting the block, one
+# variant over: the pass would vendor into the new location, leave the old one
+# untouched, and both verify modes would inspect only the new one and pass. The
+# old copy stays on disk, still stamped, still loaded by the harness.
+stale_agents_dest() {
+    _sad="$(orphaned_agents_dest "$1")"
+    [ -n "$_sad" ] || return 0
+    [ "$_sad" != "${2%/}" ] || return 0
+    echo "$_sad"
 }
 
 # devendor_agents DEST — remove the agents this sync previously managed, plus
@@ -397,7 +448,7 @@ devendor_agents() {
 $_dv_managed
 EOF
     rm -f "$_dv_prov"
-    echo "de-vendored $_dv_n agent(s) from $1 — the manifest no longer requests agents"
+    echo "de-vendored $_dv_n agent(s) from $1 — ${2:-the manifest no longer requests agents}"
 }
 
 # agents_preflight CLONE — resolve and validate everything the agents pass
@@ -507,10 +558,15 @@ EOF
     # written with an empty `# agents-dest:` (agents are disabled on this path) —
     # so reading it afterwards would always find nothing to de-vendor, and the
     # orphaned agents would survive the very run meant to remove them.
-    _cs_orphan=""
-    if ! agents_enabled; then
-        _cs_orphan="$(orphaned_agents_dest "$prov")"
+    # Covers BOTH stranding cases: the block removed entirely, and agents.dest
+    # moved while the block stays. Either way the previous location is only
+    # recoverable from the breadcrumb, which the skills pass is about to erase.
+    if agents_enabled; then
+        _cs_orphan="$(stale_agents_dest "$prov" "$(agents_dest)")"
+    else
+        _cs_orphan="$(stale_agents_dest "$prov" "")"
     fi
+    [ -z "$_cs_orphan" ] || assert_orphan_usable "$_cs_orphan"
 
     # Preflight the agents pass while the tree is still untouched. Everything
     # that can make it die — a name absent at the pin, a corrupt stamp, a
@@ -549,11 +605,14 @@ EOF
         echo "vendored $n skill(s) [$cats] → $dest @ $ref"
     fi
 
-    if agents_enabled; then
-        agents_apply "$resolved"
-    elif [ -n "$_cs_orphan" ]; then
-        devendor_agents "$_cs_orphan"
+    if [ -n "$_cs_orphan" ]; then
+        if agents_enabled; then
+            devendor_agents "$_cs_orphan" "agents.dest moved to $(agents_dest)"
+        else
+            devendor_agents "$_cs_orphan"
+        fi
     fi
+    if agents_enabled; then agents_apply "$resolved"; fi
 }
 
 # verify_agents_pass CLONE — drift-check the vendored agents against the pin.
@@ -561,6 +620,11 @@ EOF
 verify_agents_pass() {
     _vap_dest="$(agents_dest)"
     _vap_prov="$_vap_dest/.AGENTS_PROVENANCE"
+    _vap_stale="$(stale_agents_dest "$(manifest_get '.dest')/.SKILLS_PROVENANCE" "$_vap_dest")"
+    if [ -n "$_vap_stale" ]; then
+        assert_orphan_usable "$_vap_stale"
+        die "agents are still vendored in $_vap_stale but agents.dest is now $_vap_dest — run 'task sync:skills' to de-vendor the old location, and commit"
+    fi
     if [ ! -f "$_vap_prov" ]; then
         # "Not synced yet" is only benign on a repo that has never synced at
         # all. Where the SKILLS stamp exists, this repo has run the sync — so a
@@ -677,9 +741,11 @@ EOF
     if agents_enabled; then
         verify_agents_pass "$WORKDIR/devkit"
     else
-        _cv_orphan="$(orphaned_agents_dest "$prov")"
-        [ -z "$_cv_orphan" ] ||
+        _cv_orphan="$(stale_agents_dest "$prov" "")"
+        if [ -n "$_cv_orphan" ]; then
+            assert_orphan_usable "$_cv_orphan"
             die "agents are still vendored in $_cv_orphan but the manifest no longer requests them — run 'task sync:skills' to de-vendor, and commit"
+        fi
     fi
 }
 
@@ -709,6 +775,22 @@ cmd_verify_offline() {
         die "manifest ref ($ref) != vendored ref — run 'task sync:skills' and commit"
     fi
 
+    # Stranded agents FIRST. cmd_verify checks this too, and an asymmetry
+    # between the modes would have the pre-push hook wave through exactly what
+    # CI then rejects. Ordered ahead of the per-dest checks below because both
+    # can fire on a moved dest, and "files are stranded at the old location" is
+    # the one that tells you what to do — "none are vendored here" is true but
+    # says nothing about the copy still on disk.
+    if agents_enabled; then
+        _cvo_stale="$(stale_agents_dest "$prov" "$(agents_dest)")"
+    else
+        _cvo_stale="$(stale_agents_dest "$prov" "")"
+    fi
+    if [ -n "$_cvo_stale" ]; then
+        assert_orphan_usable "$_cvo_stale"
+        die "agents are still vendored in $_cvo_stale but the manifest no longer points there — run 'task sync:skills' to de-vendor, and commit"
+    fi
+
     # Agents are stamped independently, so their ref is checked independently —
     # bumping the manifest and re-syncing only skills must not pass this hook.
     if agents_enabled; then
@@ -725,6 +807,7 @@ cmd_verify_offline() {
             die "manifest ref ($ref) != vendored agents ref — run 'task sync:skills' and commit"
         fi
     fi
+
 }
 
 case "${1:-}" in

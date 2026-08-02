@@ -592,7 +592,7 @@ write_agents_manifest_at "$CE" v0.1.0-agents "[README]"
 expect_fail_contains "README is refused as an agent name" "not an agent" run_sync_at "$CE" sync
 
 write_agents_manifest_at "$CE" v0.1.0-agents "[ag-one]" "vendored/skills"
-expect_fail_contains "agents.dest sharing the skills dest is refused" "must differ" \
+expect_fail_contains "agents.dest sharing the skills dest is refused" "each pass owns its own directory" \
     run_sync_at "$CE" sync
 
 for bad in "/etc/agents" "../outside" "vendored/../../outside"; do
@@ -646,6 +646,78 @@ expect_ok "never-agents: sync succeeds" run_sync_at "$CD3" sync
 expect_ok "never-agents: empty breadcrumb written" \
     grep -q "^# agents-dest:$" "$CD3/vendored/skills/.SKILLS_PROVENANCE"
 expect_ok "never-agents: verify passes" run_sync_at "$CD3" verify
+
+# --- overlapping dests are refused, not just identical ones ---------------
+# The skills pass does `rm -rf` on a managed skill directory, so an agents dest
+# nested inside one is destroyed wholesale on every sync — stamp, managed
+# agents, and any local agent parked there.
+CV="$TMPROOT/consumer-agents-overlap"
+mkdir -p "$CV"
+write_agents_manifest_at "$CV" v0.1.0-agents "[ag-one]" "vendored/skills/uni-one"
+expect_fail_contains "agents.dest nested inside the skills dest is refused" \
+    "live inside it" run_sync_at "$CV" sync
+write_agents_manifest_at "$CV" v0.1.0-agents "[ag-one]" "vendored"
+expect_fail_contains "skills dest nested inside agents.dest is refused" \
+    "lives inside agents.dest" run_sync_at "$CV" sync
+# A trailing slash must not spell the same directory a second way past the check.
+write_agents_manifest_at "$CV" v0.1.0-agents "[ag-one]" "vendored/skills/"
+expect_fail_contains "a trailing slash cannot alias past the overlap check" \
+    "each pass owns its own directory" run_sync_at "$CV" sync
+# Sibling directories remain fine.
+write_agents_manifest_at "$CV" v0.1.0-agents "[ag-one]" "vendored/agents"
+expect_ok "sibling dests are still accepted" run_sync_at "$CV" sync
+
+# --- moving agents.dest must not strand the old location ------------------
+# Same stranding bug as removing the block, one variant over: without this the
+# pass vendors into the new dest, leaves the old one untouched, and both verify
+# modes inspect only the new one and pass.
+CW2="$TMPROOT/consumer-agents-moved"
+mkdir -p "$CW2"
+write_agents_manifest_at "$CW2" v0.1.0-agents "[ag-one]" "vendored/agents-a"
+run_sync_at "$CW2" sync >/dev/null
+echo "# local, keep me" >"$CW2/vendored/agents-a/mine.md"
+write_agents_manifest_at "$CW2" v0.1.0-agents "[ag-one]" "vendored/agents-b"
+expect_fail_contains "verify flags agents left at the old dest" \
+    "agents.dest is now" run_sync_at "$CW2" verify
+expect_fail_contains "offline check flags agents left at the old dest" \
+    "no longer points there" run_sync_at "$CW2" verify-offline
+expect_ok "sync migrates the dest" run_sync_at "$CW2" sync
+expect_ok "old dest's managed agent removed" test ! -e "$CW2/vendored/agents-a/ag-one.md"
+expect_ok "old dest's stamp removed" test ! -e "$CW2/vendored/agents-a/.AGENTS_PROVENANCE"
+expect_ok "old dest's LOCAL agent survived the move" grep -q "keep me" "$CW2/vendored/agents-a/mine.md"
+expect_ok "new dest has the agent" test -f "$CW2/vendored/agents-b/ag-one.md"
+expect_ok "verify passes after the move" run_sync_at "$CW2" verify
+expect_ok "offline check passes after the move" run_sync_at "$CW2" verify-offline
+
+# --- offline check must see a removed block too ---------------------------
+# cmd_verify caught this already; an asymmetry would have the pre-push hook wave
+# through exactly what CI then rejects.
+CY="$TMPROOT/consumer-agents-offline-orphan"
+mkdir -p "$CY"
+write_agents_manifest_at "$CY" v0.1.0-agents "[ag-one]"
+run_sync_at "$CY" sync >/dev/null
+write_manifest_at "$CY" v0.1.0-agents universal
+expect_fail_contains "offline check flags a removed block's leftovers" \
+    "no longer points there" run_sync_at "$CY" verify-offline
+expect_ok "sync de-vendors them" run_sync_at "$CY" sync
+expect_ok "offline check passes after de-vendoring" run_sync_at "$CY" verify-offline
+
+# --- a damaged orphan stamp must abort BEFORE the breadcrumb is cleared ----
+# devendor_agents runs after the skills stamp is rewritten with an empty
+# breadcrumb. A stamp problem discovered there would abort with the pointer
+# already erased, making the orphan permanently unfindable while checks pass.
+CQ="$TMPROOT/consumer-agents-damaged"
+mkdir -p "$CQ"
+write_agents_manifest_at "$CQ" v0.1.0-agents "[ag-one]"
+run_sync_at "$CQ" sync >/dev/null
+grep -v '^# managed:' "$CQ/vendored/agents/.AGENTS_PROVENANCE" >"$CQ/tmp-prov" &&
+    mv "$CQ/tmp-prov" "$CQ/vendored/agents/.AGENTS_PROVENANCE"
+write_manifest_at "$CQ" v0.1.0-agents universal
+expect_fail_contains "a damaged orphan stamp aborts the sync" "no '# managed:' line" \
+    run_sync_at "$CQ" sync
+expect_ok "aborted de-vendor kept the breadcrumb findable" \
+    grep -q "^# agents-dest: vendored/agents$" "$CQ/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "aborted de-vendor left the agents in place" test -f "$CQ/vendored/agents/ag-one.md"
 
 # --- a fresh scaffold's clean skip must not hit the network ---------------
 # The skip is documented as costing no clone. A placeholder ref in a
