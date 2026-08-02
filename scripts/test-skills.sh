@@ -150,6 +150,22 @@ mkdir -p "$G5/ai/skills/frontend/echo"
 echo "# echo (no frontmatter)" >"$G5/ai/skills/frontend/echo/SKILL.md"
 expect_fail "missing frontmatter fails" bash -c "cd '$G5' && bash '$SCRIPTS/verify-skills.sh'"
 
+# An UNCLOSED frontmatter block fails. Both parsers scan only the opening block,
+# so without an explicit check this reads as valid here while a real YAML
+# frontmatter parser sees no frontmatter at all.
+G6="$TMPROOT/guard-unclosed"
+git_init "$G6"
+mkdir -p "$G6/ai/skills/frontend/golf"
+{
+    echo "---"
+    echo "name: golf"
+    echo "description: A skill whose frontmatter is never closed."
+    echo ""
+    echo "# golf"
+} >"$G6/ai/skills/frontend/golf/SKILL.md"
+expect_fail_contains "unclosed frontmatter fails" "frontmatter block is never closed" \
+    bash -c "cd '$G6' && bash '$SCRIPTS/verify-skills.sh'"
+
 # ── sync-skills.sh (vendoring engine) ──────────────────────────────────
 echo "==> sync-skills.sh"
 

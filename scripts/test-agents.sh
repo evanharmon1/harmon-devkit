@@ -126,6 +126,20 @@ echo "# echo (no frontmatter)" >"$R6/ai/agents/echo.md"
 expect_fail_contains "missing frontmatter fails" "$R6" \
     "missing YAML frontmatter"
 
+# An unclosed frontmatter block fails — a real YAML parser sees no frontmatter
+# at all, so the fields the guard parsed out of it do not exist.
+R11="$TMPROOT/unclosed-fm"
+newrepo "$R11"
+{
+    echo "---"
+    echo "name: golf"
+    echo "description: An agent whose frontmatter is never closed."
+    echo ""
+    echo "# golf"
+} >"$R11/ai/agents/golf.md"
+expect_fail_contains "unclosed frontmatter fails" "$R11" \
+    "frontmatter block is never closed"
+
 # An agent whose name collides with a skill name fails.
 R7="$TMPROOT/collision"
 newrepo "$R7"
