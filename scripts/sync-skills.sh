@@ -446,7 +446,20 @@ orphaned_agents_dest() {
 # anything.
 assert_orphan_usable() {
     assert_safe_dest "$1" "orphaned agents"
-    agents_managed_names "$1/.AGENTS_PROVENANCE" >/dev/null
+    _aou_prov="$1/.AGENTS_PROVENANCE"
+    grep -q '^# managed:' "$_aou_prov" ||
+        die "agents provenance '$_aou_prov' has no '# managed:' line — inspect it by hand before re-syncing"
+    # Every NAME too, not just the line's presence. devendor_agents validates
+    # each name before its `rm`, which is correct but too late: by then the
+    # skills stamp carries an empty breadcrumb, so aborting there leaves agents
+    # no later run can find. Validating here — parent context, pre-mutation —
+    # means a stamp carrying `../bad` aborts with the pointer still intact.
+    while IFS= read -r _aou_n; do
+        [ -n "$_aou_n" ] || continue
+        assert_sane_name "$_aou_n"
+    done <<EOF
+$(prov_list "$_aou_prov" "managed")
+EOF
 }
 
 # stale_agents_dest PROV CURRENT — the agents dest a previous sync used and this

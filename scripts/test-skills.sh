@@ -732,6 +732,23 @@ expect_ok "aborted de-vendor kept the breadcrumb findable" \
     grep -q "^# agents-dest: vendored/agents$" "$CQ/vendored/skills/.SKILLS_PROVENANCE"
 expect_ok "aborted de-vendor left the agents in place" test -f "$CQ/vendored/agents/ag-one.md"
 
+# Same rule one level deeper: an UNSAFE NAME on the managed line must abort
+# before the breadcrumb is cleared too. devendor_agents validates each name
+# before its rm, which is correct but too late — the skills stamp has already
+# been rewritten by then, so aborting there strands the agents unfindably.
+CQ2="$TMPROOT/consumer-agents-badname"
+mkdir -p "$CQ2"
+write_agents_manifest_at "$CQ2" v0.1.0-agents "[ag-one]"
+run_sync_at "$CQ2" sync >/dev/null
+sed 's|^# managed:.*|# managed: ../bad|' "$CQ2/vendored/agents/.AGENTS_PROVENANCE" >"$CQ2/tmp-prov" &&
+    mv "$CQ2/tmp-prov" "$CQ2/vendored/agents/.AGENTS_PROVENANCE"
+write_manifest_at "$CQ2" v0.1.0-agents universal
+expect_fail_contains "an unsafe name in the orphan stamp aborts the sync" \
+    "refusing unsafe skill name" run_sync_at "$CQ2" sync
+expect_ok "unsafe-name abort kept the breadcrumb findable" \
+    grep -q "^# agents-dest: vendored/agents$" "$CQ2/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "unsafe-name abort left the agents in place" test -f "$CQ2/vendored/agents/ag-one.md"
+
 # --- a fresh scaffold's clean skip must not hit the network ---------------
 # The skip is documented as costing no clone. A placeholder ref in a
 # not-yet-synced repo must therefore not fail verify.
