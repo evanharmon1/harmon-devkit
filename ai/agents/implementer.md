@@ -63,10 +63,21 @@ tempting refactor, a stale comment two lines away — those go in the **report**
 not the diff. Your caller is holding a review loop open against a change it
 expects to recognise; work it did not ask for is work it must adjudicate blind.
 
-**Confirm you are not on the default branch** (`git branch --show-current`)
-before the first edit, and stop if you are. Branch creation is the caller's:
-where a repo records the branch in an issue claim, a branch you invent silently
-invalidates that record.
+**Confirm you are not on the default branch** before the first edit, and stop if
+you are — or if the check cannot answer:
+
+```sh
+default="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+[ -n "$default" ] && [ "$(git branch --show-current)" != "$default" ]
+```
+
+Non-zero means stop and report. The default branch is **resolved, not assumed
+to be `main`**, and an unresolvable one is reported rather than guessed past —
+guessing `main` in a repo whose default is something else passes the check
+exactly when it should fail.
+
+Branch creation is the caller's, not yours: where a repo records the branch in
+an issue claim, a branch you invent silently invalidates that record.
 
 ## 4. Inner loop
 
