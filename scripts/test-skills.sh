@@ -610,6 +610,49 @@ write_agents_manifest_at "$CH" v0.1.0-agents "[ag-one]" "/etc/agents"
 expect_fail "agents: bad dest aborts the whole sync" run_sync_at "$CH" sync
 expect_ok "aborted sync left the skills pass untouched" test -f "$CH/vendored/skills/uni-one/SKILL.md"
 
+# --- adding an agents block without syncing is DRIFT, not a fresh scaffold --
+# The skills stamp proves this repo has run a sync, so a missing agents stamp
+# means the block was added and never applied. Skipping here would let agent
+# adoption pass CI with no agent files committed.
+CU="$TMPROOT/consumer-agents-unsynced"
+mkdir -p "$CU"
+write_manifest_at "$CU" v0.1.0-agents universal
+run_sync_at "$CU" sync >/dev/null # skills only — no agents block yet
+write_agents_manifest_at "$CU" v0.1.0-agents "[ag-one]"
+expect_fail_contains "verify fails when an agents block was never synced" \
+    "requests agents but none are vendored" run_sync_at "$CU" verify
+expect_fail_contains "offline check fails when an agents block was never synced" \
+    "requests agents but none are vendored" run_sync_at "$CU" verify-offline
+expect_ok "syncing clears it" run_sync_at "$CU" sync
+expect_ok "verify passes once the agents are vendored" run_sync_at "$CU" verify
+
+# A repo that has never synced ANYTHING still skips cleanly — that is the fresh
+# scaffold case the skip exists for, and it must survive the rule above.
+CF="$TMPROOT/consumer-agents-fresh"
+mkdir -p "$CF"
+write_agents_manifest_at "$CF" v0.1.0-agents "[ag-one]"
+expect_ok "fresh scaffold: verify still skips cleanly" run_sync_at "$CF" verify
+expect_ok "fresh scaffold: offline check still skips cleanly" run_sync_at "$CF" verify-offline
+
+# --- a failing agents pass must not leave skills bumped ------------------
+# Both kinds of asset are pinned to ONE ref so they cannot skew. A sync that
+# replaced skills and then died on an agent collision would create that skew
+# while reporting failure, so the agents pass is preflighted first.
+CS="$TMPROOT/consumer-agents-skew"
+mkdir -p "$CS"
+write_agents_manifest_at "$CS" v0.1.0-agents "[ag-one]"
+run_sync_at "$CS" sync >/dev/null
+expect_ok "skew guard: baseline skill is the old one" test -f "$CS/vendored/skills/uni-one/SKILL.md"
+# Plant a local agent that the NEXT sync's incoming set will collide with.
+echo "# local ag-two" >"$CS/vendored/agents/ag-two.md"
+write_agents_manifest_at "$CS" v0.1.0-agents "[ag-one, ag-two]"
+expect_fail_contains "skew guard: the colliding sync fails" "collides with an incoming" \
+    run_sync_at "$CS" sync
+expect_ok "skew guard: skills provenance was NOT rewritten" \
+    grep -q "^# ref: v0.1.0-agents " "$CS/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "skew guard: the local agent survived" grep -q "local ag-two" "$CS/vendored/agents/ag-two.md"
+expect_ok "skew guard: the managed agent survived" test -f "$CS/vendored/agents/ag-one.md"
+
 # --- offline ref check covers agents independently -----------------------
 CO="$TMPROOT/consumer-agents-offline"
 mkdir -p "$CO"

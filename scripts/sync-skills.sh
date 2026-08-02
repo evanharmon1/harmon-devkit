@@ -301,25 +301,50 @@ agents_dest() {
     echo "$_ad"
 }
 
-# sync_agents CLONE RESOLVED_SHA — the agents pass: vendor the named agents,
-# replacing only what this sync owns and refusing to overwrite a local agent.
-sync_agents() {
-    _sa_dest="$(agents_dest)"
-    _sa_prov="$_sa_dest/.AGENTS_PROVENANCE"
+# agents_preflight CLONE — resolve and validate everything the agents pass
+# needs, WITHOUT mutating anything. Every way the pass can die lives here, so
+# cmd_sync can run it before the skills pass starts deleting.
+#
+# Ordering matters more than it looks. Both kinds of asset are pinned to one ref
+# precisely so a consumer cannot end up with skills at the new pin and agents at
+# the old one; a sync that replaced skills and then died on an agent collision
+# would create that exact skew, while reporting failure. Preflighting keeps the
+# run all-or-nothing up to the point where only I/O can fail.
+#
+# Results land in _AGP_* globals for agents_apply.
+agents_preflight() {
+    _AGP_DEST="$(agents_dest)"
+    _AGP_PROV="$_AGP_DEST/.AGENTS_PROVENANCE"
     vendor_agents "$1" "$(manifest_get '.agents.names[]')" "$WORKDIR/vendor-agents"
-    _sa_incoming="$(list_agent_names "$WORKDIR/vendor-agents")"
-    _sa_managed="$(agents_managed_names "$_sa_prov")"
+    _AGP_INCOMING="$(list_agent_names "$WORKDIR/vendor-agents")"
+    _AGP_MANAGED="$(agents_managed_names "$_AGP_PROV")"
 
-    # Collision gate BEFORE any deletion: a file we do not own that an incoming
-    # agent wants is local work.
-    while IFS= read -r _sa_name; do
-        [ -n "$_sa_name" ] || continue
-        if [ -e "$_sa_dest/$_sa_name.md" ] && ! printf '%s\n' "$_sa_managed" | grep -qxF "$_sa_name"; then
-            die "local agent '$_sa_name' collides with an incoming vendored agent — rename the local file or drop it from $MANIFEST"
+    # Collision gate: a file we do not own that an incoming agent wants is local
+    # work. Checked here, before ANY deletion anywhere in the run.
+    while IFS= read -r _agp_name; do
+        [ -n "$_agp_name" ] || continue
+        if [ -e "$_AGP_DEST/$_agp_name.md" ] && ! printf '%s\n' "$_AGP_MANAGED" | grep -qxF "$_agp_name"; then
+            die "local agent '$_agp_name' collides with an incoming vendored agent — rename the local file or drop it from $MANIFEST"
         fi
     done <<EOF
-$_sa_incoming
+$_AGP_INCOMING
 EOF
+    # Names about to be rm'd are validated here too, for the same reason.
+    while IFS= read -r _agp_name; do
+        [ -n "$_agp_name" ] || continue
+        assert_sane_name "$_agp_name"
+    done <<EOF
+$_AGP_MANAGED
+EOF
+}
+
+# agents_apply RESOLVED_SHA — mutate the agents dest using what
+# agents_preflight resolved. Replaces only what this sync owns.
+agents_apply() {
+    _sa_dest="$_AGP_DEST"
+    _sa_prov="$_AGP_PROV"
+    _sa_incoming="$_AGP_INCOMING"
+    _sa_managed="$_AGP_MANAGED"
 
     while IFS= read -r _sa_name; do
         [ -n "$_sa_name" ] || continue
@@ -338,7 +363,7 @@ EOF
     done <<EOF
 $_sa_incoming
 EOF
-    write_agents_provenance "$_sa_prov" "$_sa_incoming" "$2"
+    write_agents_provenance "$_sa_prov" "$_sa_incoming" "$1"
     echo "vendored $_sa_n agent(s) → $_sa_dest @ $(manifest_get '.source.ref')"
 }
 
@@ -377,6 +402,12 @@ cmd_sync() {
 $incoming
 EOF
 
+    # Preflight the agents pass while the tree is still untouched. Everything
+    # that can make it die — a name absent at the pin, a corrupt stamp, a
+    # collision with a local agent — is resolved here, so the run cannot replace
+    # skills and then fail, leaving the two kinds of asset at different pins.
+    if agents_enabled; then agents_preflight "$WORKDIR/devkit"; fi
+
     # Replace only what we own.
     while IFS= read -r name; do
         [ -n "$name" ] || continue
@@ -404,7 +435,7 @@ EOF
         echo "vendored $n skill(s) [$cats] → $dest @ $ref"
     fi
 
-    if agents_enabled; then sync_agents "$WORKDIR/devkit" "$resolved"; fi
+    if agents_enabled; then agents_apply "$resolved"; fi
 }
 
 # verify_agents_pass CLONE — drift-check the vendored agents against the pin.
@@ -413,6 +444,15 @@ verify_agents_pass() {
     _vap_dest="$(agents_dest)"
     _vap_prov="$_vap_dest/.AGENTS_PROVENANCE"
     if [ ! -f "$_vap_prov" ]; then
+        # "Not synced yet" is only benign on a repo that has never synced at
+        # all. Where the SKILLS stamp exists, this repo has run the sync — so a
+        # missing agents stamp means the `agents:` block was added and never
+        # applied, and skipping would let agent adoption pass CI with no agent
+        # files committed. That is exactly the drift this feature exists to
+        # catch, so it fails instead.
+        if [ -f "$(manifest_get '.dest')/.SKILLS_PROVENANCE" ]; then
+            die "manifest requests agents but none are vendored ($_vap_prov missing) — run 'task sync:skills' and commit"
+        fi
         echo "verify:skills: agents not synced yet — skipping (run 'task sync:skills')"
         return 0
     fi
@@ -543,6 +583,10 @@ cmd_verify_offline() {
     if agents_enabled; then
         _cvo_aprov="$(agents_dest)/.AGENTS_PROVENANCE"
         if [ ! -f "$_cvo_aprov" ]; then
+            # Same rule as the networked check: benign only before the repo's
+            # first sync, drift once the skills stamp proves it has run one.
+            [ ! -f "$prov" ] ||
+                die "manifest requests agents but none are vendored ($_cvo_aprov missing) — run 'task sync:skills' and commit"
             echo "verify:skills:offline: agents not synced yet — skipping (run 'task sync:skills')"
         elif [ "$(prov_field "$_cvo_aprov" "ref" | sed 's/ (.*//')" = "$ref" ]; then
             echo "✓ vendored agents ref matches manifest ($ref) — offline check"

@@ -58,7 +58,7 @@ Three things are specific to agents:
    ```sh
    mkdir -p scripts
    curl -fsSL -o scripts/sync-skills.sh \
-     https://raw.githubusercontent.com/evanharmon1/harmon-devkit/v0.5.0/scripts/sync-skills.sh
+     https://raw.githubusercontent.com/evanharmon1/harmon-devkit/v0.17.0/scripts/sync-skills.sh
    chmod +x scripts/sync-skills.sh
    ```
 
@@ -67,7 +67,7 @@ Three things are specific to agents:
    ```yaml
    source:
      repo: https://github.com/evanharmon1/harmon-devkit.git
-     ref: v0.5.0
+     ref: v0.17.0
    categories:
      - universal
      - frontend
