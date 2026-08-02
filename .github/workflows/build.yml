@@ -63,6 +63,7 @@ jobs:
       - run: task test:notify-release
       - run: task test:hooks
       - run: task test:skills
+      - run: task test:agents
       - run: task test:hygiene
       - run: task test:archive-hook
       - run: task test:skill-index-lifecycle

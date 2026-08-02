@@ -48,6 +48,21 @@ frontmatter_name() {
     ' "$1"
 }
 
+# Return success if the leading frontmatter block is CLOSED by a second `---`.
+# Checked before the two parsers below, which both scan only the opening block
+# and would otherwise accept an unterminated one: `---`, name, description, then
+# straight into the body reads as valid here while a real YAML frontmatter
+# parser sees no frontmatter at all. Counting fences anywhere in the file is
+# deliberate — the block ends at the next `---` whatever follows it, which is
+# what an actual parser does too.
+frontmatter_is_closed() {
+    awk '
+        NR == 1 && $0 != "---" { exit }
+        $0 == "---" { fence++ }
+        END { exit (fence >= 2 ? 0 : 1) }
+    ' "$1"
+}
+
 # Return success if the leading frontmatter block contains a `description:` key.
 # Note: awk `exit` runs the END rule, so route every path through END (a bare
 # `exit 0` here would be overridden by `END { exit 1 }`).
@@ -94,13 +109,30 @@ while IFS= read -r md; do
         err "$md: missing YAML frontmatter (must open with '---')"
         continue
     fi
+    if ! frontmatter_is_closed "$md"; then
+        err "$md: frontmatter block is never closed (needs a second '---')"
+        continue
+    fi
     fm_name="$(frontmatter_name "$md")"
-    # trim CR and surrounding quotes
     fm_name="${fm_name%$'\r'}"
-    fm_name="${fm_name#\"}"
-    fm_name="${fm_name%\"}"
-    fm_name="${fm_name#\'}"
-    fm_name="${fm_name%\'}"
+    # Strip surrounding quotes only as a MATCHED pair. Trimming each delimiter
+    # independently reduces `"alpha'` to `alpha`, so a mismatched quote passes
+    # as valid — and a YAML loader rejects that scalar outright, meaning the
+    # skill never loads at all while the guard calls the file well-formed.
+    case "$fm_name" in
+    '"'*'"')
+        fm_name="${fm_name#\"}"
+        fm_name="${fm_name%\"}"
+        ;;
+    "'"*"'")
+        fm_name="${fm_name#\'}"
+        fm_name="${fm_name%\'}"
+        ;;
+    '"'* | *'"' | "'"* | *"'")
+        err "$md: frontmatter name has mismatched quotes: $fm_name"
+        continue
+        ;;
+    esac
 
     if [ -z "$fm_name" ]; then
         err "$md: frontmatter is missing a 'name:' field"

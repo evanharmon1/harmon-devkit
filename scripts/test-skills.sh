@@ -150,6 +150,52 @@ mkdir -p "$G5/ai/skills/frontend/echo"
 echo "# echo (no frontmatter)" >"$G5/ai/skills/frontend/echo/SKILL.md"
 expect_fail "missing frontmatter fails" bash -c "cd '$G5' && bash '$SCRIPTS/verify-skills.sh'"
 
+# An UNCLOSED frontmatter block fails. Both parsers scan only the opening block,
+# so without an explicit check this reads as valid here while a real YAML
+# frontmatter parser sees no frontmatter at all.
+G6="$TMPROOT/guard-unclosed"
+git_init "$G6"
+mkdir -p "$G6/ai/skills/frontend/golf"
+{
+    echo "---"
+    echo "name: golf"
+    echo "description: A skill whose frontmatter is never closed."
+    echo ""
+    echo "# golf"
+} >"$G6/ai/skills/frontend/golf/SKILL.md"
+expect_fail_contains "unclosed frontmatter fails" "frontmatter block is never closed" \
+    bash -c "cd '$G6' && bash '$SCRIPTS/verify-skills.sh'"
+
+# Mismatched quotes around the name fail. Trimming each delimiter independently
+# would reduce `"hotel'` to `hotel` and match the directory, while a YAML loader
+# rejects the scalar outright and the skill never loads.
+G7="$TMPROOT/guard-badquote"
+git_init "$G7"
+mkdir -p "$G7/ai/skills/frontend/hotel"
+{
+    echo "---"
+    printf 'name: "hotel%s\n' "'"
+    echo "description: A skill whose name has mismatched quotes."
+    echo "---"
+    echo "# hotel"
+} >"$G7/ai/skills/frontend/hotel/SKILL.md"
+expect_fail_contains "mismatched-quote skill name fails" "mismatched quotes" \
+    bash -c "cd '$G7' && bash '$SCRIPTS/verify-skills.sh'"
+
+# A properly quoted name still passes.
+G8="$TMPROOT/guard-quoted"
+git_init "$G8"
+mkdir -p "$G8/ai/skills/frontend/india"
+{
+    echo "---"
+    echo 'name: "india"'
+    echo "description: A skill whose name is double-quoted."
+    echo "---"
+    echo "# india"
+} >"$G8/ai/skills/frontend/india/SKILL.md"
+expect_ok "matched double-quoted skill name passes" \
+    bash -c "cd '$G8' && bash '$SCRIPTS/verify-skills.sh'"
+
 # ── sync-skills.sh (vendoring engine) ──────────────────────────────────
 echo "==> sync-skills.sh"
 

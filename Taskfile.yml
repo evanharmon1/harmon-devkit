@@ -140,11 +140,17 @@ tasks:
     desc: Validate project config/artifacts
     cmds:
       - task: validate:skills
+      - task: validate:agents
 
   validate:skills:
     desc: Guard shared agent skills (unique names across categories, valid SKILL.md frontmatter)
     cmds:
       - ./scripts/verify-skills.sh
+
+  validate:agents:
+    desc: Guard shared subagents (flat layout, valid frontmatter, no skill-name collisions)
+    cmds:
+      - ./scripts/verify-agents.sh
 
   guard:no-commit-to-main:
     desc: Block direct commits to main
@@ -167,7 +173,7 @@ tasks:
     # (CI passes PR_TITLE/PR_BODY + BASE_SHA/HEAD_SHA; CHANGED_FILES overrides the diff.)
     desc: "Guard: a PR touching release-worthy paths needs a fix:/feat: title"
     vars:
-      RELEASE_CONTENT_PATHS: "ai/skills templates scripts"
+      RELEASE_CONTENT_PATHS: "ai/skills ai/agents templates scripts"
     cmds:
       - ./scripts/require-release-title.sh {{.RELEASE_CONTENT_PATHS}}
 
@@ -224,6 +230,7 @@ tasks:
       - test:tasks
       - test:hooks
       - test:skills
+      - test:agents
       - test:hygiene
       - test:archive-hook
       - test:track-work
@@ -293,6 +300,11 @@ tasks:
     desc: Unit-test the skills tooling (source guard + pinned vendoring engine)
     cmds:
       - ./scripts/test-skills.sh
+
+  test:agents:
+    desc: Unit-test the shared-subagent source guard (offline)
+    cmds:
+      - ./scripts/test-agents.sh
 
   test:hygiene:
     desc: Unit-test lint-hygiene's exec-bit check on shebanged files

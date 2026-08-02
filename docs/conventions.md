@@ -182,7 +182,7 @@ skill at authoring time and by the **tracking guard**
   subject — so a `chore:`/`docs:`-titled PR merges with **no release** even when it
   carries releasable content. The **release-content guard**
   (`release-content-guard.yml` → `scripts/require-release-title.sh`, unit-tested by
-  `task test:release-title`) fails a PR that changes `ai/skills templates scripts`
+  `task test:release-title`) fails a PR that changes `ai/skills ai/agents templates scripts`
   under a non-releasing title, so consumers pinning a released tag actually receive
   the change. Retitle with `fix:`/`feat:` rather than bypass. Automated dependency
   PRs (Renovate/Dependabot) are skipped.
