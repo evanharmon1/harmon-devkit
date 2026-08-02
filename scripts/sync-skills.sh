@@ -31,6 +31,21 @@
 #     path: ai/skills        # optional; where skills live in the source (default)
 #   categories: [universal, backend, frontend]
 #   dest: .claude/skills     # shared with local skills; sync manages only what it vendored
+#   agents:                  # OPTIONAL — omit the block entirely and nothing changes
+#     names: [implementer]   # explicit list, or ["*"] for every agent at the pin
+#     path: ai/agents        # optional; where agents live in the source (default)
+#     dest: .claude/agents   # shared with local agents, same managed-set rule
+#
+# Agents ride the SAME manifest and therefore the same pinned ref as skills.
+# That is deliberate: a shared agent is thin and defers to a skill by reading it
+# (`.claude/skills/<name>/SKILL.md`), so a version skew between the two would
+# leave an agent following a procedure that no longer exists. One ref, one
+# `task sync:skills`, both kinds of asset.
+#
+# Agents are single Markdown files, flat, so the agents pass has no categories
+# and no legacy-stamp migration — it is the simpler twin of the skills pass, not
+# a copy of it. The two never share a destination (refused below), so each owns
+# its own provenance file and managed set.
 set -euo pipefail
 
 MANIFEST="${2:-.skills-sync.yaml}"
@@ -67,6 +82,34 @@ assert_sane_name() {
     case "$1" in
     "" | "." | ".." | */* | .*) die "refusing unsafe skill name '$1'" ;;
     esac
+}
+
+# agents_enabled — 0 when the manifest carries an `agents:` block. A manifest
+# without one behaves exactly as it did before agents existed.
+agents_enabled() {
+    _ae="$(manifest_get '.agents')"
+    [ -n "$_ae" ] && [ "$_ae" != "null" ]
+}
+
+# assert_safe_dest DEST KIND — refuse a destination that could reach outside the
+# repo. Both passes delete paths under their dest, so this runs before any rm.
+assert_safe_dest() {
+    case "$1" in
+    "" | "/" | "." | "..") die "refusing to vendor $2 into unsafe dest '$1'" ;;
+    /*) die "refusing absolute $2 dest '$1' — $MANIFEST dest must be repo-relative" ;;
+    ../* | */../* | */..) die "refusing $2 dest with a '..' traversal component: '$1'" ;;
+    esac
+}
+
+# list_agent_names DIR — names (basename minus .md) of the agent files in DIR,
+# one per line, sorted. Non-files and the provenance stamp never count.
+list_agent_names() {
+    _lan_dir="$1"
+    [ -d "$_lan_dir" ] || return 0
+    for _lan_f in "$_lan_dir"/*.md; do
+        [ -f "$_lan_f" ] || continue # empty dir: glob stayed literal
+        basename "$_lan_f" .md
+    done | sort
 }
 
 # list_skill_dirs DIR — names of the skill directories in DIR, one per line,
@@ -170,6 +213,66 @@ EOF
     return 0
 }
 
+# vendor_agents CLONE NAMES OUTDIR — materialise the named agents (newline
+# list, or the single entry `*` meaning every agent at the pin) from CLONE,
+# flat, into OUTDIR.
+vendor_agents() {
+    _va_src="$1/$(manifest_get '.agents.path // "ai/agents"')"
+    [ -d "$_va_src" ] || die "agents path not found in the pinned clone ($_va_src)"
+    mkdir -p "$3"
+    # The wildcard is resolved BEFORE assert_sane_name, which rejects `*` as an
+    # unsafe name — it is a manifest sentinel, never a filename.
+    if printf '%s\n' "$2" | grep -qxF '*'; then
+        [ "$(printf '%s\n' "$2" | grep -cv '^$')" -eq 1 ] ||
+            die "manifest: agents.names is either [\"*\"] (every agent) or an explicit list, not both"
+        for _va_f in "$_va_src"/*.md; do
+            [ -f "$_va_f" ] || continue # no agents at this ref: glob stayed literal
+            _va_n="$(basename "$_va_f" .md)"
+            [ "$_va_n" = "README" ] && continue # documents the dir, is not an agent
+            cp "$_va_f" "$3/$_va_n.md"
+        done
+        return 0
+    fi
+    while IFS= read -r _va_name; do
+        [ -n "$_va_name" ] || continue
+        assert_sane_name "$_va_name"
+        [ "$_va_name" = "README" ] &&
+            die "'README' is the agents directory's own doc, not an agent — drop it from $MANIFEST"
+        [ -f "$_va_src/$_va_name.md" ] ||
+            die "agent '$_va_name' missing in the pinned source ($_va_src/$_va_name.md)"
+        cp "$_va_src/$_va_name.md" "$3/$_va_name.md"
+    done <<EOF
+$2
+EOF
+}
+
+# agents_managed_names PROV — the vendored agent names the sync owns, one per
+# line. Simpler than the skills equivalent: agents shipped with the `# managed:`
+# line from their first release, so there is no legacy generation to reconstruct
+# from an older pin. A stamp without the line is therefore not an old format —
+# it is damage, and guessing what it owned could delete a local agent.
+agents_managed_names() {
+    [ -f "$1" ] || return 0
+    grep -q '^# managed:' "$1" ||
+        die "agents provenance '$1' has no '# managed:' line — inspect it by hand before re-syncing"
+    prov_list "$1" "managed"
+}
+
+write_agents_provenance() {
+    _wap_csv="$(echo "$2" | grep -v '^$' | paste -sd ',' - | sed 's/,/, /g' || true)"
+    {
+        echo "# VENDORED from harmon-devkit — DO NOT EDIT the managed agents here."
+        echo "# source: $(manifest_get '.source.repo')"
+        echo "# ref: $(manifest_get '.source.ref') ($3)"
+        echo "# path: $(manifest_get '.agents.path // "ai/agents"')"
+        echo "# names: $(manifest_get '.agents.names | join(", ")')"
+        echo "# managed:${_wap_csv:+ $_wap_csv}"
+        echo "# update: edit $MANIFEST, then run 'task sync:skills' and commit."
+        echo "# Any file NOT listed on '# managed:' is a local agent owned by this"
+        echo "# repo — the sync never touches it."
+    } >"$1"
+}
+
 write_provenance() {
     _wp_managed_csv="$(echo "$2" | grep -v '^$' | paste -sd ',' - | sed 's/,/, /g' || true)"
     {
@@ -185,17 +288,71 @@ write_provenance() {
     } >"$1"
 }
 
+# agents_dest — the validated agents destination. Also refuses sharing the
+# skills dest: two independent managed sets over one directory would each have
+# to reason about the other's deletions, and that is a correctness argument
+# worth not having.
+agents_dest() {
+    _ad="$(manifest_get '.agents.dest')"
+    [ -n "$_ad" ] && [ "$_ad" != "null" ] || die "manifest: agents.dest is required when an 'agents:' block is present"
+    assert_safe_dest "$_ad" "agents"
+    [ "$_ad" != "$(manifest_get '.dest')" ] ||
+        die "manifest: agents.dest must differ from the skills dest ('$_ad') — each pass owns its own directory"
+    echo "$_ad"
+}
+
+# sync_agents CLONE RESOLVED_SHA — the agents pass: vendor the named agents,
+# replacing only what this sync owns and refusing to overwrite a local agent.
+sync_agents() {
+    _sa_dest="$(agents_dest)"
+    _sa_prov="$_sa_dest/.AGENTS_PROVENANCE"
+    vendor_agents "$1" "$(manifest_get '.agents.names[]')" "$WORKDIR/vendor-agents"
+    _sa_incoming="$(list_agent_names "$WORKDIR/vendor-agents")"
+    _sa_managed="$(agents_managed_names "$_sa_prov")"
+
+    # Collision gate BEFORE any deletion: a file we do not own that an incoming
+    # agent wants is local work.
+    while IFS= read -r _sa_name; do
+        [ -n "$_sa_name" ] || continue
+        if [ -e "$_sa_dest/$_sa_name.md" ] && ! printf '%s\n' "$_sa_managed" | grep -qxF "$_sa_name"; then
+            die "local agent '$_sa_name' collides with an incoming vendored agent — rename the local file or drop it from $MANIFEST"
+        fi
+    done <<EOF
+$_sa_incoming
+EOF
+
+    while IFS= read -r _sa_name; do
+        [ -n "$_sa_name" ] || continue
+        assert_sane_name "$_sa_name"
+        rm -f "${_sa_dest:?}/${_sa_name:?}.md"
+    done <<EOF
+$_sa_managed
+EOF
+    rm -f "$_sa_prov"
+    mkdir -p "$_sa_dest"
+    _sa_n=0
+    while IFS= read -r _sa_name; do
+        [ -n "$_sa_name" ] || continue
+        cp "$WORKDIR/vendor-agents/$_sa_name.md" "$_sa_dest/$_sa_name.md"
+        _sa_n=$((_sa_n + 1))
+    done <<EOF
+$_sa_incoming
+EOF
+    write_agents_provenance "$_sa_prov" "$_sa_incoming" "$2"
+    echo "vendored $_sa_n agent(s) → $_sa_dest @ $(manifest_get '.source.ref')"
+}
+
 cmd_sync() {
     require_tools
     WORKDIR="$(mktemp -d)"
     dest="$(manifest_get '.dest')"
     # dest is committed config (.skills-sync.yaml), but sync deletes paths under
     # it — so refuse anything that could reach outside the repo before any rm.
-    case "$dest" in
-    "" | "/" | "." | "..") die "refusing to vendor into unsafe dest '$dest'" ;;
-    /*) die "refusing absolute dest '$dest' — .skills-sync.yaml dest must be repo-relative" ;;
-    ../* | */../* | */..) die "refusing dest with a '..' traversal component: '$dest'" ;;
-    esac
+    assert_safe_dest "$dest" "skills"
+    # Validate the agents dest too, before the skills pass starts deleting: a
+    # manifest that would be rejected halfway through should be rejected before
+    # anything is removed.
+    if agents_enabled; then agents_dest >/dev/null; fi
     ref="$(manifest_get '.source.ref')"
     [ -n "$ref" ] && [ "$ref" != "null" ] || die "manifest: .source.ref is required"
 
@@ -246,6 +403,54 @@ EOF
     else
         echo "vendored $n skill(s) [$cats] → $dest @ $ref"
     fi
+
+    if agents_enabled; then sync_agents "$WORKDIR/devkit" "$resolved"; fi
+}
+
+# verify_agents_pass CLONE — drift-check the vendored agents against the pin.
+# Requires CLONE to hold a clone of the manifest ref. Dies on drift.
+verify_agents_pass() {
+    _vap_dest="$(agents_dest)"
+    _vap_prov="$_vap_dest/.AGENTS_PROVENANCE"
+    if [ ! -f "$_vap_prov" ]; then
+        echo "verify:skills: agents not synced yet — skipping (run 'task sync:skills')"
+        return 0
+    fi
+    _vap_ref="$(manifest_get '.source.ref')"
+    _vap_pinned="$(prov_field "$_vap_prov" "ref" | sed 's/ (.*//')"
+    [ "$_vap_pinned" = "$_vap_ref" ] ||
+        die "vendored agents ref ($_vap_pinned) != manifest ref ($_vap_ref) — run 'task sync:skills' and commit"
+
+    vendor_agents "$1" "$(manifest_get '.agents.names[]')" "$WORKDIR/vendor-agents"
+    _vap_incoming="$(list_agent_names "$WORKDIR/vendor-agents")"
+    _vap_managed="$(agents_managed_names "$_vap_prov")"
+
+    _vap_drift=0
+    while IFS= read -r _vap_n; do
+        [ -n "$_vap_n" ] || continue
+        if ! diff "$_vap_dest/$_vap_n.md" "$WORKDIR/vendor-agents/$_vap_n.md" >/dev/null 2>&1; then
+            echo "✗ vendored agent '$_vap_n' differs from the pin:" >&2
+            diff "$_vap_dest/$_vap_n.md" "$WORKDIR/vendor-agents/$_vap_n.md" >&2 || true
+            _vap_drift=1
+        fi
+    done <<EOF
+$_vap_incoming
+EOF
+    # A managed agent no longer named by the manifest is a leftover to clean up.
+    while IFS= read -r _vap_n; do
+        [ -n "$_vap_n" ] || continue
+        if ! printf '%s\n' "$_vap_incoming" | grep -qxF "$_vap_n"; then
+            echo "✗ '$_vap_n' is vendored (managed) but no longer shipped by the pin" >&2
+            _vap_drift=1
+        fi
+    done <<EOF
+$_vap_managed
+EOF
+    if [ "$_vap_drift" -ne 0 ]; then
+        echo "" >&2
+        die "run 'task sync:skills' and commit the result."
+    fi
+    echo "✓ vendored agents in sync with $_vap_ref (local agents untouched/ignored)"
 }
 
 cmd_verify() {
@@ -254,9 +459,16 @@ cmd_verify() {
     prov="$real/.SKILLS_PROVENANCE"
     # Fresh scaffold / not synced yet: no provenance means nothing to drift-check.
     # Skip cleanly (no clone) so a new repo's CI and pre-push stay green until the
-    # first `task sync:skills`.
+    # first `task sync:skills`. The agents pass is still evaluated below — the
+    # two are stamped independently, so "skills not synced" must not silently
+    # skip an agents drift check.
     if [ ! -f "$prov" ]; then
         echo "verify:skills: not synced yet — skipping (run 'task sync:skills')"
+        if agents_enabled; then
+            WORKDIR="$(mktemp -d)"
+            clone_ref "$(manifest_get '.source.ref')" "$WORKDIR/devkit" >/dev/null
+            verify_agents_pass "$WORKDIR/devkit"
+        fi
         return 0
     fi
     ref="$(manifest_get '.source.ref')"
@@ -299,6 +511,8 @@ EOF
         die "run 'task sync:skills' and commit the result."
     fi
     echo "✓ vendored skills in sync with $ref (local skills untouched/ignored)"
+
+    if agents_enabled; then verify_agents_pass "$WORKDIR/devkit"; fi
 }
 
 cmd_verify_offline() {
@@ -312,18 +526,29 @@ cmd_verify_offline() {
     fi
     dest="$(manifest_get '.dest')"
     prov="$dest/.SKILLS_PROVENANCE"
+    ref="$(manifest_get '.source.ref')"
     # Not synced yet -> skip cleanly (keeps fresh scaffolds green).
     if [ ! -f "$prov" ]; then
         echo "verify:skills:offline: not synced yet — skipping (run 'task sync:skills')"
-        return 0
-    fi
-    ref="$(manifest_get '.source.ref')"
     # Compare extracted values — the ref is data, not a regex ('.' in semver
     # tags would otherwise match any character).
-    if [ "$(prov_field "$prov" "ref" | sed 's/ (.*//')" = "$ref" ]; then
+    elif [ "$(prov_field "$prov" "ref" | sed 's/ (.*//')" = "$ref" ]; then
         echo "✓ vendored ref matches manifest ($ref) — offline check"
     else
         die "manifest ref ($ref) != vendored ref — run 'task sync:skills' and commit"
+    fi
+
+    # Agents are stamped independently, so their ref is checked independently —
+    # bumping the manifest and re-syncing only skills must not pass this hook.
+    if agents_enabled; then
+        _cvo_aprov="$(agents_dest)/.AGENTS_PROVENANCE"
+        if [ ! -f "$_cvo_aprov" ]; then
+            echo "verify:skills:offline: agents not synced yet — skipping (run 'task sync:skills')"
+        elif [ "$(prov_field "$_cvo_aprov" "ref" | sed 's/ (.*//')" = "$ref" ]; then
+            echo "✓ vendored agents ref matches manifest ($ref) — offline check"
+        else
+            die "manifest ref ($ref) != vendored agents ref — run 'task sync:skills' and commit"
+        fi
     fi
 }
 

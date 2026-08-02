@@ -21,6 +21,27 @@ files).
 - **Pinned tag.** The manifest pins a git tag, so updates are a deliberate manifest bump — never a surprise from upstream `main`.
 - **Shared destination — local skills are first-class.** The dest (`.claude/skills`) is shared between vendored and local skills. The sync manages **only** the dirs it vendored (recorded on the provenance `# managed:` line); any other directory is a local skill the repo owns — the sync and both verify modes never touch or report it. If a local dir's name collides with an incoming vendored skill, the sync fails loudly **before deleting anything** (rename the local skill or drop the category).
 - **Provenance.** Every synced destination gets a `.SKILLS_PROVENANCE` stamp recording the source, ref, resolved commit SHA, and the `# managed:` list of vendored dirs, with a do-not-edit marker for the managed skills.
+- **Agents ride along, optionally.** An `agents:` block vendors shared subagents (single `<name>.md` files) into their own dest, at the **same pinned ref**, in the same `task sync:skills` run. Omit the block and nothing about the sync changes.
+
+## Agents
+
+Shared subagents live in harmon-devkit under `ai/agents/<name>.md` — flat, no categories. Add an `agents:` block to request them:
+
+```yaml
+agents:
+  names: [implementer] # or ["*"] for every agent at the pin
+  dest: .claude/agents # must differ from the skills dest
+```
+
+Everything the skills pass guarantees, the agents pass guarantees too: pinned ref, flattened dest shared with your local agents, a `.AGENTS_PROVENANCE` stamp whose `# managed:` line is the only thing the sync will replace or delete, a collision that fails **before** any deletion, and both drift checks (`verify` and `verify:skills:offline`).
+
+Three things are specific to agents:
+
+- **One ref for both.** Agents and skills are pinned by the same `source.ref`, and that is deliberate rather than incidental. A shared agent is thin: it defers to a skill by _reading_ it (`.claude/skills/<name>/SKILL.md`). Pinning the two separately would let an agent follow a procedure that no longer exists at the other pin.
+- **`names`, not categories.** Agents are few and flat, so a consumer names them — or asks for all of them with `["*"]`. Mixing `"*"` with explicit names is a manifest error, not a union.
+- **Separate dest, always.** `agents.dest` must differ from `dest`. Two independent managed sets over one directory would each have to reason about the other's deletions; the sync refuses the arrangement instead.
+
+`README.md` in the source agents directory documents that directory and is never vendored as an agent.
 
 ## What's in this bundle
 
@@ -106,12 +127,18 @@ pre-push:
 
 `verify:skills:offline` fails fast if the manifest ref and the vendored provenance disagree (i.e. you bumped the ref but forgot to re-sync). Renovate can automate the ref bump, but it cannot run the re-sync half — never merge a ref bump without the accompanying `task sync:skills` result.
 
-## Adding a new skill
+## Adding a new skill or agent
 
-Skills are authored in harmon-devkit, not here. See
-[`ai/skills/README.md`](../../ai/skills/README.md) for the layout, the
-unique-name-across-categories rule, and how to add one. After it ships in a
-harmon-devkit release, bump your `ref` and re-sync.
+Both are authored in harmon-devkit, not here. See
+[`ai/skills/README.md`](../../ai/skills/README.md) for the skill layout and the
+unique-name-across-categories rule, and
+[`ai/agents/README.md`](../../ai/agents/README.md) for the agent layout and the
+portability contract. After it ships in a harmon-devkit release, bump your `ref`
+and re-sync.
+
+A new **skill** arrives automatically if it lands in a category you already
+request. A new **agent** does not: `names` is an explicit list, so add it there
+first — unless you use `["*"]`, which picks up every agent at the new pin.
 
 ## Auth
 

@@ -9,3 +9,11 @@ categories:
   - universal
   - frontend
 dest: .claude/skills # fully managed by sync — do not hand-edit vendored skills here
+
+# OPTIONAL. Delete this block and the sync behaves exactly as it did before
+# agents existed. Agents ride the SAME pinned ref as skills on purpose: a shared
+# agent is thin and defers to a skill by reading it, so letting the two pin
+# separately would leave an agent following a procedure that no longer exists.
+agents:
+  names: [implementer] # explicit list, or ["*"] for every agent at the pin
+  dest: .claude/agents # must differ from the skills dest above

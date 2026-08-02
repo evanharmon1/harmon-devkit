@@ -473,6 +473,154 @@ for bad in "/tmp/escape" "../../escape" "a/../../escape"; do
     expect_fail "sync refuses unsafe dest '$bad'" run_sync_at "$CD" sync
 done
 
+# ── sync-skills.sh agents pass ─────────────────────────────────────────
+echo "==> sync-skills.sh (agents)"
+
+# Add agents to the source repo at a new tag. README.md documents the directory
+# and must never be vendored as an agent.
+mkdir -p "$SRC/ai/agents"
+mkagent() {
+    {
+        echo "---"
+        echo "name: $2"
+        echo "description: A test agent named $2."
+        echo "---"
+        echo ""
+        echo "# $2"
+    } >"$1/ai/agents/$2.md"
+}
+mkagent "$SRC" ag-one
+mkagent "$SRC" ag-two
+echo "# Agents" >"$SRC/ai/agents/README.md"
+git_commit_all "$SRC" "add agents"
+git -C "$SRC" tag v0.1.0-agents
+
+# write_agents_manifest_at DIR REF NAMES_YAML [DEST]
+write_agents_manifest_at() {
+    local dir="$1" ref="$2" names="$3" adest="${4:-vendored/agents}"
+    {
+        echo "source:"
+        echo "  repo: file://$SRC"
+        echo "  ref: $ref"
+        echo "categories:"
+        echo "  - universal"
+        echo "dest: vendored/skills"
+        echo "agents:"
+        echo "  names: $names"
+        echo "  dest: $adest"
+    } >"$dir/.skills-sync.yaml"
+}
+
+# --- a manifest with NO agents block is untouched by any of this ---------
+CN="$TMPROOT/consumer-noagents"
+mkdir -p "$CN"
+write_manifest_at "$CN" v0.1.0-agents universal
+expect_ok "no agents block: sync still succeeds" run_sync_at "$CN" sync
+expect_ok "no agents block: nothing vendored to an agents dest" test ! -e "$CN/vendored/agents"
+expect_ok "no agents block: verify passes" run_sync_at "$CN" verify
+expect_ok "no agents block: verify-offline passes" run_sync_at "$CN" verify-offline
+
+# --- explicit name list --------------------------------------------------
+CA="$TMPROOT/consumer-agents"
+mkdir -p "$CA"
+write_agents_manifest_at "$CA" v0.1.0-agents "[ag-one]"
+expect_ok "agents: verify skips cleanly before first sync" run_sync_at "$CA" verify
+expect_ok "agents: sync vendors the named agent" run_sync_at "$CA" sync
+aprov="$CA/vendored/agents/.AGENTS_PROVENANCE"
+expect_ok "named agent vendored flat" test -f "$CA/vendored/agents/ag-one.md"
+expect_ok "unnamed agent not vendored" test ! -e "$CA/vendored/agents/ag-two.md"
+expect_ok "agents provenance records the ref" grep -q "^# ref: v0.1.0-agents " "$aprov"
+expect_ok "agents provenance lists the managed set" grep -q "^# managed: ag-one$" "$aprov"
+expect_ok "agents provenance carries do-not-edit marker" grep -q "DO NOT EDIT" "$aprov"
+expect_ok "skills still vendored alongside agents" test -f "$CA/vendored/skills/uni-one/SKILL.md"
+expect_ok "agents: verify passes right after sync" run_sync_at "$CA" verify
+expect_ok "agents: verify-offline passes right after sync" run_sync_at "$CA" verify-offline
+
+# Tamper -> drift, then re-sync heals.
+echo "tampered" >>"$CA/vendored/agents/ag-one.md"
+expect_fail "agents: verify detects a hand-edited vendored agent" run_sync_at "$CA" verify
+expect_ok "agents: re-sync heals the drift" run_sync_at "$CA" sync
+expect_ok "agents: verify passes again after re-sync" run_sync_at "$CA" verify
+
+# A local (unmanaged) agent is never touched or reported.
+echo "# local agent" >"$CA/vendored/agents/local-only.md"
+expect_ok "local agent survives a re-sync" bash -c "
+    cd '$CA' && bash '$SCRIPTS/sync-skills.sh' sync >/dev/null && test -f vendored/agents/local-only.md"
+expect_ok "agents: verify ignores a local agent" run_sync_at "$CA" verify
+
+# A local agent whose name collides with an incoming one is refused BEFORE any
+# delete — the local file must still be there afterwards.
+echo "# my own ag-two" >"$CA/vendored/agents/ag-two.md"
+write_agents_manifest_at "$CA" v0.1.0-agents "[ag-one, ag-two]"
+expect_fail_contains "collision with a local agent is refused" "collides with an incoming vendored agent" \
+    run_sync_at "$CA" sync
+expect_ok "refused collision left the local agent intact" \
+    grep -q "my own ag-two" "$CA/vendored/agents/ag-two.md"
+expect_ok "refused collision left the managed agent intact" test -f "$CA/vendored/agents/ag-one.md"
+rm -f "$CA/vendored/agents/ag-two.md" "$CA/vendored/agents/local-only.md"
+
+# Dropping a name from the manifest cleans up what the sync owns.
+write_agents_manifest_at "$CA" v0.1.0-agents "[ag-two]"
+expect_ok "agents: re-sync after a name swap" run_sync_at "$CA" sync
+expect_ok "swapped-out agent removed" test ! -e "$CA/vendored/agents/ag-one.md"
+expect_ok "swapped-in agent vendored" test -f "$CA/vendored/agents/ag-two.md"
+
+# --- wildcard ------------------------------------------------------------
+CW="$TMPROOT/consumer-agents-star"
+mkdir -p "$CW"
+write_agents_manifest_at "$CW" v0.1.0-agents '["*"]'
+expect_ok "wildcard: sync succeeds" run_sync_at "$CW" sync
+expect_ok "wildcard vendors every agent (1/2)" test -f "$CW/vendored/agents/ag-one.md"
+expect_ok "wildcard vendors every agent (2/2)" test -f "$CW/vendored/agents/ag-two.md"
+expect_ok "wildcard never vendors README.md" test ! -e "$CW/vendored/agents/README.md"
+expect_ok "wildcard: verify passes" run_sync_at "$CW" verify
+
+# The wildcard is all-or-nothing: mixing it with explicit names is a manifest
+# error, not a silent union.
+write_agents_manifest_at "$CW" v0.1.0-agents '["*", ag-one]'
+expect_fail_contains "wildcard mixed with explicit names is refused" \
+    "not both" run_sync_at "$CW" sync
+
+# --- manifest errors -----------------------------------------------------
+CE="$TMPROOT/consumer-agents-err"
+mkdir -p "$CE"
+write_agents_manifest_at "$CE" v0.1.0-agents "[nope]"
+expect_fail_contains "a missing agent name fails clearly" "missing in the pinned source" \
+    run_sync_at "$CE" sync
+
+write_agents_manifest_at "$CE" v0.1.0-agents "[README]"
+expect_fail_contains "README is refused as an agent name" "not an agent" run_sync_at "$CE" sync
+
+write_agents_manifest_at "$CE" v0.1.0-agents "[ag-one]" "vendored/skills"
+expect_fail_contains "agents.dest sharing the skills dest is refused" "must differ" \
+    run_sync_at "$CE" sync
+
+for bad in "/etc/agents" "../outside" "vendored/../../outside"; do
+    write_agents_manifest_at "$CE" v0.1.0-agents "[ag-one]" "$bad"
+    expect_fail "agents: sync refuses unsafe dest '$bad'" run_sync_at "$CE" sync
+done
+
+# An unsafe agents dest is caught BEFORE the skills pass deletes anything —
+# a manifest that cannot complete must not half-apply.
+CH="$TMPROOT/consumer-agents-halt"
+mkdir -p "$CH"
+write_agents_manifest_at "$CH" v0.1.0-agents "[ag-one]"
+run_sync_at "$CH" sync >/dev/null
+write_agents_manifest_at "$CH" v0.1.0-agents "[ag-one]" "/etc/agents"
+expect_fail "agents: bad dest aborts the whole sync" run_sync_at "$CH" sync
+expect_ok "aborted sync left the skills pass untouched" test -f "$CH/vendored/skills/uni-one/SKILL.md"
+
+# --- offline ref check covers agents independently -----------------------
+CO="$TMPROOT/consumer-agents-offline"
+mkdir -p "$CO"
+write_agents_manifest_at "$CO" v0.1.0-agents "[ag-one]"
+run_sync_at "$CO" sync >/dev/null
+expect_ok "agents: offline check passes after sync" run_sync_at "$CO" verify-offline
+# Bump only the agents provenance ref -> offline must notice.
+sed -i.bak 's/^# ref: .*/# ref: v9.9.9-absent (deadbeef)/' "$CO/vendored/agents/.AGENTS_PROVENANCE"
+expect_fail_contains "offline check catches an agents ref mismatch" "vendored agents ref" \
+    run_sync_at "$CO" verify-offline
+
 # ── standardize-repo audit assets ─────────────────────────────────────
 echo "==> standardize-repo audit assets"
 
