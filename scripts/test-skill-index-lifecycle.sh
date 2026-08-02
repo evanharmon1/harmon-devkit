@@ -21,7 +21,7 @@ FILES=(
 # literal context or POSIX character classes for word separation.
 REJECTED=(
     'green PR'
-    '(^| )PR([^[:alnum:]_]).* to green|to green.*(^| )PR([^[:alnum:]_]|$)'
+    '(^|[^[:alnum:]_])PR([^[:alnum:]_].*)?to green|to green.*(^|[^[:alnum:]_])PR([^[:alnum:]_]|$)'
     '→ green'
     '(^|[^[:alnum:]_])not green([^[:alnum:]_]|$)'
     '(^|[^[:alnum:]_])checks green([^[:alnum:]_]|$)'
