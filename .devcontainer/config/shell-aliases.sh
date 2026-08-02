@@ -273,3 +273,12 @@ extract() {
     *) echo "'$1' — unknown format" ;;
     esac
 }
+
+# ── Alternative Claude Code model providers ─────────────────
+# Optional claude-kimi / claude-deepseek / claude-glm launchers. The file is
+# jinja-gated on use_alternative_claude_providers, so it is present only in repos
+# that opted in; absent repos no-op silently (the source line is verbatim, shared
+# by every render, and the [ -f ] guard skips it when the file doesn't exist).
+if [ -f /usr/local/share/devcontainer-config/claude-providers.sh ]; then
+    source /usr/local/share/devcontainer-config/claude-providers.sh
+fi

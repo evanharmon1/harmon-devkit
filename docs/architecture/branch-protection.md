@@ -100,8 +100,8 @@ permissions and nothing more:
 > hold it — it was briefly offered, then withdrawn. Don't go looking for it: CI
 > state comes from **Actions** (workflow runs) and **Commit statuses** (the PR
 > rollup), which is what the tooling actually reads.
-**Read is cheap; write is the line.** Variables and Projects are read-only above
-for a reason that is not squeamishness — see the exclusions below.
+**Read is cheap; write is the line.** Variables are read-only above for a
+reason that is not squeamishness — see the exclusions below.
 
 **Deliberately excluded.** This list is _what the bot needs_, and the distinction
 is load-bearing, because the bot's PAT is the **agent's own credential**:

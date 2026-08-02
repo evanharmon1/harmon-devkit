@@ -1,8 +1,10 @@
 # Devcontainer incidents
 
 Worked diagnoses of real failures in this devcontainer, and where the shipped
-fix for each lives. Every one is already handled by the scripts in
-`.devcontainer/` — this exists so that when something *looks* like one of these,
+fix for each lives. Every one is already handled — by the scripts in
+`.devcontainer/` or by the shared
+`ghcr.io/evanharmon1/harmon-devcontainer` toolchain image the Dockerfile
+extends — so this exists so that when something *looks* like one of these,
 you can tell quickly whether the guard failed or you have found something new.
 
 For everyday problems see [troubleshooting.md](troubleshooting.md); this file is
@@ -28,12 +30,16 @@ lookup is not.
 The tell is that it is **flaky rather than deterministic**, and that a rerun
 with no code change goes green. Do not go looking for a defect in the diff.
 
-Shipped fix: tools are installed in the `Dockerfile` from pinned
+Shipped fix: shared tools are installed from pinned
 `https://github.com/<owner>/<repo>/releases/download/v${FOO_VERSION}/…` URLs
-carrying `# renovate: datasource=github-releases` annotations, not from
-Features that resolve a version at build time. `task` was the last holdout
-(harmon-init#427); `scripts/devcontainer-assert.sh unit` — which `task ci`
-runs — now fails if the Feature returns or the pin goes missing.
+carrying `# renovate: datasource=github-releases` annotations — in the
+canonical `ghcr.io/evanharmon1/harmon-devcontainer` image source
+(harmon-init's `images/devcontainer/`), not in Features that resolve a
+version at build time. The repo `Dockerfile` is a thin overlay pinned to an
+immutable `tag@digest` of that image and carries no tool pins of its own.
+`task` was the last holdout (harmon-init#427);
+`scripts/devcontainer-assert.sh unit` — which `task ci` runs — now fails if
+the Feature returns or the image pin goes floating or missing.
 
 **Generalize this one.** Any build-time call to an unauthenticated public API
 is a flake waiting to happen. Pinning the Feature's own version does *not* fix
@@ -51,13 +57,15 @@ one and still seeing "stopped" does not mean the fix was wrong.
 
 ### 1. A missing `pnpm` kills every later lifecycle command
 
-Node is installed from NodeSource, but without `corepack enable pnpm` the
+Node is installed from NodeSource in the shared toolchain image, but without
+`corepack enable pnpm` the
 `postCreateCommand` fails at `pnpm install` with exit 127 — and
 `@devcontainers/cli` then **skips all remaining lifecycle commands**, including
 `postStartCommand`. The conductor never starts, and the error you see is about
 pnpm, not about the conductor.
 
-Shipped fix: `corepack enable pnpm` in the Dockerfile's Node layer.
+Shipped fix: `corepack enable pnpm` in the shared image's Node layer
+(harmon-init's `images/devcontainer/Dockerfile`).
 
 **Generalize this one.** Any non-zero exit in `postCreateCommand` silently
 cancels `postStartCommand`. If a start-time service is mysteriously absent,
@@ -86,15 +94,15 @@ re-injection in `postStartCommand` so a change takes effect without a rebuild.
 
 ### 4. `ModuleNotFoundError: No module named 'toml'`
 
-The Dockerfile installs `toml` and `aiogram` for the **system** Python, but the
-devcontainer Python feature installs its own and takes over `python3` on PATH.
-The bridge therefore starts once on the Dockerfile's Python and crashes on
-restart under the feature's.
+The shared toolchain image installs `toml` and `aiogram` for the **system**
+Python, but the devcontainer Python feature installs its own and takes over
+`python3` on PATH. The bridge therefore starts once on the image's Python and
+crashes on restart under the feature's.
 
 Shipped fix: `pip install --quiet toml aiogram` in `post-create-common.sh`,
 which runs *after* features are installed.
 
-**Generalize this one too.** Anything the Dockerfile installs into a runtime a
+**Generalize this one too.** Anything the image installs into a runtime a
 devcontainer feature later replaces must be reinstalled post-create.
 
 ### 5. Coder rebuilds reused a stale checkout

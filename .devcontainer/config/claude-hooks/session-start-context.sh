@@ -15,8 +15,14 @@ cd "${CLAUDE_PROJECT_DIR:-$(pwd)}"
 # Strip ANSI color codes so the additionalContext payload renders cleanly.
 strip_ansi() { sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g'; }
 
+# The outer deadlines must exceed what the sections themselves allow, or the
+# inner bounds are pointless: whatever the section was about to report is lost
+# wholesale, because status.sh buffers each section before printing it. status:gh
+# spends up to NETWORK_TIMEOUT (5s) on the auth probe and then up to another 5s
+# on the PR/run probes it launches in parallel — 10s worst case, so 12 here.
+# status:git makes no network calls at all.
 git_status="$(timeout 5 task status:git 2>/dev/null | strip_ansi || echo '(task status:git unavailable)')"
-gh_status="$(timeout 8 task status:gh 2>/dev/null | strip_ansi || echo '(task status:gh unavailable)')"
+gh_status="$(timeout 12 task status:gh 2>/dev/null | strip_ansi || echo '(task status:gh unavailable)')"
 branch="$(git branch --show-current 2>/dev/null || echo 'unknown')"
 
 reminder=$'Repo conventions:\n- Run `task verify` before committing (lint + build + validate + test).\n- Conventional Commits required (feat/fix/docs/style/refactor/perf/test/chore/ci/build/change/remove/revert).\n- Never bypass git hooks with --no-verify; fix the underlying issue.\n- Use lefthook for git hooks (not pre-commit).\n- See docs/conventions.md (and AGENTS.md) for the authoritative conventions catalog.'

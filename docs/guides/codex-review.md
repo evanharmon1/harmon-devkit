@@ -2,11 +2,12 @@
 
 A second AI model — the [OpenAI Codex CLI](https://developers.openai.com/codex/cli)
 — reviews changes in this repo: manual review/challenge tasks, plus an optional
-automatic Claude Code → Codex stop-gate. Everything is local and advisory:
-nothing runs in CI, no PR check depends on Codex, and `verify`/`ci` never
-invoke it. Findings are hypotheses for the primary agent to adjudicate — the
-protocol and the loop caps live in AGENTS.md ("Second-Model
-Review").
+automatic Claude Code → Codex stop-gate. Those tasks are local and advisory:
+nothing runs in CI, no PR check depends on Codex, and `verify`/`ci` never invoke
+it. Repositories can separately opt into a required current-head result from
+Codex cloud review during PR shepherding. Findings are hypotheses for the
+primary agent to adjudicate — the protocol and the loop caps live in AGENTS.md
+("Second-Model Review").
 
 ## Setup
 
@@ -30,6 +31,15 @@ Review").
    /codex:setup
    ```
 
+5. **If `use_codex_cloud_review` is enabled, connect this repository to Codex
+   cloud review for PR shepherding.** The Copier opt-in adds the policy but
+   cannot grant GitHub access: a maintainer must connect Codex through ChatGPT
+   and allow the repository in the GitHub connector. Availability and quotas
+   depend on the maintainer's ChatGPT plan, and private repositories require
+   explicit connector access. Cloud review is a required shepherd signal, not
+   a required GitHub status check; if it stays unavailable for both bounded
+   attempts, the agent stops and escalates.
+
 ## Manual reviews
 
 | Command | What it does |
@@ -40,11 +50,23 @@ Review").
 Both accept an explicit target and free-text focus after `--`:
 
 ```bash
-task challenge                                     # auto: dirty tree → uncommitted; clean → origin/HEAD, else local main/master
-task challenge -- --base main                      # branch vs main explicitly
+task challenge                                     # auto: commits beyond the base AND uncommitted work — whatever exists
+task challenge -- --base main                      # committed history only, vs main explicitly
 task review -- --uncommitted                       # staged + unstaged + untracked only
 task challenge -- --base main focus on the update/migration path
 ```
+
+With no target flag, **both halves of the change are in scope**: the commits
+beyond the auto-detected base (`origin/HEAD`, else a local `main`/`master`)
+*and* the working tree. When both exist the prompt carries one manifest split
+into a `Committed changes` and an `Uncommitted changes` section, so the
+reviewer knows which diff to collect for each path; when only one exists it is
+reviewed on its own. If the base cannot be resolved at all, the run refuses
+(exit 2) rather than falling back to the worktree half — a partial review that
+exits 0 is indistinguishable from a clean pass. The explicit flags stay narrow
+deliberately — `--base` is committed history only and `--uncommitted` is the
+worktree only — so they remain escapes you opt into rather than a default that
+quietly drops half the change.
 
 Whichever target you pick, an empty one is refused before Codex is invoked,
 with a non-zero exit. An empty scope has no correct outcome — the model either
@@ -53,6 +75,20 @@ capped challenge/review round would be spent banking a review that never
 happened. `--base` on a dirty tree also says so on stderr: it reviews
 committed history only, and the uncommitted work it excludes is often the very
 change you meant to review.
+
+`--base` also warns when the ref you named lags its own upstream and your
+branch already carries some of the difference — `--base main` on a checkout
+whose local `main` trails `origin/main` puts those already-merged commits
+inside `main...HEAD`, so the review spends a round on findings against files
+your branch never touched. The warning counts the already-merged commits caught
+in the scope and names the remote-qualified alternative (`--base origin/main`),
+and it is advisory: an intentionally older base still runs. Partly-updated
+branches count too — rebasing onto a mid-point of the gap still leaves those
+commits in scope. It stays quiet when the base has no upstream (a tag, a sha,
+`origin/main` itself), when your branch carries none of the upstream commits,
+when the base has run *ahead* of its upstream rather than behind, and when the
+gap changes no files at all (a change and its revert) — the two scopes are
+byte-identical there, so there is nothing to warn about.
 
 Inside Claude Code the plugin's slash commands are the interactive
 equivalents: `/codex:review` and
@@ -80,22 +116,25 @@ signal that the reviewed diff can spoof.
 
 Two things not to change when backgrounding:
 
-- **The target.** Bare `task challenge` keeps the auto-selection above — dirty
-  tree → uncommitted, clean tree → `origin/HEAD`. At this point in the loop
-  the tree is normally dirty, so a hardcoded `-- --base main` would review the
-  committed branch and silently skip the very work being challenged (and name
-  the wrong base in a repo that does not use `main`). Add a target flag only
-  when you mean to override. Note `origin/HEAD` is a *cached* ref: if the
-  remote's default branch moved, refresh it with
-  `git remote set-head origin --auto`, or the auto-selected base is silently
-  the old one.
+- **The target.** Bare `task challenge` keeps the auto-selection above — the
+  branch's commits and the working tree, whichever exist. At this point in the
+  loop the tree is normally dirty *and* the branch has commits, so a hardcoded
+  `-- --base main` would review the committed branch and silently skip the
+  very work being challenged (and name the wrong base in a repo that does not
+  use `main`). Add a target flag only when you mean to narrow. Note
+  `origin/HEAD` is a *cached* ref: if the remote's default branch moved,
+  refresh it with `git remote set-head origin --auto`, or the auto-selected
+  base is silently the old one.
 
-  The scopes do not overlap: `--uncommitted` reads the worktree,
-  `--base` diffs commits, and **neither covers both**. A dirty tree always wins
-  the auto-selection, so once the branch has commits, an uncommitted fix
-  narrows the re-run to just that fix — and the clean pass then attests to the
-  fix rather than to the whole change. **Commit each round's fixes before
-  re-running**, so the branch diff is the whole change again.
+  The explicit scopes do not overlap: `--uncommitted` reads the worktree,
+  `--base` diffs commits, and **neither covers both**. That is why passing one
+  mid-loop is risky — an uncommitted fix under `--uncommitted` narrows the
+  re-run to just that fix, and the clean pass then attests to the fix rather
+  than to the whole change. Bare `task challenge` covers both halves, so it is
+  the right thing to re-run. Committing each round's fixes first is still
+  tidier (it keeps the committed half authoritative and shrinks what Codex has
+  to reconcile), but the loop's exit condition no longer depends on your
+  remembering to.
 - **The runner.** Background `task challenge` itself, not
   `/codex:adversarial-review --background`: the slash command calls Codex
   directly, so it never receives the P0/P1/P2 scale that
@@ -105,12 +144,13 @@ Two things not to change when backgrounding:
 **Then leave the tree alone until it finishes.** `codex-review.sh` captures the
 file manifest at launch, but Codex collects the diffs itself as it runs — so
 editing, staging, or committing mid-review has it read a repository that no
-longer matches the manifest, and committing an initially dirty tree empties the
-`--uncommitted` scope outright. Backgrounding buys polling, not parallel edits:
-if there is other work to do, do it after the verdict. Should you capture the
-output to a file, keep it under `git rev-parse --git-path` rather than in the
-worktree — for the same reason the deferred-findings sidecar lives there, a
-stray worktree file becomes the next bare `task challenge`'s entire scope.
+longer matches the manifest, and committing an initially dirty tree empties an
+explicit `--uncommitted` scope outright. Backgrounding buys polling, not
+parallel edits: if there is other work to do, do it after the verdict. Should
+you capture the output to a file, keep it under `git rev-parse --git-path`
+rather than in the worktree — for the same reason the deferred-findings
+sidecar lives there, a stray worktree file lands in the next bare
+`task challenge`'s scope as part of the change under review.
 
 **Still running is not hung.** `codex exec` streams events as it works, so
 growing output is the liveness signal — poll it instead of inferring. Long
@@ -268,8 +308,9 @@ orphan if it belongs to this work, otherwise leave it and mention it. One
 command beats rename-migration logic that would need its own correctness
 argument. The location is deterministic, so a later session finds it the same
 way, and `git status` never sees it — a note left in the *worktree* would be
-worse than none, because a dirty tree makes the next bare `task challenge`
-review the note instead of the branch.
+worse than none, because a dirty tree puts it in the next bare
+`task challenge`'s scope: a file of open findings, handed to the reviewer as
+part of the change to adjudicate.
 
 The shepherd stage settles every entry and ticks it off in the body as it
 goes, so the checkbox — not anyone's memory — is what says whether a finding
@@ -300,5 +341,13 @@ Adjudicate it; never disable the gate to get past a BLOCK.
   (exit 1) instead of asking Codex to review nothing; the message names the
   condition and the way out. Reaching it from `task challenge` with no flags
   means a clean tree with no commits beyond the base. Reaching it from
-  `--base <ref>` usually means the work is still uncommitted — use
-  `--uncommitted`, or commit first.
+  `--base <ref>` usually means the work is still uncommitted — drop the flag
+  to review both halves, or use `--uncommitted`.
+- **Could not resolve a base to review this branch against** — no
+  `origin/HEAD` and no local `main`/`master`, or the detected base shares no
+  history with `HEAD` (exit 2). It refuses on a dirty tree too, rather than
+  quietly reviewing the worktree alone: which commits are missing is exactly
+  what cannot be determined, and a partial review that exits 0 reads as a
+  clean pass. Fix the cached ref (`git remote set-head origin --auto`), name a
+  base with `--base <ref>`, or say the worktree really is the whole target
+  with `--uncommitted`.

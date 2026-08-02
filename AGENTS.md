@@ -105,24 +105,40 @@ something to ask permission for.
   then **re-run `task challenge`**. The stage passes only when a re-run comes
   back with **no confirmed P0 or P1 findings** — fixing the findings is not
   the exit condition, a clean pass is. **P2s do not gate this stage**: carry
-  them to the PR (see "Deferring P2s" below). Max **6** challenge → fix →
-  re-challenge
+  them to the PR (see "Deferring P2s" below). This loop is
+  **self-referential** — the fixes you make in response to a round become the
+  next round's input, so it can generate its own work indefinitely — and that
+  is what the cap defends against: max **6** challenge → fix → re-challenge
   rounds; if P0/P1 findings persist, stop and escalate to the maintainer.
+  "Between rounds, check what the findings are about" below is how you catch
+  the loop feeding on itself before the cap does.
   A `task challenge` round is long — 5–15 minutes is ordinary, past most
   agents' tool-call timeouts — so **run it in the background and poll**
   instead of blocking one call on it. Growing output means running, not hung;
-  relaunching a live run only doubles the cost. Commit each round's fixes
-  before re-challenging, or the re-run scopes to the fix alone instead of the
-  whole change. Details:
+  relaunching a live run only doubles the cost. Re-challenge with a bare
+  `task challenge` — it covers the branch's commits *and* the working tree,
+  so an uncommitted fix cannot narrow the re-run to itself; an explicit
+  `--base`/`--uncommitted` reviews one half only. Committing each round's
+  fixes first is still tidier, not load-bearing. Details:
   [docs/guides/codex-review.md](docs/guides/codex-review.md) ("Duration and
   backgrounding").
 - **`task review`** — verification-checkpoint review; same adjudication, same
-  P0/P1 clean-pass exit condition, and the same background-and-poll handling,
-  with its own max **6** rounds.
+  P0/P1 clean-pass exit condition, the same self-referential shape and so the
+  same reason for a cap, and the same background-and-poll handling, with its
+  own max **6** rounds.
 - **`task ci`** — the full CI mirror; fix anything it catches.
 - **Open the draft PR** — conventional commit, push the branch, `gh pr create
   --draft` with a clear what/why/verification summary. Draft is the agent
   workbench: implementation and automated review are still active.
+- **Git transport** — pushes authenticate over HTTPS via `gh` (dotfiles-managed
+  hosts and the devcontainers rewrite GitHub SSH URLs to HTTPS via
+  `url.insteadOf`; harmon-dotfiles ADR 0002). Never work around an SSH failure
+  by pushing to a raw `https://…` URL — a URL push bypasses the named remote
+  and leaves stale tracking refs. On an unprovisioned host, force the helper
+  and the rewrite against the *named* remote:
+  `git -c credential.helper= -c credential.helper='!gh auth git-credential' -c url."https://github.com/".insteadOf="git@github.com:" -c url."https://github.com/".insteadOf="ssh://git@github.com/" -c url."https://github.com/".insteadOf="ssh://git@ssh.github.com:443/" -c url."https://github.com/".insteadOf="ssh://git@ssh.github.com/" push`
+  (a credential helper only applies to HTTPS, and `insteadOf` is prefix
+  matching — every SSH form needs its own mapping, hence all four).
 - **Shepherd the draft (`/shepherd`, max 5 rounds).** `gh pr create --draft`
   returning is
   the trigger for this stage, not the end of the work — enter it deliberately
@@ -271,6 +287,35 @@ two-attempt procedure; PR-level or stale reactions do not satisfy it.
 6. Finish with a concise adjudication table: finding → priority →
    classification → evidence → action taken.
 
+**Between rounds, check what the findings are about.** Those six steps are all
+*per-finding*, so a reviewer can be right every round while the loop as a whole
+diverges: each fix adds surface, the next round attacks that surface, and the
+findings stay individually defensible right up to the cap. Before starting a
+round's fixes, ask where they *live* — in the change you set out to make, or in
+code that exists only because an earlier round asked for it. **A round whose
+findings are all about the previous round's fix is the tell**, and it is
+visible in round 2 — the first round that can show it. Do not wait for the
+pattern to be unmistakable in round 4.
+
+**Deleting the added code is a legitimate way to reach a clean pass.** When a
+round's findings are about scaffolding rather than the change, weigh removing
+that scaffolding against hardening it once more — a remediation can be correct
+in the abstract and wrong for the artifact. A documentation guide that has
+grown a hand-rolled process supervisor earns real, defensible P1s about per-run
+state, process-group supervision, and PID reuse; every one of them becomes moot
+when the recipe is deleted instead of hardened. That is not giving up on the
+findings: the stage exits on a **clean re-run**, and a re-run does not care
+whether a finding was answered or made inapplicable. Name the mooted findings
+in the adjudication table *and* in the message of the commit that removes the
+code — the table is scrollback, but the commit is why the code is gone, and it
+is the record a later round or a different session can still find.
+
+One endpoint is worth knowing: if the deletion empties the change *entirely*,
+there is no clean pass to reach — `codex-review.sh` refuses an empty scope
+non-zero by design, so the stage cannot pass and re-running will not change
+that. Treat it as the answer rather than a failure to work around: a change
+that has become empty is abandoned, not reviewed clean.
+
 **Severity gating.** Both tasks ask Codex to label every finding `P0`
 (breaks correctness, security, or data integrity in ordinary use, or breaks
 an existing contract), `P1` (a real defect or materially wrong design
@@ -325,9 +370,10 @@ collide `feat/x` with `feat-x` and reintroduce exactly that loss, and adding
 an extension would make `foo` (a file) block `foo.md/bar` (needing a
 directory). Used as-is, the mapping is git's own ref namespace, and git
 already forbids one live branch from being a path prefix of another. A note in the *worktree* would be worse than none:
-`codex-review.sh` reviews the uncommitted diff whenever the tree is dirty, so
-the note would become the next bare `task challenge`'s entire scope — and the
-change it was supposed to review would get a clean pass it never earned.
+`codex-review.sh` puts uncommitted files in scope whenever the tree is dirty,
+so the note would be handed to the next bare `task challenge` as part of the
+change under review — a file of open findings, presented to the reviewer as
+work to adjudicate.
 
 The shepherd stage settles every entry and **edits the PR body to tick it**
 (`- [x] … — fixed in <sha>` / `declined: <reason>` / `filed as #<n>`) in the
