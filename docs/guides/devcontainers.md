@@ -60,6 +60,55 @@ host session shows:
 To use your own instead, point `statusLine.command` in `~/.claude/settings.json`
 at it — the seed merge will not overwrite it.
 
+### Fable 5 is unselectable in `/model`
+
+**Symptom.** Fable works on your host but the container's `/model` picker
+refuses it, complaining about usage credits — on an account that is entitled
+to Fable. `claude --model fable --print 'hi'` in the same container succeeds,
+which is the tell: the API is fine and the block is client-side.
+
+**Cause.** Fable needs a one-time "draws from usage credits" consent, stored
+**per machine** in `~/.claude.json` under `.fableOverageConsentV2`, keyed by
+the signed-in account's `organizationUuid` (or `acct:<accountUuid>`).
+`~/.claude` is a container-local volume, so the consent you granted on the
+host never reaches the container.
+
+Without the record, Claude Code arms a credits gate on the first API response
+reporting overage-in-use — the setter is guarded by "no consent recorded", so a
+machine that already has it never arms the gate at all. Accepting the resulting
+prompt then live-checks extra usage, and if the account's cached
+`cachedExtraUsageDisabledReason` is `out_of_credits` that path dead-ends. So
+the in-app dialog cannot get you out of it, which is why this needs a manual
+write.
+
+**Fix.** Once per container, **with no `claude` session running**:
+
+```sh
+CJ=~/.claude/.claude.json
+KEY=$(jq -r '.oauthAccount
+  | if .organizationUuid then .organizationUuid
+    elif .accountUuid then "acct:" + .accountUuid
+    else empty end' "$CJ")
+[ -n "$KEY" ] || echo "not signed in yet — run claude once first"
+jq --arg k "$KEY" '.fableOverageConsentV2 = ((.fableOverageConsentV2 // {}) | .[$k] = true)' \
+  "$CJ" >"$CJ.tmp" && mv "$CJ.tmp" "$CJ"
+```
+
+Then start Claude Code. It merges rather than replaces, so re-running it is
+harmless and another account's consent is left alone; the temp file is a
+sibling of the target so the replacement is an atomic rename.
+
+Two things make the timing matter. Claude Code caches `.claude.json` in memory
+at startup and never re-reads it, so a write during a session cannot affect
+that session — and the CLI's next config write serializes its stale copy back
+over the file, discarding the record. Run it between sessions.
+
+The `~/.claude` volume survives rebuilds, so this is once per *new* container,
+not once per rebuild. It is deliberately **not** automated: the key is a
+billing authorization, and a hook baked into a shared image would grant it for
+whichever account happened to sign in — including in repos templated from here.
+Running the command yourself is the consent.
+
 ## Secrets — 1Password Environments (the standard)
 
 Don't hand-write or copy `devcontainer.env`. The standard is **1Password
