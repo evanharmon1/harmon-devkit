@@ -96,7 +96,16 @@ frontmatter_keys() {
     ' "$1"
 }
 
-# Return success if the leading frontmatter block contains a `description:` key.
+# Return success if `description:` resolves to a NON-EMPTY value. Checking only
+# that the key is spelled would accept a bare `description:`, which YAML parses
+# as null — and the description is the field a harness selects the subagent on,
+# so an empty one makes the agent undiscoverable while the guard calls it valid.
+#
+# A block scalar (`description: >-`) legitimately has nothing after the colon,
+# so the value may live on the indented continuation lines instead. Order
+# matters below: the block/bare rules must precede the inline rule, which would
+# otherwise match the `>` itself as a value.
+#
 # Note: awk `exit` runs the END rule, so route every path through END (a bare
 # `exit 0` here would be overridden by `END { exit 1 }`).
 frontmatter_has_description() {
@@ -104,7 +113,12 @@ frontmatter_has_description() {
         NR == 1 && $0 != "---" { exit }
         fence >= 2 { next }
         $0 == "---" { fence++; next }
-        fence == 1 && /^description:[[:space:]]*/ { found = 1 }
+        fence != 1 { next }
+        /^description:[[:space:]]*$/            { pending = 1; next }  # bare: value may follow, indented
+        /^description:[[:space:]]*[|>]/         { pending = 1; next }  # block scalar
+        /^description:[[:space:]]*[^[:space:]]/ { found = 1; next }    # inline value
+        pending && /^[[:space:]]+[^[:space:]]/  { found = 1; pending = 0; next }
+        pending && /^[^[:space:]]/              { pending = 0 }        # next key ended it, still empty
         END { exit (found ? 0 : 1) }
     ' "$1"
 }
@@ -203,8 +217,19 @@ while IFS= read -r md; do
     # and `tools:`/`model:`/`color:` would ship to every consumer as a decision
     # the calling session can no longer make. Adding a key later is meant to
     # cost a deliberate edit here — that friction IS the portability review.
+    seen_keys=""
     while IFS= read -r key; do
         [ -n "$key" ] || continue
+        # Duplicate keys are invalid YAML, and permissive loaders commonly keep
+        # the LAST one — so `name: alpha` followed by `name: beta` would let a
+        # consumer load an identity this guard never checked.
+        case " $seen_keys " in
+        *" $key "*)
+            err "$md: duplicate frontmatter key '$key'"
+            err "  a permissive YAML loader may take the last value, not the one checked here"
+            ;;
+        *) seen_keys="$seen_keys $key" ;;
+        esac
         case "$key" in
         name | description) ;;
         *)

@@ -87,6 +87,16 @@ current="$(git branch --show-current)"
 [ -n "$default" ] && [ -n "$current" ] && [ "$current" != "$default" ]
 ```
 
+**And confirm the checkout is clean** — `git status --porcelain` must be empty.
+A fresh context is not a fresh worktree: your caller may have delegated with
+work in progress, and that work is invisible to you. Committing over it sweeps
+it into a commit whose message describes something else entirely.
+
+If the tree is dirty, **stop and report it — do not park it yourself.** Stashing
+someone else's uncommitted work from a context that cannot see what it is, and
+cannot ask, is the unilateral act this whole file exists to prevent. Your caller
+knows what those edits are; you do not.
+
 Non-zero means stop and report. Both emptiness tests are load-bearing. The
 default branch is **resolved, not assumed to be `main`** — guessing `main` in a
 repo whose default is something else passes the check exactly when it should
@@ -106,6 +116,13 @@ end.
 **Commit as you go**, in conventional-commit units. Your caller's second-model
 review scopes to the committed diff, so work left uncommitted is reviewed as a
 fragment or not at all.
+
+**Stage explicitly — never `git add -A`, `git add .`, or `git commit -a`.** Name
+the paths your brief covers. The clean-tree check in §3 establishes the baseline
+once; blanket staging discards it at the first commit, picking up anything that
+appeared since — a formatter touching a file outside the brief, a tool writing a
+cache, an editor's scratch file. Naming paths keeps every commit reviewable as
+the change you were asked to make.
 
 ## 5. Exit gate
 

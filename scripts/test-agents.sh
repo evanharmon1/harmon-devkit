@@ -153,6 +153,61 @@ newrepo "$R15"
 mkagent "$R15" "kilo lima"
 expect_fail_contains "an agent name with a space fails" "$R15" "is not kebab-case"
 
+# A duplicate key is refused — permissive YAML loaders keep the LAST value, so
+# the identity a consumer loads would not be the one this guard checked.
+R16="$TMPROOT/dup-key"
+newrepo "$R16"
+{
+    echo "---"
+    echo "name: mike"
+    echo "name: november"
+    echo "description: An agent declaring its name twice."
+    echo "---"
+    echo "# mike"
+} >"$R16/ai/agents/mike.md"
+expect_fail_contains "a duplicate 'name:' key fails" "$R16" \
+    "duplicate frontmatter key 'name'"
+
+# A bare `description:` is null in YAML — the harness would have no description
+# to select the subagent on, so the key's mere presence is not enough.
+R17="$TMPROOT/empty-desc"
+newrepo "$R17"
+{
+    echo "---"
+    echo "name: oscar"
+    echo "description:"
+    echo "---"
+    echo "# oscar"
+} >"$R17/ai/agents/oscar.md"
+expect_fail_contains "an empty description fails" "$R17" \
+    "missing a 'description:' field"
+
+# A block scalar carries its value on the continuation lines — still valid.
+R18="$TMPROOT/block-desc"
+newrepo "$R18"
+{
+    echo "---"
+    echo "name: papa"
+    echo "description: |"
+    echo "  A literal block scalar whose value lives below the key."
+    echo "---"
+    echo "# papa"
+} >"$R18/ai/agents/papa.md"
+expect_ok "a literal block-scalar description passes" "$R18"
+
+# A block scalar with NO continuation line is still empty.
+R19="$TMPROOT/block-desc-empty"
+newrepo "$R19"
+{
+    echo "---"
+    echo "name: quebec"
+    echo "description: >-"
+    echo "---"
+    echo "# quebec"
+} >"$R19/ai/agents/quebec.md"
+expect_fail_contains "an empty block-scalar description fails" "$R19" \
+    "missing a 'description:' field"
+
 # A Claude-specific frontmatter key breaks the portability contract.
 R12="$TMPROOT/extra-key"
 newrepo "$R12"
