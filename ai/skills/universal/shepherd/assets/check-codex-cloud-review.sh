@@ -559,6 +559,18 @@ check)
     # appended after the closing tag was invisible. An unterminated block does
     # not match the removal and its contents then fail the check, which is the
     # right direction.
+    #
+    # Removal is anchored on the block's SUMMARY, not on "<details" alone.
+    # Discarding any collapsed block would let a concern hide inside one. The
+    # summary is a stable identifier; the block's body is Codex's prose and is
+    # deliberately not asserted on, because a reworded boilerplate would then
+    # fail the gate on every PR. Residual, accepted knowingly: unbadged text
+    # inside the genuine About block passes. A BADGED finding does not —
+    # has_severity_marker scans the whole body, block included.
+    #
+    # And the metadata line is matched WHOLE. `startswith` on the label
+    # accepted "**Reviewed commit:** `sha` However a race remains.", which is
+    # the same trailing-text hole as the verdict line had, one line lower.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
@@ -584,11 +596,14 @@ check)
           # catch it.
           def rest_is_boilerplate:
             (body_text | split("\n") | .[1:] | join("\n") |
-              gsub("<details.*?</details>"; ""; "m") |
+              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
+                   ""; "im") |
               ascii_downcase | split("\n") |
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               map(select(. != "")) |
-              all(startswith("**reviewed commit:**")));
+              all(test(
+                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
+              )));
           def verdict_class:
             # Bind the tail before the membership test: index/1 evaluates its
             # argument with the ARRAY as input, so an inline verdict_tail
@@ -644,11 +659,14 @@ check)
           # catch it.
           def rest_is_boilerplate:
             (body_text | split("\n") | .[1:] | join("\n") |
-              gsub("<details.*?</details>"; ""; "m") |
+              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
+                   ""; "im") |
               ascii_downcase | split("\n") |
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               map(select(. != "")) |
-              all(startswith("**reviewed commit:**")));
+              all(test(
+                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
+              )));
           def verdict_class:
             # Bind the tail before the membership test: index/1 evaluates its
             # argument with the ARRAY as input, so an inline verdict_tail

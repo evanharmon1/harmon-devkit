@@ -353,6 +353,47 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 2 indeterminate
 
+echo "==> a concern appended to the Reviewed commit LINE is not clean"
+# startswith on the label accepted trailing text — the same hole the verdict
+# line had, one line lower.
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:110,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "**Reviewed commit:** `" + $prefix + "` However a race remains.")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> a concern hidden in a NON-About collapsed block is not clean"
+# Removal is anchored on the summary, so an arbitrary <details> is not a
+# hiding place.
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:111,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "**Reviewed commit:** `" + $prefix + "`\n\n" +
+          "<details><summary>Notes</summary>\nHowever a race remains.\n</details>")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
 echo "==> an unterminated About block fails closed"
 new_cycle
 prefix="${head_sha:0:10}"
