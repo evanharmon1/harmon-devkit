@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.17.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.16.0...v0.17.0) (2026-08-02)
+
+
+### Features
+
+* **agents:** centralize shared subagents with an implementer agent ([#253](https://github.com/evanharmon1/harmon-devkit/issues/253)) ([90a3bf7](https://github.com/evanharmon1/harmon-devkit/commit/90a3bf741fd5cfff8568b4a414e675eaa77b7ac9))
+
+
+### Bug Fixes
+
+* align public skill indexes with the draft-PR lifecycle ([#238](https://github.com/evanharmon1/harmon-devkit/issues/238)) ([4c84626](https://github.com/evanharmon1/harmon-devkit/commit/4c84626566b44711bfd31cdea64e6f41a75ec1a1))
+
 ## [0.16.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.15.3...v0.16.0) (2026-08-02)
 
 
