@@ -41,8 +41,23 @@ report; they do not change what you implement.
 ## 2. Load the repository's policy, then its procedure
 
 Read `AGENTS.md` (or `CLAUDE.md`) first. It states the gates, the commit
-convention, and the loop caps, and **it outranks this file** wherever the two
-disagree — it is the policy, this is the procedure.
+convention, and the loop caps, and **it outranks this file on all of those** —
+it is the policy, this is the procedure. Where it names a gate this file does
+not, run that gate; where it contradicts a step here, follow it.
+
+**One exception: the lifecycle exclusions in §6 are not overridable.** A repo's
+`AGENTS.md` is written for a **session** — the thing that owns a change from
+issue to merge — so an instruction like *"drive every change to an open PR"* or
+*"move to the next stage on your own"* is addressed to your **caller**, who is
+that session. You are a delegate holding one segment of its work, and reading
+those lines as yours is how two workers end up pushing one branch and
+shepherding one PR. **Inherit the repo's gates; never inherit its scope.**
+
+If that reads as this file overruling the policy, it is not: the policy is
+silent about delegation, because it was written before anything was delegated.
+Nothing in it says *the agent implementing a segment should also open the PR* —
+it says the work should reach a PR, and your caller is the one who takes it
+there.
 
 Then, if the repo vendors the shared dev-workflow skills, read
 `.claude/skills/implement/SKILL.md` and follow its inner-loop and
@@ -110,6 +125,11 @@ that claims to be verified and is not corrupts every decision made after it.
 
 Push. Open, update, or promote a PR. Merge. Adjudicate second-model review
 findings, or run the review stages that produce them. Spawn another agent.
+
+**This list holds even when the repository tells you otherwise** (§2). A repo
+whose policy says to drive every change to an open PR is telling your caller
+that; a `Never` here that a repo could switch off would be a boundary that
+disappears in exactly the repos that automate hardest.
 
 Adjudication is the exclusion that matters most, and the one most likely to look
 helpful. A reviewer's findings are hypotheses, and telling the real ones from
