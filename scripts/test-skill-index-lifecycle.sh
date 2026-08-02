@@ -17,13 +17,14 @@ FILES=(
 )
 
 # Patterns that should not appear in skill/workflow descriptions.
-# Each is a grep -iE regex.
+# Each is a grep -iE regex.  We avoid GNU-only \b; instead we use
+# literal context or POSIX character classes for word separation.
 REJECTED=(
-    'green \bPR\b'
-    '\bPR\b.* to green|to green.*\bPR\b'
+    'green PR'
+    ' PR .* to green| PR to green|to green.* PR |to green.* PR$'
     '→ green'
-    '\bnot green\b'
-    '\bchecks green\b'
+    '(^|[^[:alnum:]_])not green([^[:alnum:]_]|$)'
+    '(^|[^[:alnum:]_])checks green([^[:alnum:]_]|$)'
 )
 
 fail=0
