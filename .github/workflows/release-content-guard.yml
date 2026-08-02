@@ -3,10 +3,10 @@ run-name: release-content-guard checking the PR title
 
 # Squash-merge uses the PR title as the commit subject, and release-please only
 # tags feat/fix/breaking — so a chore/docs title on a change to release-worthy
-# content (ai/skills templates scripts) would merge WITHOUT cutting a release,
-# and tag-pinned consumers would never receive it. This guard fails such a PR at
-# review time. `edited` re-runs it when the title changes, so retitling clears
-# the check. See docs/conventions.md.
+# content (ai/skills ai/agents templates scripts) would merge WITHOUT cutting a
+# release, and tag-pinned consumers would never receive it. This guard fails
+# such a PR at review time. `edited` re-runs it when the title changes, so
+# retitling clears the check. See docs/conventions.md.
 
 on:
   pull_request:

@@ -68,13 +68,16 @@ you are — or if the check cannot answer:
 
 ```sh
 default="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
-[ -n "$default" ] && [ "$(git branch --show-current)" != "$default" ]
+current="$(git branch --show-current)"
+[ -n "$default" ] && [ -n "$current" ] && [ "$current" != "$default" ]
 ```
 
-Non-zero means stop and report. The default branch is **resolved, not assumed
-to be `main`**, and an unresolvable one is reported rather than guessed past —
-guessing `main` in a repo whose default is something else passes the check
-exactly when it should fail.
+Non-zero means stop and report. Both emptiness tests are load-bearing. The
+default branch is **resolved, not assumed to be `main`** — guessing `main` in a
+repo whose default is something else passes the check exactly when it should
+fail. And an empty `current` means **detached HEAD**, where committing strands
+the work on no branch at all; comparing it to a branch name would quietly
+succeed, since no name equals the empty string.
 
 Branch creation is the caller's, not yours: where a repo records the branch in
 an issue claim, a branch you invent silently invalidates that record.

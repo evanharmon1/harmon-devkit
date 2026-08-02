@@ -140,6 +140,35 @@ newrepo "$R11"
 expect_fail_contains "unclosed frontmatter fails" "$R11" \
     "frontmatter block is never closed"
 
+# A Claude-specific frontmatter key breaks the portability contract.
+R12="$TMPROOT/extra-key"
+newrepo "$R12"
+{
+    echo "---"
+    echo "name: hotel"
+    echo "description: An agent carrying non-portable metadata."
+    echo "tools: Bash, Read"
+    echo "model: opus"
+    echo "---"
+    echo "# hotel"
+} >"$R12/ai/agents/hotel.md"
+expect_fail_contains "a 'tools:' frontmatter key fails" "$R12" \
+    "frontmatter key 'tools' breaks the portability contract"
+
+# A folded description's indented continuation lines are values, not keys.
+R13="$TMPROOT/folded-desc"
+newrepo "$R13"
+{
+    echo "---"
+    echo "name: india"
+    echo "description: >-"
+    echo "  A folded description whose continuation lines are indented."
+    echo "  tools: this line is prose inside the value, not a key."
+    echo "---"
+    echo "# india"
+} >"$R13/ai/agents/india.md"
+expect_ok "a folded description's continuation lines are not read as keys" "$R13"
+
 # An agent whose name collides with a skill name fails.
 R7="$TMPROOT/collision"
 newrepo "$R7"

@@ -8,6 +8,9 @@
 #      `name:` and `description:` keys.
 #   2. The frontmatter `name:` matches the filename (minus `.md`).
 #   3. No agent name collides with a skill directory name under `ai/skills/`.
+#   4. Frontmatter carries `name` and `description` and nothing else — the
+#      portability contract in ai/agents/README.md, which is otherwise a rule
+#      with nothing checking it.
 #
 # (3) is the rule with no skills-side equivalent. Agents and skills land in
 # sibling destinations (`.claude/agents/` vs `.claude/skills/`), so a shared
@@ -74,6 +77,21 @@ frontmatter_is_closed() {
         NR == 1 && $0 != "---" { exit }
         $0 == "---" { fence++ }
         END { exit (fence >= 2 ? 0 : 1) }
+    ' "$1"
+}
+
+# Print the top-level keys of the leading frontmatter block, one per line.
+# Column-anchored, so the indented continuation lines of a folded scalar
+# (`description: >-`) are values, not keys.
+frontmatter_keys() {
+    awk '
+        NR == 1 && $0 != "---" { exit }
+        fence >= 2 { next }
+        $0 == "---" { fence++; next }
+        fence == 1 && /^[A-Za-z_][A-Za-z0-9_-]*:/ {
+            sub(/:.*/, "")
+            print
+        }
     ' "$1"
 }
 
@@ -166,6 +184,24 @@ while IFS= read -r md; do
     if ! frontmatter_has_description "$md"; then
         err "$md: frontmatter is missing a 'description:' field"
     fi
+
+    # --- portability: no keys beyond name/description --------------------
+    # ai/agents/README.md states the contract; without this it is aspirational,
+    # and `tools:`/`model:`/`color:` would ship to every consumer as a decision
+    # the calling session can no longer make. Adding a key later is meant to
+    # cost a deliberate edit here — that friction IS the portability review.
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        case "$key" in
+        name | description) ;;
+        *)
+            err "$md: frontmatter key '$key' breaks the portability contract"
+            err "  shared agents carry 'name' and 'description' only (see $AGENTS_ROOT/README.md)"
+            ;;
+        esac
+    done <<EOF
+$(frontmatter_keys "$md")
+EOF
 
     # --- no collision with a skill name ---------------------------------
     # Match on the filename, not the frontmatter: the two are required to agree
