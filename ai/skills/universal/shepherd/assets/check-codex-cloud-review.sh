@@ -10,7 +10,8 @@
 #   11 pending
 #   12 retry (attempt 1 timed out)
 #   13 escalate (attempt 2 timed out)
-#   2  indeterminate / malformed / changed head / usage error
+#   2  indeterminate — malformed, changed head, usage error, or a
+#      current-head verdict whose shape cannot be classified
 
 set -euo pipefail
 
@@ -506,20 +507,121 @@ check)
         exit 10
     fi
 
+    # Classifying a current-head result is three-way, not binary, because
+    # "I cannot tell" is a real answer and reporting it as `findings` is a lie
+    # that costs a clean PR its gate.
+    #
+    # The two Codex formats are structurally disjoint. A clean verdict is a
+    # top-level comment whose first line is "Codex Review: Didn't find any
+    # major issues." plus a praise clause. Findings are a review body opening
+    # "### Codex Review", and the findings themselves are INLINE comments
+    # carrying a P0/P1/P2 badge — which are rejected before this point. So the
+    # prefix is the real signal, and the trailing clause is decoration.
+    #
+    # Equality on the whole line was the original bug: Codex always appends
+    # praise, so it never matched and no PR could satisfy the gate. Screening
+    # the tail for "no colon, no digit" replaced it and was not a boundary
+    # either — it admitted "… issues. However a race remains". Narrowing to a
+    # short exclamation then rejected the real reply "… issues. Chef's kiss."
+    # Each rule traded one failure direction for the other because it was
+    # trying to read intent out of free text.
+    #
+    #   * does not open with the verdict sentence   -> findings
+    #   * carries a P0/P1/P2 marker anywhere        -> findings
+    #   * tail is empty or an OBSERVED praise string -> clean
+    #   * anything else                             -> INDETERMINATE
+    #
+    # The tail is matched against a literal list, not a shape. Every shape
+    # rule tried here admitted a negative qualifier of the same shape: "but a
+    # race remains." and "one concern." are as short and as alphabetic as
+    # "Chef's kiss.", so no pattern over characters can separate them. Only
+    # positive recognition can.
+    #
+    # An allowlist is normally the brittle choice, and it was: while the
+    # outcome was binary, an unlisted praise string had to be called
+    # `findings`, which jammed a clean PR's gate and asserted something false.
+    # The third branch is what makes it safe now — an unlisted tail is
+    # `indeterminate`, so the shepherd stops and a human either recognises new
+    # praise (add it below) or finds a real qualifier. The list is allowed to
+    # be incomplete; it is not allowed to be wrong.
+    #
+    # Add a string here only after seeing Codex actually emit it.
+    #
+    # The verdict LINE is not the whole story either: a concern parked further
+    # down the body carries no badge, so constraining only the first line let
+    # "…issues. Keep it up!\n\nHowever a race remains." read as clean.
+    # Everything after the verdict line must therefore be Codex's own metadata
+    # — the "Reviewed commit" line and its collapsed About block — and any
+    # other prose makes the result indeterminate.
+    #
+    # The About block is REMOVED rather than truncated at. Cutting the body at
+    # the first "<details" validated only the text before it, so a concern
+    # appended after the closing tag was invisible. An unterminated block does
+    # not match the removal and its contents then fail the check, which is the
+    # right direction.
+    #
+    # Removal is anchored on the block's SUMMARY, not on "<details" alone.
+    # Discarding any collapsed block would let a concern hide inside one. The
+    # summary is a stable identifier; the block's body is Codex's prose and is
+    # deliberately not asserted on, because a reworded boilerplate would then
+    # fail the gate on every PR. Residual, accepted knowingly: unbadged text
+    # inside the genuine About block passes. A BADGED finding does not —
+    # has_severity_marker scans the whole body, block included.
+    #
+    # And the metadata line is matched WHOLE. `startswith` on the label
+    # accepted "**Reviewed commit:** `sha` However a race remains.", which is
+    # the same trailing-text hole as the verdict line had, one line lower.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
-          def clean_result:
-            ((.body // "") | split("\n")[0] |
-              gsub("^[[:space:]]+|[[:space:]]+$"; "") |
-              ascii_downcase) ==
+          def clean_sentence:
             "codex review: didn\u0027t find any major issues.";
+          def body_text: (.body // "");
+          def first_line:
+            (body_text | split("\n")[0] |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
+          def verdict_tail:
+            (first_line | ltrimstr(clean_sentence) |
+              gsub("^[[:space:]]+|[[:space:]]+$"; ""));
+          def has_severity_marker:
+            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
+          def observed_praise: [
+            "keep it up!",
+            "nice work!",
+            "chef\u0027s kiss."
+          ];
+          # Everything after the verdict line must be Codex\u0027s own metadata:
+          # the "Reviewed commit" line and its collapsed About block. A concern
+          # parked on a later line carries no badge, so nothing else would
+          # catch it.
+          def rest_is_boilerplate:
+            (body_text | split("\n") | .[1:] | join("\n") |
+              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
+                   ""; "im") |
+              ascii_downcase | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              map(select(. != "")) |
+              all(test(
+                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
+              )));
+          def verdict_class:
+            # Bind the tail before the membership test: index/1 evaluates its
+            # argument with the ARRAY as input, so an inline verdict_tail
+            # would resolve .body against observed_praise and error.
+            verdict_tail as $tail |
+            if (first_line | startswith(clean_sentence) | not) then "findings"
+            elif has_severity_marker then "findings"
+            elif ($tail != "" and (observed_praise | index($tail) == null))
+            then "unrecognized"
+            elif (rest_is_boilerplate | not) then "unrecognized"
+            else "clean" end;
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head)
-          ) | if clean_result then "clean" else "findings" end
+          ) | verdict_class
           ] |
           if index("findings") then "findings"
+          elif index("unrecognized") then "unrecognized"
           elif index("clean") then "clean"
           else "none" end
         ' "$workdir/reviews.json")
@@ -527,15 +629,55 @@ check)
         emit findings "authenticated current-head review requires adjudication"
         exit 10
     fi
+    if [ "$review_result" = "unrecognized" ]; then
+        emit indeterminate "current-head review opens with the clean verdict but its trailing clause is unrecognized"
+        exit 2
+    fi
 
     comment_candidates="$workdir/comment-candidates.tsv"
     jq -r \
         --argjson id "$actor_id" '
-          def clean_result:
-            ((.body // "") | split("\n")[0] |
-              gsub("^[[:space:]]+|[[:space:]]+$"; "") |
-              ascii_downcase) ==
+          def clean_sentence:
             "codex review: didn\u0027t find any major issues.";
+          def body_text: (.body // "");
+          def first_line:
+            (body_text | split("\n")[0] |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
+          def verdict_tail:
+            (first_line | ltrimstr(clean_sentence) |
+              gsub("^[[:space:]]+|[[:space:]]+$"; ""));
+          def has_severity_marker:
+            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
+          def observed_praise: [
+            "keep it up!",
+            "nice work!",
+            "chef\u0027s kiss."
+          ];
+          # Everything after the verdict line must be Codex\u0027s own metadata:
+          # the "Reviewed commit" line and its collapsed About block. A concern
+          # parked on a later line carries no badge, so nothing else would
+          # catch it.
+          def rest_is_boilerplate:
+            (body_text | split("\n") | .[1:] | join("\n") |
+              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
+                   ""; "im") |
+              ascii_downcase | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              map(select(. != "")) |
+              all(test(
+                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
+              )));
+          def verdict_class:
+            # Bind the tail before the membership test: index/1 evaluates its
+            # argument with the ARRAY as input, so an inline verdict_tail
+            # would resolve .body against observed_praise and error.
+            verdict_tail as $tail |
+            if (first_line | startswith(clean_sentence) | not) then "findings"
+            elif has_severity_marker then "findings"
+            elif ($tail != "" and (observed_praise | index($tail) == null))
+            then "unrecognized"
+            elif (rest_is_boilerplate | not) then "unrecognized"
+            else "clean" end;
           .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(
@@ -545,7 +687,7 @@ check)
           select($prefix != "") |
           [
             $prefix,
-            (if clean_result then "clean" else "findings" end),
+            verdict_class,
             (.id | tostring)
           ] | @tsv
         ' "$workdir/comments.json" >"$comment_candidates"
@@ -576,6 +718,10 @@ check)
         }
         if [ "$classification" = "findings" ]; then
             comment_result=findings
+        elif [ "$classification" = "unrecognized" ]; then
+            # findings outranks unrecognized outranks clean, so a single
+            # unclassifiable verdict is never masked by a clean sibling.
+            [ "$comment_result" = "findings" ] || comment_result=unrecognized
         elif [ "$comment_result" = "none" ]; then
             comment_result=clean
         fi
@@ -585,6 +731,10 @@ check)
     if [ "$comment_result" = "findings" ]; then
         emit findings "authenticated current-head conversation finding requires adjudication"
         exit 10
+    fi
+    if [ "$comment_result" = "unrecognized" ]; then
+        emit indeterminate "current-head result opens with the clean verdict but its trailing clause is unrecognized"
+        exit 2
     fi
     if [ "$review_result" = "clean" ] || [ "$comment_result" = "clean" ]; then
         emit clean "authenticated bot posted a current-head clean result"

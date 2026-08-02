@@ -360,6 +360,18 @@ issue may be moved at all.
   Actor ambiguity, malformed or incomplete API data, a changed head, and an
   ambiguous commit prefix fail closed.
 
+  Classification is three-way, because "I cannot tell" is a real answer and
+  reporting it as a finding is a false statement about what the reviewer said.
+  A result that opens with the clean verdict sentence but carries a P0/P1/P2
+  marker is a **finding**; one whose trailing clause is empty or an *observed*
+  praise string is **clean**; anything else is **indeterminate** and escalates.
+  The trailing clause is matched against a literal list rather than a shape,
+  because no pattern over characters separates "Chef's kiss." from "but a race
+  remains." Being unlisted costs one escalation; being wrong would pass a PR
+  the reviewer flagged. When an escalation turns out to be genuinely new
+  praise, add the exact string to `observed_praise` in the helper and pin it
+  in `scripts/test-shepherd-codex.sh` — do not loosen the match.
+
   Persist each attempt under the git directory so branch switches and resumed
   sessions cannot duplicate it:
 

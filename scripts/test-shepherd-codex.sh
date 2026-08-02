@@ -184,6 +184,274 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 
+# Codex does not emit the bare sentence — it appends a praise clause, and the
+# clause varies. "Keep it up!" (#239), "Nice work!" (#225) and "Chef's kiss."
+# (#239, a later run) are all verbatim from this repo's own history. The
+# fixture above uses the bare form, so on its own it pinned a phrasing Codex
+# has never actually produced: the classifier compared for equality, every real
+# clean verdict fell through to "findings", and the cloud gate could not go
+# green for any PR.
+#
+# "Chef's kiss." is why the accepted shape is not just a short exclamation —
+# it carries an apostrophe and ends in a full stop. Pin the shapes that occur.
+for suffix in "Keep it up!" "Nice work!" "Chef's kiss."; do
+    echo "==> a clean verdict with the trailing '${suffix}' is still clean"
+    new_cycle
+    prefix="${head_sha:0:10}"
+    jq -cn \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" \
+        --arg prefix "$prefix" \
+        --arg suffix "$suffix" \
+        '[[],[
+      {
+        id:78,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. " + $suffix +
+          "\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+    run_check '2026-07-31T08:01:00Z'
+    assert_status 0 clean
+done
+
+echo "==> an UNOBSERVED praise phrasing escalates rather than passing"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues. Great job everyone!"
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+# Deliberately NOT clean. No pattern over characters separates "Great job
+# everyone!" from "but a race remains." — both are short and alphabetic — so
+# the tail is matched against observed strings only, and anything else asks a
+# human. Being unlisted costs one escalation; being wrong costs a false green.
+assert_status 2 indeterminate
+
+echo "==> a clean-shaped review body with a praise clause is clean"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:101,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues. Keep it up!"
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+# The trailing clause is recognised by PRAISE STRUCTURE, not merely screened
+# for suspicious characters: a short all-alphabetic exclamation. A character
+# blacklist (no colon, no digit) let "However a race remains" through — a
+# qualifier that smuggles a finding onto the clean sentence's own line, which
+# would promote a PR Codex actually flagged. Anything unrecognised fails
+# closed into `findings`, costing an escalation rather than a false green.
+# A severity marker anywhere in the body is a finding outright, whatever the
+# verdict line says.
+for tail in "P1: the retry path is unguarded" "P0: data loss on rollback"; do
+    echo "==> a verdict line carrying '${tail}' is a finding"
+    new_cycle
+    jq -cn \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" \
+        --arg head "$head_sha" \
+        --arg tail "$tail" \
+        '[[
+      {
+        id:103,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("Codex Review: Didn\u0027t find any major issues. " + $tail)
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+    run_check '2026-07-31T08:01:00Z'
+    assert_status 10 findings
+done
+
+# Everything else that opens with the verdict but does not read as praise is
+# INDETERMINATE, not `findings`. Reporting "Codex found something" about a
+# verdict that says the opposite is a lie, and it is the lie that cost a clean
+# PR its gate when the rule was a praise-shape whitelist. Escalating instead
+# puts a human on the one case a pattern cannot settle — and it keeps a
+# qualifier smuggled onto the verdict line from passing as clean.
+for tail in "However a race remains" "However a race remains." \
+    "but see the note below" "See item 3" "However, 2 concerns:" \
+    "an unusually long and effusive compliment" \
+    "but a race remains." "one concern."; do
+    echo "==> a verdict line trailed by '${tail}' is indeterminate, not clean"
+    new_cycle
+    jq -cn \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" \
+        --arg head "$head_sha" \
+        --arg tail "$tail" \
+        '[[
+      {
+        id:105,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("Codex Review: Didn\u0027t find any major issues. " + $tail)
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+    run_check '2026-07-31T08:01:00Z'
+    assert_status 2 indeterminate
+done
+
+echo "==> a concern parked on a LATER line is not clean"
+# The verdict line can be allowlisted praise while a warning sits further down,
+# where no badge marks it. Only the first line was ever constrained, so nothing
+# else would catch this.
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:106,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "However a race remains.\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> a concern appended AFTER the About block is not clean"
+# Cutting the body at the first "<details" validates only what precedes it, so
+# anything after the closing tag was invisible.
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:108,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "**Reviewed commit:** `" + $prefix + "`\n\n" +
+          "<details> <summary>About Codex in GitHub</summary>\nblah\n</details>\n\n" +
+          "However a race remains.")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> a concern appended to the Reviewed commit LINE is not clean"
+# startswith on the label accepted trailing text — the same hole the verdict
+# line had, one line lower.
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:110,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "**Reviewed commit:** `" + $prefix + "` However a race remains.")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> a concern hidden in a NON-About collapsed block is not clean"
+# Removal is anchored on the summary, so an arbitrary <details> is not a
+# hiding place.
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:111,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "**Reviewed commit:** `" + $prefix + "`\n\n" +
+          "<details><summary>Notes</summary>\nHowever a race remains.\n</details>")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> an unterminated About block fails closed"
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:109,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "**Reviewed commit:** `" + $prefix + "`\n\n" +
+          "<details> never closed\nHowever a race remains.")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> the real clean layout — verdict, Reviewed commit, About block — is clean"
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:107,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "**Reviewed commit:** `" + $prefix + "`\n\n" +
+          "<details> <summary>About Codex in GitHub</summary>\n" +
+          "Reviews are triggered when you open a pull request.\n</details>")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> a finding whose body merely CONTAINS the verdict is still a finding"
+# The guard on prefix matching: the sentence has to START the line. Without
+# this, relaxing equality to a prefix could be relaxed further by accident.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:102,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"Unlike the clean case, Codex Review: Didn\u0027t find any major issues. is quoted here as P1 evidence."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
 echo "==> exact-head evidence remains valid after local state loss"
 new_cycle
 prefix="${head_sha:0:10}"
