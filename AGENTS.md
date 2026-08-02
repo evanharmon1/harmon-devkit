@@ -36,13 +36,16 @@ One of five repos in **harmon-platform** (Evan's developer & DevOps platform + h
 - `scripts/` — standalone scripts and utilities: `appleScripts/`
   (AppleScript/Automator apps), plus the harmon-init helper scripts
   (`status.sh`, `lint-hygiene.sh`, `test-*.sh`, …) that back the Taskfile.
-- `ai/` — AI assets by type: `skills/`, `prompts/`, `agents/`, `rules/`,
+- `ai/` — AI assets by type: `skills/`, `agents/`, `prompts/`, `rules/`,
   `evals/`, `tools/`, `workflows/`, `mcp/`, `knowledge/`, `memories/`. `skills/`
   is the populated one (Agent Skills convention — a `SKILL.md` with
   `name`/`description` frontmatter); the standouts are `repo/standardize-repo`
   (applies harmon-init's conventions to a repo), the `design/` suite, and the
   `universal/` dev-workflow session suite (`/orient`, `/preflight`,
-  `/implement`, `/shepherd`, `/retro`, `/close`).
+  `/implement`, `/shepherd`, `/retro`, `/close`). `agents/` holds shared
+  subagents — one flat `<name>.md` each, thin by design and deferring to the
+  skills above; see [ai/agents/README.md](ai/agents/README.md) for the layout
+  and the portability contract.
 - `snippets/` — small reusable code snippets (placeholder).
 - `docs/` — project docs (see [docs/README.md](docs/README.md)); the
   new-project [checklist](docs/CHECKLIST.md) lives here.
@@ -238,8 +241,8 @@ something to ask permission for.
 - Releases are intentional: release-please keeps a rolling release PR from
   conventional commits; merging it cuts the tag/release. Nothing bumps on a
   normal merge. `task release:*` remains as a manual override.
-- **A PR that changes `ai/skills templates scripts` must use a `fix:`/`feat:`
-  (or breaking) PR title.** Squash-merge feeds the PR title to release-please,
+- **A PR that changes `ai/skills ai/agents templates scripts` must use a
+  `fix:`/`feat:` (or breaking) PR title.** Squash-merge feeds the PR title to release-please,
   which tags only feat/fix/breaking — so a `chore:`/`docs:` title over these
   paths would merge without cutting a release, and consumers pinning a released
   tag would never receive the change. The `release-content-guard.yml` check

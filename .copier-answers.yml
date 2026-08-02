@@ -20,7 +20,7 @@ project_management: none
 project_name: Harmon DevKit
 project_slug: harmon-devkit
 project_type: general
-release_content_paths: ai/skills templates scripts
+release_content_paths: ai/skills ai/agents templates scripts
 run_task_install: false
 snyk_scan_schedule: 'off'
 use_alternative_claude_providers: false

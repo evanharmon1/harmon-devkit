@@ -32,6 +32,12 @@ pre-commit:
       # glob only gates WHEN it runs, so it stays off the hot path for other edits.
       glob: "ai/skills/**"
       run: task validate:skills
+    agents:
+      # Same whole-tree shape as the skills guard. It also reads ai/skills/ (an
+      # agent name may not collide with a skill name), so an edit on EITHER side
+      # can introduce the collision — hence both globs.
+      glob: "ai/{agents,skills}/**"
+      run: task validate:agents
 
 commit-msg:
   commands:

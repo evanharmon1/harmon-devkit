@@ -57,7 +57,7 @@ See [`templates/README.md`](./templates/README.md) for conventions and per-categ
 
 ## AI Assets
 
-`ai/` collects reusable AI assets organized by type — `skills/`, `prompts/`, `agents/`, `rules/`, `evals/`, `tools/`, `workflows/`, `mcp/`, `knowledge/`, and `memories/`. Most are placeholders for now; the populated area is **skills**, which follow the Agent Skills convention (a `SKILL.md` with `name`/`description` frontmatter).
+`ai/` collects reusable AI assets organized by type — `skills/`, `agents/`, `prompts/`, `rules/`, `evals/`, `tools/`, `workflows/`, `mcp/`, `knowledge/`, and `memories/`. Most are placeholders for now; the populated areas are **skills** (the Agent Skills convention — a `SKILL.md` with `name`/`description` frontmatter) and **agents** (shared subagents, one flat `<name>.md` each).
 
 Skills are grouped into **category subdirectories** (`universal/`, `backend/`, `frontend/`, `infra/`, `mobile/`, `repo/`) so consumer repos can vendor a selected subset via the [`skills-sync`](./templates/skills-sync/) template. Skill directory names must be **unique across categories** (they are flattened on vendor) — [`ai/skills/README.md`](./ai/skills/README.md) documents the layout, the constraint, and how to add a skill.
 
@@ -74,6 +74,12 @@ Skills are grouped into **category subdirectories** (`universal/`, `backend/`, `
 | [`universal/close`](./ai/skills/universal/close/)                             | Ready       | `/close` — close-of-session ritual: wrap up dangling work and emit the `/rename done-<name>` command                                                                                                                                                                      |
 | [`universal/shepherd`](./ai/skills/universal/shepherd/)                       | Ready       | `/shepherd` — drive an open PR to green: watch CI and bot/human reviews, adjudicate findings as hypotheses, fix confirmed ones with per-thread replies, push, re-watch (max 5 rounds, or the repo's own cap; never merges)                                                                        |
 | [`universal/track-work`](./ai/skills/universal/track-work/)                   | Ready       | GitHub issue/PR tracking hygiene — fires automatically when writing a PR body that closes an issue, filing a follow-up, citing an issue, or closing one. Ships executable checks (`Closes` vs `Refs`, unticked items, perishable claims) that CI runs too, plus a narrowed ticking command for criteria you verify as you work |
+
+Agents are a flat directory — one `<name>.md` per subagent, no categories yet. They are deliberately **thin**: an agent is a delegated context, a skill is procedure, and the agents here point at skills rather than restating them. [`ai/agents/README.md`](./ai/agents/README.md) documents the layout, the portability contract (Claude's format, minus the parts that would strand them in another harness), and the guard.
+
+| Agent | Status | Description |
+| --- | --- | --- |
+| [`implementer`](./ai/agents/implementer.md) | Ready | Implements a written plan — or a review finding the caller has already confirmed — in a fresh context, and returns a verified change plus a report. Refuses a brief that isn't self-contained. Never branches, adjudicates review findings, pushes, opens PRs, or merges |
 
 ## Inspired by Other Boilerplate Repos
 
