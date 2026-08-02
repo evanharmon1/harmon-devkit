@@ -310,6 +310,47 @@ for tail in "However a race remains" "However a race remains." \
     assert_status 2 indeterminate
 done
 
+echo "==> a concern parked on a LATER line is not clean"
+# The verdict line can be allowlisted praise while a warning sits further down,
+# where no badge marks it. Only the first line was ever constrained, so nothing
+# else would catch this.
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:106,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "However a race remains.\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> the real clean layout — verdict, Reviewed commit, About block — is clean"
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:107,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "**Reviewed commit:** `" + $prefix + "`\n\n" +
+          "<details> <summary>About Codex in GitHub</summary>\n" +
+          "Reviews are triggered when you open a pull request.\n</details>")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
 echo "==> a finding whose body merely CONTAINS the verdict is still a finding"
 # The guard on prefix matching: the sentence has to START the line. Without
 # this, relaxing equality to a prefix could be relaxed further by accident.

@@ -546,6 +546,13 @@ check)
     # be incomplete; it is not allowed to be wrong.
     #
     # Add a string here only after seeing Codex actually emit it.
+    #
+    # The verdict LINE is not the whole story either: a concern parked further
+    # down the body carries no badge, so constraining only the first line let
+    # "…issues. Keep it up!\n\nHowever a race remains." read as clean.
+    # Everything after the verdict line must therefore be Codex's own metadata
+    # — the "Reviewed commit" line and its collapsed About block — and any
+    # other prose makes the result indeterminate.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
@@ -565,6 +572,16 @@ check)
             "nice work!",
             "chef\u0027s kiss."
           ];
+          # Everything after the verdict line must be Codex\u0027s own metadata:
+          # the "Reviewed commit" line and its collapsed About block. A concern
+          # parked on a later line carries no badge, so nothing else would
+          # catch it.
+          def rest_is_boilerplate:
+            (body_text | split("\n") | .[1:] | join("\n") |
+              (split("<details")[0] // "") | ascii_downcase | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              map(select(. != "")) |
+              all(startswith("**reviewed commit:**")));
           def verdict_class:
             # Bind the tail before the membership test: index/1 evaluates its
             # argument with the ARRAY as input, so an inline verdict_tail
@@ -572,9 +589,10 @@ check)
             verdict_tail as $tail |
             if (first_line | startswith(clean_sentence) | not) then "findings"
             elif has_severity_marker then "findings"
-            elif ($tail == "" or (observed_praise | index($tail) != null))
-            then "clean"
-            else "unrecognized" end;
+            elif ($tail != "" and (observed_praise | index($tail) == null))
+            then "unrecognized"
+            elif (rest_is_boilerplate | not) then "unrecognized"
+            else "clean" end;
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head)
@@ -613,6 +631,16 @@ check)
             "nice work!",
             "chef\u0027s kiss."
           ];
+          # Everything after the verdict line must be Codex\u0027s own metadata:
+          # the "Reviewed commit" line and its collapsed About block. A concern
+          # parked on a later line carries no badge, so nothing else would
+          # catch it.
+          def rest_is_boilerplate:
+            (body_text | split("\n") | .[1:] | join("\n") |
+              (split("<details")[0] // "") | ascii_downcase | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              map(select(. != "")) |
+              all(startswith("**reviewed commit:**")));
           def verdict_class:
             # Bind the tail before the membership test: index/1 evaluates its
             # argument with the ARRAY as input, so an inline verdict_tail
@@ -620,9 +648,10 @@ check)
             verdict_tail as $tail |
             if (first_line | startswith(clean_sentence) | not) then "findings"
             elif has_severity_marker then "findings"
-            elif ($tail == "" or (observed_praise | index($tail) != null))
-            then "clean"
-            else "unrecognized" end;
+            elif ($tail != "" and (observed_praise | index($tail) == null))
+            then "unrecognized"
+            elif (rest_is_boilerplate | not) then "unrecognized"
+            else "clean" end;
           .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(
