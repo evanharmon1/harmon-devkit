@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.16.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.15.3...v0.16.0) (2026-08-02)
+
+
+### Features
+
+* cap the Codex review loops at 4 rounds each ([#247](https://github.com/evanharmon1/harmon-devkit/issues/247)) ([252ca33](https://github.com/evanharmon1/harmon-devkit/commit/252ca33853874135056bf45671d3b45e17863e25))
+
 ## [0.15.3](https://github.com/evanharmon1/harmon-devkit/compare/v0.15.2...v0.15.3) (2026-08-02)
 
 
