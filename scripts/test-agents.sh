@@ -208,6 +208,41 @@ newrepo "$R19"
 expect_fail_contains "an empty block-scalar description fails" "$R19" \
     "missing a 'description:' field"
 
+# Literal null/empty spellings are rejected — they look like a value but YAML
+# resolves them to null or an empty string, leaving nothing to select the agent
+# on. Loop over the forms a human might plausibly type when stubbing a file.
+nulli=0
+for spelling in "null" "Null" "NULL" "~" '""' "''" "[]" "{}"; do
+    # Index the directory rather than deriving it from the spelling — several of
+    # these reduce to the same slug, and a reused repo would silently retest the
+    # previous case instead of this one.
+    nulli=$((nulli + 1))
+    RN="$TMPROOT/null-desc-$nulli"
+    newrepo "$RN"
+    {
+        echo "---"
+        echo "name: romeo"
+        echo "description: $spelling"
+        echo "---"
+        echo "# romeo"
+    } >"$RN/ai/agents/romeo.md"
+    expect_fail_contains "description: $spelling is rejected" "$RN" \
+        "missing a 'description:' field"
+done
+
+# A description that merely CONTAINS a null-ish word is still a real value.
+R20="$TMPROOT/null-substring"
+newrepo "$R20"
+mkagent "$R20" sierra
+{
+    echo "---"
+    echo "name: sierra"
+    echo "description: Handles null pointers and empty results."
+    echo "---"
+    echo "# sierra"
+} >"$R20/ai/agents/sierra.md"
+expect_ok "a description containing the word 'null' passes" "$R20"
+
 # A Claude-specific frontmatter key breaks the portability contract.
 R12="$TMPROOT/extra-key"
 newrepo "$R12"

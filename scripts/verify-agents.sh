@@ -106,6 +106,13 @@ frontmatter_keys() {
 # matters below: the block/bare rules must precede the inline rule, which would
 # otherwise match the `>` itself as a value.
 #
+# The scope here is deliberately "did the author leave it blank", NOT "does this
+# resolve to a non-empty string" — that second question is YAML type resolution,
+# and answering it in awk costs more than the rule protects. The literal null
+# spellings are rejected because a stubbed-out `description: null` is a
+# plausible slip; a sequence or a nested mapping under `description:` is not a
+# slip, it is a deliberate act visible in review. See the PR #253 thread.
+#
 # Note: awk `exit` runs the END rule, so route every path through END (a bare
 # `exit 0` here would be overridden by `END { exit 1 }`).
 frontmatter_has_description() {
@@ -114,9 +121,24 @@ frontmatter_has_description() {
         fence >= 2 { next }
         $0 == "---" { fence++; next }
         fence != 1 { next }
-        /^description:[[:space:]]*$/            { pending = 1; next }  # bare: value may follow, indented
-        /^description:[[:space:]]*[|>]/         { pending = 1; next }  # block scalar
-        /^description:[[:space:]]*[^[:space:]]/ { found = 1; next }    # inline value
+        /^description:[[:space:]]*$/    { pending = 1; next }  # bare: value may follow, indented
+        /^description:[[:space:]]*[|>]/ { pending = 1; next }  # block scalar
+        /^description:[[:space:]]*[^[:space:]]/ {              # inline value
+            val = $0
+            sub(/^description:[[:space:]]*/, "", val)
+            sub(/[[:space:]]+$/, "", val)
+            # Spellings that LOOK like a value but resolve to null or empty.
+            # Compared as strings, not matched as a regex: `[]`/`{}` would need
+            # escaping that mawk and gawk disagree about (see issue #246).
+            # The apostrophe pair is \047\047, not '' — this awk program is
+            # single-quoted by the shell, so a literal '' closes and reopens the
+            # quote and the comparison silently becomes `val == ""`, which no
+            # inline value ever equals. Caught by the test below, not by review.
+            if (val == "null" || val == "Null" || val == "NULL" || val == "~" ||
+                val == "\"\"" || val == "\047\047" || val == "[]" || val == "{}") next
+            found = 1
+            next
+        }
         pending && /^[[:space:]]+[^[:space:]]/  { found = 1; pending = 0; next }
         pending && /^[^[:space:]]/              { pending = 0 }        # next key ended it, still empty
         END { exit (found ? 0 : 1) }
