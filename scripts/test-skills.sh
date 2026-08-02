@@ -610,6 +610,55 @@ write_agents_manifest_at "$CH" v0.1.0-agents "[ag-one]" "/etc/agents"
 expect_fail "agents: bad dest aborts the whole sync" run_sync_at "$CH" sync
 expect_ok "aborted sync left the skills pass untouched" test -f "$CH/vendored/skills/uni-one/SKILL.md"
 
+# --- a malformed agents.names must never resolve to "vendor nothing" ------
+# `yq '.agents.names[]'` exits 0 and prints nothing for a missing key or a
+# scalar, so `names: "*"` (the natural mis-spelling of `["*"]`) would otherwise
+# delete every managed agent, write an empty stamp, and exit 0 — with verify
+# agreeing afterwards, because empty really is in sync with empty.
+CM="$TMPROOT/consumer-agents-malformed"
+mkdir -p "$CM"
+write_agents_manifest_at "$CM" v0.1.0-agents '["*"]'
+run_sync_at "$CM" sync >/dev/null
+expect_ok "malformed guard: agents vendored to begin with" test -f "$CM/vendored/agents/ag-one.md"
+
+write_bad_names() {
+    {
+        echo "source:"
+        echo "  repo: file://$SRC"
+        echo "  ref: v0.1.0-agents"
+        echo "categories:"
+        echo "  - universal"
+        echo "dest: vendored/skills"
+        echo "agents:"
+        [ -n "$1" ] && echo "  names: $1"
+        echo "  dest: vendored/agents"
+    } >"$CM/.skills-sync.yaml"
+}
+
+write_bad_names '"*"'
+expect_fail_contains "scalar agents.names is refused" "must be a list" run_sync_at "$CM" sync
+expect_ok "refused scalar left the agents intact" test -f "$CM/vendored/agents/ag-one.md"
+
+write_bad_names '{a: b}'
+expect_fail_contains "mapping agents.names is refused" "must be a list" run_sync_at "$CM" sync
+expect_ok "refused mapping left the agents intact" test -f "$CM/vendored/agents/ag-two.md"
+
+write_bad_names ""
+expect_fail_contains "missing agents.names is refused" "agents.names is required" run_sync_at "$CM" sync
+expect_ok "refused missing-names left the agents intact" test -f "$CM/vendored/agents/ag-one.md"
+
+write_bad_names '"*"'
+expect_fail_contains "verify also refuses a malformed agents.names" "must be a list" \
+    run_sync_at "$CM" verify
+
+# An EXPLICIT empty list is unambiguous intent and still works — it vendors
+# nothing, exactly as an empty categories list vendors no skills.
+write_bad_names "[]"
+expect_ok "explicit empty agents.names is allowed" run_sync_at "$CM" sync
+expect_ok "explicit empty list vendored no agents" test ! -e "$CM/vendored/agents/ag-one.md"
+expect_ok "explicit empty list still stamped provenance" test -f "$CM/vendored/agents/.AGENTS_PROVENANCE"
+expect_ok "explicit empty list verifies" run_sync_at "$CM" verify
+
 # --- adding an agents block without syncing is DRIFT, not a fresh scaffold --
 # The skills stamp proves this repo has run a sync, so a missing agents stamp
 # means the block was added and never applied. Skipping here would let agent

@@ -98,8 +98,13 @@ Three things are specific to agents:
    ```sh
    task sync:skills
    git add .skills-sync.yaml .claude/skills scripts/sync-skills.sh
+   git add .claude/agents # only if your manifest has an `agents:` block
    git commit -m "chore: vendor shared agent skills from harmon-devkit"
    ```
+
+   Stage the agents dest too, or the committed manifest requests agents that no
+   commit contains — and the drift check fails on the next clone or CI run,
+   correctly, for a reason that looks nothing like "you forgot to `git add`".
 
 Requires `yq` ([mikefarah/yq](https://github.com/mikefarah/yq)) and `git` on `PATH`. Step 1 also uses `gh` to resolve the newest release; without it, open the [releases page](https://github.com/evanharmon1/harmon-devkit/releases/latest) and substitute the tag by hand — just don't reuse your manifest `ref` for it, which is the mistake the warning above describes.
 

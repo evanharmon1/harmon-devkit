@@ -213,6 +213,36 @@ EOF
     return 0
 }
 
+# assert_agents_names — require `.agents.names` to be a YAML SEQUENCE.
+#
+# This is a data-loss guard, not a tidiness check. `yq '.agents.names[]'` exits
+# 0 and prints NOTHING when the key is missing or holds a scalar — so
+# `names: "*"`, the natural mis-spelling of `names: ["*"]`, would resolve the
+# incoming set to empty, and the pass would then delete every agent it manages,
+# write an empty `# managed:` stamp, and exit 0. `verify` would agree
+# afterwards, because an empty managed set really is in sync with an empty
+# incoming set. The typo destroys the vendored agents and every check reports
+# success.
+#
+# A mapping is refused for the same reason it is dangerous: `[]` over a mapping
+# iterates its VALUES, so `names: {a: b}` silently means `[b]`.
+#
+# An explicit empty sequence is allowed — `names: []` is an unambiguous "vendor
+# no agents", the same way an empty `categories` list vendors no skills. What is
+# refused is a shape that *reads* as a request and *resolves* as nothing.
+assert_agents_names() {
+    _aan_type="$(manifest_get '.agents.names | type')"
+    case "$_aan_type" in
+    '!!seq') return 0 ;;
+    '!!null')
+        die "manifest: agents.names is required when an 'agents:' block is present (use [] to vendor none)"
+        ;;
+    *)
+        die "manifest: agents.names must be a list, got $_aan_type — write names: [\"*\"], not names: \"*\""
+        ;;
+    esac
+}
+
 # vendor_agents CLONE NAMES OUTDIR — materialise the named agents (newline
 # list, or the single entry `*` meaning every agent at the pin) from CLONE,
 # flat, into OUTDIR.
@@ -315,6 +345,7 @@ agents_dest() {
 agents_preflight() {
     _AGP_DEST="$(agents_dest)"
     _AGP_PROV="$_AGP_DEST/.AGENTS_PROVENANCE"
+    assert_agents_names
     vendor_agents "$1" "$(manifest_get '.agents.names[]')" "$WORKDIR/vendor-agents"
     _AGP_INCOMING="$(list_agent_names "$WORKDIR/vendor-agents")"
     _AGP_MANAGED="$(agents_managed_names "$_AGP_PROV")"
@@ -461,6 +492,7 @@ verify_agents_pass() {
     [ "$_vap_pinned" = "$_vap_ref" ] ||
         die "vendored agents ref ($_vap_pinned) != manifest ref ($_vap_ref) — run 'task sync:skills' and commit"
 
+    assert_agents_names
     vendor_agents "$1" "$(manifest_get '.agents.names[]')" "$WORKDIR/vendor-agents"
     _vap_incoming="$(list_agent_names "$WORKDIR/vendor-agents")"
     _vap_managed="$(agents_managed_names "$_vap_prov")"
