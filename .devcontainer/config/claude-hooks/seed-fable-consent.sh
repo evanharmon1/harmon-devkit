@@ -94,13 +94,10 @@ fi
 # performing the identical write, so skipping is correct rather than merely
 # safe.
 #
-# What this does NOT do — and cannot — is serialize against Claude Code itself,
-# which rewrites ~/.claude.json from its own in-memory state without taking any
-# lock. A CLI write landing between the read and the rename below is still
-# lost. Two things bound that: the rename is atomic, so the file is never torn
-# — the failure mode is a lost update, never corruption — and postStart runs
-# this while no CLI is live, which re-applies the record on the next container
-# start. The residual window is one session's worth of consent, self-healing.
+# It does NOT serialize against Claude Code itself, which rewrites
+# ~/.claude.json from its own in-memory state without taking any lock. That is
+# handled below instead, by comparing the file's signature before and after the
+# read and abandoning the write if it moved.
 if command -v flock >/dev/null 2>&1; then
     exec 9>"${CLAUDE_JSON}.fable-consent.lock" 2>/dev/null || exit 0
     flock -w 5 9 2>/dev/null || exit 0
@@ -115,12 +112,30 @@ fi
 # atomicity the paragraph above relies on. Same directory keeps it a rename.
 consent_tmp="$(mktemp "${CLAUDE_JSON}.XXXXXX")" || exit 0
 trap 'rm -f "$consent_tmp"' EXIT
+
+# Compare-and-swap on mtime+size. flock only orders seeders against each other;
+# Claude Code takes no lock, so a live session rewriting .claude.json between
+# the read below and the rename would be clobbered by this stale whole-file
+# snapshot — losing OAuth or settings updates that have nothing to do with
+# Fable. Re-stat immediately before the rename and abandon the write if the
+# file moved. Abandoning is free: this runs before every launch, so the next
+# one retries. Nanosecond mtime keeps same-second writes distinguishable.
+stat_sig() { stat -c '%y %s' "$1" 2>/dev/null || echo unavailable; }
+before_sig="$(stat_sig "$CLAUDE_JSON")"
+
 if jq --arg k "$consent_key" \
     '.fableOverageConsentV2 = ((.fableOverageConsentV2 // {}) | .[$k] = true)' \
     "$CLAUDE_JSON" >"$consent_tmp"; then
-    mv "$consent_tmp" "$CLAUDE_JSON"
-    [ -n "$verbose" ] &&
-        echo "==> Recorded Fable 5 usage-credit consent for the signed-in account"
+    after_sig="$(stat_sig "$CLAUDE_JSON")"
+    if [ "$before_sig" = "unavailable" ] || [ "$before_sig" != "$after_sig" ]; then
+        rm -f "$consent_tmp"
+        [ -n "$verbose" ] &&
+            echo "==> Skipped Fable consent: $CLAUDE_JSON changed under us; will retry"
+    else
+        mv "$consent_tmp" "$CLAUDE_JSON"
+        [ -n "$verbose" ] &&
+            echo "==> Recorded Fable 5 usage-credit consent for the signed-in account"
+    fi
 else
     rm -f "$consent_tmp"
     echo "seed-fable-consent: could not update $CLAUDE_JSON; left unchanged" >&2

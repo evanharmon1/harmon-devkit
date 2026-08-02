@@ -155,12 +155,18 @@ wrapper="$repo/.devcontainer/config/claude-hooks/claude-wrapper.sh"
 
 wdir="$tmpdir/wrap"
 mkdir -p "$wdir/first" "$wdir/realbin" "$wdir/tools" "$wdir/dup"
-for b in bash readlink; do ln -sf "$(command -v "$b")" "$wdir/tools/$b"; done
+# ONLY bash. The wrapper must resolve copies without grep, head, readlink or
+# stat: an earlier version piped head into grep, which fails open on a minimal
+# PATH and let two copies exec each other forever.
+ln -sf "$(command -v bash)" "$wdir/tools/bash"
 sed "s|^SEEDER=.*|SEEDER=$wdir/seed.sh|" "$wrapper" >"$wdir/first/claude"
 cp "$wdir/first/claude" "$wdir/dup/claude"
 chmod +x "$wdir/first/claude" "$wdir/dup/claude"
 printf '#!/usr/bin/env bash\necho SEEDED >>"%s/seed.log"\n' "$wdir" >"$wdir/seed.sh"
-printf '#!/usr/bin/env bash\necho "REAL $*"\n' >"$wdir/realbin/claude"
+# The stub re-invokes `claude` the way Claude Code does for subagents and -p
+# runs, so nesting is exercised on every happy-path case below.
+printf '#!/usr/bin/env bash\necho "REAL $*"\n[ "${1:-}" = child ] || claude child\n' \
+    >"$wdir/realbin/claude"
 chmod +x "$wdir/seed.sh" "$wdir/realbin/claude"
 
 wrun() {
@@ -180,14 +186,19 @@ full="$wdir/first:$wdir/realbin:$wdir/tools"
 echo "==> the wrapper execs the real CLI and passes arguments through"
 : >"$wdir/seed.log"
 out="$(wrun "$full" "" hello world)" || fail "wrapper exited non-zero on the happy path"
-[ "$out" = "REAL hello world" ] || fail "wrapper did not pass through: $out"
+case "$out" in "REAL hello world"*) ;; *) fail "wrapper did not pass through: $out" ;; esac
+
+echo "==> the real CLI can spawn a nested claude through the wrapper"
+# A recursion guard exported into the environment survives exec and breaks
+# every nested launch. This pins that regression.
+case "$out" in *"REAL child"*) ;; *) fail "nested claude did not run: $out" ;; esac
 
 echo "==> opted out, the wrapper does not seed"
 [ ! -s "$wdir/seed.log" ] || fail "wrapper seeded while opted out"
 
 echo "==> opted in, the wrapper seeds before exec"
 out="$(wrun "$full" true go)" || fail "wrapper exited non-zero when opted in"
-[ "$out" = "REAL go" ] || fail "wrapper did not exec the real CLI: $out"
+case "$out" in "REAL go"*) ;; *) fail "wrapper did not exec the real CLI: $out" ;; esac
 grep -q SEEDED "$wdir/seed.log" || fail "wrapper did not run the seeder"
 
 echo "==> with no real CLI reachable it fails loudly, it does not loop"
@@ -195,9 +206,15 @@ _rc=0
 wrun "$wdir/first:$wdir/tools" true orphan >/dev/null 2>&1 || _rc=$?
 [ "$_rc" -eq 127 ] || fail "expected 127 with no real CLI, got $_rc (124 = hung)"
 
-echo "==> two wrapper copies on PATH cannot ping-pong"
+echo "==> a second wrapper copy on PATH is skipped, never exec-ed into a loop"
 _rc=0
-wrun "$wdir/first:$wdir/dup:$wdir/tools" true twice >/dev/null 2>&1 || _rc=$?
-[ "$_rc" -eq 127 ] || fail "expected 127 on duplicate wrappers, got $_rc (124 = looped)"
+out="$(wrun "$wdir/first:$wdir/dup:$wdir/realbin:$wdir/tools" true twice)" || _rc=$?
+[ "$_rc" -eq 0 ] || fail "expected the real CLI to be reached, got $_rc (124 = looped)"
+case "$out" in "REAL twice"*) ;; *) fail "duplicate wrapper was not skipped: $out" ;; esac
+
+echo "==> only wrapper copies reachable: 127, still no loop"
+_rc=0
+wrun "$wdir/first:$wdir/dup:$wdir/tools" true nowhere >/dev/null 2>&1 || _rc=$?
+[ "$_rc" -eq 127 ] || fail "expected 127 with only wrappers, got $_rc (124 = looped)"
 
 echo "✓ fable consent hook behaves"
