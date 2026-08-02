@@ -243,6 +243,43 @@ mkagent "$R20" sierra
 } >"$R20/ai/agents/sierra.md"
 expect_ok "a description containing the word 'null' passes" "$R20"
 
+# Mismatched quotes around the name are refused. Trimming each delimiter
+# independently would reduce `"alpha'` to `alpha` and match the filename, while
+# a YAML loader rejects the scalar and the agent never loads at all.
+R21="$TMPROOT/mismatched-quote"
+newrepo "$R21"
+{
+    echo "---"
+    printf 'name: "tango%s\n' "'"
+    echo "description: An agent whose name has mismatched quotes."
+    echo "---"
+    echo "# tango"
+} >"$R21/ai/agents/tango.md"
+expect_fail_contains "a mismatched-quote name fails" "$R21" "mismatched quotes"
+
+# A properly matched quoted name is still accepted.
+R22="$TMPROOT/quoted-name"
+newrepo "$R22"
+{
+    echo "---"
+    echo 'name: "uniform"'
+    echo "description: An agent whose name is double-quoted."
+    echo "---"
+    echo "# uniform"
+} >"$R22/ai/agents/uniform.md"
+expect_ok "a matched double-quoted name passes" "$R22"
+
+R23="$TMPROOT/squoted-name"
+newrepo "$R23"
+{
+    echo "---"
+    printf "name: %svictor%s\n" "'" "'"
+    echo "description: An agent whose name is single-quoted."
+    echo "---"
+    echo "# victor"
+} >"$R23/ai/agents/victor.md"
+expect_ok "a matched single-quoted name passes" "$R23"
+
 # A Claude-specific frontmatter key breaks the portability contract.
 R12="$TMPROOT/extra-key"
 newrepo "$R12"

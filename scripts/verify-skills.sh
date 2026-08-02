@@ -114,12 +114,25 @@ while IFS= read -r md; do
         continue
     fi
     fm_name="$(frontmatter_name "$md")"
-    # trim CR and surrounding quotes
     fm_name="${fm_name%$'\r'}"
-    fm_name="${fm_name#\"}"
-    fm_name="${fm_name%\"}"
-    fm_name="${fm_name#\'}"
-    fm_name="${fm_name%\'}"
+    # Strip surrounding quotes only as a MATCHED pair. Trimming each delimiter
+    # independently reduces `"alpha'` to `alpha`, so a mismatched quote passes
+    # as valid — and a YAML loader rejects that scalar outright, meaning the
+    # skill never loads at all while the guard calls the file well-formed.
+    case "$fm_name" in
+    '"'*'"')
+        fm_name="${fm_name#\"}"
+        fm_name="${fm_name%\"}"
+        ;;
+    "'"*"'")
+        fm_name="${fm_name#\'}"
+        fm_name="${fm_name%\'}"
+        ;;
+    '"'* | *'"' | "'"* | *"'")
+        err "$md: frontmatter name has mismatched quotes: $fm_name"
+        continue
+        ;;
+    esac
 
     if [ -z "$fm_name" ]; then
         err "$md: frontmatter is missing a 'name:' field"
