@@ -675,6 +675,21 @@ expect_fail_contains "offline check fails when an agents block was never synced"
 expect_ok "syncing clears it" run_sync_at "$CU" sync
 expect_ok "verify passes once the agents are vendored" run_sync_at "$CU" verify
 
+# The mirror case: agents stamped, skills gone. The agents stamp proves a sync
+# has run, so this is drift too — guarding only one direction moves the hole
+# instead of closing it.
+CX="$TMPROOT/consumer-skills-lost"
+mkdir -p "$CX"
+write_agents_manifest_at "$CX" v0.1.0-agents "[ag-one]"
+run_sync_at "$CX" sync >/dev/null
+rm -rf "$CX/vendored/skills"
+expect_fail_contains "verify fails when the vendored skills went missing" \
+    "requests skills but none are vendored" run_sync_at "$CX" verify
+expect_fail_contains "offline check fails when the vendored skills went missing" \
+    "requests skills but none are vendored" run_sync_at "$CX" verify-offline
+expect_ok "re-syncing restores them" run_sync_at "$CX" sync
+expect_ok "verify passes once skills are back" run_sync_at "$CX" verify
+
 # A repo that has never synced ANYTHING still skips cleanly — that is the fresh
 # scaffold case the skip exists for, and it must survive the rule above.
 CF="$TMPROOT/consumer-agents-fresh"

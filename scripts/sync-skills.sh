@@ -91,6 +91,27 @@ agents_enabled() {
     [ -n "$_ae" ] && [ "$_ae" != "null" ]
 }
 
+# repo_has_synced — 0 when this repo has run at least one sync, proven by EITHER
+# provenance stamp existing.
+#
+# The "not synced yet, skip cleanly" rule exists for a FRESH SCAFFOLD, so that a
+# newly generated repo's CI and pre-push stay green before its first sync. A
+# fresh scaffold has neither stamp. Once either one exists, a missing stamp for
+# an asset kind the manifest requests is drift, not newness.
+#
+# Asked symmetrically on purpose: guarding one direction only moves the hole
+# rather than closing it. Making the agents skip conditional on the skills stamp
+# (and not the reverse) left a repo that had synced both, then lost its vendored
+# skills, passing every check — the agents stamp proved a sync had run, and
+# nothing consulted it.
+repo_has_synced() {
+    [ -f "$(manifest_get '.dest')/.SKILLS_PROVENANCE" ] && return 0
+    if agents_enabled; then
+        [ -f "$(agents_dest)/.AGENTS_PROVENANCE" ] && return 0
+    fi
+    return 1
+}
+
 # assert_safe_dest DEST KIND — refuse a destination that could reach outside the
 # repo. Both passes delete paths under their dest, so this runs before any rm.
 assert_safe_dest() {
@@ -481,7 +502,7 @@ verify_agents_pass() {
         # applied, and skipping would let agent adoption pass CI with no agent
         # files committed. That is exactly the drift this feature exists to
         # catch, so it fails instead.
-        if [ -f "$(manifest_get '.dest')/.SKILLS_PROVENANCE" ]; then
+        if repo_has_synced; then
             die "manifest requests agents but none are vendored ($_vap_prov missing) — run 'task sync:skills' and commit"
         fi
         echo "verify:skills: agents not synced yet — skipping (run 'task sync:skills')"
@@ -535,6 +556,9 @@ cmd_verify() {
     # two are stamped independently, so "skills not synced" must not silently
     # skip an agents drift check.
     if [ ! -f "$prov" ]; then
+        if repo_has_synced; then
+            die "manifest requests skills but none are vendored ($prov missing) — run 'task sync:skills' and commit"
+        fi
         echo "verify:skills: not synced yet — skipping (run 'task sync:skills')"
         if agents_enabled; then
             WORKDIR="$(mktemp -d)"
@@ -601,6 +625,9 @@ cmd_verify_offline() {
     ref="$(manifest_get '.source.ref')"
     # Not synced yet -> skip cleanly (keeps fresh scaffolds green).
     if [ ! -f "$prov" ]; then
+        if repo_has_synced; then
+            die "manifest requests skills but none are vendored ($prov missing) — run 'task sync:skills' and commit"
+        fi
         echo "verify:skills:offline: not synced yet — skipping (run 'task sync:skills')"
     # Compare extracted values — the ref is data, not a regex ('.' in semver
     # tags would otherwise match any character).
@@ -617,7 +644,7 @@ cmd_verify_offline() {
         if [ ! -f "$_cvo_aprov" ]; then
             # Same rule as the networked check: benign only before the repo's
             # first sync, drift once the skills stamp proves it has run one.
-            [ ! -f "$prov" ] ||
+            ! repo_has_synced ||
                 die "manifest requests agents but none are vendored ($_cvo_aprov missing) — run 'task sync:skills' and commit"
             echo "verify:skills:offline: agents not synced yet — skipping (run 'task sync:skills')"
         elif [ "$(prov_field "$_cvo_aprov" "ref" | sed 's/ (.*//')" = "$ref" ]; then
