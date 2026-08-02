@@ -553,6 +553,12 @@ check)
     # Everything after the verdict line must therefore be Codex's own metadata
     # — the "Reviewed commit" line and its collapsed About block — and any
     # other prose makes the result indeterminate.
+    #
+    # The About block is REMOVED rather than truncated at. Cutting the body at
+    # the first "<details" validated only the text before it, so a concern
+    # appended after the closing tag was invisible. An unterminated block does
+    # not match the removal and its contents then fail the check, which is the
+    # right direction.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
@@ -578,7 +584,8 @@ check)
           # catch it.
           def rest_is_boilerplate:
             (body_text | split("\n") | .[1:] | join("\n") |
-              (split("<details")[0] // "") | ascii_downcase | split("\n") |
+              gsub("<details.*?</details>"; ""; "m") |
+              ascii_downcase | split("\n") |
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               map(select(. != "")) |
               all(startswith("**reviewed commit:**")));
@@ -637,7 +644,8 @@ check)
           # catch it.
           def rest_is_boilerplate:
             (body_text | split("\n") | .[1:] | join("\n") |
-              (split("<details")[0] // "") | ascii_downcase | split("\n") |
+              gsub("<details.*?</details>"; ""; "m") |
+              ascii_downcase | split("\n") |
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               map(select(. != "")) |
               all(startswith("**reviewed commit:**")));

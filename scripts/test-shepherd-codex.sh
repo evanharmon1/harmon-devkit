@@ -331,6 +331,47 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 2 indeterminate
 
+echo "==> a concern appended AFTER the About block is not clean"
+# Cutting the body at the first "<details" validates only what precedes it, so
+# anything after the closing tag was invisible.
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:108,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "**Reviewed commit:** `" + $prefix + "`\n\n" +
+          "<details> <summary>About Codex in GitHub</summary>\nblah\n</details>\n\n" +
+          "However a race remains.")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> an unterminated About block fails closed"
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[],[
+      {
+        id:109,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n" +
+          "**Reviewed commit:** `" + $prefix + "`\n\n" +
+          "<details> never closed\nHowever a race remains.")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
 echo "==> the real clean layout — verdict, Reviewed commit, About block — is clean"
 new_cycle
 prefix="${head_sha:0:10}"
