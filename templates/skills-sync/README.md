@@ -33,6 +33,14 @@ agents:
   dest: .claude/agents # must differ from the skills dest
 ```
 
+> **Requires an engine with agents support.** `scripts/sync-skills.sh` from a
+> release older than this feature does not know the `agents:` key exists — it
+> vendors your skills, exits 0, and never mentions that the block was ignored,
+> and its `verify` is silent about it too. There is no version handshake that
+> could warn you: an old program cannot recognise a future key. If the block is
+> in your manifest and `.AGENTS_PROVENANCE` never appears in `agents.dest`, your
+> engine is too old — re-fetch it per step 1 of the adoption steps below.
+
 Everything the skills pass guarantees, the agents pass guarantees too: pinned ref, flattened dest shared with your local agents, a `.AGENTS_PROVENANCE` stamp whose `# managed:` line is the only thing the sync will replace or delete, a collision that fails **before** any deletion, and both drift checks (`verify` and `verify:skills:offline`).
 
 Three things are specific to agents:
@@ -53,21 +61,30 @@ Three things are specific to agents:
 
 ## Adopt it in a consumer repo
 
-1. **Copy the engine** into your repo (it is maintained and unit-tested in harmon-devkit):
+1. **Copy the engine** into your repo (it is maintained and unit-tested in harmon-devkit). Resolve the newest release rather than hard-coding a tag — see the warning below:
 
    ```sh
    mkdir -p scripts
+   engine="$(gh release view --repo evanharmon1/harmon-devkit --json tagName -q .tagName)"
    curl -fsSL -o scripts/sync-skills.sh \
-     https://raw.githubusercontent.com/evanharmon1/harmon-devkit/v0.17.0/scripts/sync-skills.sh
+     "https://raw.githubusercontent.com/evanharmon1/harmon-devkit/${engine}/scripts/sync-skills.sh"
    chmod +x scripts/sync-skills.sh
    ```
+
+   > **The engine version and the manifest `ref` are different things.** The
+   > `ref` pins _what content you vendor_ and is a deliberate choice. The engine
+   > is _the program doing the vendoring_, and should simply be current — an
+   > engine older than a manifest feature **ignores that feature silently**. An
+   > engine predating `agents:` support, handed a manifest with an `agents:`
+   > block, exits 0 having vendored only skills; its `verify` ignores agents
+   > too, so nothing ever reports the omission. Take the newest engine.
 
 2. **Add the manifest.** Copy `.skills-sync.yaml` to your repo root and edit `categories`, `ref`, and `dest`:
 
    ```yaml
    source:
      repo: https://github.com/evanharmon1/harmon-devkit.git
-     ref: v0.17.0
+     ref: v0.17.0 # a deliberate content pin — bump when you want new assets
    categories:
      - universal
      - frontend
@@ -84,7 +101,7 @@ Three things are specific to agents:
    git commit -m "chore: vendor shared agent skills from harmon-devkit"
    ```
 
-Requires `yq` ([mikefarah/yq](https://github.com/mikefarah/yq)) and `git` on `PATH`.
+Requires `yq` ([mikefarah/yq](https://github.com/mikefarah/yq)) and `git` on `PATH`. Step 1 also uses `gh` to resolve the newest release; without it, open the [releases page](https://github.com/evanharmon1/harmon-devkit/releases/latest) and substitute the tag by hand — just don't reuse your manifest `ref` for it, which is the mistake the warning above describes.
 
 ## CI drift check
 
