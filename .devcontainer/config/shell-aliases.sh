@@ -27,32 +27,11 @@ if [ "${DEVCONTAINER_TAILSCALE:-}" = "true" ]; then
     alias ts-up='bash .devcontainer/scripts/tailscale-connect.sh'
 fi
 
-# Fable 5 usage-credit consent, opt-in (DEVCONTAINER_FABLE_CONSENT=true).
-# Rationale and revocation: docs/guides/devcontainers.md.
-#
-# Wrapping `claude` rather than seeding once at shell startup, because the
-# record can only be written in the window this wrapper occupies. Claude Code
-# caches .claude.json in memory at startup and never re-reads it, so a write
-# from inside a session cannot reach that session, and the CLI's next config
-# write serializes its stale copy back over the file and drops the record —
-# which rules out a SessionStart hook. Seeding at shell startup instead is
-# too early and happens too rarely: on a fresh volume no account exists yet,
-# and a second `claude` in the SAME terminal never re-sources this file, so
-# every later session in that terminal would stay unseeded.
-#
-# Running immediately before each launch is the one point that is both after
-# a previous session wrote .oauthAccount and before the next CLI loads its
-# config, with no session live to overwrite it.
-#
-# The gate is tested before defining the function, so an opted-out shell
-# neither defines it nor spawns anything.
-if [ "${DEVCONTAINER_FABLE_CONSENT:-}" = "true" ] &&
-    [ -x /etc/claude-code/hooks/seed-fable-consent.sh ]; then
-    claude() {
-        /etc/claude-code/hooks/seed-fable-consent.sh || true
-        command claude "$@"
-    }
-fi
+# Fable 5 usage-credit consent is handled by /usr/local/bin/claude (installed
+# from config/claude-hooks/claude-wrapper.sh), not from here. A shell function
+# is invisible to child processes, and agent-deck — this image's primary
+# launcher — spawns Claude out of process, so a function would silently miss
+# every agent-deck session. See docs/guides/devcontainers.md.
 
 # workmux: short alias and zsh completions.
 alias wm=workmux

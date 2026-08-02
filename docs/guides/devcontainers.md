@@ -97,8 +97,9 @@ it Fable can end up **unselectable in `/model`** here while working fine on
 the host, on an account that is entitled to it.
 
 `config/claude-hooks/seed-fable-consent.sh` records it for the signed-in
-account, from postStart (covers container starts) and from a `claude` shell
-wrapper that runs it immediately before each launch.
+account. It runs from postStart (covers container starts) and from
+`/usr/local/bin/claude` — a wrapper installed from
+`config/claude-hooks/claude-wrapper.sh` that seeds and then execs the real CLI.
 
 The launch-time call site is forced by how Claude Code handles its config. The
 CLI caches `.claude.json` in memory at startup and never re-reads it, so a
@@ -110,6 +111,14 @@ rare, since a second `claude` in the same terminal never re-sources the
 profile. Immediately before each launch is the one moment that is both after a
 previous session wrote `.oauthAccount` and before the next CLI reads its
 config, with no session live to overwrite it.
+
+A **PATH wrapper**, not a shell function, because a function is invisible to
+child processes and agent-deck — this image's primary launcher — spawns Claude
+out of process. `/usr/local/bin` precedes `/usr/bin` (where npm installs the
+real binary) in the default PATH for daemons and interactive shells alike, so
+the wrapper is seen by every launcher. It resolves the real CLI by scanning
+PATH for the first `claude` that is not itself, so an npm prefix change cannot
+create an exec loop, and it refuses to run twice via a marker variable.
 
 The honest residual: on a brand-new container the **first** authenticated
 session still cannot select Fable, because the account the key is derived from
