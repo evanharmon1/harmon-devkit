@@ -191,7 +191,7 @@ to a terminal result and inspect reviews, top-level comments, and every inline
 thread. Settle every finding and deferred PR-body checkbox, run the target's
 full local gate on the exact clean commit before each fix push, and repeat until
 the unchanged head is clean. Use the shepherd-round cap in the target's policy,
-or five rounds when it states none: one fix push or one no-change adjudication
+or four rounds when it states none: one fix push or one no-change adjudication
 cycle is a round. Stop early when the sole blocker survives two consecutive
 rounds unchanged, or immediately for a permission, secret, external-service, or
 maintainer-decision blocker; every non-success stop remains draft.

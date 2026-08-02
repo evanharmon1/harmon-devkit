@@ -213,11 +213,11 @@ release plumbing), disable it for routine development.
 task check      # fast inner loop while editing
 task verify     # definition-of-done gate
 task challenge  # adversarial second model — adjudicate, fix, re-challenge
-                # until a CLEAN pass (no P0/P1 findings), ≤6 rounds
-task review     # verification checkpoint — same clean-pass exit, ≤6 rounds
+                # until a CLEAN pass (no P0/P1 findings), ≤4 rounds
+task review     # verification checkpoint — same clean-pass exit, ≤4 rounds
 task ci         # full CI mirror
 # → open the PR, then /shepherd it: watch CI + reviews, settle the deferred
-#   P2s, adjudicate → fix → push, ≤5 rounds (independent of the loops above);
+#   P2s, adjudicate → fix → push, ≤4 rounds (independent of the loops above);
 #   checks green with reviews unpolled is not done — reviews land after checks
 #   settle
 # → merging stays a human decision
