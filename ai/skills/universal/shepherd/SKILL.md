@@ -360,6 +360,14 @@ issue may be moved at all.
   Actor ambiguity, malformed or incomplete API data, a changed head, and an
   ambiguous commit prefix fail closed.
 
+  Classification is three-way, because "I cannot tell" is a real answer and
+  reporting it as a finding is a false statement about what the reviewer said.
+  A result that opens with the clean verdict sentence but carries a P0/P1/P2
+  marker is a **finding**; one whose trailing clause reads as praise is
+  **clean**; anything else is **indeterminate** and escalates. Do not widen
+  the praise shape to make an unfamiliar verdict pass — the escalation is the
+  designed outcome, and the helper's own tests pin it.
+
   Persist each attempt under the git directory so branch switches and resumed
   sessions cannot duplicate it:
 

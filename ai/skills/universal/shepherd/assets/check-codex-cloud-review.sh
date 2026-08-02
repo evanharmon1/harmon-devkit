@@ -10,7 +10,8 @@
 #   11 pending
 #   12 retry (attempt 1 timed out)
 #   13 escalate (attempt 2 timed out)
-#   2  indeterminate / malformed / changed head / usage error
+#   2  indeterminate — malformed, changed head, usage error, or a
+#      current-head verdict whose shape cannot be classified
 
 set -euo pipefail
 
@@ -506,67 +507,64 @@ check)
         exit 10
     fi
 
-    # clean_result matches the verdict sentence as a PREFIX of the first line,
-    # not as the whole line. Codex appends a variable praise clause to it —
-    # "Keep it up!" and "Nice work!" are both observed in this repo's history —
-    # so an equality test never matched a real clean verdict, and every clean
-    # review classified as a finding. That failed closed, which is the right
-    # direction, but it also meant no PR could ever satisfy the Codex cloud
-    # gate and reach the shepherd's readiness step.
+    # Classifying a current-head result is three-way, not binary, because
+    # "I cannot tell" is a real answer and reporting it as `findings` is a lie
+    # that costs a clean PR its gate.
     #
-    # Prefix matching stays safe because a body only reaches here after the
-    # inline-findings check above, and because the anchor is the START of the
-    # line: a finding that merely quotes the sentence ("P1: code can emit Codex
-    # Review: Didn't find any major issues.") does not begin with it and is
-    # still a finding. That case is pinned by a test.
+    # The two Codex formats are structurally disjoint. A clean verdict is a
+    # top-level comment whose first line is "Codex Review: Didn't find any
+    # major issues." plus a praise clause. Findings are a review body opening
+    # "### Codex Review", and the findings themselves are INLINE comments
+    # carrying a P0/P1/P2 badge — which are rejected before this point. So the
+    # prefix is the real signal, and the trailing clause is decoration.
     #
-    # The trailing clause is recognised by PRAISE STRUCTURE — a short,
-    # all-alphabetic exclamation — rather than screened for suspicious
-    # characters. A blacklist ("no colon, no digit") is not a boundary: it
-    # admits "… Didn't find any major issues. However a race remains", a
-    # qualifier carrying a finding on the verdict's own line, which would
-    # promote a PR Codex actually flagged.
+    # Equality on the whole line was the original bug: Codex always appends
+    # praise, so it never matched and no PR could satisfy the gate. Screening
+    # the tail for "no colon, no digit" replaced it and was not a boundary
+    # either — it admitted "… issues. However a race remains". Narrowing to a
+    # short exclamation then rejected the real reply "… issues. Chef's kiss."
+    # Each rule traded one failure direction for the other because it was
+    # trying to read intent out of free text.
     #
-    # Anything unrecognised falls through to `findings`, which is the direction
-    # a gate must fail in — an unfamiliar suffix costs one escalation, whereas
-    # trusting arbitrary text from an external bot costs a false green.
+    #   * does not open with the verdict sentence   -> findings
+    #   * carries a P0/P1/P2 marker anywhere        -> findings
+    #   * tail empty, or short praise               -> clean
+    #   * anything else                             -> INDETERMINATE
     #
-    # Structure, not an allowlist of observed praise strings: an allowlist jams
-    # the gate shut on the next new phrasing, which is the exact brittleness
-    # this function is being fixed for.
-    #
-    # The shape is deliberately wider than "short exclamation". A first pass
-    # required a trailing `!` and letters only; #239 then drew the real reply
-    # "Codex Review: Didn't find any major issues. Chef's kiss." — an
-    # apostrophe and a full stop — which that pass would have called a finding.
-    # Observed praise so far: "Keep it up!", "Nice work!", "Chef's kiss.".
-    # Hence letters, spaces and apostrophes, ending in `.` or `!`, and short.
-    #
-    # The length bound is what keeps prose out: "however a race remains." is
-    # otherwise the same shape. That makes the boundary empirical rather than
-    # principled — a short qualifier ("but a race remains.") would slip
-    # through, and a long compliment would fail closed. Both directions are
-    # documented rather than hidden, and the second is the cheaper one: an
-    # unrecognised suffix costs an escalation, not a false green.
+    # The last branch is the point. The tail pattern no longer decides
+    # correctness — only whether a human is asked. A novel long compliment
+    # stops the shepherd and says the shape was unrecognized, instead of
+    # claiming Codex found something; a qualifier smuggled onto the verdict
+    # line lands in the same branch rather than passing as clean. Observed
+    # praise so far: "Keep it up!", "Nice work!", "Chef's kiss.".
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
           def clean_sentence:
             "codex review: didn\u0027t find any major issues.";
-          def clean_result:
-            ((.body // "") | split("\n")[0] |
-              gsub("^[[:space:]]+|[[:space:]]+$"; "") |
-              ascii_downcase) as $line |
-            ($line | startswith(clean_sentence)) and
-            (($line | ltrimstr(clean_sentence) |
-              gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
-             . == "" or test("^[a-z][a-z\u0027 ]{0,18}[.!]$"));
+          def body_text: (.body // "");
+          def first_line:
+            (body_text | split("\n")[0] |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
+          def verdict_tail:
+            (first_line | ltrimstr(clean_sentence) |
+              gsub("^[[:space:]]+|[[:space:]]+$"; ""));
+          def has_severity_marker:
+            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
+          def verdict_class:
+            if (first_line | startswith(clean_sentence) | not) then "findings"
+            elif has_severity_marker then "findings"
+            elif (verdict_tail == "" or
+                  (verdict_tail | test("^[a-z][a-z\u0027 ]{0,18}[.!]$")))
+            then "clean"
+            else "unrecognized" end;
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head)
-          ) | if clean_result then "clean" else "findings" end
+          ) | verdict_class
           ] |
           if index("findings") then "findings"
+          elif index("unrecognized") then "unrecognized"
           elif index("clean") then "clean"
           else "none" end
         ' "$workdir/reviews.json")
@@ -574,20 +572,32 @@ check)
         emit findings "authenticated current-head review requires adjudication"
         exit 10
     fi
+    if [ "$review_result" = "unrecognized" ]; then
+        emit indeterminate "current-head review opens with the clean verdict but its trailing clause is unrecognized"
+        exit 2
+    fi
 
     comment_candidates="$workdir/comment-candidates.tsv"
     jq -r \
         --argjson id "$actor_id" '
           def clean_sentence:
             "codex review: didn\u0027t find any major issues.";
-          def clean_result:
-            ((.body // "") | split("\n")[0] |
-              gsub("^[[:space:]]+|[[:space:]]+$"; "") |
-              ascii_downcase) as $line |
-            ($line | startswith(clean_sentence)) and
-            (($line | ltrimstr(clean_sentence) |
-              gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
-             . == "" or test("^[a-z][a-z\u0027 ]{0,18}[.!]$"));
+          def body_text: (.body // "");
+          def first_line:
+            (body_text | split("\n")[0] |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
+          def verdict_tail:
+            (first_line | ltrimstr(clean_sentence) |
+              gsub("^[[:space:]]+|[[:space:]]+$"; ""));
+          def has_severity_marker:
+            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
+          def verdict_class:
+            if (first_line | startswith(clean_sentence) | not) then "findings"
+            elif has_severity_marker then "findings"
+            elif (verdict_tail == "" or
+                  (verdict_tail | test("^[a-z][a-z\u0027 ]{0,18}[.!]$")))
+            then "clean"
+            else "unrecognized" end;
           .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(
@@ -597,7 +607,7 @@ check)
           select($prefix != "") |
           [
             $prefix,
-            (if clean_result then "clean" else "findings" end),
+            verdict_class,
             (.id | tostring)
           ] | @tsv
         ' "$workdir/comments.json" >"$comment_candidates"
@@ -628,6 +638,10 @@ check)
         }
         if [ "$classification" = "findings" ]; then
             comment_result=findings
+        elif [ "$classification" = "unrecognized" ]; then
+            # findings outranks unrecognized outranks clean, so a single
+            # unclassifiable verdict is never masked by a clean sibling.
+            [ "$comment_result" = "findings" ] || comment_result=unrecognized
         elif [ "$comment_result" = "none" ]; then
             comment_result=clean
         fi
@@ -637,6 +651,10 @@ check)
     if [ "$comment_result" = "findings" ]; then
         emit findings "authenticated current-head conversation finding requires adjudication"
         exit 10
+    fi
+    if [ "$comment_result" = "unrecognized" ]; then
+        emit indeterminate "current-head result opens with the clean verdict but its trailing clause is unrecognized"
+        exit 2
     fi
     if [ "$review_result" = "clean" ] || [ "$comment_result" = "clean" ]; then
         emit clean "authenticated bot posted a current-head clean result"

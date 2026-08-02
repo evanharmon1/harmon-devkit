@@ -255,9 +255,10 @@ assert_status 0 clean
 # qualifier that smuggles a finding onto the clean sentence's own line, which
 # would promote a PR Codex actually flagged. Anything unrecognised fails
 # closed into `findings`, costing an escalation rather than a false green.
-for tail in "P1: the retry path is unguarded" "However, 2 concerns:" "See item 3" \
-    "However a race remains" "However a race remains." "but see the note below"; do
-    echo "==> a verdict line trailed by '${tail}' is a finding, not clean"
+# A severity marker anywhere in the body is a finding outright, whatever the
+# verdict line says.
+for tail in "P1: the retry path is unguarded" "P0: data loss on rollback"; do
+    echo "==> a verdict line carrying '${tail}' is a finding"
     new_cycle
     jq -cn \
         --argjson id "$actor_id" \
@@ -274,6 +275,34 @@ for tail in "P1: the retry path is unguarded" "However, 2 concerns:" "See item 3
     ]]' >"${fixtures}/reviews.pages.json"
     run_check '2026-07-31T08:01:00Z'
     assert_status 10 findings
+done
+
+# Everything else that opens with the verdict but does not read as praise is
+# INDETERMINATE, not `findings`. Reporting "Codex found something" about a
+# verdict that says the opposite is a lie, and it is the lie that cost a clean
+# PR its gate when the rule was a praise-shape whitelist. Escalating instead
+# puts a human on the one case a pattern cannot settle — and it keeps a
+# qualifier smuggled onto the verdict line from passing as clean.
+for tail in "However a race remains" "However a race remains." \
+    "but see the note below" "See item 3" "However, 2 concerns:" \
+    "an unusually long and effusive compliment"; do
+    echo "==> a verdict line trailed by '${tail}' is indeterminate, not clean"
+    new_cycle
+    jq -cn \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" \
+        --arg head "$head_sha" \
+        --arg tail "$tail" \
+        '[[
+      {
+        id:105,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("Codex Review: Didn\u0027t find any major issues. " + $tail)
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+    run_check '2026-07-31T08:01:00Z'
+    assert_status 2 indeterminate
 done
 
 echo "==> a finding whose body merely CONTAINS the verdict is still a finding"
