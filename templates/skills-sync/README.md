@@ -51,6 +51,12 @@ Three things are specific to agents:
 
 `README.md` in the source agents directory documents that directory and is never vendored as an agent.
 
+### Stopping
+
+Delete the `agents:` block and re-run `task sync:skills`. The vendored agents and their stamp are removed; your local agents in the same directory are not. Until you run that sync, `verify` reports the leftovers rather than ignoring them.
+
+That works because the skills stamp records `# agents-dest:`. It has to: `agents.dest` lives _inside_ the block you just deleted, so without the breadcrumb nothing would know where the agents had been put — they would sit there indefinitely, still stamped do-not-edit, pinned to a ref nothing will bump, invisible to both drift checks.
+
 ## What's in this bundle
 
 | File | Purpose |

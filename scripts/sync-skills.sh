@@ -332,6 +332,12 @@ write_provenance() {
         echo "# ref: $(manifest_get '.source.ref') ($3)"
         echo "# path: $(manifest_get '.source.path // "ai/skills"')"
         echo "# categories: $(manifest_get '.categories | join(", ")')"
+        # Breadcrumb for de-vendoring. `agents.dest` lives INSIDE the optional
+        # agents block, so deleting that block also deletes the only record of
+        # where the agents went — leaving vendored files that claim to be
+        # managed, with nothing able to find them. The skills stamp is always
+        # findable (`dest` is top-level and required), so it carries the pointer.
+        echo "# agents-dest:${4:+ $4}"
         echo "# managed:${_wp_managed_csv:+ $_wp_managed_csv}"
         echo "# update: edit $MANIFEST, then run 'task sync:skills' and commit."
         echo "# Any directory NOT listed on '# managed:' is a local skill owned by this"
@@ -350,6 +356,48 @@ agents_dest() {
     [ "$_ad" != "$(manifest_get '.dest')" ] ||
         die "manifest: agents.dest must differ from the skills dest ('$_ad') — each pass owns its own directory"
     echo "$_ad"
+}
+
+# orphaned_agents_dest PROV — echo the agents dest recorded on a skills stamp
+# whose manifest no longer requests agents, when agents are still vendored
+# there. Empty when there is nothing to de-vendor.
+#
+# Only ever called with agents DISABLED, so the dest cannot come from the
+# manifest — it comes from the stamp, which is why the breadcrumb exists. It is
+# validated like any other dest before anything deletes under it: the stamp is
+# committed config, but a corrupted line must not become an rm.
+orphaned_agents_dest() {
+    [ -f "$1" ] || return 0
+    _oad="$(prov_field "$1" "agents-dest")"
+    [ -n "$_oad" ] || return 0
+    assert_safe_dest "$_oad" "orphaned agents"
+    [ -f "$_oad/.AGENTS_PROVENANCE" ] || return 0
+    echo "$_oad"
+}
+
+# devendor_agents DEST — remove the agents this sync previously managed, plus
+# their stamp, after the manifest stopped requesting them.
+#
+# A vendoring tool needs an un-vendoring path. Without one, deleting the
+# `agents:` block silently stranded every vendored agent: still on disk, still
+# loaded by the harness, still stamped DO NOT EDIT, pinned to a ref nothing will
+# ever bump, and invisible to both drift checks. Deletes only what the stamp's
+# `# managed:` line claims — a local agent in the same directory is untouched,
+# exactly as during a normal sync.
+devendor_agents() {
+    _dv_prov="$1/.AGENTS_PROVENANCE"
+    _dv_managed="$(agents_managed_names "$_dv_prov")"
+    _dv_n=0
+    while IFS= read -r _dv_name; do
+        [ -n "$_dv_name" ] || continue
+        assert_sane_name "$_dv_name"
+        rm -f "${1:?}/${_dv_name:?}.md"
+        _dv_n=$((_dv_n + 1))
+    done <<EOF
+$_dv_managed
+EOF
+    rm -f "$_dv_prov"
+    echo "de-vendored $_dv_n agent(s) from $1 — the manifest no longer requests agents"
 }
 
 # agents_preflight CLONE — resolve and validate everything the agents pass
@@ -454,6 +502,16 @@ cmd_sync() {
 $incoming
 EOF
 
+    # Capture the de-vendor breadcrumb BEFORE anything rewrites the stamp. The
+    # skills pass deletes and re-writes $prov further down, and the new stamp is
+    # written with an empty `# agents-dest:` (agents are disabled on this path) —
+    # so reading it afterwards would always find nothing to de-vendor, and the
+    # orphaned agents would survive the very run meant to remove them.
+    _cs_orphan=""
+    if ! agents_enabled; then
+        _cs_orphan="$(orphaned_agents_dest "$prov")"
+    fi
+
     # Preflight the agents pass while the tree is still untouched. Everything
     # that can make it die — a name absent at the pin, a corrupt stamp, a
     # collision with a local agent — is resolved here, so the run cannot replace
@@ -478,7 +536,11 @@ EOF
     done <<EOF
 $incoming
 EOF
-    write_provenance "$prov" "$incoming" "$resolved"
+    if agents_enabled; then
+        write_provenance "$prov" "$incoming" "$resolved" "$(agents_dest)"
+    else
+        write_provenance "$prov" "$incoming" "$resolved"
+    fi
 
     cats="$(manifest_get '.categories | join(", ")')"
     if [ "$n" -eq 0 ]; then
@@ -487,7 +549,11 @@ EOF
         echo "vendored $n skill(s) [$cats] → $dest @ $ref"
     fi
 
-    if agents_enabled; then agents_apply "$resolved"; fi
+    if agents_enabled; then
+        agents_apply "$resolved"
+    elif [ -n "$_cs_orphan" ]; then
+        devendor_agents "$_cs_orphan"
+    fi
 }
 
 # verify_agents_pass CLONE — drift-check the vendored agents against the pin.
@@ -559,12 +625,12 @@ cmd_verify() {
         if repo_has_synced; then
             die "manifest requests skills but none are vendored ($prov missing) — run 'task sync:skills' and commit"
         fi
+        # Nothing is stamped, so nothing can have drifted — return WITHOUT
+        # cloning. The clean skip is documented as costing no network, and a
+        # fresh scaffold's ref is often still a placeholder: cloning here would
+        # fail verify on an unreachable source before the repo's first sync,
+        # which is precisely the state the skip exists to keep green.
         echo "verify:skills: not synced yet — skipping (run 'task sync:skills')"
-        if agents_enabled; then
-            WORKDIR="$(mktemp -d)"
-            clone_ref "$(manifest_get '.source.ref')" "$WORKDIR/devkit" >/dev/null
-            verify_agents_pass "$WORKDIR/devkit"
-        fi
         return 0
     fi
     ref="$(manifest_get '.source.ref')"
@@ -608,7 +674,13 @@ EOF
     fi
     echo "✓ vendored skills in sync with $ref (local skills untouched/ignored)"
 
-    if agents_enabled; then verify_agents_pass "$WORKDIR/devkit"; fi
+    if agents_enabled; then
+        verify_agents_pass "$WORKDIR/devkit"
+    else
+        _cv_orphan="$(orphaned_agents_dest "$prov")"
+        [ -z "$_cv_orphan" ] ||
+            die "agents are still vendored in $_cv_orphan but the manifest no longer requests them — run 'task sync:skills' to de-vendor, and commit"
+    fi
 }
 
 cmd_verify_offline() {

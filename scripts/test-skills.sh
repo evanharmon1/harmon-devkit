@@ -610,6 +610,52 @@ write_agents_manifest_at "$CH" v0.1.0-agents "[ag-one]" "/etc/agents"
 expect_fail "agents: bad dest aborts the whole sync" run_sync_at "$CH" sync
 expect_ok "aborted sync left the skills pass untouched" test -f "$CH/vendored/skills/uni-one/SKILL.md"
 
+# --- de-vendoring: removing the agents block must not strand the files ----
+# A vendoring tool needs an un-vendoring path. `agents.dest` lives INSIDE the
+# optional block, so deleting the block also deletes the only record of where
+# the agents went — hence the `# agents-dest:` breadcrumb on the skills stamp.
+CD2="$TMPROOT/consumer-agents-devendor"
+mkdir -p "$CD2"
+write_agents_manifest_at "$CD2" v0.1.0-agents "[ag-one]"
+run_sync_at "$CD2" sync >/dev/null
+expect_ok "de-vendor: agent vendored to begin with" test -f "$CD2/vendored/agents/ag-one.md"
+expect_ok "de-vendor: skills stamp records the agents dest" \
+    grep -q "^# agents-dest: vendored/agents$" "$CD2/vendored/skills/.SKILLS_PROVENANCE"
+# A local agent in the same directory must survive the de-vendor.
+echo "# local, keep me" >"$CD2/vendored/agents/mine.md"
+
+# Drop the agents block entirely.
+write_manifest_at "$CD2" v0.1.0-agents universal
+expect_fail_contains "de-vendor: verify flags agents left behind" \
+    "no longer requests them" run_sync_at "$CD2" verify
+expect_ok "de-vendor: sync removes them" run_sync_at "$CD2" sync
+expect_ok "de-vendor: managed agent gone" test ! -e "$CD2/vendored/agents/ag-one.md"
+expect_ok "de-vendor: agents stamp gone" test ! -e "$CD2/vendored/agents/.AGENTS_PROVENANCE"
+expect_ok "de-vendor: LOCAL agent survived" grep -q "keep me" "$CD2/vendored/agents/mine.md"
+expect_ok "de-vendor: verify passes afterwards" run_sync_at "$CD2" verify
+expect_ok "de-vendor: breadcrumb cleared from the skills stamp" \
+    grep -q "^# agents-dest:$" "$CD2/vendored/skills/.SKILLS_PROVENANCE"
+# Idempotent: a second sync with no block has nothing left to remove.
+expect_ok "de-vendor: repeat sync is a no-op" run_sync_at "$CD2" sync
+
+# A repo that NEVER had agents is unaffected by any of this.
+CD3="$TMPROOT/consumer-never-agents"
+mkdir -p "$CD3"
+write_manifest_at "$CD3" v0.1.0-agents universal
+expect_ok "never-agents: sync succeeds" run_sync_at "$CD3" sync
+expect_ok "never-agents: empty breadcrumb written" \
+    grep -q "^# agents-dest:$" "$CD3/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "never-agents: verify passes" run_sync_at "$CD3" verify
+
+# --- a fresh scaffold's clean skip must not hit the network ---------------
+# The skip is documented as costing no clone. A placeholder ref in a
+# not-yet-synced repo must therefore not fail verify.
+CZ="$TMPROOT/consumer-fresh-noclone"
+mkdir -p "$CZ"
+write_agents_manifest_at "$CZ" v9.9.9-unreachable "[ag-one]"
+expect_ok "fresh scaffold: verify skips without cloning an unreachable ref" \
+    run_sync_at "$CZ" verify
+
 # --- a malformed agents.names must never resolve to "vendor nothing" ------
 # `yq '.agents.names[]'` exits 0 and prints nothing for a missing key or a
 # scalar, so `names: "*"` (the natural mis-spelling of `["*"]`) would otherwise
