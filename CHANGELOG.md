@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.15.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.15.1...v0.15.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* **track-work:** make the ATX heading test portable to mawk ([#239](https://github.com/evanharmon1/harmon-devkit/issues/239)) ([e7448b6](https://github.com/evanharmon1/harmon-devkit/commit/e7448b68318435bd5d5c40008d4d85a1e262f532))
+* update to harmon-init v4.11.0 (shared devcontainer image) ([#243](https://github.com/evanharmon1/harmon-devkit/issues/243)) ([0880fd3](https://github.com/evanharmon1/harmon-devkit/commit/0880fd3bcf41d163487681b63454b03a0efdd9cf))
+
 ## [0.15.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.15.0...v0.15.1) (2026-08-01)
 
 
