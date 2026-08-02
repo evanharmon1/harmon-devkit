@@ -227,6 +227,7 @@ tasks:
       - test:hygiene
       - test:archive-hook
       - test:track-work
+      - test:skill-index-lifecycle
 
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)
@@ -302,6 +303,11 @@ tasks:
     desc: Offline regression tests for the SessionEnd transcript-archive hook template
     cmds:
       - ./scripts/test-archive-hook.sh
+
+  test:skill-index-lifecycle:
+    desc: Guard public skill indexes against stale lifecycle language
+    cmds:
+      - ./scripts/test-skill-index-lifecycle.sh
 
   # ── Second-model review (Codex) ───────────────────────────────
   # Optional second AI model (the OpenAI Codex CLI) reviewing the current

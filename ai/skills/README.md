@@ -14,8 +14,8 @@ ai/skills/
 ├── universal/   # every repo gets these
 │   ├── orient/SKILL.md      # /orient — orient + name the session
 │   ├── preflight/SKILL.md   # /preflight — sanity-check + claim the issue
-│   ├── implement/SKILL.md   # /implement — claimed issue → green PR via the dev loop
-│   ├── shepherd/SKILL.md    # /shepherd — watch an open PR's CI/reviews to green
+│   ├── implement/SKILL.md   # /implement — claimed issue → ready-for-review PR via the dev loop
+│   ├── shepherd/SKILL.md    # /shepherd — shepherd a draft PR to ready for review
 │   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables
 │   ├── close/SKILL.md       # /close — wrap up + rename done-<name>
 │   └── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
@@ -29,7 +29,7 @@ ai/skills/
 
 `universal/` ships the dev-workflow session suite — six user-invoked slash
 commands (`disable-model-invocation: true`) covering the phases of a working
-session, from naming it to shepherding its PR to green — plus `track-work`,
+session, from naming it to shepherding its PR to ready for review — plus `track-work`,
 which is deliberately **not** slash-only. Tracking
 mistakes happen mid-flow, while a PR body is being written and nobody is typing
 a command, so it must be model-invocable to fire at all. It also bundles
