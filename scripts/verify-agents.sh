@@ -6,7 +6,8 @@
 #
 #   1. Every agent file has valid frontmatter: a leading `---` block with
 #      `name:` and `description:` keys.
-#   2. The frontmatter `name:` matches the filename (minus `.md`).
+#   2. The frontmatter `name:` matches the filename (minus `.md`), and that
+#      name is kebab-case — it is used as a path on both sides of the vendor.
 #   3. No agent name collides with a skill directory name under `ai/skills/`.
 #   4. Frontmatter carries `name` and `description` and nothing else — the
 #      portability contract in ai/agents/README.md, which is otherwise a rule
@@ -167,6 +168,18 @@ while IFS= read -r md; do
         err "$md: frontmatter block is never closed (needs a second '---')"
         continue
     fi
+    # --- kebab-case ------------------------------------------------------
+    # Not cosmetic: the vendoring engine uses this name as a PATH on both
+    # sides (ai/agents/<name>.md -> <dest>/<name>.md), so a space, a slash, or
+    # a capital is a path hazard — the latter silently colliding on a
+    # case-insensitive filesystem, where `Foo.md` and `foo.md` are one file.
+    case "$name" in
+    "" | -* | *- | *[!a-z0-9-]*)
+        err "$md: agent name '$name' is not kebab-case ([a-z0-9-], no leading/trailing '-')"
+        continue
+        ;;
+    esac
+
     fm_name="$(frontmatter_name "$md")"
     # trim CR and surrounding quotes
     fm_name="${fm_name%$'\r'}"

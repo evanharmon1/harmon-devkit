@@ -41,7 +41,10 @@ ignores the frontmatter.
   file. Restrict scope in the body instead; a consumer that wants a hard
   capability limit can add `tools:` to its own vendored copy.
 - **`name` matches the filename** (kebab-case, no extension), and must not
-  collide with a skill name — `task validate:agents` enforces both.
+  collide with a skill name — `task validate:agents` enforces all three. The
+  kebab-case rule is not cosmetic: the name becomes a path on both sides of the
+  vendor, so a space or a capital is a path hazard, the latter colliding
+  silently with its lowercase twin on a case-insensitive filesystem.
 - **Reference skills by reading the file, never by invoking one.** A subagent
   has no slash commands, and the dev-workflow skills are user-invocable only
   (`disable-model-invocation: true`), so nothing can invoke them on a model's

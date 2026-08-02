@@ -140,6 +140,19 @@ newrepo "$R11"
 expect_fail_contains "unclosed frontmatter fails" "$R11" \
     "frontmatter block is never closed"
 
+# Non-kebab-case names are refused — they become paths on both sides of the
+# vendor, and a capital collides with its lowercase twin on a case-insensitive
+# filesystem.
+R14="$TMPROOT/not-kebab"
+newrepo "$R14"
+mkagent "$R14" "Juliet"
+expect_fail_contains "an uppercase agent name fails" "$R14" "is not kebab-case"
+
+R15="$TMPROOT/spaced-name"
+newrepo "$R15"
+mkagent "$R15" "kilo lima"
+expect_fail_contains "an agent name with a space fails" "$R15" "is not kebab-case"
+
 # A Claude-specific frontmatter key breaks the portability contract.
 R12="$TMPROOT/extra-key"
 newrepo "$R12"
