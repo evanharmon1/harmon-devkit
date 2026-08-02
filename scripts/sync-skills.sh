@@ -112,6 +112,43 @@ repo_has_synced() {
     return 1
 }
 
+# normalize_path PATH — the canonical spelling of a repo-relative path, for
+# comparing two of them.
+#
+# Rebuilt from components rather than pattern-substituted, because the substring
+# approach is only ever an approximation: `a/./././b` defeats a single global
+# `s#/\./#/#g` (the matches overlap), and each new alias shape needs another
+# rule. Component rebuild is complete by construction.
+#
+# NOT canonicalization — no symlink resolution, no filesystem access, and `..`
+# is deliberately PRESERVED so assert_safe_dest still sees and rejects it.
+# What is dropped is exactly the set that names the same directory: `.`
+# components, empty components from `//`, and a trailing slash.
+normalize_path() {
+    _np_out=""
+    _np_in="$1"
+    # Preserve absolute-ness. An absolute path's leading `/` produces an EMPTY
+    # first component, which the loop drops like any other — silently turning
+    # `/etc/agents` into `etc/agents`, a relative path that assert_safe_dest is
+    # then happy to accept. Caught by the pre-existing unsafe-dest tests.
+    _np_abs=""
+    case "$_np_in" in
+    /*) _np_abs="/" ;;
+    esac
+    while [ -n "$_np_in" ]; do
+        _np_seg="${_np_in%%/*}"
+        case "$_np_in" in
+        */*) _np_in="${_np_in#*/}" ;;
+        *) _np_in="" ;;
+        esac
+        case "$_np_seg" in
+        "" | ".") continue ;;
+        esac
+        _np_out="${_np_out:+$_np_out/}$_np_seg"
+    done
+    printf '%s' "$_np_abs$_np_out"
+}
+
 # assert_safe_dest DEST KIND — refuse a destination that could reach outside the
 # repo. Both passes delete paths under their dest, so this runs before any rm.
 assert_safe_dest() {
@@ -352,6 +389,7 @@ write_provenance() {
 agents_dest() {
     _ad="$(manifest_get '.agents.dest')"
     [ -n "$_ad" ] && [ "$_ad" != "null" ] || die "manifest: agents.dest is required when an 'agents:' block is present"
+    _ad="$(normalize_path "$_ad")"
     assert_safe_dest "$_ad" "agents"
     # Not just inequality — NON-OVERLAP. Either dest containing the other is the
     # same hazard as sharing one: the skills pass does `rm -rf` on a managed
@@ -360,9 +398,10 @@ agents_dest() {
     # and agent files inside a skill directory fail skill verification anyway.
     # Trailing slashes are stripped so `vend/skills/` and `vend/skills` cannot
     # spell the same directory two ways and slip past a string compare.
-    _ad="${_ad%/}"
-    _sd="$(manifest_get '.dest')"
-    _sd="${_sd%/}"
+    # Normalize before comparing: `./vend/skills/x` and `vend/skills/x` name the
+    # same directory, and only the second was caught by a string compare.
+    _ad="$(normalize_path "$_ad")"
+    _sd="$(normalize_path "$(manifest_get '.dest')")"
     case "$_ad" in
     "$_sd" | "$_sd"/*)
         die "manifest: agents.dest ('$_ad') must not be the skills dest or live inside it — each pass owns its own directory"
@@ -388,7 +427,7 @@ orphaned_agents_dest() {
     [ -f "$1" ] || return 0
     _oad="$(prov_field "$1" "agents-dest")"
     [ -n "$_oad" ] || return 0
-    _oad="${_oad%/}"
+    _oad="$(normalize_path "$_oad")"
     [ -f "$_oad/.AGENTS_PROVENANCE" ] || return 0
     echo "$_oad"
 }
@@ -422,7 +461,7 @@ assert_orphan_usable() {
 stale_agents_dest() {
     _sad="$(orphaned_agents_dest "$1")"
     [ -n "$_sad" ] || return 0
-    [ "$_sad" != "${2%/}" ] || return 0
+    [ "$_sad" != "$(normalize_path "$2")" ] || return 0
     echo "$_sad"
 }
 

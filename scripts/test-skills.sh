@@ -595,7 +595,7 @@ write_agents_manifest_at "$CE" v0.1.0-agents "[ag-one]" "vendored/skills"
 expect_fail_contains "agents.dest sharing the skills dest is refused" "each pass owns its own directory" \
     run_sync_at "$CE" sync
 
-for bad in "/etc/agents" "../outside" "vendored/../../outside"; do
+for bad in "/etc/agents" "//etc//agents" "/" "../outside" "./../outside" "vendored/../../outside"; do
     write_agents_manifest_at "$CE" v0.1.0-agents "[ag-one]" "$bad"
     expect_fail "agents: sync refuses unsafe dest '$bad'" run_sync_at "$CE" sync
 done
@@ -663,9 +663,22 @@ expect_fail_contains "skills dest nested inside agents.dest is refused" \
 write_agents_manifest_at "$CV" v0.1.0-agents "[ag-one]" "vendored/skills/"
 expect_fail_contains "a trailing slash cannot alias past the overlap check" \
     "each pass owns its own directory" run_sync_at "$CV" sync
-# Sibling directories remain fine.
+# Path ALIASES must not slip past either. `./x`, `x//y` and `x/./y` name the
+# same directory as `x/y`, and a string compare only caught some of them.
+for alias in "./vendored/skills/uni-one" "vendored//skills/uni-one" "vendored/./skills/uni-one" "./vendored/skills"; do
+    write_agents_manifest_at "$CV" v0.1.0-agents "[ag-one]" "$alias"
+    expect_fail_contains "overlap alias '$alias' is refused" \
+        "each pass owns its own directory" run_sync_at "$CV" sync
+done
+
+# Sibling directories remain fine, including when spelled with an alias.
 write_agents_manifest_at "$CV" v0.1.0-agents "[ag-one]" "vendored/agents"
 expect_ok "sibling dests are still accepted" run_sync_at "$CV" sync
+write_agents_manifest_at "$CV" v0.1.0-agents "[ag-one]" "./vendored/agents/"
+expect_ok "an aliased sibling dest is still accepted" run_sync_at "$CV" sync
+expect_ok "the aliased sibling vendored normally" test -f "$CV/vendored/agents/ag-one.md"
+# ...and normalization must not make an aliased spelling look like a moved dest.
+expect_ok "an aliased spelling is not mistaken for a dest change" run_sync_at "$CV" verify
 
 # --- moving agents.dest must not strand the old location ------------------
 # Same stranding bug as removing the block, one variant over: without this the
