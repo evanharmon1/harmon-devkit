@@ -89,14 +89,27 @@ KEY=$(jq -r '.oauthAccount
   | if .organizationUuid then .organizationUuid
     elif .accountUuid then "acct:" + .accountUuid
     else empty end' "$CJ")
-[ -n "$KEY" ] || echo "not signed in yet — run claude once first"
-jq --arg k "$KEY" '.fableOverageConsentV2 = ((.fableOverageConsentV2 // {}) | .[$k] = true)' \
-  "$CJ" >"$CJ.tmp" && mv "$CJ.tmp" "$CJ"
+if [ -z "$KEY" ]; then
+  echo "not signed in yet — run claude once, then re-run this"
+else
+  (umask 077
+   jq --arg k "$KEY" \
+     '.fableOverageConsentV2 = ((.fableOverageConsentV2 // {}) | .[$k] = true)' \
+     "$CJ" >"$CJ.tmp") && mv "$CJ.tmp" "$CJ"
+fi
 ```
 
 Then start Claude Code. It merges rather than replaces, so re-running it is
 harmless and another account's consent is left alone; the temp file is a
 sibling of the target so the replacement is an atomic rename.
+
+Two details in there are load-bearing rather than style. The `if` guards the
+write: with a bare `[ -n "$KEY" ] || echo …`, execution continues on failure
+and the update records consent under an **empty key**, corrupting the file it
+was meant to fix. And `umask 077` keeps the new file at `0600` — a plain
+redirect creates it with your umask, and the `mv` would then hand
+`~/.claude.json`, which holds OAuth account state, looser permissions than it
+started with.
 
 Two things make the timing matter. Claude Code caches `.claude.json` in memory
 at startup and never re-reads it, so a write during a session cannot affect
