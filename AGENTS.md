@@ -108,7 +108,7 @@ something to ask permission for.
   them to the PR (see "Deferring P2s" below). This loop is
   **self-referential** — the fixes you make in response to a round become the
   next round's input, so it can generate its own work indefinitely — and that
-  is what the cap defends against: max **6** challenge → fix → re-challenge
+  is what the cap defends against: max **4** challenge → fix → re-challenge
   rounds; if P0/P1 findings persist, stop and escalate to the maintainer.
   "Between rounds, check what the findings are about" below is how you catch
   the loop feeding on itself before the cap does.
@@ -125,7 +125,7 @@ something to ask permission for.
 - **`task review`** — verification-checkpoint review; same adjudication, same
   P0/P1 clean-pass exit condition, the same self-referential shape and so the
   same reason for a cap, and the same background-and-poll handling, with its
-  own max **6** rounds.
+  own max **4** rounds.
 - **`task ci`** — the full CI mirror; fix anything it catches.
 - **Open the draft PR** — conventional commit, push the branch, `gh pr create
   --draft` with a clear what/why/verification summary. Draft is the agent
@@ -139,7 +139,7 @@ something to ask permission for.
   `git -c credential.helper= -c credential.helper='!gh auth git-credential' -c url."https://github.com/".insteadOf="git@github.com:" -c url."https://github.com/".insteadOf="ssh://git@github.com/" -c url."https://github.com/".insteadOf="ssh://git@ssh.github.com:443/" -c url."https://github.com/".insteadOf="ssh://git@ssh.github.com/" push`
   (a credential helper only applies to HTTPS, and `insteadOf` is prefix
   matching — every SSH form needs its own mapping, hence all four).
-- **Shepherd the draft (`/shepherd`, max 5 rounds).** `gh pr create --draft`
+- **Shepherd the draft (`/shepherd`, max 4 rounds).** `gh pr create --draft`
   returning is
   the trigger for this stage, not the end of the work — enter it deliberately
   instead of judging for yourself when the PR is finished. `/shepherd` is the
@@ -179,7 +179,7 @@ something to ask permission for.
   sessions in the same checkout; it is not a distributed lock across separate
   checkouts or machines. Do not shepherd the same PR concurrently elsewhere.
   If ownership is ambiguous, stop and reconcile the remote trigger history
-  before continuing. If checks still fail or findings remain after 5 rounds,
+  before continuing. If checks still fail or findings remain after 4 rounds,
   leave the PR draft, stop, and summarize what's unresolved on the PR for the
   maintainer. Once the complete readiness gate is clean for the unchanged
   current head, confirm that every required workflow and review app can run on
@@ -295,7 +295,7 @@ round's fixes, ask where they *live* — in the change you set out to make, or i
 code that exists only because an earlier round asked for it. **A round whose
 findings are all about the previous round's fix is the tell**, and it is
 visible in round 2 — the first round that can show it. Do not wait for the
-pattern to be unmistakable in round 4.
+pattern to be unmistakable in round 3, by which point only one round is left.
 
 **Deleting the added code is a legitimate way to reach a clean pass.** When a
 round's findings are about scaffolding rather than the change, weigh removing
@@ -385,7 +385,7 @@ stated here and in the Dev Loop above, and holds whether or not the optional
 
 **Loop cap and exit:** a stage exits only on a **clean re-run** — no
 confirmed P0 or P1 findings — never on "findings fixed" alone, with at most
-**6** challenge iterations and **6** review iterations (challenge → fix →
+**4** challenge iterations and **4** review iterations (challenge → fix →
 re-challenge, and likewise for review). If P0/P1 disagreement persists at the
 cap, stop and surface it to the maintainer instead of iterating further.
 

@@ -545,7 +545,7 @@ expect_ok "standardization hands off only a ready-for-review PR" \
         grep -qF "reviews.auto_review.drafts: true" "$1" &&
         grep -qF "draft-time checks/review gate and final promotion" "$1" &&
         grep -qF "If the target has no vendored shepherd" "$1" &&
-        grep -qF "or five rounds when it states none" "$1" &&
+        grep -qF "or four rounds when it states none" "$1" &&
         grep -qF "ready on an unverified head" "$1" &&
         grep -qF "final ready promotion is confirmed" "$1"' sh \
     "$STANDARDIZE_SKILL"
