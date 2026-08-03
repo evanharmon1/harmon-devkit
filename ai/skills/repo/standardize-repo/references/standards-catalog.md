@@ -696,9 +696,13 @@ install the Renovate GitHub App on the repo. Conventions:
   introduced it default-on (and vendored the full source tree);
   current template source now deliberately defaults to `no`. Always pass an
   explicit per-repo answer on update because this is a deliberate operational
-  opt-in, not a passive lint config. A repo scaffolded before the v2 flip must drop
-  its vendored tree per foreman's migration guide (`git rm -r scripts/foreman`
-  plus a `test ! -d scripts/foreman` CI guard). Absence is deliberate when
+  opt-in, not a passive lint config. A repo scaffolded before the v2 flip must sweep
+  every retired v1 artifact per foreman's migration guide — port local
+  deltas first, then
+  `git rm -rf --ignore-unmatch scripts/foreman && git rm -f --ignore-unmatch .claude/agents/foreman-*.md docs/architecture/foreman.md`,
+  guarded in CI by `test ! -d scripts/foreman && test ! -e
+  docs/architecture/foreman.md && ! ls .claude/agents/foreman-*.md
+  >/dev/null 2>&1`. Absence is deliberate when
   `use_foreman: false`. **[copier]**
 - Devcontainer ships richer `config/claude-settings.json` as managed settings (see
   1.6). **[copier]**

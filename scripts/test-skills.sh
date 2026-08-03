@@ -464,11 +464,15 @@ expect_ok "standards catalog pins the foreman v2 uvx wrapper" \
 expect_fail "standards catalog no longer ships vendored foreman paths" \
     grep -qF '.claude/agents/foreman-preflight' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog recipe matches the complete forced sweep" \
+    sh -c 'grep -qF "git rm -rf --ignore-unmatch scripts/foreman" "$1" &&
+        grep -qF "docs/architecture/foreman.md" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "update guidance documents the Foreman default transition" \
     grep -qF 'It was default-on when introduced in v3.26.1' \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance removes the vendored foreman tree on migration" \
-    sh -c 'grep -qF "git rm -rf scripts/foreman" "$1" &&
+    sh -c 'grep -qF "git rm -rf --ignore-unmatch scripts/foreman" "$1" &&
         grep -qF "test ! -d scripts/foreman" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance sweeps every retired foreman artifact" \
