@@ -479,6 +479,10 @@ expect_ok "update guidance branches the migration on the use_foreman answer" \
     sh -c 'grep -qF "use_foreman=false" "$1" &&
         grep -qF "nothing to migrate" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "inventory guidance gates the wrapper proof on the reviewed answer" \
+    sh -c 'grep -qF "branch on the reviewed \`use_foreman\`" "$1" &&
+        grep -qF "does not exist and must not be required" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "preflight skill names the renamed foreman-vet sibling" \
     grep -qF 'foreman-vet' "$PREFLIGHT_SKILL"
 expect_fail "preflight skill drops the retired foreman-preflight sibling claim" \

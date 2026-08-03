@@ -1184,15 +1184,22 @@ successor lacks — port that intentional delta to the successor first, the
 same judgment call as any DRIFT.
 
 A range that crosses the Foreman v2 flip is the canonical whole-subtree case:
-every `scripts/foreman/*` entry shows as an old-side deletion with no
-in-repo successor, because the successor is the packaged dependency the
-`taskfiles/foreman.yml` wrapper pins via
-`uvx --from git+https://github.com/ponderousdev/foreman@v{{.FOREMAN_VERSION}}`.
-Do not repoint anything at the vendored tree — remove it wholesale
-(`git rm -r scripts/foreman`, per foreman's migration guide), then prove the
-wrapper resolves to the pin: `task foreman:plan` must succeed with the
-vendored tree gone. A `test ! -d scripts/foreman` guard in CI keeps the
-subtree from silently returning.
+every `scripts/foreman/*` entry shows as an old-side deletion. Do not
+repoint anything at the vendored tree — remove it wholesale
+(`git rm -r scripts/foreman`, per foreman's migration guide) under either
+answer, then branch on the reviewed `use_foreman`:
+
+- `true`: the in-repo successor is the packaged dependency the
+  `taskfiles/foreman.yml` wrapper pins via
+  `uvx --from git+https://github.com/ponderousdev/foreman@v{{.FOREMAN_VERSION}}`;
+  prove it resolves — `task foreman:plan` must succeed with the vendored
+  tree gone — and a `test ! -d scripts/foreman` guard in CI (extended to
+  the other retired paths, per the migration section) keeps the subtree
+  from silently returning.
+- `false`: there is no successor — the render carries no wrapper, so
+  `task foreman:plan` does not exist and must not be required. The check is
+  the sweep itself: retired paths gone, `task --list` shows no `foreman:*`
+  targets.
 
 **The template-side diff cannot see hand-copied ancestors — sweep the
 repo's own inventory too.** A helper the repo adopted by hand (e.g. copied
