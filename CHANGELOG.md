@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.19.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.18.0...v0.19.0) (2026-08-03)
+
+
+### Features
+
+* **skills:** retarget the foreman standard to the v2 thin uvx integration ([#237](https://github.com/evanharmon1/harmon-devkit/issues/237)) ([0c2e549](https://github.com/evanharmon1/harmon-devkit/commit/0c2e549f171cfde8a945df7a4bd3502d82265848))
+
 ## [0.18.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.17.0...v0.18.0) (2026-08-02)
 
 
