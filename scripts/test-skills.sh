@@ -883,6 +883,7 @@ STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 SHEPHERD_SKILL="$repo/ai/skills/universal/shepherd/SKILL.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
+PREFLIGHT_SKILL="$repo/ai/skills/universal/preflight/SKILL.md"
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
     grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
 
@@ -906,9 +907,39 @@ expect_ok "standards catalog documents the web-only skills-sync default" \
 expect_ok "standards catalog documents Foreman as deliberate opt-in" \
     grep -qF 'current template source now deliberately' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog pins the foreman v2 uvx wrapper" \
+    grep -qF 'uvx --from git+https://github.com/ponderousdev/foreman@v' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "standards catalog no longer ships vendored foreman paths" \
+    grep -qF '.claude/agents/foreman-preflight' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog recipe matches the complete forced sweep" \
+    sh -c 'grep -qF "git rm -rf --ignore-unmatch scripts/foreman" "$1" &&
+        grep -qF "docs/architecture/foreman.md" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "update guidance documents the Foreman default transition" \
     grep -qF 'It was default-on when introduced in v3.26.1' \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance removes the vendored foreman tree on migration" \
+    sh -c 'grep -qF "git rm -rf --ignore-unmatch scripts/foreman" "$1" &&
+        grep -qF "test ! -d scripts/foreman" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance sweeps every retired foreman artifact" \
+    sh -c 'grep -qF ".claude/agents/foreman-*.md" "$1" &&
+        grep -qF "docs/architecture/foreman.md" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance branches the migration on the use_foreman answer" \
+    sh -c 'grep -qF "use_foreman=false" "$1" &&
+        grep -qF "nothing to migrate" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "inventory guidance gates the wrapper proof on the reviewed answer" \
+    sh -c 'grep -qF "branch on the reviewed \`use_foreman\`" "$1" &&
+        grep -qF "does not exist and must not be required" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "preflight skill names the renamed foreman-vet sibling" \
+    grep -qF 'foreman-vet' "$PREFLIGHT_SKILL"
+expect_fail "preflight skill drops the retired foreman-preflight sibling claim" \
+    grep -qF "sibling of harmon-init's \`foreman-preflight\`" "$PREFLIGHT_SKILL"
 expect_ok "new-repo guidance exposes the explicit CodeQL answer" \
     grep -qF '| `use_codeql` | bool |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
@@ -3142,10 +3173,11 @@ for required in \
     scripts/sync-skills.sh \
     .github/workflows/close-milestone-on-release.yml \
     .foreman.toml \
-    taskfiles/foreman.yml \
-    scripts/foreman/cli.py; do
+    taskfiles/foreman.yml; do
     expect_ok "template-owned manifest includes $required" grep -qxF "$required" "$manifest"
 done
+expect_fail "template-owned manifest lists no vendored foreman source" \
+    grep -q '^scripts/foreman/' "$manifest"
 
 # Exercise executable-mode drift, equivalent mature layouts, legacy CodeRabbit
 # opt-out handling, and index-backed transient deletions end to end with a tiny

@@ -25,9 +25,10 @@ user's own settings may already allow `gh` broadly), and untrusted issue
 content must never be able to trigger a mutation silently.
 
 Run this right before starting implementation. It is the lightweight
-interactive sibling of harmon-init's `foreman-preflight` agent and uses the
-same severity vocabulary. Everything is read-only except the final
-issue-claiming step.
+interactive sibling of Foreman's `foreman-vet` agent (renamed from
+`foreman-preflight` — Foreman's own `preflight` command is now its empirical
+security-assertion gate, not issue analysis) and uses the same severity
+vocabulary. Everything is read-only except the final issue-claiming step.
 
 ## 1. Target
 
@@ -129,7 +130,7 @@ explicit confirmation from the user. Then look for:
     when the key is absent, that root is the repository root, not "no root to
     search"; `verify-applied.sh` treats empty, `.`, and `/` alike. Do not
     build a literal path: filenames there carry Jinja conditionals in `[% %]`
-    delimiters, so `template/.claude/[% if use_foreman %]agents[% endif %]/…`
+    delimiters, so `template/[% if use_foreman %]taskfiles[% endif %]/…`
     matches no literal path and, unquoted, reads as a shell glob. Match on the
     basename or on a distinctive line of the body instead. Say **which
     revision** you searched: a checkout you were handed can be stale, dirty, or

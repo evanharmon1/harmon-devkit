@@ -64,41 +64,20 @@ commitlint.config.mjs
 .github/workflows/deploy-preview.yml
 .github/workflows/project-automation.yml
 .github/workflows/terraform.yml
+.github/actions/setup/action.yml
 
 # ── Foreman (conditional on use_foreman) ─────────────────────────────────────
+# Foreman v2 is a thin integration (ponderousdev/foreman#12): the consumer
+# holds only the wrapper Taskfile — its FOREMAN var runs a renovate-pinned
+# `uvx --from git+https://github.com/ponderousdev/foreman@v<FOREMAN_VERSION>`
+# — and the consumer config. Foreman source is never vendored into consumers
+# (no scripts/foreman/, no .claude/agents/foreman-*.md, no architecture doc).
+# Retired v1 paths are deliberately NOT listed here: entries absent from the
+# render are skipped, so this manifest cannot flag leftovers. Removing them
+# from pre-v2 repos is the update-mode migration sweep (references/
+# mode-update.md), which covers both use_foreman answers.
 .foreman.toml
 taskfiles/foreman.yml
-docs/architecture/foreman.md
-.claude/agents/foreman-implementer.md
-.claude/agents/foreman-preflight.md
-.claude/agents/foreman-shepherd.md
-scripts/foreman/__init__.py
-scripts/foreman/__main__.py
-scripts/foreman/backend.py
-scripts/foreman/backends/claude.sh
-scripts/foreman/backends/mock.sh
-scripts/foreman/cli.py
-scripts/foreman/config.py
-scripts/foreman/dispatch.py
-scripts/foreman/github.py
-scripts/foreman/graph.py
-scripts/foreman/inputs.py
-scripts/foreman/pr.py
-scripts/foreman/prompts/implementer-preamble.md
-scripts/foreman/prompts/preflight.md
-scripts/foreman/prompts/shepherd-adjudicate.md
-scripts/foreman/prompts/shepherd-ci-fix.md
-scripts/foreman/prompts/shepherd-rebase.md
-scripts/foreman/report.py
-scripts/foreman/shepherd.py
-scripts/foreman/signatures.py
-scripts/foreman/signatures.toml
-scripts/foreman/spec.py
-scripts/foreman/util.py
-scripts/foreman/verify.py
-scripts/foreman/watch.py
-scripts/foreman/worktree.py
-.github/actions/setup/action.yml
 
 # ── Devcontainer (template-owned lifecycle + tooling) ─────────────────────────
 .devcontainer/Dockerfile

@@ -365,10 +365,44 @@ unconditionally and cannot satisfy a reviewed false answer.
 Every newly introduced question needs an explicit decision. This is especially
 important for a feature with a material footprint or an external capability:
 
-- `use_foreman` adds its supervisor, agents, taskfile, configuration,
-  documentation, and tests. It was default-on when introduced in v3.26.1;
-  current template source defaults it off. Update mode must still decide whether
-  the target should opt in.
+- `use_foreman` adds the thin Foreman v2 integration
+  (ponderousdev/foreman#12): `taskfiles/foreman.yml`, a wrapper whose
+  `FOREMAN` var runs
+  `uvx --from git+https://github.com/ponderousdev/foreman@v{{.FOREMAN_VERSION}} foreman`
+  against a renovate-annotated `FOREMAN_VERSION` tag pin, plus `.foreman.toml`
+  (consumer config). The supervisor's source stays in ponderousdev/foreman —
+  consumers vendor none of it, and source updates arrive as Renovate pin
+  bumps. It was default-on when introduced in v3.26.1, which also vendored the
+  full source tree under `scripts/foreman/`; current template source defaults
+  it off and ships no source at all. Update mode must still decide whether the
+  target should opt in. A target scaffolded before the v2 flip carries the
+  whole v1 footprint, and `copier update` deletes none of it (Copier never
+  deletes files the template stopped emitting). The retired v1 artifacts are
+  removed under BOTH answers — port any local modifications the repo wants to
+  keep, then sweep `scripts/foreman/`, `.claude/agents/foreman-*.md`, and
+  `docs/architecture/foreman.md`
+  (`git rm -rf --ignore-unmatch scripts/foreman && git rm -f --ignore-unmatch .claude/agents/foreman-*.md docs/architecture/foreman.md`;
+  `-f` because the locally modified survivors this sweep explicitly targets
+  fail `git rm`'s up-to-date check — port their deltas FIRST, the force
+  flag is not a license to skip that — and `--ignore-unmatch` because on an
+  unmodified repo `copier update` may have staged the deletions already, so
+  an absent path must not abort the chain). Then branch on the answer:
+  - `use_foreman=true`: migrate `.foreman.toml` keys (`verify_command` → the
+    `[verify]` table with a `default` command plus capability-keyed
+    additions; `comment_trust` → `trusted_actors`; new `runner` and
+    `required_capabilities`), and prove the wrapper resolves to the pin —
+    `task foreman:plan` must succeed with no `scripts/foreman/` present. A CI
+    guard keeps every retired path from coming back: `test ! -d
+    scripts/foreman && test ! -e docs/architecture/foreman.md && ! ls
+    .claude/agents/foreman-*.md >/dev/null 2>&1`. Note the command rename:
+    read-only issue analysis is now `foreman vet`; `foreman preflight` is the
+    empirical security-assertion gate.
+  - `use_foreman=false`: the target render intentionally carries no Foreman
+    files, so there is nothing to migrate and no wrapper to validate —
+    `task foreman:plan` cannot succeed and must not be required. Beyond the
+    sweep above, remove the rest of the legacy integration: `.foreman.toml`,
+    `taskfiles/foreman.yml`, and any hand-added root-Taskfile include of it,
+    then confirm `task --list` shows no `foreman:*` targets.
 - `use_coderabbit` adds a third-party GitHub App integration and defaults off.
   Pass `--data use_coderabbit=false` unless the repository is deliberately
   retaining CodeRabbit. The false path removes `.coderabbit.yaml` and bot trust,
@@ -1138,8 +1172,8 @@ stays behind silently while every workflow/Taskfile reference to it keeps
 inventory entry against the tree and clean up the ones still present:
 
 ```bash
-# -r: recurse — shipped subtrees (scripts/foreman/…) hide renames from a
-# top-level listing
+# -r: recurse — shipped subtrees hide renames from a top-level listing (e.g.
+# the scripts/foreman/ tree that pre-v2 template revisions vendored)
 diff <(git -C ~/git/harmon-init ls-tree -r --name-only <old> template/scripts/) \
      <(git -C ~/git/harmon-init ls-tree -r --name-only <new> template/scripts/)
 ```
@@ -1153,6 +1187,27 @@ locally-modified orphan carries repo-specific behavior the canonical
 successor lacks — port that intentional delta to the successor first, the
 same judgment call as any DRIFT.
 
+A range that crosses the Foreman v2 flip is the canonical whole-subtree case:
+every `scripts/foreman/*` entry shows as an old-side deletion. Do not
+repoint anything at the vendored tree — remove it wholesale
+(`git rm -rf --ignore-unmatch scripts/foreman`, per foreman's migration
+guide — `-f` so locally modified survivors whose deltas were already
+ported still stage, `--ignore-unmatch` so an already-clean tree exits 0)
+under either
+answer, then branch on the reviewed `use_foreman`:
+
+- `true`: the in-repo successor is the packaged dependency the
+  `taskfiles/foreman.yml` wrapper pins via
+  `uvx --from git+https://github.com/ponderousdev/foreman@v{{.FOREMAN_VERSION}}`;
+  prove it resolves — `task foreman:plan` must succeed with the vendored
+  tree gone — and a `test ! -d scripts/foreman` guard in CI (extended to
+  the other retired paths, per the migration section) keeps the subtree
+  from silently returning.
+- `false`: there is no successor — the render carries no wrapper, so
+  `task foreman:plan` does not exist and must not be required. The check is
+  the sweep itself: retired paths gone, `task --list` shows no `foreman:*`
+  targets.
+
 **The template-side diff cannot see hand-copied ancestors — sweep the
 repo's own inventory too.** A helper the repo adopted by hand (e.g. copied
 from harmon-init's root layer before the template shipped it) was never in
@@ -1163,9 +1218,8 @@ ADDS, grep the repo for a predecessor under a different name; and list the
 repo's template-extra scripts outright and judge each one (local keeper vs
 orphan of a new successor).
 
-Sweep against a **rendered** inventory, never the raw template tree. Three
-quarters of `template/scripts/` is jinja-wrapped (`[% if use_codeql %]…`,
-and `foreman/`'s whole subtree hangs off one wrapped parent directory), so a
+Sweep against a **rendered** inventory, never the raw template tree. Much of
+`template/scripts/` is jinja-wrapped (`[% if use_codeql %]…`), so a
 raw `ls-tree` listing reports every gated file the repo legitimately owns as
 "repo-extra" and buries the handful of real orphans. Render the target once
 under the repo's own post-update answers and compare against that — the
