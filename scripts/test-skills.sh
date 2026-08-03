@@ -468,7 +468,7 @@ expect_ok "update guidance documents the Foreman default transition" \
     grep -qF 'It was default-on when introduced in v3.26.1' \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance removes the vendored foreman tree on migration" \
-    sh -c 'grep -qF "git rm -r scripts/foreman" "$1" &&
+    sh -c 'grep -qF "git rm -rf scripts/foreman" "$1" &&
         grep -qF "test ! -d scripts/foreman" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance sweeps every retired foreman artifact" \

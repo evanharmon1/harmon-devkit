@@ -381,8 +381,11 @@ important for a feature with a material footprint or an external capability:
   removed under BOTH answers — port any local modifications the repo wants to
   keep, then sweep `scripts/foreman/`, `.claude/agents/foreman-*.md`, and
   `docs/architecture/foreman.md`
-  (`git rm -r scripts/foreman && git rm .claude/agents/foreman-*.md docs/architecture/foreman.md`,
-  dropping the arguments a given repo never had). Then branch on the answer:
+  (`git rm -rf scripts/foreman && git rm -f .claude/agents/foreman-*.md docs/architecture/foreman.md`,
+  dropping the arguments a given repo never had; `-f` because the locally
+  modified survivors this sweep explicitly targets fail `git rm`'s
+  up-to-date check — port their deltas FIRST, the force flag is not a
+  license to skip that). Then branch on the answer:
   - `use_foreman=true`: migrate `.foreman.toml` keys (`verify_command` → the
     `[verify]` table with a `default` command plus capability-keyed
     additions; `comment_trust` → `trusted_actors`; new `runner` and
@@ -1186,7 +1189,9 @@ same judgment call as any DRIFT.
 A range that crosses the Foreman v2 flip is the canonical whole-subtree case:
 every `scripts/foreman/*` entry shows as an old-side deletion. Do not
 repoint anything at the vendored tree — remove it wholesale
-(`git rm -r scripts/foreman`, per foreman's migration guide) under either
+(`git rm -rf scripts/foreman`, per foreman's migration guide — `-f` so
+locally modified survivors whose deltas were already ported still stage)
+under either
 answer, then branch on the reviewed `use_foreman`:
 
 - `true`: the in-repo successor is the packaged dependency the
