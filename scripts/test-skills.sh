@@ -471,6 +471,14 @@ expect_ok "update guidance removes the vendored foreman tree on migration" \
     sh -c 'grep -qF "git rm -r scripts/foreman" "$1" &&
         grep -qF "test ! -d scripts/foreman" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance sweeps every retired foreman artifact" \
+    sh -c 'grep -qF ".claude/agents/foreman-*.md" "$1" &&
+        grep -qF "docs/architecture/foreman.md" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance branches the migration on the use_foreman answer" \
+    sh -c 'grep -qF "use_foreman=false" "$1" &&
+        grep -qF "nothing to migrate" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "preflight skill names the renamed foreman-vet sibling" \
     grep -qF 'foreman-vet' "$PREFLIGHT_SKILL"
 expect_fail "preflight skill drops the retired foreman-preflight sibling claim" \

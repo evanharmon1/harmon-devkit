@@ -375,17 +375,30 @@ important for a feature with a material footprint or an external capability:
   bumps. It was default-on when introduced in v3.26.1, which also vendored the
   full source tree under `scripts/foreman/`; current template source defaults
   it off and ships no source at all. Update mode must still decide whether the
-  target should opt in. A target scaffolded before the v2 flip keeps its
-  vendored tree after `copier update` (Copier never deletes files the template
-  stopped emitting): remove it explicitly (`git rm -r scripts/foreman`),
-  migrate `.foreman.toml` keys (`verify_command` → the `[verify]` table with a
-  `default` command plus capability-keyed additions; `comment_trust` →
-  `trusted_actors`; new `runner` and `required_capabilities`), and prove the
-  wrapper resolves to the pin — `task foreman:plan` must succeed with no
-  `scripts/foreman/` present, and a `test ! -d scripts/foreman` CI guard keeps
-  it from coming back. Note the command rename: read-only issue analysis is
-  now `foreman vet`; `foreman preflight` is the empirical security-assertion
-  gate.
+  target should opt in. A target scaffolded before the v2 flip carries the
+  whole v1 footprint, and `copier update` deletes none of it (Copier never
+  deletes files the template stopped emitting). The retired v1 artifacts are
+  removed under BOTH answers — port any local modifications the repo wants to
+  keep, then sweep `scripts/foreman/`, `.claude/agents/foreman-*.md`, and
+  `docs/architecture/foreman.md`
+  (`git rm -r scripts/foreman && git rm .claude/agents/foreman-*.md docs/architecture/foreman.md`,
+  dropping the arguments a given repo never had). Then branch on the answer:
+  - `use_foreman=true`: migrate `.foreman.toml` keys (`verify_command` → the
+    `[verify]` table with a `default` command plus capability-keyed
+    additions; `comment_trust` → `trusted_actors`; new `runner` and
+    `required_capabilities`), and prove the wrapper resolves to the pin —
+    `task foreman:plan` must succeed with no `scripts/foreman/` present. A CI
+    guard keeps every retired path from coming back: `test ! -d
+    scripts/foreman && test ! -e docs/architecture/foreman.md && ! ls
+    .claude/agents/foreman-*.md >/dev/null 2>&1`. Note the command rename:
+    read-only issue analysis is now `foreman vet`; `foreman preflight` is the
+    empirical security-assertion gate.
+  - `use_foreman=false`: the target render intentionally carries no Foreman
+    files, so there is nothing to migrate and no wrapper to validate —
+    `task foreman:plan` cannot succeed and must not be required. Beyond the
+    sweep above, remove the rest of the legacy integration: `.foreman.toml`,
+    `taskfiles/foreman.yml`, and any hand-added root-Taskfile include of it,
+    then confirm `task --list` shows no `foreman:*` targets.
 - `use_coderabbit` adds a third-party GitHub App integration and defaults off.
   Pass `--data use_coderabbit=false` unless the repository is deliberately
   retaining CodeRabbit. The false path removes `.coderabbit.yaml` and bot trust,

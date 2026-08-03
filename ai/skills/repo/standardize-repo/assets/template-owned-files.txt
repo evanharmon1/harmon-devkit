@@ -72,6 +72,10 @@ commitlint.config.mjs
 # `uvx --from git+https://github.com/ponderousdev/foreman@v<FOREMAN_VERSION>`
 # — and the consumer config. Foreman source is never vendored into consumers
 # (no scripts/foreman/, no .claude/agents/foreman-*.md, no architecture doc).
+# Retired v1 paths are deliberately NOT listed here: entries absent from the
+# render are skipped, so this manifest cannot flag leftovers. Removing them
+# from pre-v2 repos is the update-mode migration sweep (references/
+# mode-update.md), which covers both use_foreman answers.
 .foreman.toml
 taskfiles/foreman.yml
 
