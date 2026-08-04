@@ -244,89 +244,15 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 
-# The other direction, and the one that must never regress. The old rationale
-# held that no pattern separates "Great job everyone!" from "but a race
-# remains." The contrast is structural rather than lexical: a caveat leads with
-# a contrastive or imperative word, cites a location, or runs to a second
-# sentence. Length is only a backstop — most entries here are far under the cap
-# and are caught by shape alone.
+# The tail is NOT consulted. Everything above the "Reviewed commit" line after
+# the verdict sentence is stripped, so no corpus of caveat phrasings belongs
+# here any more — three revisions of that corpus each passed while the
+# classifier they guarded was fail-open, which is what retired the approach.
 #
-# When a caveat is seen to slip through, add it here; do not relax a rule.
-#
-# The last seven were found by the second-model review of the change that
-# introduced this test. They are FLAT STATEMENTS of a problem: short, single
-# sentence, no digits, no code span, and leading with no contrastive or
-# imperative word. An earlier revision classified all seven as CLEAN, because
-# it rejected known caveat shapes and accepted everything else — a blocklist,
-# which fails open. The classifier now requires the tail to be positively
-# recognisable as praise, so unmatched text escalates. Keep that direction.
-#
-# The five with a praise word in them are the SECOND round of the same defect:
-# requiring a praise word to be PRESENT still left the rest of the clause
-# unexamined, so "Nice work, tests crash on Windows." passed on "nice". The
-# rule is now that the tail must be NOTHING BUT praise — every word
-# recognised — which is what makes it terminate: a caveat has to name
-# something, and the thing it names is a word the vocabulary does not have.
-#
-# The last four are the THIRD round of the same defect, and show that
-# "every word is allowed" was still not enough on its own: ":warning:" was
-# accepted by a blanket any-shortcode rule, and "Work on it." / "Change it." /
-# "Ship it." are built entirely out of FILLER, which was individually allowed
-# but carries no praise. The tail must now also contain a sentiment word or a
-# known praise phrase. "Ship it." is approval rather than a concern; it is
-# rejected because permitting the imperative SHAPE is what admits "Work on
-# it.", not because the phrase itself is a warning.
-for caveat in \
-    "But a race remains." \
-    "However, check the lock." \
-    "One nit below." \
-    "See my comment." \
-    "Minor concern." \
-    "Though the retry path is untested." \
-    "Watch out for the null case." \
-    "Missing a test." \
-    "Should probably guard that." \
-    "Note the TODO on line 42." \
-    "Nice, but the mutex is unbalanced." \
-    "Great work. One thing though." \
-    "Double-check the migration." \
-    "Tests fail on Windows." \
-    "Coverage dropped." \
-    "The retry path is untested." \
-    "Docs are stale." \
-    "Formatting is inconsistent." \
-    "Clean this up." \
-    "Rerun after rebase." \
-    "Nice work, tests crash on Windows." \
-    "Great job, data corrupts on rollback." \
-    "Excellent work, deployment hangs." \
-    "Clean this up." \
-    "Neat, but fix the lock." \
-    ":warning:" \
-    "Work on it." \
-    "Change it." \
-    "Ship it."; do
-    echo "==> the caveat tail '${caveat}' still escalates"
-    new_cycle
-    jq -cn \
-        --argjson id "$actor_id" \
-        --arg login "$actor_login" \
-        --arg head "$head_sha" \
-        --arg caveat "$caveat" \
-        '[[
-      {
-        id:104,user:{id:$id,login:$login},
-        submitted_at:"2026-07-31T08:00:04Z",
-        commit_id:$head,
-        body:("Codex Review: Didn\u0027t find any major issues. " + $caveat)
-      }
-    ]]' >"${fixtures}/reviews.pages.json"
-    run_check '2026-07-31T08:01:00Z'
-    assert_status 2 indeterminate
-done
-
-# The cap on its own, for an essay that dodges every keyword.
-echo "==> an over-long tail escalates on the cap alone"
+# What replaces it is the ACCEPTED RESIDUAL, pinned deliberately below so it is
+# visible rather than discovered: an unbadged concern appended to the verdict
+# sentence classifies clean. That is the known cost of not parsing the tail.
+echo "==> ACCEPTED RESIDUAL: an unbadged concern on the verdict line is clean"
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
@@ -337,8 +263,32 @@ jq -cn \
         id:104,user:{id:$id,login:$login},
         submitted_at:"2026-07-31T08:00:04Z",
         commit_id:$head,
-        body:("Codex Review: Didn\u0027t find any major issues. " +
-          "truly a delight to read from top to bottom every single time")
+        body:"Codex Review: Didn\u0027t find any major issues. But a race remains."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+# Deliberate. Codex has never posted an unbadged concern — every finding it has
+# made in this repo carried a P0/P1/P2 badge — and this would require it to
+# contradict itself inside one sentence. The gate promotes a draft to
+# ready-for-review rather than merging, so a human still reads the PR.
+# If this ever fires in the wild, do NOT resume parsing the clause: raise it
+# with the maintainer, because the assumption behind the design has broken.
+assert_status 0 clean
+
+# A concern on its OWN line is still caught, by the boilerplate rule — the tail
+# exemption is confined to the verdict line and does not extend down the body.
+echo "==> a concern on its own line is still indeterminate"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues.\n\nBut a race remains.\n\n**Reviewed commit:** `abc1234`"
       }
     ]]' >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:01:00Z'
@@ -389,40 +339,15 @@ for tail in "P1: the retry path is unguarded" "P0: data loss on rollback"; do
     assert_status 10 findings
 done
 
-# Everything else that opens with the verdict but does not read as praise is
-# INDETERMINATE, not `findings`. Reporting "Codex found something" about a
-# verdict that says the opposite is a lie, and it is the lie that cost a clean
-# PR its gate when the rule was a praise-shape whitelist. Escalating instead
-# puts a human on the one case a pattern cannot settle — and it keeps a
-# qualifier smuggled onto the verdict line from passing as clean.
+# The "trailing clause that does not read as praise" corpus that used to live
+# here — "However a race remains", "See item 3", "However, 2 concerns:" — is
+# gone with the parser it guarded. All of those now classify clean, which is
+# the same accepted residual pinned above, and repeating it per phrasing would
+# only imply the tail is being inspected when it is not.
 #
-# "an unusually long and effusive compliment" used to be in this list, pinning
-# the removed rule that unlisted praise escalates. It is praise, and at 40
-# characters it is one shorter than a praise clause Codex actually emitted
-# ("already looking forward to the next diff."), so no length cap can separate
-# the two. It is now covered by the praise-shaped-is-clean case above; the cap
-# is exercised by the over-long test instead.
-for tail in "However a race remains" "However a race remains." \
-    "but see the note below" "See item 3" "However, 2 concerns:" \
-    "but a race remains." "one concern."; do
-    echo "==> a verdict line trailed by '${tail}' is indeterminate, not clean"
-    new_cycle
-    jq -cn \
-        --argjson id "$actor_id" \
-        --arg login "$actor_login" \
-        --arg head "$head_sha" \
-        --arg tail "$tail" \
-        '[[
-      {
-        id:105,user:{id:$id,login:$login},
-        submitted_at:"2026-07-31T08:00:04Z",
-        commit_id:$head,
-        body:("Codex Review: Didn\u0027t find any major issues. " + $tail)
-      }
-    ]]' >"${fixtures}/reviews.pages.json"
-    run_check '2026-07-31T08:01:00Z'
-    assert_status 2 indeterminate
-done
+# The protections that do NOT depend on the tail are exercised above and below:
+# a P0/P1/P2 badge anywhere in the body, a non-clean verdict sentence, any
+# non-boilerplate line, and inline comments on the current head.
 
 echo "==> a concern parked on a LATER line is not clean"
 # The verdict line can be allowlisted praise while a warning sits further down,

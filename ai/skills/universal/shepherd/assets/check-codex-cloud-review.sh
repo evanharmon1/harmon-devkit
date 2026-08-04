@@ -253,9 +253,6 @@ codex_verdict_defs=$(
           def first_line:
             (body_text | split("\n")[0] |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
-          def verdict_tail:
-            (first_line | ltrimstr(clean_sentence) |
-              gsub("^[[:space:]]+|[[:space:]]+$"; ""));
           def has_severity_marker:
             (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
           # The tail is judged by SHAPE, not by membership in a list of
@@ -274,94 +271,6 @@ codex_verdict_defs=$(
           # human. That is the safe direction: a rejected praise clause costs
           # one escalation, an accepted caveat passes a PR the reviewer
           # flagged.
-          def praise_cap: 48;
-          # A bare emoji shortcode (:+1:) is praise and contains a digit, so
-          # it is matched before the digit rule below.
-          # A CLOSED set of positive reactions. The previous rule accepted
-          # any shortcode, so ":warning:" read as praise.
-          def is_emoji_token:
-            test("^:(\\+1|thumbsup|tada|rocket|fire|sparkles|clap|star|"
-              + "stars|heart|hearts|100|trophy|medal|raised_hands|muscle|"
-              + "ok_hand|grin|smile|tada2|partying_face):$");
-          # There is deliberately no "any symbol-only tail is fine" rule.
-          # It accepted the warning glyph, which asserts plenty.
-          # POSITIVE recognition, over the WHOLE tail.
-          #
-          # Two earlier revisions of this test failed open, each more subtly:
-          #
-          #   1. reject known caveat shapes, accept the rest — a blocklist, so
-          #      "Tests fail on Windows." passed, tripping no rule;
-          #   2. accept if a praise word appears anywhere — so "Nice work,
-          #      tests crash on Windows." passed on the strength of "nice".
-          #
-          # Both share a root cause: some part of the tail went unexamined.
-          # The rule is therefore not "contains praise" but "is NOTHING BUT
-          # praise". Every word must be recognised; one unknown word escalates.
-          # That terminates, because there is no residue left for a concern to
-          # hide in — a caveat has to name something, and the thing it names is
-          # a word this vocabulary does not have.
-          #
-          # The vocabulary is of words rather than whole clauses, which is what
-          # keeps it tractable: "Nice work!", "Nice job!" and "Very nice." are
-          # covered by one entry where a clause list needed three.
-          # Sentiment words. At least one must be present, or a phrase.
-          def core_praise:
-            test("^(nice|great|excellent|awesome|amazing|beautiful|lovely|"
-              + "superb|stellar|brilliant|fantastic|terrific|wonderful|"
-              + "impressive|bravo|kudos|chapeau|kiss|swish|delight|delightful|"
-              + "love|loved|enjoyed|pleasure|flawless|spotless|exemplary|"
-              + "admirable|perfect|ace|lgtm|solid|smooth|slick|elegant|"
-              + "crisp|good|nicely|beautifully|cheers|thanks|thank)$");
-          # Praise that only reads as praise as a whole phrase.
-          def praise_phrase:
-            test("keep it up|looking forward|on a roll|well done|hats off|"
-              + "top.?notch|chef.?s kiss");
-          def praise_word:
-            test("^(nice|great|excellent|awesome|amazing|beautiful|lovely|"
-              + "superb|stellar|brilliant|fantastic|terrific|wonderful|"
-              + "impressive|bravo|kudos|chapeau|kiss|swish|delight|delightful|"
-              + "love|loved|enjoyed|pleasure|flawless|spotless|exemplary|"
-              + "admirable|perfect|ace|lgtm|solid|smooth|slick|elegant|"
-              # NOTE: "clean", "tidy", "neat" and "sharp" are deliberately
-              # ABSENT. Each doubles as an imperative verb, and with a deictic
-              # they build an instruction out of nothing but allowed words —
-              # "Clean this up." was clean until they were removed. For the
-              # same reason no deictic ("this", "that", "these") is allowed:
-              # a word that points at something is pointing at the code.
-              + "crisp|elegant|good|well|done|"
-              # Filler that carries no assertion on its own.
-              + "work|job|stuff|one|it|up|on|a|an|the|to|and|of|as|is|are|"
-              + "you|your|youre|you.re|chef|chefs|chef.s|"
-              + "very|really|so|much|truly|quite|absolutely|simply|just|"
-              + "keep|keeping|looking|forward|next|diff|pr|change|changes|"
-              + "everyone|all|here|again|already|another|roll|notch|top|"
-              + "hats|off|ship|thanks|thank|cheers|nicely|beautifully)$");
-          # Everything after the verdict line must be Codex's own metadata:
-          # the "Reviewed commit" line and its collapsed About block. A concern
-          # parked on a later line carries no badge, so nothing else would
-          # catch it.
-          def praise_ok:
-            verdict_tail as $t |
-            if $t == "" then true
-            elif ($t | is_emoji_token) then true
-            elif ($t | length) > praise_cap then false
-            # A reference to code or a location is a caveat, never praise.
-            elif ($t | test("[`<>()\\[\\]/]|https?:|[0-9]")) then false
-            # More than one sentence is an argument, not an interjection.
-            elif ($t | test("[.!?][[:space:]]+[^[:space:]]")) then false
-            # Default DENY, in two parts. Every word must be recognised —
-            # so no unexamined residue is left for a concern to hide in — AND
-            # the tail must carry actual praise, not merely permitted words.
-            # Filler alone composes into imperatives: "Work on it.",
-            # "Change it." and "Ship it." are built entirely from words that
-            # were individually allowed.
-            else ($t
-              | gsub("[^a-z'\u2019[:space:]]"; " ") as $clean
-              | ($clean | split(" ") | map(select(. != ""))) as $words
-              | ($words | length > 0)
-                and ($words | all(praise_word))
-                and (($words | any(core_praise)) or ($clean | praise_phrase)))
-            end;
           def rest_is_boilerplate:
             (body_text | split("\n") | .[1:] | join("\n") |
               gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
@@ -372,10 +281,42 @@ codex_verdict_defs=$(
               all(test(
                 "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
               )));
+          # The verdict line must OPEN with the clean sentence; whatever
+          # Codex appends after it is stripped and plays no part in the
+          # decision.
+          #
+          # Three earlier revisions tried to prove the trailing clause was
+          # praise — by rejecting caveat shapes, then by requiring a praise
+          # word, then by requiring every word to be recognised. Each looked
+          # airtight and each was fail-OPEN within minutes of review
+          # ("Tests fail on Windows.", "Nice work, tests crash on Windows.",
+          # ":warning:", "Work on it."). The clause is free text that Codex
+          # writes differently every time; it is not a channel that can be
+          # parsed reliably, and the allowlist that preceded those attempts
+          # could not converge either — seven distinct clauses, three inside
+          # twenty-five minutes, and it deadlocked the PR that was fixing it.
+          #
+          # So the tail is not load-bearing. What decides the verdict is the
+          # part of Codex's output that does NOT vary:
+          #
+          #   1. the verdict sentence itself, matched exactly;
+          #   2. the absence of any P0/P1/P2 badge ANYWHERE in the body —
+          #      every finding Codex has ever posted here carried one;
+          #   3. every remaining line being Codex's own metadata.
+          #
+          # Inline comments on the current head are classified as findings
+          # separately, before this runs.
+          #
+          # The residual, stated plainly: a concern that is unbadged, absent
+          # from the inline comments, and appended to a sentence that says the
+          # opposite would pass. That has never been observed — it requires
+          # Codex to contradict itself mid-line — and this gate promotes a
+          # draft to ready-for-review rather than merging, so a human still
+          # reads the PR. That is a better trade than a parser that has been
+          # wrong three times.
           def verdict_class:
             if (first_line | startswith(clean_sentence) | not) then "findings"
             elif has_severity_marker then "findings"
-            elif (praise_ok | not) then "unrecognized"
             elif (rest_is_boilerplate | not) then "unrecognized"
             else "clean" end;
 JQDEFS
