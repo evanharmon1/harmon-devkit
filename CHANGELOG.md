@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.20.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.20.1...v0.20.2) (2026-08-04)
+
+
+### Bug Fixes
+
+* **shepherd:** judge the Codex praise clause by shape, not by an allowlist ([#272](https://github.com/evanharmon1/harmon-devkit/issues/272)) ([4bea340](https://github.com/evanharmon1/harmon-devkit/commit/4bea340c9677c96a554a6fa2b66b17de6e2e7800))
+* **skills:** record the observed auto-close that Refs caused ([#271](https://github.com/evanharmon1/harmon-devkit/issues/271)) ([5db8db5](https://github.com/evanharmon1/harmon-devkit/commit/5db8db510df8bc15686919fef04b4d5081cf71ff))
+* **skills:** stop shell comments inside fenced blocks from terminating the Verify section ([#273](https://github.com/evanharmon1/harmon-devkit/issues/273)) ([174d1fa](https://github.com/evanharmon1/harmon-devkit/commit/174d1fa69387038a3212d86a3d77a65dc75a6db7))
+
 ## [0.20.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.20.0...v0.20.1) (2026-08-04)
 
 
