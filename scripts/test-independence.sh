@@ -115,6 +115,63 @@ for target in "${TARGETS[@]}"; do
             fail=1
         fi
     done < <(git ls-files -z --cached --others --exclude-standard -- "$target")
+
+    # The index, which is what the next commit actually records. The loop above
+    # takes its PATHS from git but reads CONTENT from the worktree, so a
+    # violation that was staged and then edited out without re-staging would
+    # pass here and ship in the commit. `git grep --cached` reads the staged
+    # blobs themselves — including a symlink's blob, which is its target path.
+    #
+    # Option order matters and is load-bearing: `--cached` must come BEFORE the
+    # pattern, or git reads it as a revision and dies. Its exit status is
+    # three-valued — 0 match, 1 no match, >1 error — so the error case is
+    # handled explicitly rather than swallowed with `|| true`: a scan that
+    # cannot run must fail the guard, never report independence.
+    staged=$(git grep --cached -lIEi "$PATTERN" -- "$target") || staged_rc=$?
+    staged_rc=${staged_rc:-0}
+    if [ "$staged_rc" -gt 1 ]; then
+        echo "FAIL: staged-content scan of ${target} failed (git grep exit ${staged_rc})" >&2
+        fail=1
+    fi
+    while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        [ "$file" != "$SELF" ] || continue
+        echo "FAIL: ${file} — the STAGED copy references harmon-dotfiles or a personal dotfiles path" >&2
+        git grep --cached -nEi "$PATTERN" -- "$file" | sed 's/^/      /' >&2
+        fail=1
+    done <<EOF
+$staged
+EOF
+    unset staged_rc
+
+    # Index entries git grep cannot read. It skips symlinks (so a staged link
+    # whose worktree copy was replaced by a regular file evades the scan above)
+    # and a gitlink has no blob at all — an uninitialized submodule is an empty
+    # directory locally while `--recurse-submodules` hands a consumer whatever
+    # it points at. Read the modes directly.
+    while IFS= read -r -d '' entry; do
+        [ -n "$entry" ] || continue
+        mode=${entry%% *}
+        path=${entry#*$'\t'}
+        [ "$path" != "$SELF" ] || continue
+        case "$mode" in
+        120000)
+            dest=$(git cat-file blob ":${path}" 2>/dev/null) || continue
+            if printf '%s\n' "$dest" | grep -qEi "$PATTERN"; then
+                echo "FAIL: ${path} — the STAGED symlink points at ${dest}" >&2
+                fail=1
+            fi
+            ;;
+        160000)
+            # No pattern check: the URL lives in .gitmodules, outside these
+            # trees, so the gitlink itself is the only thing to judge. Shipped
+            # output owns its content outright rather than pointing at another
+            # repo's history.
+            echo "FAIL: ${path} — submodules must not ship in consumer-facing trees" >&2
+            fail=1
+            ;;
+        esac
+    done < <(git ls-files -s -z -- "$target")
 done
 
 if [ "$fail" -ne 0 ]; then
