@@ -589,6 +589,7 @@ check)
             "keep it up!",
             "nice work!",
             "bravo.",
+            "swish!",
             "chef\u0027s kiss."
           ];
           # Everything after the verdict line must be Codex\u0027s own metadata:
@@ -653,6 +654,7 @@ check)
             "keep it up!",
             "nice work!",
             "bravo.",
+            "swish!",
             "chef\u0027s kiss."
           ];
           # Everything after the verdict line must be Codex\u0027s own metadata:

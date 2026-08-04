@@ -186,8 +186,22 @@ assert_status 0 clean
 
 # Codex does not emit the bare sentence — it appends a praise clause, and the
 # clause varies. "Keep it up!" (#239), "Nice work!" (#225), "Chef's kiss."
-# (#239, a later run) and "Bravo." (#268) are all verbatim from this repo's own
-# history. The
+# (#239, a later run), "Bravo." (#268) and "Swish!" (#269) are all verbatim
+# from this repo's own history.
+#
+# Note the rate. "Bravo." and "Swish!" were both first observed within twenty
+# minutes of each other, on consecutive PRs, which is not the shape of a small
+# fixed vocabulary being enumerated — it reads as a clause sampled per review.
+# If that holds, this list cannot converge and every unlisted clause costs a
+# shepherd escalation. Do NOT respond by loosening the match; the reason for
+# equality is in the helper and still stands. The alternative worth costing out
+# is dropping the praise test entirely and resting the clean verdict on the
+# signals that are already checked and not free-text: the opening sentence, the
+# absence of any P0/P1/P2 marker, and the requirement that every remaining line
+# be Codex's own boilerplate. That is a design change, not a list edit, so it
+# wants its own issue and its own argument — weigh it before adding a sixth
+# string here.
+# The
 # fixture above uses the bare form, so on its own it pinned a phrasing Codex
 # has never actually produced: the classifier compared for equality, every real
 # clean verdict fell through to "findings", and the cloud gate could not go
@@ -195,7 +209,7 @@ assert_status 0 clean
 #
 # "Chef's kiss." is why the accepted shape is not just a short exclamation —
 # it carries an apostrophe and ends in a full stop. Pin the shapes that occur.
-for suffix in "Keep it up!" "Nice work!" "Chef's kiss." "Bravo."; do
+for suffix in "Keep it up!" "Nice work!" "Chef's kiss." "Bravo." "Swish!"; do
     echo "==> a clean verdict with the trailing '${suffix}' is still clean"
     new_cycle
     prefix="${head_sha:0:10}"
