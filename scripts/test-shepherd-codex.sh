@@ -193,8 +193,16 @@ assert_status 0 clean
 # green for any PR.
 #
 # "Chef's kiss." is why the accepted shape is not just a short exclamation —
-# it carries an apostrophe and ends in a full stop. Pin the shapes that occur.
-for suffix in "Keep it up!" "Nice work!" "Chef's kiss."; do
+# it carries an apostrophe and ends in a full stop.
+#
+# Every clause below was observed in the wild. They are pinned as regression
+# fixtures, NOT as an allowlist: the classifier no longer consults a list, so
+# a clause absent from here still passes if it is praise-shaped. Seven were
+# collected before the allowlist was replaced — three of them inside
+# twenty-five minutes, and ":+1:" is an emoji shortcode, which is why the
+# shape rules exempt that form rather than trying to spell it.
+for suffix in "Keep it up!" "Nice work!" "Chef's kiss." "Bravo." "Swish!" \
+    "You're on a roll." ":+1:" "Already looking forward to the next diff."; do
     echo "==> a clean verdict with the trailing '${suffix}' is still clean"
     new_cycle
     prefix="${head_sha:0:10}"
@@ -215,7 +223,11 @@ for suffix in "Keep it up!" "Nice work!" "Chef's kiss."; do
     assert_status 0 clean
 done
 
-echo "==> an UNOBSERVED praise phrasing escalates rather than passing"
+# An UNOBSERVED but praise-shaped clause is now clean. That is the point of the
+# change: the allowlist could not converge — seven clauses, three of them inside
+# twenty-five minutes — so every unlisted one was a false blocker on a clean
+# review, and one deadlocked the very PR that was fixing it.
+echo "==> an UNOBSERVED praise-shaped clause is clean"
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
@@ -230,10 +242,66 @@ jq -cn \
       }
     ]]' >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:01:00Z'
-# Deliberately NOT clean. No pattern over characters separates "Great job
-# everyone!" from "but a race remains." — both are short and alphabetic — so
-# the tail is matched against observed strings only, and anything else asks a
-# human. Being unlisted costs one escalation; being wrong costs a false green.
+assert_status 0 clean
+
+# The other direction, and the one that must never regress. The old rationale
+# held that no pattern separates "Great job everyone!" from "but a race
+# remains." The contrast is structural rather than lexical: a caveat leads with
+# a contrastive or imperative word, cites a location, or runs to a second
+# sentence. Length is only a backstop — most entries here are far under the cap
+# and are caught by shape alone.
+#
+# When a caveat is seen to slip through, add it here; do not relax a rule.
+for caveat in \
+    "But a race remains." \
+    "However, check the lock." \
+    "One nit below." \
+    "See my comment." \
+    "Minor concern." \
+    "Though the retry path is untested." \
+    "Watch out for the null case." \
+    "Missing a test." \
+    "Should probably guard that." \
+    "Note the TODO on line 42." \
+    "Nice, but the mutex is unbalanced." \
+    "Great work. One thing though." \
+    "Double-check the migration."; do
+    echo "==> the caveat tail '${caveat}' still escalates"
+    new_cycle
+    jq -cn \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" \
+        --arg head "$head_sha" \
+        --arg caveat "$caveat" \
+        '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("Codex Review: Didn\u0027t find any major issues. " + $caveat)
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+    run_check '2026-07-31T08:01:00Z'
+    assert_status 2 indeterminate
+done
+
+# The cap on its own, for an essay that dodges every keyword.
+echo "==> an over-long tail escalates on the cap alone"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("Codex Review: Didn\u0027t find any major issues. " +
+          "truly a delight to read from top to bottom every single time")
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
 assert_status 2 indeterminate
 
 echo "==> a clean-shaped review body with a praise clause is clean"
@@ -287,9 +355,15 @@ done
 # PR its gate when the rule was a praise-shape whitelist. Escalating instead
 # puts a human on the one case a pattern cannot settle — and it keeps a
 # qualifier smuggled onto the verdict line from passing as clean.
+#
+# "an unusually long and effusive compliment" used to be in this list, pinning
+# the removed rule that unlisted praise escalates. It is praise, and at 40
+# characters it is one shorter than a praise clause Codex actually emitted
+# ("already looking forward to the next diff."), so no length cap can separate
+# the two. It is now covered by the praise-shaped-is-clean case above; the cap
+# is exercised by the over-long test instead.
 for tail in "However a race remains" "However a race remains." \
     "but see the note below" "See item 3" "However, 2 concerns:" \
-    "an unusually long and effusive compliment" \
     "but a race remains." "one concern."; do
     echo "==> a verdict line trailed by '${tail}' is indeterminate, not clean"
     new_cycle

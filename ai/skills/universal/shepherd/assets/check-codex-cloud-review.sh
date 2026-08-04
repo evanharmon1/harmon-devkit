@@ -245,6 +245,86 @@ fetch_evidence() {
     esac
 }
 
+codex_verdict_defs=$(
+    cat <<'JQDEFS'
+          def clean_sentence:
+            "codex review: didn't find any major issues.";
+          def body_text: (.body // "");
+          def first_line:
+            (body_text | split("\n")[0] |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
+          def verdict_tail:
+            (first_line | ltrimstr(clean_sentence) |
+              gsub("^[[:space:]]+|[[:space:]]+$"; ""));
+          def has_severity_marker:
+            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
+          # The tail is judged by SHAPE, not by membership in a list of
+          # strings we happen to have seen. The list could not converge:
+          # seven distinct clauses were observed, three of them inside
+          # twenty-five minutes, and one was an emoji shortcode — so every
+          # unlisted clause was a false blocker on a clean review.
+          #
+          # Length alone cannot do it. The longest praise actually observed
+          # is 41 characters ("already looking forward to the next diff."),
+          # while real caveats are SHORTER than that: "But a race remains."
+          # is 19. So the cap is a backstop against essays, and the
+          # discriminating work is done by the shape rules below.
+          #
+          # Every rule rejects toward "unrecognized", which escalates to a
+          # human. That is the safe direction: a rejected praise clause costs
+          # one escalation, an accepted caveat passes a PR the reviewer
+          # flagged.
+          def praise_cap: 48;
+          # A bare emoji shortcode (:+1:) is praise and contains a digit, so
+          # it is matched first and exempted from the rules below.
+          def is_emoji_token: test("^:[a-z0-9_+-]{1,20}:$");
+          # Words that open a concern. A caveat overwhelmingly leads with one.
+          def caveat_opener:
+            test("^(but|however|though|although|that said|one|a few|minor|"
+              + "small|note|caveat|concern|careful|watch|check|see|consider|"
+              + "review|verify|confirm|double|make sure|ensure|fix|address|"
+              + "look|heads|fyi|aside|except|still|yet|unless|before|only|"
+              + "just|worth|suggest|recommend|nit|missing|should|must)\\b");
+          # Words that signal a concern wherever they appear.
+          def caveat_word:
+            test("\\b(but|however|though|caveat|nit|concern|bug|race|"
+              + "regression|broken|missing|unless|except|careful|watch out|"
+              + "double-check|be aware|one thing|follow.?up|todo)\\b");
+          def praise_ok:
+            verdict_tail as $t |
+            if $t == "" then true
+            elif ($t | is_emoji_token) then true
+            elif ($t | length) > praise_cap then false
+            # A reference to code or a location is a caveat, never praise.
+            elif ($t | test("[`<>()\\[\\]/]|https?:|[0-9]")) then false
+            # More than one sentence is an argument, not an interjection.
+            elif ($t | test("[.!?][[:space:]]+[^[:space:]]")) then false
+            elif ($t | caveat_opener) then false
+            elif ($t | caveat_word) then false
+            else true end;
+          # Everything after the verdict line must be Codex's own metadata:
+          # the "Reviewed commit" line and its collapsed About block. A concern
+          # parked on a later line carries no badge, so nothing else would
+          # catch it.
+          def rest_is_boilerplate:
+            (body_text | split("\n") | .[1:] | join("\n") |
+              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
+                   ""; "im") |
+              ascii_downcase | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              map(select(. != "")) |
+              all(test(
+                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
+              )));
+          def verdict_class:
+            if (first_line | startswith(clean_sentence) | not) then "findings"
+            elif has_severity_marker then "findings"
+            elif (praise_ok | not) then "unrecognized"
+            elif (rest_is_boilerplate | not) then "unrecognized"
+            else "clean" end;
+JQDEFS
+)
+
 case "$command_name" in
 reserve)
     [ -n "$repo" ] && [ -n "$pr" ] && [ -n "$head" ] && [ -n "$attempt" ] ||
@@ -573,48 +653,8 @@ check)
     # the same trailing-text hole as the verdict line had, one line lower.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
-        --arg head "$state_head" '
-          def clean_sentence:
-            "codex review: didn\u0027t find any major issues.";
-          def body_text: (.body // "");
-          def first_line:
-            (body_text | split("\n")[0] |
-              gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
-          def verdict_tail:
-            (first_line | ltrimstr(clean_sentence) |
-              gsub("^[[:space:]]+|[[:space:]]+$"; ""));
-          def has_severity_marker:
-            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
-          def observed_praise: [
-            "keep it up!",
-            "nice work!",
-            "chef\u0027s kiss."
-          ];
-          # Everything after the verdict line must be Codex\u0027s own metadata:
-          # the "Reviewed commit" line and its collapsed About block. A concern
-          # parked on a later line carries no badge, so nothing else would
-          # catch it.
-          def rest_is_boilerplate:
-            (body_text | split("\n") | .[1:] | join("\n") |
-              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
-                   ""; "im") |
-              ascii_downcase | split("\n") |
-              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
-              map(select(. != "")) |
-              all(test(
-                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
-              )));
-          def verdict_class:
-            # Bind the tail before the membership test: index/1 evaluates its
-            # argument with the ARRAY as input, so an inline verdict_tail
-            # would resolve .body against observed_praise and error.
-            verdict_tail as $tail |
-            if (first_line | startswith(clean_sentence) | not) then "findings"
-            elif has_severity_marker then "findings"
-            elif ($tail != "" and (observed_praise | index($tail) == null))
-            then "unrecognized"
-            elif (rest_is_boilerplate | not) then "unrecognized"
-            else "clean" end;
+        --arg head "$state_head" \
+        "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head)
@@ -636,48 +676,8 @@ check)
 
     comment_candidates="$workdir/comment-candidates.tsv"
     jq -r \
-        --argjson id "$actor_id" '
-          def clean_sentence:
-            "codex review: didn\u0027t find any major issues.";
-          def body_text: (.body // "");
-          def first_line:
-            (body_text | split("\n")[0] |
-              gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
-          def verdict_tail:
-            (first_line | ltrimstr(clean_sentence) |
-              gsub("^[[:space:]]+|[[:space:]]+$"; ""));
-          def has_severity_marker:
-            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
-          def observed_praise: [
-            "keep it up!",
-            "nice work!",
-            "chef\u0027s kiss."
-          ];
-          # Everything after the verdict line must be Codex\u0027s own metadata:
-          # the "Reviewed commit" line and its collapsed About block. A concern
-          # parked on a later line carries no badge, so nothing else would
-          # catch it.
-          def rest_is_boilerplate:
-            (body_text | split("\n") | .[1:] | join("\n") |
-              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
-                   ""; "im") |
-              ascii_downcase | split("\n") |
-              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
-              map(select(. != "")) |
-              all(test(
-                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
-              )));
-          def verdict_class:
-            # Bind the tail before the membership test: index/1 evaluates its
-            # argument with the ARRAY as input, so an inline verdict_tail
-            # would resolve .body against observed_praise and error.
-            verdict_tail as $tail |
-            if (first_line | startswith(clean_sentence) | not) then "findings"
-            elif has_severity_marker then "findings"
-            elif ($tail != "" and (observed_praise | index($tail) == null))
-            then "unrecognized"
-            elif (rest_is_boilerplate | not) then "unrecognized"
-            else "clean" end;
+        --argjson id "$actor_id" \
+        "$codex_verdict_defs"'
           .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(
