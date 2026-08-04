@@ -116,8 +116,12 @@ Any output means the issue holds work this PR is not finishing.
 
 The rules the check encodes:
 
-- **`Refs #N` is the default.** It links the PR to the issue and closes nothing.
-  Reach for a closing keyword only when the PR resolves the issue *entirely*.
+- **`Refs #N` is the default** — but not because it is inert. On a repo whose
+  changelog is generated from commits, `Refs #N` is reliably rewritten into a
+  closing keyword downstream and closes the issue at release (*Why the timing
+  is the rule*, below, with the observed chain). Choose it because the PR
+  genuinely does not finish the issue; reach for a closing keyword when it
+  resolves the issue *entirely*. Either way, assume the issue will close.
 - **Unticked items block a close — so tick them while you work, not here.**
   Tick each criterion the moment you verify it during implementation, when the
   evidence is in front of you (*Tick as you go* below). A PR that resolves its
@@ -220,8 +224,8 @@ PR merges; the issue stays open with every box unticked and no record the work
 was done.
 
 That is the *good* outcome. The bad one is that the issue closes anyway, with
-its criteria still unticked, for a reason nobody chose. `Refs` itself is inert
-— GitHub closes on closing keywords only — but the reference does not stay
+its criteria still unticked, for a reason nobody chose. `Refs` is inert **to
+GitHub** — it closes on closing keywords only — but the reference does not stay
 where you put it: the table above is the list of ways text reaches the default
 branch, and downstream of that, changelog generators and release commits
 restate references in their own words. Anything that restates `Refs #N` as a
@@ -230,13 +234,72 @@ by tools and humans who never saw the criteria. After that a stranded issue and
 a finished one are indistinguishable, because the ticks that would have told
 them apart are exactly what was deferred.
 
-*How much of that is live here:* release-please, which both repos use, renders
-the commit **subject** and a PR link and drops trailers — `555e28a` carried
-`Refs #165` and the changelog entry shows no reference to #165 at all, and that
-issue was closed by hand rather than by a commit. So the auto-close path is a
-hazard of the shape, not a demonstrated failure in this configuration. It is
-worth naming because the ticks are the only thing that distinguishes the two
-outcomes, and they cost nothing at the moment you verify.
+**That is not hypothetical here — it has happened, and `Refs` is what did it.**
+Observed 2026-08-04, harmon-devkit#262, with every step timestamped:
+
+| Step | Value |
+| --- | --- |
+| what the commit body said | `Refs #262` |
+| what the changelog rendered | `closes #262` |
+| where that text landed | the release PR's body |
+| release PR merged | 05:59:32Z |
+| **#262 closed `COMPLETED`** | **05:59:33Z**, 0 of 5 criteria ticked |
+
+The mechanism is not "some tool might restate it", and it is not reliable
+either — which is the part that matters. conventional-changelog does not read
+the keyword at all. It harvests the references it finds in the commit's
+**footer** and renders them under a hardcoded `closes` list, so `Refs`, `See`
+and a bare `#N` are all treated alike. Whether *your* reference lands in footer
+position is decided at merge, by how many commits the PR ends up with:
+
+| squash commit | commits in the PR | `Refs #N` position | changelog |
+| --- | --- | --- | --- |
+| `1454774` | **1** | the footer | rendered `closes` — **the issue closed** |
+| `1331c3a` | **6** | buried mid-body | nothing |
+| `555e28a` | several | buried mid-body | nothing |
+
+A single-commit PR leaves the reference in the footer. A multi-commit squash
+gets GitHub's `---------` separator and one trailer block per commit, which
+pushes it out. So the same `Refs #262`, written the same way on the same day,
+closed an issue from a one-commit PR and did nothing from a six-commit one.
+
+You control neither input at the moment you write the reference: the commit
+count at merge is not knowable while you are working, and it changes every time
+a review round adds a commit or an amend removes one.
+
+Two things follow, and they change the rules above rather than annotate them:
+
+- **Keep the reference out of the commit when the work is genuinely partial.**
+  This is the actionable half, because it is the only step in the chain you
+  control: put `Refs #N` in the **PR body** and leave the bare `#N` out of the
+  commit message. release-please reads *commits*, and a squash configured for
+  `COMMIT_MESSAGES` builds its body from the commit messages and never from the
+  PR body — so a reference that exists only in the PR body cannot reach the
+  changelog, while GitHub still links the PR to the issue and still closes
+  nothing. Where the PR does resolve the issue, none of this applies: use a
+  closing keyword and mean it.
+- **`Refs #N` in a commit is not inert wherever a changelog generator sees it.**
+  It is a closing keyword that may or may not fire. Choose it because the PR
+  genuinely does not finish the issue, never because it is the safe option —
+  safety is not what it buys you.
+- **Ticking is therefore load-bearing, not hygiene.** If the issue is going to
+  be closed on release either way, the ticks are the *only* thing separating
+  finished work from abandoned work in the record. #262's five criteria were
+  each verified during implementation; none was ticked, and the issue now reads
+  exactly like one that was closed without being done.
+
+An earlier reading of this repo held that release-please renders only the
+commit subject and drops trailers, so the path was a hazard of the shape rather
+than a live defect. `555e28a`/#165 did behave that way. That is now known to be
+the exception and not the rule; do not rely on it.
+
+**Writing *about* a closing keyword is indistinguishable from using one.** A
+PR body or commit message that quotes `<keyword> #<n>` to explain the hazard
+trips the check above, and would be read the same way by anything else scanning
+for it — code fences and table cells do not reliably exempt it. Break the
+adjacency instead: name the keyword and the issue in separate phrases. The PR
+that first documented the auto-close above failed its own `guard` check on
+exactly this, in both its body and its commit message.
 
 Observed 2026-07-28 — harmon-init#427: all six criteria were satisfied and
 individually verified *during* implementation, PR #438 merged with 17/17

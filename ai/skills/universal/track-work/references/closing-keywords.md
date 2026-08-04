@@ -17,16 +17,26 @@ body, and much easier to miss.
 
 ## The rule
 
-| Situation | Keyword |
-| --- | --- |
-| The PR resolves the issue **entirely** | `Closes #N` |
-| The PR does part of it | `Refs #N` |
-| The issue has unticked items the PR won't tick | `Refs #N` |
-| The issue is in another repository | `Refs owner/repo#N` — never a closing keyword |
-| You are not sure | `Refs #N` |
+| Situation | Keyword | Where to write it |
+| --- | --- | --- |
+| The PR resolves the issue **entirely** | `Closes #N` | anywhere |
+| The PR does part of it | `Refs #N` | **PR body only** |
+| The issue has unticked items the PR won't tick | `Refs #N` | **PR body only** |
+| The issue is in another repository | `Refs owner/repo#N` — never a closing keyword | PR body only |
+| You are not sure | `Refs #N` | **PR body only** |
 
-`Refs` links the PR to the issue in the timeline and closes nothing. It is the
-default; a closing keyword is the exception you justify.
+`Refs` links the PR to the issue in the timeline and, *to GitHub*, closes
+nothing. It is the default; a closing keyword is the exception you justify.
+
+**The third column is load-bearing and is not a style preference.** Where a
+changelog is generated from commits, a reference sitting in the commit's footer
+is harvested and re-rendered under a hardcoded `closes` list — the generator
+never reads the keyword, so `Refs` is converted like any other. That has
+already closed an issue in this repo with none of its criteria ticked. Whether
+it fires depends on how many commits the PR ends up with, which you cannot know
+while writing. Keeping the bare `#N` in the PR body and out of the commit
+removes the only step you control from the chain. The skill's §2 has the
+evidence and the mechanism.
 
 ## The check
 
