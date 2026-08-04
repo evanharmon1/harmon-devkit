@@ -260,6 +260,13 @@ assert_status 0 clean
 # it rejected known caveat shapes and accepted everything else — a blocklist,
 # which fails open. The classifier now requires the tail to be positively
 # recognisable as praise, so unmatched text escalates. Keep that direction.
+#
+# The five with a praise word in them are the SECOND round of the same defect:
+# requiring a praise word to be PRESENT still left the rest of the clause
+# unexamined, so "Nice work, tests crash on Windows." passed on "nice". The
+# rule is now that the tail must be NOTHING BUT praise — every word
+# recognised — which is what makes it terminate: a caveat has to name
+# something, and the thing it names is a word the vocabulary does not have.
 for caveat in \
     "But a race remains." \
     "However, check the lock." \
@@ -280,7 +287,12 @@ for caveat in \
     "Docs are stale." \
     "Formatting is inconsistent." \
     "Clean this up." \
-    "Rerun after rebase."; do
+    "Rerun after rebase." \
+    "Nice work, tests crash on Windows." \
+    "Great job, data corrupts on rollback." \
+    "Excellent work, deployment hangs." \
+    "Clean this up." \
+    "Neat, but fix the lock."; do
     echo "==> the caveat tail '${caveat}' still escalates"
     new_cycle
     jq -cn \

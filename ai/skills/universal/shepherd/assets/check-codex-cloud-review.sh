@@ -281,40 +281,49 @@ codex_verdict_defs=$(
           # A tail with no ASCII letters at all — an emoji, a punctuation
           # flourish — cannot assert anything about the code.
           def has_no_letters: (test("[a-z]") | not);
-          # POSITIVE recognition. The tail must carry an unambiguous mark of
-          # praise; anything unrecognised escalates to a human.
+          # POSITIVE recognition, over the WHOLE tail.
           #
-          # This direction is the whole safety property. An earlier revision
-          # inverted it — reject known caveat shapes, accept the rest — which
-          # fails OPEN: "Tests fail on Windows." is short, single-sentence,
-          # digit-free and leads with no contrastive word, so it sailed
-          # through as clean. So did "Coverage dropped." and "Docs are stale."
-          # A blocklist has to enumerate every way a concern can be phrased;
-          # this list only has to enumerate the ways Codex says "well done",
-          # which is a far smaller and more stable vocabulary, and being
-          # wrong about it costs one escalation rather than a false green.
-          def praise_token:
-            test("\\b(nice|great|excellent|awesome|amazing|beautiful|lovely|"
+          # Two earlier revisions of this test failed open, each more subtly:
+          #
+          #   1. reject known caveat shapes, accept the rest — a blocklist, so
+          #      "Tests fail on Windows." passed, tripping no rule;
+          #   2. accept if a praise word appears anywhere — so "Nice work,
+          #      tests crash on Windows." passed on the strength of "nice".
+          #
+          # Both share a root cause: some part of the tail went unexamined.
+          # The rule is therefore not "contains praise" but "is NOTHING BUT
+          # praise". Every word must be recognised; one unknown word escalates.
+          # That terminates, because there is no residue left for a concern to
+          # hide in — a caveat has to name something, and the thing it names is
+          # a word this vocabulary does not have.
+          #
+          # The vocabulary is of words rather than whole clauses, which is what
+          # keeps it tractable: "Nice work!", "Nice job!" and "Very nice." are
+          # covered by one entry where a clause list needed three.
+          def praise_word:
+            test("^(nice|great|excellent|awesome|amazing|beautiful|lovely|"
               + "superb|stellar|brilliant|fantastic|terrific|wonderful|"
               + "impressive|bravo|kudos|chapeau|kiss|swish|delight|delightful|"
               + "love|loved|enjoyed|pleasure|flawless|spotless|exemplary|"
               + "admirable|perfect|ace|lgtm|solid|smooth|slick|elegant|"
-              + "well done|good work|good job|good stuff|nicely done|"
-              + "keep it up|looking forward|on a roll|ship it|top.?notch|"
-              + "hats off|chef)\\b");
-          # Words that open a concern. A caveat overwhelmingly leads with one.
-          def caveat_opener:
-            test("^(but|however|though|although|that said|one|a few|minor|"
-              + "small|note|caveat|concern|careful|watch|check|see|consider|"
-              + "review|verify|confirm|double|make sure|ensure|fix|address|"
-              + "look|heads|fyi|aside|except|still|yet|unless|before|only|"
-              + "just|worth|suggest|recommend|nit|missing|should|must)\\b");
-          # Words that signal a concern wherever they appear.
-          def caveat_word:
-            test("\\b(but|however|though|caveat|nit|concern|bug|race|"
-              + "regression|broken|missing|unless|except|careful|watch out|"
-              + "double-check|be aware|one thing|follow.?up|todo|fail|fails|"
-              + "failing|stale|untested|dropped|inconsistent)\\b");
+              # NOTE: "clean", "tidy", "neat" and "sharp" are deliberately
+              # ABSENT. Each doubles as an imperative verb, and with a deictic
+              # they build an instruction out of nothing but allowed words —
+              # "Clean this up." was clean until they were removed. For the
+              # same reason no deictic ("this", "that", "these") is allowed:
+              # a word that points at something is pointing at the code.
+              + "crisp|elegant|good|well|done|"
+              # Filler that carries no assertion on its own.
+              + "work|job|stuff|one|it|up|on|a|an|the|to|and|of|as|is|are|"
+              + "you|your|youre|you.re|chef|chefs|chef.s|"
+              + "very|really|so|much|truly|quite|absolutely|simply|just|"
+              + "keep|keeping|looking|forward|next|diff|pr|change|changes|"
+              + "everyone|all|here|again|already|another|roll|notch|top|"
+              + "hats|off|ship|thanks|thank|cheers|nicely|beautifully)$");
+          # Everything after the verdict line must be Codex's own metadata:
+          # the "Reviewed commit" line and its collapsed About block. A concern
+          # parked on a later line carries no badge, so nothing else would
+          # catch it.
           def praise_ok:
             verdict_tail as $t |
             if $t == "" then true
@@ -325,15 +334,13 @@ codex_verdict_defs=$(
             elif ($t | test("[`<>()\\[\\]/]|https?:|[0-9]")) then false
             # More than one sentence is an argument, not an interjection.
             elif ($t | test("[.!?][[:space:]]+[^[:space:]]")) then false
-            elif ($t | caveat_opener) then false
-            elif ($t | caveat_word) then false
-            # Default DENY: unrecognised text escalates rather than passing.
-            elif ($t | praise_token) then true
-            else false end;
-          # Everything after the verdict line must be Codex's own metadata:
-          # the "Reviewed commit" line and its collapsed About block. A concern
-          # parked on a later line carries no badge, so nothing else would
-          # catch it.
+            # Default DENY: every word must be recognised praise or filler,
+            # so no unexamined residue is left for a concern to hide in.
+            else ($t
+              | gsub("[^a-z'\u2019[:space:]]"; " ")
+              | split(" ") | map(select(. != ""))
+              | (length > 0) and all(praise_word))
+            end;
           def rest_is_boilerplate:
             (body_text | split("\n") | .[1:] | join("\n") |
               gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
