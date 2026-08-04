@@ -37,7 +37,10 @@ cd "$(git rev-parse --show-toplevel)"
 #
 # It is deliberately the PATH and not the word "dotfiles". Shipped guidance may
 # legitimately discuss a consumer's own dotfiles, and banning the English word
-# would fail on text that breaks no invariant.
+# would fail on text that breaks no invariant. The segment boundary is written
+# out rather than assumed: a leading `.dotfiles/config` (relative path, or a
+# symlink target that starts at the checkout) has no slash in front of it, so
+# anchoring on `/` alone would let exactly that form through.
 #
 # NOTE: unlike harmon-init's `test:template-independence`, `chezmoi` is NOT in
 # this pattern. The `standardize-repo` skill carries substantial chezmoi
@@ -45,7 +48,7 @@ cd "$(git rev-parse --show-toplevel)"
 # because one of the repos it may be pointed at *is* a chezmoi source. The
 # technique is domain knowledge this repo needs; only the personal repo's name
 # and offsite rationale are forbidden.
-PATTERN='harmon-dotfiles|/\.dotfiles'
+PATTERN='harmon-dotfiles|(^|[^[:alnum:]_-])\.dotfiles(/|$|[^[:alnum:]_-])'
 
 # What a consumer receives.
 TARGETS=(
@@ -56,8 +59,10 @@ TARGETS=(
 )
 
 # This guard lives inside a scanned target and necessarily spells out the very
-# string it forbids. Excluding it by exact path is the whole exemption — nothing
-# else under the targets is skipped.
+# string it forbids — enforcement cannot name the thing without naming it. That
+# carve-out is written into the Hard Rule itself (AGENTS.md), so this is the
+# rule's own text and not an exemption from it. It is the whole exemption:
+# excluding one exact path, with nothing else under the targets skipped.
 SELF="scripts/test-independence.sh"
 
 fail=0
@@ -81,12 +86,14 @@ for target in "${TARGETS[@]}"; do
     done < <(grep -rlIEi "$PATTERN" "$target" 2>/dev/null || true)
 
     # Paths. Dotfiles machinery can be named rather than written: an empty
-    # `harmon-dotfiles/` directory has no contents for the scan above to match.
+    # `harmon-dotfiles/` directory has no contents for the scan above to match,
+    # and a committed `ai/example/.dotfiles/config` encodes the same checkout
+    # layout in its path while every file under it reads clean.
     while IFS= read -r path; do
         [ -n "$path" ] || continue
         echo "FAIL: ${path} — personal dotfiles machinery must not ship to consumers" >&2
         fail=1
-    done < <(find "$target" -iname '*harmon-dotfiles*' -print)
+    done < <(find "$target" \( -iname '*harmon-dotfiles*' -o -iname '.dotfiles' \) -print)
 
     # Symlink TARGETS. Neither scan above sees one: `grep -r` does not read link
     # targets (that is -R, which we must not use here — it would follow a link

@@ -77,7 +77,10 @@ Non-negotiable, regardless of any autonomy granted elsewhere in this file:
   "related repos" tables, `.claude/settings.json` grants,
   `.devcontainer/related-repos.txt`), which is why `test:independence`, the
   guard that enforces this, scans those four directories and not the whole
-  repo. **chezmoi as a technique is not covered**: `standardize-repo` carries
+  repo. That guard's own source is the single carve-out: enforcement has to
+  spell out the string it forbids, exactly as this rule's prose does — the
+  rule text is out of scope because it sits at the root, the guard is out of
+  scope by name, and nothing else under the four trees is exempt. **chezmoi as a technique is not covered**: `standardize-repo` carries
   real chezmoi guidance because one of the repos it may be pointed at *is* a
   chezmoi source. What must never ship is the personal repo's name and
   rationale that exists only there — not the technique.
