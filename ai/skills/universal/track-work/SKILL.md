@@ -306,17 +306,18 @@ open on a PR. Run this at the same moment as the search, once per path the
 issue is about:
 
 ```sh
-gh pr list --repo <target> --state open --json number,title,files \
+gh pr list --repo <target> --state open --limit 200 --json number,title,files \
   --jq '.[] | select([.files[].path] | index("<path the issue is about>"))
         | "#\(.number) \(.title)"'
 ```
 
-It lists 30 open PRs by default and fetches the lot in a single GraphQL query,
-so raising `--limit` on a busy tracker is cheap. Two silent misses are worth
-knowing, because both fail the way a dedup check must not — by returning
-nothing: `gh` asks for `files(first: 100)` and never paginates it, so a PR
-changing more than 100 files can touch your path and not appear; and `index`
-takes a literal, so a path *fragment* matches nothing rather than erroring.
+**`--limit 200`** carries its weight for the same reason it does on the search
+above — the default is 30 — and it is free here: the whole listing, file lists
+included, is a single GraphQL query. Two silent misses survive it, and both
+fail the way a dedup check must not, by returning nothing. `gh` asks for
+`files(first: 100)` and never paginates that, so a PR changing more than 100
+files can touch your path and not appear. And `index` takes a literal, so a
+path *fragment* matches nothing rather than erroring.
 
 This is a command rather than something to notice for the same reason the
 search above is bound to `<target>` explicitly: §3 sends you to file in a repo
