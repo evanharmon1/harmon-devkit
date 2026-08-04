@@ -362,15 +362,35 @@ issue may be moved at all.
 
   Classification is three-way, because "I cannot tell" is a real answer and
   reporting it as a finding is a false statement about what the reviewer said.
-  A result that opens with the clean verdict sentence but carries a P0/P1/P2
-  marker is a **finding**; one whose trailing clause is empty or an *observed*
-  praise string is **clean**; anything else is **indeterminate** and escalates.
-  The trailing clause is matched against a literal list rather than a shape,
-  because no pattern over characters separates "Chef's kiss." from "but a race
-  remains." Being unlisted costs one escalation; being wrong would pass a PR
-  the reviewer flagged. When an escalation turns out to be genuinely new
-  praise, add the exact string to `observed_praise` in the helper and pin it
-  in `scripts/test-shepherd-codex.sh` — do not loosen the match.
+  A result carrying a P0/P1/P2 marker anywhere in its body is a **finding**;
+  one that opens with the clean verdict sentence and whose remaining lines are
+  Codex's own metadata is **clean**; anything else is **indeterminate** and
+  escalates.
+
+  **The trailing clause Codex appends to the verdict sentence is not part of
+  the decision.** It is stripped. Codex writes it differently nearly every
+  time — "Bravo.", "Swish!", ":+1:", "Already looking forward to the next
+  diff." — and three separate attempts to parse it (reject caveat shapes;
+  require a praise word; require every word recognised) were each fail-**open**
+  within minutes of review, while the literal allowlist that preceded them
+  could not converge and deadlocked the PR fixing it. It is free text, and it
+  is not a channel that can be parsed reliably.
+
+  What decides the verdict is the part of Codex's output that does *not* vary:
+  the verdict sentence matched exactly, the absence of any severity badge
+  anywhere in the body, and every remaining line being Codex's own metadata.
+  Inline comments on the current head are classified as findings before any of
+  this runs.
+
+  **The residual, stated so nobody rediscovers it as a surprise:** an unbadged
+  concern appended to the verdict sentence would classify clean. It has never
+  been observed — every finding Codex has posted in this repo carried a badge,
+  and this would require it to contradict itself inside one sentence — and the
+  gate promotes a draft to *ready for review* rather than merging, so a human
+  still reads the PR. `scripts/test-shepherd-codex.sh` pins that case
+  deliberately. **If it ever fires in the wild, do not resume parsing the
+  clause; raise it with the maintainer, because the assumption behind the
+  design has broken.**
 
   Persist each attempt under the git directory so branch switches and resumed
   sessions cannot duplicate it:

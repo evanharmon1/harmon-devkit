@@ -245,6 +245,67 @@ fetch_evidence() {
     esac
 }
 
+codex_verdict_defs=$(
+    cat <<'JQDEFS'
+          def clean_sentence:
+            "codex review: didn't find any major issues.";
+          def body_text: (.body // "");
+          def first_line:
+            (body_text | split("\n")[0] |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
+          def has_severity_marker:
+            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
+          def rest_is_boilerplate:
+            (body_text | split("\n") | .[1:] | join("\n") |
+              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
+                   ""; "im") |
+              ascii_downcase | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              map(select(. != "")) |
+              all(test(
+                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
+              )));
+          # The verdict line must OPEN with the clean sentence; whatever
+          # Codex appends after it is stripped and plays no part in the
+          # decision.
+          #
+          # Three earlier revisions tried to prove the trailing clause was
+          # praise — by rejecting caveat shapes, then by requiring a praise
+          # word, then by requiring every word to be recognised. Each looked
+          # airtight and each was fail-OPEN within minutes of review
+          # ("Tests fail on Windows.", "Nice work, tests crash on Windows.",
+          # ":warning:", "Work on it."). The clause is free text that Codex
+          # writes differently every time; it is not a channel that can be
+          # parsed reliably, and the allowlist that preceded those attempts
+          # could not converge either — seven distinct clauses, three inside
+          # twenty-five minutes, and it deadlocked the PR that was fixing it.
+          #
+          # So the tail is not load-bearing. What decides the verdict is the
+          # part of Codex's output that does NOT vary:
+          #
+          #   1. the verdict sentence itself, matched exactly;
+          #   2. the absence of any P0/P1/P2 badge ANYWHERE in the body —
+          #      every finding Codex has ever posted here carried one;
+          #   3. every remaining line being Codex's own metadata.
+          #
+          # Inline comments on the current head are classified as findings
+          # separately, before this runs.
+          #
+          # The residual, stated plainly: a concern that is unbadged, absent
+          # from the inline comments, and appended to a sentence that says the
+          # opposite would pass. That has never been observed — it requires
+          # Codex to contradict itself mid-line — and this gate promotes a
+          # draft to ready-for-review rather than merging, so a human still
+          # reads the PR. That is a better trade than a parser that has been
+          # wrong three times.
+          def verdict_class:
+            if (first_line | startswith(clean_sentence) | not) then "findings"
+            elif has_severity_marker then "findings"
+            elif (rest_is_boilerplate | not) then "unrecognized"
+            else "clean" end;
+JQDEFS
+)
+
 case "$command_name" in
 reserve)
     [ -n "$repo" ] && [ -n "$pr" ] && [ -n "$head" ] && [ -n "$attempt" ] ||
@@ -573,48 +634,8 @@ check)
     # the same trailing-text hole as the verdict line had, one line lower.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
-        --arg head "$state_head" '
-          def clean_sentence:
-            "codex review: didn\u0027t find any major issues.";
-          def body_text: (.body // "");
-          def first_line:
-            (body_text | split("\n")[0] |
-              gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
-          def verdict_tail:
-            (first_line | ltrimstr(clean_sentence) |
-              gsub("^[[:space:]]+|[[:space:]]+$"; ""));
-          def has_severity_marker:
-            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
-          def observed_praise: [
-            "keep it up!",
-            "nice work!",
-            "chef\u0027s kiss."
-          ];
-          # Everything after the verdict line must be Codex\u0027s own metadata:
-          # the "Reviewed commit" line and its collapsed About block. A concern
-          # parked on a later line carries no badge, so nothing else would
-          # catch it.
-          def rest_is_boilerplate:
-            (body_text | split("\n") | .[1:] | join("\n") |
-              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
-                   ""; "im") |
-              ascii_downcase | split("\n") |
-              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
-              map(select(. != "")) |
-              all(test(
-                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
-              )));
-          def verdict_class:
-            # Bind the tail before the membership test: index/1 evaluates its
-            # argument with the ARRAY as input, so an inline verdict_tail
-            # would resolve .body against observed_praise and error.
-            verdict_tail as $tail |
-            if (first_line | startswith(clean_sentence) | not) then "findings"
-            elif has_severity_marker then "findings"
-            elif ($tail != "" and (observed_praise | index($tail) == null))
-            then "unrecognized"
-            elif (rest_is_boilerplate | not) then "unrecognized"
-            else "clean" end;
+        --arg head "$state_head" \
+        "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head)
@@ -636,48 +657,8 @@ check)
 
     comment_candidates="$workdir/comment-candidates.tsv"
     jq -r \
-        --argjson id "$actor_id" '
-          def clean_sentence:
-            "codex review: didn\u0027t find any major issues.";
-          def body_text: (.body // "");
-          def first_line:
-            (body_text | split("\n")[0] |
-              gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
-          def verdict_tail:
-            (first_line | ltrimstr(clean_sentence) |
-              gsub("^[[:space:]]+|[[:space:]]+$"; ""));
-          def has_severity_marker:
-            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
-          def observed_praise: [
-            "keep it up!",
-            "nice work!",
-            "chef\u0027s kiss."
-          ];
-          # Everything after the verdict line must be Codex\u0027s own metadata:
-          # the "Reviewed commit" line and its collapsed About block. A concern
-          # parked on a later line carries no badge, so nothing else would
-          # catch it.
-          def rest_is_boilerplate:
-            (body_text | split("\n") | .[1:] | join("\n") |
-              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
-                   ""; "im") |
-              ascii_downcase | split("\n") |
-              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
-              map(select(. != "")) |
-              all(test(
-                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
-              )));
-          def verdict_class:
-            # Bind the tail before the membership test: index/1 evaluates its
-            # argument with the ARRAY as input, so an inline verdict_tail
-            # would resolve .body against observed_praise and error.
-            verdict_tail as $tail |
-            if (first_line | startswith(clean_sentence) | not) then "findings"
-            elif has_severity_marker then "findings"
-            elif ($tail != "" and (observed_praise | index($tail) == null))
-            then "unrecognized"
-            elif (rest_is_boilerplate | not) then "unrecognized"
-            else "clean" end;
+        --argjson id "$actor_id" \
+        "$codex_verdict_defs"'
           .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(
