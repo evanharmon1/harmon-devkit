@@ -202,6 +202,20 @@ expect_fail_contains "an unreadable index fails the guard" "$d" "could not enume
 # An index entry whose blob does not exist. Piping `git cat-file` into the scan
 # hid this: cat-file exits 128, grep then exits 1, and pipefail reports the
 # rightmost non-zero — so the unreadable blob read as "no match".
+# A worktree file that cannot be read. `tr | grep` hid this the same way the
+# staged read did: tr fails, grep exits 1, pipefail reports the rightmost
+# status, and the guard called it clean. Skipped as root, where chmod 000 does
+# not deny reads and the fixture cannot express the condition.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  – unreadable worktree file: skipped (running as root)"
+else
+    d="$(newrepo unreadable)"
+    printf 'harmon-dotfiles\n' >"$d/ai/locked.md"
+    chmod 000 "$d/ai/locked.md"
+    expect_fail_contains "an unreadable worktree file fails the guard" "$d" "could not read"
+    chmod 644 "$d/ai/locked.md"
+fi
+
 d="$(newrepo missing-blob)"
 git -C "$d" update-index --add --cacheinfo \
     "100644,0000000000000000000000000000000000000001,ai/ghost.md"

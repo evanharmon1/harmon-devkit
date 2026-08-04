@@ -104,7 +104,12 @@ LISTING="$(mktemp)"
 # Staged blobs are read to a file rather than through a pipe, so that the read
 # and the scan have separate, checkable exit statuses — see the index loop.
 BLOB="$(mktemp)"
-trap 'rm -f "$LISTING" "$BLOB"' EXIT
+# The decode is written to a file too, for the same reason: `tr | grep` hides a
+# decoder failure behind grep's "no match", so the two are separate commands
+# with separate statuses. After this there is no multi-command pipeline left in
+# either scan path — every step's status is checked where it happens.
+DECODED="$(mktemp)"
+trap 'rm -f "$LISTING" "$BLOB" "$DECODED"' EXIT
 
 # enumerate ARGS… — run git ls-files into $LISTING, failing the guard if it
 # cannot enumerate. Returns non-zero so the caller can skip a doomed scan.
@@ -179,8 +184,13 @@ for target in "${TARGETS[@]}"; do
         # whenever the file is larger than a pipe buffer. Reproduced with a
         # 20 MiB fixture: the guard printed "independence OK". Letting grep
         # drain the stream costs a full read and cannot lie.
+        if ! tr -d '\000' <"$file" >"$DECODED" 2>/dev/null; then
+            echo "FAIL: could not read ${file}" >&2
+            fail=1
+            continue
+        fi
         scan_rc=0
-        tr -d '\000' <"$file" 2>/dev/null | grep -aEi "$PATTERN" >/dev/null || scan_rc=$?
+        grep -aEi "$PATTERN" "$DECODED" >/dev/null || scan_rc=$?
         if [ "$scan_rc" -gt 1 ]; then
             echo "FAIL: could not scan ${file} (exit ${scan_rc})" >&2
             fail=1
@@ -235,8 +245,13 @@ for target in "${TARGETS[@]}"; do
             # an early-exiting grep would make a large matching blob report 141
             # here, which this branch would then call a read failure — right
             # answer, wrong reason, and only by luck.
+            if ! tr -d '\000' <"$BLOB" >"$DECODED" 2>/dev/null; then
+                echo "FAIL: could not decode the staged blob for ${path}" >&2
+                fail=1
+                continue
+            fi
             blob_rc=0
-            tr -d '\000' <"$BLOB" | grep -aEi "$PATTERN" >/dev/null || blob_rc=$?
+            grep -aEi "$PATTERN" "$DECODED" >/dev/null || blob_rc=$?
             if [ "$blob_rc" -eq 0 ]; then
                 echo "FAIL: ${path} — the STAGED copy references harmon-dotfiles or a personal dotfiles path" >&2
                 fail=1
