@@ -923,6 +923,11 @@ template does not yet render either, so audit for the skill, not the workflow.
   unticked items must not be auto-closed — tick what the PR satisfies or use
   `Refs`. Never close across repos. **On a squash-merge repo the PR title is the
   same vector** (it becomes the commit subject), so the guard checks both.
+  **Keep the bare `#N` out of the commit message when the work is partial**:
+  where a changelog is generated from commits, a reference in the commit footer
+  is re-rendered under a `closes` list whatever keyword introduced it, and
+  `Refs` stops protecting anything. The PR body is not read by the generator,
+  so a reference kept there does the linking without the risk.
 - **A bare `#123` means the current repo.** Cross-repo references are written
   `owner/repo#123` (or a full URL) everywhere, including when verifying them.
 - **Re-read an issue before describing it**, including one read earlier in the
