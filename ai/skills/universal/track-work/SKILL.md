@@ -335,9 +335,15 @@ gh api --paginate repos/<target>/pulls/<n>/comments \
 without `--paginate` anything past the first page is invisible. It is read-only
 and it **will prompt**: `gh api` cannot be pre-approved here, because an
 allowlist entry cannot constrain arguments (§2) and the prefix that reads
-comments also posts them. Resolution state is not in this payload — read the
-threads rather than trusting the listing, since a resolved thread is a settled
-record and an unresolved one is open work.
+comments also posts them.
+
+It returns flat comments rather than threads — group them by `in_reply_to_id`
+if you want the thread shape — and it carries **no** resolution state, which is
+GraphQL-only. Do not go and fetch it. Whether a thread is resolved does not
+decide anything here: the disposition below is the same either way, and what
+settles whether a finding is still live is the code, not somebody's resolved
+flag. A thread can be resolved with the defect still in the file, and a
+finding you cannot reproduce should not be filed however open its thread is.
 
 **A thread hit does not replace the issue.** This is where it parts company
 with the table below: an open *issue* duplicate means comment there instead of
