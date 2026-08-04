@@ -356,17 +356,25 @@ finding you cannot reproduce should not be filed however open its thread is.
 **A thread hit does not replace the issue.** This is where it parts company
 with the table below: an open *issue* duplicate means comment there instead of
 filing, but a review thread is not a backlog item. It dies with the PR, and on
-a draft nobody may come back to it. File the issue anyway if it carries
-anything the threads do not, and link every thread it overlaps, so the two
+a draft nobody may come back to it.
+
+So file it **however completely the threads already say it**. Total overlap is
+the case that most needs an issue, not least: it is precisely when the finding
+has no backlog presence at all. Then link every thread it overlaps, so the two
 records cannot be settled separately — otherwise someone resolves the threads,
-someone else works the issue, and neither knows the other happened.
+someone else works the issue, and neither knows the other happened. What
+decides whether to file is whether the finding is live in the code; that
+somebody already wrote it on a PR is never the reason not to.
 
 Observed 2026-08-03: harmon-dotfiles#44 carried three findings about that
 repo's Ghostty config, filed after this section's search ran correctly against
 harmon-dotfiles and returned nothing. Two of the three were already open as
 unresolved threads on harmon-dotfiles#41 — the draft PR that introduces the
 config — one of them posted by a review bot the day before. Only the third was
-new, and that issue's own body named the PR as where the change lives.
+new, and that issue's own body named the PR as where the change lives. All
+three were filed regardless, which is the behaviour above: that PR is still an
+unmerged draft, so the two overlapping findings would otherwise be tracked
+nowhere.
 
 **On a hit, read the existing issue before you write anything.** It may carry
 the reason the obvious fix is wrong. harmon-init#412 recorded that the
