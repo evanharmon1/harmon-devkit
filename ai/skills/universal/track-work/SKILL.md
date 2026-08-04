@@ -311,9 +311,12 @@ gh pr list --repo <target> --state open --json number,title,files \
         | "#\(.number) \(.title)"'
 ```
 
-It lists 30 open PRs by default; raise `--limit` on a busy tracker, knowing
-`--json files` costs an API call per PR. Match the path exactly — `index` takes
-a literal, and a fragment silently matches nothing.
+It lists 30 open PRs by default and fetches the lot in a single GraphQL query,
+so raising `--limit` on a busy tracker is cheap. Two silent misses are worth
+knowing, because both fail the way a dedup check must not — by returning
+nothing: `gh` asks for `files(first: 100)` and never paginates it, so a PR
+changing more than 100 files can touch your path and not appear; and `index`
+takes a literal, so a path *fragment* matches nothing rather than erroring.
 
 This is a command rather than something to notice for the same reason the
 search above is bound to `<target>` explicitly: §3 sends you to file in a repo
