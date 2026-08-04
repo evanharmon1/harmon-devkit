@@ -1,193 +1,171 @@
 #!/usr/bin/env bash
-# test-independence.sh — keep shipped output free of the maintainer's personal
-# dotfiles repo (AGENTS.md, "Hard Rules"; harmon-devkit#263).
+# test-independence.sh — unit tests for verify-independence.sh, the guard that
+# keeps shipped output free of the maintainer's personal dotfiles repo.
+# Hermetic and offline: builds throwaway git repos in temp dirs and drives the
+# real script against them. Run via `task test:independence`.
 #
-# harmon-init, harmon-devkit, and harmon-infra are independent of harmon-dotfiles.
-# The permitted coupling is one-way and optional: harmon-dotfiles may pull from
-# them at a pinned tag; they never point back. A consumer has no access to that
-# repo, so a shipped mention of it is one of three failures — rationale they
-# cannot read, a pointer that means nothing to them, or (worst) a claim that a
-# personal repo is authoritative for content this repo owns.
-#
-# This is a written invariant made enforceable. Intent that is only remembered
-# drifts back: every reference this guard replaces was added in good faith.
-#
-# SCOPE IS DELIBERATE. It covers what reaches a consumer — `ai/` (skills and
-# agents are vendored at a pinned tag into harmon-init and into every repo it
-# generates), plus the copy-paste asset trees `templates/`, `scripts/`, and
-# `snippets/`. It does NOT cover the whole repo, because root-only mentions ship
-# to nobody and create no dependency: `.devcontainer/related-repos.txt`, the
-# sibling-repo grants in `.claude/settings.json`, the "related repos" tables in
-# `README.md`/`AGENTS.md`, and the Hard Rule's own text all name harmon-dotfiles
-# legitimately. A repo-wide guard would fail on the rule that motivates it.
-#
-# Run via `task test:independence`.
+# Why fixtures at all: `task validate:independence` only ever runs the guard
+# against a clean checkout, where the expected answer is "OK". Every rejection
+# path could be replaced with a no-op and CI would stay green. These tests are
+# what make the guard's failures load-bearing rather than assumed.
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
 
-# Case-insensitive — a capitalized "Harmon-Dotfiles" in prose ships just the
-# same. No grep -P and no \b: BSD grep has neither, and these tokens need no
-# anchors.
-#
-# The second alternative catches a hardcoded path into somebody's dotfiles
-# CHECKOUT (~/.dotfiles/..., $HOME/.dotfiles/...) — the leak the equivalent
-# harmon-init guard first missed: a guide named `~/.dotfiles/.functions` long
-# after the repo name was gone, so the name alone reported independence while a
-# pointer to the maintainer's layout still shipped.
-#
-# It is deliberately the PATH and not the word "dotfiles". Shipped guidance may
-# legitimately discuss a consumer's own dotfiles, and banning the English word
-# would fail on text that breaks no invariant. The segment boundary is written
-# out rather than assumed: a leading `.dotfiles/config` (relative path, or a
-# symlink target that starts at the checkout) has no slash in front of it, so
-# anchoring on `/` alone would let exactly that form through.
-#
-# NOTE: unlike harmon-init's `test:template-independence`, `chezmoi` is NOT in
-# this pattern. The `standardize-repo` skill carries substantial chezmoi
-# guidance (.chezmoiignore, private_/dot_ prefixes, git.autoCommit vs lefthook)
-# because one of the repos it may be pointed at *is* a chezmoi source. The
-# technique is domain knowledge this repo needs; only the personal repo's name
-# and offsite rationale are forbidden.
-PATTERN='harmon-dotfiles|(^|[^[:alnum:]_-])\.dotfiles(/|$|[^[:alnum:]_-])'
+repo="$(git rev-parse --show-toplevel)"
+GUARD="$repo/scripts/verify-independence.sh"
 
-# What a consumer receives.
-TARGETS=(
-    ai
-    templates
-    scripts
-    snippets
-)
+TMPROOT="$(mktemp -d)"
+trap 'rm -rf "$TMPROOT"' EXIT
 
-# This guard lives inside a scanned target and necessarily spells out the very
-# string it forbids — enforcement cannot name the thing without naming it. That
-# carve-out is written into the Hard Rule itself (AGENTS.md), so this is the
-# rule's own text and not an exemption from it. It is the whole exemption:
-# excluding one exact path, with nothing else under the targets skipped.
-SELF="scripts/test-independence.sh"
-
+pass=0
 fail=0
-scanned=0
-for target in "${TARGETS[@]}"; do
-    if [ ! -e "$target" ]; then
-        echo "FAIL: expected scan target is missing: ${target}" >&2
-        fail=1
-        continue
+ok() {
+    pass=$((pass + 1))
+    echo "  ✓ $*"
+}
+bad() {
+    fail=$((fail + 1))
+    echo "  ✗ $*" >&2
+}
+
+# newrepo NAME — a throwaway repo with all four scanned trees present and a
+# copy of the guard at the path the guard exempts, so the fixture mirrors the
+# real layout (including the self-exemption) rather than a stripped-down one.
+newrepo() {
+    local dir="$TMPROOT/$1"
+    mkdir -p "$dir"/{ai,templates,scripts,snippets}
+    git -C "$dir" init -q .
+    git -C "$dir" config user.email test@example.com
+    git -C "$dir" config user.name Test
+    cp "$GUARD" "$dir/scripts/verify-independence.sh"
+    printf 'placeholder\n' >"$dir/ai/.gitkeep"
+    printf '%s\n' "$dir"
+}
+
+guard() { (cd "$1" && bash ./scripts/verify-independence.sh); }
+
+expect_ok() {
+    local desc="$1" dir="$2" output
+    if output="$(guard "$dir" 2>&1)"; then
+        ok "$desc"
+    else
+        bad "$desc (expected exit 0)"
+        printf '%s\n' "$output" | sed 's/^/      /' >&2
     fi
-    scanned=$((scanned + 1))
+}
 
-    # The scan universe is git's, not the filesystem's: tracked files plus
-    # untracked ones git would accept. Ignored artifacts cannot ship, and
-    # walking them raw is worse than wasteful — an ignored `.env` or a local
-    # `node_modules/` under one of these trees would fail this guard on one
-    # machine while CI, which never sees them, passed.
-    while IFS= read -r -d '' file; do
-        [ -n "$file" ] || continue
-        [ "$file" != "$SELF" ] || continue
-
-        # Paths. Machinery can be named rather than written: a committed
-        # `ai/example/.dotfiles/config` encodes the checkout layout in its path
-        # while every file under it reads clean.
-        if printf '%s\n' "$file" | grep -qEi "$PATTERN"; then
-            echo "FAIL: ${file} — personal dotfiles machinery must not ship to consumers" >&2
-            fail=1
-        fi
-
-        # Symlink TARGETS, where the dependency actually lives. The content
-        # scan cannot see one: reading through a link is `grep -R`, which must
-        # not be used here — it would follow a link out of the tree and scan
-        # whatever it lands on.
-        if [ -L "$file" ]; then
-            dest=$(readlink "$file") || continue
-            [ -n "$dest" ] || continue
-            if printf '%s\n' "$dest" | grep -qEi "$PATTERN"; then
-                echo "FAIL: ${file} is a symlink to ${dest}" >&2
-                fail=1
-            fi
-            continue
-        fi
-        [ -f "$file" ] || continue
-
-        # Contents, read as BYTES (-a), not as text. `grep -I` would skip any
-        # file with a NUL in it, and these trees ship ~100 tracked binaries
-        # under scripts/appleScripts — including compiled .scpt files, which
-        # embed the filesystem paths their source referenced. Skipping binaries
-        # would exempt exactly the assets most likely to carry a hardcoded
-        # dotfiles path, and would do it silently.
-        if grep -qaEi "$PATTERN" "$file" 2>/dev/null; then
-            echo "FAIL: ${file} references harmon-dotfiles or a personal dotfiles path" >&2
-            # Dump matching lines for text; for a binary, say so instead of
-            # spraying raw bytes at the terminal.
-            if grep -Iq . "$file" 2>/dev/null; then
-                grep -naEi "$PATTERN" "$file" | sed 's/^/      /' >&2
-            else
-                echo "      (binary file — match found in its raw bytes)" >&2
-            fi
-            fail=1
-        fi
-    done < <(git ls-files -z --cached --others --exclude-standard -- "$target")
-
-    # The index, which is what the next commit actually records. The loop above
-    # takes its PATHS from git but reads CONTENT from the worktree, so a
-    # violation that was staged and then edited out without re-staging would
-    # pass here and ship in the commit. `git grep --cached` reads the staged
-    # blobs themselves — including a symlink's blob, which is its target path.
-    #
-    # Option order matters and is load-bearing: `--cached` must come BEFORE the
-    # pattern, or git reads it as a revision and dies. Its exit status is
-    # three-valued — 0 match, 1 no match, >1 error — so the error case is
-    # handled explicitly rather than swallowed with `|| true`: a scan that
-    # cannot run must fail the guard, never report independence.
-    staged=$(git grep --cached -laEi "$PATTERN" -- "$target") || staged_rc=$?
-    staged_rc=${staged_rc:-0}
-    if [ "$staged_rc" -gt 1 ]; then
-        echo "FAIL: staged-content scan of ${target} failed (git grep exit ${staged_rc})" >&2
-        fail=1
+# Succeed iff the guard exits non-zero AND names the offending path — a
+# rejection that fires for an unrelated reason is a passing test that proves
+# nothing.
+expect_fail_contains() {
+    local desc="$1" dir="$2" needle="$3" output
+    if output="$(guard "$dir" 2>&1)"; then
+        bad "$desc (expected non-zero exit)"
+        printf '%s\n' "$output" | sed 's/^/      /' >&2
+    elif printf '%s\n' "$output" | grep -qF "$needle"; then
+        ok "$desc"
+    else
+        bad "$desc (rejected, but not for the expected reason: missing '$needle')"
+        printf '%s\n' "$output" | sed 's/^/      /' >&2
     fi
-    while IFS= read -r file; do
-        [ -n "$file" ] || continue
-        [ "$file" != "$SELF" ] || continue
-        echo "FAIL: ${file} — the STAGED copy references harmon-dotfiles or a personal dotfiles path" >&2
-        git grep --cached -naEi "$PATTERN" -- "$file" | sed 's/^/      /' >&2
-        fail=1
-    done <<EOF
-$staged
+}
+
+echo "verify-independence: acceptance"
+
+d="$(newrepo clean)"
+printf 'ordinary guidance about your own dotfiles setup\n' >"$d/ai/notes.md"
+expect_ok "a clean tree passes" "$d"
+
+# The rule bans the personal repo and hardcoded checkout paths, NOT the
+# technique — standardize-repo carries real chezmoi guidance on purpose.
+d="$(newrepo chezmoi)"
+cat >"$d/ai/chezmoi-guidance.md" <<'EOF'
+Add generated files to `.chezmoiignore` and verify with `chezmoi status`.
+The `private_`/`dot_` prefixes and `{{ .chezmoi.* }}` templates are fine.
 EOF
-    unset staged_rc
+expect_ok "chezmoi technique guidance passes" "$d"
 
-    # Index entries git grep cannot read. It skips symlinks (so a staged link
-    # whose worktree copy was replaced by a regular file evades the scan above)
-    # and a gitlink has no blob at all — an uninitialized submodule is an empty
-    # directory locally while `--recurse-submodules` hands a consumer whatever
-    # it points at. Read the modes directly.
-    while IFS= read -r -d '' entry; do
-        [ -n "$entry" ] || continue
-        mode=${entry%% *}
-        path=${entry#*$'\t'}
-        [ "$path" != "$SELF" ] || continue
-        case "$mode" in
-        120000)
-            dest=$(git cat-file blob ":${path}" 2>/dev/null) || continue
-            if printf '%s\n' "$dest" | grep -qEi "$PATTERN"; then
-                echo "FAIL: ${path} — the STAGED symlink points at ${dest}" >&2
-                fail=1
-            fi
-            ;;
-        160000)
-            # No pattern check: the URL lives in .gitmodules, outside these
-            # trees, so the gitlink itself is the only thing to judge. Shipped
-            # output owns its content outright rather than pointing at another
-            # repo's history.
-            echo "FAIL: ${path} — submodules must not ship in consumer-facing trees" >&2
-            fail=1
-            ;;
-        esac
-    done < <(git ls-files -s -z -- "$target")
-done
+d="$(newrepo self)"
+expect_ok "the guard exempts only its own source" "$d"
 
-if [ "$fail" -ne 0 ]; then
-    echo "independence: shipped output must not reference harmon-dotfiles or a personal dotfiles checkout" >&2
-    echo "  state the rationale here rather than citing that repo, and drop the name where it is" >&2
-    echo "  only a pointer (AGENTS.md, \"Hard Rules\")" >&2
-    exit 1
-fi
-echo "independence OK: ${scanned} consumer-facing target(s) name no personal dotfiles repo or path"
+d="$(newrepo innocuous-link)"
+ln -s ../templates "$d/ai/link"
+expect_ok "an innocuous symlink passes" "$d"
+
+echo "verify-independence: rejection"
+
+d="$(newrepo name)"
+printf 'see harmon-dotfiles ADR 0002\n' >"$d/ai/skill.md"
+expect_fail_contains "the repo name in content is rejected" "$d" "ai/skill.md"
+
+d="$(newrepo homepath)"
+printf 'source ~/.dotfiles/.functions\n' >"$d/templates/setup.sh"
+expect_fail_contains "a ~/.dotfiles path is rejected" "$d" "templates/setup.sh"
+
+d="$(newrepo relpath)"
+printf '.dotfiles/private/config\n' >"$d/templates/notes.md"
+expect_fail_contains "a leading .dotfiles/ path is rejected" "$d" "templates/notes.md"
+
+d="$(newrepo pathname)"
+mkdir -p "$d/ai/example/.dotfiles"
+printf 'clean content\n' >"$d/ai/example/.dotfiles/config"
+expect_fail_contains "a .dotfiles path component is rejected" "$d" ".dotfiles/config"
+
+d="$(newrepo symlink)"
+ln -s /home/someone/.dotfiles/tool "$d/snippets/tool"
+expect_fail_contains "a symlink into a dotfiles tree is rejected" "$d" "snippets/tool"
+
+d="$(newrepo binary)"
+printf 'prefix\000harmon-dotfiles/config\000tail\n' >"$d/ai/payload.bin"
+expect_fail_contains "a NUL-containing binary payload is rejected" "$d" "ai/payload.bin"
+
+# The compiled-AppleScript case: UTF-16 stores the path as `.\0d\0o\0t\0…`, so
+# an ASCII pattern never sees it contiguously. Written as bytes rather than
+# built with osacompile so the test stays hermetic and runs off macOS.
+d="$(newrepo utf16)"
+printf '\376\377' >"$d/scripts/compiled.scpt"
+printf '/\000U\000s\000e\000r\000s\000/\000x\000/\000.\000d\000o\000t\000f\000i\000l\000e\000s\000/\000c\000\n' \
+    >>"$d/scripts/compiled.scpt"
+expect_fail_contains "a UTF-16 path in a compiled asset is rejected" "$d" "scripts/compiled.scpt"
+
+echo "verify-independence: index vs worktree"
+
+# The core staged case: violation staged, worktree copy then cleaned without
+# re-staging. The commit would record the offending blob.
+d="$(newrepo staged)"
+printf 'see harmon-dotfiles ADR 0002\n' >"$d/ai/skill.md"
+git -C "$d" add ai/skill.md
+printf 'clean text\n' >"$d/ai/skill.md"
+expect_fail_contains "a staged-only violation is rejected" "$d" "STAGED"
+
+# git grep skips symlink entries, so this one needs the index-mode read.
+d="$(newrepo staged-link)"
+ln -s /home/someone/.dotfiles/tool "$d/ai/tool"
+git -C "$d" add ai/tool
+rm "$d/ai/tool"
+printf 'clean\n' >"$d/ai/tool"
+expect_fail_contains "a staged symlink with a clean worktree copy is rejected" "$d" "STAGED symlink"
+
+# A gitlink has no blob to scan and an uninitialized submodule is an empty
+# directory locally, while `--recurse-submodules` hands a consumer whatever it
+# points at. Staged with update-index rather than `git submodule add` so the
+# fixture needs no second repo and no protocol.file.allow.
+d="$(newrepo gitlink)"
+sha="$(git -C "$d" hash-object -w /dev/null)"
+git -C "$d" update-index --add --cacheinfo "160000,${sha},ai/vendored"
+expect_fail_contains "a submodule gitlink is rejected" "$d" "ai/vendored"
+
+d="$(newrepo ignored)"
+printf 'node_modules/\n' >"$d/.gitignore"
+mkdir -p "$d/templates/node_modules"
+printf 'harmon-dotfiles\n' >"$d/templates/node_modules/dep.js"
+expect_ok "a git-ignored file is not scanned" "$d"
+
+echo "verify-independence: structure"
+
+d="$(newrepo missing-target)"
+rm -rf "$d/snippets"
+expect_fail_contains "a missing scan target is rejected" "$d" "missing"
+
+echo
+echo "independence guard tests: ${pass} passed, ${fail} failed"
+[ "$fail" -eq 0 ]

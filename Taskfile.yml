@@ -141,6 +141,7 @@ tasks:
     cmds:
       - task: validate:skills
       - task: validate:agents
+      - task: validate:independence
 
   validate:skills:
     desc: Guard shared agent skills (unique names across categories, valid SKILL.md frontmatter)
@@ -151,6 +152,11 @@ tasks:
     desc: Guard shared subagents (flat layout, valid frontmatter, no skill-name collisions)
     cmds:
       - ./scripts/verify-agents.sh
+
+  validate:independence:
+    desc: Guard shipped output against personal-dotfiles references
+    cmds:
+      - ./scripts/verify-independence.sh
 
   guard:no-commit-to-main:
     desc: Block direct commits to main
@@ -323,7 +329,7 @@ tasks:
       - ./scripts/test-skill-index-lifecycle.sh
 
   test:independence:
-    desc: Guard shipped output against personal-dotfiles references
+    desc: Unit-test the shipped-output independence guard (offline, temp repos)
     cmds:
       - ./scripts/test-independence.sh
 
