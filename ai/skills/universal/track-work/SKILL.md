@@ -366,11 +366,11 @@ someone else works the issue, and neither knows the other happened. What
 decides whether to file is whether the finding is live in the code; that
 somebody already wrote it on a PR is never the reason not to.
 
-Observed 2026-08-03: harmon-dotfiles#44 carried three findings about that
-repo's Ghostty config, filed after this section's search ran correctly against
-harmon-dotfiles and returned nothing. Two of the three were already open as
-unresolved threads on harmon-dotfiles#41 — the draft PR that introduces the
-config — one of them posted by a review bot the day before. Only the third was
+Observed 2026-08-03: an issue in a sibling repo carried three findings about a
+terminal-emulator config, filed after this section's search ran correctly
+against that repo and returned nothing. Two of the three were already open as
+unresolved threads on the draft PR that introduces the config — one of them
+posted by a review bot the day before. Only the third was
 new, and that issue's own body named the PR as where the change lives. All
 three were filed regardless, which is the behaviour above: that PR is still an
 unmerged draft, so the two overlapping findings would otherwise be tracked
