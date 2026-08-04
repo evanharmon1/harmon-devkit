@@ -255,22 +255,6 @@ codex_verdict_defs=$(
               gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
           def has_severity_marker:
             (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
-          # The tail is judged by SHAPE, not by membership in a list of
-          # strings we happen to have seen. The list could not converge:
-          # seven distinct clauses were observed, three of them inside
-          # twenty-five minutes, and one was an emoji shortcode — so every
-          # unlisted clause was a false blocker on a clean review.
-          #
-          # Length alone cannot do it. The longest praise actually observed
-          # is 41 characters ("already looking forward to the next diff."),
-          # while real caveats are SHORTER than that: "But a race remains."
-          # is 19. So the cap is a backstop against essays, and the
-          # discriminating work is done by the shape rules below.
-          #
-          # Every rule rejects toward "unrecognized", which escalates to a
-          # human. That is the safe direction: a rejected praise clause costs
-          # one escalation, an accepted caveat passes a PR the reviewer
-          # flagged.
           def rest_is_boilerplate:
             (body_text | split("\n") | .[1:] | join("\n") |
               gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
