@@ -776,7 +776,9 @@ loops indefinitely:
      c5="$(jq -c '[.[].data.repository.pullRequest.reviewThreads.nodes[]]
                   | map({id, r:.isResolved}) | sort_by(.id)' <<<"$thr")" \
        || return 1
-     printf '%s\n' "$c1" "$c2" "$c3" "$c4" "$c5" | sha256sum
+     printf '%s\n' "$c1" "$c2" "$c3" "$c4" "$c5" |
+       if command -v sha256sum >/dev/null 2>&1; then sha256sum
+       else shasum -a 256; fi   # stock macOS ships shasum, not sha256sum
    }
    fp_before="$(promo_fp <n>)" \
      || { echo 'fingerprint UNKNOWN — a component failed; cannot promote'
