@@ -418,6 +418,112 @@ _rc=0
 printf 'x' | "$closing" --repo >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "--repo without a value should exit 2 (got $_rc)"
 
+echo "==> a shell comment inside a fenced code block does not end the Verify section (backtick fence)"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+```sh
+# check the thing
+grep -n x foo.sh
+```
+')" = 0 ] || fail "a shell comment inside a backtick fence should not terminate the Verify section"
+
+echo "==> a shell comment inside a tilde-fenced code block does not end the Verify section"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+~~~
+# check the thing
+grep -n x foo.sh
+~~~
+')" = 0 ] || fail "a shell comment inside a tilde fence should not terminate the Verify section"
+
+echo "==> a shell comment inside an indented fenced code block does not end the Verify section"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+   ```sh
+   # check the thing
+   grep -n x foo.sh
+   ```
+')" = 0 ] || fail "a shell comment inside an indented fence should not terminate the Verify section"
+
+echo "==> a heading-like line inside a fenced script block is content, not a terminator"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+```sh
+### Section
+echo "starting"
+```
+')" = 0 ] || fail "an ATX-heading-like line inside a fence must not end the section"
+
+echo "==> a real heading after a fenced Verify block still terminates the section (heading not swallowed)"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+```sh
+```
+## Notes
+
+Some prose.
+')" = 1 ] || fail "a real heading after the closing fence should still end the section"
+
+echo "==> a real heading after a fenced Verify block with a command still terminates the section"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+```sh
+# check the thing
+grep -n x foo.sh
+```
+
+## Notes
+
+Some prose.
+')" = 0 ] || fail "a real heading after the closing fence should end the section but the command should count"
+
+echo "==> a Verify-heading-like line inside a fenced block does not reset the parser"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+```sh
+## Verify
+echo "still captured"
+```
+')" = 0 ] || fail "a Verify heading inside a fenced block must not reset parser state"
+
+echo "==> a four-backtick fence is not closed by a three-backtick line inside it"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+````sh
+# the command
+```
+echo "three backticks inside, not a closer"
+````
+')" = 0 ] || fail "a shorter run of the same char must not close a longer fence"
+
+echo "==> a four-backtick fence is closed by a four-backtick closer"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+````sh
+# the command
+echo "three backticks inside"
+```
+````
+')" = 0 ] || fail "a matching-length closer should close the fence"
+
 # --- tick-criteria.sh -------------------------------------------------------
 #
 # The guarantee under test is narrowness: this is the one write the skill

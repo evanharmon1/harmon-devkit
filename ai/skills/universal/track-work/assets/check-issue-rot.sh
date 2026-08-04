@@ -93,8 +93,15 @@ fi
 # CommonMark allows up to three spaces of indent before an ATX heading, so the
 # `#` is not necessarily in column 1.
 verify_content="$(printf '%s\n' "$draft" | awk '
-    tolower($0) ~ /^ ? ? ?#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$/ { inv = 1; next }
-    inv && /^ ? ? ?#+[[:space:]]/ { inv = 0 }
+    tolower($0) ~ /^ ? ? ?#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$/ { if (!inv) in_fence = 0; inv = 1; next }
+    inv && match($0, /^ ? ? ?(`{3,}|~{3,})/) {
+        seq = substr($0, RSTART, RLENGTH); sub(/^ +/, "", seq)
+        fc = substr(seq, 1, 1)
+        rest = substr($0, RSTART + RLENGTH)
+        if (!in_fence) { in_fence = 1; fence_char = fc; fence_len = length(seq) }
+        else if (fc == fence_char && length(seq) >= fence_len && rest ~ /^[[:space:]]*$/) { in_fence = 0; fence_char = ""; fence_len = 0 }
+    }
+    inv && !in_fence && /^ ? ? ?#+[[:space:]]/ { inv = 0 }
     inv { print }
 ')"
 
