@@ -12,7 +12,7 @@ description: >-
   `gh project`/Projects V2 field writes, and PR bodies alike,
   and applies to issues in other repos as much as this one. Trigger it even if
   the user doesn't say the word "skill".
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
 ---
 
 # Track Work
@@ -298,6 +298,84 @@ gh issue list --repo <target-owner/target-repo> --state all --limit 200 \
   For re-filing something you filed yourself, the number `gh issue create`
   returned is better than either: carry it forward rather than re-deriving it.
 
+**An open PR against the same file is a second tracker.** `--search` reads
+issues; it never reads review threads. A finding about a file somebody is
+actively changing is usually recorded *there* first — a review bot gets to it
+before you do — so the search above comes back clean while the finding sits
+open on a PR. Run this at the same moment as the search, once per path the
+issue is about:
+
+```sh
+gh pr list --repo <target> --state open --limit 200 --json number,title,files \
+  --jq '.[] | select([.files[].path] | index("<path the issue is about>"))
+        | "#\(.number) \(.title)"'
+```
+
+**`--limit 200`** carries its weight for the same reason it does on the search
+above — the default is 30 — and it is free here: the whole listing, file lists
+included, is a single GraphQL query. Two silent misses survive it, and both
+fail the way a dedup check must not, by returning nothing. `gh` asks for
+`files(first: 100)` and never paginates that, so a PR changing more than 100
+files can touch your path and not appear. And `index` takes a literal, so a
+path *fragment* matches nothing rather than erroring.
+
+This is a command rather than something to notice for the same reason the
+search above is bound to `<target>` explicitly: §3 sends you to file in a repo
+you are *not* working in, so you have no idea what is open there. A rule
+phrased as "when you already know a PR is changing this file" would cover only
+the case you were never going to miss.
+
+**On a PR hit, read its threads before you file:**
+
+```sh
+gh api --paginate repos/<target>/pulls/<n>/comments \
+  --jq '.[] | "\(.html_url)  \(.path):\(.line // .original_line)  \(.user.login)"
+      + "  reply_to=\(.in_reply_to_id // "root")\n\(.body)\n"'
+```
+
+`gh api` takes no `--repo` flag, so `<target>` goes literally in the path, and
+without `--paginate` anything past the first page is invisible. It is read-only
+and it **will prompt**: `gh api` cannot be pre-approved here, because an
+allowlist entry cannot constrain arguments (§2) and the prefix that reads
+comments also posts them.
+
+Every field in that projection earns its place. `html_url` is the
+`#discussion_r…` anchor the disposition below tells you to link, so a
+projection that drops it makes the rule's own point unexecutable.
+`in_reply_to_id` is what groups the result into threads — the endpoint returns
+comments, not threads. And the body prints whole: truncate it and you hide the
+substance you came here to compare your finding against.
+
+Resolution state is **not** in this payload; it is GraphQL-only. Do not go and
+fetch it. Whether a thread is resolved does not
+decide anything here: the disposition below is the same either way, and what
+settles whether a finding is still live is the code, not somebody's resolved
+flag. A thread can be resolved with the defect still in the file, and a
+finding you cannot reproduce should not be filed however open its thread is.
+
+**A thread hit does not replace the issue.** This is where it parts company
+with the table below: an open *issue* duplicate means comment there instead of
+filing, but a review thread is not a backlog item. It dies with the PR, and on
+a draft nobody may come back to it.
+
+So file it **however completely the threads already say it**. Total overlap is
+the case that most needs an issue, not least: it is precisely when the finding
+has no backlog presence at all. Then link every thread it overlaps, so the two
+records cannot be settled separately — otherwise someone resolves the threads,
+someone else works the issue, and neither knows the other happened. What
+decides whether to file is whether the finding is live in the code; that
+somebody already wrote it on a PR is never the reason not to.
+
+Observed 2026-08-03: harmon-dotfiles#44 carried three findings about that
+repo's Ghostty config, filed after this section's search ran correctly against
+harmon-dotfiles and returned nothing. Two of the three were already open as
+unresolved threads on harmon-dotfiles#41 — the draft PR that introduces the
+config — one of them posted by a review bot the day before. Only the third was
+new, and that issue's own body named the PR as where the change lives. All
+three were filed regardless, which is the behaviour above: that PR is still an
+unmerged draft, so the two overlapping findings would otherwise be tracked
+nowhere.
+
 **On a hit, read the existing issue before you write anything.** It may carry
 the reason the obvious fix is wrong. harmon-init#412 recorded that the
 devcontainer lockfile ignore rule came from #375 *because* a tracked lockfile
@@ -354,7 +432,9 @@ Found while doing <owner/repo>#<n> — moved here because this repo owns <thing>
 **Fail conditions:** you are about to write "we should also…" about code in
 another repo without an issue number in that repo to point at — or you are about
 to run `gh issue create --repo <target>` without having run
-`gh issue list --repo <target>` for the same `<target>` first.
+`gh issue list --repo <target>` for the same `<target>` first — or an open PR in
+`<target>` changes the file the issue is about and you have not read its review
+threads.
 
 ## 4. Closing an issue
 
