@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.20.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.20.0...v0.20.1) (2026-08-04)
+
+
+### Bug Fixes
+
+* **skills:** stop shipping references to the maintainer's personal dotfiles repo ([#266](https://github.com/evanharmon1/harmon-devkit/issues/266)) ([ce97d89](https://github.com/evanharmon1/harmon-devkit/commit/ce97d89fe349cb7cd1ff4e7a15ada700191fb3e3))
+
 ## [0.20.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.19.0...v0.20.0) (2026-08-04)
 
 
