@@ -745,12 +745,81 @@ loops indefinitely:
 
    Freeze a stable content fingerprint from fresh, paginated reads of the PR
    body, reviews, top-level comments, inline comments (including replies), and
-   GraphQL review-thread resolution. Include IDs, bodies, update times, authors,
-   review states, and resolution state; exclude volatile ordering and the draft
-   flag itself. Re-fetch and compare that fingerprint as the last read before
-   `gh pr ready`. Any difference means a body edit, finding, reply, review, or
-   resolution change arrived after adjudication, so return to step 2 without
-   promoting. A fetch error is unknown and also cannot promote.
+   GraphQL review-thread resolution. **This recipe is the fingerprint — run
+   it, do not approximate it:**
+
+   ```sh
+   promo_fp() {   # promotion fingerprint — fail-closed by construction
+     local n=$1 owner="${repo%/*}" name="${repo#*/}"
+     local pr rev top inl thr c1 c2 c3 c4 c5
+     pr="$(gh api repos/"$repo"/pulls/"$n")"                             || return 1
+     rev="$(gh api --paginate --slurp repos/"$repo"/pulls/"$n"/reviews)" || return 1
+     top="$(gh api --paginate --slurp repos/"$repo"/issues/"$n"/comments)" \
+       || return 1
+     inl="$(gh api --paginate --slurp repos/"$repo"/pulls/"$n"/comments)" \
+       || return 1
+     thr="$(gh api graphql --paginate --slurp \
+             -F owner="$owner" -F name="$name" -F pr="$n" -f query='
+       query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
+         repository(owner:$owner,name:$name){ pullRequest(number:$pr){
+           reviewThreads(first:100,after:$endCursor){
+             pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}')" \
+       || return 1
+     c1="$(jq -cS '{title,body}' <<<"$pr")"                              || return 1
+     c2="$(jq -c 'add // [] | map({id, u:.user.login, s:.state, b:.body,
+                                   t:.submitted_at}) | sort_by(.id)' \
+             <<<"$rev")"                                                 || return 1
+     c3="$(jq -c 'add // [] | map({id, u:.user.login, b:.body, t:.updated_at})
+                  | sort_by(.id)' <<<"$top")"                            || return 1
+     c4="$(jq -c 'add // [] | map({id, u:.user.login, b:.body, t:.updated_at})
+                  | sort_by(.id)' <<<"$inl")"                            || return 1
+     c5="$(jq -c '[.[].data.repository.pullRequest.reviewThreads.nodes[]]
+                  | map({id, r:.isResolved}) | sort_by(.id)' <<<"$thr")" \
+       || return 1
+     printf '%s\n' "$c1" "$c2" "$c3" "$c4" "$c5" | sha256sum
+   }
+   fp_before="$(promo_fp <n>)" \
+     || { echo 'fingerprint UNKNOWN — a component failed; cannot promote'
+          exit 1; }
+   ```
+
+   Why the shape is load-bearing:
+
+   - **Every component is captured and exit-checked before anything is
+     hashed.** The tempting one-liner — a brace group of five `gh` calls
+     piped straight into `sha256sum` — converts "I could not read this" into
+     "this did not change": a failing `gh api` writes its diagnostic to
+     stderr and nothing to stdout, the pipeline's status is `sha256sum`'s, and
+     the result is a well-formed, *stable* hash missing a whole surface.
+     Because such a failure is typically deterministic, the pre/post
+     comparison then passes with maximum confidence — on exactly the surfaces
+     (reviews, comments, thread resolution) the fingerprint exists to watch.
+     A flaky failure would be safer; a stable one certifies content never
+     fetched. So a component failure must abort: the fingerprint is
+     **unknown**, and unknown cannot promote — the PR stays draft.
+   - **`--slurp` output goes to a standalone `jq`, never `--jq`.** `gh api`
+     refuses `--slurp` alongside `--jq` outright, and `--slurp` is what makes
+     a `--paginate` read page-safe (step 2) — so the combination the obvious
+     implementation reaches for is precisely the one that errors, with empty
+     stdout for the unguarded pipeline to hash. The guarded captures above
+     are what make that failure loud instead.
+   - **Content-bearing fields only.** IDs, authors, bodies, content update
+     times (`updated_at` on comments; `submitted_at` plus the hashed body on
+     reviews, which carry no `updated_at`), review states, and thread
+     resolution are in. The PR object's own `updated_at`, the draft flag,
+     mergeability, and API ordering are out — `sort_by(.id)` everywhere, `-S`
+     for key order — because `gh pr ready` mutates those, and including any
+     of them would make every normal promotion invalidate its own
+     fingerprint (#227).
+   - **An empty component that fetched successfully is real state, not a
+     failure.** A PR with no reviews normalizes to `[]` and hashes fine
+     (`add // []` covers the empty slurp). Only a non-zero exit is unknown.
+
+   Re-fetch and compare that fingerprint (`promo_fp` again, equally guarded)
+   as the last read before `gh pr ready`. Any difference means a body edit,
+   finding, reply, review, or resolution change arrived after adjudication,
+   so return to step 2 without promoting. A fetch error is unknown and also
+   cannot promote — on either read, a failed `promo_fp` leaves the PR draft.
 
    Before promotion, identify required workflows and review apps that react only
    to `pull_request.ready_for_review`. Promotion can notify CODEOWNERS and other
