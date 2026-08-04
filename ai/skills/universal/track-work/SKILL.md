@@ -329,7 +329,8 @@ the case you were never going to miss.
 
 ```sh
 gh api --paginate repos/<target>/pulls/<n>/comments \
-  --jq '.[] | "\(.path):\(.line // .original_line) \(.user.login): \(.body[0:160])"'
+  --jq '.[] | "\(.html_url)  \(.path):\(.line // .original_line)  \(.user.login)"
+      + "  reply_to=\(.in_reply_to_id // "root")\n\(.body)\n"'
 ```
 
 `gh api` takes no `--repo` flag, so `<target>` goes literally in the path, and
@@ -338,9 +339,15 @@ and it **will prompt**: `gh api` cannot be pre-approved here, because an
 allowlist entry cannot constrain arguments (§2) and the prefix that reads
 comments also posts them.
 
-It returns flat comments rather than threads — group them by `in_reply_to_id`
-if you want the thread shape — and it carries **no** resolution state, which is
-GraphQL-only. Do not go and fetch it. Whether a thread is resolved does not
+Every field in that projection earns its place. `html_url` is the
+`#discussion_r…` anchor the disposition below tells you to link, so a
+projection that drops it makes the rule's own point unexecutable.
+`in_reply_to_id` is what groups the result into threads — the endpoint returns
+comments, not threads. And the body prints whole: truncate it and you hide the
+substance you came here to compare your finding against.
+
+Resolution state is **not** in this payload; it is GraphQL-only. Do not go and
+fetch it. Whether a thread is resolved does not
 decide anything here: the disposition below is the same either way, and what
 settles whether a finding is still live is the code, not somebody's resolved
 flag. A thread can be resolved with the defect still in the file, and a
