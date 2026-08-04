@@ -75,39 +75,46 @@ for target in "${TARGETS[@]}"; do
     fi
     scanned=$((scanned + 1))
 
-    # Contents. -I skips binaries, -l prints each offending path once; the
-    # follow-up grep shows the lines so the failure is actionable.
-    while IFS= read -r file; do
+    # The scan universe is git's, not the filesystem's: tracked files plus
+    # untracked ones git would accept. Ignored artifacts cannot ship, and
+    # walking them raw is worse than wasteful — an ignored `.env` or a local
+    # `node_modules/` under one of these trees would fail this guard on one
+    # machine while CI, which never sees them, passed.
+    while IFS= read -r -d '' file; do
         [ -n "$file" ] || continue
         [ "$file" != "$SELF" ] || continue
-        echo "FAIL: ${file} references harmon-dotfiles or a personal dotfiles path" >&2
-        grep -nEi "$PATTERN" "$file" | sed 's/^/      /' >&2
-        fail=1
-    done < <(grep -rlIEi "$PATTERN" "$target" 2>/dev/null || true)
 
-    # Paths. Dotfiles machinery can be named rather than written: an empty
-    # `harmon-dotfiles/` directory has no contents for the scan above to match,
-    # and a committed `ai/example/.dotfiles/config` encodes the same checkout
-    # layout in its path while every file under it reads clean.
-    while IFS= read -r path; do
-        [ -n "$path" ] || continue
-        echo "FAIL: ${path} — personal dotfiles machinery must not ship to consumers" >&2
-        fail=1
-    done < <(find "$target" \( -iname '*harmon-dotfiles*' -o -iname '.dotfiles' \) -print)
-
-    # Symlink TARGETS. Neither scan above sees one: `grep -r` does not read link
-    # targets (that is -R, which we must not use here — it would follow a link
-    # out of the tree and scan whatever it lands on), and `find -iname` matches
-    # only the link's own name.
-    while IFS= read -r link; do
-        [ -n "$link" ] || continue
-        dest=$(readlink "$link") || continue
-        [ -n "$dest" ] || continue
-        if printf '%s\n' "$dest" | grep -qEi "$PATTERN"; then
-            echo "FAIL: ${link} is a symlink to ${dest}" >&2
+        # Paths. Machinery can be named rather than written: a committed
+        # `ai/example/.dotfiles/config` encodes the checkout layout in its path
+        # while every file under it reads clean.
+        if printf '%s\n' "$file" | grep -qEi "$PATTERN"; then
+            echo "FAIL: ${file} — personal dotfiles machinery must not ship to consumers" >&2
             fail=1
         fi
-    done < <(find "$target" -type l -print)
+
+        # Symlink TARGETS, where the dependency actually lives. The content
+        # scan cannot see one: reading through a link is `grep -R`, which must
+        # not be used here — it would follow a link out of the tree and scan
+        # whatever it lands on.
+        if [ -L "$file" ]; then
+            dest=$(readlink "$file") || continue
+            [ -n "$dest" ] || continue
+            if printf '%s\n' "$dest" | grep -qEi "$PATTERN"; then
+                echo "FAIL: ${file} is a symlink to ${dest}" >&2
+                fail=1
+            fi
+            continue
+        fi
+        [ -f "$file" ] || continue
+
+        # Contents. -I skips binaries; the second grep shows the lines so the
+        # failure is actionable.
+        if grep -qIEi "$PATTERN" "$file" 2>/dev/null; then
+            echo "FAIL: ${file} references harmon-dotfiles or a personal dotfiles path" >&2
+            grep -nEi "$PATTERN" "$file" | sed 's/^/      /' >&2
+            fail=1
+        fi
+    done < <(git ls-files -z --cached --others --exclude-standard -- "$target")
 done
 
 if [ "$fail" -ne 0 ]; then
