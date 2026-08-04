@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.20.3](https://github.com/evanharmon1/harmon-devkit/compare/v0.20.2...v0.20.3) (2026-08-04)
+
+
+### Bug Fixes
+
+* **shepherd:** correct comments describing the deleted praise allowlist ([#286](https://github.com/evanharmon1/harmon-devkit/issues/286)) ([f87ba51](https://github.com/evanharmon1/harmon-devkit/commit/f87ba512fa2becef757e487312fe7b9ca974e259))
+
 ## [0.20.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.20.1...v0.20.2) (2026-08-04)
 
 
