@@ -107,11 +107,21 @@ for target in "${TARGETS[@]}"; do
         fi
         [ -f "$file" ] || continue
 
-        # Contents. -I skips binaries; the second grep shows the lines so the
-        # failure is actionable.
-        if grep -qIEi "$PATTERN" "$file" 2>/dev/null; then
+        # Contents, read as BYTES (-a), not as text. `grep -I` would skip any
+        # file with a NUL in it, and these trees ship ~100 tracked binaries
+        # under scripts/appleScripts — including compiled .scpt files, which
+        # embed the filesystem paths their source referenced. Skipping binaries
+        # would exempt exactly the assets most likely to carry a hardcoded
+        # dotfiles path, and would do it silently.
+        if grep -qaEi "$PATTERN" "$file" 2>/dev/null; then
             echo "FAIL: ${file} references harmon-dotfiles or a personal dotfiles path" >&2
-            grep -nEi "$PATTERN" "$file" | sed 's/^/      /' >&2
+            # Dump matching lines for text; for a binary, say so instead of
+            # spraying raw bytes at the terminal.
+            if grep -Iq . "$file" 2>/dev/null; then
+                grep -naEi "$PATTERN" "$file" | sed 's/^/      /' >&2
+            else
+                echo "      (binary file — match found in its raw bytes)" >&2
+            fi
             fail=1
         fi
     done < <(git ls-files -z --cached --others --exclude-standard -- "$target")
@@ -127,7 +137,7 @@ for target in "${TARGETS[@]}"; do
     # three-valued — 0 match, 1 no match, >1 error — so the error case is
     # handled explicitly rather than swallowed with `|| true`: a scan that
     # cannot run must fail the guard, never report independence.
-    staged=$(git grep --cached -lIEi "$PATTERN" -- "$target") || staged_rc=$?
+    staged=$(git grep --cached -laEi "$PATTERN" -- "$target") || staged_rc=$?
     staged_rc=${staged_rc:-0}
     if [ "$staged_rc" -gt 1 ]; then
         echo "FAIL: staged-content scan of ${target} failed (git grep exit ${staged_rc})" >&2
@@ -137,7 +147,7 @@ for target in "${TARGETS[@]}"; do
         [ -n "$file" ] || continue
         [ "$file" != "$SELF" ] || continue
         echo "FAIL: ${file} — the STAGED copy references harmon-dotfiles or a personal dotfiles path" >&2
-        git grep --cached -nEi "$PATTERN" -- "$file" | sed 's/^/      /' >&2
+        git grep --cached -naEi "$PATTERN" -- "$file" | sed 's/^/      /' >&2
         fail=1
     done <<EOF
 $staged
