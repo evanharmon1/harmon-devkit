@@ -192,15 +192,15 @@ assert_status 0 clean
 # clean verdict fell through to "findings", and the cloud gate could not go
 # green for any PR.
 #
-# "Chef's kiss." is why the accepted shape is not just a short exclamation —
-# it carries an apostrophe and ends in a full stop.
+# Every clause below was observed in the wild, and together they show why no
+# list and no pattern could have held: they run from a bare emoji shortcode
+# (":+1:") to a 41-character sentence, and three of the eight turned up inside
+# twenty-five minutes.
 #
-# Every clause below was observed in the wild. They are pinned as regression
-# fixtures, NOT as an allowlist: the classifier no longer consults a list, so
-# a clause absent from here still passes if it is praise-shaped. Seven were
-# collected before the allowlist was replaced — three of them inside
-# twenty-five minutes, and ":+1:" is an emoji shortcode, which is why the
-# shape rules exempt that form rather than trying to spell it.
+# They are pinned as regression fixtures, NOT as an allowlist. The classifier
+# consults neither a list nor a shape — it does not read the tail at all — so a
+# clause absent from here passes just the same. What these guard is that the
+# tail stays out of the decision.
 for suffix in "Keep it up!" "Nice work!" "Chef's kiss." "Bravo." "Swish!" \
     "You're on a roll." ":+1:" "Already looking forward to the next diff."; do
     echo "==> a clean verdict with the trailing '${suffix}' is still clean"
@@ -223,11 +223,11 @@ for suffix in "Keep it up!" "Nice work!" "Chef's kiss." "Bravo." "Swish!" \
     assert_status 0 clean
 done
 
-# An UNOBSERVED but praise-shaped clause is now clean. That is the point of the
-# change: the allowlist could not converge — seven clauses, three of them inside
-# twenty-five minutes — so every unlisted one was a false blocker on a clean
-# review, and one deadlocked the very PR that was fixing it.
-echo "==> an UNOBSERVED praise-shaped clause is clean"
+# An UNOBSERVED clause is clean. That is the point of the change: the allowlist
+# could not converge — eight clauses, three of them inside twenty-five minutes —
+# so every unlisted one was a false blocker on a clean review, and one
+# deadlocked the very PR that was fixing it.
+echo "==> an UNOBSERVED trailing clause is clean"
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
@@ -311,14 +311,11 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 
-# The trailing clause is recognised by PRAISE STRUCTURE, not merely screened
-# for suspicious characters: a short all-alphabetic exclamation. A character
-# blacklist (no colon, no digit) let "However a race remains" through — a
-# qualifier that smuggles a finding onto the clean sentence's own line, which
-# would promote a PR Codex actually flagged. Anything unrecognised fails
-# closed into `findings`, costing an escalation rather than a false green.
 # A severity marker anywhere in the body is a finding outright, whatever the
-# verdict line says.
+# verdict line says. This is the protection that still covers the verdict
+# line's own tail: the classifier does not parse that tail, so a badge is what
+# catches a finding parked there. An UNBADGED qualifier on that line is the
+# residual documented above `verdict_class` and tracked as evanharmon1/harmon-devkit#285.
 for tail in "P1: the retry path is unguarded" "P0: data loss on rollback"; do
     echo "==> a verdict line carrying '${tail}' is a finding"
     new_cycle
@@ -350,7 +347,7 @@ done
 # non-boilerplate line, and inline comments on the current head.
 
 echo "==> a concern parked on a LATER line is not clean"
-# The verdict line can be allowlisted praise while a warning sits further down,
+# The verdict line can read perfectly clean while a warning sits further down,
 # where no badge marks it. Only the first line was ever constrained, so nothing
 # else would catch this.
 new_cycle

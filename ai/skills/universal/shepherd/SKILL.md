@@ -388,9 +388,9 @@ issue may be moved at all.
   and this would require it to contradict itself inside one sentence — and the
   gate promotes a draft to *ready for review* rather than merging, so a human
   still reads the PR. `scripts/test-shepherd-codex.sh` pins that case
-  deliberately. **If it ever fires in the wild, do not resume parsing the
-  clause; raise it with the maintainer, because the assumption behind the
-  design has broken.**
+  deliberately, and it is tracked as evanharmon1/harmon-devkit#285. **If it
+  ever fires in the wild, do not resume parsing the clause; raise it with the
+  maintainer, because the assumption behind the design has broken.**
 
   Persist each attempt under the git directory so branch switches and resumed
   sessions cannot duplicate it:

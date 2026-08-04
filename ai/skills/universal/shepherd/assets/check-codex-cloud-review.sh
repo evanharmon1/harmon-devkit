@@ -589,24 +589,27 @@ check)
     #
     #   * does not open with the verdict sentence   -> findings
     #   * carries a P0/P1/P2 marker anywhere        -> findings
-    #   * tail is empty or an OBSERVED praise string -> clean
-    #   * anything else                             -> INDETERMINATE
+    #   * a later line is not Codex's own metadata  -> INDETERMINATE
+    #   * otherwise                                 -> clean
     #
-    # The tail is matched against a literal list, not a shape. Every shape
-    # rule tried here admitted a negative qualifier of the same shape: "but a
-    # race remains." and "one concern." are as short and as alphabetic as
-    # "Chef's kiss.", so no pattern over characters can separate them. Only
-    # positive recognition can.
+    # The trailing clause is NOT one of those tests, and there is no list of
+    # praise strings here to extend. Two families of rule were tried in that
+    # position and both shipped broken. An allowlist of observed praise could
+    # not converge — eight distinct clauses, three of them inside twenty-five
+    # minutes — and it deadlocked the PR that was extending it, because that
+    # PR's own clause was unlisted. The shape test that replaced it was
+    # revised three times and was fail-OPEN each time within minutes of
+    # review ("Tests fail on Windows.", "Nice work, tests crash on Windows.",
+    # ":warning:", "Work on it."). Length separates nothing in either
+    # direction: the longest observed praise, "already looking forward to the
+    # next diff.", is 41 characters, and the caveat "But a race remains." is
+    # 19.
     #
-    # An allowlist is normally the brittle choice, and it was: while the
-    # outcome was binary, an unlisted praise string had to be called
-    # `findings`, which jammed a clean PR's gate and asserted something false.
-    # The third branch is what makes it safe now — an unlisted tail is
-    # `indeterminate`, so the shepherd stops and a human either recognises new
-    # praise (add it below) or finds a real qualifier. The list is allowed to
-    # be incomplete; it is not allowed to be wrong.
-    #
-    # Add a string here only after seeing Codex actually emit it.
+    # So the decision rests only on the parts of Codex's output that do not
+    # vary. The full reasoning, and the residual this knowingly accepts, are
+    # in the comment above `verdict_class`. Do not add a fourth attempt at
+    # parsing the clause here — the residual is tracked as
+    # evanharmon1/harmon-devkit#285.
     #
     # The verdict LINE is not the whole story either: a concern parked further
     # down the body carries no badge, so constraining only the first line let
@@ -651,7 +654,7 @@ check)
         exit 10
     fi
     if [ "$review_result" = "unrecognized" ]; then
-        emit indeterminate "current-head review opens with the clean verdict but its trailing clause is unrecognized"
+        emit indeterminate "current-head review opens with the clean verdict but carries prose beyond Codex's own metadata"
         exit 2
     fi
 
@@ -714,7 +717,7 @@ check)
         exit 10
     fi
     if [ "$comment_result" = "unrecognized" ]; then
-        emit indeterminate "current-head result opens with the clean verdict but its trailing clause is unrecognized"
+        emit indeterminate "current-head result opens with the clean verdict but carries prose beyond Codex's own metadata"
         exit 2
     fi
     if [ "$review_result" = "clean" ] || [ "$comment_result" = "clean" ]; then
