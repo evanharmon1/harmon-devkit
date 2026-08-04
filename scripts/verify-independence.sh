@@ -55,7 +55,12 @@ export LC_ALL=C
 # because one of the repos it may be pointed at *is* a chezmoi source. The
 # technique is domain knowledge this repo needs; only the personal repo's name
 # and offsite rationale are forbidden.
-PATTERN='harmon-dotfiles|(^|[^[:alnum:]_-])\.dotfiles(/|$|[^[:alnum:]_-])'
+#
+# The trailing boundary excludes `.` deliberately: `.dotfiles.example`,
+# `.dotfiles.json`, and `.dotfiles.bak` are ordinary filenames, not a personal
+# checkout, and rejecting them would fail text that breaks no invariant. A real
+# checkout path is followed by a separator or ends there.
+PATTERN='harmon-dotfiles|(^|[^[:alnum:]_-])\.dotfiles(/|$|[^[:alnum:]_.-])'
 
 # What a consumer receives.
 TARGETS=(
@@ -88,6 +93,27 @@ is_exempt() {
 
 fail=0
 scanned=0
+
+# Enumeration goes through a temp file rather than straight into `while ... <
+# <(git ls-files)`. A process substitution's exit status belongs to the
+# substitution, not to the loop, so a `git ls-files` that dies (a corrupt index,
+# say) would hand the loop zero entries and the guard would print "independence
+# OK" having scanned nothing. Same fail-open class as the swallowed `|| true`
+# this file already carries a warning about; here it is checked instead.
+LISTING="$(mktemp)"
+trap 'rm -f "$LISTING"' EXIT
+
+# enumerate ARGS… — run git ls-files into $LISTING, failing the guard if it
+# cannot enumerate. Returns non-zero so the caller can skip a doomed scan.
+enumerate() {
+    if git "$@" >"$LISTING" 2>/dev/null; then
+        return 0
+    fi
+    echo "FAIL: could not enumerate files (git $*)" >&2
+    fail=1
+    return 1
+}
+
 for target in "${TARGETS[@]}"; do
     if [ ! -e "$target" ]; then
         echo "FAIL: expected scan target is missing: ${target}" >&2
@@ -101,6 +127,7 @@ for target in "${TARGETS[@]}"; do
     # walking them raw is worse than wasteful — an ignored `.env` or a local
     # `node_modules/` under one of these trees would fail this guard on one
     # machine while CI, which never sees them, passed.
+    enumerate ls-files -z --cached --others --exclude-standard -- "$target" || continue
     while IFS= read -r -d '' file; do
         [ -n "$file" ] || continue
         ! is_exempt "$file" || continue
@@ -135,14 +162,27 @@ for target in "${TARGETS[@]}"; do
         # would exempt exactly the assets most likely to carry a hardcoded
         # dotfiles path, and would do it silently.
         #
-        # Scanned twice: once raw, once with NUL bytes stripped. `osacompile`
-        # stores strings as UTF-16, so a path in a compiled .scpt is
-        # `.\0d\0o\0t\0…` and never appears contiguously to an ASCII pattern.
-        # Deleting NULs is the whole decode: every NUL-padded encoding of
-        # ASCII-range text — UTF-16LE, UTF-16BE, UTF-32 — collapses back to
-        # ASCII, so this closes the class rather than one encoding at a time.
-        if grep -qaEi "$PATTERN" "$file" 2>/dev/null ||
-            tr -d '\000' <"$file" 2>/dev/null | grep -qaEi "$PATTERN"; then
+        # NUL bytes are stripped before matching. `osacompile` stores strings as
+        # UTF-16, so a path in a compiled .scpt is `.\0d\0o\0t\0…` and never
+        # appears contiguously to an ASCII pattern. Deleting NULs is the whole
+        # decode: every NUL-padded encoding of ASCII-range text — UTF-16LE,
+        # UTF-16BE, UTF-32 — collapses back to ASCII, so this closes the class
+        # rather than one encoding at a time. On plain text it is a no-op, which
+        # is why one scan serves both and there is no separate raw pass.
+        #
+        # `grep` must NOT be given -q here. With -q it exits the moment it
+        # matches, `tr` takes SIGPIPE on its next write, and `pipefail` reports
+        # 141 for the pipeline — turning a FOUND violation into a false clean
+        # whenever the file is larger than a pipe buffer. Reproduced with a
+        # 20 MiB fixture: the guard printed "independence OK". Letting grep
+        # drain the stream costs a full read and cannot lie.
+        scan_rc=0
+        tr -d '\000' <"$file" 2>/dev/null | grep -aEi "$PATTERN" >/dev/null || scan_rc=$?
+        if [ "$scan_rc" -gt 1 ]; then
+            echo "FAIL: could not scan ${file} (exit ${scan_rc})" >&2
+            fail=1
+        fi
+        if [ "$scan_rc" -eq 0 ]; then
             echo "FAIL: ${file} references harmon-dotfiles or a personal dotfiles path" >&2
             # Dump matching lines for text; for a binary, say so instead of
             # spraying raw bytes at the terminal.
@@ -153,7 +193,7 @@ for target in "${TARGETS[@]}"; do
             fi
             fail=1
         fi
-    done < <(git ls-files -z --cached --others --exclude-standard -- "$target")
+    done <"$LISTING"
 
     # The index, which is what the next commit actually records. The loop above
     # takes its PATHS from git but reads CONTENT from the worktree, so a
@@ -164,6 +204,7 @@ for target in "${TARGETS[@]}"; do
     # need its own NUL-stripping decode, it silently skips symlink entries, and
     # a gitlink has no blob for it to read at all. One pass over the index
     # modes covers all three kinds with the same rules as the worktree scan.
+    enumerate ls-files -s -z -- "$target" || continue
     while IFS= read -r -d '' entry; do
         [ -n "$entry" ] || continue
         mode=${entry%% *}
@@ -177,10 +218,14 @@ for target in "${TARGETS[@]}"; do
             # independence. (An earlier revision swallowed a fatal git error
             # with `|| true` and printed "independence OK" while its staged
             # scan had never run at all.)
+            # No -q, for the same SIGPIPE reason as the worktree scan above:
+            # an early-exiting grep would make a large matching blob report 141
+            # here, which this branch would then call a read failure — right
+            # answer, wrong reason, and only by luck.
             blob_rc=0
             git cat-file blob ":${path}" 2>/dev/null |
                 tr -d '\000' |
-                grep -qaEi "$PATTERN" || blob_rc=$?
+                grep -aEi "$PATTERN" >/dev/null || blob_rc=$?
             if [ "$blob_rc" -eq 0 ]; then
                 echo "FAIL: ${path} — the STAGED copy references harmon-dotfiles or a personal dotfiles path" >&2
                 fail=1
@@ -205,7 +250,7 @@ for target in "${TARGETS[@]}"; do
             fail=1
             ;;
         esac
-    done < <(git ls-files -s -z -- "$target")
+    done <"$LISTING"
 done
 
 if [ "$fail" -ne 0 ]; then

@@ -87,6 +87,15 @@ expect_ok "chezmoi technique guidance passes" "$d"
 d="$(newrepo self)"
 expect_ok "the guard exempts only its own source" "$d"
 
+# Near-misses: ordinary filenames that merely start with the same characters
+# are not a personal checkout, and rejecting them would fail text that breaks
+# no invariant.
+d="$(newrepo near-miss)"
+printf 'x\n' >"$d/ai/.dotfiles.example"
+printf 'x\n' >"$d/ai/.dotfiles.json"
+printf 'see .dotfiles.bak for the old copy\n' >"$d/ai/notes.md"
+expect_ok "dotted near-miss names pass" "$d"
+
 d="$(newrepo innocuous-link)"
 ln -s ../templates "$d/ai/link"
 expect_ok "an innocuous symlink passes" "$d"
@@ -127,6 +136,26 @@ printf '/\000U\000s\000e\000r\000s\000/\000x\000/\000.\000d\000o\000t\000f\000i\
     >>"$d/scripts/compiled.scpt"
 expect_fail_contains "a UTF-16 path in a compiled asset is rejected" "$d" "scripts/compiled.scpt"
 
+# A match near the front followed by more than a pipe buffer of data. With
+# `grep -q` in the decode pipeline this passed: grep exited on the match, `tr`
+# took SIGPIPE, and pipefail reported 141 — a found violation reported clean.
+# 2 MiB is comfortably past any pipe buffer while keeping the test quick.
+d="$(newrepo large-binary)"
+{
+    printf '\000h\000a\000r\000m\000o\000n\000-\000d\000o\000t\000f\000i\000l\000e\000s\000/\000c\000\n'
+    head -c 2097152 /dev/zero | tr '\000' 'A'
+} >"$d/ai/large.bin"
+expect_fail_contains "a large NUL-padded binary is rejected" "$d" "large.bin references"
+
+d="$(newrepo large-binary-staged)"
+{
+    printf '\000h\000a\000r\000m\000o\000n\000-\000d\000o\000t\000f\000i\000l\000e\000s\000/\000c\000\n'
+    head -c 2097152 /dev/zero | tr '\000' 'A'
+} >"$d/ai/large.bin"
+git -C "$d" add ai/large.bin
+rm "$d/ai/large.bin"
+expect_fail_contains "a large staged binary is rejected" "$d" "STAGED copy references"
+
 echo "verify-independence: index vs worktree"
 
 # The core staged case: violation staged, worktree copy then cleaned without
@@ -161,6 +190,14 @@ printf 'harmon-dotfiles\n' >"$d/templates/node_modules/dep.js"
 expect_ok "a git-ignored file is not scanned" "$d"
 
 echo "verify-independence: structure"
+
+# Fail closed when the file list cannot be produced. A process substitution's
+# exit status belongs to the substitution, not the loop, so an unchecked
+# enumeration failure would hand the loop zero entries and the guard would
+# report independence having scanned nothing.
+d="$(newrepo corrupt-index)"
+printf 'garbage-not-an-index' >"$d/.git/index"
+expect_fail_contains "an unreadable index fails the guard" "$d" "could not enumerate"
 
 d="$(newrepo missing-target)"
 rm -rf "$d/snippets"
