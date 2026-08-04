@@ -523,8 +523,9 @@ after the copier run:
      a trailing newline (e.g. `private_karabiner.json`, `private_dot_mackup.cfg`) —
      append one, and expect it to **recur**: the app rewrites its config without a
      newline and the next `chezmoi re-add` re-imports it, failing `lint:hygiene`
-     again (bit harmon-dotfiles twice, 2026-06/07). Re-append on each occurrence;
-     a durable per-file lint-hygiene ignore is a harmon-init backlog item.
+     again (observed twice on a chezmoi source, 2026-06/07). Re-append on each
+     occurrence; a durable per-file lint-hygiene ignore is a harmon-init backlog
+     item.
    - **If the source uses chezmoi `git.autoCommit`/`autoPush`, reconcile it with
      lefthook.** A chezmoi source that auto-commits to `main` collides with the
      template hooks head-on — the `no-commit-to-main` guard blocks the commit and
