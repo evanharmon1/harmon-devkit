@@ -366,15 +366,14 @@ someone else works the issue, and neither knows the other happened. What
 decides whether to file is whether the finding is live in the code; that
 somebody already wrote it on a PR is never the reason not to.
 
-Observed 2026-08-03: an issue in a sibling repo carried three findings about a
-terminal-emulator config, filed after this section's search ran correctly
-against that repo and returned nothing. Two of the three were already open as
-unresolved threads on the draft PR that introduces the config — one of them
-posted by a review bot the day before. Only the third was
-new, and that issue's own body named the PR as where the change lives. All
-three were filed regardless, which is the behaviour above: that PR is still an
-unmerged draft, so the two overlapping findings would otherwise be tracked
-nowhere.
+Observed 2026-08-03, filing into a sibling repo: one issue carried three
+findings about a single config file, opened after this section's search ran
+correctly against that repo's tracker and returned nothing. Two of the three
+were already open as unresolved threads on the draft PR that introduces the
+file — one posted by a review bot the day before. Only the third was new, and
+the issue's own body named that PR as where the change lives. All three were
+filed regardless, which is the behaviour above: the PR is still an unmerged
+draft, so the two overlapping findings would otherwise be tracked nowhere.
 
 **On a hit, read the existing issue before you write anything.** It may carry
 the reason the obvious fix is wrong. harmon-init#412 recorded that the

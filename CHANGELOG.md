@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.20.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.19.0...v0.20.0) (2026-08-04)
+
+
+### Features
+
+* **skills:** teach track-work's dedup step to read a PR's review threads ([#265](https://github.com/evanharmon1/harmon-devkit/issues/265)) ([1331c3a](https://github.com/evanharmon1/harmon-devkit/commit/1331c3a6c4d8b18d4fdd1b6336b7a97929638a0d))
+
+
+### Bug Fixes
+
+* **skills:** make track-work's incident repo-agnostic ([#268](https://github.com/evanharmon1/harmon-devkit/issues/268)) ([1454774](https://github.com/evanharmon1/harmon-devkit/commit/1454774efefc15ace57ca08546fafff5924d1574)), closes [#262](https://github.com/evanharmon1/harmon-devkit/issues/262)
+
 ## [0.19.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.18.0...v0.19.0) (2026-08-03)
 
 
