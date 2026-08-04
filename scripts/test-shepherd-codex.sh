@@ -185,8 +185,9 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 
 # Codex does not emit the bare sentence — it appends a praise clause, and the
-# clause varies. "Keep it up!" (#239), "Nice work!" (#225) and "Chef's kiss."
-# (#239, a later run) are all verbatim from this repo's own history. The
+# clause varies. "Keep it up!" (#239), "Nice work!" (#225), "Chef's kiss."
+# (#239, a later run) and "Bravo." (#268) are all verbatim from this repo's own
+# history. The
 # fixture above uses the bare form, so on its own it pinned a phrasing Codex
 # has never actually produced: the classifier compared for equality, every real
 # clean verdict fell through to "findings", and the cloud gate could not go
@@ -194,7 +195,7 @@ assert_status 0 clean
 #
 # "Chef's kiss." is why the accepted shape is not just a short exclamation —
 # it carries an apostrophe and ends in a full stop. Pin the shapes that occur.
-for suffix in "Keep it up!" "Nice work!" "Chef's kiss."; do
+for suffix in "Keep it up!" "Nice work!" "Chef's kiss." "Bravo."; do
     echo "==> a clean verdict with the trailing '${suffix}' is still clean"
     new_cycle
     prefix="${head_sha:0:10}"

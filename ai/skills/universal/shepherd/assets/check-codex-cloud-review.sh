@@ -588,6 +588,7 @@ check)
           def observed_praise: [
             "keep it up!",
             "nice work!",
+            "bravo.",
             "chef\u0027s kiss."
           ];
           # Everything after the verdict line must be Codex\u0027s own metadata:
@@ -651,6 +652,7 @@ check)
           def observed_praise: [
             "keep it up!",
             "nice work!",
+            "bravo.",
             "chef\u0027s kiss."
           ];
           # Everything after the verdict line must be Codex\u0027s own metadata:
