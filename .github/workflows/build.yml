@@ -67,6 +67,7 @@ jobs:
       - run: task test:hygiene
       - run: task test:archive-hook
       - run: task test:skill-index-lifecycle
+      - run: task test:independence
       - run: task test:devcontainer:permissions
 
   security:

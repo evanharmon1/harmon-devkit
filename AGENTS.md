@@ -62,6 +62,25 @@ Non-negotiable, regardless of any autonomy granted elsewhere in this file:
   and get confirmation before executing — announcing intent and proceeding in
   the same turn is not consent. Read operations (`op read`, `op item list`,
   `op inject` over existing references) are fine.
+- **Never reference harmon-dotfiles in shipped output.** harmon-init,
+  harmon-devkit, and harmon-infra are independent of the personal dotfiles
+  repo: nothing they ship may name it, hardcode a path into somebody's
+  dotfiles checkout (`~/.dotfiles/…` leaks the same setup without naming the
+  repo), or require dotfiles to be installed, present, or accommodated. A
+  consumer cannot read that repo, so rationale belongs here rather than cited
+  offsite, and content this repo owns is never described as kept "in sync"
+  with it. The permitted coupling is one-way and optional: harmon-dotfiles may
+  pull from these repos at a pinned tag; they never point back. Shipped output
+  here is `ai/`, `templates/`, `scripts/`, and `snippets/` — the vendored
+  skills and agents reach every repo harmon-init generates. Root-only mentions
+  ship to nobody and create no dependency (the sibling-repo lists, the
+  "related repos" tables, `.claude/settings.json` grants,
+  `.devcontainer/related-repos.txt`), which is why `test:independence`, the
+  guard that enforces this, scans those four directories and not the whole
+  repo. **chezmoi as a technique is not covered**: `standardize-repo` carries
+  real chezmoi guidance because one of the repos it may be pointed at *is* a
+  chezmoi source. What must never ship is the personal repo's name and
+  rationale that exists only there — not the technique.
 
 ## Commands
 
@@ -133,9 +152,12 @@ something to ask permission for.
 - **Open the draft PR** — conventional commit, push the branch, `gh pr create
   --draft` with a clear what/why/verification summary. Draft is the agent
   workbench: implementation and automated review are still active.
-- **Git transport** — pushes authenticate over HTTPS via `gh` (dotfiles-managed
+- **Git transport** — pushes authenticate over HTTPS via `gh` (provisioned
   hosts and the devcontainers rewrite GitHub SSH URLs to HTTPS via
-  `url.insteadOf`; harmon-dotfiles ADR 0002). Never work around an SSH failure
+  `url.insteadOf`, so that git never needs an SSH agent: a headless container
+  has none, forwarding one into an interactive container is lockout-prone, and
+  `gh` already holds an HTTPS credential that works for both).
+  Never work around an SSH failure
   by pushing to a raw `https://…` URL — a URL push bypasses the named remote
   and leaves stale tracking refs. On an unprovisioned host, force the helper
   and the rewrite against the *named* remote:

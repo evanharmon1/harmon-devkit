@@ -235,6 +235,7 @@ tasks:
       - test:archive-hook
       - test:track-work
       - test:skill-index-lifecycle
+      - test:independence
 
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)
@@ -320,6 +321,11 @@ tasks:
     desc: Guard public skill indexes against stale lifecycle language
     cmds:
       - ./scripts/test-skill-index-lifecycle.sh
+
+  test:independence:
+    desc: Guard shipped output against personal-dotfiles references
+    cmds:
+      - ./scripts/test-independence.sh
 
   # ── Second-model review (Codex) ───────────────────────────────
   # Optional second AI model (the OpenAI Codex CLI) reviewing the current

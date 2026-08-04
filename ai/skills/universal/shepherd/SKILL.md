@@ -532,11 +532,14 @@ is optional in addition, never a substitute for per-thread replies.
   never weaken a gate to get through it.
 - Do **not** re-enter the local challenge/review loops — the post-push
   cloud/bot review is the second-model check at this stage.
-- **Git transport is HTTPS authenticated by `gh`**, not SSH: on
-  dotfiles-managed hosts and in the platform's devcontainers,
-  `credential.helper` is `gh auth git-credential` and SSH GitHub URLs are
-  rewritten to HTTPS via `url.insteadOf` (harmon-dotfiles ADR 0002), so a
-  locked or absent SSH agent must never block a push. Two corollaries:
+- **Git transport is HTTPS authenticated by `gh`**, not SSH: on provisioned
+  hosts and in the platform's devcontainers, `credential.helper` is
+  `gh auth git-credential` and SSH GitHub URLs are rewritten to HTTPS via
+  `url.insteadOf`, so that git never needs an SSH agent — a headless
+  container has none, forwarding one into an interactive container is
+  lockout-prone, and `gh` already holds an HTTPS credential that works for
+  both. A locked or absent SSH agent must never block a push. Two
+  corollaries:
   - **Never work around an SSH failure by pushing to a raw `https://…`
     URL.** A URL push bypasses the named remote, so the remote-tracking ref
     is not updated and `git status` reports a phantom "ahead N" after a
