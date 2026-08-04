@@ -489,6 +489,41 @@ grep -n x foo.sh
 Some prose.
 ')" = 0 ] || fail "a real heading after the closing fence should end the section but the command should count"
 
+echo "==> a Verify-heading-like line inside a fenced block does not reset the parser"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+```sh
+## Verify
+echo "still captured"
+```
+')" = 0 ] || fail "a Verify heading inside a fenced block must not reset parser state"
+
+echo "==> a four-backtick fence is not closed by a three-backtick line inside it"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+````sh
+# the command
+```
+echo "three backticks inside, not a closer"
+````
+')" = 0 ] || fail "a shorter run of the same char must not close a longer fence"
+
+echo "==> a four-backtick fence is closed by a four-backtick closer"
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+````sh
+# the command
+echo "three backticks inside"
+```
+````
+')" = 0 ] || fail "a matching-length closer should close the fence"
+
 # --- tick-criteria.sh -------------------------------------------------------
 #
 # The guarantee under test is narrowness: this is the one write the skill
