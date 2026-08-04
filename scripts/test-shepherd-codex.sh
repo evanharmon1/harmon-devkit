@@ -267,6 +267,15 @@ assert_status 0 clean
 # rule is now that the tail must be NOTHING BUT praise — every word
 # recognised — which is what makes it terminate: a caveat has to name
 # something, and the thing it names is a word the vocabulary does not have.
+#
+# The last four are the THIRD round of the same defect, and show that
+# "every word is allowed" was still not enough on its own: ":warning:" was
+# accepted by a blanket any-shortcode rule, and "Work on it." / "Change it." /
+# "Ship it." are built entirely out of FILLER, which was individually allowed
+# but carries no praise. The tail must now also contain a sentiment word or a
+# known praise phrase. "Ship it." is approval rather than a concern; it is
+# rejected because permitting the imperative SHAPE is what admits "Work on
+# it.", not because the phrase itself is a warning.
 for caveat in \
     "But a race remains." \
     "However, check the lock." \
@@ -292,7 +301,11 @@ for caveat in \
     "Great job, data corrupts on rollback." \
     "Excellent work, deployment hangs." \
     "Clean this up." \
-    "Neat, but fix the lock."; do
+    "Neat, but fix the lock." \
+    ":warning:" \
+    "Work on it." \
+    "Change it." \
+    "Ship it."; do
     echo "==> the caveat tail '${caveat}' still escalates"
     new_cycle
     jq -cn \

@@ -277,10 +277,14 @@ codex_verdict_defs=$(
           def praise_cap: 48;
           # A bare emoji shortcode (:+1:) is praise and contains a digit, so
           # it is matched before the digit rule below.
-          def is_emoji_token: test("^:[a-z0-9_+-]{1,20}:$");
-          # A tail with no ASCII letters at all — an emoji, a punctuation
-          # flourish — cannot assert anything about the code.
-          def has_no_letters: (test("[a-z]") | not);
+          # A CLOSED set of positive reactions. The previous rule accepted
+          # any shortcode, so ":warning:" read as praise.
+          def is_emoji_token:
+            test("^:(\\+1|thumbsup|tada|rocket|fire|sparkles|clap|star|"
+              + "stars|heart|hearts|100|trophy|medal|raised_hands|muscle|"
+              + "ok_hand|grin|smile|tada2|partying_face):$");
+          # There is deliberately no "any symbol-only tail is fine" rule.
+          # It accepted the warning glyph, which asserts plenty.
           # POSITIVE recognition, over the WHOLE tail.
           #
           # Two earlier revisions of this test failed open, each more subtly:
@@ -300,6 +304,18 @@ codex_verdict_defs=$(
           # The vocabulary is of words rather than whole clauses, which is what
           # keeps it tractable: "Nice work!", "Nice job!" and "Very nice." are
           # covered by one entry where a clause list needed three.
+          # Sentiment words. At least one must be present, or a phrase.
+          def core_praise:
+            test("^(nice|great|excellent|awesome|amazing|beautiful|lovely|"
+              + "superb|stellar|brilliant|fantastic|terrific|wonderful|"
+              + "impressive|bravo|kudos|chapeau|kiss|swish|delight|delightful|"
+              + "love|loved|enjoyed|pleasure|flawless|spotless|exemplary|"
+              + "admirable|perfect|ace|lgtm|solid|smooth|slick|elegant|"
+              + "crisp|good|nicely|beautifully|cheers|thanks|thank)$");
+          # Praise that only reads as praise as a whole phrase.
+          def praise_phrase:
+            test("keep it up|looking forward|on a roll|well done|hats off|"
+              + "top.?notch|chef.?s kiss");
           def praise_word:
             test("^(nice|great|excellent|awesome|amazing|beautiful|lovely|"
               + "superb|stellar|brilliant|fantastic|terrific|wonderful|"
@@ -328,18 +344,23 @@ codex_verdict_defs=$(
             verdict_tail as $t |
             if $t == "" then true
             elif ($t | is_emoji_token) then true
-            elif ($t | has_no_letters) then true
             elif ($t | length) > praise_cap then false
             # A reference to code or a location is a caveat, never praise.
             elif ($t | test("[`<>()\\[\\]/]|https?:|[0-9]")) then false
             # More than one sentence is an argument, not an interjection.
             elif ($t | test("[.!?][[:space:]]+[^[:space:]]")) then false
-            # Default DENY: every word must be recognised praise or filler,
-            # so no unexamined residue is left for a concern to hide in.
+            # Default DENY, in two parts. Every word must be recognised —
+            # so no unexamined residue is left for a concern to hide in — AND
+            # the tail must carry actual praise, not merely permitted words.
+            # Filler alone composes into imperatives: "Work on it.",
+            # "Change it." and "Ship it." are built entirely from words that
+            # were individually allowed.
             else ($t
-              | gsub("[^a-z'\u2019[:space:]]"; " ")
-              | split(" ") | map(select(. != ""))
-              | (length > 0) and all(praise_word))
+              | gsub("[^a-z'\u2019[:space:]]"; " ") as $clean
+              | ($clean | split(" ") | map(select(. != ""))) as $words
+              | ($words | length > 0)
+                and ($words | all(praise_word))
+                and (($words | any(core_praise)) or ($clean | praise_phrase)))
             end;
           def rest_is_boilerplate:
             (body_text | split("\n") | .[1:] | join("\n") |
