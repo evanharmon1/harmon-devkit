@@ -363,14 +363,25 @@ issue may be moved at all.
   Classification is three-way, because "I cannot tell" is a real answer and
   reporting it as a finding is a false statement about what the reviewer said.
   A result that opens with the clean verdict sentence but carries a P0/P1/P2
-  marker is a **finding**; one whose trailing clause is empty or an *observed*
-  praise string is **clean**; anything else is **indeterminate** and escalates.
-  The trailing clause is matched against a literal list rather than a shape,
-  because no pattern over characters separates "Chef's kiss." from "but a race
-  remains." Being unlisted costs one escalation; being wrong would pass a PR
-  the reviewer flagged. When an escalation turns out to be genuinely new
-  praise, add the exact string to `observed_praise` in the helper and pin it
-  in `scripts/test-shepherd-codex.sh` — do not loosen the match.
+  marker is a **finding**; one whose trailing clause is empty or *positively
+  recognisable as praise* is **clean**; anything else is **indeterminate** and
+  escalates.
+
+  The trailing clause is judged by shape, and the direction of that test is
+  the safety property: the clause must be recognised **as praise** to pass,
+  and anything unrecognised escalates. It is not a list of caveat shapes to
+  reject — that fails open, because a concern can be phrased as a flat
+  statement ("Tests fail on Windows.") that trips no contrastive word and no
+  keyword. Being unrecognised costs one escalation; being wrong would pass a
+  PR the reviewer flagged.
+
+  When an escalation turns out to be genuinely new praise, add the missing
+  **word** to the praise vocabulary in the helper and pin the clause in
+  `scripts/test-shepherd-codex.sh`. Never widen it by accepting unmatched
+  text, and never add a word that could carry a concern. An allowlist of
+  whole *clauses* is what this replaced: it could not converge — seven
+  distinct clauses were observed, three inside twenty-five minutes — and it
+  deadlocked the PR that was fixing it.
 
   Persist each attempt under the git directory so branch switches and resumed
   sessions cannot duplicate it:

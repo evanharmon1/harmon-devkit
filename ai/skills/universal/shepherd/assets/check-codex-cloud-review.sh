@@ -276,8 +276,32 @@ codex_verdict_defs=$(
           # flagged.
           def praise_cap: 48;
           # A bare emoji shortcode (:+1:) is praise and contains a digit, so
-          # it is matched first and exempted from the rules below.
+          # it is matched before the digit rule below.
           def is_emoji_token: test("^:[a-z0-9_+-]{1,20}:$");
+          # A tail with no ASCII letters at all — an emoji, a punctuation
+          # flourish — cannot assert anything about the code.
+          def has_no_letters: (test("[a-z]") | not);
+          # POSITIVE recognition. The tail must carry an unambiguous mark of
+          # praise; anything unrecognised escalates to a human.
+          #
+          # This direction is the whole safety property. An earlier revision
+          # inverted it — reject known caveat shapes, accept the rest — which
+          # fails OPEN: "Tests fail on Windows." is short, single-sentence,
+          # digit-free and leads with no contrastive word, so it sailed
+          # through as clean. So did "Coverage dropped." and "Docs are stale."
+          # A blocklist has to enumerate every way a concern can be phrased;
+          # this list only has to enumerate the ways Codex says "well done",
+          # which is a far smaller and more stable vocabulary, and being
+          # wrong about it costs one escalation rather than a false green.
+          def praise_token:
+            test("\\b(nice|great|excellent|awesome|amazing|beautiful|lovely|"
+              + "superb|stellar|brilliant|fantastic|terrific|wonderful|"
+              + "impressive|bravo|kudos|chapeau|kiss|swish|delight|delightful|"
+              + "love|loved|enjoyed|pleasure|flawless|spotless|exemplary|"
+              + "admirable|perfect|ace|lgtm|solid|smooth|slick|elegant|"
+              + "well done|good work|good job|good stuff|nicely done|"
+              + "keep it up|looking forward|on a roll|ship it|top.?notch|"
+              + "hats off|chef)\\b");
           # Words that open a concern. A caveat overwhelmingly leads with one.
           def caveat_opener:
             test("^(but|however|though|although|that said|one|a few|minor|"
@@ -289,11 +313,13 @@ codex_verdict_defs=$(
           def caveat_word:
             test("\\b(but|however|though|caveat|nit|concern|bug|race|"
               + "regression|broken|missing|unless|except|careful|watch out|"
-              + "double-check|be aware|one thing|follow.?up|todo)\\b");
+              + "double-check|be aware|one thing|follow.?up|todo|fail|fails|"
+              + "failing|stale|untested|dropped|inconsistent)\\b");
           def praise_ok:
             verdict_tail as $t |
             if $t == "" then true
             elif ($t | is_emoji_token) then true
+            elif ($t | has_no_letters) then true
             elif ($t | length) > praise_cap then false
             # A reference to code or a location is a caveat, never praise.
             elif ($t | test("[`<>()\\[\\]/]|https?:|[0-9]")) then false
@@ -301,7 +327,9 @@ codex_verdict_defs=$(
             elif ($t | test("[.!?][[:space:]]+[^[:space:]]")) then false
             elif ($t | caveat_opener) then false
             elif ($t | caveat_word) then false
-            else true end;
+            # Default DENY: unrecognised text escalates rather than passing.
+            elif ($t | praise_token) then true
+            else false end;
           # Everything after the verdict line must be Codex's own metadata:
           # the "Reviewed commit" line and its collapsed About block. A concern
           # parked on a later line carries no badge, so nothing else would

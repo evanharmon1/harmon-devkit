@@ -252,6 +252,14 @@ assert_status 0 clean
 # and are caught by shape alone.
 #
 # When a caveat is seen to slip through, add it here; do not relax a rule.
+#
+# The last seven were found by the second-model review of the change that
+# introduced this test. They are FLAT STATEMENTS of a problem: short, single
+# sentence, no digits, no code span, and leading with no contrastive or
+# imperative word. An earlier revision classified all seven as CLEAN, because
+# it rejected known caveat shapes and accepted everything else — a blocklist,
+# which fails open. The classifier now requires the tail to be positively
+# recognisable as praise, so unmatched text escalates. Keep that direction.
 for caveat in \
     "But a race remains." \
     "However, check the lock." \
@@ -265,7 +273,14 @@ for caveat in \
     "Note the TODO on line 42." \
     "Nice, but the mutex is unbalanced." \
     "Great work. One thing though." \
-    "Double-check the migration."; do
+    "Double-check the migration." \
+    "Tests fail on Windows." \
+    "Coverage dropped." \
+    "The retry path is untested." \
+    "Docs are stale." \
+    "Formatting is inconsistent." \
+    "Clean this up." \
+    "Rerun after rebase."; do
     echo "==> the caveat tail '${caveat}' still escalates"
     new_cycle
     jq -cn \
