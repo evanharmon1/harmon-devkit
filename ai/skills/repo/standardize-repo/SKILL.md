@@ -203,18 +203,26 @@ configuration blocker: ready can notify human reviewers immediately and is not
 a reversible automation probe. Freeze one final snapshot of the head, draft
 state, checks, reviews, mergeability, deferred findings, and unanswered threads.
 For the content half of that snapshot, use the `promo_fp` recipe from the
-shepherd skill's stop conditions (`shepherd/SKILL.md` §6) verbatim — one
-recipe, not a re-derivation. Its construction is the contract even when the
-skill file itself is not at hand: fetch each component (PR title/body, reviews,
-top-level comments, inline comments, GraphQL thread resolution) into a checked
-capture and abort on any non-zero exit — never pipe unchecked `gh` calls into
-a hash, which turns a failed fetch into a stable hash of the components that
-survived; pipe `--slurp` output to a standalone `jq` (`gh api` refuses
-`--slurp` with `--jq`, and `--slurp` is what makes `--paginate` page-safe);
-hash content-bearing fields only, in stable order, excluding the PR's own
-`updated_at` and the draft flag, which promotion itself mutates. A failed
-component means the fingerprint is unknown, and unknown cannot promote: the
-PR stays draft.
+shepherd skill's stop conditions (`shepherd/SKILL.md` §6) whenever that skill
+is installed alongside this one — one recipe, not a re-derivation. When it is
+not (this fallback exists precisely for targets without a vendored shepherd,
+and this skill can be installed without it), construct the fingerprint to the
+same contract, which is stated here in full because the file may be absent:
+fetch each component (PR title/body, reviews, top-level comments, inline
+comments, GraphQL thread resolution) into a checked capture and abort on any
+non-zero exit — never pipe unchecked `gh` calls into a hash, which turns a
+failed fetch into a stable hash of the components that survived; pipe
+`--slurp` output to a standalone `jq` (`gh api` refuses `--slurp` with
+`--jq`, and `--slurp` is what makes `--paginate` page-safe); hash
+content-bearing fields only (IDs, authors, bodies, comment `updated_at`,
+review states and `submitted_at`, thread `isResolved`), in stable order
+(`sort_by(.id)`), excluding the PR's own `updated_at` and the draft flag,
+which promotion itself mutates. A locally constructed fingerprint is only
+ever compared against itself within this session — pre-promotion against
+post-promotion — so satisfying the contract, not byte-identity with the
+shepherd recipe's hash, is what correctness requires. A failed component
+means the fingerprint is unknown, and unknown cannot promote: the PR stays
+draft.
 Promote that head with `gh pr ready`, confirm it is still the same open head and
 is no longer draft, then stop. Reconcile the remote state even if promotion or
 confirmation fails; if an open PR is ready on an unverified head, run
