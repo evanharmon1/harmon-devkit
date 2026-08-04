@@ -199,6 +199,19 @@ d="$(newrepo corrupt-index)"
 printf 'garbage-not-an-index' >"$d/.git/index"
 expect_fail_contains "an unreadable index fails the guard" "$d" "could not enumerate"
 
+# An index entry whose blob does not exist. Piping `git cat-file` into the scan
+# hid this: cat-file exits 128, grep then exits 1, and pipefail reports the
+# rightmost non-zero — so the unreadable blob read as "no match".
+d="$(newrepo missing-blob)"
+git -C "$d" update-index --add --cacheinfo \
+    "100644,0000000000000000000000000000000000000001,ai/ghost.md"
+expect_fail_contains "an unreadable staged blob fails the guard" "$d" "could not read the staged blob"
+
+d="$(newrepo missing-link-blob)"
+git -C "$d" update-index --add --cacheinfo \
+    "120000,0000000000000000000000000000000000000001,ai/ghostlink"
+expect_fail_contains "an unreadable staged symlink fails the guard" "$d" "could not read the staged symlink"
+
 d="$(newrepo missing-target)"
 rm -rf "$d/snippets"
 expect_fail_contains "a missing scan target is rejected" "$d" "missing"

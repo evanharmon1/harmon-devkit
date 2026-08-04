@@ -101,7 +101,10 @@ scanned=0
 # OK" having scanned nothing. Same fail-open class as the swallowed `|| true`
 # this file already carries a warning about; here it is checked instead.
 LISTING="$(mktemp)"
-trap 'rm -f "$LISTING"' EXIT
+# Staged blobs are read to a file rather than through a pipe, so that the read
+# and the scan have separate, checkable exit statuses — see the index loop.
+BLOB="$(mktemp)"
+trap 'rm -f "$LISTING" "$BLOB"' EXIT
 
 # enumerate ARGS… — run git ls-files into $LISTING, failing the guard if it
 # cannot enumerate. Returns non-zero so the caller can skip a doomed scan.
@@ -212,6 +215,16 @@ for target in "${TARGETS[@]}"; do
         ! is_exempt "$path" || continue
         case "$mode" in
         100644 | 100755)
+            # The read is a SEPARATE command from the scan, and its status is
+            # checked on its own. Piping `git cat-file` into the scan hides it:
+            # a missing or corrupt blob exits 128, but `grep` then exits 1 and
+            # `pipefail` reports the RIGHTMOST non-zero — 1, "no match" — so an
+            # unreadable staged file read as clean.
+            if ! git cat-file blob ":${path}" >"$BLOB" 2>/dev/null; then
+                echo "FAIL: could not read the staged blob for ${path}" >&2
+                fail=1
+                continue
+            fi
             # Pipeline status is three-valued under `set -o pipefail`: 0 match,
             # 1 clean, anything else a failed read. The error case is explicit
             # — a scan that cannot run must fail the guard, never report
@@ -223,19 +236,23 @@ for target in "${TARGETS[@]}"; do
             # here, which this branch would then call a read failure — right
             # answer, wrong reason, and only by luck.
             blob_rc=0
-            git cat-file blob ":${path}" 2>/dev/null |
-                tr -d '\000' |
-                grep -aEi "$PATTERN" >/dev/null || blob_rc=$?
+            tr -d '\000' <"$BLOB" | grep -aEi "$PATTERN" >/dev/null || blob_rc=$?
             if [ "$blob_rc" -eq 0 ]; then
                 echo "FAIL: ${path} — the STAGED copy references harmon-dotfiles or a personal dotfiles path" >&2
                 fail=1
             elif [ "$blob_rc" -gt 1 ]; then
-                echo "FAIL: could not read the staged blob for ${path} (exit ${blob_rc})" >&2
+                echo "FAIL: could not scan the staged blob for ${path} (exit ${blob_rc})" >&2
                 fail=1
             fi
             ;;
         120000)
-            dest=$(git cat-file blob ":${path}" 2>/dev/null) || continue
+            # Same rule for a link: an unreadable blob is a failure to scan,
+            # not a clean symlink. `|| continue` here used to skip it silently.
+            if ! dest=$(git cat-file blob ":${path}" 2>/dev/null); then
+                echo "FAIL: could not read the staged symlink target for ${path}" >&2
+                fail=1
+                continue
+            fi
             if printf '%s\n' "$dest" | grep -qEi "$PATTERN"; then
                 echo "FAIL: ${path} — the STAGED symlink points at ${dest}" >&2
                 fail=1
