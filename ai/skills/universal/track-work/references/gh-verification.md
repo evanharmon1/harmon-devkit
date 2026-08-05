@@ -55,11 +55,26 @@ pages="$(gh api --paginate --slurp "repos/<owner>/<repo>/labels")" \
 jq -e --arg want '<label>' 'add | any(.name == $want)' <<<"$pages" >/dev/null
 ```
 
+**`add` folds *array* pages, which is the REST collection shape** — the pages
+are arrays, so `add` concatenates them. It is not a general "combine the
+pages" verb: a paginated **GraphQL** query returns one *object* per page, and
+`add` merges objects, so later pages overwrite earlier ones and the result is
+a single page wearing the shape of all of them. Reach past the envelope to the
+list instead, as `/shepherd`'s promotion fingerprint already does:
+
+```sh
+jq -c '[.[].data.repository.pullRequest.reviewThreads.nodes[]]' <<<"$pages"
+```
+
+Measured on this PR's own review threads: four pages, `add` yields one object,
+the extraction yields all four nodes.
+
 The rule of thumb: `--jq` with `--paginate` is safe only for a filter you want
 applied per page and printed per page. Anything that computes **one** answer
 over the whole collection — a membership test, a count, a max — needs the
-slurped form. `/shepherd` hit exactly this in its unanswered-thread check,
-where a reply on page 2 stopped cancelling its root on page 1.
+slurped form, plus a fold that matches the page shape. `/shepherd` hit exactly
+this in its unanswered-thread check, where a reply on page 2 stopped
+cancelling its root on page 1.
 
 ## Observed violation (2026-08-04, harmon-init)
 
