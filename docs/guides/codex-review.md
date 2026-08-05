@@ -40,6 +40,17 @@ primary agent to adjudicate — the protocol and the loop caps live in AGENTS.md
    a required GitHub status check; if it stays unavailable for both bounded
    attempts, the agent stops and escalates.
 
+6. **Then disable Codex Automatic reviews** — personal Auto review off, and the
+   repository's Auto code review preference set to **Follow personal**. Codex
+   triggers a cloud review on three events: opening a PR for review, marking a
+   draft ready, and an explicit `@codex review`. Only the third is usable here:
+   the PR is a draft for the whole automated lifecycle, so the first never
+   fires, and the second fires *after* the readiness gate — starting a new
+   asynchronous review at the exact moment "non-draft" is supposed to mean the
+   automated work is done. No API reports this setting, so it is a
+   human-configured prerequisite recorded in docs/CHECKLIST.md; the readiness
+   gate trusts that record and must never claim it was mechanically verified.
+
 ## Manual reviews
 
 | Command | What it does |
@@ -216,22 +227,25 @@ task challenge  # adversarial second model — adjudicate, fix, re-challenge
                 # until a CLEAN pass (no P0/P1 findings), ≤4 rounds
 task review     # verification checkpoint — same clean-pass exit, ≤4 rounds
 task ci         # full CI mirror
-# → open the PR, then /shepherd it: watch CI + reviews, settle the deferred
-#   P2s, adjudicate → fix → push, ≤4 rounds (independent of the loops above);
-#   checks pass with reviews unpolled is not done — reviews land after checks
-#   settle
+# → open a DRAFT PR, then shepherd it: watch CI + reviews, settle the deferred
+#   P2s, adjudicate → fix → push, ≤4 rounds (independent of the loops above)
+# → readiness gate passes → gh pr ready (the handoff to a human)
 # → merging stays a human decision
 ```
 
-The full staged loop — including the PR-shepherding rounds — is defined in
-AGENTS.md ("Dev Loop"). When Codex cloud review is enabled, every pushed PR
-head needs an authenticated terminal result attributable to that exact head:
-an exact-head review or inline finding, a top-level result naming an
-unambiguous prefix of the head, or a 👍 on the exact `@codex review` trigger
-reserved for it. Stale or PR-level reactions do not count. The shepherd
-persists each trigger and waits 10–15 minutes after checks settle, tries at
-most twice per head, and escalates if neither attempt produces a terminal
-result.
+The full staged loop — including the PR-shepherding rounds and the readiness
+gate that ends them — is defined in AGENTS.md ("Dev Loop"). The PR is a
+**draft** for every stage above: it is the agent's workbench, and promoting it
+is the one signal that the automated work is finished.
+
+If Codex cloud review is connected to the repo, PRs
+get a cloud pass too: inline comments only for high-priority findings, a
+👍 from the pinned Codex bot actor ID `199175422` on the exact
+`@codex review` trigger comment as the clean pass. That reaction must post
+after both the current head was pushed and its review request was created.
+Those requests are explicit and made while the PR is draft — which is why
+Automatic reviews must be off (setup step 6): an automatic review triggered by
+`gh pr ready` would land after the gate that promoted the PR.
 
 ## Finding priorities
 
@@ -351,3 +365,12 @@ Adjudicate it; never disable the gate to get past a BLOCK.
   clean pass. Fix the cached ref (`git remote set-head origin --auto`), name a
   base with `--base <ref>`, or say the worktree really is the whole target
   with `--uncommitted`.
+- **A captured log is enormous, and the verdict is buried** — the CLI logs
+  some errors with the entire API response inlined, so one line can run to
+  hundreds of kilobytes and a retry loop repeats it. `codex-review.sh` bounds
+  each **stderr** line to `CODEX_REVIEW_MAX_STDERR_BYTES` (default 1024) and
+  marks what it cut; stdout, where the verdict is, is never filtered. Set the
+  variable to `0` to capture a payload in full when debugging the CLI itself.
+  A recurring dump usually means the CLI is older than the API it is talking
+  to — compare `codex --version` against the version your devcontainer image
+  ships, and rebuild or pull a newer image if it lags.

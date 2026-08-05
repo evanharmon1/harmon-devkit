@@ -358,7 +358,7 @@ if should_show "git"; then
         status_text="dirty (${changed} files)"
     fi
 
-    tag="$(git describe --tags --abbrev=0 2>/dev/null || echo "none")"
+    tag="$(git describe --tags --abbrev=0 --exclude="*-probe*" 2>/dev/null || echo "none")"
 
     {
         kv "Branch" "$CURRENT_BRANCH"
@@ -882,7 +882,14 @@ if [[ "${SECTION}" == "setup" ]]; then
                     # sentinel label: a repo seeded before the set grew (a new
                     # layer:/domain: value, say) has the sentinel and is missing
                     # the rest, and a single probe would call that green.
+                    # The foreman:* arming table is opt-in (--foreman, passed
+                    # only when the repo uses foreman — the wrapper taskfile is
+                    # its render-time marker), so expect it only there or a
+                    # non-foreman repo reports 11 permanently-missing labels.
                     want_labels="$(sed -n -E 's/^([A-Za-z0-9:._-]+)\|[0-9A-Fa-f]{6}\|.*/\1/p' scripts/setup-github-labels.sh)"
+                    if [ ! -f taskfiles/foreman.yml ]; then
+                        want_labels="$(printf '%s\n' "${want_labels}" | grep -v '^foreman:')"
+                    fi
                     have_labels="$(cat "${d}/labels.txt" 2>/dev/null || true)"
                     want_count=0
                     missing_count=0

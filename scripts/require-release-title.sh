@@ -11,13 +11,16 @@
 #
 # Usage:
 #   PR_TITLE="<title>" [PR_BODY="…"] \
-#   [CHANGED_FILES=$'a\nb'  |  BASE_SHA=<sha> [HEAD_SHA=<sha>]] \
+#   [CHANGED_FILES=$'a\nb'  |  BASE_SHA=<commit-ish> [HEAD_SHA=<commit-ish>]] \
 #     require-release-title.sh PREFIX [PREFIX …]
 #
 # PREFIXes are release-worthy path prefixes: a literal directory that matches
 # itself and everything beneath it (so `ai/skills` matches `ai/skills/x`, but
 # NOT the sibling `ai/skills-extra`). Changed files come from $CHANGED_FILES
 # (newline-separated) when set, else from `git diff --name-only BASE...HEAD`.
+# BASE_SHA may be any commit-ish; CI passes the base BRANCH (`origin/main`)
+# rather than a pinned sha, because the webhook's base sha goes stale when the
+# base branch moves and the three-dot merge base then falls behind it.
 # A title is "releasing" iff its type is feat/fix, or it marks a breaking
 # change (`!` before the colon, or a BREAKING CHANGE note in the body).
 #

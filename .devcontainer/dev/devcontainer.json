@@ -1,7 +1,7 @@
 {
   // Local dev profile.
   // This intentionally omits the root profile's containerEnv block because the
-  // local runArgs env-file already provides TS_AUTHKEY and GH_TOKEN.
+  // local runArgs env-file already provides TS_AUTHKEY.
   "name": "DEV - devcontainer-harmon-devkit",
   "containerName": "devcontainer-harmon-devkit-dev",
   // Minimum to run the intended workload (Playwright + agents). Codespaces
@@ -19,10 +19,18 @@
   // Dev profile is the only place TS_AUTHKEY is allowed — Tailscale is
   // installed here and tailscale-connect.sh needs the key to bring up the
   // tunnel.
+  // GH_TOKEN is deliberately ABSENT, and the omission is the point: this
+  // profile commits as the operator, so it must authenticate as the operator.
+  // `gh` prefers GH_TOKEN over any stored credential unconditionally and offers
+  // no precedence knob, so the only way to let a human's own `gh auth login`
+  // win is to keep the bot's PAT out of this container entirely. init-env.sh
+  // evicts a stale GH_TOKEN from this env-file on every rebuild (it is in that
+  // script's EVICT_VARS). Log in with `gh auth login` — see
+  // docs/guides/devcontainers.md.
   // Alternative-model provider keys (KIMI/DEEPSEEK/ZAI) are opt-in via
   // use_alternative_claude_providers; when on they land in this env-file so the
   // claude-kimi/deepseek/glm wrappers (and the op fallback) work here.
-  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/dev/devcontainer.env TS_AUTHKEY GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY",
+  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/dev/devcontainer.env TS_AUTHKEY CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY",
   "runArgs": [
     "--init",
     "--shm-size=2g",
@@ -54,10 +62,38 @@
   // low|medium|high for the persisted effortLevel field, while the env var
   // accepts low|medium|high|max. Resolution order at runtime: env var >
   // settings.json effortLevel > model default.
+  //
+  // GITHUB_TOKEN and the enterprise aliases are blanked because dropping
+  // GH_TOKEN alone does not finish the job: gh's precedence is GH_TOKEN >
+  // GITHUB_TOKEN > GH_ENTERPRISE_TOKEN > GITHUB_ENTERPRISE_TOKEN > the stored
+  // `gh auth login`, so removing only the first hands this container to the
+  // next env token in the chain — silently, and as the wrong identity. gh reads
+  // an EMPTY value as unset, and containerEnv becomes docker --env, which
+  // outranks --env-file.
+  //
+  // These three names are consequently RESERVED in this profile. The blank
+  // reaches every process, not only gh, so an application reading GITHUB_TOKEN
+  // at runtime gets an empty string and must use a different variable name.
+  // That is the deliberate trade: one container cannot let the same name mean
+  // both "who gh is" and "the app's credential", and in the profile whose
+  // defining property is its GitHub identity, gh's meaning wins.
+  //
+  // Two alternatives were rejected. Evicting the names in init-env.sh is worse
+  // than blanking — it deletes the value from BOTH profiles' env-files, losing
+  // data rather than shadowing it. Scoping the unset to a `gh` shell wrapper
+  // does not work: git runs the credential helper as
+  // `!/usr/bin/gh auth git-credential`, an absolute path that bypasses any
+  // shell function, so `git push` would go on using the alias.
+  //
+  // GH_TOKEN itself needs no entry — init-env.sh knows that name and evicts it
+  // from the env-file.
   "containerEnv": {
     "CODER": "${localEnv:CODER}",
     "DEVCONTAINER_TAILSCALE": "true",
-    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+    "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "GITHUB_TOKEN": "",
+    "GH_ENTERPRISE_TOKEN": "",
+    "GITHUB_ENTERPRISE_TOKEN": ""
   },
   "postCreateCommand": "bash .devcontainer/dev/post-create.sh",
   "postStartCommand": "bash .devcontainer/dev/post-start.sh",

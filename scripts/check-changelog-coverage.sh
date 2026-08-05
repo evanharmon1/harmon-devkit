@@ -24,7 +24,7 @@ changelog="${repo_root}/CHANGELOG.md"
 # for the guard below to handle that case gracefully.
 tag="${1:-}"
 if [ -z "$tag" ]; then
-    tag="$(git describe --tags --abbrev=0 2>/dev/null)" || true
+    tag="$(git describe --tags --abbrev=0 --exclude="*-probe*" 2>/dev/null)" || true
 fi
 if [ -z "$tag" ]; then
     echo "check-changelog-coverage: no tags in this repo — nothing to check"

@@ -23,9 +23,23 @@ fail() {
 test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 
-# Stub codex: print the invocation so assertions can grep it.
+# Stub codex: print the invocation so assertions can grep it. STUB_BIG_STDERR
+# and STUB_EXIT arm the payload-dump reproduction and a failing CLI; both are
+# off unless set, so every other test sees the plain stub.
 mkdir -p "${test_tmp}/bin"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "STUB-ARGS:%s %s %s\n" "$1" "$2" "${3:-}"' 'if [ "${3:-}" = "-" ]; then printf "STUB-PROMPT:%s\n" "$(cat)"; fi' >"${test_tmp}/bin/codex"
+cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
+#!/usr/bin/env bash
+printf "STUB-ARGS:%s %s %s\n" "$1" "$2" "${3:-}"
+if [ -n "${STUB_BIG_STDERR:-}" ]; then
+    # One over-long stderr line (the models-JSON dump), ordinary narration
+    # around it, and a long prose line on stdout standing in for a verdict.
+    awk -v n="${STUB_BIG_STDERR}" 'BEGIN { l = ""; while (length(l) < n) l = l "PAYLOAD"; printf "ERROR codex_models_manager: simulated payload dump; body: %s\n", l }' >&2
+    echo "short stderr narration" >&2
+    awk 'BEGIN { p = ""; while (length(p) < 4000) p = p "verdict prose "; printf "P0 finding: %s\n", p }'
+fi
+if [ "${3:-}" = "-" ]; then printf "STUB-PROMPT:%s\n" "$(cat)"; fi
+exit "${STUB_EXIT:-0}"
+CODEXSTUB
 chmod +x "${test_tmp}/bin/codex"
 PATH="${test_tmp}/bin:${PATH}"
 export PATH
@@ -436,6 +450,70 @@ echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked with a worktree half th
 echo "$out" | grep -q "refusing rather than reading an unreadable worktree" || fail "missing unreadable-worktree refusal message: $out"
 rm -f halfwork.txt "${test_tmp}/bin/git"
 
+# The reported bug: one codex_models_manager decode error inlines the entire
+# models JSON as a single ~195 KiB stderr line, and the CLI retries, so eleven
+# lines carried 2.1 MB of a 2.2 MB captured log — the verdict a plain `tail`
+# should have shown was buried, and `cat`-ing the log to read the findings
+# overran an agent's tool-output limit. The bound is on line LENGTH rather than
+# on that message, so these guard the class: any future payload dump is covered.
+echo bound >bound.txt
+big_out="${test_tmp}/bound.out"
+big_err="${test_tmp}/bound.err"
+longest() { awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }' "$1"; }
+
+echo "==> an over-long CLI stderr line is bounded, and stdout is left alone"
+STUB_BIG_STDERR=40000 ./scripts/codex-review.sh review --uncommitted >"$big_out" 2>"$big_err" ||
+    fail "review with a payload-dumping stub exited non-zero: $(cat "$big_err")"
+[ "$(longest "$big_err")" -lt 2000 ] ||
+    fail "over-long stderr line was not bounded (longest $(longest "$big_err") bytes)"
+grep -q "truncated by codex-review.sh" "$big_err" ||
+    fail "no truncation marker, so a reader cannot tell output was dropped"
+grep -q "short stderr narration" "$big_err" ||
+    fail "bounding the long line also dropped the ordinary narration around it"
+# stdout carries the verdict, where a long prose line is legitimate; filtering
+# it would corrupt the very output the bound exists to keep readable.
+[ "$(longest "$big_out")" -gt 4000 ] ||
+    fail "a long stdout line was truncated; only stderr may be bounded"
+grep -q "truncated by codex-review.sh" "$big_out" &&
+    fail "truncation marker reached stdout; only stderr may be bounded"
+
+echo "==> the stderr filter preserves the CLI's exit status"
+# pipefail must surface codex's own status, not the filter's — otherwise a
+# failed review reads as the clean pass a capped loop exits on.
+status=0
+STUB_EXIT=7 STUB_BIG_STDERR=40000 ./scripts/codex-review.sh review --uncommitted >/dev/null 2>&1 || status=$?
+[ "$status" -eq 7 ] || fail "codex exit status lost through the filter (got ${status}, want 7)"
+
+echo "==> CODEX_REVIEW_MAX_STDERR_BYTES=0 restores the unbounded output"
+CODEX_REVIEW_MAX_STDERR_BYTES=0 STUB_BIG_STDERR=40000 \
+    ./scripts/codex-review.sh review --uncommitted >/dev/null 2>"$big_err" ||
+    fail "review with the bound disabled exited non-zero: $(cat "$big_err")"
+[ "$(longest "$big_err")" -gt 40000 ] ||
+    fail "escape hatch did not restore the full line (longest $(longest "$big_err") bytes)"
+
+echo "==> a non-numeric bound is refused before the CLI is invoked"
+if out="$(CODEX_REVIEW_MAX_STDERR_BYTES=abc ./scripts/codex-review.sh review --uncommitted 2>&1)"; then
+    fail "non-numeric bound accepted: $out"
+fi
+echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite an invalid bound: $out"
+echo "$out" | grep -q "must be a non-negative integer" || fail "missing validation message: $out"
+
+echo "==> a bound past INT64_MAX is refused rather than leaking a shell error"
+# All-digit but too wide for `test -eq`, which fails with "integer expression
+# expected" ON STDERR and then runs effectively unbounded — a shell error in
+# the very stream this change exists to keep clean.
+if out="$(CODEX_REVIEW_MAX_STDERR_BYTES=999999999999999999999 ./scripts/codex-review.sh review --uncommitted 2>&1)"; then
+    fail "an INT64_MAX-exceeding bound was accepted: $out"
+fi
+echo "$out" | grep -q "integer expression expected" && fail "shell arithmetic error leaked to the caller: $out"
+echo "$out" | grep -q "implausibly large" || fail "missing implausible-bound message: $out"
+# The widest value that still compares cleanly must keep working.
+CODEX_REVIEW_MAX_STDERR_BYTES=999999999999999999 STUB_BIG_STDERR=40000 \
+    ./scripts/codex-review.sh review --uncommitted >/dev/null 2>"$big_err" ||
+    fail "the widest safe bound was rejected: $(cat "$big_err")"
+grep -q "integer expression expected" "$big_err" && fail "shell arithmetic error at the 18-digit boundary: $(cat "$big_err")"
+rm -f bound.txt
+
 echo "==> gate: another repo's project-scoped plugin install is not accepted"
 fake_claude="${test_tmp}/claude-config"
 mkdir -p "${fake_claude}/plugins"
@@ -533,4 +611,4 @@ if out="$(CLAUDE_CONFIG_DIR="${fake_claude}2" CLAUDE_PLUGIN_DATA="${test_tmp}/pl
 fi
 echo "$out" | grep -q "non-interactive" || fail "missing non-interactive disable refusal message: $out"
 
-echo "codex-review + codex-gate guards OK (33 cases)"
+echo "codex-review + codex-gate guards OK (38 cases)"

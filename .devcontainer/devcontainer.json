@@ -61,9 +61,13 @@
   // low|medium|high for the persisted effortLevel field, while the env var
   // accepts low|medium|high|max. Resolution order at runtime: env var >
   // settings.json effortLevel > model default.
+  //
+  // FOREMAN_DEVCONTAINER: foreman's D2 startup tripwire — it refuses to run
+  // anywhere this marker is not "bot" (only the bot profile sets it).
   "containerEnv": {
     "CODER": "${localEnv:CODER}",
-    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+    "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "FOREMAN_DEVCONTAINER": "bot"
   },
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "postStartCommand": "bash .devcontainer/post-start.sh",

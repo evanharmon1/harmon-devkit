@@ -3,10 +3,10 @@
 #
 # Gives a container session the same four-line status line as a host session:
 #
-#   📁 ~/git/my-project  🌿 main  🔀 #512 ✓  ▪ session name  · a1b2c3d4
+#   📁 ~/git/my-project  🌿 main  PR #512 ✓  ▪ session name  · a1b2c3d4
 #   🧠 ▕████░░░░░░░░░░░░▏ 24%  760k left  🤖 Opus 5 1M · medium · ⚡ · 💭  📟 v2.1.220
 #   💰 $0.43  ✎ +120/-45  ⏱ 11m session
-#   🚦 5h ▕█░░░░░░▏ 🔄 2h13m   ·   7d ▕░░░░░░░▏ 🔄 4d20h
+#   🚦 5h ▕█░░░░░░▏ ⧖ 2h13m   ·   7d ▕░░░░░░░▏ ⧖ 4d20h
 #
 # Reading down: where you are, how much room and horsepower you have left, what
 # the session has cost, and how close the subscription limits are to biting.
@@ -111,8 +111,18 @@ fields=$(jq -r '
   , (.output_style.name                 | s)
   , (.session_id                        | s | .[0:8])
   , (.session_name                      | s)
-  , ((.context_window.used_percentage
-       // (100 - (.context_window.remaining_percentage // 100))) | n)
+  # The context gauge has three states, not two: a percentage, and "unknown".
+  # A payload carrying neither field — an early-session refresh, or a Claude
+  # Code that reports only token counts — must reach the renderer as absent so
+  # it draws `context n/a`. Defaulting the missing remainder to 100 would make
+  # `100 - 100 = 0` and paint an empty green bar over a context window that may
+  # be nearly full: the one wrong answer worse than no answer. Same rule as `o`
+  # above, one field deeper.
+  , (if   (.context_window.used_percentage      | type) == "number"
+     then (.context_window.used_percentage      | floor)
+     elif (.context_window.remaining_percentage | type) == "number"
+     then ((100 - .context_window.remaining_percentage) | floor)
+     else "" end)
   , (.context_window.context_window_size    | n)
   , (.cost.total_cost_usd                   | (. // 0) | tostring)
   , (.cost.total_lines_added                | n)
@@ -291,7 +301,11 @@ if num "${pr_num:-}"; then
     changes_requested) label+=' ✗' ;;
     pending | commented) label+=' ⋯' ;;
     esac
-    seg '🔀' "$PR" "$label"
+    # The only word in an emoji slot on this line, so it is dimmed: left at the
+    # default foreground it would be the BRIGHTEST thing on line 1, which is the
+    # opposite of what a label should be. Gray label, pink number — the same
+    # "quiet key, loud value" the rest of the line already reads as.
+    seg "${DIM}PR${RST}" "$PR" "$label"
 fi
 
 [ -n "${sname:-}" ] && seg '▪' "$META" "$sname"
@@ -369,7 +383,7 @@ rl() {
     # it rather than render a countdown that has stopped meaning anything.
     if num "$at" && ((at > now)); then
         dur $((at - now))
-        printf ' %s🔄 %s%s' "$DIM" "$REPLY" "$RST"
+        printf ' %s⧖ %s%s' "$DIM" "$REPLY" "$RST"
     fi
 }
 if num "${rl5_pct:-}" || num "${rl7_pct:-}"; then
