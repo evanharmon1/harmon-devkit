@@ -1,10 +1,10 @@
 # Verification reads set an explicit `--limit`
 
 A `gh … list` run to **verify state** — did the labels get created, is the PR
-closed, is the issue claimed — sets an explicit `--limit`, or `--paginate` for
-`gh api`. The default returns one page, so a verification that reads truncated
-output reports **absence that is actually pagination** — and reports it with
-exactly the confidence of a real answer.
+closed, is the issue claimed — sets an explicit `--limit`, or `--paginate`
+**and `--slurp`** for `gh api`. The default returns one page, so a verification
+that reads truncated output reports **absence that is actually pagination** —
+and reports it with exactly the confidence of a real answer.
 
 This is the dedup search's failure mode (SKILL.md §3) pointed at a different
 question, and it costs more here. A dedup search that truncates files a
@@ -21,6 +21,45 @@ does not exist. Nothing downstream can tell that zero from a true one.
 | `gh pr list` | 30 |
 | `gh label list` | 30 |
 | `gh api <endpoint>` | one page |
+
+## `--paginate` alone is not enough for `gh api`
+
+Fetching every page and *reading* every page are two different things.
+`--paginate` emits each page as its own JSON document, so a filter applied with
+`--jq` runs once **per page** and answers about that page alone:
+
+```console
+$ gh api --paginate "repos/<owner>/<repo>/labels?per_page=1" \
+    --jq 'any(.name == "bug")'
+false
+false
+true
+false
+false
+```
+
+The label exists — page 3 says so. But a caller reading the exit status, or the
+last line, or `[ -z "$out" ]`, sees `false` and reports it absent. That is this
+document's own failure mode arriving through the flag meant to prevent it, and
+it gets worse as the collection grows: more pages means more chances the last
+one disagrees with the answer.
+
+`--slurp` is what wraps the pages into a single array, and `gh api` **refuses
+it alongside `--jq`** (`the --slurp option is not supported with --jq or
+--template`), so an aggregate check pipes to a standalone `jq` and folds the
+pages with `add`:
+
+```sh
+pages="$(gh api --paginate --slurp "repos/<owner>/<repo>/labels")" \
+  || { echo 'read failed — unknown, not absent' >&2; exit 2; }
+jq -e --arg want '<label>' 'add | any(.name == $want)' <<<"$pages" >/dev/null
+```
+
+The rule of thumb: `--jq` with `--paginate` is safe only for a filter you want
+applied per page and printed per page. Anything that computes **one** answer
+over the whole collection — a membership test, a count, a max — needs the
+slurped form. `/shepherd` hit exactly this in its unanswered-thread check,
+where a reply on page 2 stopped cancelling its root on page 1.
 
 ## Observed violation (2026-08-04, harmon-init)
 
