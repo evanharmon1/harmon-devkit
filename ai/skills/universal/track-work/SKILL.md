@@ -339,7 +339,10 @@ gh issue list --repo <target-owner/target-repo> --state all --limit 200 \
 - **`--state all`**, because a closed issue is an answer too. One closed
   `not planned` means the thing was already declined; refiling it needs to
   engage that decision, not reopen it blind.
-- **`--limit 200`**, because the default returns 30.
+- **`--limit 200`**, because the default returns one page. Why an explicit
+  limit is load-bearing on every list you read for an answer — and why it
+  matters more when the answer is a *verification* than a dedup — is in
+  [`references/gh-verification.md`](references/gh-verification.md).
 - Search the **invariant's** vocabulary, not your title's. The same defect gets
   named differently by everyone who finds it, so a title-shaped query is the one
   most likely to miss.
@@ -375,7 +378,8 @@ gh pr list --repo <target> --state open --limit 200 --json number,title,files \
 ```
 
 **`--limit 200`** carries its weight for the same reason it does on the search
-above — the default is 30 — and it is free here: the whole listing, file lists
+above ([`references/gh-verification.md`](references/gh-verification.md)) — and
+it is free here: the whole listing, file lists
 included, is a single GraphQL query. Two silent misses survive it, and both
 fail the way a dedup check must not, by returning nothing. `gh` asks for
 `files(first: 100)` and never paginates that, so a PR changing more than 100

@@ -44,7 +44,8 @@ gh issue list --repo <target-owner/target-repo> --state all --limit 200 \
 ```
 
 `--state all` surfaces a previous `not planned` — a decision to engage, not a
-gap to fill. `--limit 200` because the default is 30. Query the invariant's
+gap to fill. `--limit 200` because the default returns one page
+([`gh-verification.md`](gh-verification.md)). Query the invariant's
 words rather than your title's; the same defect is named differently by everyone
 who finds it.
 
