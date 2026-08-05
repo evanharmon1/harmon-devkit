@@ -32,9 +32,18 @@ gh label list --repo <owner/repo> --json name \
   --jq '[.[].name | select(startswith("foreman:"))] | length'
 ```
 
-The labels existed. The default 30-label page, ordered alphabetically, did not
-reach `foreman:*`. `--limit 100` returned all eleven. A post-merge verification
-came one step from reporting provisioning as failed.
+The labels existed. `gh label list` sorts by **creation time**, not by name —
+`--sort` defaults to `created` — so the eleven labels written moments earlier
+sorted last, past the end of the 30-item first page. `--limit 100` returned all
+eleven. A post-merge verification came one step from reporting provisioning as
+failed.
+
+Their **newness** is what put them out of reach, and that is the part worth
+keeping straight: a verification runs right after the write it is checking, so
+the rows it is looking for are the newest in the collection — which a
+created-ascending default sorts to the far end, behind every row that was
+already there. The check is most blind to exactly what it was written to see,
+and it gets blinder as the repo accumulates labels.
 
 That is the whole mechanism, and it is why the command reads as safe: the
 projection *looks* like a query for `foreman:*` labels, so `0` reads as "no
