@@ -12,12 +12,12 @@ Skills are grouped into **category subdirectories**:
 ```text
 ai/skills/
 ├── universal/   # every repo gets these
-│   ├── orient/SKILL.md      # /orient — orient + name the session
-│   ├── preflight/SKILL.md   # /preflight — sanity-check + claim the issue
+│   ├── kickoff/SKILL.md     # /kickoff — get oriented + name the session
+│   ├── claim/SKILL.md       # /claim — sanity-check + claim the issue
 │   ├── implement/SKILL.md   # /implement — claimed issue → ready-for-review PR via the dev loop
 │   ├── shepherd/SKILL.md    # /shepherd — shepherd a draft PR to ready for review
 │   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables
-│   ├── close/SKILL.md       # /close — wrap up + rename done-<name>
+│   ├── wrap/SKILL.md        # /wrap — wrap up + rename done-<name>
 │   └── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
 ├── backend/     # server / data / Convex
 ├── frontend/    # React / TanStack / shadcn / design

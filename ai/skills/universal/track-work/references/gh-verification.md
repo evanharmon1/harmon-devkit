@@ -145,7 +145,7 @@ other — so read these as two columns, not one badge.
 - SKILL.md §3 — the dedup search and the open-PR listing, both `--limit 200`.
 - [`cross-repo-work.md`](cross-repo-work.md) — the same search, bound to the
   repo being filed into.
-- `/preflight` decides whether a repo has the `agent:*` label family at all.
+- `/claim` decides whether a repo has the `agent:*` label family at all.
   It sets `--limit 1000`, so truncation cannot fool it — and it then pipes the
   listing into `grep`, so a failed read still reads as "no such family". It is
   the **motivating case for the second half, not an example of it**:
