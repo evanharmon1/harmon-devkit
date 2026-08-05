@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.20.4](https://github.com/evanharmon1/harmon-devkit/compare/v0.20.3...v0.20.4) (2026-08-05)
+
+
+### Bug Fixes
+
+* **skills:** point issue-authoring's --limit assertion at the rule ([#299](https://github.com/evanharmon1/harmon-devkit/issues/299)) ([2c4eff3](https://github.com/evanharmon1/harmon-devkit/commit/2c4eff3b83601d69a1cb960153a4ea45923fbaf7)), closes [#292](https://github.com/evanharmon1/harmon-devkit/issues/292) [#207](https://github.com/evanharmon1/harmon-devkit/issues/207)
+* **skills:** state the gh list --limit rule once, for verification too ([#293](https://github.com/evanharmon1/harmon-devkit/issues/293)) ([f374b42](https://github.com/evanharmon1/harmon-devkit/commit/f374b4240d27f79596b5ebbc17ac0098b7559a7f))
+
 ## [0.20.3](https://github.com/evanharmon1/harmon-devkit/compare/v0.20.2...v0.20.3) (2026-08-04)
 
 
