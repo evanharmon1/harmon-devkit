@@ -25,8 +25,8 @@ Verify before running anything:
 - [ ] **Hidden author/org defaults are correct for you.** Identity, org info,
       and machine-specific paths live in `copier.yml` under `when: false`
       (e.g. `author_full_name`, `author_email`, `author_git_provider_username`,
-      `organization`, `projects_directory`, `bunches_directory`,
-      `obsidian_directory`). These are NOT asked interactively — they are baked
+      `organization`, `projects_directory`). These are NOT asked interactively
+      under `when: false` — they are baked
       in for the template owner. If you are not the template owner, fork
       harmon-init and edit those once before first use.
 
@@ -161,6 +161,8 @@ predate the question and render CodeRabbit unconditionally.
 | `github_release_init` | bool | `false` | Runs `task release:init` (initial release). |
 | `bunch_add` | bool | `false` | Add Bunch file (macOS-only; moves to iCloud). |
 | `obsidian_project_add` | bool | `false` | Add Obsidian project note to the vault (macOS-only). |
+| `bunches_directory` | str | `~/Library/Mobile Documents/com~apple~CloudDocs/Bunches` | Directory holding `.bunch` files (must exist). Prompted only when `bunch_add=true`. |
+| `obsidian_directory` | str | `~/Local/Memex/Professional` | Vault directory the project note is filed under (must exist). Prompted only when `obsidian_project_add=true`. |
 | `run_task_install` | bool | `false` | Run `task install` after generation (brew bundle + git hooks). |
 
 Notes:
