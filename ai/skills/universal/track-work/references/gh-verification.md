@@ -67,21 +67,30 @@ and only the first is fixed by `--limit`. So the limit is necessary and not
 sufficient: check that the read **succeeded** before you believe its emptiness.
 
 ```sh
-labels="$(gh label list --repo <owner/repo> --limit 1000 --json name -q '.[].name')" \
+labels="$(gh label list --repo <owner/repo> --limit 1000 --json name)" \
   || { echo 'label read failed — unknown, not absent' >&2; exit 2; }
-grep -qFx '<label>' <<<"$labels"
+jq -e --arg want '<label>' 'any(.name == $want)' <<<"$labels" >/dev/null
 ```
 
 Assigning first and testing after is the whole point: piping `gh` straight
-into `grep` discards its exit status, so a failed fetch reads as a clean miss.
-`-F` matches the label literally and `-x` whole-line: without both, a name
-carrying a regex metacharacter matches something it should not (`foo.bar`
-accepts `fooXbar`) or errors outright, which is the same false answer arriving
-by a different route.
-Exit 2 rather than 1 keeps "could not verify" distinct from "verified absent"
-— the same three-way reading the `set-issue-status.sh` exit codes use in
-SKILL.md §6, and the same reason `/implement` treats a failed identity lookup
-as unknown rather than unclaimed.
+into a matcher discards its exit status, so a failed fetch reads as a clean
+miss. Exit 2 rather than 1 keeps "could not verify" distinct from "verified
+absent" — the same three-way reading the `set-issue-status.sh` exit codes use
+in SKILL.md §6, and the same reason `/implement` treats a failed identity
+lookup as unknown rather than unclaimed.
+
+**Compare the name as data, not as a pattern.** The membership test is `jq`
+rather than `grep` on purpose: the name is a value that must be matched
+exactly, and every text matcher reinterprets some values as syntax. `grep`
+alone treats `foo.bar` as a regex that accepts `fooXbar`; `grep -F` fixes
+that and still parses a leading `-` as an option, so a `-bug` label errors and
+a `--help` one prints usage — one implementation exiting 0, another 2, neither
+meaning absent. Each is fixable (`-F`, `-x`, `--`, in that order, after being
+bitten three times), and the fixes are a checklist you have to remember rather
+than a property of the tool. `--arg` passes the name as a JSON string and
+`==` compares it, so none of those classes exist: option-shaped, regex-shaped,
+and whitespace-carrying names all answer correctly with no escaping. `jq -e`
+exits 1 on a `false` result, which is the absent case.
 
 **Addressing one object directly does not escape this.** `gh api
 "repos/<owner>/<repo>/labels/<name>"` looks stronger than listing — one
