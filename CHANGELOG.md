@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.21.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.20.4...v0.21.0) (2026-08-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **skills:** `/orient`, `/preflight`, and `/close` are now `/kickoff`, `/claim`, and `/wrap`. No alias skills ship — the old names disappear from the picker. Consumer repos pick the rename up on their next skills-sync pin bump; the sync removes managed directories the pin no longer ships, so no manual migration is needed.
+
+### Features
+
+* **skills:** rename the session suite — orient→kickoff, preflight→claim, close→wrap ([#301](https://github.com/evanharmon1/harmon-devkit/issues/301)) ([cfc2085](https://github.com/evanharmon1/harmon-devkit/commit/cfc2085d3540e4fa251238464f1212b3129364bd)), closes [#300](https://github.com/evanharmon1/harmon-devkit/issues/300)
+
+
+### Bug Fixes
+
+* update to harmon-init v4.15.1 ([#302](https://github.com/evanharmon1/harmon-devkit/issues/302)) ([92f4c5b](https://github.com/evanharmon1/harmon-devkit/commit/92f4c5bd33a40038e3997541964a65397e5112b8))
+
 ## [0.20.4](https://github.com/evanharmon1/harmon-devkit/compare/v0.20.3...v0.20.4) (2026-08-05)
 
 
