@@ -49,32 +49,54 @@ you expect to find is the thing being measured. Size it to the ceiling of the
 namespace being read:
 
 ```sh
-gh label list --repo <owner/repo> --limit 1000 --json name -q '.[].name' |
-  grep -qx '<label>'
+gh label list --repo <owner/repo> --limit 1000 --json name -q '.[].name'
 ```
 
 Verification reads are cheap and run once, so a generous limit costs nothing
 worth saving; `gh` pages internally to satisfy a `--limit` above 100 rather
-than failing.
+than failing. Capture that output and check the exit status before reading
+anything into it — see the next section for why the obvious one-liner throws
+the status away.
 
-## Strongest form: ask about the one thing
+## A failed read is *unknown*, never *absent*
 
-A filtered count over a list is the shape that fails silently. Where the API
-addresses the object directly, ask for it and read the exit status — a 404 is
-an answer, not an empty page:
+Truncation is one way a read reports nothing; the others are a network blip,
+an expired token, a rate limit, a typo'd repo. They are the same defect —
+something the reader did not see, reported as something that does not exist —
+and only the first is fixed by `--limit`. So the limit is necessary and not
+sufficient: check that the read **succeeded** before you believe its emptiness.
 
 ```sh
-gh api "repos/<owner>/<repo>/labels/<name>" --silent && echo present
+labels="$(gh label list --repo <owner/repo> --limit 1000 --json name -q '.[].name')" \
+  || { echo 'label read failed — unknown, not absent' >&2; exit 2; }
+grep -qx '<label>' <<<"$labels"
 ```
 
-Exit 0 present, exit 1 absent. `--silent` drops the response *body*, not the
-error: a miss still prints `gh: Not Found (HTTP 404)` to stderr, so read the
-status rather than the output, and redirect stderr where a clean miss is the
-expected case.
+Assigning first and testing after is the whole point: piping `gh` straight
+into `grep` discards its exit status, so a failed fetch reads as a clean miss.
+Exit 2 rather than 1 keeps "could not verify" distinct from "verified absent"
+— the same three-way reading the `set-issue-status.sh` exit codes use in
+SKILL.md §6, and the same reason `/implement` treats a failed identity lookup
+as unknown rather than unclaimed.
 
-Same for a single issue or PR: `gh issue view <n>` and `gh pr view <n>` ask
-about one object and cannot truncate. Reach for a list only when the question
-is genuinely about a set.
+**Addressing one object directly does not escape this.** `gh api
+"repos/<owner>/<repo>/labels/<name>"` looks stronger than listing — one
+object, nothing to truncate — but it collapses more states into the same
+signal, not fewer:
+
+- Bad credentials exit non-zero exactly as a miss does (`HTTP 401`), so exit
+  status alone cannot mean "absent".
+- A wrong or unreadable **repo** returns `404` too, identically to a present
+  repo with no such label.
+- A name containing `/` is read as extra path segments, so it 404s on routing
+  rather than on absence. (`gh` percent-encodes spaces on its own, so
+  `good first issue` is fine — which is what makes the `/` case easy to miss.)
+
+Use it when you control the name and want the object's *contents*; do not use
+it as an existence test for a name you did not validate. For that, the
+checked-list form above is both simpler and harder to fool. `gh issue view
+<n>` and `gh pr view <n>` are safe in the same narrow sense: a number is not
+path-sensitive, and a failure still has to be read as unknown.
 
 ## Where this already applies
 
