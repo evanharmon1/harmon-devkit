@@ -286,7 +286,11 @@ its current `headRefOid`:
   `headRefOid` immediately before promoting and compare.
 
 Then run `gh pr ready`, confirm the PR is no longer draft and the head did not
-change, and hand it to the human reviewer.
+change, and hand it to the human reviewer. Even when the command or the
+confirmation fails, bounded-fetch the remote state and reconcile it: if the
+open PR is ready on any unverified head or content snapshot, return it to
+draft with `gh pr ready --undo` and confirm draft state before resuming or
+stopping — a promotion whose gate was never validated must not stand.
 
 A failed **or indeterminate** condition is not a pass: leave the PR draft, post
 a blocker report naming what is unresolved, and stop. "The check never ran",
