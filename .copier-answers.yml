@@ -15,7 +15,8 @@ include_ansible: false
 include_terraform: false
 license: mit
 obsidian_project_add: false
-project_description: 'My personal developer kit: reusable templates and boilerplates, standalone scripts, and AI assets (skills, prompts, agents).'
+project_description: 'My personal developer kit: reusable templates and boilerplates,
+    standalone scripts, and AI assets (skills, prompts, agents).'
 project_management: none
 project_name: Harmon DevKit
 project_slug: harmon-devkit
@@ -26,7 +27,7 @@ snyk_scan_schedule: 'off'
 use_alternative_claude_providers: false
 use_codeql: false
 use_coderabbit: false
-use_codex_cloud_review: false
+use_codex_cloud_review: true
 use_codex_review: true
 use_foreman: false
 use_release_please: true

@@ -62,6 +62,19 @@ config, toolchain, devcontainer, and dev environment — against the items below
       previously used it, remove this repo from the CodeRabbit GitHub App
       installation. Deleting `.coderabbit.yaml` and bot trust does not revoke
       existing App access.
+- [ ] **[human-only] Connect Codex cloud review** — connect this repository in
+      ChatGPT Codex settings, grant private-repository access if applicable,
+      and confirm review activity is authored by GitHub actor ID `199175422`
+      (`chatgpt-codex-connector[bot]`, type `Bot`).
+- [ ] **[human-only] Disable Codex Automatic reviews** — turn **personal Auto
+      review** off and set this repository's **Auto code review** preference to
+      **Follow personal**. The draft-workbench lifecycle drives Codex with
+      explicit `@codex review` requests while the PR is draft; left on,
+      `gh pr ready` starts a *new* asynchronous review after the readiness gate,
+      and non-draft stops truthfully meaning "ready for a human". No API exposes
+      this setting, so it is a human-configured prerequisite the gate trusts on
+      the strength of this record — never report it as mechanically verified,
+      and re-check it here if Codex's settings change.
 - [ ] **[human-only] Any other automatic reviewer must review drafts** — if you
       enable one (GitHub Copilot code review, for example), turn on its draft-review option.
       A reviewer that skips drafts first reports *after* promotion, so the

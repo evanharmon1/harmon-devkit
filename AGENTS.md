@@ -219,6 +219,30 @@ error silently reverts the lifecycle rather than fixing anything.
   Shepherd-round fixes must pass `task verify` before each push; the local
   challenge/review loops are not re-entered — the post-push cloud/bot review
   is the second-model check at this stage.
+  **Require a current-head Codex result.** On initial shepherd entry and
+  immediately after every fix push, capture the PR's current `headRefOid` and
+  the head's push time, then post `@codex review`. Record the request time and
+  the comment ID returned for that trigger. Poll PR reactions, top-level
+  comments, reviews, and inline review comments; fetch trigger reactions by
+  that exact comment ID. A Codex result is terminal for that captured head only
+  when it is either: a clean review or top-level comment authored by GitHub
+  actor ID `199175422` (`chatgpt-codex-connector[bot]`, type `Bot`) whose
+  `Reviewed commit:` identifies that head; a fresh 👍 from that bot on that
+  exact trigger comment, created after both the head push and the review
+  request, with no newer contradictory bot result; or review findings authored
+  by that bot which identify that head and must be adjudicated before the
+  cycle can become clean. Earlier comments, reviews,
+  inline findings, and reactions never count for a newer head. A 👀 is pending,
+  not success; if it disappears without a terminal result, the attempt is
+  incomplete.
+  Give each attempt a full 10–15 minute window. If the first attempt is
+  incomplete, post `@codex review` once more for the same head and run one more
+  full window, recording and using the new trigger comment ID. If both attempts
+  are incomplete, stop and escalate without reporting green. Waiting and the
+  one allowed re-trigger do not consume a shepherd fix round. Immediately
+  before accepting the result or reporting green, fetch `headRefOid` and all
+  four review surfaces again; a changed head invalidates the result and starts
+  a new current-head cycle.
   Shepherd is **externally driven** — CI results and other people's comments
   are its input, so it cannot manufacture a round on its own. A round is one
   fix push, or one no-change cycle where everything is answered and nothing
@@ -250,10 +274,9 @@ error silently reverts the lifecycle rather than fixing anything.
   settle, so `gh pr checks --watch` returns at exactly the moment the review
   has not run yet: an empty comment list read at that instant means "not
   reviewed yet", not "nothing to answer".
-  Wait for **both** signals — let
-  every check conclude, then give the reviewer a bounded window (~10–15
-  minutes) on the current head, and proceed on CI alone only if nothing lands
-  in it.
+  Wait for **both** signals: every check must conclude, and the required
+  current-head Codex cycle above must reach a terminal result. Green CI while
+  that cycle is pending or incomplete is still non-terminal.
 - **Stop at ready-for-review.** When the readiness gate below passes, promote
   the draft **exactly once** with `gh pr ready <n>`, confirm `isDraft == false`
   on the same head, report, and stop. Human approval is deliberately *not* a
@@ -271,6 +294,7 @@ its current `headRefOid`:
   *indeterminate*, not a pass — GitHub populates it asynchronously, so a read
   taken moments after the push reports nothing having run rather than nothing
   to run.
+- The current-head Codex cycle above is terminal and clean.
 - Every review finding is fixed, declined with evidence, or filed as follow-up
   work.
 - Every inline review comment has its required per-thread reply.
@@ -360,10 +384,26 @@ Setup and mechanics: [docs/guides/codex-review.md](docs/guides/codex-review.md).
   past a BLOCK** — adjudicate the finding or escalate to the maintainer instead.
 
 These tasks slot into the **Dev Loop** above: after `task verify` goes green,
-before `task ci`. If Codex cloud review is enabled for the repo, shepherding
-also requires a terminal result attributable to the current PR head. The
-canonical `/shepherd` skill owns the exact classifier and persistent
-two-attempt procedure; PR-level or stale reactions do not satisfy it.
+before `task ci`.
+Codex cloud review is also connected to the repo; it reviews PRs too and posts
+inline comments only for high-priority findings.
+During shepherding, accept its clean comments, reviews, or reactions only under
+the current-head cycle above: stale activity is not evidence for the current
+commit, and a lone 👀 that disappears or never resolves is an incomplete
+attempt.
+
+**Codex Automatic reviews must stay disabled.** Codex triggers a cloud review
+on three events: opening a PR for review, marking a draft ready, and an
+explicit `@codex review`. The first two fire too late to inform a draft
+workbench, and the second is actively harmful here — `gh pr ready` would kick
+off a fresh asynchronous review *after* the gate that was supposed to complete
+the automated work, so non-draft would stop meaning "ready for a human". The
+lifecycle therefore uses explicit `@codex review` requests while the PR is
+draft, per the current-head cycle above. Turn personal Auto review off and set
+the repository's Auto code review preference to **Follow personal** (see
+docs/CHECKLIST.md). That state is a **human-configured prerequisite**, not
+something any API confirms, so never report it as mechanically verified; if it
+changes, the readiness gate stops being valid until it is restored.
 
 **Treat Codex findings as hypotheses, not authority.** For every finding:
 
