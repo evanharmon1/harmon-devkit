@@ -65,7 +65,7 @@ jobs:
       # this checkout deliberately persists the short-lived narrow CI App token
       # so Claude's `git push` of the working branch can authenticate. The token
       # is least-privilege (minted above) and expires with the job.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
@@ -117,8 +117,19 @@ jobs:
           # ephemeral runner. Widen if a real run stalls on a denied command.
           # The single allowedTools token cannot be wrapped without changing it.
           # yamllint disable rule:line-length
+          # --disallowedTools denies the draft→ready promotion the prompt below
+          # forbids. Deny rules beat allow rules, so this is a real control and
+          # not only prompt text — but it is the same coarse prefix matching as
+          # --allowedTools, so shell composition still gets around it. It raises
+          # the cost of a mistaken or injected promotion; the boundary that
+          # actually holds is branch protection (the bot cannot merge).
+          # All three pattern forms are listed deliberately: the bare command,
+          # the documented `:*` prefix form, and the space-glob form the
+          # allowlist below uses. A deny rule that matches nothing is worse than
+          # none — it reads as a control while allowing the command outright.
           claude_args: >-
             --model opus --effort high --max-budget-usd 25 --max-turns 200
+            --disallowedTools "Bash(gh pr ready)" "Bash(gh pr ready:*)" "Bash(gh pr ready *)"
             --allowedTools "Edit,MultiEdit,Write,Read,NotebookEdit,Glob,Grep,LS,TodoWrite,Bash(task *),Bash(pnpm *),Bash(npx *),Bash(node *),Bash(git *),Bash(gh *),Bash(cd *),Bash(ls *),Bash(cat *),Bash(head *),Bash(tail *),Bash(grep *),Bash(rg *),Bash(find *),Bash(sed *),Bash(awk *),Bash(jq *),Bash(wc *),Bash(sort *),Bash(diff *),Bash(echo *),Bash(mkdir *),Bash(cp *),Bash(mv *),Bash(which *),Bash(pwd)"
           # yamllint enable rule:line-length
           prompt: |
@@ -128,26 +139,44 @@ jobs:
             - Do NOT ask clarifying questions. Pick the most reasonable
               interpretation of the request and proceed. State any non-obvious
               assumptions in the PR body so the reviewer can redirect if needed.
-            - The only acceptable terminal states are:
-                (a) an opened pull request on a claude/... branch, or
-                (b) an opened DRAFT pull request that documents what blocked you.
-              Do NOT end by leaving a summary comment on the issue — the PR is
-              the deliverable, not the comment.
+            - The deliverable is ONE opened DRAFT pull request on a claude/...
+              branch — on the success path and the blocked path alike. The draft
+              is the agent workbench (AGENTS.md, "Dev Loop"), not a failure
+              signal; the two paths differ in PR body content, not draft state.
+              Do NOT end by leaving a summary comment on the issue.
+            - NEVER run `gh pr ready`. This workflow cannot complete the
+              readiness gate — it runs headless as the CI app bot and cannot
+              drive the current-head review cycle a human handoff requires — so
+              promoting here would make "non-draft" stop meaning "ready for a
+              human". Promotion belongs to a shepherd session.
+            - NEVER merge and never push to main, whatever CI says.
             - If `task verify` fails and you cannot resolve it within several
-              attempts, commit the best-effort state, push the branch, open a
-              DRAFT PR, and describe the failing step in the PR body. Do not
-              abandon the branch or dump a diff in a comment.
+              attempts, commit the best-effort state, push the branch, open the
+              draft PR anyway, and describe the failing step under a "## Blocked"
+              heading in the body. Do not abandon the branch or dump a diff in a
+              comment.
 
             Workflow:
             1. Make the code changes directly in the working tree.
             2. Run `task verify` and fix any failures before continuing.
             3. Commit with a conventional-commits message referencing this issue.
             4. Push the branch to origin.
-            5. Open a pull request targeting main. In the PR body, link to this
-               issue with "Closes #${{ github.event.issue.number || github.event.pull_request.number }}", summarize
-               what changed, and note anything reviewers should pay attention to.
+            5. Open the pull request targeting main with `gh pr create --draft`.
+               In the body, link to this issue with
+               "Closes #${{ github.event.issue.number || github.event.pull_request.number }}", summarize
+               what changed, note anything reviewers should pay attention to, and
+               say the PR is a draft awaiting shepherding. Confirm it with
+               `gh pr view <n> --json isDraft,headRefOid`: isDraft must be true
+               and the SHA must be the one you just pushed.
+            6. Watch the PR's checks with `gh pr checks <n> --watch`. Fix what
+               you can fix mechanically — commit, push, watch again — for at most
+               3 such rounds. The PR stays draft throughout.
+            7. Stop and report: the PR URL, the gates you ran, what CI said, and
+               what a shepherd session still has to settle (remaining check
+               failures, unanswered review findings). A draft handed over with a
+               clear report is a complete, successful run.
 
             Do not post the diff as a comment. The PR is the deliverable.
 
             Follow the conventions documented in AGENTS.md, including the
-            commit-message style.
+            commit-message style and the draft-PR lifecycle.

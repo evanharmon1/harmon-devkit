@@ -28,6 +28,16 @@ config, toolchain, devcontainer, and dev environment — against the items below
 
 ## 2. GitHub repo settings
 
+- [ ] **Confirm draft pull requests are available on this repo** — every agent
+      PR opens as a draft and is promoted only by the readiness gate (AGENTS.md,
+      "Dev Loop"). GitHub restricts draft PRs on **private** repositories to its
+      paid plans, so on a private free-plan repo `gh pr create --draft` fails
+      outright and the whole lifecycle stops at its first step. Check the current
+      plan matrix in [GitHub's draft-PR
+      docs](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/changing-the-stage-of-a-pull-request);
+      if drafts are unavailable, make the repo public, upgrade the plan, or
+      decide deliberately not to run agent workflows here — do not "fix" it by
+      dropping `--draft`, which would make an open PR mean nothing again.
 - [ ] **Automated settings** — run `task setup:github` (idempotent, safe to
       re-run): enables **Dependabot alerts** and **private vulnerability
       reporting** when public. Do not add `dependabot.yml`: Renovate owns routine
@@ -52,6 +62,24 @@ config, toolchain, devcontainer, and dev environment — against the items below
       previously used it, remove this repo from the CodeRabbit GitHub App
       installation. Deleting `.coderabbit.yaml` and bot trust does not revoke
       existing App access.
+- [ ] **[human-only] Connect Codex cloud review** — connect this repository in
+      ChatGPT Codex settings, grant private-repository access if applicable,
+      and confirm review activity is authored by GitHub actor ID `199175422`
+      (`chatgpt-codex-connector[bot]`, type `Bot`).
+- [ ] **[human-only] Disable Codex Automatic reviews** — turn **personal Auto
+      review** off and set this repository's **Auto code review** preference to
+      **Follow personal**. The draft-workbench lifecycle drives Codex with
+      explicit `@codex review` requests while the PR is draft; left on,
+      `gh pr ready` starts a *new* asynchronous review after the readiness gate,
+      and non-draft stops truthfully meaning "ready for a human". No API exposes
+      this setting, so it is a human-configured prerequisite the gate trusts on
+      the strength of this record — never report it as mechanically verified,
+      and re-check it here if Codex's settings change.
+- [ ] **[human-only] Any other automatic reviewer must review drafts** — if you
+      enable one (GitHub Copilot code review, for example), turn on its draft-review option.
+      A reviewer that skips drafts first reports *after* promotion, so the
+      readiness gate would hand a human a PR it had not actually reviewed.
+      Leave it off rather than run it blind to the workbench.
 - [ ] Actions secret: `CLAUDE_CODE_OAUTH_TOKEN` (claude-* workflows) — generate
       with `claude setup-token`; the value must start **`sk-ant-oat01-`** (an OAuth
       token, billed to your Claude subscription), **not** `sk-ant-api03-` (a raw API
@@ -113,8 +141,10 @@ config, toolchain, devcontainer, and dev environment — against the items below
       `.env.example`-style files
 - [ ] Devcontainer secrets: create a **1Password environment** that mounts
       `.devcontainer/devcontainer.env` (and `.devcontainer/dev/devcontainer.env`)
-      with `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_DECK_TELEGRAM_KEY`
-      (+ `TS_AUTHKEY` for the dev profile). `init-env.sh` enforces the per-profile
+      with `CLAUDE_CODE_OAUTH_TOKEN` and `AGENT_DECK_TELEGRAM_KEY`, plus
+      `GH_TOKEN` for the bot profile and `TS_AUTHKEY` for the dev one — the dev
+      profile carries no `GH_TOKEN` and runs `gh auth login` instead.
+      `init-env.sh` enforces the per-profile
       allow-list; on Coder the values come from workspace parameters. See
       [guides/devcontainers.md](guides/devcontainers.md)
 

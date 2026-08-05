@@ -3,6 +3,11 @@ set -euo pipefail
 
 export DEVCONTAINER_GIT_NAME="evanharmon1-bot"
 export DEVCONTAINER_GIT_EMAIL="evanharmon1-bot@users.noreply.github.com"
+# Which remedy post-create-common.sh prints when `gh` has no credential. This
+# profile authenticates from the bot's scoped PAT, so the fix is always to
+# supply GH_TOKEN. Never set this to "login": a `gh auth login` here would put
+# the operator's credential inside a bypassPermissions agent container.
+export DEVCONTAINER_GH_AUTH="token"
 
 bash .devcontainer/scripts/post-create-common.sh
 

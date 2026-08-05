@@ -55,7 +55,10 @@ shift || true
 #                          until cleared manually. That is a least-privilege nit,
 #                          not a leak: the key stays safe in 1Password and the
 #                          env-file is host-local and gitignored.
-BASE_MANAGED_VARS=(TS_AUTHKEY GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY)
+# FOREMAN_AGENT_GH_TOKEN is the separate READ-ONLY PAT foreman hands to
+# dispatched agents as their GH_TOKEN (required before any dispatch); only
+# the bot profile allow-lists it, so it is evicted from dev/ like GH_TOKEN.
+BASE_MANAGED_VARS=(TS_AUTHKEY GH_TOKEN FOREMAN_AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY)
 OPT_IN_PROVIDER_KEYS=(KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY)
 # KNOWN_VARS: every var this script recognizes. The filter below restricts the
 # caller's allow-list to this set, so a positional arg can't smuggle an unknown

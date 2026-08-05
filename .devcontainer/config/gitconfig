@@ -1,11 +1,15 @@
-# Git config baked into the dev container image.
+# Git config baked into the dev container image — the ENVIRONMENT layer.
 # Source of truth: .devcontainer/config/gitconfig
 # Installed to:    /home/vscode/.config/git/config
 #
-# This is git's XDG-compliant second user config location. Git reads it in
-# addition to ~/.gitconfig and merges the two — single-valued keys in
-# ~/.gitconfig (e.g. user.name set by post-create-common.sh) take precedence,
-# but values here apply unmodified unless explicitly overridden.
+# This is git's XDG user config location. Git reads it BEFORE ~/.gitconfig and
+# merges the two: single-valued keys in ~/.gitconfig override same-named keys
+# here, while multi-valued keys (url.insteadOf) accumulate across both files.
+# Everything environment/container-shaped belongs in this file; ~/.gitconfig is
+# reserved for personal config (VS Code's copyGitConfig may copy the host's in
+# on attach — that copy must never be able to break container plumbing).
+# post-create-common.sh appends runtime-only values (git identity) to this
+# file explicitly via `git config --file`.
 
 [alias]
 	ll = log --graph --oneline --decorate
@@ -26,3 +30,17 @@
 
 [push]
 	autoSetupRemote = true
+
+# Rewrite every GitHub SSH URL form to HTTPS for fetch AND push: in-container
+# git ops never depend on an SSH agent (absent in bot containers; lockout-
+# prone when forwarded into human ones). Covers the scp form (git@github.com:)
+# plus all three ssh:// forms, including the explicit port-443 endpoint.
+# HTTPS auth comes from gh (GH_TOKEN in the bot profile, the operator's own
+# `gh auth login` in the dev one), or VS Code's forwarded host credential
+# helper on attach. insteadOf is prefix matching, so every SSH form needs its
+# own mapping.
+[url "https://github.com/"]
+	insteadOf = git@github.com:
+	insteadOf = ssh://git@github.com/
+	insteadOf = ssh://git@ssh.github.com:443/
+	insteadOf = ssh://git@ssh.github.com/

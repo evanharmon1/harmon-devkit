@@ -64,11 +64,13 @@ tasks:
       - task: test:tasks
       - task: test:ci-results
       - task: test:status
+      - task: test:meta-install
       - task: test:codex-review
       - task: test:shepherd-codex
       - task: test:release-title
       - task: test:notify-release
       - task: test:hooks
+      - task: test:statusline
       - task: test:devcontainer:permissions
       - task: test
 
@@ -258,6 +260,11 @@ tasks:
     cmds:
       - ./scripts/test-status.sh
 
+  test:meta-install:
+    desc: Unit-test the .meta sidecar installer's ~-expansion and refusals
+    cmds:
+      - ./scripts/test-meta-install.sh
+
   test:codex-review:
     desc: Unit-test codex-review.sh target selection (offline, stubbed codex)
     cmds:
@@ -297,6 +304,11 @@ tasks:
     desc: Unit-assert devcontainer permission invariants (no container needed)
     cmds:
       - ./scripts/devcontainer-assert.sh unit
+
+  test:statusline:
+    desc: Unit-test the devcontainer status line renderer (no container needed)
+    cmds:
+      - ./scripts/test-statusline.sh
 
   test:hooks:
     desc: Round-trip the Taskfile targets the Claude hooks delegate to
@@ -510,7 +522,7 @@ tasks:
     desc: Bump patch version and release
     vars:
       CURRENT_TAG:
-        sh: git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
+        sh: git describe --tags --abbrev=0 --exclude="*-probe*" 2>/dev/null || echo "v0.0.0"
       NEXT_TAG:
         sh: echo "{{.CURRENT_TAG}}" | awk -F. '{printf "%s.%s.%d", $1, $2, $3+1}'
     cmds:
@@ -523,7 +535,7 @@ tasks:
     desc: Bump minor version and release
     vars:
       CURRENT_TAG:
-        sh: git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
+        sh: git describe --tags --abbrev=0 --exclude="*-probe*" 2>/dev/null || echo "v0.0.0"
       NEXT_TAG:
         sh: echo "{{.CURRENT_TAG}}" | awk -F. '{printf "%s.%d.0", $1, $2+1}'
     cmds:
@@ -536,7 +548,7 @@ tasks:
     desc: Bump major version and release
     vars:
       CURRENT_TAG:
-        sh: git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
+        sh: git describe --tags --abbrev=0 --exclude="*-probe*" 2>/dev/null || echo "v0.0.0"
       NEXT_TAG:
         sh: echo "{{.CURRENT_TAG}}" | awk -F. '{printf "v%d.0.0", substr($1,2)+1}'
     cmds:
@@ -600,8 +612,7 @@ tasks:
   util:bunch-install:
     desc: Move the Bunch file to iCloud and replace it with a symlink (macOS)
     cmds:
-      - mv '.meta/Code Project - Harmon DevKit.bunch' '/Users/evan/Library/Mobile Documents/com~apple~CloudDocs/Bunches/'
-      - ln -s '/Users/evan/Library/Mobile Documents/com~apple~CloudDocs/Bunches/Code Project - Harmon DevKit.bunch' .meta
+      - ./scripts/meta-install.sh bunch 'Harmon DevKit' '~/Library/Mobile Documents/com~apple~CloudDocs/Bunches'
 
   util:obsidian-add:
     desc: Scaffold the Obsidian project note in .meta (mirrors what the template generates)
@@ -611,5 +622,4 @@ tasks:
   util:obsidian-install:
     desc: Move the Obsidian note to the vault and replace it with a symlink (macOS)
     cmds:
-      - mv '.meta/Harmon DevKit.md' '/Users/evan/Local/Memex/Personal/Digital'
-      - ln -s '/Users/evan/Local/Memex/Personal/Digital/Harmon DevKit.md' .meta
+      - ./scripts/meta-install.sh obsidian 'Harmon DevKit' '~/Local/Memex/Professional'

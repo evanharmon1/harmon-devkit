@@ -112,6 +112,10 @@ backs the devcontainer's `--env-file`, as `GH_TOKEN` — see
 [devcontainers.md](devcontainers.md). Never into git, never into
 `containerEnv`, never pasted into a shell that records history.
 
+Into the **bot** profile's env-file only. The human `dev/` profile carries no
+`GH_TOKEN` — it authenticates as the operator via `gh auth login`, and `gh`
+would prefer this PAT over that login unconditionally if both were present.
+
 ### 5. Verify end to end
 
 From inside the bot devcontainer:

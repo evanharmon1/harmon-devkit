@@ -32,7 +32,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -55,6 +55,7 @@ jobs:
       - run: task validate
       - run: task test:tasks
       - run: task test:codex-review
+      - run: task test:meta-install
       - run: task test:shepherd-codex
       - run: task test:ci-results
       - run: task test:status
@@ -68,6 +69,7 @@ jobs:
       - run: task test:archive-hook
       - run: task test:skill-index-lifecycle
       - run: task test:independence
+      - run: task test:statusline
       - run: task test:devcontainer:permissions
 
   security:
@@ -79,7 +81,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -123,7 +125,7 @@ jobs:
           fi
           echo "Untrusted fork trust boundary enforced: all repository-controlled jobs were deliberately skipped."
       - if: env.IS_FORK != 'true'
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Verify required jobs succeeded

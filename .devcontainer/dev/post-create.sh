@@ -3,6 +3,10 @@ set -euo pipefail
 
 export DEVCONTAINER_GIT_NAME="evanharmon1"
 export DEVCONTAINER_GIT_EMAIL="evan@evanharmon.com"
+# Which remedy post-create-common.sh prints when `gh` has no credential. This
+# profile carries no GH_TOKEN and commits as the operator, so the fix is an
+# operator `gh auth login`. This is the ONLY profile that may declare "login".
+export DEVCONTAINER_GH_AUTH="login"
 
 bash .devcontainer/scripts/post-create-common.sh
 
