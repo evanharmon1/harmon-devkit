@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# release-claim.sh — release the claim markers a /preflight claim left on an
-# issue, from an event instead of a session.
+# release-claim.sh — release the claim markers /claim left on an issue, from
+# an event instead of a session.
 #
 # Why: a claim is written by a session, but its release is owed after the
 # merge — an event no session is guaranteed to witness (/shepherd stops before
@@ -187,7 +187,7 @@ trusted_json="$(jq --arg owner "$owner" \
 # --paginate --slurp: an array of pages; `add` flattens. The latest trusted
 # `Claiming —` comment is the claim of record; a later trusted
 # `Claim released —` has already superseded it (the same predicate
-# orient/retro/implement read). With a cutoff, a claim newer than the
+# kickoff/retro/implement read). With a cutoff, a claim newer than the
 # triggering event refuses (too_new) rather than releasing work the event
 # does not cover.
 # shellcheck disable=SC2016 # single quotes hold a jq program, not shell

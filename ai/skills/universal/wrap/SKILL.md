@@ -1,15 +1,17 @@
 ---
-name: close
+name: wrap
 description: >-
-  Close-of-session ritual — check for uncommitted or unpushed work, release
+  End-of-session ritual — check for uncommitted or unpushed work, release
   any issue claim left standing, list anything dangling, and emit the
   copy-pasteable /rename done-<session-name> command for the user. Invoke as
-  /close.
+  /wrap.
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(gh issue view:*), Bash(gh pr list:*)
 ---
 
-# Close Session
+# Wrap Session
+
+Formerly `/close`.
 
 **Arguments:** $ARGUMENTS
 
@@ -18,7 +20,7 @@ to distinguish in the session picker and the Claude mobile app.
 
 ## 1. Recover the session name
 
-Look for `/orient`'s "Session name: `<name>`" line in the conversation. If it
+Look for `/kickoff`'s "Session name: `<name>`" line in the conversation. If it
 is not in context, **ask the user** for the current session name (they can
 read it in the UI) — never guess.
 
@@ -27,7 +29,7 @@ read it in the UI) — never guess.
 - `git status -sb` for uncommitted work; `git log @{u}..HEAD --oneline` for
   unpushed commits (guard for branches with no upstream).
 - If `/retro` has not run this session, offer to run it first.
-- **Release any claim this session made.** If `/preflight` claimed an issue
+- **Release any claim this session made.** If `/claim` claimed an issue
   (assignee, `agent:*` label, card at `In Progress`), check what actually
   became of it — a claim left standing over abandoned or finished work is a lie
   the board tells the next reader, and it outlives the session that told it:
@@ -67,7 +69,7 @@ read it in the UI) — never guess.
   ```
 
   The claim comment is never deleted, so without this supersede line the
-  issue keeps reading as a live claim to every future `/orient` and `/retro`
+  issue keeps reading as a live claim to every future `/kickoff` and `/retro`
   — clearing the markers without it recreates exactly the state this step
   exists to prevent. Post it **last, and only when every applicable marker
   write succeeded**: a supersede comment over a marker that survived — a
@@ -86,7 +88,7 @@ read it in the UI) — never guess.
   `n/a`); a displaced label you already restored counts too, and never
   re-add your own `agent:*` label beside it, which would leave the issue
   claiming two owners. The point is that the half-released claim stays
-  findable by `/orient`'s sweep instead of surviving only as a card and an
+  findable by `/kickoff`'s sweep instead of surviving only as a card and an
   unsuperseded comment. If that restore also fails, nothing was writable —
   say exactly that; the user is present on this path.
 
@@ -133,7 +135,7 @@ read it in the UI) — never guess.
     a second session on the same GitHub identity is visible only in a new
     claim comment or a new PR, never in the converging markers. Any change
     from what the conditions were judged on returns this to stop-and-ask,
-    the same pre-write re-read `/preflight` performs before claiming.
+    the same pre-write re-read `/claim` performs before claiming.
 
     Otherwise **stop and ask** — in particular when no claim record survives,
     the record says `prior board status: unknown`, another agent's `agent:*`
@@ -165,14 +167,14 @@ read it in the UI) — never guess.
     that has stopped. (`/shepherd` never sets `Done` at all: it stops before
     the merge, so for it `Done` is a prediction rather than a record.)
   - **Neither** — the session stopped mid-flight. Offer the commands to hand
-    the work back. `/preflight` set **four** markers, and clearing only some
+    the work back. `/claim` set **four** markers, and clearing only some
     leaves the issue still advertising itself as held — the exact failure this
     step exists to prevent:
 
     **Undo only what the claim added.** The claim comment carries a "Claim
-    record" listing which markers `/preflight` actually created. An issue can
+    record" listing which markers `/claim` actually created. An issue can
     be assigned to you, or carry the label, *before* the claim — ordinary
-    backlog ownership, which `/preflight` explicitly allows — and the writes
+    backlog ownership, which `/claim` explicitly allows — and the writes
     are all add-if-missing, so on that path they changed nothing. Removing
     them anyway destroys state the session never created, and no amount of
     user approval recovers it, because by then nobody can tell which it was.
@@ -180,7 +182,7 @@ read it in the UI) — never guess.
     than assume the claim created everything.
 
     ```sh
-    # Separate commands on purpose: the label is optional (/preflight skips it
+    # Separate commands on purpose: the label is optional (/claim skips it
     # where the family does not exist), and `--remove-label` on a label the
     # repo lacks fails the whole `gh issue edit` — taking the assignee removal
     # down with it and leaving the claim standing. A marker already released
@@ -189,7 +191,7 @@ read it in the UI) — never guess.
     #
     # Board FIRST, searchable markers LAST. The board write is the one that
     # fails for environmental reasons (missing `project` scope), and the
-    # assignee and `agent:*` label are what /orient's stale-claim sweep
+    # assignee and `agent:*` label are what /kickoff's stale-claim sweep
     # queries — clear them before a failed board write and the leftover card
     # becomes undiscoverable (the board-only gap, harmon-devkit#183).
     # The recorded board title and status are external data — a project title

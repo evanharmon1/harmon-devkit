@@ -1,7 +1,7 @@
 name: Claim Release
 run-name: releasing claim markers after a close event
 
-# A /preflight claim is written by a session, but its release is owed after
+# A claim is written by a session (/claim), but its release is owed after
 # the merge — an event no session is guaranteed to witness (/shepherd stops
 # before the merge on policy). This workflow is the release: it undoes the
 # markers the claim record says the claim added and posts the `Claim

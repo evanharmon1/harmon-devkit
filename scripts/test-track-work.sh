@@ -2142,7 +2142,7 @@ rc_comment() {
 
 body_v1='Claiming — starting implementation on branch b (session s).
 
-Claim record (for `/close` — undo only what this claim added):
+Claim record (for `/wrap` — undo only what this claim added):
 - board: none
 - prior board status: none
 - assignee added by this claim: yes

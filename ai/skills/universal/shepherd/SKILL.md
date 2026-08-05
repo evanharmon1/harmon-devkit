@@ -892,7 +892,7 @@ loops indefinitely:
    If the record is missing or unreadable, leave the label and say so in the
    report instead of guessing. Do **not** post a release comment — the claim
    as a whole is still live (assignee, card) until the close event or
-   `/close` releases it; only the label's "right now" assertion has expired.
+   `/wrap` releases it; only the label's "right now" assertion has expired.
    And the release is not one-way: if review activity later pulls shepherd
    back into §5 fix rounds, **re-add the label first** (same guard — the
    record said the claim added it), because "implementing right now" has
@@ -925,7 +925,7 @@ not keep iterating past a stop condition.
 `track-work/references/claim-lifecycle.md` — this section is the
 session-written half.)
 
-`/preflight` claimed the issue by moving its card to `In Progress`. A claim
+`/claim` claimed the issue by moving its card to `In Progress`. A claim
 that is never released is worse than no claim at all: the board keeps showing
 an agent mid-flight on work that is finished or abandoned, and the next
 reader trusts it. So shepherd advances the same card as the PR moves.
@@ -933,7 +933,7 @@ reader trusts it. So shepherd advances the same card as the PR moves.
 **Which issue — this is the part that goes wrong.** Two separate questions,
 and collapsing them is the bug:
 
-1. **Is this issue mine to touch?** Only if `/preflight` claimed it this
+1. **Is this issue mine to touch?** Only if `/claim` claimed it this
    session, or a closing keyword links it
    (`gh pr view <n> --repo "$repo" --json closingIssuesReferences`). Anything
    else — a `Refs #N` you did not claim, an issue mentioned in a comment — is
@@ -979,7 +979,7 @@ description on the board. A draft that has not passed readiness stays
 
 Do **not** move the card to `Done` — shepherd stops *before* the merge, so
 from here `Done` is a prediction rather than a record. Once a merge has
-actually been observed, `/close` offers it.
+actually been observed, `/wrap` offers it.
 
 Exit **3** means the issue is on no board or the board lacks that option —
 benign, note it once and never retry. **4** is partial (some fields applied,

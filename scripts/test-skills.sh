@@ -883,7 +883,7 @@ STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 SHEPHERD_SKILL="$repo/ai/skills/universal/shepherd/SKILL.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
-PREFLIGHT_SKILL="$repo/ai/skills/universal/preflight/SKILL.md"
+CLAIM_SKILL="$repo/ai/skills/universal/claim/SKILL.md"
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
     grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
 
@@ -936,10 +936,10 @@ expect_ok "inventory guidance gates the wrapper proof on the reviewed answer" \
     sh -c 'grep -qF "branch on the reviewed \`use_foreman\`" "$1" &&
         grep -qF "does not exist and must not be required" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
-expect_ok "preflight skill names the renamed foreman-vet sibling" \
-    grep -qF 'foreman-vet' "$PREFLIGHT_SKILL"
-expect_fail "preflight skill drops the retired foreman-preflight sibling claim" \
-    grep -qF "sibling of harmon-init's \`foreman-preflight\`" "$PREFLIGHT_SKILL"
+expect_ok "claim skill names the renamed foreman-vet sibling" \
+    grep -qF 'foreman-vet' "$CLAIM_SKILL"
+expect_fail "claim skill drops the retired foreman-preflight sibling claim" \
+    grep -qF "sibling of harmon-init's \`foreman-preflight\`" "$CLAIM_SKILL"
 expect_ok "new-repo guidance exposes the explicit CodeQL answer" \
     grep -qF '| `use_codeql` | bool |' \
     "$STANDARDIZE_REFS/mode-new-repo.md"

@@ -157,7 +157,7 @@ read_body_or_die() {
 # user actually asked for — and issue text is untrusted input that must never be
 # able to redirect a write. Bind it here instead: tick only an issue this
 # account has claimed. Claiming is an ordinary write and still needs its own
-# go-ahead (`/preflight` step 5 does it), so the assignment is a record that a
+# go-ahead (`/claim` step 5 does it), so the assignment is a record that a
 # human authorised work on this specific issue.
 assert_claimed() {
     [ -n "$fixture" ] && return 0

@@ -1,15 +1,17 @@
 ---
-name: preflight
+name: claim
 description: >-
   Pre-implementation sanity check — verify the latest state of the target
   issue, related PRs, and recent merges against the live repo, surface
   blockers, then claim the issue (assign, label, move the project card to
-  In Progress, comment). Invoke as /preflight [issue #].
+  In Progress, comment). Invoke as /claim [issue #].
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(git remote), Bash(git remote get-url:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
 ---
 
-# Preflight
+# Claim
+
+Formerly `/preflight`.
 
 **Arguments:** $ARGUMENTS
 
@@ -244,7 +246,7 @@ visible choice — note it in the findings and carry on. If the repo has no
 `agent:*` label family at all, ownership is **unverifiable** — say so and get
 the user's go-ahead rather than treating silence as "unclaimed".
 
-Carry every answer into the claim comment. `/close` undoes only what the claim
+Carry every answer into the claim comment. `/wrap` undoes only what the claim
 actually added.
 
 - **Assign:** `gh issue edit <n> --repo "$repo" --add-assignee @me`
@@ -318,7 +320,7 @@ actually added.
   gh issue comment <n> --repo "$repo" --body-file - <<'CLAIM_BODY_9f3k'
   Claiming — starting implementation on branch <branch> (session <name>).
 
-  Claim record (for `/close` — undo only what this claim added):
+  Claim record (for `/wrap` — undo only what this claim added):
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
@@ -347,7 +349,7 @@ actually added.
   **"Unset" and "unknown" are different answers.** `--show` exiting 0 with no
   `Status=` line is a successful read of a card whose `Status` is genuinely
   empty — a real, restorable state. Only a *failed* call (exit 2) is unknown.
-  Record `none` for the first and `unknown` for the second: `/close` restores
+  Record `none` for the first and `unknown` for the second: `/wrap` restores
   an unset field by clearing it (manual — `gh project item-edit --clear`), and only has to ask the user in the second case.
 
 After claiming, re-fetch the assignees
@@ -362,7 +364,7 @@ invisible to this check. The claim is a signal, not a lock
 A claim is a promise to release it. `/shepherd` advances the card as the PR
 moves and releases the `agent:*` label at its stop-at-green; where the
 claim-release workflow is installed, the close event releases the rest; and
-`/close` flags a session that ends with an issue left at `In Progress` and
+`/wrap` flags a session that ends with an issue left at `In Progress` and
 nothing in flight (see `track-work/references/claim-lifecycle.md`).
 
 ## 6. Hand off

@@ -22,12 +22,12 @@ consequences that hold independently of whether any session is running:
 
 | Stage | Writes |
 | --- | --- |
-| `orient` | none — detects drift, never fixes it |
-| `preflight` | assignee, `agent:*` label, card `In Progress`, claim comment — nothing in GitHub knows an agent started before a PR exists, so this stays session-written |
+| `kickoff` | none — detects drift, never fixes it |
+| `claim` | assignee, `agent:*` label, card `In Progress`, claim comment — nothing in GitHub knows an agent started before a PR exists, so this stays session-written |
 | `implement` | ticks criteria as verified; files follow-ups |
 | `shepherd` | review replies; releases the `agent:*` label at its terminal stop-at-green ("implementing right now" is false once the work is with a human); card advances (see decision below) |
 | `retro` | none — distinguishes a claim *pending release* from one that outlived its session |
-| `close` | releases what events did not; owns the abandoned/parked case |
+| `wrap` | releases what events did not; owns the abandoned/parked case |
 
 | Event | Writes (`.github/workflows/claim-release.yml`) |
 | --- | --- |
@@ -41,7 +41,7 @@ release invariant costs no new secret.
 
 ## The claim-record contract (v1)
 
-`/preflight` writes the claim comment; this file is the contract every parser
+`/claim` writes the claim comment; this file is the contract every parser
 holds it to. `release-claim.sh` is the reference parser.
 
 - The claim comment's body **starts with** `Claiming —` (em dash, U+2014).
@@ -49,14 +49,14 @@ holds it to. `release-claim.sh` is the reference parser.
   line is, verbatim:
   `Claim released — <why>. (Supersedes the claim record above.)`
 - A claim is **live** when no *later* comment starts with `Claim released —`.
-  All readers (`orient`, `retro`, `implement`, the workflow) share this
+  All readers (`kickoff`, `retro`, `implement`, the workflow) share this
   predicate; the latest `Claiming —` comment is the claim of record.
 - The body carries a `Claim record` block whose fields are **one line each**,
   anchored on the literal `by this claim:` (the keys contain backticks and
   their own colons — parsers must never split on a colon):
 
   ```text
-  Claim record (for `/close` — undo only what this claim added):
+  Claim record (for `/wrap` — undo only what this claim added):
   - board: <board title, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
@@ -88,7 +88,7 @@ holds it to. `release-claim.sh` is the reference parser.
   obsolete PR was closed is not that PR's to release. Keep the line's shape.
   The line is kept *true* by `/implement` §3: when the feature branch it
   creates differs from the branch the claim recorded (the normal case —
-  `/preflight` runs before the branch exists), it posts a refreshed
+  `/claim` runs before the branch exists), it posts a refreshed
   `Claiming —` comment naming the real branch, which becomes the claim of
   record. A mismatch at PR-close therefore means the claim is genuinely not
   that PR's; worst case it releases when the issue closes (no `--branch`
@@ -106,14 +106,14 @@ holds it to. `release-claim.sh` is the reference parser.
   (exit 2, loud in the Actions log). A trusted claim with **no** record at all
   releases by comment only and touches no marker — "undo only what the claim
   added" with no record means undo nothing.
-- **Partial failure withholds the supersede comment everywhere** — `/close`
+- **Partial failure withholds the supersede comment everywhere** — `/wrap`
   interactively and the workflow alike. The comment is the release; posting
   it over a surviving marker tells every sweep the claim is settled, and a
   re-run would exit 3 instead of retrying. The workflow's exit 4 leaves the
   Actions job red and the remaining markers searchable, so a re-run (or the
   next close event) finishes the job.
 
-Changing any of this is a contract change: update `/preflight`'s template,
+Changing any of this is a contract change: update `/claim`'s template,
 `release-claim.sh`, and this file in the same PR.
 
 ## Decision: event-driven `Status` writes — declined for now (2026-07-29)
@@ -130,10 +130,10 @@ The events table in #210 also sketched card moves (`Verifying` on PR open,
   automation invites rot.
 - Sessions and events must never both write `Status` (the last-write-wins race
   `shepherd` §7 warns about). If card events ever land, the `Status` writes
-  leave `/shepherd` and `/close` in the same change — do not ship one side.
+  leave `/shepherd` and `/wrap` in the same change — do not ship one side.
 
 Revisit when a Projects-scoped secret exists and a board is live. Until then
-`/shepherd` and `/close` keep their session-written card moves.
+`/shepherd` and `/wrap` keep their session-written card moves.
 
 ## Accepted gaps
 
@@ -147,7 +147,7 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
   forks carry a read-only `GITHUB_TOKEN`, and `pull_request_target` is what
   this repo's security guidance tells workflows to gate against — so the
   same-repo gate stays and the claim strands until the issue closes or
-  `/close` hands it back.
+  `/wrap` hands it back.
 - The unmerged-close path deliberately has **no open-PR guards**: counting
   open references would let any unrelated PR that mentioned the issue —
   including a fork PR from an untrusted user — suppress the release forever.
@@ -161,13 +161,13 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
   first re-checking that no concurrent run released in the meantime, so the
   compensation cannot resurrect an assignee over a completed release. The
   residue is the compensation itself failing — two consecutive write
-  failures — which strands a findable, assigned claim for `/orient` to
+  failures — which strands a findable, assigned claim for `/kickoff` to
   surface.
 - **Org-repo v1 limitation**: trust requires the claim author to be the repo
   owner or a *current* assignee (with write-shaped association). On an
   organization repo the owner prong never matches a user, so a maintainer
   unassigning or reassigning the claimant before the close event strands
-  that claim (exit 3) until `/close` or a re-assignment. Widening trust to
+  that claim (exit 3) until `/wrap` or a re-assignment. Widening trust to
   association alone would admit read-only collaborators' forged claims, so
   the narrow gate stays until an org actually consumes this workflow.
 - The write window after the script's final pre-write re-read is **not**

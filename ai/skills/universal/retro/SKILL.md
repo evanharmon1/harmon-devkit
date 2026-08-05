@@ -35,15 +35,15 @@ release, so on its own it proves nothing about now).
 
 Neither `state` nor `assignees` may gate that check. Both exclude real stale
 claims: a closing PR auto-closes the issue while the label and card stay set,
-and a `/close` that removed the assignee before failing on the label or status
+and a `/wrap` that removed the assignee before failing on the label or status
 leaves a claim with nobody assigned. Gating on either is how the claim this
 step exists to surface becomes invisible. Do not require the label
-specifically, either — `/preflight` treats a missing `agent:*` family as benign
+specifically, either — `/claim` treats a missing `agent:*` family as benign
 and claims anyway, so demanding it would miss every claim in an older repo or
 one with `project_management: none`, which are exactly the repos where the
 label cannot exist. Report it as "open — claimed,
 in progress", then check it is still true: a claim with no open PR and no work
-in flight is a loose end for §2, not a status. `/close` offers the commands to
+in flight is a loose end for §2, not a status. `/wrap` offers the commands to
 hand it back.
 
 **A claim awaiting release is not a stale claim.** Two live claims read
@@ -52,7 +52,7 @@ rather than reporting both as loose ends:
 
 - **Pending release** — *this session* claimed it, and its PR is open, in
   review, or awaiting merge. The release is owed to the close event
-  (`claim-release.yml` where installed) or to `/close`, not overdue. Report
+  (`claim-release.yml` where installed) or to `/wrap`, not overdue. Report
   it as part of the work's normal state, not as a loose end.
 - **Stale** — the claim outlived its work: **nothing is in flight** (no open
   PR, no fresh activity), whichever session made it, or the issue is already
@@ -66,7 +66,7 @@ rather than reporting both as loose ends:
   closed issue whose card still sits at `In Progress` **under a trusted
   `Claim released —` comment** is a successful release awaiting board
   cleanup — the workflow has no Projects permission by design — so report
-  it as a pending `/close` chore, not a workflow failure. These are §2
+  it as a pending `/wrap` chore, not a workflow failure. These are §2
   loose ends.
 
 Keep each reference's repository identity: a bare `#123` from another repo
@@ -134,4 +134,4 @@ Emoji legend (use these consistently):
 
 ## 5. Wrap
 
-Suggest `/close` as the final step of the session.
+Suggest `/wrap` as the final step of the session.
