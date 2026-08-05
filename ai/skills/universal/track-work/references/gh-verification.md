@@ -102,11 +102,18 @@ checked-list form above is both simpler and harder to fool. `gh issue view
 <n>` and `gh pr view <n>` are safe in the same narrow sense: a number is not
 path-sensitive, and a failure still has to be read as unknown.
 
-## Where this already applies
+## Where this applies
+
+Both halves of the rule are separate, and a caller can satisfy one without the
+other — so read these as two columns, not one badge.
 
 - SKILL.md §3 — the dedup search and the open-PR listing, both `--limit 200`.
 - [`cross-repo-work.md`](cross-repo-work.md) — the same search, bound to the
   repo being filed into.
-- `/preflight` reads the whole `agent:*` label family with `--limit 1000`
-  before concluding a repo has no such family: the exact shape above, where
-  the wrong answer silently reclassifies a claimed issue as unclaimed.
+- `/preflight` decides whether a repo has the `agent:*` label family at all.
+  It sets `--limit 1000`, so truncation cannot fool it — and it then pipes the
+  listing into `grep`, so a failed read still reads as "no such family". It is
+  the **motivating case for the second half, not an example of it**:
+  evanharmon1/harmon-devkit#294 tracks the fix. The consequence is the one
+  worth remembering — a transient read failure silently downgrades a real
+  claim to an unlabelled one, and the next agent sees no owner.
