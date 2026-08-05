@@ -80,11 +80,15 @@ false
 false
 ```
 
-The label exists — page 3 says so. But a caller reading the exit status, or the
-last line, or `[ -z "$out" ]`, sees `false` and reports it absent. That is this
-document's own failure mode arriving through the flag meant to prevent it, and
-it gets worse as the collection grows: more pages means more chances the last
-one disagrees with the answer.
+The label exists — page 3 says so. The defect is that there is no single answer
+to read: `--jq` prints one boolean per page, and the command exits **0**
+regardless, because `gh`'s status reports whether the *request* succeeded, not
+what the filter found. So the exit status carries no information about the
+answer, and the obvious way to collapse the output — take the last line —
+yields `false` for a label that exists. A genuinely absent label produces the
+same last line and the same exit 0, so the two cases are indistinguishable by
+either signal. It gets worse as the collection grows: more pages means more
+chances the last one disagrees with the answer.
 
 `--slurp` is what wraps the pages into a single array, and `gh api` **refuses
 it alongside `--jq`** (`the --slurp option is not supported with --jq or
