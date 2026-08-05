@@ -69,11 +69,15 @@ sufficient: check that the read **succeeded** before you believe its emptiness.
 ```sh
 labels="$(gh label list --repo <owner/repo> --limit 1000 --json name -q '.[].name')" \
   || { echo 'label read failed — unknown, not absent' >&2; exit 2; }
-grep -qx '<label>' <<<"$labels"
+grep -qFx '<label>' <<<"$labels"
 ```
 
 Assigning first and testing after is the whole point: piping `gh` straight
 into `grep` discards its exit status, so a failed fetch reads as a clean miss.
+`-F` matches the label literally and `-x` whole-line: without both, a name
+carrying a regex metacharacter matches something it should not (`foo.bar`
+accepts `fooXbar`) or errors outright, which is the same false answer arriving
+by a different route.
 Exit 2 rather than 1 keeps "could not verify" distinct from "verified absent"
 — the same three-way reading the `set-issue-status.sh` exit codes use in
 SKILL.md §6, and the same reason `/implement` treats a failed identity lookup
