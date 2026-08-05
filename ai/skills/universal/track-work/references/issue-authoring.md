@@ -157,7 +157,9 @@ body` still shows `- [ ]`.
   ```
 
   A duplicate is rarely linked from anywhere, so nothing surfaces it but this
-  command. `--state all` and `--limit 200` are both load-bearing. On a hit, read
+  command. `--state all` and `--limit 200` are both load-bearing — why an
+  explicit limit is, and why it matters more still when the read is a
+  *verification*, is in [`gh-verification.md`](gh-verification.md). On a hit, read
   that issue and then act on **what state it is in** — commenting is right for an
   open one, while a closed `completed` issue whose defect recurred needs a live
   issue instead. The skill's §3 tabulates all three cases; follow it there, and
