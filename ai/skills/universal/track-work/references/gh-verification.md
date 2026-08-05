@@ -22,9 +22,42 @@ does not exist. Nothing downstream can tell that zero from a true one.
 | `gh label list` | 30 |
 | `gh api <endpoint>` | one page |
 
-## `--paginate` alone is not enough for `gh api`
+## A filter narrows what was fetched; it never widens it
 
-Fetching every page and *reading* every page are two different things.
+Observed 2026-08-04 in harmon-init. Immediately after eleven `foreman:*`
+labels were created, this returned **0**:
+
+```sh
+gh label list --repo <owner/repo> --json name \
+  --jq '[.[].name | select(startswith("foreman:"))] | length'
+```
+
+The labels existed. The default 30-label page, ordered alphabetically, did not
+reach `foreman:*`. `--limit 100` returned all eleven. A post-merge verification
+came one step from reporting provisioning as failed.
+
+That is the whole mechanism, and it is why the command reads as safe: the
+projection *looks* like a query for `foreman:*` labels, so `0` reads as "no
+such labels". The selection ran locally, over a page already cut to 30. Every
+`--jq`, `grep`, or `select` over list output has this shape — it can only
+narrow what the fetch returned.
+
+## Size the limit to the namespace, not to the answer
+
+A verification's limit cannot be sized to what you expect to find, because what
+you expect to find is the thing being measured. Size it to the ceiling of the
+namespace being read:
+
+```sh
+gh label list --repo <owner/repo> --limit 1000 --json name
+```
+
+Verification reads are cheap and run once, so a generous limit costs nothing
+worth saving; `gh` pages internally to satisfy a `--limit` above 100 rather
+than failing.
+
+## Fetching every page is not reading every page
+
 `--paginate` emits each page as its own JSON document, so a filter applied with
 `--jq` runs once **per page** and answers about that page alone:
 
@@ -46,71 +79,17 @@ one disagrees with the answer.
 
 `--slurp` is what wraps the pages into a single array, and `gh api` **refuses
 it alongside `--jq`** (`the --slurp option is not supported with --jq or
---template`), so an aggregate check pipes to a standalone `jq` and folds the
-pages with `add`:
+--template`), so an aggregate read pipes to a standalone `jq`. Fold the pages
+to match their shape rather than reaching for a habit: a REST collection
+endpoint pages as arrays, while a paginated GraphQL query — and REST endpoints
+with a count envelope, like `search/issues` and `actions/runs` — page as
+objects, where merging lets a later page overwrite an earlier one.
 
-```sh
-pages="$(gh api --paginate --slurp "repos/<owner>/<repo>/labels")" \
-  || { echo 'read failed — unknown, not absent' >&2; exit 2; }
-jq -e --arg want '<label>' 'add | any(.name == $want)' <<<"$pages" >/dev/null
-```
-
-**`add` folds *array* pages, which is the REST collection shape** — the pages
-are arrays, so `add` concatenates them. It is not a general "combine the
-pages" verb: a paginated **GraphQL** query returns one *object* per page, and
-`add` merges objects, so later pages overwrite earlier ones and the result is
-a single page wearing the shape of all of them. Reach past the envelope to the
-list instead, as `/shepherd`'s promotion fingerprint already does:
-
-```sh
-jq -c '[.[].data.repository.pullRequest.reviewThreads.nodes[]]' <<<"$pages"
-```
-
-Measured on this PR's own review threads: four pages, `add` yields one object,
-the extraction yields all four nodes.
-
-The rule of thumb: `--jq` with `--paginate` is safe only for a filter you want
-applied per page and printed per page. Anything that computes **one** answer
-over the whole collection — a membership test, a count, a max — needs the
-slurped form, plus a fold that matches the page shape. `/shepherd` hit exactly
-this in its unanswered-thread check, where a reply on page 2 stopped
+So: `--jq` with `--paginate` is safe only for a filter you want applied and
+printed per page. Anything computing **one** answer over the whole collection —
+a membership test, a count, a max — needs the slurped form. `/shepherd` hit
+exactly this in its unanswered-thread check, where a reply on page 2 stopped
 cancelling its root on page 1.
-
-## Observed violation (2026-08-04, harmon-init)
-
-Immediately after eleven `foreman:*` labels were created, this returned **0**:
-
-```sh
-gh label list --repo <owner/repo> --json name \
-  --jq '[.[].name | select(startswith("foreman:"))] | length'
-```
-
-The labels existed. The default 30-label page, ordered alphabetically, did not
-reach `foreman:*`. `--limit 100` returned all eleven. A post-merge verification
-came one step from reporting provisioning as failed.
-
-**`--jq` filters what was fetched, not what exists.** That is the whole
-mechanism, and it is why the command reads as safe: the projection *looks* like
-a query for `foreman:*` labels, so `0` reads as "no such labels". The selection
-ran locally, over a page already cut to 30. Every `--jq`, `grep`, or `select`
-over list output has this shape — a filter narrows what the fetch returned and
-can never widen it.
-
-## Size the limit to the namespace, not to the answer
-
-A verification's limit cannot be sized to what you expect to find, because what
-you expect to find is the thing being measured. Size it to the ceiling of the
-namespace being read:
-
-```sh
-gh label list --repo <owner/repo> --limit 1000 --json name -q '.[].name'
-```
-
-Verification reads are cheap and run once, so a generous limit costs nothing
-worth saving; `gh` pages internally to satisfy a `--limit` above 100 rather
-than failing. Capture that output and check the exit status before reading
-anything into it — see the next section for why the obvious one-liner throws
-the status away.
 
 ## A failed read is *unknown*, never *absent*
 
@@ -118,38 +97,19 @@ Truncation is one way a read reports nothing; the others are a network blip,
 an expired token, a rate limit, a typo'd repo. They are the same defect —
 something the reader did not see, reported as something that does not exist —
 and only the first is fixed by `--limit`. So the limit is necessary and not
-sufficient: check that the read **succeeded** before you believe its emptiness.
+sufficient.
 
-```sh
-labels="$(gh label list --repo <owner/repo> --limit 1000 --json name)" \
-  || { echo 'label read failed — unknown, not absent' >&2; exit 2; }
-jq -e --arg want '<label>' 'any(.name == $want)' <<<"$labels" >/dev/null
-```
-
-Assigning first and testing after is the whole point: piping `gh` straight
-into a matcher discards its exit status, so a failed fetch reads as a clean
-miss. Exit 2 rather than 1 keeps "could not verify" distinct from "verified
-absent" — the same three-way reading the `set-issue-status.sh` exit codes use
-in SKILL.md §6, and the same reason `/implement` treats a failed identity
-lookup as unknown rather than unclaimed.
-
-**Compare the name as data, not as a pattern.** The membership test is `jq`
-rather than `grep` on purpose: the name is a value that must be matched
-exactly, and every text matcher reinterprets some values as syntax. `grep`
-alone treats `foo.bar` as a regex that accepts `fooXbar`; `grep -F` fixes
-that and still parses a leading `-` as an option, so a `-bug` label errors and
-a `--help` one prints usage — one implementation exiting 0, another 2, neither
-meaning absent. Each is fixable (`-F`, `-x`, `--`, in that order, after being
-bitten three times), and the fixes are a checklist you have to remember rather
-than a property of the tool. `--arg` passes the name as a JSON string and
-`==` compares it, so none of those classes exist: option-shaped, regex-shaped,
-and whitespace-carrying names all answer correctly with no escaping. `jq -e`
-exits 1 on a `false` result, which is the absent case.
+**Capture the output and check the exit status before believing it is empty.**
+Piping `gh` straight into a matcher throws that status away, so a failed fetch
+is indistinguishable from a clean miss. And keep the three states apart:
+"could not verify" is not "verified absent" — the same reading the
+`set-issue-status.sh` exit codes get in SKILL.md §6, and the same reason
+`/implement` treats a failed identity lookup as unknown rather than unclaimed.
 
 **Addressing one object directly does not escape this.** `gh api
-"repos/<owner>/<repo>/labels/<name>"` looks stronger than listing — one
-object, nothing to truncate — but it collapses more states into the same
-signal, not fewer:
+"repos/<owner>/<repo>/labels/<name>"` looks stronger than listing — one object,
+nothing to truncate — but it collapses more states into the same signal, not
+fewer:
 
 - Bad credentials exit non-zero exactly as a miss does (`HTTP 401`), so exit
   status alone cannot mean "absent".
@@ -160,9 +120,8 @@ signal, not fewer:
   `good first issue` is fine — which is what makes the `/` case easy to miss.)
 
 Use it when you control the name and want the object's *contents*; do not use
-it as an existence test for a name you did not validate. For that, the
-checked-list form above is both simpler and harder to fool. `gh issue view
-<n>` and `gh pr view <n>` are safe in the same narrow sense: a number is not
+it as an existence test for a name you did not validate. `gh issue view <n>`
+and `gh pr view <n>` are safe in the same narrow sense: a number is not
 path-sensitive, and a failure still has to be read as unknown.
 
 ## Where this applies
