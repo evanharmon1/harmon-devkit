@@ -245,16 +245,15 @@ relationship in follow-up mutations after the issue exists, so `issues.opened`
 automation can observe the bare issue regardless. What actually closes the
 race is sequencing what the automation *consumes*: identify the gating input
 the target's dispatcher actually reads — from its configuration in the target
-repo, never by assumption — and apply that signal last, after every
-relationship is attached and verified. Foreman is the worked example of why
-this must be read rather than guessed: depending on the target's configured
-input mode, dispatch eligibility may come from milestone membership, an issue
-field, or a label applied by a trusted actor, and guessing wrong either arms
-blocked work early or leaves every approved unit undispatchable. Whatever the
-signal is, everything else about the issue — body, labels, relationships — is
-written before it. Where nothing automates dispatch, the window is only
-cosmetic — immediate attachment is still the rule, arming order just stops
-mattering.
+repo, never by assumption (foreman's, for one, varies by configured input
+mode, and guessing wrong either arms blocked work early or leaves every
+approved unit undispatchable) — and apply that signal last, after every
+relationship is attached. A target that dispatches unconditionally on
+`issues.opened`, with nothing that can be withheld, cannot be sequenced
+safely at all: that is a §6 finding for the human to decide on (pause the
+automation, or accept the race), not something ordering can paper over.
+Where nothing automates dispatch, the window is only cosmetic — immediate
+attachment is still the rule, arming order just stops mattering.
 
 **Preflight every target repo before the first write.** A cross-repo plan
 executed with credentials that can write only some of its targets mutates the
@@ -268,53 +267,31 @@ relationship surfaces now too: the §4 dependency probe, and, where the plan
 contains any parent, the sub-issue endpoint (read one issue's `…/sub_issues`
 — a `404` means the host does not support them, so that parent's tree is
 recorded as body references per §3 and the proposal says so *before*
-approval, not after the children exist as standalone claimable issues). Any
+approval, not after the children exist as standalone claimable issues; the
+reference form is executable because parents are created first — each child's
+body carries `Part of #<parent>` at creation, and one parent edit at the end
+lists the children). Any
 target failing the preflight blocks the whole execution: report it and
 return to §6 rather than filing a partial decomposition.
 
-Record every created identifier as its write returns — the proposal's chunk
-list becomes the ledger mapping chunk → issue number (and repo → milestone
-number), and it is what makes a partial run resumable: re-running after an
-interruption starts from the ledger, never by re-filing. **The ledger is a
-file, not conversation state.** The interruptions it exists for — a dead
-session, a lost context — take conversation memory with them, so a ledger
-that lives only in the transcript resumes nothing. Before the first write,
-persist the approved chunk list to the path
-`git rev-parse --git-path "breakdown/$(git branch --show-current)"` names
-(`mkdir -p` its directory first — the git directory keeps it deterministic
-for a later session and invisible to `git status`, the same reasoning as the
-deferred-findings file), and append each created identifier to it as the
-write returns, before moving to the next write. Delete it only when the run
-is verified complete. Milestones resume by
-identity too: before any milestone POST, list the repo's existing milestones —
-paginated, or a page-one match window silently misses one —
-(`gh api --paginate 'repos/<owner>/<repo>/milestones?state=all' --jq
-'.[] | [.number,.title]'`) and reuse one whose title matches the approved
-plan; a blind re-POST after an interrupted run duplicates it or errors the
-resume.
-
-When a create ends **ambiguously** — `gh` times out or the session dies after
-the request may have committed — the ledger has no entry while the issue may
-exist, and GitHub's search index is too stale to ask. Reconcile with a plain
-newest-first listing that fetches enough to match on, keyed by something
-**chunk-unique** — the chunk's exact title, which the proposal fixed:
-
-```sh
-gh issue list --repo <target> --state all --limit 20 \
-  --json number,title,body
-```
-
-The provenance line alone cannot disambiguate — every issue split from the
-same lump carries the same one — and a title alone cannot either: GitHub does
-not enforce unique titles, so a title hit is a *candidate*, adopted into the
-ledger only after reading its body (which is why the listing fetches `body`)
-and confirming the provenance line — adopting a same-titled stranger attaches
-labels and edges to an unrelated issue. Only retry a create once the listing
-shows no confirmed hit. Size the window to the interruption: 20 covers a same-session retry, but
-a resume hours later on a busy tracker must extend `--limit` (or paginate)
-back past the original request time — the possibly-committed issue is only
-*near* the top for as long as nothing else is being filed. Re-filing on an
-unreconciled ambiguity is how a breakdown ships duplicates.
+**A partial failure halts the run — it does not improvise recovery.** This
+skill executes interactively, under a §6 approval, with the human reachable;
+it is not an unattended transaction system and must not pretend to be one. On
+any failed *or ambiguous* write — a timeout that may have committed, a
+forbidden create, a died session — stop writing and report: what was
+approved, which chunks were confirmed created (numbers as their writes
+returned them), and where execution stopped. **Recovery is a fresh read of
+the tracker, never a replay.** The tracker itself is the only record that
+survives the interruptions that matter, so a resumed run re-lists the
+target's issues (`gh issue list --repo <target> --state all` with `--json
+number,title,body`, newest first, wide enough to cover the gap), matches
+already-filed chunks by title *and* body — GitHub enforces neither unique
+titles nor anything about provenance lines, so a hit counts only when both
+agree with the approved chunk — and continues from the first chunk with no
+confirmed hit. The same rule covers milestones: list existing ones
+(`gh api --paginate`) and reuse by title before ever creating. Nothing is
+ever re-filed on top of an ambiguity; a listing that cannot settle whether a
+chunk exists is a report back to the human, not a license to retry.
 
 **Labels and fields come from the repo's vocabulary — never mint any**
 (`track-work` §6: vocabularies belong to the repo's own setup tasks, and
@@ -356,8 +333,9 @@ are routine and crafted shell syntax is possible; carry each value in a
 quoted variable or a file, never spliced into a single-quoted command string.
 
 - **Milestone**: `gh api repos/<owner>/<repo>/milestones -f title="$title"
-  -f description="$desc"` (issues join it at the §7 arming step, not at
-  create).
+  -f description="$desc"`. Issues may take `--milestone` at create — except
+  where milestone membership is the dispatcher's gating input, in which case
+  it is the arming signal and comes last.
 - **Issues**: `gh issue create --repo <owner/repo> --title "$title"
   --body-file "$bodyfile" --label …`. Write each body to a temp file — bodies
   contain backticks and `$`, and must reach the shell as data. A quoted
@@ -407,12 +385,16 @@ quoted variable or a file, never spliced into a single-quoted command string.
   blocked-unrecorded in the report, and do not hand off (§8) as if the graph
   were complete.
 
-After the writes, verify the result against the ledger — every chunk has its
-issue, every approved edge reads back (`gh issue view` / the dependencies
-endpoint), sub-issue counts match — and report the mapping, the ready set, and
-anything that fell back or failed. The ready set is computed from the edges
-**as recorded**, never from the proposal: a chunk whose edges did not all land
-is not ready, whatever the plan said.
+After the writes, verify the result against the **approved proposal, in
+full** — every chunk has its issue, every approved edge reads back
+(`gh issue view` / the dependencies endpoint), sub-issue counts match, and
+the non-issue writes read back too: milestone membership, the arming signal,
+types and fields, and the source issue's disposition. A completion check
+that covers only issue existence passes while units sit undispatchable or
+the source issue survives as a second claimable copy. Report the mapping,
+the ready set, and anything that fell back or failed. The ready set is
+computed from the edges **as recorded**, never from the proposal: a chunk
+whose edges did not all land is not ready, whatever the plan said.
 
 ## 8. Hand off
 
