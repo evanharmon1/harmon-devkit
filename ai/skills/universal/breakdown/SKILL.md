@@ -158,7 +158,10 @@ issues exist.
 - **Documented fallback** where native edges are unavailable (the API probe in
   §7 fails, or the host does not support dependencies): a `## Dependencies`
   section in each blocked issue's body — `Blocked by: #N` (qualified
-  `owner/repo#N` across repos, per `track-work` §1), one line per edge — plus
+  `owner/repo#N` across repos, per `track-work` §1, and the **full issue
+  URL** when blocker and blocked live on different hosts — `owner/repo#N`
+  resolves against the blocked issue's own host, so across hosts it points
+  at a same-named stranger or nothing), one line per edge — plus
   the ordered chunk list in the milestone description or parent issue body.
   Body text is the fallback precisely because it is the one surface every
   GitHub host renders; keep the line's shape fixed so a later tool can parse
@@ -356,6 +359,12 @@ hand-rolled — and report any proposed field the tooling cannot write instead
 of improvising a GraphQL mutation for it. And never set a claim marker
 (`agent:*` label, assignee, `In Progress`) — a breakdown plans work,
 `/claim` claims it.
+
+**The recipes below are written for the default host.** They are the §1 host
+rule's one blind spot when copied verbatim: on any other host, every `gh api`
+call takes `--hostname <host>` and every `gh issue`/`gh label` command the
+host-qualified `--repo <host>/<owner>/<repo>` — a recipe run without them
+reads or mutates a same-named repo on the active default host.
 
 **Every dynamic field is data, not command text** — bodies, titles, milestone
 descriptions alike. All of it derives from the source lump, so apostrophes
