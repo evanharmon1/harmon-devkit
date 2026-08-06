@@ -93,7 +93,13 @@ and not hierarchy by default either:
   that big is a sibling issue, not a child. A unit lands as one PR in one
   repo, so a parent and its sub-issues live in the **same repository** by
   construction — work in another repo is never a sub-issue, it is a sibling
-  chunk there with a dependency edge (§4).
+  chunk there with a dependency edge (§4). **The parent is the claimable
+  issue, so author it self-contained**: the downstream suite operates on one
+  issue at a time (`/claim` and `/implement` read the issue they are given,
+  not its children), so the parent's own body must carry the unit's complete
+  acceptance criteria, with sub-issues as internal tracking granularity —
+  never the only home of a criterion. A parent that is just a stub over its
+  children produces a unit no downstream skill can execute.
 - **Milestones** — for a multi-issue body of work: the whole breakdown, or a
   named phase of it. This is also what foreman's milestone-driven dispatch
   consumes, so on a foreman repo the milestone is load-bearing, not
@@ -102,7 +108,13 @@ and not hierarchy by default either:
   its own repo, so a breakdown spanning repos gets one milestone per repo (or
   a cross-repo umbrella issue as the single rollup) — never plan one
   whole-breakdown milestone across repos, because the issue creates in the
-  other repos cannot reference it.
+  other repos cannot reference it. And **milestone structure follows the
+  target repo's own policy**: some repos reserve milestones for another
+  lifecycle entirely (release-versioned milestones whose titles are tags,
+  closed by release automation — the harmon-init convention), and a
+  breakdown-named milestone there sits outside that lifecycle and never
+  closes. Where milestones are spoken for, group with an umbrella issue
+  instead.
 
 An umbrella issue (a rollup that `Refs` its children) is a legitimate
 alternative to a milestone where the repo already tracks that way — follow the
@@ -202,9 +214,17 @@ chunks added afterward.
 ## 7. Execute the writes
 
 All writes follow the approved proposal, in dependency-safe order: milestone
-first, then issues (parents before sub-issues, blockers before blocked so
-edges can be recorded as each issue lands), then edges, then any project-board
-fields.
+first, then issues — parents before sub-issues, blockers before blocked —
+**recording each issue's relationships at creation time, not in a final edge
+phase**. Between an issue's create and its edges it looks independent and
+ready, and on a repo with issue-created or milestone-driven automation
+(foreman dispatch) that window is long enough to dispatch a blocked chunk out
+of order. Creating blockers first is what makes immediate attachment
+possible: every edge's far end already exists when its near end is created.
+Where the installed `gh` supports relationship flags on `gh issue create`
+(probe `gh issue create --help` for `--parent`/`--blocked-by`-style options),
+prefer them — create-plus-edge in one call closes the window entirely;
+otherwise write each issue's edges immediately after its create returns.
 
 **Preflight every target repo before the first write.** A cross-repo plan
 executed with credentials that can write only some of its targets mutates the
@@ -214,34 +234,59 @@ repo's §4 dependency probe now too, so a fallback-form repo is known before
 its issues exist. Any target failing the preflight blocks the whole execution:
 report it and return to §6 rather than filing a partial decomposition.
 
-Record each created number as `gh issue create` returns it — the proposal's
-chunk list becomes the ledger mapping chunk → issue number, and it is what
-makes a partial run resumable: re-running after an interruption starts from
-the ledger, never by re-filing. Give every body a stable provenance line
-(§5's `Split from <source>` names the source lump) so creations are
-findable *outside* the ledger too: when a create ends **ambiguously** — `gh`
-times out or the session dies after the request may have committed — the
-ledger has no entry while the issue may exist, and GitHub's search index is
-too stale to ask. Reconcile with a plain newest-first listing
-(`gh issue list --repo <target> --state all --limit 20`) and match on the
-provenance line before any retry; re-filing on an unreconciled ambiguity is
-how a breakdown ships duplicates.
+Record every created identifier as its write returns — the proposal's chunk
+list becomes the ledger mapping chunk → issue number (and repo → milestone
+number), and it is what makes a partial run resumable: re-running after an
+interruption starts from the ledger, never by re-filing. Milestones resume by
+identity too: before any milestone POST, list the repo's existing milestones
+(`gh api repos/<owner>/<repo>/milestones --jq '.[] | [.number,.title]'`) and
+reuse one whose title matches the approved plan — a blind re-POST after an
+interrupted run duplicates it or errors the resume.
+
+When a create ends **ambiguously** — `gh` times out or the session dies after
+the request may have committed — the ledger has no entry while the issue may
+exist, and GitHub's search index is too stale to ask. Reconcile with a plain
+newest-first listing that fetches enough to match on, keyed by something
+**chunk-unique** — the chunk's exact title, which the proposal fixed:
+
+```sh
+gh issue list --repo <target> --state all --limit 20 \
+  --json number,title,body --jq '.[] | [.number, .title]'
+```
+
+The provenance line alone cannot disambiguate — every issue split from the
+same lump carries the same one — so match title (plus provenance in the body
+to confirm the lineage), and only retry a create once the listing shows no
+hit. Re-filing on an unreconciled ambiguity is how a breakdown ships
+duplicates.
 
 **Labels and fields come from the repo's vocabulary — never mint any**
 (`track-work` §6: vocabularies belong to the repo's own setup tasks, and
-minting per-repo is how they fork). Read before proposing:
+minting per-repo is how they fork). Labels are not the whole vocabulary:
+repos on the harmon conventions treat labels and issue fields as orthogonal,
+so read every surface the target actually uses before proposing:
 
 ```sh
 gh label list --repo <owner/repo> --limit 1000 --json name,description
+# org-owned targets may also carry issue types (Task, Bug, Feature, …):
+gh api repos/<owner>/<repo> --jq .organization.login   # org repo?
+gh api orgs/<org>/issue-types --jq '.[].name'          # the type vocabulary
 ```
 
-Apply the families that fit: type, priority, layer/domain — and the
-agent-routing vocabulary where the repo has it: `suggest:<family>[:<model>]`
-("this chunk suits this model class"; the label strategy of
-evanharmon1/harmon-init#620, which replaces the retired `Agent` field). A repo
-without a family skips it, noted once in the report. Never write an `Agent`
-issue field, and never set a claim marker (`agent:*` label, assignee,
-`In Progress`) — a breakdown plans work, `/claim` claims it.
+Apply the families that fit: an issue **type** where the org defines them
+(`gh issue create --type`, or the issue-type edit endpoint after create),
+label families for priority and layer/domain, and the agent-routing
+vocabulary where the repo has it: `suggest:<family>[:<model>]` ("this chunk
+suits this model class"; the label strategy of evanharmon1/harmon-init#620,
+which replaces the retired `Agent` field). Project-board fields (`Size`,
+`Status` options and the like) are Projects V2 state: propose them in §6, but
+write only what the target's own tooling exposes for the purpose —
+`track-work`'s `set-issue-status.sh` for `Status`, nothing hand-rolled — and
+report any proposed field the tooling cannot write instead of improvising a
+GraphQL mutation for it. A repo without a family skips it, noted once in the
+report. Never write an `Agent` issue field, and never set a claim marker
+(`agent:*` label, assignee, `In Progress`) — a breakdown plans work,
+`/claim` claims it.
 
 - **Milestone**: `gh api repos/<owner>/<repo>/milestones -f title='…'
   -f description='…'`, then `--milestone` on each `gh issue create`.
