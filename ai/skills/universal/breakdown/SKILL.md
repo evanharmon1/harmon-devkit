@@ -9,7 +9,7 @@ description: >-
   writing anything to GitHub. Invoke as /breakdown [topic, doc path, or issue
   reference].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh label list:*), Bash(gh repo view:*), Bash(gh api graphql -f query=query*), Bash(task --list-all:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh label list:*), Bash(gh repo view:*), Bash(task --list-all:*)
 ---
 
 # Breakdown
@@ -90,11 +90,19 @@ and not hierarchy by default either:
   list worth tracking as issues: a parent plus its sub-issues that all land in
   the parent's single PR. This is foreman's unit model — parent + sub-issues =
   one unit, one PR — so never give a sub-issue its own PR-sized scope; work
-  that big is a sibling issue, not a child.
+  that big is a sibling issue, not a child. A unit lands as one PR in one
+  repo, so a parent and its sub-issues live in the **same repository** by
+  construction — work in another repo is never a sub-issue, it is a sibling
+  chunk there with a dependency edge (§4).
 - **Milestones** — for a multi-issue body of work: the whole breakdown, or a
   named phase of it. This is also what foreman's milestone-driven dispatch
   consumes, so on a foreman repo the milestone is load-bearing, not
   decorative. Milestones group; they do not order — ordering is §4's job.
+  **Milestones are repository-scoped**: an issue can only join a milestone in
+  its own repo, so a breakdown spanning repos gets one milestone per repo (or
+  a cross-repo umbrella issue as the single rollup) — never plan one
+  whole-breakdown milestone across repos, because the issue creates in the
+  other repos cannot reference it.
 
 An umbrella issue (a rollup that `Refs` its children) is a legitimate
 alternative to a milestone where the repo already tracks that way — follow the
@@ -147,10 +155,18 @@ judgment. The bar, concretely:
 - **Acceptance criteria as `- [ ]` task-list items** — what `track-work`'s
   tick machinery and its closing-keyword guard read. Each criterion must be
   adjudicable from the PR's diff and gates; "works well" is not a criterion.
-- **Foreman repos** (the target repo has `task foreman:vet` — probe with
-  `task --list-all 2>/dev/null | grep -q 'foreman:vet'`): conform to the spec
-  contract — the heading `## Acceptance Criteria`, `[CI]` items mapping to
-  named automated tests, `[HUMAN]` items for what agents must never attempt.
+- **Foreman repos**: conform to the spec contract. Probe the **target repo**,
+  not the checkout you happen to be in —
+  `task --list-all 2>/dev/null | grep -q 'foreman:vet'` answers only for the
+  current directory, so it is valid only when the target repo *is* this
+  checkout; for any other target, read the target's own tree instead
+  (`gh api repos/<owner>/<repo>/contents/Taskfile.yml` — or its
+  `taskfiles/` includes — and look for the `foreman:` namespace). A probe
+  run in the wrong directory either omits the required `[CI]`/`[HUMAN]`
+  criteria on a foreman target or imposes them on a repo whose tooling
+  never reads them. The contract itself: the heading `## Acceptance
+  Criteria`, `[CI]` items mapping to named automated tests, and `[HUMAN]`
+  items for what agents must never attempt.
 - **Perishable claims** follow `track-work` §5: invariant / observed violation
   (dated) / `Verify` block with the command that re-checks it. A breakdown is
   written well before its last chunk is implemented — by then, every
@@ -188,10 +204,28 @@ chunks added afterward.
 All writes follow the approved proposal, in dependency-safe order: milestone
 first, then issues (parents before sub-issues, blockers before blocked so
 edges can be recorded as each issue lands), then edges, then any project-board
-fields. Record each created number as `gh issue create` returns it — the
-proposal's chunk list becomes the ledger mapping chunk → issue number, and it
-is what makes a partial run resumable: re-running after an interruption starts
-from the ledger, never by re-filing.
+fields.
+
+**Preflight every target repo before the first write.** A cross-repo plan
+executed with credentials that can write only some of its targets mutates the
+accessible repos and then stops half-done. Check push access on each target
+first (`gh api repos/<owner>/<repo> --jq .permissions.push`) — and run each
+repo's §4 dependency probe now too, so a fallback-form repo is known before
+its issues exist. Any target failing the preflight blocks the whole execution:
+report it and return to §6 rather than filing a partial decomposition.
+
+Record each created number as `gh issue create` returns it — the proposal's
+chunk list becomes the ledger mapping chunk → issue number, and it is what
+makes a partial run resumable: re-running after an interruption starts from
+the ledger, never by re-filing. Give every body a stable provenance line
+(§5's `Split from <source>` names the source lump) so creations are
+findable *outside* the ledger too: when a create ends **ambiguously** — `gh`
+times out or the session dies after the request may have committed — the
+ledger has no entry while the issue may exist, and GitHub's search index is
+too stale to ask. Reconcile with a plain newest-first listing
+(`gh issue list --repo <target> --state all --limit 20`) and match on the
+provenance line before any retry; re-filing on an unreconciled ambiguity is
+how a breakdown ships duplicates.
 
 **Labels and fields come from the repo's vocabulary — never mint any**
 (`track-work` §6: vocabularies belong to the repo's own setup tasks, and
@@ -212,9 +246,18 @@ issue field, and never set a claim marker (`agent:*` label, assignee,
 - **Milestone**: `gh api repos/<owner>/<repo>/milestones -f title='…'
   -f description='…'`, then `--milestone` on each `gh issue create`.
 - **Issues**: `gh issue create --repo <owner/repo> --title '…' --body-file …
-  --label …`. Pass bodies via `--body-file` with a quoted heredoc or a temp
-  file — bodies contain backticks and `$`, and must reach the shell as data.
-- **Sub-issue links** need each issue's numeric `id` (not its number):
+  --label …`. Write each body to a temp file and pass it via `--body-file` —
+  bodies contain backticks and `$`, and must reach the shell as data. A
+  quoted heredoc is safe only when its delimiter provably does not occur as
+  a line of the body: quoting disables expansion, not termination, and a
+  breakdown body routinely quotes source snippets, so a matching line would
+  end the heredoc early and hand the remaining body lines to the shell.
+  Check the body for the delimiter first, or skip the question entirely
+  with the temp file.
+- **Sub-issue links** need each issue's numeric `id` (not its number). Parent
+  and child are in the same repository by §3's unit rule, so one
+  `<owner>/<repo>` serves both lookups — a child number resolved against any
+  other repo is a different issue that happens to share the number:
 
   ```sh
   child_id="$(gh api repos/<owner>/<repo>/issues/<child-number> --jq .id)"
@@ -230,17 +273,26 @@ issue field, and never set a claim marker (`agent:*` label, assignee,
     -F issue_id="$blocker_id"
   ```
 
-  **Probe before relying on it**: read one issue's
-  `…/dependencies/blocked_by` first — a `404`/`410` on the read means the
-  host or plan does not expose dependencies, so fall back to §4's body form
-  for every edge and say so in the report. Never let a failed edge write pass
-  silently: an issue whose blockers were approved but not recorded *looks*
-  ready, which is the one lie a dependency graph must not tell.
+  **Probe before relying on it** (the §7 preflight runs this per repo): read
+  one issue's `…/dependencies/blocked_by` — a `404`/`410` on the read means
+  the host or plan does not expose dependencies, so use §4's body form for
+  every edge in that repo and say so in the report.
+
+  **A failed edge write fails closed.** An issue whose approved blockers were
+  not recorded *looks* ready — to GitHub, to foreman's graph planner, and to
+  the next `/claim` — which is the one lie a dependency graph must not tell.
+  When a native edge write fails, record the same edge in §4's body-fallback
+  form before moving on; if that write fails too, the blocked issue's edges
+  are unrecorded — exclude it from the reported ready set, name it as
+  blocked-unrecorded in the report, and do not hand off (§8) as if the graph
+  were complete.
 
 After the writes, verify the result against the ledger — every chunk has its
 issue, every approved edge reads back (`gh issue view` / the dependencies
 endpoint), sub-issue counts match — and report the mapping, the ready set, and
-anything that fell back or failed.
+anything that fell back or failed. The ready set is computed from the edges
+**as recorded**, never from the proposal: a chunk whose edges did not all land
+is not ready, whatever the plan said.
 
 ## 8. Hand off
 
