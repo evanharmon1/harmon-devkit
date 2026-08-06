@@ -223,7 +223,11 @@ not per-issue. Before writing anything to GitHub, present:
   (`Refs` each one) and close it `not planned` as superseded per `track-work`
   §4; or, where it must stay open (an umbrella tracking partial delivery),
   edit it so its remaining scope is exactly what the chunks do not cover.
-  "Leave it as is" is not a disposition;
+  "Leave it as is" is not a disposition. Execution happens well after this
+  approval, so re-read the source issue (state, body, `updatedAt`)
+  immediately before mutating it — an edit that landed in between means the
+  snapshot the human approved is stale; return for approval instead of
+  overwriting it;
 - anything unresolved — ambiguous ownership, duplicate hits, chunks you could
   not size confidently.
 
@@ -264,8 +268,13 @@ issues-disabled repos fail every create while `permissions.push` still reads
 true) and the credential can perform them (issue writes need triage;
 milestone writes need push — read `.permissions`) — and probe each repo's
 relationship surfaces now too: the §4 dependency probe, and, where the plan
-contains any parent, the sub-issue endpoint (read one issue's `…/sub_issues`
-— a `404` means the host does not support them, so that parent's tree is
+contains any parent, the sub-issue endpoint (read one **existing** issue's
+`…/sub_issues` — on a tracker with no issues yet there is nothing valid to
+probe and a `404` against an invented number means "no such issue", not "no
+such feature", so record the capability as *unknown* and re-probe against
+the first issue this run creates rather than dropping to the fallback — and
+on a real issue a `404` means the host does not support them, so that
+parent's tree is
 recorded as body references per §3 and the proposal says so *before*
 approval, not after the children exist as standalone claimable issues; the
 reference form is executable because parents are created first — each child's
