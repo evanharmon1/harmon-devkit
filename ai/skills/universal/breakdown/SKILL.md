@@ -224,10 +224,12 @@ not per-issue. Before writing anything to GitHub, present:
   §4; or, where it must stay open (an umbrella tracking partial delivery),
   edit it so its remaining scope is exactly what the chunks do not cover.
   "Leave it as is" is not a disposition. Execution happens well after this
-  approval, so re-read the source issue (state, body, `updatedAt`)
-  immediately before mutating it — an edit that landed in between means the
-  snapshot the human approved is stale; return for approval instead of
-  overwriting it;
+  approval, so re-read the source issue (state, body, `updatedAt`) **twice**:
+  in §7's preflight, before the first GitHub write — a drifted source stales
+  the whole decomposition, and catching it after the chunks are filed is too
+  late — and again immediately before mutating the source itself. Either
+  re-read showing an intervening edit means the snapshot the human approved
+  is stale: return for approval instead of proceeding on it;
 - anything unresolved — ambiguous ownership, duplicate hits, chunks you could
   not size confidently.
 
@@ -238,8 +240,11 @@ chunks added afterward.
 
 ## 7. Execute the writes
 
-All writes follow the approved proposal, in dependency-safe order: issues
-first — parents before sub-issues, blockers before blocked, each issue's
+All writes follow the approved proposal, in dependency-safe order: milestones
+first (create or reuse — an issue can only join a milestone that already
+exists, so `--milestone` at create depends on this; only *membership* is
+deferred, and only where it is the arming signal), then issues — parents
+before sub-issues, blockers before blocked, each issue's
 relationships written immediately after its create returns (creating blockers
 first is what makes that possible: every edge's far end already exists when
 its near end is created) — and **arming last**. Between an issue's create and
@@ -346,7 +351,11 @@ quoted variable or a file, never spliced into a single-quoted command string.
   where milestone membership is the dispatcher's gating input, in which case
   it is the arming signal and comes last.
 - **Issues**: `gh issue create --repo <owner/repo> --title "$title"
-  --body-file "$bodyfile" --label …`. Write each body to a temp file — bodies
+  --body-file "$bodyfile" --label …` — where the label list **excludes the
+  dispatcher's gating label**, if that is the target's arming signal: a label
+  applied at create arms the issue before its relationships exist, exactly
+  the race the arming-last rule closes; add it in the arming step instead.
+  Write each body to a temp file — bodies
   contain backticks and `$`, and must reach the shell as data. A quoted
   heredoc is safe only when its delimiter provably does not occur as a line
   of the body: quoting disables expansion, not termination, and a breakdown
