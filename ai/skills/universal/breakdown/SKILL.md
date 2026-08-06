@@ -50,9 +50,11 @@ time, but a breakdown that files into the wrong repo manufactures work
 
 Two more things bind to each target repo, not to the checkout you are in.
 **Its host**: a target named by URL can live on a different GitHub host than
-the active `gh` default, and an unqualified `gh api repos/…` then reads or
-writes a same-named repo on the wrong server — carry the host with the repo
-and pass `--hostname` on every `gh api` call for that target. **Its issue
+the active `gh` default, and an unqualified command then reads or writes a
+same-named repo on the wrong server — carry the host with the repo
+everywhere, not just on API calls: `--repo <host>/<owner>/<repo>` on every
+`gh issue`/`gh pr`/`gh label` command (gh accepts the host-qualified form)
+and `--hostname` on every `gh api` call for that target. **Its issue
 policy**: a repo can mandate issue structure in its `AGENTS.md`,
 `CONTRIBUTING.md`, or `.github/ISSUE_TEMPLATE/` — read them per target
 before authoring (§5), so produced issues do not bypass a contract the
