@@ -62,8 +62,11 @@ target enforces.
 
 ## 2. Size the chunks
 
-Every produced issue targets three constraints **at once** — they usually
-agree, and when they disagree the smallest wins:
+Every **executable** chunk targets three constraints *at once* — they usually
+agree, and when they disagree the smallest wins. (Two §3 structures are
+deliberately not executable chunks and are exempt: a unit's sub-issues are
+internal granularity smaller than a PR, and an umbrella parent is tracking
+only and receives no PR of its own.)
 
 - **1 session** — an agent completes it in a single working session without
   exhausting context. Reading half the repo to start is a sign the chunk is
@@ -303,7 +306,10 @@ recorded as body references per §3 and the proposal says so *before*
 approval, not after the children exist as standalone claimable issues; the
 reference form is executable because parents are created first — each child's
 body carries `Part of #<parent>` at creation, and one parent edit at the end
-lists the children). Any
+lists the children; and where the capability is *unknown* at proposal time —
+an empty tracker leaves nothing to probe — the §6 proposal carries this
+fallback conditionally, so the human approves both shapes rather than the
+run switching shape after approval). Any
 target failing the preflight blocks the whole execution: report it and
 return to §6 rather than filing a partial decomposition.
 
