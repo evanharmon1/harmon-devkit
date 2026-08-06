@@ -86,20 +86,27 @@ and not hierarchy by default either:
 
 - **Flat issues** — the default for a handful of independent chunks. Hierarchy
   that only restates the issue list is overhead.
-- **Sub-issues** — where one *unit* (one session, one PR) has an internal task
-  list worth tracking as issues: a parent plus its sub-issues that all land in
-  the parent's single PR. This is foreman's unit model — parent + sub-issues =
-  one unit, one PR — so never give a sub-issue its own PR-sized scope; work
-  that big is a sibling issue, not a child. A unit lands as one PR in one
-  repo, so a parent and its sub-issues live in the **same repository** by
-  construction — work in another repo is never a sub-issue, it is a sibling
-  chunk there with a dependency edge (§4). **The parent is the claimable
-  issue, so author it self-contained**: the downstream suite operates on one
-  issue at a time (`/claim` and `/implement` read the issue they are given,
-  not its children), so the parent's own body must carry the unit's complete
-  acceptance criteria, with sub-issues as internal tracking granularity —
-  never the only home of a criterion. A parent that is just a stub over its
-  children produces a unit no downstream skill can execute.
+- **Sub-issues** — a parent/child tree carries one of two meanings, and the
+  proposal must say which each parent is, because everything downstream (who
+  claims what, how many PRs, where criteria live) differs:
+  - **A unit** — one session, one PR, with an internal task list worth
+    tracking as issues. This is foreman's model — parent + sub-issues = one
+    unit, one PR — and the shape to use wherever the target runs foreman (or
+    an equivalent unit-dispatch policy). No child gets PR-sized scope (work
+    that big is a sibling), and the unit lands as one PR in one repo, so
+    parent and children share a repository by construction. **The parent is
+    the claimable issue, so author it self-contained**: the downstream suite
+    operates on one issue at a time (`/claim` and `/implement` read the issue
+    they are given, not its children), so the parent's own body must carry
+    the unit's complete acceptance criteria, with sub-issues as internal
+    granularity — never the only home of a criterion.
+  - **An umbrella** — a rollup parent whose children are each themselves
+    session-sized, PR-sized, claimable chunks (the leaf-Task model repos
+    without a unit policy commonly use). The children are the executable
+    work, sized by §2 like any sibling; the parent is tracking only, is
+    never claimed, and is `Refs`, never a closing keyword, in any child's PR.
+    Children may live in other repos where the host supports the link —
+    otherwise record the tree in body references.
 - **Milestones** — for a multi-issue body of work: the whole breakdown, or a
   named phase of it. This is also what foreman's milestone-driven dispatch
   consumes, so on a foreman repo the milestone is load-bearing, not
@@ -200,9 +207,18 @@ not per-issue. Before writing anything to GitHub, present:
 
 - the chunk list — title, one-line scope, target repo, and size rationale for
   anything near the limits;
-- the structure — milestone(s), parents and their sub-issues, flat issues;
+- the structure — milestone(s), parents (unit or umbrella, per §3) and their
+  sub-issues, flat issues;
 - the dependency graph — every edge, plus the resulting ready set and waves;
 - labels and fields per issue, from §7's vocabulary read;
+- **the source issue's disposition, when the input was a live issue** — a big
+  issue left open and unmarked after its chunks are filed is a second,
+  claimable copy of the same work. Propose one of: reuse it as the
+  parent/umbrella; or supersede it — edit its body to point at the chunks
+  (`Refs` each one) and close it `not planned` as superseded per `track-work`
+  §4; or, where it must stay open (an umbrella tracking partial delivery),
+  edit it so its remaining scope is exactly what the chunks do not cover.
+  "Leave it as is" is not a disposition;
 - anything unresolved — ambiguous ownership, duplicate hits, chunks you could
   not size confidently.
 
@@ -213,35 +229,45 @@ chunks added afterward.
 
 ## 7. Execute the writes
 
-All writes follow the approved proposal, in dependency-safe order: milestone
-first, then issues — parents before sub-issues, blockers before blocked —
-**recording each issue's relationships at creation time, not in a final edge
-phase**. Between an issue's create and its edges it looks independent and
-ready, and on a repo with issue-created or milestone-driven automation
-(foreman dispatch) that window is long enough to dispatch a blocked chunk out
-of order. Creating blockers first is what makes immediate attachment
-possible: every edge's far end already exists when its near end is created.
-Where the installed `gh` supports relationship flags on `gh issue create`
-(probe `gh issue create --help` for `--parent`/`--blocked-by`-style options),
-prefer them — create-plus-edge in one call closes the window entirely;
-otherwise write each issue's edges immediately after its create returns.
+All writes follow the approved proposal, in dependency-safe order: issues
+first — parents before sub-issues, blockers before blocked, each issue's
+relationships written immediately after its create returns (creating blockers
+first is what makes that possible: every edge's far end already exists when
+its near end is created) — and **arming last**. Between an issue's create and
+its edges it looks independent and ready, and no ordering of API calls makes
+create-plus-edge atomic — even create-time relationship flags apply the
+relationship in follow-up mutations after the issue exists, so `issues.opened`
+automation can observe the bare issue regardless. What actually closes the
+race is sequencing what the automation *consumes*: where dispatch is
+milestone-driven (foreman), create the issues **without** the milestone,
+attach and verify every relationship, and add issues to the milestone as the
+final arming step; where automation dispatches on other signals, find its
+gating input and arm that last the same way. Where nothing automates
+dispatch, the window is only cosmetic — immediate attachment is still the
+rule, arming order just stops mattering.
 
 **Preflight every target repo before the first write.** A cross-repo plan
 executed with credentials that can write only some of its targets mutates the
-accessible repos and then stops half-done. Check push access on each target
-first (`gh api repos/<owner>/<repo> --jq .permissions.push`) — and run each
-repo's §4 dependency probe now too, so a fallback-form repo is known before
-its issues exist. Any target failing the preflight blocks the whole execution:
-report it and return to §6 rather than filing a partial decomposition.
+accessible repos and then stops half-done. Check what the approved operations
+actually need, per target: the repo accepts issue writes at all
+(`gh api repos/<owner>/<repo> --jq '[.archived, .has_issues]'` — archived or
+issues-disabled repos fail every create while `permissions.push` still reads
+true) and the credential can perform them (issue writes need triage;
+milestone writes need push — read `.permissions`) — and run each repo's §4
+dependency probe now too, so a fallback-form repo is known before its issues
+exist. Any target failing the preflight blocks the whole execution: report it
+and return to §6 rather than filing a partial decomposition.
 
 Record every created identifier as its write returns — the proposal's chunk
 list becomes the ledger mapping chunk → issue number (and repo → milestone
 number), and it is what makes a partial run resumable: re-running after an
 interruption starts from the ledger, never by re-filing. Milestones resume by
-identity too: before any milestone POST, list the repo's existing milestones
-(`gh api repos/<owner>/<repo>/milestones --jq '.[] | [.number,.title]'`) and
-reuse one whose title matches the approved plan — a blind re-POST after an
-interrupted run duplicates it or errors the resume.
+identity too: before any milestone POST, list the repo's existing milestones —
+paginated, or a page-one match window silently misses one —
+(`gh api --paginate 'repos/<owner>/<repo>/milestones?state=all' --jq
+'.[] | [.number,.title]'`) and reuse one whose title matches the approved
+plan; a blind re-POST after an interrupted run duplicates it or errors the
+resume.
 
 When a create ends **ambiguously** — `gh` times out or the session dies after
 the request may have committed — the ledger has no entry while the issue may
@@ -257,8 +283,11 @@ gh issue list --repo <target> --state all --limit 20 \
 The provenance line alone cannot disambiguate — every issue split from the
 same lump carries the same one — so match title (plus provenance in the body
 to confirm the lineage), and only retry a create once the listing shows no
-hit. Re-filing on an unreconciled ambiguity is how a breakdown ships
-duplicates.
+hit. Size the window to the interruption: 20 covers a same-session retry, but
+a resume hours later on a busy tracker must extend `--limit` (or paginate)
+back past the original request time — the possibly-committed issue is only
+*near* the top for as long as nothing else is being filed. Re-filing on an
+unreconciled ambiguity is how a breakdown ships duplicates.
 
 **Labels and fields come from the repo's vocabulary — never mint any**
 (`track-work` §6: vocabularies belong to the repo's own setup tasks, and
@@ -275,34 +304,48 @@ gh api orgs/<org>/issue-types --jq '.[].name'          # the type vocabulary
 
 Apply the families that fit: an issue **type** where the org defines them
 (`gh issue create --type`, or the issue-type edit endpoint after create),
-label families for priority and layer/domain, and the agent-routing
-vocabulary where the repo has it: `suggest:<family>[:<model>]` ("this chunk
-suits this model class"; the label strategy of evanharmon1/harmon-init#620,
-which replaces the retired `Agent` field). Project-board fields (`Size`,
-`Status` options and the like) are Projects V2 state: propose them in §6, but
-write only what the target's own tooling exposes for the purpose —
-`track-work`'s `set-issue-status.sh` for `Status`, nothing hand-rolled — and
-report any proposed field the tooling cannot write instead of improvising a
-GraphQL mutation for it. A repo without a family skips it, noted once in the
-report. Never write an `Agent` issue field, and never set a claim marker
+label families for priority and layer/domain, and **agent routing in
+whichever vocabulary the target actually has** — this one is in transition
+(evanharmon1/harmon-init#620 replaces the `Agent` planning field with
+`suggest:<family>[:<model>]` labels, "this chunk suits this model class").
+Where the target carries the `suggest:*` label family, use it. Where it still
+runs the `Agent` *field*, that field is a triage-time planning assignment —
+which is exactly what a breakdown produces, so proposing values for it in §6
+is legitimate here (unlike at claim time, where writing it destroys the plan —
+`track-work` §6); write it only where the target's tooling can (it is not
+writable via Projects V2 on org repos — there, report the proposed value
+instead). Neither vocabulary present: skip routing, noted once. Project-board
+fields (`Size`, `Status` options and the like) are Projects V2 state: propose
+them in §6, but write only what the target's own tooling exposes for the
+purpose — `track-work`'s `set-issue-status.sh` for `Status`, nothing
+hand-rolled — and report any proposed field the tooling cannot write instead
+of improvising a GraphQL mutation for it. And never set a claim marker
 (`agent:*` label, assignee, `In Progress`) — a breakdown plans work,
 `/claim` claims it.
 
-- **Milestone**: `gh api repos/<owner>/<repo>/milestones -f title='…'
-  -f description='…'`, then `--milestone` on each `gh issue create`.
-- **Issues**: `gh issue create --repo <owner/repo> --title '…' --body-file …
-  --label …`. Write each body to a temp file and pass it via `--body-file` —
-  bodies contain backticks and `$`, and must reach the shell as data. A
-  quoted heredoc is safe only when its delimiter provably does not occur as
-  a line of the body: quoting disables expansion, not termination, and a
-  breakdown body routinely quotes source snippets, so a matching line would
-  end the heredoc early and hand the remaining body lines to the shell.
-  Check the body for the delimiter first, or skip the question entirely
-  with the temp file.
-- **Sub-issue links** need each issue's numeric `id` (not its number). Parent
-  and child are in the same repository by §3's unit rule, so one
-  `<owner>/<repo>` serves both lookups — a child number resolved against any
-  other repo is a different issue that happens to share the number:
+**Every dynamic field is data, not command text** — bodies, titles, milestone
+descriptions alike. All of it derives from the source lump, so apostrophes
+are routine and crafted shell syntax is possible; carry each value in a
+quoted variable or a file, never spliced into a single-quoted command string.
+
+- **Milestone**: `gh api repos/<owner>/<repo>/milestones -f title="$title"
+  -f description="$desc"` (issues join it at the §7 arming step, not at
+  create).
+- **Issues**: `gh issue create --repo <owner/repo> --title "$title"
+  --body-file "$bodyfile" --label …`. Write each body to a temp file — bodies
+  contain backticks and `$`, and must reach the shell as data. A quoted
+  heredoc is safe only when its delimiter provably does not occur as a line
+  of the body: quoting disables expansion, not termination, and a breakdown
+  body routinely quotes source snippets, so a matching line would end the
+  heredoc early and hand the remaining body lines to the shell. Check the
+  body for the delimiter first, or skip the question entirely with the temp
+  file.
+- **Sub-issue links** need each issue's numeric `id` (not its number). For a
+  §3 *unit*, parent and child are in the same repository by construction, so
+  one `<owner>/<repo>` serves both lookups; for an *umbrella* with a
+  cross-repo child, resolve the child's `id` against the **child's own**
+  repo — a child number resolved against any other repo is a different issue
+  that happens to share the number:
 
   ```sh
   child_id="$(gh api repos/<owner>/<repo>/issues/<child-number> --jq .id)"
@@ -323,12 +366,17 @@ report. Never write an `Agent` issue field, and never set a claim marker
   the host or plan does not expose dependencies, so use §4's body form for
   every edge in that repo and say so in the report.
 
-  **A failed edge write fails closed.** An issue whose approved blockers were
-  not recorded *looks* ready — to GitHub, to foreman's graph planner, and to
-  the next `/claim` — which is the one lie a dependency graph must not tell.
-  When a native edge write fails, record the same edge in §4's body-fallback
-  form before moving on; if that write fails too, the blocked issue's edges
-  are unrecorded — exclude it from the reported ready set, name it as
+  **A failed edge write fails closed — after a read-back.** An issue whose
+  approved blockers were not recorded *looks* ready — to GitHub, to foreman's
+  graph planner, and to the next `/claim` — which is the one lie a dependency
+  graph must not tell. But a timeout is ambiguous the same way a create's is:
+  GitHub may have committed the edge behind the error, and adding the body
+  fallback on top of a live native edge leaves two records to disagree later.
+  So on a failed edge write, first re-read the blocked issue's
+  `…/dependencies/blocked_by` — the edge being present is success, not
+  failure. Only when it is confirmed absent, record the edge in §4's
+  body-fallback form; if that write fails too, the blocked issue's edges are
+  unrecorded — exclude it from the reported ready set, name it as
   blocked-unrecorded in the report, and do not hand off (§8) as if the graph
   were complete.
 
