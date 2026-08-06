@@ -48,6 +48,16 @@ rather than guessing; `/claim` re-checks ownership per issue at implementation
 time, but a breakdown that files into the wrong repo manufactures work
 `/claim` can only reject.
 
+Two more things bind to each target repo, not to the checkout you are in.
+**Its host**: a target named by URL can live on a different GitHub host than
+the active `gh` default, and an unqualified `gh api repos/…` then reads or
+writes a same-named repo on the wrong server — carry the host with the repo
+and pass `--hostname` on every `gh api` call for that target. **Its issue
+policy**: a repo can mandate issue structure in its `AGENTS.md`,
+`CONTRIBUTING.md`, or `.github/ISSUE_TEMPLATE/` — read them per target
+before authoring (§5), so produced issues do not bypass a contract the
+target enforces.
+
 ## 2. Size the chunks
 
 Every produced issue targets three constraints **at once** — they usually
@@ -159,7 +169,11 @@ issues exist.
 - **Cross-repo edges always use the fallback form**, even where native edges
   exist — a native edge into another repo couples two trackers' UIs to a
   relationship their owners may not both see, and the qualified body line is
-  unambiguous everywhere.
+  unambiguous everywhere. One consequence to surface in §6: a planner that
+  consumes only its own repo's edges cannot see a cross-repo blocker in any
+  form, so a chunk blocked across repos on a planner-managed target **stays
+  unarmed** — dispatched by a human once the blocker lands, not by the
+  planner — unless the planner documents a cross-repo representation.
 
 ## 5. Author each issue at the right altitude
 
