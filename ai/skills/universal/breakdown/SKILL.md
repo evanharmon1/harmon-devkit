@@ -150,7 +150,12 @@ issues exist.
   the ordered chunk list in the milestone description or parent issue body.
   Body text is the fallback precisely because it is the one surface every
   GitHub host renders; keep the line's shape fixed so a later tool can parse
-  it.
+  it. **Where the target runs a planner that parses its own dependency
+  syntax** (foreman's graph planner reads a specific trailer form), the
+  fallback must be written in *that* syntax — read the planner's contract in
+  the target repo rather than assuming the generic line above; a dependency
+  recorded in a shape the planner does not parse records nothing for it, and
+  the blocked chunk enters the ready wave unblocked.
 - **Cross-repo edges always use the fallback form**, even where native edges
   exist — a native edge into another repo couples two trackers' UIs to a
   relationship their owners may not both see, and the qualified body line is
@@ -238,13 +243,18 @@ its edges it looks independent and ready, and no ordering of API calls makes
 create-plus-edge atomic — even create-time relationship flags apply the
 relationship in follow-up mutations after the issue exists, so `issues.opened`
 automation can observe the bare issue regardless. What actually closes the
-race is sequencing what the automation *consumes*: where dispatch is
-milestone-driven (foreman), create the issues **without** the milestone,
-attach and verify every relationship, and add issues to the milestone as the
-final arming step; where automation dispatches on other signals, find its
-gating input and arm that last the same way. Where nothing automates
-dispatch, the window is only cosmetic — immediate attachment is still the
-rule, arming order just stops mattering.
+race is sequencing what the automation *consumes*: identify the gating input
+the target's dispatcher actually reads — from its configuration in the target
+repo, never by assumption — and apply that signal last, after every
+relationship is attached and verified. Foreman is the worked example of why
+this must be read rather than guessed: depending on the target's configured
+input mode, dispatch eligibility may come from milestone membership, an issue
+field, or a label applied by a trusted actor, and guessing wrong either arms
+blocked work early or leaves every approved unit undispatchable. Whatever the
+signal is, everything else about the issue — body, labels, relationships — is
+written before it. Where nothing automates dispatch, the window is only
+cosmetic — immediate attachment is still the rule, arming order just stops
+mattering.
 
 **Preflight every target repo before the first write.** A cross-repo plan
 executed with credentials that can write only some of its targets mutates the
@@ -253,15 +263,29 @@ actually need, per target: the repo accepts issue writes at all
 (`gh api repos/<owner>/<repo> --jq '[.archived, .has_issues]'` — archived or
 issues-disabled repos fail every create while `permissions.push` still reads
 true) and the credential can perform them (issue writes need triage;
-milestone writes need push — read `.permissions`) — and run each repo's §4
-dependency probe now too, so a fallback-form repo is known before its issues
-exist. Any target failing the preflight blocks the whole execution: report it
-and return to §6 rather than filing a partial decomposition.
+milestone writes need push — read `.permissions`) — and probe each repo's
+relationship surfaces now too: the §4 dependency probe, and, where the plan
+contains any parent, the sub-issue endpoint (read one issue's `…/sub_issues`
+— a `404` means the host does not support them, so that parent's tree is
+recorded as body references per §3 and the proposal says so *before*
+approval, not after the children exist as standalone claimable issues). Any
+target failing the preflight blocks the whole execution: report it and
+return to §6 rather than filing a partial decomposition.
 
 Record every created identifier as its write returns — the proposal's chunk
 list becomes the ledger mapping chunk → issue number (and repo → milestone
 number), and it is what makes a partial run resumable: re-running after an
-interruption starts from the ledger, never by re-filing. Milestones resume by
+interruption starts from the ledger, never by re-filing. **The ledger is a
+file, not conversation state.** The interruptions it exists for — a dead
+session, a lost context — take conversation memory with them, so a ledger
+that lives only in the transcript resumes nothing. Before the first write,
+persist the approved chunk list to the path
+`git rev-parse --git-path "breakdown/$(git branch --show-current)"` names
+(`mkdir -p` its directory first — the git directory keeps it deterministic
+for a later session and invisible to `git status`, the same reasoning as the
+deferred-findings file), and append each created identifier to it as the
+write returns, before moving to the next write. Delete it only when the run
+is verified complete. Milestones resume by
 identity too: before any milestone POST, list the repo's existing milestones —
 paginated, or a page-one match window silently misses one —
 (`gh api --paginate 'repos/<owner>/<repo>/milestones?state=all' --jq
@@ -277,13 +301,16 @@ newest-first listing that fetches enough to match on, keyed by something
 
 ```sh
 gh issue list --repo <target> --state all --limit 20 \
-  --json number,title,body --jq '.[] | [.number, .title]'
+  --json number,title,body
 ```
 
 The provenance line alone cannot disambiguate — every issue split from the
-same lump carries the same one — so match title (plus provenance in the body
-to confirm the lineage), and only retry a create once the listing shows no
-hit. Size the window to the interruption: 20 covers a same-session retry, but
+same lump carries the same one — and a title alone cannot either: GitHub does
+not enforce unique titles, so a title hit is a *candidate*, adopted into the
+ledger only after reading its body (which is why the listing fetches `body`)
+and confirming the provenance line — adopting a same-titled stranger attaches
+labels and edges to an unrelated issue. Only retry a create once the listing
+shows no confirmed hit. Size the window to the interruption: 20 covers a same-session retry, but
 a resume hours later on a busy tracker must extend `--limit` (or paginate)
 back past the original request time — the possibly-committed issue is only
 *near* the top for as long as nothing else is being filed. Re-filing on an
