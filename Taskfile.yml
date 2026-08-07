@@ -222,6 +222,21 @@ tasks:
     cmds:
       - ./scripts/sync-devkit-release.sh run {{.CLI_ARGS}}
 
+  sync:skills:
+    desc: Vendor the pinned skill categories from harmon-devkit into .claude/skills
+    cmds:
+      - ./scripts/sync-skills.sh sync
+
+  verify:skills:
+    desc: "Skill drift check (network): fail if vendored skills differ from the pinned ref"
+    cmds:
+      - ./scripts/sync-skills.sh verify
+
+  verify:skills:offline:
+    desc: "Fast offline check that the vendored ref matches the manifest (no network)"
+    cmds:
+      - ./scripts/sync-skills.sh verify-offline
+
   format:
     desc: Auto-format code
     cmds:
