@@ -7,6 +7,12 @@ output:
     begin: "::group::{{.TASK}}"
     end: "::endgroup::"
 
+includes:
+  # Foreman — deterministic supervisor for milestone-driven agent dispatch
+  # (task foreman:plan / dispatch / shepherd / watch ...; the CLI is pinned
+  # and fetched via uvx in taskfiles/foreman.yml)
+  foreman: taskfiles/foreman.yml
+
 # ── Entry Points ───────────────────────────────────────────────────
 tasks:
   default:
