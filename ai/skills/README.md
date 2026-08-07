@@ -13,6 +13,7 @@ Skills are grouped into **category subdirectories**:
 ai/skills/
 ├── universal/   # every repo gets these
 │   ├── kickoff/SKILL.md     # /kickoff — get oriented + name the session
+│   ├── breakdown/SKILL.md   # /breakdown — decompose work into session-sized issues
 │   ├── claim/SKILL.md       # /claim — sanity-check + claim the issue
 │   ├── implement/SKILL.md   # /implement — claimed issue → ready-for-review PR via the dev loop
 │   ├── shepherd/SKILL.md    # /shepherd — shepherd a draft PR to ready for review
@@ -27,9 +28,10 @@ ai/skills/
     └── standardize-repo/SKILL.md
 ```
 
-`universal/` ships the dev-workflow session suite — six user-invoked slash
+`universal/` ships the dev-workflow session suite — seven user-invoked slash
 commands (`disable-model-invocation: true`) covering the phases of a working
-session, from naming it to shepherding its PR to ready for review — plus `track-work`,
+session, from decomposing the work and naming the session to shepherding its
+PR to ready for review — plus `track-work`,
 which is deliberately **not** slash-only. Tracking
 mistakes happen mid-flow, while a PR body is being written and nobody is typing
 a command, so it must be model-invocable to fire at all. It also bundles
