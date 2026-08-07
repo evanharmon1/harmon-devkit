@@ -458,6 +458,16 @@ open_or_update_pr() {
         gh pr create --draft --base "$BASE_BRANCH" --head "$SYNC_BRANCH" \
             --title "$_pr_title" --body-file "$BODY_FILE" ||
             die "could not open the sync PR"
+        # Confirm the PR landed as draft — a non-draft result silently
+        # publishes an unverified head to reviewers.
+        if _pr_number=$(gh pr view "$SYNC_BRANCH" --json number -q .number 2>/dev/null) &&
+            [ -n "$_pr_number" ]; then
+            _pr_is_draft=$(gh pr view "$_pr_number" --json isDraft -q .isDraft 2>/dev/null)
+            if [ "$_pr_is_draft" != "true" ]; then
+                gh pr ready --undo "$_pr_number" 2>/dev/null ||
+                    die "sync PR #$_pr_number was not draft and could not be returned to draft"
+            fi
+        fi
     fi
 }
 
@@ -652,6 +662,12 @@ cmd_run() {
     # Force-push: this branch is owned solely by this workflow and is rebuilt
     # from the base every run, so its remote history is disposable by design.
     # Only $SYNC_BRANCH is ever written — never $BASE_BRANCH.
+    # Return any existing rolling PR to draft first so the new head is never
+    # published ready-for-review before CI and the shepherd cycle run.
+    if [ -n "$_run_open_pr" ]; then
+        gh pr ready --undo "$_run_open_pr" ||
+            note "could not return PR #$_run_open_pr to draft (may already be draft)"
+    fi
     note "pushing $SYNC_BRANCH"
     push_sync_branch || die "could not push $SYNC_BRANCH"
 
