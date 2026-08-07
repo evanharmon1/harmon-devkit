@@ -305,8 +305,12 @@ parent's tree is
 recorded as body references per §3 and the proposal says so *before*
 approval, not after the children exist as standalone claimable issues; the
 reference form is executable because parents are created first — each child's
-body carries `Part of #<parent>` at creation, and one parent edit at the end
-lists the children; and where the capability is *unknown* at proposal time —
+body carries a `Part of` line at creation, referencing the parent the same
+way §4's fallback references a blocker: bare `#<parent>` only within one
+repo, qualified `owner/repo#<parent>` for a cross-repo umbrella child, and
+the full issue URL across hosts — a bare number resolves inside the child's
+own repository, so unqualified it links a stranger or nothing. One parent
+edit at the end lists the children; and where the capability is *unknown* at proposal time —
 an empty tracker leaves nothing to probe — the §6 proposal carries this
 fallback conditionally, so the human approves both shapes rather than the
 run switching shape after approval). Any
