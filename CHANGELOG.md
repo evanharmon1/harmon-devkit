@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.22.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.21.0...v0.22.0) (2026-08-07)
+
+
+### Features
+
+* **skills:** add /breakdown — decompose work into session-sized, dependency-ordered issues ([#312](https://github.com/evanharmon1/harmon-devkit/issues/312)) ([df45168](https://github.com/evanharmon1/harmon-devkit/commit/df45168d3aa2a2d07c124fc9145a69617671f2df))
+
 ## [0.21.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.20.4...v0.21.0) (2026-08-05)
 
 
