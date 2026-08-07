@@ -1,0 +1,66 @@
+# Foreman — deterministic supervisor for milestone-driven agent dispatch.
+# Included by the root Taskfile under the `foreman:` namespace; every task is
+# a thin wrapper over the PINNED Foreman CLI, fetched and run via uvx from
+# https://github.com/ponderousdev/foreman at the tag below (`{{.FOREMAN}}
+# --help`). No Foreman source is vendored here; bumping FOREMAN_VERSION is
+# how this repo takes a new Foreman.
+#
+# Targeting: every orchestration task takes `-- --milestone <n|title>` or
+# `-- --issue <n>`, e.g. `task foreman:plan -- --milestone 4`.
+version: "3"
+
+vars:
+  # renovate: datasource=github-tags depName=ponderousdev/foreman extractVersion=^v(?<version>.*)$
+  FOREMAN_VERSION: 2.1.0
+  FOREMAN: uvx --from git+https://github.com/ponderousdev/foreman@v{{.FOREMAN_VERSION}} foreman
+
+tasks:
+  plan:
+    desc: "Dry run: graph, waves, ready set, input mode, validation (no side effects)"
+    cmds:
+      - "{{.FOREMAN}} plan {{.CLI_ARGS}}"
+
+  vet:
+    desc: "Read-only agent analysis of the target; drafts correction comments for human approval (--post publishes them)"
+    cmds:
+      - "{{.FOREMAN}} vet {{.CLI_ARGS}}"
+
+  preflight:
+    desc: "Empirically assert the security controls (identity, rulesets, token scopes) before any dispatch"
+    cmds:
+      - "{{.FOREMAN}} preflight {{.CLI_ARGS}}"
+
+  dispatch:
+    desc: "Dispatch ready units to agents in worktrees, verify, open PRs (idempotent)"
+    cmds:
+      - "{{.FOREMAN}} dispatch {{.CLI_ARGS}}"
+
+  shepherd:
+    desc: "Keep open foreman PRs healthy: repair CI, adjudicate reviews, rebase, report merge order"
+    cmds:
+      - "{{.FOREMAN}} shepherd {{.CLI_ARGS}}"
+
+  watch:
+    desc: "Loop plan→dispatch→shepherd with heartbeats until done (stop file: .foreman-stop)"
+    cmds:
+      - "{{.FOREMAN}} watch {{.CLI_ARGS}}"
+
+  status:
+    desc: "Read-only snapshot: unit table + consolidated human-action queue"
+    cmds:
+      - "{{.FOREMAN}} status {{.CLI_ARGS}}"
+
+  retry:
+    desc: "Re-dispatch a unit whose PR a human closed (usage: task foreman:retry -- --unit N)"
+    cmds:
+      - "{{.FOREMAN}} retry {{.CLI_ARGS}}"
+
+  attach:
+    desc: "Resume a preserved failed unit in place (usage: task foreman:attach -- --unit N)"
+    cmds:
+      - "{{.FOREMAN}} attach {{.CLI_ARGS}}"
+
+  cleanup:
+    desc: "Prune worktrees + foreman-created branches for closed units (in-flight untouched)"
+    cmds:
+      - "{{.FOREMAN}} cleanup {{.CLI_ARGS}}"

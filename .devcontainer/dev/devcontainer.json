@@ -54,6 +54,7 @@
     "source=codex-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.codex,type=volume",
     "source=gemini-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.gemini,type=volume",
     "source=agent-deck-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.agent-deck,type=volume",
+    "source=herdr-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.config/herdr,type=volume",
     "source=shell-history-evanharmon1-harmon-devkit-dev,target=/home/vscode/.shell-history,type=volume",
     "source=zoxide-data-evanharmon1-harmon-devkit-dev,target=/home/vscode/.local/share/zoxide,type=volume"
   ],

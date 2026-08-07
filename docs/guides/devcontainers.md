@@ -230,6 +230,63 @@ a `TERM=… docker exec` prefix changes only the client's environment. Ask for t
 terminal you want with `-e`:
 `docker exec -e TERM=xterm-256color -it <container> bash`.
 
+## Persistent agent sessions (Herdr)
+
+**Herdr** is the agent-session runtime in both profiles: it owns the panes your
+coding agents run in and tracks each one's state (working / blocked / idle) so
+you can see at a glance which agent is waiting on you. `zellij` and `tmux` are
+still installed and still the right tool for general terminal multiplexing —
+Herdr is not a replacement for them, it is the layer that knows what an *agent*
+pane is doing.
+
+The server **auto-starts on the first `herdr` invocation**. There is no `herdr
+server start` subcommand to run first; to check whether a server is already
+live, run `herdr status`.
+
+To attach from another machine, SSH in and run `herdr` — with the caveat that
+the SSH endpoint must execute **inside the devcontainer**, where this image
+installed Herdr and configured its socket. An SSH server that terminates on the
+Docker host attaches you to a host-side Herdr (or nothing at all). On Coder the
+agent runs inside the workspace container, so `coder ssh <workspace>` lands in
+the right place:
+
+```bash
+ssh <container-ssh-host>
+herdr
+```
+
+or let Herdr do the SSH itself — it wraps `ssh`, so it uses whatever host alias
+your SSH config defines (on Coder, `coder config-ssh` writes the
+`coder.<workspace>` aliases). This form runs a local Herdr thin client, so
+install Herdr on the machine you attach from first (`brew install herdr` on
+macOS, or the installer at [herdr.dev](https://herdr.dev/)):
+
+```bash
+herdr --remote <container-ssh-host>
+```
+
+`~/.config/herdr` is a **named volume** (`herdr-config-…`, one per profile; on
+Coder it is symlinked into the `~/.persistent` volume instead), so Herdr's own
+state survives a rebuild: snapshot restore brings the workspace shape back —
+tabs, panes, cwds, layout — as fresh shells. Whether an agent *conversation*
+resumes inside its restored pane is a separate mechanism:
+`resume_agents_on_restore` only works for agents whose Herdr integration has
+recorded a native session reference. post-create installs the Claude Code and
+Codex integrations automatically (`herdr integration install`, idempotent) —
+Gemini has no resume integration in v0.8. The
+conversations themselves persist regardless, in the `~/.claude`, `~/.codex`,
+and `~/.gemini` volumes, so a pane that restores as a plain shell can still
+resume its agent by hand (e.g. `claude --resume`).
+
+The default session's server socket deliberately does **not** live in that
+volume. The image sets `HERDR_SOCKET_PATH=/tmp/herdr.sock` container-wide, so a
+socket left behind by a dead server cannot ride along in the persisted config
+directory into the next container. (Herdr derives the client socket from the
+same variable — `/tmp/herdr-client.sock`.) Named sessions (`herdr --session`)
+ignore that override and keep sockets under `~/.config/herdr/sessions/<name>/`,
+so a stale named-session socket can survive a rebuild — harmless, but if a
+named session misbehaves after a rebuild, delete its `herdr.sock` and reattach.
+
 ## Secrets — 1Password Environments (the standard)
 
 Don't hand-write or copy `devcontainer.env`. The standard is **1Password
@@ -330,6 +387,32 @@ captures the same variables from the **host environment**, where they arrive as
 workspace/template parameters. It does **not** call `op` itself — 1Password
 Environments is what supplies the values locally.
 
+A variable already in the env-file but absent from the host env is **left
+alone** — that is how a 1Password-managed value survives a rebuild when you
+haven't also exported it in your shell.
+
+If a variable is missing from **both** places, though, nothing will supply it,
+and `init-env.sh` prints a warning to stderr naming the variables (never their
+values) in the container-build log:
+
+```text
+init-env.sh: warning: allow-listed but unset in the host env and absent from .devcontainer/dev/devcontainer.env:
+init-env.sh:   TS_AUTHKEY
+init-env.sh: the container will start without them. On Coder/Codespaces set them as
+init-env.sh: workspace/repo secrets; locally populate the env-file from 1Password.
+```
+
+The build still succeeds — a missing optional secret must not block a rebuild,
+and `initializeCommand` runs on the host, where a non-zero exit aborts the whole
+build. So this is a signal to read, not a failure. Without it the container comes
+up clean and only the dependent step fails later, far from the cause: a missing
+`TS_AUTHKEY` went unnoticed for hours in a Coder workspace that way.
+
+The warning covers **only** the vars this profile's allow-list permits, so the
+bot profile never reports `TS_AUTHKEY` missing. Its absence there is correct —
+that profile has no tailnet path at all — and naming it would advertise a
+credential the bot container must never hold.
+
 ## Run it in Coder
 
 The devcontainers are Coder-ready: the `CODER` env is passed through, the
@@ -352,6 +435,16 @@ repo** (one template serves every repo). To stand this repo up in Coder:
      `gh auth login` instead
      (+ `TS_AUTHKEY` if you want Tailscale). Coder passes these
      into the workspace's host environment, where `init-env.sh` picks them up.
+
+   Coder is the case where this matters most: there is no 1Password app in the
+   workspace, so a **workspace parameter is the only way a secret arrives**. A
+   parameter you forget to set is not backfilled from anywhere — the env-file
+   starts empty on a fresh workspace, so the variable is simply absent. Check
+   the build log for the `init-env.sh: warning:` lines above before assuming a
+   workspace is fully provisioned; they name exactly what did not arrive. On a
+   **rebuild** of an existing workspace the env-file may still hold a value from
+   an earlier build, which is why the warning fires only when both sources are
+   empty.
 3. The build pulls `ghcr.io/evanharmon1/harmon-devkit-devcontainer` from GHCR as a cache. If that
    package is private, give the Coder builder a read token (or make the package
    public); a cache miss only makes the first build slower.

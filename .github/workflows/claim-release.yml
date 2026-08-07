@@ -6,28 +6,39 @@ run-name: releasing claim markers after a close event
 # before the merge on policy). This workflow is the release: it undoes the
 # markers the claim record says the claim added and posts the `Claim
 # released —` supersede comment. Contract, design record, and accepted gaps:
-# ai/skills/universal/track-work/references/claim-lifecycle.md.
+# .claude/skills/track-work/references/claim-lifecycle.md.
 #
 # Merged PRs are deliberately NOT handled here: a merge whose PR carries a
 # closing keyword closes the linked issue, and the issues-closed job releases
 # the claim then (which also covers `gh issue close` and closed-by-hand).
 # Only an unmerged close leaves a stale claim with no issues event coming.
 #
-# Repo-local on purpose (like tracking-guard.yml): the name does not exist in
-# the harmon-init template, so `copier update` never touches it. The release
-# logic ships inside the track-work skill so consumers vendor it alongside
-# the claim convention it undoes.
+# The release LOGIC is not here: this file only wires events to
+# `release-claim.sh`, which ships inside the vendored track-work skill so the
+# release always matches the version of the claim convention that wrote the
+# markers. Editing that script here is pointless — `task sync:skills`
+# overwrites it. Change it in harmon-devkit and bump the pin.
+#
+# "No script on disk" is handled at RUNTIME, by the run: guard below, not by
+# narrowing the copier gate that renders this file. The gate asks only whether
+# the repo vendors skills at all; which categories it vendors is editable after
+# scaffolding without updating any copier answer, so a gate that tested for the
+# `universal` category would stay false forever in a repo that added it the
+# documented way — leaving the claim skills writing markers with nothing to
+# release them. The guard makes the looser gate safe: no script AND no claim
+# skill means nothing was ever claimed, so it exits 0.
 #
 # Security: this workflow holds a write-capable token and reads
-# attacker-writable comment bodies, so — one deliberate divergence from
-# tracking-guard.yml — it always checks out and runs DEFAULT-BRANCH code,
-# never a PR head. The script treats every comment value as data (trust gate
+# attacker-writable comment bodies, so it always checks out and runs
+# DEFAULT-BRANCH code, never a PR head — a fork PR must not be able to
+# substitute the script this job executes with the token it holds.
+# The script treats every comment value as data (trust gate
 # on the claim author, regex validation before anything becomes an argument),
 # and the blast radius of a fooled parse is availability only. Loop-safety:
 # comments posted with GITHUB_TOKEN never trigger workflow runs, and the
-# claude-*.yml issue_comment jobs additionally gate on an allowlisted sender —
-# a future workflow adding a PAT/App token on issue_comment must keep such a
-# gate.
+# generated claude-*.yml issue_comment jobs additionally gate on an
+# allowlisted sender — a future workflow adding a PAT/App token on
+# issue_comment must keep such a gate.
 
 on:
   issues:
@@ -69,13 +80,34 @@ jobs:
           STATE_REASON: ${{ github.event.issue.state_reason }}
           CLOSED_AT: ${{ github.event.issue.closed_at }}
         run: |
+          # Not-yet-vendored is a genuine no-op, not a swallowed error: this
+          # script and the /claim skill that WRITES these markers ship in the
+          # same vendored skill set, so no script means no claim convention
+          # means nothing was ever claimed. Generated repos vendor skills by
+          # running `task sync:skills` after scaffolding (docs/CHECKLIST.md),
+          # so this window is real and every close event would otherwise fail.
+          #
+          # Test -e, not -x, and cross-check the claim skill. A file that
+          # exists but will not run (exec bit lost in a checkout) must reach
+          # the invocation below and fail the job loudly; and if claims are
+          # being written while the releaser is missing, staying quiet would
+          # strand exactly the claims this workflow exists to release.
+          script=./.claude/skills/track-work/assets/release-claim.sh
+          if [ ! -e "$script" ]; then
+            if [ -e .claude/skills/claim/SKILL.md ]; then
+              echo "::error::the claim skill is vendored but $script is missing — claims written here will strand. Re-run 'task sync:skills'."
+              exit 1
+            fi
+            echo "::notice::$script is not vendored — run 'task sync:skills'. No claim convention is installed, so there is nothing to release."
+            exit 0
+          fi
           rc=0
           # --not-after: a claim created after this close belongs to newer
           # work (a reopen-and-reclaim) and is not this event's to release.
           # --require-closed: a queued event whose issue was reopened before
           # this ran is stale — an accidental close/reopen continues the
           # existing claim, and releasing it would strip active work.
-          ./ai/skills/universal/track-work/assets/release-claim.sh \
+          "$script" \
             --repo "$GH_REPO" --issue "$ISSUE_NUMBER" \
             --reason "issue closed (${STATE_REASON:-closed})" \
             --not-after "$CLOSED_AT" --require-closed || rc=$?
@@ -108,6 +140,16 @@ jobs:
           # to the script as data — it compares equality and never evaluates.
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
+          # Same not-yet-vendored no-op as the issues job above, same reasons.
+          script=./.claude/skills/track-work/assets/release-claim.sh
+          if [ ! -e "$script" ]; then
+            if [ -e .claude/skills/claim/SKILL.md ]; then
+              echo "::error::the claim skill is vendored but $script is missing — claims written here will strand. Re-run 'task sync:skills'."
+              exit 1
+            fi
+            echo "::notice::$script is not vendored — run 'task sync:skills'. No claim convention is installed, so there is nothing to release."
+            exit 0
+          fi
           job_rc=0
           # A queued event whose PR was reopened before this ran is stale —
           # the work is active again and its claim is accurate (the issues
@@ -132,7 +174,7 @@ jobs:
             # let any unrelated fork PR that mentioned the issue suppress
             # the release forever, and the branch binding already refuses
             # everything that is not this PR's own claim.)
-            ./ai/skills/universal/track-work/assets/release-claim.sh \
+            "$script" \
               --repo "$GH_REPO" --issue "$n" \
               --reason "PR #${PR_NUMBER} closed without merging" \
               --not-after "$CLOSED_AT" --branch "$HEAD_REF" || rc=$?

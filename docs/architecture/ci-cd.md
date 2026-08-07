@@ -16,6 +16,13 @@ plus an aggregate **`verify`** job; branch protection requires `verify` +
 - `build.yml` — on push/PR to `main`: lint, security, then the aggregate **`verify`** job. Security always runs gitleaks + dependency audit + Semgrep CE SAST.
 - `claude-plan` / `claude-implement` / `claude-review` — `@claude …` on issues and PRs.
 - `devcontainer-build.yml` — prebuilds the devcontainer images to GHCR on `.devcontainer/**` changes.
+- `claim-release.yml` — on `issues closed` and on `pull_request closed`
+  **unmerged**, releases the claim markers an agent session left on an issue
+  (assignee, `agent:*` label, and the `Claiming —` comment's supersede). It
+  holds `issues: write` and parses attacker-writable comment bodies, so it
+  always checks out the **default branch** and never a PR head. It only wires
+  events to `release-claim.sh` in the vendored `track-work` skill, so it
+  no-ops until you have run `task sync:skills`.
 - `release.yml` — release-please maintains the rolling release PR.
 
 ## Authentication
