@@ -453,7 +453,7 @@ open_or_update_pr() {
             die "could not update PR #$_pr_existing"
     else
         note "opening a sync PR"
-        gh pr create --base "$BASE_BRANCH" --head "$SYNC_BRANCH" \
+        gh pr create --draft --base "$BASE_BRANCH" --head "$SYNC_BRANCH" \
             --title "$_pr_title" --body-file "$BODY_FILE" ||
             die "could not open the sync PR"
     fi

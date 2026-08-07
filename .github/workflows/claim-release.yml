@@ -92,9 +92,9 @@ jobs:
           # the invocation below and fail the job loudly; and if claims are
           # being written while the releaser is missing, staying quiet would
           # strand exactly the claims this workflow exists to release.
-          script=./.claude/skills/track-work/assets/release-claim.sh
+          script=./ai/skills/universal/track-work/assets/release-claim.sh
           if [ ! -e "$script" ]; then
-            if [ -e .claude/skills/claim/SKILL.md ]; then
+            if [ -e ai/skills/universal/claim/SKILL.md ]; then
               echo "::error::the claim skill is vendored but $script is missing — claims written here will strand. Re-run 'task sync:skills'."
               exit 1
             fi
@@ -141,9 +141,9 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           # Same not-yet-vendored no-op as the issues job above, same reasons.
-          script=./.claude/skills/track-work/assets/release-claim.sh
+          script=./ai/skills/universal/track-work/assets/release-claim.sh
           if [ ! -e "$script" ]; then
-            if [ -e .claude/skills/claim/SKILL.md ]; then
+            if [ -e ai/skills/universal/claim/SKILL.md ]; then
               echo "::error::the claim skill is vendored but $script is missing — claims written here will strand. Re-run 'task sync:skills'."
               exit 1
             fi
