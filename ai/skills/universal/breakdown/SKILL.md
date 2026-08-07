@@ -54,8 +54,13 @@ the active `gh` default, and an unqualified command then reads or writes a
 same-named repo on the wrong server — carry the host with the repo
 everywhere, not just on API calls: `--repo <host>/<owner>/<repo>` on every
 `gh issue`/`gh pr`/`gh label` command (gh accepts the host-qualified form)
-and `--hostname` on every `gh api` call for that target. **Its issue
-policy**: a repo can mandate issue structure in its `AGENTS.md`,
+and `--hostname` on every `gh api` call for that target. The same binding
+governs **every issue reference this skill writes into any body** —
+provenance lines, `Part of` lines, dependency fallbacks, supersede `Refs`:
+bare `#N` only within one repository, qualified `owner/repo#N` across
+repositories, and the **full issue URL** whenever the two ends live on
+different hosts, because `owner/repo#N` resolves against the host of the
+issue it is written in. **Its issue policy**: a repo can mandate issue structure in its `AGENTS.md`,
 `CONTRIBUTING.md`, or `.github/ISSUE_TEMPLATE/` — read them per target
 before authoring (§5), so produced issues do not bypass a contract the
 target enforces.
@@ -191,7 +196,9 @@ subagent — without being so prescriptive it forecloses implementation
 judgment. The bar, concretely:
 
 - **Context**: what this chunk is for, what it touches, and its provenance —
-  `Found while doing <owner/repo>#<n>` / `Split from <source>` — so the
+  `Found while doing <owner/repo>#<n>` / `Split from <source>` (qualified
+  per §1's reference rule — a full URL when source and chunk live on
+  different hosts) — so the
   implementer can recover intent without re-reading the whole source lump.
   State *what* must become true and *why*; leave *how* to the implementer
   unless a constraint is real (an interface another chunk depends on, a
