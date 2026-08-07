@@ -451,6 +451,8 @@ open_or_update_pr() {
         note "updating the open sync PR #$_pr_existing"
         gh pr edit "$_pr_existing" --title "$_pr_title" --body-file "$BODY_FILE" ||
             die "could not update PR #$_pr_existing"
+        gh pr ready --undo "$_pr_existing" ||
+            note "could not return PR #$_pr_existing to draft (may already be draft)"
     else
         note "opening a sync PR"
         gh pr create --draft --base "$BASE_BRANCH" --head "$SYNC_BRANCH" \
