@@ -48,9 +48,12 @@ holds it to. `release-claim.sh` is the reference parser.
 **Vocabulary transition.** The live-claim label is migrating from the
 harness-named `agent:*` family to the model-centric `claim:<family>[:<model>]`
 family (registry: harmon-init's `agent-registry.json`; e.g. `claim:claude`,
-`claim:codex`). New claims write `claim:*`; the parser and every reader
-recognize **both** families until the live-label migration completes
-downstream, so no in-flight `agent:*` claim strands mid-transition. The harness
+`claim:codex`). New claims **prefer `claim:*`, falling back to the legacy
+`agent:*` label** on a repo whose label provisioning has not yet migrated (so a
+currently-provisioned repo keeps its claim labeled rather than regressing to an
+unlabeled one); the parser and every reader recognize **both** families until
+the live-label migration completes downstream, so no in-flight `agent:*` claim
+strands mid-transition. The harness
 that ran the work (Claude Code, the Action, the codex CLI) is recorded in the
 claim comment's session context, never in the label.
 

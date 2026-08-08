@@ -294,7 +294,7 @@ actually added.
 
   ```sh
   gh issue edit <n> --repo "$repo" \
-    --add-label claim:claude --remove-label claim:codex   # remove the ACTUAL label — a legacy conflict is agent:codex
+    --add-label <the label the pre-check above selected> --remove-label <the ACTUAL competing label>   # e.g. add claim:claude (or agent:claude-code on a provisioned-only repo); remove claim:codex or a legacy agent:codex
   ```
 
   The displaced label may itself be legacy (`agent:codex`) on a not-yet-migrated
