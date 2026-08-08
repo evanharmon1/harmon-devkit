@@ -65,7 +65,7 @@ is exactly such a token. On a personal account it is granted no Projects
 permission at all — that row of the PAT table is organization-scoped, and a
 user-owned board has no equivalent setting to hand a second account. So an agent
 running as the bot **cannot move a card**, and there is no permission to raise:
-the board is moved by you, while the claim stays visible through the `agent:*`
+the board is moved by you, while the claim stays visible through the `claim:*`
 label and the assignee — see
 [Claiming](#claiming--making-an-agents-work-visible-while-it-happens), which is
 exactly why a claim writes all three signals instead of relying on the board
@@ -109,12 +109,13 @@ Archived-items view), so aged `Done` items leave the board automatically instead
 of sitting in an "Archived" column.
 
 **Agent Queue is the hand-off lane to AI coding agents.** An item lands there once
-it's shaped and ready for an *agent* rather than a human to implement — the
-**Agent** field says which one (and effort / model). Today the hand-off is manual:
-assign the agent and trigger it (a `claude-*` workflow, or point Claude Code at the
-item). The lane is built for future automation, though — an agent can watch *Agent
-Queue + Agent-set + priority* (the Agent-queue view below) and pull the top item on
-its own — and either way the item moves to **In Progress** once work starts.
+it's shaped and ready for an *agent* rather than a human to implement — a
+`suggest:<family>[:<model>]` label says which intelligence should (see
+[Labels](#labels)). Today the hand-off is manual: apply the suggestion and trigger
+it (a `claude-*` workflow, or point Claude Code at the item). The lane is built for
+future automation, though — an agent can watch *Agent Queue + `suggest:*` +
+priority* (the Agent-queue view below) and pull the top item on its own — and
+either way the item moves to **In Progress** once work starts.
 
 > **Foreman is that automation** for issue-driven delivery: arm the issue with
 > a `foreman:*` label (label arming is the supported mode — issue-field arming
@@ -239,8 +240,6 @@ The work-metadata fields:
 - **Size** — estimation points on the Fibonacci ladder (1 / 2 / 3 / 5 / 8 / 13 / 21),
   a project **number** field so a view can sum it per group
 - **Product** — which product/area it belongs to (free text)
-- **Agent** — which agent should implement it (Claude Code, Codex, Gemini CLI,
-  Qwen Code, DeepSeek, Kimi K2, GLM, GitHub Copilot) and how (effort level, model)
 - **Domain** — which part of the *product* it belongs to. Ships as a starter
   single-select (`auth`, `billing`, `platform`); the real vocabulary comes from
   your ERD entities — add options as the product grows
@@ -248,6 +247,14 @@ The work-metadata fields:
   interaction, tokens, a11y — no data change), `logic` (business rules,
   handlers, calculation), `data` (schema, indexes, validators, migrations),
   `integration` (external boundary: webhooks, API clients, credentials)
+
+There is deliberately **no `Agent` field.** *Which* intelligence should implement
+an issue is advisory routing, and it now lives in the `suggest:*` **label**; which
+one *is* implementing it lives in the `claim:*` label (both under
+[Labels](#labels)). Both are labels rather than fields because a project field
+records no actor for its changes and cannot be written on a personal-account board
+at all — the reasoning is in
+[Claiming](#claiming--making-an-agents-work-visible-while-it-happens).
 
 Domain and Layer are orthogonal to each other and to `Type`/`Status`: an issue
 normally carries one of each — *what part of the product* × *what slice of the
@@ -273,7 +280,7 @@ them in step afterwards. Two things to know before you extend either:
   names the missing options to add by hand rather than failing the run.
 
 On a personal account there are no issue fields, so `task setup:github-project`
-creates **Priority, Product, Agent, Domain, Layer, and Size** as project fields.
+creates **Priority, Product, Domain, Layer, and Size** as project fields.
 
 TODO: finalize each field's options/values.
 
@@ -292,10 +299,14 @@ families, color-coded by family; the starter set is created by
 - **Layer** — `layer:ui`, `layer:logic`, `layer:data`, `layer:integration`
 - **Domain** — start with `domain:auth`, `domain:billing`, `domain:platform`;
   grow from your ERD entities
-- **Agent** — `agent:claude-code`, `agent:codex`, `agent:gemini-cli`,
-  `agent:qwen-code`, `agent:deepseek`, `agent:kimi-k2`, `agent:glm`,
-  `agent:github-copilot` — which agent is working the issue *right now* (see
-  **Claiming** below)
+- **Suggested agent** — `suggest:<family>[:<model>]`, human-written advisory
+  routing: *which* intelligence should work the issue (e.g. `suggest:claude`,
+  `suggest:claude:sonnet`, `suggest:codex:sol`). Replaces the retired `Agent`
+  field; advisory only, it never dispatches anything.
+- **Claim** — `claim:<family>[:<model>]`, agent-written live ownership: which
+  intelligence is working the issue *right now* (e.g. `claim:claude`,
+  `claim:claude:opus`, `claim:kimi:k3`). Applied at claim, released at hand-off
+  (see **Claiming** below)
 
 The `layer:` and `domain:` families offer the same options as the **Layer** and
 **Domain** fields above — same names, same meanings, but no per-issue sync (see
@@ -303,11 +314,16 @@ Fields). Use the label when you want it on the issue list and in
 `gh issue list --label`, the field when you want to group a board view by it,
 and extend both together so the option sets stay identical.
 
-The `agent:` family shares the **Agent** field's option names and *nothing
-else*. The field is the planned implementer, the label is the active one — see
-**Claiming** below. Extend the two lists together, but never treat one as a
-copy of the other: writing the field to match the label overwrites a planning
-decision.
+`suggest:*` and `claim:*` name the model **intelligence**, not the harness that
+runs it — Claude Code vs. the `@claude` Action vs. the codex CLI is operational
+detail, recorded in the claim comment, not the label. The family segment is
+required; the model segment is optional (`claim:claude` is a valid family-level
+claim, `claim:claude:opus` pins the model). The family vocabulary — `claude`,
+`codex`, `copilot`, `qwen`, `deepseek`, `glm`, `kimi`, `minimax`, `gemini` — and
+its per-family models are defined once in harmon-init's `agent-registry.json` and
+provisioned by `task setup:github-labels`; don't invent a per-repo slug. Foreman
+arming stays separate and harness-centric (`foreman:<adapter>`) — a `suggest:*`
+label is advice, never an arming signal.
 
 GitHub labels live per-repository (there's no shared org label pool).
 `setup-github-labels` seeds the set into one repo — run it in each, or set the
@@ -331,36 +347,50 @@ each is blind where the others see:
 | Signal | Answers | Shows up in |
 |---|---|---|
 | `Status` = `In Progress` | where it is in delivery | the board |
-| `agent:*` label | which agent is working it **right now** | the issue page, `gh issue list --label` |
+| `claim:*` label | which agent is working it **right now** | the issue page, `gh issue list --label` |
 | assignee | that *someone* has it | notifications, `gh issue list --assignee` |
 
-**`Agent` is not on that list, and a claim must not write it.** The two look
-like the same fact and are not:
+**A claim writes `claim:*`, and must never write a `suggest:*` label.** The two
+look like the same fact and are not:
 
 | | Means | Set by | When |
 |---|---|---|---|
-| **`Agent`** field | which agent *should* implement it | whoever plans/triages | at planning, before the work starts |
-| **`agent:*`** label | which agent *is* implementing it | the agent itself | at claim, released at hand-off |
+| **`suggest:*`** label | which agent *should* implement it | whoever plans/triages | at planning, before the work starts |
+| **`claim:*`** label | which agent *is* implementing it | the agent itself | at claim, released at hand-off |
 
-They share one vocabulary — the same option names, which is why the two lists
-are extended together — but they answer different questions. Overwriting
-`Agent` at claim time would destroy the planning assignment the **Agent queue**
-view is built on (that view lists issues *whose `Agent` field is set*), and
-would silently reassign work planned for one agent to whichever agent happened
-to pick it up.
+They share one model-centric vocabulary — the same family and model slugs — but
+they answer different questions. Overwriting the `suggest:*` label at claim time
+would destroy the planning routing the **Agent queue** view is built on (that
+view lists issues carrying a `suggest:*` label), and would erase the record that
+work routed to one family was picked up by another.
 
-So a claim writes the **label**. If the label and the field disagree, that is
-information, not drift: it means a different agent picked up work planned for
-another one. Worth noticing, not worth auto-correcting.
+So a claim writes the `claim:*` **label** and leaves any `suggest:*` untouched.
+If the claim and the suggestion disagree, that is information, not drift: a
+different intelligence picked up work routed to another one. Worth noticing, not
+worth auto-correcting.
 
-This also removes an owner-type problem: on an organization `Agent` is an org
-**issue field** that the Projects V2 API cannot write anyway, so a claim that
-depended on it would have been impossible there. The label works identically on
-both owner types.
+Both signals are labels, which is the whole point of retiring the old `Agent`
+*field* (harmon-init ADR 0005). A label carries the actor who set it in its
+timeline and works on every owner type; an org `Agent` issue field recorded no
+actor and the Projects V2 API could not write it at all, so a claim that depended
+on it was impossible on an organization to begin with.
 
 These labels ship with `task setup:github-labels`, which is generated only for
 `project_management: github`. A repo on `none` or `linear` gets no label
 families at all, so a claim there rests on the assignee and the claim comment.
+
+**During the rolling transition, the skills and the label provisioning move on
+separate clocks.** The vendored `claim` / `shepherd` / `wrap` skills arrive via
+`task sync:skills`; the `claim:*` / `suggest:*` label set is provisioned by
+`task setup:github-labels`. Nothing makes the two atomic, so a repo can carry
+skills that speak `claim:*` before its labels have migrated from the legacy
+`agent:*` family — or the reverse. The skills absorb the skew: a claim prefers
+`claim:claude` and falls back to the legacy `agent:claude-code` label only when
+`claim:*` is not yet provisioned, and the release and stale-claim sweeps still
+*recognize* a legacy `agent:*` claim so in-flight work started under the old
+vocabulary is not stranded. That read-side recognition is also why a plain grep
+for the literal `agent:claude-code` no longer proves a legacy *writer* is
+installed — the automation check below accounts for it.
 
 **A board write can fail without anyone learning.** Every `Status` write in the
 lifecycle needs the [`project` scope](#token-scopes). Without it each one exits
@@ -410,14 +440,21 @@ with no closing keyword, an unmerged fork PR), are in
 > its own schedule, via the automated devkit-release sync:
 >
 > ```sh
-> grep -rl 'agent:claude-code' .claude/skills/claim/ .claude/skills/wrap/
+> ls .claude/skills/claim/SKILL.md .claude/skills/wrap/SKILL.md 2>/dev/null
 > ```
 >
-> A match means claiming is automated end to end. No match means the `agent:`
-> labels above are yours to apply by hand, and no *skill* will move the card.
-> That is not the same as nothing moving it: on an organization
+> Both present means claiming is automated end to end. Test for the **skills'
+> presence**, not for a label literal: the migrated skills deliberately retain a
+> read-side `agent:claude-code` compatibility literal (to recognize legacy
+> in-flight claims), so the older check —
+> `grep -rl 'agent:claude-code' .claude/skills/claim/ .claude/skills/wrap/` —
+> now matches that *reader* and reports automation on a repo whose skills merely
+> read the old label. It can no longer tell a legacy writer from a compatibility
+> reader; the skills' presence can. If the skills are absent, the `claim:*` /
+> `suggest:*` labels above are yours to apply by hand and no *skill* will move
+> the card. That is not the same as nothing moving it: on an organization
 > `project-automation.yml` still syncs `Status` from PR and CI events, so check
-> what that workflow already does before setting the field manually — racing it
+> what that workflow already does before setting the card manually — racing it
 > is how the board ends up with whichever value happened to land last.
 
 ## Milestones
@@ -618,7 +655,7 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   **`needs-triage`**, grouped by **Type** (Bug / Feature / Task / Research) so you
   see the shape of the inbox. This is your grooming session — it exists so
   untriaged work can't hide; empty it regularly and it stays useful.
-- **Agent queue** — board, filtered to issues whose **`Agent`** field is set,
+- **Agent queue** — board, filtered to issues carrying a **`suggest:*`** label,
   showing only the in-flight `Status` columns (**Ready, Agent Queue, In Progress,
   Verifying, In Review, Ready to Merge**), sorted by `Priority`.
 - **Planning** — table, grouped by **`Product`** (or `Type`), sorted by
@@ -641,9 +678,9 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
 - **Slice the board** — rather than separate per-product / per-layer / per-agent
   saved views, slice the one board: by **`Product`** when you go multi-product, by
   **`Domain`** to focus a product area, by **`Layer`** to focus a slice of the
-  stack, by **`Agent`** to see the split. One
-  board, many lenses — and how multiple products stay legible in one aggregating
-  project instead of fragmenting into project-per-product.
+  stack, or by the **Labels** axis on the `suggest:*` / `claim:*` families to see
+  the agent split. One board, many lenses — and how multiple products stay legible
+  in one aggregating project instead of fragmenting into project-per-product.
 
 ## Notes
 
