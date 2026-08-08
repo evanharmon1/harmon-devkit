@@ -330,8 +330,11 @@ and extend both together so the option sets stay identical.
 `suggest:*` and `claim:*` name the model **intelligence**, not the harness that
 runs it — Claude Code vs. the `@claude` Action vs. the codex CLI is operational
 detail, recorded in the claim comment, not the label. The family segment is
-required; the model segment is optional (`claim:claude` is a valid family-level
-claim, `claim:claude:opus` pins the model). The family vocabulary — `claude`,
+required; the model segment is optional. Claim at the family level
+(`claim:claude`) by default; pin the model (`claim:claude:opus`) only where the
+registry-driven provisioning has created that model-level label, because the
+claim skill applies an existing label rather than minting one. The family
+vocabulary — `claude`,
 `codex`, `copilot`, `qwen`, `deepseek`, `glm`, `kimi`, `minimax`, `gemini` — and
 its per-family models are defined once in harmon-init's `agent-registry.json` and
 provisioned by `task setup:github-labels` (mid-migration — see the transition note
@@ -399,13 +402,14 @@ on separate clocks.** The vendored `claim` / `shepherd` / `wrap` skills arrive v
 *provisioning* to that vocabulary is a separate rollout unit (registry-driven —
 harmon-init#661/#663), so until it reaches a given repo, `task setup:github-labels`
 still creates the legacy `agent:*` labels and `task setup:github-project` still
-creates the retired `Agent` field. Nothing makes the two clocks atomic, so a repo
-routinely carries skills that speak `claim:*` before its labels have migrated —
-or the reverse. The skills absorb the skew: a claim prefers `claim:claude` and
-falls back to the legacy `agent:claude-code` label only when `claim:*` is not yet
-provisioned, and the release and stale-claim sweeps still *recognize* a legacy
-`agent:*` claim so in-flight work started under the old vocabulary is not
-stranded. That read-side recognition is also why a plain grep for the literal
+creates the retired `Agent` field. The rollout is ordered **skills first**:
+harmon-init#663 ships the released devkit whose skills speak `claim:*` before any
+live `agent:*` labels are renamed, so the skew a repo actually sees is new skills
+against still-legacy provisioning. The skills absorb exactly that direction: a
+claim prefers `claim:claude` and falls back to the legacy `agent:claude-code`
+label when `claim:*` is not yet provisioned, and the release and stale-claim
+sweeps still *recognize* a legacy `agent:*` claim so in-flight work started under
+the old vocabulary is not stranded. That read-side recognition is also why a plain grep for the literal
 `agent:claude-code` no longer proves a legacy *writer* is installed — the
 automation check below accounts for it.
 
@@ -683,12 +687,13 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   **`needs-triage`**, grouped by **Type** (Bug / Feature / Task / Research) so you
   see the shape of the inbox. This is your grooming session — it exists so
   untriaged work can't hide; empty it regularly and it stays useful.
-- **Agent queue** — board, filtered to **`Status: Agent Queue`**, showing only the
-  in-flight `Status` columns (**Ready, Agent Queue, In Progress, Verifying, In
-  Review, Ready to Merge**), sorted by `Priority`. Projects V2 label filters match
-  concrete label values, not a `suggest:*` glob, so narrow by intelligence by
-  OR-ing the specific `suggest:<family>` labels you use rather than filtering on
-  the family prefix.
+- **Agent queue** — board, filtered to issues carrying any of your
+  `suggest:<family>` labels, showing the in-flight `Status` columns (**Ready,
+  Agent Queue, In Progress, Verifying, In Review, Ready to Merge**), sorted by
+  `Priority`. Filter on the concrete labels OR-ed together — Projects V2 matches
+  concrete label values, not a `suggest:*` glob — so an agent-routed issue stays
+  in the view across every stage, not only while it sits in the `Agent Queue`
+  column.
 - **Planning** — table, grouped by **`Product`** (or `Type`), sorted by
   `Priority`, with the **`Size` field summed in each group header**. The "how
   big is the pile, and what's the plan" view, and a **dates-free roadmap
