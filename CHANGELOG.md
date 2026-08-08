@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.23.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.22.1...v0.23.0) (2026-08-08)
+
+
+### Features
+
+* **skills:** migrate session suite from agent:* to claim:* vocabulary ([#326](https://github.com/evanharmon1/harmon-devkit/issues/326)) ([1af7c10](https://github.com/evanharmon1/harmon-devkit/commit/1af7c103b63ee035bae6d00662310527065b36bb))
+
+
+### Bug Fixes
+
+* **claim:** treat /claim invocation as approval for the routine claim writes ([#329](https://github.com/evanharmon1/harmon-devkit/issues/329)) ([1061c5d](https://github.com/evanharmon1/harmon-devkit/commit/1061c5d10290d997c9cbc3380fe4115415eb8fb2))
+* **standardize-repo:** align agent vocabulary catalog ([#324](https://github.com/evanharmon1/harmon-devkit/issues/324)) ([2ebcb44](https://github.com/evanharmon1/harmon-devkit/commit/2ebcb44e5629166338415760a9a5f74a31d9080c))
+
 ## [0.22.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.22.0...v0.22.1) (2026-08-08)
 
 
