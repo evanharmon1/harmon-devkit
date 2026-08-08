@@ -259,26 +259,32 @@ actually added.
   has it. Claim at the family level (`claim:claude`) unless you mean to pin the
   model (`claim:claude:opus`); the harness that ran it (Claude Code, the Action,
   the codex CLI) is operational detail for the claim comment, not the label.
-  Apply it only if the repo actually has the label, and only when the pre-check
-  above found no claude-family claim already present (`--limit` matters — the
-  default returns only 30 labels):
+  Apply a label only when the pre-check above found no claude-family claim
+  already present, and **prefer `claim:*`, falling back to the legacy `agent:*`
+  label** on a repo whose provisioning has not migrated. A currently-provisioned
+  repo — where `setup-github-labels.sh` still ships only `agent:*` until
+  harmon-init#661/#663 land the registry-driven provisioning that owns the label
+  migration — would otherwise *regress* from a labeled claim to an unlabeled
+  one, and skills sync independently of provisioning so the two are never atomic
+  (`--limit` matters — the default returns only 30 labels):
 
   ```sh
-  gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' |
-    grep -qx claim:claude &&
+  labels="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')"
+  if printf '%s\n' "$labels" | grep -qx claim:claude; then
     gh issue edit <n> --repo "$repo" --add-label claim:claude
+  elif printf '%s\n' "$labels" | grep -qx agent:claude-code; then
+    gh issue edit <n> --repo "$repo" --add-label agent:claude-code   # legacy, until claim:* is provisioned
+  fi
   ```
 
-  A repo without the `claim:*` family — one that has updated these skills but
-  not yet its label provisioning (`setup-github-labels.sh` still ships `agent:*`
-  until harmon-init#661/#663 land the registry-driven provisioning that owns
-  this migration), or any repo with `project_management: none` — skips the
-  label, exactly as the skill has always skipped a family a repo lacks. The
-  claim is still tracked by its **assignee and comment** (the authoritative
-  markers `kickoff`/`release-claim.sh` read); the label is a supplement that
-  arrives with provisioning. Say so once and carry on; **do not create the label
-  here.** The label taxonomy belongs to `task setup:github-labels` (driven by
-  the agent registry), and inventing a label per repo is how vocabularies fork.
+  **Record the exact label applied** in the claim record below — the release
+  parser removes exactly that one, so a legacy fallback is recorded as
+  `agent:claude-code`, not `claim:claude`. A repo with **neither** family — one
+  seeded before either existed, or any repo with `project_management: none` —
+  skips the label (the claim is still tracked by its authoritative assignee and
+  comment); say so once and carry on. **Do not create the label here** — the
+  taxonomy belongs to `task setup:github-labels` (driven by the agent registry),
+  and inventing a label per repo is how vocabularies fork.
 
   **If the user approved proceeding past another owner's claim label**, *replace*
   it rather than adding alongside: `--add-label` alone leaves the issue
@@ -343,7 +349,7 @@ actually added.
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `claim:` label added by this claim: <the exact label applied — claim:claude or a model-pinned claim:claude:opus | no | n/a>
+  - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
   - `claim:` label displaced by this claim: <claim:codex | agent:codex (legacy) | none>
   CLAIM_BODY_9f3k
 

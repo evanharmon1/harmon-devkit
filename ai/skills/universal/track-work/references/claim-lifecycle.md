@@ -70,16 +70,19 @@ claim comment's session context, never in the label.
   - board: <board title, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `claim:` label added by this claim: <the exact label applied — claim:claude or a model-pinned claim:claude:opus | no | n/a>
+  - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
   - `claim:` label displaced by this claim: <claim:codex | agent:codex (legacy) | none>
   ```
 
 - The label fields name the **actual label** (`claim:…`, e.g. `claim:claude` —
   the family segment names the model intelligence, not the harness). A new
-  claim adds a `claim:*` label; the **displaced** field may still name a legacy
-  `agent:*` label when the claim takes over a legacy in-flight claim, and
-  pre-migration records name `agent:*` in the added field too — so consumers
-  must accept **both** families here, not reject the record. The parser anchors
+  claim adds a `claim:*` label where the repo has the family and falls back to a
+  legacy `agent:claude-code` where provisioning has not migrated (so a
+  currently-provisioned repo keeps its claim labeled during the window); the
+  **displaced** field may likewise name a legacy `agent:*` label when the claim
+  takes over a legacy in-flight claim, and pre-migration records name `agent:*`
+  in the added field too — so consumers must accept **both** families here, not
+  reject the record. The parser anchors
   on `label added by this claim:`, so the `` `claim:` `` prefix is cosmetic and
   legacy records written with `` `agent:` `` still parse. Records that wrote
   `yes` (older still) name no label; the parser falls back to every live
