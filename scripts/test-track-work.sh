@@ -1961,10 +1961,12 @@ board_stub '{"data":{"repository":{"issue":{"projectItems":{"nodes":[]}}}}}'
 
 echo "==> a resolved field and option is written"
 board_stub "$on_board"
-[ "$(run_status --issue 5 --status "In Progress" --agent "Claude Code")" = 0 ] ||
+[ "$(run_status --issue 5 --status "In Progress")" = 0 ] ||
     fail "a resolvable field should apply"
 [ "$(grep -c 'F_status' "$tmp/mutations.log")" = 1 ] || fail "Status should be written once"
-[ "$(grep -c 'F_agent' "$tmp/mutations.log")" = 1 ] || fail "Agent should be written once"
+# The board_stub still exposes an Agent field, so this proves the script leaves
+# the retired field alone even when a legacy board still carries it.
+if grep -q 'F_agent' "$tmp/mutations.log"; then fail "the retired Agent field must never be written"; fi
 
 echo "==> option names match case-insensitively (boards differ on 'In progress')"
 board_stub "$on_board"
@@ -1977,35 +1979,11 @@ board_stub "$on_board"
     fail "a missing option should exit 3"
 [ ! -s "$tmp/mutations.log" ] || fail "a missing option must write nothing"
 
-echo "==> a partial apply is exit 4, never 0 — a skipped Status must not hide behind a written Agent"
+echo "==> --agent is retired: the removed flag is now an unknown-arg usage error (exit 2)"
 board_stub "$on_board"
-[ "$(run_status --issue 5 --status "Ready to Merge" --agent "Claude Code")" = 4 ] ||
-    fail "a skipped Status with a written Agent must report partial, not success"
-grep -q 'F_agent' "$tmp/mutations.log" || fail "the resolvable half should still be written"
-if grep -q 'F_status' "$tmp/mutations.log"; then fail "the unresolvable Status must not be written"; fi
-
-echo "==> every requested field applying is exit 0"
-board_stub "$on_board"
-[ "$(run_status --issue 5 --status "Todo" --agent "Claude Code")" = 0 ] ||
-    fail "all requested fields applying should exit 0"
-
-echo "==> a write that fails AFTER one succeeded is partial (4), not a flat failure (1)"
-cat >"$stub/gh" <<STUB
-#!/bin/sh
-case "\$*" in
-*projectItems*) echo '$on_board' ;;
-*ProjectV2SingleSelectField*)
-    echo '{"data":{"node":{"fields":{"nodes":[{"id":"F_status","name":"Status","options":[{"id":"O_todo","name":"Todo"}]},{"id":"F_agent","name":"Agent","options":[{"id":"O_cc","name":"Claude Code"}]}]}}}}'
-    ;;
-# Status writes; the second mutation (Agent) fails, as a timeout would.
-*F_status*) echo '{"data":{}}' ;;
-*F_agent*) exit 1 ;;
-*) exit 1 ;;
-esac
-STUB
-chmod +x "$stub/gh"
-[ "$(run_status --issue 5 --status "Todo" --agent "Claude Code")" = 4 ] ||
-    fail "a failed write after a successful one must report partial, not total failure"
+[ "$(run_status --issue 5 --status "Todo" --agent "Claude Code")" = 2 ] ||
+    fail "the removed --agent flag must be rejected as a usage error"
+[ ! -s "$tmp/mutations.log" ] || fail "a usage error must write nothing"
 
 echo "==> a write that fails with nothing else applied is exit 1"
 cat >"$stub/gh" <<STUB
@@ -2178,6 +2156,37 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_legacy")")" \
 [ "$(run_release --reason r)" = 0 ] || fail "legacy release should exit 0"
 grep -q -- '--remove-label agent:claude-code' "$rc_log" || fail "legacy release must remove live agent labels"
 grep -q -- '--remove-label agent:codex' "$rc_log" || fail "legacy release must remove every live agent label"
+
+# --- claim:* vocabulary (the model-centric family replacing agent:*) ----------
+# The rolling transition (harmon-init#620) migrates the live-claim label from
+# `agent:*` to `claim:<family>[:<model>]`. release-claim.sh must recognize the
+# new family exactly as it does the legacy one: a record naming a `claim:*`
+# label at family level and with an optional model segment, and the `yes`
+# fallback sweeping live `claim:*` labels alongside any legacy `agent:*` ones.
+# body_v2 rewrites body_v1's field prefix and value to the new family.
+body_v2="$(printf '%s' "$body_v1" | sed 's/`agent:` label/`claim:` label/g; s/agent:claude-code/claim:claude/')"
+issue_closed_claim='{"state":"closed","labels":[{"name":"bug"},{"name":"claim:claude"}],"assignees":[{"login":"evanharmon1"}]}'
+
+echo "==> a claim:* record releases the named claim label (family level)"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v2")")" "$issue_closed_claim"
+[ "$(run_release --reason 'issue closed (completed)')" = 0 ] || fail "a claim:* record release should exit 0"
+grep -q -- '--remove-label claim:claude' "$rc_log" || fail "a claim:* record must remove the named claim: label"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "a claim:* record must still remove the assignment"
+
+echo "==> a family+model claim label (claim:claude:opus) is released verbatim"
+body_model="$(printf '%s' "$body_v2" | sed 's/claim:claude/claim:claude:opus/g')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_model")")" \
+    '{"state":"closed","labels":[{"name":"claim:claude:opus"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a model-segmented claim label should release"
+grep -q -- '--remove-label claim:claude:opus' "$rc_log" || fail "the optional :model segment must be preserved in the removal"
+
+echo "==> a legacy 'yes' record sweeps live claim:* labels too, not only agent:*"
+body_yes_claim="$(printf '%s' "$body_v2" | sed 's/claim:claude$/yes/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_yes_claim")")" \
+    '{"state":"closed","labels":[{"name":"claim:claude"},{"name":"agent:codex"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a 'yes' record over claim:* labels should exit 0"
+grep -q -- '--remove-label claim:claude' "$rc_log" || fail "the 'yes' fallback must sweep live claim:* labels"
+grep -q -- '--remove-label agent:codex' "$rc_log" || fail "the 'yes' fallback must sweep legacy agent:* labels in the same pass"
 
 echo "==> 'assignee added: no' leaves the assignee in place"
 body_noassign="$(printf '%s' "$body_v1" | sed 's/^- assignee added by this claim: yes/- assignee added by this claim: no/')"

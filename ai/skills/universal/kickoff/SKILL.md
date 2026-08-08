@@ -5,7 +5,7 @@ description: >-
   PRs/issues) and compose a descriptive session name, emitting a
   copy-pasteable /rename command for the user. Invoke as /kickoff [topic or issue #].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh pr list:*), Bash(gh issue list:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh pr list:*), Bash(gh issue list:*), Bash(gh label list:*)
 ---
 
 # Kickoff Session
@@ -36,7 +36,7 @@ rather than blocking the session start.
 **Sweep for stale claims.** The claim `/claim` makes has no owner once its
 session ends: `/shepherd` stops before the merge, `/wrap` leaves an open PR
 alone, and a personal-account board has no automation — so when the maintainer
-merges later, the assignee, `agent:*` label, `Agent` field, and card status all
+merges later, the assignee, `claim:*` label, and card status all
 survive with nobody left to clear them. Session start is where that gets
 caught, because it is the one step that runs without depending on the session
 that made the claim:
@@ -44,15 +44,30 @@ that made the claim:
 ```sh
 gh issue list --repo <owner/repo> --assignee @me --state all --limit 200 \
   --json number,title,state,labels,url
-# ...and by marker, because a claim can outlive its assignee:
-gh issue list --repo <owner/repo> --label agent:claude-code --state all --limit 200 \
-  --json number,title,state,assignees,url
+# ...and by marker, because a claim can outlive its assignee. `gh issue list
+# --label` is exact-match (no prefix), so enumerate the claude-family claim
+# labels the repo actually carries — family-level, model-pinned, and legacy —
+# and query each. This must be a CHECKED read: a bare `for lbl in $(gh label
+# list ...)` runs zero iterations and falsely reports a clean sweep on an
+# expired token or rate limit, hiding the marker-only claim this exists to find
+# (gh-verification.md). On an org repo the event-driven release cannot recover
+# such a claim once its assignee is gone (its trust gate needs the owner or a
+# current assignee), so this sweep is the only backstop — do not skip it on a
+# failed enumeration, surface it:
+if ! claim_labels="$(gh label list --repo <owner/repo> --limit 1000 --json name -q \
+    '.[].name | select(. == "claim:claude" or startswith("claim:claude:") or . == "agent:claude-code")')"; then
+  echo "warning: could not list claim labels — the marker-only sweep is INCOMPLETE; retry or check auth" >&2
+fi
+for lbl in $claim_labels; do
+  gh issue list --repo <owner/repo> --label "$lbl" --state all --limit 200 \
+    --json number,title,state,assignees,url
+done
 ```
 
 **Query both, and union the results.** `/wrap` runs its cleanup as separate
 commands on purpose — a combined `gh issue edit` fails wholesale when the repo
 lacks the label — so a partial cleanup that removes the assignee and then fails
-on the label, `Agent`, or `Status` is an expected outcome. An assignee-only
+on the label or `Status` is an expected outcome. An assignee-only
 query can never see exactly that leftover, which is the case this sweep is
 supposed to recover.
 
@@ -63,8 +78,8 @@ matters too; the default returns 30.
 
 **Assignment alone is not a claim.** Plenty of people assign themselves planned
 backlog work. Flag an issue only when a claim marker corroborates it — an
-`agent:*` label, a card at `In Progress`, or a `/claim` claim comment — and
-then only if its work has finished or stalled.
+`claim:*` label (or a legacy `agent:*` one), a card at `In Progress`, or a
+`/claim` claim comment — and then only if its work has finished or stalled.
 
 **A claim comment is history, not state.** Comments are never deleted, so the
 claim comment survives its own release — and where the issue was already
@@ -72,7 +87,7 @@ assigned to you, `/wrap` correctly leaves that assignment in place too. Both
 markers then persist forever, and treating the comment alone as current would
 make every future `/kickoff` re-report the same long-released claim. So the
 comment counts only when **no later `Claim released —` comment supersedes it**.
-Prefer the live markers (`agent:*` label, card at `In Progress`); fall back to
+Prefer the live markers (`claim:*` label, card at `In Progress`); fall back to
 the comment only after checking what follows it.
 
 Report what survives that test as loose ends and point at `/wrap` for the

@@ -30,7 +30,7 @@ read it in the UI) — never guess.
   unpushed commits (guard for branches with no upstream).
 - If `/retro` has not run this session, offer to run it first.
 - **Release any claim this session made.** If `/claim` claimed an issue
-  (assignee, `agent:*` label, card at `In Progress`), check what actually
+  (assignee, `claim:*` label, card at `In Progress`), check what actually
   became of it — a claim left standing over abandoned or finished work is a lie
   the board tells the next reader, and it outlives the session that told it:
 
@@ -86,7 +86,7 @@ read it in the UI) — never guess.
   actually existed and fabricates no ownership** — re-add the assignee you
   just removed (always writable, even where the record marks the label
   `n/a`); a displaced label you already restored counts too, and never
-  re-add your own `agent:*` label beside it, which would leave the issue
+  re-add your own `claim:*` label beside it, which would leave the issue
   claiming two owners. The point is that the half-released claim stays
   findable by `/kickoff`'s sweep instead of surviving only as a card and an
   unsuperseded comment. If that restore also fails, nothing was writable —
@@ -138,8 +138,8 @@ read it in the UI) — never guess.
     the same pre-write re-read `/claim` performs before claiming.
 
     Otherwise **stop and ask** — in particular when no claim record survives,
-    the record says `prior board status: unknown`, another agent's `agent:*`
-    label is present, another open PR still references the issue, or the card
+    the record says `prior board status: unknown`, another agent's `claim:*`
+    (or legacy `agent:*`) label is present, another open PR still references the issue, or the card
     sits at a status this lifecycle never writes.
 
     (The single confirmation is about *judgment*, not tool permissions: the
@@ -191,7 +191,7 @@ read it in the UI) — never guess.
     #
     # Board FIRST, searchable markers LAST. The board write is the one that
     # fails for environmental reasons (missing `project` scope), and the
-    # assignee and `agent:*` label are what /kickoff's stale-claim sweep
+    # assignee and `claim:*` label are what /kickoff's stale-claim sweep
     # queries — clear them before a failed board write and the leftover card
     # becomes undiscoverable (the board-only gap, harmon-devkit#183).
     # The recorded board title and status are external data — a project title
@@ -210,8 +210,8 @@ read it in the UI) — never guess.
       --project '<the board the claim comment recorded>' \
       --status '<the status the claim comment recorded>'
     # If the record names a displaced label, put it back — the claim removed it:
-    gh issue edit <n> --repo <owner/repo> --add-label <displaced agent: label>
-    gh issue edit <n> --repo <owner/repo> --remove-label agent:claude-code  # only if the record says the claim added it
+    gh issue edit <n> --repo <owner/repo> --add-label <the displaced label the record names>
+    gh issue edit <n> --repo <owner/repo> --remove-label <the exact label the record says the claim added>  # e.g. claim:claude, model-pinned claim:claude:opus, or legacy agent:claude-code
     gh issue edit <n> --repo <owner/repo> --remove-assignee @me          # likewise
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```
@@ -249,11 +249,12 @@ read it in the UI) — never guess.
     - Anything else — `Icebox`, `Next`, `Shaping`, a status this lifecycle
       never writes — someone else moved it. Leave it and say what you found.
 
-    **Leave the `Agent` field alone.** A claim never writes it — it records
-    which agent *should* implement the issue, set at planning, while the
-    `agent:*` label records which one *is*. Clearing it here would delete a
-    planning decision the claim never made and the board's Agent-queue view
-    depends on.
+    **Leave the `Agent` field alone.** It is retired, and a claim never wrote
+    it — advisory routing now lives in the `suggest:*` label and live ownership
+    in the `claim:*` label. If a legacy `Agent` value still lingers on an old
+    board, it is a planning artifact this claim never set, so clearing it here
+    would delete a decision the claim never made. Release only what the claim
+    record says the claim added.
 
     Do not run any of this mid-flight hand-back unasked — the work is being
     handed back, not finished, so it is the user's call: they may be resuming

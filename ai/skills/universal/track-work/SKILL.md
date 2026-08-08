@@ -593,22 +593,21 @@ blind where the others see:
 | Marker | Says | Visible in |
 | --- | --- | --- |
 | `Status` = `In Progress` | where it is in delivery | the board |
-| `agent:claude-code` label | *which* agent is working it right now | `gh issue list --label`, the issue page, and every owner type |
+| `claim:claude` label | *which* intelligence is working it right now | `gh issue list --label`, the issue page, and every owner type |
 | assignee | a human-shaped "taken" | notifications, `gh issue list --assignee` |
 
-**The `Agent` field is not one of them, and a claim must never write it.** It
-looks like the obvious place and is the wrong one: `Agent` says which agent
-*should* implement the issue — a planning assignment, set at triage, and what
-the board's Agent-queue view filters on. The label says which one *is*. They
-share a vocabulary (which is why the option lists are extended together) and
-answer different questions, so writing the field at claim time destroys a
-planning decision and silently reassigns work planned for one agent to whoever
-picked it up. A label that disagrees with the field is information — someone
-took work planned for another agent — not drift to reconcile.
+**The retired `Agent` field is not one of them, and a claim must never write
+it.** Advisory routing — *which* family/model *should* do the work — is now the
+human-authored `suggest:<family>[:<model>]` label, set at triage; the `claim:*`
+label says which one *is* doing it. Both are labels answering different
+questions, so never confuse a `suggest:*` with a claim, and never write the
+`Agent` field (it is gone from the taxonomy). A `claim:*` label that disagrees
+with a `suggest:*` label is information — someone took work suggested for
+another family — not drift to reconcile.
 
-Keeping the field out of the claim also makes it behave the same everywhere: on
-an organization `Agent` is an org *issue field* that Projects V2 cannot write at
-all, so a claim depending on it could never have worked there.
+Both being labels makes the claim behave the same everywhere: the old `Agent`
+field was an org *issue field* that Projects V2 could not write at all, so a
+claim depending on it could never have worked there.
 
 ```sh
 <skill-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
@@ -616,10 +615,8 @@ all, so a claim depending on it could never have worked there.
 ```
 
 **Exit 0** applied. **Exit 3** nothing to do — the issue is on no board, or the
-board has no such field/option; benign, note it once and never retry. **Exit 4**
-partial (only possible when more than one field was requested) — report which
-half landed rather than claiming the move. **Exit 1** the write failed.
-**Exit 2** it could not verify — usually a missing token scope
+board has no such field/option; benign, note it once and never retry. **Exit 1**
+the write failed. **Exit 2** it could not verify — usually a missing token scope
 (`gh auth refresh -s read:project,project`); treat as unsafe, not as clean.
 
 The script never creates fields, options, or labels: the vocabulary belongs to
