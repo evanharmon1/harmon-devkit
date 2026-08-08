@@ -639,7 +639,11 @@ for CAPABILITY_KEY in \
       exit 1
     }
 done
-if [ "$USE_CODEX_CLOUD_REVIEW" = "true" ]; then
+# skill_categories is a conditional question activated by use_skills_sync, so a
+# skills-source repo running with use_skills_sync=false (native classifier) has
+# it inactive by design. Require it active only when the sync/universal path is
+# what installs the classifier — the same carve-out the later guards apply.
+if [ "$USE_CODEX_CLOUD_REVIEW" = "true" ] && [ "$SHIPS_CLASSIFIER_NATIVELY" != "true" ]; then
   grep -qxF skill_categories "$GUARDED_STATE/reviewed-keys" ||
     {
       echo "required skill_categories question is not active" >&2

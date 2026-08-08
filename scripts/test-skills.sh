@@ -1040,7 +1040,8 @@ expect_ok "update guidance waives classifier prerequisites for a skills-source r
         grep -qF "ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh" "$1" &&
         grep -qF "SHIPS_CLASSIFIER_NATIVELY=true" "$1" &&
         grep -qF "] && [ -x " "$1" &&
-        test "$(grep -Fc "SHIPS_CLASSIFIER_NATIVELY" "$1")" -eq 5 &&
+        grep -qF "SHIPS_CLASSIFIER_NATIVELY\" != \"true\"" "$1" &&
+        test "$(grep -Fc "SHIPS_CLASSIFIER_NATIVELY" "$1")" -eq 6 &&
         test "$(grep -Fc "waived when this repo ships the classifier natively" "$1")" -eq 3 &&
         grep -qF "waives both the skills-sync and universal-category" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
