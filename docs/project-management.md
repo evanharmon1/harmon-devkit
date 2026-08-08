@@ -330,7 +330,10 @@ and extend both together so the option sets stay identical.
 
 `suggest:*` and `claim:*` name the model **intelligence**, not the harness that
 runs it — Claude Code vs. the `@claude` Action vs. the codex CLI is operational
-detail, recorded in the claim comment, not the label. Claims and suggestions
+detail, recorded in the claim comment, not the label. A provider-rewired harness
+labels by the **model family** it runs, not the wrapper: work done by Claude Code
+running Kimi is `claim:kimi`, and the harness slug (`claude-code-kimi`) never
+appears in the label. Claims and suggestions
 operate at the **family level** (`claim:claude`, `suggest:claude`): that is what
 `task setup:github-labels` provisions and what the skills apply, since a claim
 applies an existing label rather than minting one. The registry vocabulary also
@@ -689,15 +692,14 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   **`needs-triage`**, grouped by **Type** (Bug / Feature / Task / Research) so you
   see the shape of the inbox. This is your grooming session — it exists so
   untriaged work can't hide; empty it regularly and it stays useful.
-- **Agent queue** — board, filtered to issues carrying any of your family-level
-  `suggest:<family>` labels, showing the in-flight `Status` columns (**Ready,
-  Agent Queue, In Progress, Verifying, In Review, Ready to Merge**), sorted by
-  `Priority`. Filter on the concrete labels OR-ed together — Projects V2 matches
-  concrete label values, not a `suggest:*` glob — so an agent-routed issue stays
-  in the view across every stage, not only while it sits in the `Agent Queue`
-  column. Suggestions are family-level by default; if you also apply a model-level
-  `suggest:` label, co-apply the family one (or add the model labels to the OR set)
-  so the issue is not missed.
+- **Agent queue** — board, keyed on **`Status: Agent Queue`** (the shaped-and-
+  waiting lane before an agent picks work up), sorted by `Priority`. It may
+  additionally filter by the concrete `suggest:<family>` labels you use — Projects
+  V2 matches concrete label values, not a `suggest:*` glob, so OR the specific
+  labels rather than the family prefix — and it never depends on an `Agent` field.
+  To watch agent-routed work *across* the pipeline instead of just the queue lane,
+  slice the board by the `suggest:*` / `claim:*` labels (below) rather than
+  overloading this view.
 - **Planning** — table, grouped by **`Product`** (or `Type`), sorted by
   `Priority`, with the **`Size` field summed in each group header**. The "how
   big is the pile, and what's the plan" view, and a **dates-free roadmap
