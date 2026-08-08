@@ -46,12 +46,12 @@ gh issue list --repo <owner/repo> --assignee @me --state all --limit 200 \
   --json number,title,state,labels,url
 # ...and by marker, because a claim can outlive its assignee. `gh issue list
 # --label` is EXACT-match, so a single `claim:claude` query misses a
-# model-pinned `claim:claude:opus` — and the legacy `agent:*` fallback a
-# not-yet-provisioned repo still applies. Discover every claude-family claim
+# model-pinned `claim:claude:opus` — and a legacy `agent:claude-code` claim
+# still in flight from before the migration. Discover every claude-family claim
 # label the repo actually carries (family-level, model-pinned, and legacy),
 # then query each:
 for lbl in $(gh label list --repo <owner/repo> --limit 1000 --json name -q \
-    '.[].name | select(startswith("claim:claude") or . == "agent:claude-code")'); do
+    '.[].name | select(. == "claim:claude" or startswith("claim:claude:") or . == "agent:claude-code")'); do
   gh issue list --repo <owner/repo> --label "$lbl" --state all --limit 200 \
     --json number,title,state,assignees,url
 done

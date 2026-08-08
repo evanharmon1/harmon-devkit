@@ -139,7 +139,7 @@ read it in the UI) — never guess.
 
     Otherwise **stop and ask** — in particular when no claim record survives,
     the record says `prior board status: unknown`, another agent's `claim:*`
-    label is present, another open PR still references the issue, or the card
+    (or legacy `agent:*`) label is present, another open PR still references the issue, or the card
     sits at a status this lifecycle never writes.
 
     (The single confirmation is about *judgment*, not tool permissions: the

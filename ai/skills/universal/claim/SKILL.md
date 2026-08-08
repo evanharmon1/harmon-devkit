@@ -218,9 +218,15 @@ add-if-missing, so on that path it changes nothing and there is nothing to undo.
 A hand-back that removes it anyway destroys state the session never created:
 
 ```sh
+# `labelled` is true when a claude-family claim is ALREADY on the issue — the
+# family-level label, a model-pinned variant, or a legacy in-flight one — so a
+# re-claim does not add a second marker (if labelled, add nothing and record the
+# label as `no`):
 gh issue view <n> --repo "$repo" --json assignees,labels \
   --jq '{assigned: ([.assignees[].login] | index("<your-login>") != null),
-         labelled: ([.labels[].name] | any(. == "claim:claude" or . == "agent:claude-code"))}'
+         labelled: ([.labels[].name]
+                    | any(. == "claim:claude" or startswith("claim:claude:")
+                          or . == "agent:claude-code"))}'
 # the board's own markers — the same --show that reads the prior status:
 <track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --show
 ```
@@ -253,29 +259,26 @@ actually added.
   has it. Claim at the family level (`claim:claude`) unless you mean to pin the
   model (`claim:claude:opus`); the harness that ran it (Claude Code, the Action,
   the codex CLI) is operational detail for the claim comment, not the label.
-  Apply only a label the repo actually has, and **prefer `claim:*` but fall back
-  to the legacy `agent:*` label** — a repo that has updated these skills but not
-  yet its label provisioning (`setup-github-labels.sh` still ships `agent:*`
-  until harmon-init#661/#663 land) would otherwise silently drop the
-  live-ownership marker, hiding the claim from label-based coordination and the
-  stale-claim sweep. `--limit` matters — the default returns only 30 labels:
+  Apply it only if the repo actually has the label, and only when the pre-check
+  above found no claude-family claim already present (`--limit` matters — the
+  default returns only 30 labels):
 
   ```sh
-  labels="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')"
-  if printf '%s\n' "$labels" | grep -qx claim:claude; then
+  gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' |
+    grep -qx claim:claude &&
     gh issue edit <n> --repo "$repo" --add-label claim:claude
-  elif printf '%s\n' "$labels" | grep -qx agent:claude-code; then
-    gh issue edit <n> --repo "$repo" --add-label agent:claude-code   # legacy, until claim:* is provisioned
-  fi
   ```
 
-  **Record the label you actually applied** in the claim record below — the
-  release parser removes exactly that one, so a legacy fallback must be recorded
-  as `agent:claude-code`, not `claim:claude`. A repo with **neither** family —
-  one seeded before either existed, or any repo with `project_management: none` —
-  skips this. Say so once and carry on; **do not create the label here.** The
-  label taxonomy belongs to `task setup:github-labels` (driven by the agent
-  registry), and inventing a label per repo is how vocabularies fork.
+  A repo without the `claim:*` family — one that has updated these skills but
+  not yet its label provisioning (`setup-github-labels.sh` still ships `agent:*`
+  until harmon-init#661/#663 land the registry-driven provisioning that owns
+  this migration), or any repo with `project_management: none` — skips the
+  label, exactly as the skill has always skipped a family a repo lacks. The
+  claim is still tracked by its **assignee and comment** (the authoritative
+  markers `kickoff`/`release-claim.sh` read); the label is a supplement that
+  arrives with provisioning. Say so once and carry on; **do not create the label
+  here.** The label taxonomy belongs to `task setup:github-labels` (driven by
+  the agent registry), and inventing a label per repo is how vocabularies fork.
 
   **If the user approved proceeding past another owner's claim label**, *replace*
   it rather than adding alongside: `--add-label` alone leaves the issue
@@ -340,7 +343,7 @@ actually added.
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `claim:` label added by this claim: <claim:claude | agent:claude-code (legacy fallback) | no | n/a>
+  - `claim:` label added by this claim: <claim:claude | no | n/a>
   - `claim:` label displaced by this claim: <claim:codex | agent:codex (legacy) | none>
   CLAIM_BODY_9f3k
 
