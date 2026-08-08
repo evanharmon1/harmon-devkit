@@ -907,6 +907,69 @@ expect_ok "standards catalog documents the web-only skills-sync default" \
 expect_ok "standards catalog documents Foreman as deliberate opt-in" \
     grep -qF 'current template source now deliberately' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog names the six planning axes" \
+    grep -qF 'six planning axes are' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog lists every planning axis" \
+    grep -qF '**Status, Priority, Size, Product, Domain, and Layer**' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog removes Agent from the target field set" \
+    grep -qF 'The retired `Agent` field is not part of the' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog distinguishes pre-rollout task behavior" \
+    grep -qF 'Those rows describe executable behavior in pre-rollout harmon-init releases' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog leaves transition execution to harmon-init" \
+    grep -qF 'not re-specified' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents model-centric suggestions" \
+    grep -qF '`suggest:<family>[:<model>]` for human-authored, advisory triage' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog documents model-centric claims" \
+    grep -qF '`claim:<family>[:<model>]` for agent-authored live ownership' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog keeps claim cleanup transition-compatible" \
+    grep -qF 'Transition-compatible consumers also recognize documented legacy' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog scopes session claim cleanup to lifecycle completion" \
+    grep -qF 'Interactive session claims are released at wrap or shepherd completion' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog guarantees failure cleanup only for Claude Actions" \
+    grep -qF 'Claude Action claims are always released, including on failure' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog requires registry-derived human routing tables" \
+    grep -qF 'includes family and harness tables derived from the' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog conditions phantom Foreman labels on opt-in" \
+    grep -qF 'when `use_foreman` is enabled, phantom `foreman:*` rows' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog reserves arming for Foreman" \
+    grep -qF "only an authorized actor's \`foreman:<adapter>\` label arms" \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog points to the agent registry" \
+    grep -qF 'harmon-init/blob/cc5b735b6c512738cf8689df393df8a20d409cee/agent-registry.json' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog points to the vocabulary ADR" \
+    grep -qF 'cc5b735b6c512738cf8689df393df8a20d409cee/docs/decisions/0005-unified-agent-vocabulary.md' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "standards catalog does not source the agent registry from mutable main" \
+    grep -qF 'harmon-init/blob/main/agent-registry.json' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "standards catalog does not source the vocabulary ADR from mutable main" \
+    grep -qF 'harmon-init/blob/main/docs/decisions/0005-unified-agent-vocabulary.md' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog classifies missing registries as version lag" \
+    grep -qF 'If that revision lacks the registry, report template-version lag' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog marks Claude workflow inventory pre-rollout" \
+    grep -qF 'The three `claude-*` rows describe current pre-rollout template behavior.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog records the Claude workflow target" \
+    grep -qF 'target is mention-only and `claim:claude`-aware' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog keeps migration procedures out of the catalog" \
+    grep -qF 'not a second procedure in this catalog' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog pins the foreman v2 uvx wrapper" \
     grep -qF 'uvx --from git+https://github.com/ponderousdev/foreman@v' \
     "$STANDARDIZE_REFS/standards-catalog.md"
