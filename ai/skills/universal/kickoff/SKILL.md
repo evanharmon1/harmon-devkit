@@ -44,10 +44,13 @@ that made the claim:
 ```sh
 gh issue list --repo <owner/repo> --assignee @me --state all --limit 200 \
   --json number,title,state,labels,url
-# ...and by marker, because a claim can outlive its assignee (run once per
-# live-claim label the repo uses — `claim:claude` now, `agent:claude-code` on a
-# repo still mid-transition):
+# ...and by marker, because a claim can outlive its assignee. Query BOTH
+# live-claim families during the rolling transition — `claim:*` is the current
+# marker, `agent:*` is the legacy fallback a not-yet-provisioned repo still
+# applies (run the query once per label):
 gh issue list --repo <owner/repo> --label claim:claude --state all --limit 200 \
+  --json number,title,state,assignees,url
+gh issue list --repo <owner/repo> --label agent:claude-code --state all --limit 200 \
   --json number,title,state,assignees,url
 ```
 
