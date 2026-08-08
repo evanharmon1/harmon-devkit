@@ -1,0 +1,52 @@
+name: Snyk Scheduled
+run-name: ${{ github.actor }} is running the optional Snyk second-opinion scan
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 6 * * 0"
+
+# Advisory defense in depth only: intentionally no pull_request/push trigger and
+# no required branch check. Public repositories do not consume private-test
+# quotas; private repositories should normally leave this workflow ungenerated.
+
+concurrency:
+  group: snyk-scheduled
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Snyk ${{ matrix.scan }}
+    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
+    # default; set it to a JSON runner spec to override without a commit.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        scan:
+          - sast
+          - sca
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          snyk: "true"
+      - name: Verify Snyk token is configured
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: test -n "${SNYK_TOKEN}"
+      - name: Run Snyk ${{ matrix.scan }} second-opinion scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_REMOTE_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        # Explicit remote context helps Snyk classify a public repository as
+        # public so it does not debit the private-test allocation.
+        run: >-
+          task "security:${{ matrix.scan }}:snyk" --
+          "--remote-repo-url=${SNYK_REMOTE_REPO_URL}"

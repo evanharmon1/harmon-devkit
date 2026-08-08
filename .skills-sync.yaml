@@ -1,0 +1,22 @@
+# .skills-sync.yaml — the shared agent skills this repo vendors from
+# harmon-devkit, pinned to a tag. Categories came from the skill_categories
+# copier answer (seeded from your project type); edit them freely, then run
+# `task sync:skills`. See docs/CHECKLIST.md.
+#
+# harmon-devkit is the single source of truth; the sync manages ONLY the
+# skill directories it vendored (tracked on the provenance `# managed:`
+# line) — any other directory in `dest` is a local skill it never touches.
+source:
+  repo: https://github.com/evanharmon1/harmon-devkit.git
+  # renovate: datasource=github-releases depName=evanharmon1/harmon-devkit
+  ref: v0.22.0 # pinned tag — bump deliberately to a released harmon-devkit tag
+categories:
+  - universal
+  - repo
+dest: .claude/skills
+# Shared subagents, vendored at the SAME pinned ref as the skills above. A thin
+# agent defers to a skill by reading it, so letting the two pin separately would
+# leave an agent following a procedure that no longer exists at the other pin.
+agents:
+  names: ["*"] # every agent at the pin, the way a requested skill category works
+  dest: .claude/agents

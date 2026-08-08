@@ -130,6 +130,11 @@ assert_unit() {
         grep -q "^${1}=" "$2"
     }
 
+    # These allow-list cases run init-env.sh with most vars unset, so its
+    # missing-var warning (asserted in 6 below) fires on every one. They assert
+    # on the ENV-FILE, not stderr, so the warning is discarded: a green run must
+    # not print "warning:" blocks a reader has to triage. `set -e` still catches
+    # a nonzero exit, and 6 is where stderr is captured and checked.
     local bot_allow=(GH_TOKEN FOREMAN_AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY)
     local dev_allow=(TS_AUTHKEY CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY)
 
@@ -137,7 +142,7 @@ assert_unit() {
     #    including the read-only agent token foreman requires for dispatch.
     env_file="${work_dir}/env-bot-strip"
     : >"$env_file"
-    TS_AUTHKEY=fake GH_TOKEN=fake FOREMAN_AGENT_GH_TOKEN=fake bash "$init_env" "$env_file" "${bot_allow[@]}"
+    TS_AUTHKEY=fake GH_TOKEN=fake FOREMAN_AGENT_GH_TOKEN=fake bash "$init_env" "$env_file" "${bot_allow[@]}" 2>/dev/null
     has_var GH_TOKEN "$env_file" || fail "bot profile dropped allowed GH_TOKEN"
     has_var FOREMAN_AGENT_GH_TOKEN "$env_file" || fail "bot profile dropped allowed FOREMAN_AGENT_GH_TOKEN (foreman dispatch needs it)"
     if has_var TS_AUTHKEY "$env_file"; then
@@ -148,7 +153,7 @@ assert_unit() {
     #    unset in the host env.
     env_file="${work_dir}/env-bot-evict"
     printf 'TS_AUTHKEY=stale\nGH_TOKEN=old\n' >"$env_file"
-    (unset TS_AUTHKEY && GH_TOKEN=new bash "$init_env" "$env_file" "${bot_allow[@]}")
+    (unset TS_AUTHKEY && GH_TOKEN=new bash "$init_env" "$env_file" "${bot_allow[@]}") 2>/dev/null
     if has_var TS_AUTHKEY "$env_file"; then
         fail "bot profile failed to evict a stale TS_AUTHKEY"
     fi
@@ -159,7 +164,7 @@ assert_unit() {
     #    login`) rather than carry the bot's PAT.
     env_file="${work_dir}/env-dev-keep"
     : >"$env_file"
-    TS_AUTHKEY=keep GH_TOKEN=fake FOREMAN_AGENT_GH_TOKEN=fake bash "$init_env" "$env_file" "${dev_allow[@]}"
+    TS_AUTHKEY=keep GH_TOKEN=fake FOREMAN_AGENT_GH_TOKEN=fake bash "$init_env" "$env_file" "${dev_allow[@]}" 2>/dev/null
     has_var TS_AUTHKEY "$env_file" || fail "dev profile dropped allowed TS_AUTHKEY"
     if has_var GH_TOKEN "$env_file"; then
         fail "dev profile injected GH_TOKEN — a human profile must carry no bot credential"
@@ -174,7 +179,7 @@ assert_unit() {
     #     allow-list alone would leave the old token sitting in the env-file.
     env_file="${work_dir}/env-dev-evict"
     printf 'GH_TOKEN=stale\nTS_AUTHKEY=old\n' >"$env_file"
-    (unset GH_TOKEN && TS_AUTHKEY=new bash "$init_env" "$env_file" "${dev_allow[@]}")
+    (unset GH_TOKEN && TS_AUTHKEY=new bash "$init_env" "$env_file" "${dev_allow[@]}") 2>/dev/null
     if has_var GH_TOKEN "$env_file"; then
         fail "dev profile failed to evict a stale GH_TOKEN"
     fi
@@ -183,7 +188,7 @@ assert_unit() {
     #    (it silently overrides CLAUDE_CODE_OAUTH_TOKEN).
     env_file="${work_dir}/env-anthropic"
     : >"$env_file"
-    ANTHROPIC_API_KEY=secret GH_TOKEN=fake bash "$init_env" "$env_file" GH_TOKEN ANTHROPIC_API_KEY
+    ANTHROPIC_API_KEY=secret GH_TOKEN=fake bash "$init_env" "$env_file" GH_TOKEN ANTHROPIC_API_KEY 2>/dev/null
     if has_var ANTHROPIC_API_KEY "$env_file"; then
         fail "ANTHROPIC_API_KEY was allowed into the env-file"
     fi
@@ -191,12 +196,94 @@ assert_unit() {
     # 5. An unknown var passed in the allow-list cannot be smuggled in.
     env_file="${work_dir}/env-smuggle"
     : >"$env_file"
-    HARMON_SMUGGLE=evil bash "$init_env" "$env_file" GH_TOKEN HARMON_SMUGGLE
+    HARMON_SMUGGLE=evil bash "$init_env" "$env_file" GH_TOKEN HARMON_SMUGGLE 2>/dev/null
     if has_var HARMON_SMUGGLE "$env_file"; then
         fail "an unknown var was smuggled into the env-file via the allow-list"
     fi
 
-    # 6. tailscale-connect.sh no-ops (exit 0, prints its "unavailable" message)
+    # 6. A var allow-listed for this profile but absent from BOTH the host env
+    #    and the env-file must WARN on stderr. The silence this replaces is how
+    #    a missing TS_AUTHKEY went unnoticed for hours in a Coder workspace
+    #    (harmon-init#639): the container came up fine and only the Tailscale-
+    #    dependent step failed, far from the cause.
+    local warn_out warn_rc
+    env_file="${work_dir}/env-warn-dev"
+    : >"$env_file"
+    warn_rc=0
+    warn_out="$(unset TS_AUTHKEY CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY &&
+        bash "$init_env" "$env_file" "${dev_allow[@]}" 2>&1 >/dev/null)" || warn_rc=$?
+    [ "$warn_rc" -eq 0 ] ||
+        fail "init-env.sh exited ${warn_rc} on a missing allow-listed var — it runs as initializeCommand on the HOST, so a nonzero exit aborts the container build"
+    case "$warn_out" in
+    *TS_AUTHKEY*) ;;
+    *) fail "dev profile did not warn about a TS_AUTHKEY missing from both the host env and the env-file" ;;
+    esac
+
+    #    The bot profile must stay SILENT about TS_AUTHKEY even when it is
+    #    missing everywhere: it is off that allow-list by design (no tailnet
+    #    path from a bypassPermissions container), so naming it would advertise
+    #    a credential the profile must never hold — and train the reader to
+    #    expect one. Warning from BASE_MANAGED_VARS/EVICT_VARS instead of the
+    #    post-filter allow-list is the accident this pins down.
+    env_file="${work_dir}/env-warn-bot"
+    : >"$env_file"
+    warn_rc=0
+    warn_out="$(unset TS_AUTHKEY GH_TOKEN FOREMAN_AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY &&
+        bash "$init_env" "$env_file" "${bot_allow[@]}" 2>&1 >/dev/null)" || warn_rc=$?
+    [ "$warn_rc" -eq 0 ] || fail "init-env.sh exited ${warn_rc} warning under the bot profile"
+    case "$warn_out" in
+    *TS_AUTHKEY*) fail "bot profile warned about a missing TS_AUTHKEY — it is off that allow-list by design and must never be advertised there" ;;
+    esac
+    case "$warn_out" in
+    *GH_TOKEN*) ;;
+    *) fail "bot profile did not warn about a GH_TOKEN missing from both the host env and the env-file" ;;
+    esac
+
+    #    A value already in the env-file is the out-of-band case init-env.sh
+    #    exists to preserve (1Password-managed, never exported to the host
+    #    shell): warn about nothing, and leave the value intact.
+    env_file="${work_dir}/env-warn-quiet"
+    printf 'TS_AUTHKEY=fromop\nCLAUDE_CODE_OAUTH_TOKEN=tok\nAGENT_DECK_TELEGRAM_KEY=key\n' >"$env_file"
+    warn_rc=0
+    warn_out="$(unset TS_AUTHKEY CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY &&
+        bash "$init_env" "$env_file" "${dev_allow[@]}" 2>&1 >/dev/null)" || warn_rc=$?
+    [ "$warn_rc" -eq 0 ] || fail "init-env.sh exited ${warn_rc} with every allow-listed var already in the env-file"
+    [ -z "$warn_out" ] || fail "init-env.sh warned about vars already present in the env-file: ${warn_out}"
+    grep -q '^TS_AUTHKEY=fromop$' "$env_file" ||
+        fail "init-env.sh did not preserve the out-of-band TS_AUTHKEY value in the env-file"
+
+    #    A bare "VAR=" env-file line leaves the container with no usable value,
+    #    so the presence test requires at least one character after the `=`.
+    env_file="${work_dir}/env-warn-blank"
+    printf 'TS_AUTHKEY=\nCLAUDE_CODE_OAUTH_TOKEN=tok\nAGENT_DECK_TELEGRAM_KEY=key\n' >"$env_file"
+    warn_rc=0
+    warn_out="$(unset TS_AUTHKEY CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY &&
+        bash "$init_env" "$env_file" "${dev_allow[@]}" 2>&1 >/dev/null)" || warn_rc=$?
+    [ "$warn_rc" -eq 0 ] || fail "init-env.sh exited ${warn_rc} on a blank env-file entry"
+    case "$warn_out" in
+    *TS_AUTHKEY*) ;;
+    *) fail "init-env.sh treated a blank 'TS_AUTHKEY=' env-file line as a usable value" ;;
+    esac
+
+    #    The warning names vars, never VALUES — it lands in build logs. Asserted
+    #    with a var exported EMPTY (which "${!var:-}" treats as unset, so it
+    #    warns) alongside two carrying sentinel secrets that must not appear.
+    env_file="${work_dir}/env-warn-novalue"
+    : >"$env_file"
+    warn_rc=0
+    warn_out="$(TS_AUTHKEY= CLAUDE_CODE_OAUTH_TOKEN=harmon-sentinel-one \
+        AGENT_DECK_TELEGRAM_KEY=harmon-sentinel-two \
+        bash "$init_env" "$env_file" "${dev_allow[@]}" 2>&1 >/dev/null)" || warn_rc=$?
+    [ "$warn_rc" -eq 0 ] || fail "init-env.sh exited ${warn_rc} on an allow-listed var exported empty"
+    case "$warn_out" in
+    *TS_AUTHKEY*) ;;
+    *) fail "init-env.sh did not warn about an allow-listed var exported empty — no usable value reaches the container" ;;
+    esac
+    case "$warn_out" in
+    *harmon-sentinel*) fail "init-env.sh printed a secret VALUE in its warning output" ;;
+    esac
+
+    # 7. tailscale-connect.sh no-ops (exit 0, prints its "unavailable" message)
     #    when `tailscale` is not on PATH. Invoke with an absolute bash path so
     #    the unreachable PATH doesn't also hide the interpreter.
     local ts_out
@@ -208,7 +295,7 @@ assert_unit() {
     *) fail "tailscale-connect.sh did not report tailscale unavailable: ${ts_out}" ;;
     esac
 
-    # 7. The shared post-create guidance must never steer a BOT container to an
+    # 8. The shared post-create guidance must never steer a BOT container to an
     #    operator `gh auth login`. Following that advice would put a human
     #    credential — `workflow` scope included — inside a bypassPermissions
     #    agent container, which is the escalation the bot PAT's denials exist to
@@ -240,7 +327,7 @@ assert_unit() {
         fail "post-create gh guidance omits the operator login where the profile declares one"
     fi
 
-    # 8. Static devcontainer.json invariants via the devcontainers CLI.
+    # 9. Static devcontainer.json invariants via the devcontainers CLI.
     assert_config_invariants "$repo_root" "$bot_config" bot
     assert_config_invariants "$repo_root" "$dev_config" dev
 

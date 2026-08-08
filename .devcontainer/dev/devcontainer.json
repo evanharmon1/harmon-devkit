@@ -30,7 +30,7 @@
   // Alternative-model provider keys (KIMI/DEEPSEEK/ZAI) are opt-in via
   // use_alternative_claude_providers; when on they land in this env-file so the
   // claude-kimi/deepseek/glm wrappers (and the op fallback) work here.
-  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/dev/devcontainer.env TS_AUTHKEY CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY",
+  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/dev/devcontainer.env TS_AUTHKEY CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY",
   "runArgs": [
     "--init",
     "--shm-size=2g",
@@ -54,6 +54,7 @@
     "source=codex-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.codex,type=volume",
     "source=gemini-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.gemini,type=volume",
     "source=agent-deck-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.agent-deck,type=volume",
+    "source=herdr-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.config/herdr,type=volume",
     "source=shell-history-evanharmon1-harmon-devkit-dev,target=/home/vscode/.shell-history,type=volume",
     "source=zoxide-data-evanharmon1-harmon-devkit-dev,target=/home/vscode/.local/share/zoxide,type=volume"
   ],

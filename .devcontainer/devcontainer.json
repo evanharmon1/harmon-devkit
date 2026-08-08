@@ -23,7 +23,7 @@
   // Alternative-model provider keys (KIMI/DEEPSEEK/ZAI) are opt-in via
   // use_alternative_claude_providers; when on they land in this env-file too,
   // so a headless/bypass bot can read them — a deliberate posture extension.
-  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/devcontainer.env GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY",
+  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/devcontainer.env GH_TOKEN FOREMAN_AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY",
   "runArgs": [
     "--init",
     "--shm-size=2g",
@@ -47,6 +47,7 @@
     "source=codex-config-evanharmon1-harmon-devkit,target=/home/vscode/.codex,type=volume",
     "source=gemini-config-evanharmon1-harmon-devkit,target=/home/vscode/.gemini,type=volume",
     "source=agent-deck-config-evanharmon1-harmon-devkit,target=/home/vscode/.agent-deck,type=volume",
+    "source=herdr-config-evanharmon1-harmon-devkit,target=/home/vscode/.config/herdr,type=volume",
     "source=shell-history-evanharmon1-harmon-devkit,target=/home/vscode/.shell-history,type=volume",
     "source=zoxide-data-evanharmon1-harmon-devkit,target=/home/vscode/.local/share/zoxide,type=volume"
   ],

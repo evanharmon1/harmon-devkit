@@ -130,10 +130,45 @@ done
 # For allowed vars, replace any stale entry with the current host value.
 # Vars not present in the host env are left untouched, so values
 # populated out-of-band (e.g. from 1Password) survive rebuilds.
+#
+# A var missing from BOTH the host env and the env-file is a different case: it
+# is not an out-of-band value being preserved, it is a value nothing will
+# supply. Silence there is how a missing TS_AUTHKEY went unnoticed for hours in
+# a Coder workspace — the container came up fine and only the Tailscale-
+# dependent step failed, far from the cause. So collect those and warn on
+# stderr below.
+#
+# The loop is over ALLOWED_VARS — the post-filter allow-list — NOT over
+# BASE_MANAGED_VARS or EVICT_VARS. That is load-bearing for the profile
+# boundary, not just tidiness: the bot profile deliberately omits TS_AUTHKEY
+# (no tailnet path from a bypassPermissions container), so warning from the
+# managed set would print "TS_AUTHKEY missing" on every bot rebuild —
+# advertising a credential that profile must never hold, and training the
+# reader to expect one. A var this profile is not allowed to populate is not
+# missing; it is correctly absent.
+missing=""
 for var in "${ALLOWED_VARS[@]}"; do
     val="${!var:-}"
     if [ -n "$val" ]; then
         strip_var "$var" "$ENV_FILE"
         echo "${var}=${val}" >>"$ENV_FILE"
+    elif ! grep -q "^${var}=." "$ENV_FILE"; then
+        # `=.` requires at least one character after the `=`: a bare "VAR="
+        # line (or a host var exported empty, which "${!var:-}" already treats
+        # as unset) leaves the container with no usable value, so it warns the
+        # same as a wholly absent one. Var names come from KNOWN_VARS, so they
+        # carry no regex metacharacters.
+        missing="${missing:+$missing }${var}"
     fi
 done
+
+# Names only, never values — this lands in build logs. Non-fatal by design: a
+# rebuild must not be blocked by an optional secret, and this script runs as
+# initializeCommand on the HOST, where a non-zero exit aborts the whole
+# container build.
+if [ -n "$missing" ]; then
+    echo "init-env.sh: warning: allow-listed but unset in the host env and absent from ${ENV_FILE}:" >&2
+    echo "init-env.sh:   ${missing}" >&2
+    echo "init-env.sh: the container will start without them. On Coder/Codespaces set them as" >&2
+    echo "init-env.sh: workspace/repo secrets; locally populate the env-file from 1Password." >&2
+fi

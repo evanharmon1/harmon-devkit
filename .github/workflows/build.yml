@@ -62,6 +62,8 @@ jobs:
       - run: task test:release-title
       - run: task test:track-work
       - run: task test:notify-release
+      - run: task test:setup-github-project
+      - run: task test:sync-devkit-release
       - run: task test:hooks
       - run: task test:skills
       - run: task test:agents

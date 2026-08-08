@@ -7,6 +7,12 @@ output:
     begin: "::group::{{.TASK}}"
     end: "::endgroup::"
 
+includes:
+  # Foreman — deterministic supervisor for milestone-driven agent dispatch
+  # (task foreman:plan / dispatch / shepherd / watch ...; the CLI is pinned
+  # and fetched via uvx in taskfiles/foreman.yml)
+  foreman: taskfiles/foreman.yml
+
 # ── Entry Points ───────────────────────────────────────────────────
 tasks:
   default:
@@ -69,6 +75,8 @@ tasks:
       - task: test:shepherd-codex
       - task: test:release-title
       - task: test:notify-release
+      - task: test:setup-github-project
+      - task: test:sync-devkit-release
       - task: test:hooks
       - task: test:statusline
       - task: test:devcontainer:permissions
@@ -204,6 +212,31 @@ tasks:
     cmds:
       - ./ai/skills/universal/track-work/assets/check-closing-keywords.sh --body-env PR_BODY --title-env PR_TITLE --commits-file "${PR_COMMITS_FILE:-}"
 
+  # Entry point for .github/workflows/sync-harmon-devkit.yml: resolves the
+  # latest harmon-devkit release, bumps .skills-sync.yaml, vendors, verifies
+  # offline, and opens/updates ONE rolling bot/sync-harmon-devkit PR.
+  # Never merges anything. `{{.CLI_ARGS}}` passes an explicit tag for the
+  # manual recovery path (`task sync:devkit-release -- vX.Y.Z`).
+  sync:devkit-release:
+    desc: "Pin the latest harmon-devkit release, vendor it, verify, and open/update the sync PR"
+    cmds:
+      - ./scripts/sync-devkit-release.sh run {{.CLI_ARGS}}
+
+  sync:skills:
+    desc: Vendor the pinned skill categories from harmon-devkit into .claude/skills
+    cmds:
+      - ./scripts/sync-skills.sh sync
+
+  verify:skills:
+    desc: "Skill drift check (network): fail if vendored skills differ from the pinned ref"
+    cmds:
+      - ./scripts/sync-skills.sh verify
+
+  verify:skills:offline:
+    desc: "Fast offline check that the vendored ref matches the manifest (no network)"
+    cmds:
+      - ./scripts/sync-skills.sh verify-offline
+
   format:
     desc: Auto-format code
     cmds:
@@ -289,6 +322,16 @@ tasks:
     desc: Unit-test the track-work skill's issue/PR tracking checks (offline)
     cmds:
       - ./scripts/test-track-work.sh
+
+  test:sync-devkit-release:
+    desc: "Unit-test the harmon-devkit release→sync-PR automation (offline, stubbed gh/task)"
+    cmds:
+      - ./scripts/test-sync-devkit-release.sh
+
+  test:setup-github-project:
+    desc: Unit-test the GitHub Project field reconciliation (stubbed gh, no network)
+    cmds:
+      - ./scripts/test-setup-github-project.sh
 
   test:devcontainer:root:
     desc: Smoke test the primary (AI bot) devcontainer via the devcontainers CLI
@@ -485,6 +528,21 @@ tasks:
       - lefthook install
 
   # ── GitHub setup ───────────────────────────────────────────────
+  setup:github-project:
+    desc: >-
+      Idempotently create/sync the owner's GitHub Project V2 board + Status
+      pipeline + Size number field (on a personal account also the other
+      metadata fields). Requires `gh auth refresh -s project`.
+    cmds:
+      - ./scripts/setup-github-project.sh --owner "evanharmon1" --title "evanharmon1 Project"
+
+  setup:github-labels:
+    desc: Idempotently create/update this repo's starter labels incl. the foreman arming labels. Requires `gh` with repo write.
+    vars:
+      REPO: "evanharmon1/harmon-devkit"
+    cmds:
+      - ./scripts/setup-github-labels.sh --repo "{{.REPO}}" --foreman
+
   # One-time, idempotent repo settings applied via gh (safe to re-run); run once
   # the repo exists on GitHub. The remaining setup steps need a browser or a real
   # credential and stay manual — see docs/CHECKLIST.md (branch ruleset import,

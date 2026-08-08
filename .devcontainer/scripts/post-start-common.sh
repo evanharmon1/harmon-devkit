@@ -6,7 +6,8 @@ set -euo pipefail
 unset NODE_OPTIONS
 
 for dir in /home/vscode/.codex /home/vscode/.claude /home/vscode/.gemini \
-    /home/vscode/.agent-deck /home/vscode/.shell-history /home/vscode/.local/share/zoxide; do
+    /home/vscode/.agent-deck /home/vscode/.shell-history \
+    /home/vscode/.config/herdr /home/vscode/.local/share/zoxide; do
     sudo mkdir -p "$dir"
     sudo chown vscode:vscode "$dir"
     sudo chmod 700 "$dir"

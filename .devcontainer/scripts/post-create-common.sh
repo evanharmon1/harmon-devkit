@@ -124,6 +124,7 @@ gh auth status || true
 echo "==> Fixing ownership of persistent volume dirs..."
 for dir in /home/vscode/.codex /home/vscode/.claude /home/vscode/.gemini \
     /home/vscode/.agent-deck /home/vscode/.shell-history \
+    /home/vscode/.config /home/vscode/.config/herdr \
     /home/vscode/.local /home/vscode/.local/share /home/vscode/.local/share/zoxide; do
     sudo mkdir -p "$dir"
     sudo chown vscode:vscode "$dir"
@@ -163,6 +164,36 @@ if [ "${CODER:-}" = "true" ] && [ -d "/home/vscode/.persistent" ]; then
         rm -rf "${HOME:?}/.local/share/zoxide"
     fi
     ln -sfn "/home/vscode/.persistent/zoxide" "$HOME/.local/share/zoxide"
+    mkdir -p "/home/vscode/.persistent/herdr" "$HOME/.config"
+    # Unlike the agent dirs above, ~/.config/herdr can hold the only copy of
+    # session snapshots — never delete the source unless the copy succeeded,
+    # and fail the lifecycle rather than continue unpersisted: a
+    # warn-and-continue would let Herdr write snapshots the next rebuild
+    # silently discards.
+    if [ -d "$HOME/.config/herdr" ] && [ ! -L "$HOME/.config/herdr" ]; then
+        if ! cp -a "$HOME/.config/herdr/." "/home/vscode/.persistent/herdr/"; then
+            echo "ERROR: Herdr state migration to ~/.persistent failed;" \
+                "fix the persistent volume and rebuild" >&2
+            exit 1
+        fi
+        rm -rf "${HOME:?}/.config/herdr"
+    fi
+    ln -sfn "/home/vscode/.persistent/herdr" "$HOME/.config/herdr"
+fi
+
+# --- Herdr agent integrations ---
+# resume_agents_on_restore only resumes agents whose Herdr integration has
+# recorded a native session reference, and the integration also reports
+# authoritative working/blocked state to the sidebar instead of Herdr
+# screen-scraping. The installer is version-aware and file-writing only (no
+# running server needed), so re-running on every create is safe. Guarded:
+# the pinned shared image may predate the herdr binary, and a failed install
+# only degrades resume back to fresh shells — never block the container on it.
+if command -v herdr >/dev/null 2>&1; then
+    for agent in claude codex; do
+        herdr integration install "$agent" ||
+            echo "WARN: herdr integration install $agent failed (non-fatal)" >&2
+    done
 fi
 
 # --- Agent-Deck config seeding ---
