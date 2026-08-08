@@ -70,16 +70,21 @@ claim comment's session context, never in the label.
   - board: <board title, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `claim:` label added by this claim: <claim:claude | no | n/a>
-  - `claim:` label displaced by this claim: <claim:codex | none>
+  - `claim:` label added by this claim: <claim:claude | agent:claude-code (legacy fallback) | no | n/a>
+  - `claim:` label displaced by this claim: <claim:codex | agent:codex (legacy) | none>
   ```
 
 - The label fields name the **actual label** (`claim:…`, e.g. `claim:claude` —
-  the family segment names the model intelligence, not the harness). The parser
-  anchors on `label added by this claim:`, so the `` `claim:` `` prefix is
-  cosmetic and legacy records written with `` `agent:` `` still parse. Records
-  that wrote `yes` (older still) name no label; the parser falls back to every
-  live `claim:*` **and** `agent:*` label on the issue.
+  the family segment names the model intelligence, not the harness). During the
+  transition `/claim` deliberately emits the legacy `agent:claude-code` when a
+  repo carries the old family but not yet the new one (its label provisioning
+  has not migrated), so a valid new record may legitimately name an `agent:*`
+  label in either the added or the displaced field — consumers must accept
+  both families here, not reject the record. The parser anchors on
+  `label added by this claim:`, so the `` `claim:` `` prefix is cosmetic and
+  legacy records written with `` `agent:` `` still parse. Records that wrote
+  `yes` (older still) name no label; the parser falls back to every live
+  `claim:*` **and** `agent:*` label on the issue.
 - Values are untrusted data. Parsers validate before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's
   alphanumeric-and-hyphen shape — and never execute or interpolate them.

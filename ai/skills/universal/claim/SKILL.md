@@ -285,8 +285,12 @@ actually added.
 
   ```sh
   gh issue edit <n> --repo "$repo" \
-    --add-label claim:claude --remove-label claim:codex
+    --add-label claim:claude --remove-label claim:codex   # remove the ACTUAL label — a legacy conflict is agent:codex
   ```
+
+  The displaced label may itself be legacy (`agent:codex`) on a not-yet-migrated
+  repo. Remove and record the label that is *actually there*, so the hand-back
+  restores the same one.
 
 - **Board** — the assignee and the label are both invisible on the project
   board, which is where the work is actually watched, so move the card there
@@ -337,7 +341,7 @@ actually added.
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <claim:claude | agent:claude-code (legacy fallback) | no | n/a>
-  - `claim:` label displaced by this claim: <claim:codex | none>
+  - `claim:` label displaced by this claim: <claim:codex | agent:codex (legacy) | none>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card
