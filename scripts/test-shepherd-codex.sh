@@ -975,6 +975,25 @@ assert_reap '.reaped' 0
 [ -f "${reap_root}/example/impostor/11.json" ] ||
     fail "a relocated state file was deleted on the strength of its contents"
 
+echo "==> state naming a malformed repo is skipped without querying GitHub"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+# Schema-valid — .repo is still a string — but not a repository slug. The
+# schema check cannot catch this, and both fields become `gh` arguments.
+jq '.repo = "not-a-slug"' "${reap_root}/example/alpha/11.json" \
+    >"${reap_root}/example/alpha/11.json.next"
+mv "${reap_root}/example/alpha/11.json.next" "${reap_root}/example/alpha/11.json"
+: >"$log"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "reap exited $reap_rc: $reap_out"
+assert_reap '.skipped' 1
+assert_reap '.reaped' 0
+[ -f "${reap_root}/example/alpha/11.json" ] || fail "a malformed slug was deleted"
+if grep -Fq 'pr view' "$log"; then
+    fail "reap queried GitHub with a malformed repository slug"
+fi
+
 echo "==> a locked state file is skipped and does not abort the sweep"
 write_defaults
 rm -rf "$reap_root"

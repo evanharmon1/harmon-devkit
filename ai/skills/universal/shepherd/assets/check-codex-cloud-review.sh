@@ -207,7 +207,7 @@ reap_record() {
         '{
           path:$path,
           repo:(if $repo == "" then null else $repo end),
-          pr:(if $pr == "" then null else ($pr | tonumber) end),
+          pr:(if $pr == "" then null else (try ($pr | tonumber) catch null) end),
           state:(if $state == "" then null else $state end),
           action:$action,
           detail:$detail
@@ -539,6 +539,15 @@ reap)
                 "not a recognizable state file"
             continue
         }
+
+        # The same shape `reserve` enforces before it writes. The schema check
+        # above proves `.repo` is a string and `.pr` a number, not that either
+        # names a repository — and these two become arguments to `gh`.
+        if ! valid_repo "$state_repo" || ! valid_uint "$state_pr"; then
+            reap_record "$candidate" "$state_repo" "" "" skipped \
+                "state does not name a well-formed repository and PR"
+            continue
+        fi
 
         # The file says which PR it belongs to and so does its path. Requiring
         # them to agree means a state file that was moved, hand-edited, or
