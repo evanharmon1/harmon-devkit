@@ -330,10 +330,7 @@ and extend both together so the option sets stay identical.
 
 `suggest:*` and `claim:*` name the model **intelligence**, not the harness that
 runs it — Claude Code vs. the `@claude` Action vs. the codex CLI is operational
-detail, recorded in the claim comment, not the label. A provider-rewired harness
-labels by the **model family** it runs, not the wrapper: work done by Claude Code
-running Kimi is `claim:kimi`, and the harness slug (`claude-code-kimi`) never
-appears in the label. Claims and suggestions
+detail, recorded in the claim comment, not the label. Claims and suggestions
 operate at the **family level** (`claim:claude`, `suggest:claude`): that is what
 `task setup:github-labels` provisions and what the skills apply, since a claim
 applies an existing label rather than minting one. The registry vocabulary also
@@ -382,9 +379,9 @@ look like the same fact and are not:
 
 They share one model-centric vocabulary — the same family and model slugs — but
 they answer different questions. Overwriting the `suggest:*` label at claim time
-would destroy the planning routing the **Agent queue** view is built on (that
-view lists issues carrying a `suggest:*` label), and would erase the record that
-work routed to one family was picked up by another.
+would destroy the planning routing it carries — the signal that narrows the
+**Agent queue** view and lanes the board by intelligence — and would erase the
+record that work routed to one family was picked up by another.
 
 So a claim writes the `claim:*` **label** and leaves any `suggest:*` untouched.
 If the claim and the suggestion disagree, that is information, not drift: a
