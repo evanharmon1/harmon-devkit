@@ -32,8 +32,17 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
 
 if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
-    jq -cn --arg head "$(cat "$GH_FIXTURES/head")" \
-        '{headRefOid:$head,state:"OPEN"}'
+    # PR state defaults to OPEN, so every classifier fixture behaves exactly as
+    # it did before reaping existed. `reap` needs per-PR control, so a
+    # pr-state-<n> file overrides one PR and fail-pr-<n> makes it unreadable.
+    pr_number="${3:-}"
+    [ ! -f "$GH_FIXTURES/fail-pr-$pr_number" ] || exit 94
+    pr_state=OPEN
+    if [ -f "$GH_FIXTURES/pr-state-$pr_number" ]; then
+        pr_state="$(cat "$GH_FIXTURES/pr-state-$pr_number")"
+    fi
+    jq -cn --arg head "$(cat "$GH_FIXTURES/head")" --arg state "$pr_state" \
+        '{headRefOid:$head,state:$state}'
     exit 0
 fi
 
@@ -101,6 +110,7 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/slow-endpoint"
+    rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
     : >"$log"
 }
 
@@ -856,5 +866,156 @@ jq -cn \
     ]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 2 indeterminate
+
+# ── reap: the other half of the state lifecycle ────────────────────────────
+#
+# `reserve` is the only thing that creates state and, until `reap`, nothing
+# removed it. A shepherded PR is still open when its session stops, so a cycle
+# can never reap its own state — every case below is therefore a LATER sweep
+# observing a PR that has since closed, which is the only way state is ever
+# collected.
+
+reap_root="${test_tmp}/reap-root"
+reap_out=
+
+seed_state() {
+    seed_slug=$1
+    seed_pr=$2
+    rm -f "${fixtures}/pr-state-${seed_pr}" "${fixtures}/fail-pr-${seed_pr}"
+    "$helper" reserve \
+        --state "${reap_root}/${seed_slug}/${seed_pr}.json" \
+        --repo "$seed_slug" --pr "$seed_pr" \
+        --head "$head_sha" --attempt 1 >/dev/null
+}
+
+run_reap() {
+    set +e
+    reap_out="$("$helper" reap --root "$1" 2>&1)"
+    reap_rc=$?
+    set -e
+}
+
+assert_reap() {
+    reap_actual="$(printf '%s' "$reap_out" | jq -r "$1" 2>/dev/null || true)"
+    [ "$reap_actual" = "$2" ] ||
+        fail "reap: expected ($1) = '$2', got '$reap_actual': $reap_out"
+}
+
+echo "==> reap collects merged and closed PRs and keeps open ones"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+seed_state example/beta 22
+seed_state example/gamma 33
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+printf '%s\n' CLOSED >"${fixtures}/pr-state-22"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "reap exited $reap_rc: $reap_out"
+assert_reap '.status' swept
+assert_reap '.scanned' 3
+assert_reap '.reaped' 2
+assert_reap '.kept' 1
+assert_reap '.skipped' 0
+[ ! -f "${reap_root}/example/alpha/11.json" ] || fail "merged state survived"
+[ ! -f "${reap_root}/example/beta/22.json" ] || fail "closed state survived"
+[ -f "${reap_root}/example/gamma/33.json" ] || fail "open state was reaped"
+assert_reap '[.entries[] | select(.pr == 33) | .action] | first' kept
+[ ! -d "${reap_root}/example/alpha" ] ||
+    fail "an emptied state directory was left behind"
+
+echo "==> an unreadable PR state keeps its file rather than deleting it"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+: >"${fixtures}/fail-pr-11"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "reap exited $reap_rc: $reap_out"
+assert_reap '.reaped' 0
+assert_reap '.kept' 1
+assert_reap '[.entries[] | .detail] | first' "PR state is unreadable"
+[ -f "${reap_root}/example/alpha/11.json" ] ||
+    fail "unreadable PR state was deleted — it must be kept"
+
+echo "==> an unrecognized PR state keeps its file"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+printf '%s\n' WITHDRAWN >"${fixtures}/pr-state-11"
+run_reap "$reap_root"
+assert_reap '.reaped' 0
+assert_reap '.kept' 1
+[ -f "${reap_root}/example/alpha/11.json" ] ||
+    fail "an unrecognized PR state was treated as closed"
+
+echo "==> a file reap cannot identify is skipped, never deleted"
+write_defaults
+rm -rf "$reap_root"
+mkdir -p "${reap_root}/example/alpha"
+printf '%s\n' 'not json at all' >"${reap_root}/example/alpha/11.json"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "reap exited $reap_rc: $reap_out"
+assert_reap '.skipped' 1
+assert_reap '.reaped' 0
+[ -f "${reap_root}/example/alpha/11.json" ] ||
+    fail "an unidentifiable file was deleted"
+if grep -Fq 'pr view' "$log"; then
+    fail "reap queried GitHub for a file it could not identify"
+fi
+
+echo "==> state whose contents disagree with its path is skipped"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+mkdir -p "${reap_root}/example/impostor"
+mv "${reap_root}/example/alpha/11.json" "${reap_root}/example/impostor/11.json"
+run_reap "$reap_root"
+assert_reap '.skipped' 1
+assert_reap '.reaped' 0
+[ -f "${reap_root}/example/impostor/11.json" ] ||
+    fail "a relocated state file was deleted on the strength of its contents"
+
+echo "==> a locked state file is skipped and does not abort the sweep"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+seed_state example/beta 22
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+printf '%s\n' MERGED >"${fixtures}/pr-state-22"
+mkdir "${reap_root}/example/alpha/11.json.lock"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "a locked entry aborted the sweep: $reap_out"
+assert_reap '.skipped' 1
+assert_reap '.reaped' 1
+[ -f "${reap_root}/example/alpha/11.json" ] ||
+    fail "state locked by a live shepherd was deleted"
+[ ! -f "${reap_root}/example/beta/22.json" ] ||
+    fail "one locked entry stopped the rest of the sweep"
+
+echo "==> non-state siblings are left alone"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+printf '%s\n' 'leftover' >"${reap_root}/example/alpha/11.json.tmp.abcdef"
+run_reap "$reap_root"
+assert_reap '.scanned' 1
+assert_reap '.reaped' 1
+[ -f "${reap_root}/example/alpha/11.json.tmp.abcdef" ] ||
+    fail "reap deleted a file outside the layout reserve writes"
+
+echo "==> a checkout that has never shepherded sweeps cleanly"
+write_defaults
+run_reap "${test_tmp}/never-shepherded"
+[ "$reap_rc" -eq 0 ] || fail "a missing state root is not a failure"
+assert_reap '.scanned' 0
+assert_reap '.reaped' 0
+
+echo "==> reap requires a root"
+set +e
+"$helper" reap >/dev/null 2>&1
+reap_rc=$?
+set -e
+[ "$reap_rc" -eq 2 ] || fail "reap without --root should exit 2, got $reap_rc"
 
 echo "shepherd Codex cloud-review classifier: PASS"

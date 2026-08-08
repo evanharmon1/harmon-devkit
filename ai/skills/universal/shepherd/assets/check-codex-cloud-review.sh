@@ -12,6 +12,14 @@
 #   13 escalate (attempt 2 timed out)
 #   2  indeterminate — malformed, changed head, usage error, or a
 #      current-head verdict whose shape cannot be classified
+#
+# `reserve` creates the state a cycle runs on; `reap` is the other half of that
+# lifecycle. Nothing else removes a state file — a shepherded PR is still open
+# when its session stops, so a cycle can never reap its own state, and without
+# a sweep the directory grows by one file per PR forever. `reap` exits 0 for a
+# completed sweep whatever it found — kept and skipped entries are results, not
+# failures, so a caller can run it unconditionally — and 2 only when it cannot
+# complete a sweep at all (usage error, unusable root).
 
 set -euo pipefail
 
@@ -22,6 +30,7 @@ Usage:
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh check --state FILE --actor-id N [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
+  check-codex-cloud-review.sh reap --root DIR
 EOF
     exit 2
 }
@@ -52,6 +61,7 @@ command_name="${1:-}"
 shift
 
 state_file=
+root_dir=
 repo=
 pr=
 head=
@@ -62,13 +72,16 @@ actor_login='chatgpt-codex-connector[bot]'
 timeout_min=15
 now=
 lock_dir=
+reap_entries=
+reap_lock=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --now)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --now)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
+        --root) root_dir=$2 ;;
         --repo) repo=$2 ;;
         --pr) pr=$2 ;;
         --head) head=$2 ;;
@@ -85,7 +98,13 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ -n "$state_file" ] || usage
+# `reap` sweeps a directory rather than operating on one state file, so the
+# required argument differs by subcommand. An unknown command falls through to
+# the `*)` arm of the dispatch below, which is `usage` anyway.
+case "$command_name" in
+reap) [ -n "$root_dir" ] || usage ;;
+*) [ -n "$state_file" ] || usage ;;
+esac
 
 valid_repo() {
     printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
@@ -172,6 +191,27 @@ release_state_lock() {
     rmdir "$lock_dir" 2>/dev/null || true
     lock_dir=
     trap - EXIT
+}
+
+# One ndjson line per swept candidate. Empty repo/pr/state become JSON null:
+# a candidate this sweep declined to identify has no PR to report, and saying
+# so is not the same as reporting it as PR 0 of the empty repository.
+reap_record() {
+    jq -cn \
+        --arg path "$1" \
+        --arg repo "$2" \
+        --arg pr "$3" \
+        --arg state "$4" \
+        --arg action "$5" \
+        --arg detail "$6" \
+        '{
+          path:$path,
+          repo:(if $repo == "" then null else $repo end),
+          pr:(if $pr == "" then null else ($pr | tonumber) end),
+          state:(if $state == "" then null else $state end),
+          action:$action,
+          detail:$detail
+        }' >>"$reap_entries"
 }
 
 emit() {
@@ -439,6 +479,150 @@ attach)
 show)
     read_state
     cat "$state_file"
+    ;;
+
+reap)
+    # A checkout that has never shepherded has no state directory. That is a
+    # sweep of an empty set, not an error — the caller runs this
+    # unconditionally, so "nothing here" must not be a failure.
+    if [ ! -e "$root_dir" ]; then
+        jq -cn --arg root "$root_dir" '{
+          status:"swept",root:$root,
+          scanned:0,reaped:0,kept:0,skipped:0,entries:[]
+        }'
+        exit 0
+    fi
+    [ -d "$root_dir" ] || die "state root is not a directory: $root_dir"
+
+    reap_workdir=$(mktemp -d -t codex-cloud-review-reap-XXXXXX) ||
+        die "cannot create a temporary sweep directory"
+    trap 'rm -rf "$reap_workdir"; rmdir "$reap_lock" 2>/dev/null || true' EXIT
+    reap_entries="$reap_workdir/entries.ndjson"
+    : >"$reap_entries"
+
+    # Only the layout `reserve` writes — <root>/<owner>/<repo>/<pr>.json — is
+    # a candidate. Depth is pinned rather than recursed, and non-`.json`
+    # siblings are excluded, so `write_state`'s `.tmp.XXXXXX` leftovers and a
+    # leaked `.lock` directory are passed over instead of deleted. This sweep
+    # removes state it can positively identify as its own; it is not a
+    # general-purpose cleaner for whatever sits under the path it was handed.
+    # NUL-delimited: a newline in a path would otherwise split one candidate
+    # into two, and a half-path that no longer resolves is a confusing way to
+    # discover an unreadable directory. A find that could not complete is a
+    # sweep that did not happen, so it fails rather than under-reporting.
+    find "$root_dir" -mindepth 3 -maxdepth 3 -type f -name '*.json' -print0 \
+        >"$reap_workdir/candidates" ||
+        die "cannot enumerate state under $root_dir"
+
+    while IFS= read -r -d '' candidate; do
+        [ -n "$candidate" ] || continue
+        # Derived from the path itself rather than by stripping $root_dir, so
+        # a trailing slash in the argument cannot skew the components.
+        candidate_parent=${candidate%/*}
+        candidate_grandparent=${candidate_parent%/*}
+        path_repo="${candidate_grandparent##*/}/${candidate_parent##*/}"
+        path_pr=${candidate##*/}
+        path_pr=${path_pr%.json}
+
+        state_repo=$(jq -er '
+              select(
+                type == "object" and (.version == 1) and
+                (.repo | type == "string") and (.pr | type == "number")
+              ) | .repo
+            ' "$candidate" 2>/dev/null) || {
+            reap_record "$candidate" "" "" "" skipped \
+                "not a recognizable state file"
+            continue
+        }
+        state_pr=$(jq -er '.pr | tostring' "$candidate" 2>/dev/null) || {
+            reap_record "$candidate" "" "" "" skipped \
+                "not a recognizable state file"
+            continue
+        }
+
+        # The file says which PR it belongs to and so does its path. Requiring
+        # them to agree means a state file that was moved, hand-edited, or
+        # dropped in from elsewhere is left alone rather than driving a delete
+        # against whatever PR its contents happen to name.
+        if [ "$state_repo" != "$path_repo" ] || [ "$state_pr" != "$path_pr" ]; then
+            reap_record "$candidate" "$state_repo" "$state_pr" "" skipped \
+                "state contents disagree with the path they are stored under"
+            continue
+        fi
+
+        # The same lock `reserve`/`attach`/`check` take. Held means a live
+        # shepherd owns this PR, so skip it — a sweep must never delete state
+        # out from under a cycle in progress, and one busy entry must not
+        # abort the rest of the sweep.
+        reap_lock="${candidate}.lock"
+        if ! mkdir "$reap_lock" 2>/dev/null; then
+            reap_lock=
+            reap_record "$candidate" "$state_repo" "$state_pr" "" skipped \
+                "state is locked by another shepherd"
+            continue
+        fi
+
+        pr_state=
+        if pr_payload=$(run_gh pr view "$state_pr" --repo "$state_repo" \
+            --json state 2>/dev/null); then
+            pr_state=$(printf '%s' "$pr_payload" |
+                jq -r 'select(type == "object") | .state // empty' 2>/dev/null) ||
+                pr_state=
+        fi
+
+        case "$pr_state" in
+        CLOSED | MERGED)
+            if rm -f "$candidate"; then
+                action=reaped
+                detail="PR is $pr_state"
+            else
+                action=kept
+                detail="PR is $pr_state but the state file could not be removed"
+            fi
+            ;;
+        OPEN)
+            action=kept
+            detail="PR is still open"
+            ;;
+        '')
+            # Unreadable is not closed. A rate limit, an expired token, a
+            # network blip, or a repository that has become inaccessible all
+            # land here, and deleting on any of them would discard live state
+            # for a PR still in flight. Keeping costs one stale file until the
+            # next sweep; deleting costs a cycle that cannot be resumed.
+            action=kept
+            detail="PR state is unreadable"
+            ;;
+        *)
+            action=kept
+            detail="unrecognized PR state: $pr_state"
+            ;;
+        esac
+
+        rmdir "$reap_lock" 2>/dev/null || true
+        reap_lock=
+
+        if [ "$action" = reaped ]; then
+            # Both are plain rmdir, which refuses a non-empty directory — so a
+            # sibling PR's state, or a lock leaked by an interrupted run, keeps
+            # its directory rather than being swept up with it.
+            rmdir "$candidate_parent" 2>/dev/null || true
+            rmdir "$candidate_grandparent" 2>/dev/null || true
+        fi
+
+        reap_record "$candidate" "$state_repo" "$state_pr" "$pr_state" \
+            "$action" "$detail"
+    done <"$reap_workdir/candidates"
+
+    jq -s -c --arg root "$root_dir" '{
+      status:"swept",
+      root:$root,
+      scanned:length,
+      reaped:([.[] | select(.action == "reaped")] | length),
+      kept:([.[] | select(.action == "kept")] | length),
+      skipped:([.[] | select(.action == "skipped")] | length),
+      entries:.
+    }' "$reap_entries"
     ;;
 
 check)
