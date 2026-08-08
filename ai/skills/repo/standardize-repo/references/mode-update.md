@@ -409,9 +409,18 @@ important for a feature with a material footprint or an external capability:
   but a human must also remove the repository from the CodeRabbit App
   installation because deleting repository files does not revoke App access.
 - `use_codex_cloud_review` adds a required external shepherd signal and defaults
-  off. It is active only when `use_codex_review=true`; when active, require
-  `use_skills_sync=true` and `universal` in `skill_categories` so the classifier
-  is installed. Review it explicitly and keep it false unless the maintainer has
+  off. It is active only when `use_codex_review=true` — the sole precondition
+  Copier's own validator enforces. When active, a *consumer* repo must also set
+  `use_skills_sync=true` and include `universal` in `skill_categories`, because
+  there the classifier (`check-codex-cloud-review.sh`) reaches the repo only by
+  syncing the shepherd skill from the `universal` category. A skills-*source*
+  repo that ships that classifier natively in its own tree
+  (`ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, e.g.
+  harmon-devkit, where `use_skills_sync=false` by design because it cannot
+  vendor released copies of itself) already satisfies that intent, so the guard
+  detects the asset and waives both the skills-sync and universal-category
+  requirements for it while keeping them for every other repo. Review it
+  explicitly and keep it false unless the maintainer has
   connected Codex cloud review, accepts plan-dependent availability/quotas, and
   has granted explicit connector permission for a private repository. The
   maintainer must also disable Codex Automatic reviews so ready-for-review
@@ -471,6 +480,15 @@ ORIGINAL_DATA="$GUARDED_STATE/original-data.yml"
 yq 'with_entries(select(.key | test("^_") | not))' \
   "$GUARDED_STATE/original-answers.yml" >"$ORIGINAL_DATA" ||
   { echo "failed to prepare recorded answers for discovery" >&2; exit 1; }
+# use_codex_cloud_review's use_skills_sync / universal-category requirements are
+# a proxy for "the cloud-review classifier is installed": in a consumer repo the
+# shepherd skill and its check-codex-cloud-review.sh reach the repo only via
+# skills sync of the universal category. A skills-source repo hosts that
+# classifier natively in its own tree, so it satisfies the intent directly and
+# is exempt (matching Copier's validator, which gates the option on
+# use_codex_review alone). The guards below re-test this asset and waive both
+# requirements when it is present, keeping them for every other repo.
+SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
 if test -e "$REVIEWED_DATA"; then
   yq -e \
     'tag == "!!map" and
@@ -505,7 +523,8 @@ case "$USE_SKILLS_SYNC" in true | false) ;; *) echo "USE_SKILLS_SYNC must be tru
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_CODEX_REVIEW" = "true" ] ||
   { echo "use_codex_cloud_review requires use_codex_review" >&2; exit 1; }
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_SKILLS_SYNC" = "true" ] ||
-  { echo "use_codex_cloud_review requires use_skills_sync" >&2; exit 1; }
+  test -e "$SKILLS_SOURCE_CLASSIFIER" ||
+  { echo "use_codex_cloud_review requires use_skills_sync (waived when this repo ships the classifier natively at $SKILLS_SOURCE_CLASSIFIER)" >&2; exit 1; }
 case "$USE_CODERABBIT" in true | false) ;; *) echo "USE_CODERABBIT must be true or false" >&2; exit 1 ;; esac
 if [ "$USE_CODEQL" = "false" ]; then
   CODEQL_LANGUAGES='[]'
@@ -713,10 +732,11 @@ case "$USE_SKILLS_SYNC" in true | false) ;; *) echo "reviewed use_skills_sync mu
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_CODEX_REVIEW" = "true" ] ||
   { echo "use_codex_cloud_review requires use_codex_review" >&2; exit 1; }
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_SKILLS_SYNC" = "true" ] ||
-  { echo "use_codex_cloud_review requires use_skills_sync" >&2; exit 1; }
-[ "$USE_CODEX_CLOUD_REVIEW" != "true" ] ||
+  test -e "$SKILLS_SOURCE_CLASSIFIER" ||
+  { echo "use_codex_cloud_review requires use_skills_sync (waived when this repo ships the classifier natively at $SKILLS_SOURCE_CLASSIFIER)" >&2; exit 1; }
+[ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || test -e "$SKILLS_SOURCE_CLASSIFIER" ||
   printf '%s\n' "$SKILL_CATEGORIES" | yq -e 'contains(["universal"])' - >/dev/null ||
-  { echo "use_codex_cloud_review requires the universal skill category" >&2; exit 1; }
+  { echo "use_codex_cloud_review requires the universal skill category (waived when this repo ships the classifier natively at $SKILLS_SOURCE_CLASSIFIER)" >&2; exit 1; }
 case "$USE_CODERABBIT" in true | false) ;; *) echo "reviewed use_coderabbit must be boolean" >&2; exit 1 ;; esac
 case "$USE_CODEQL" in true | false) ;; *) echo "reviewed use_codeql must be boolean" >&2; exit 1 ;; esac
 if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
