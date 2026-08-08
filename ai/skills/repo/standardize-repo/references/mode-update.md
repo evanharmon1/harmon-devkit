@@ -414,12 +414,16 @@ important for a feature with a material footprint or an external capability:
   `use_skills_sync=true` and include `universal` in `skill_categories`, because
   there the classifier (`check-codex-cloud-review.sh`) reaches the repo only by
   syncing the shepherd skill from the `universal` category. A skills-*source*
-  repo that ships that classifier natively in its own tree
-  (`ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, e.g.
-  harmon-devkit, where `use_skills_sync=false` by design because it cannot
-  vendor released copies of itself) already satisfies that intent, so the guard
-  detects the asset and waives both the skills-sync and universal-category
-  requirements for it while keeping them for every other repo. Review it
+  repo — one that authors the shepherd skill under `ai/skills/` rather than
+  vendoring a released copy of it (harmon-devkit is the canonical case, and may
+  therefore keep `use_skills_sync=false` since self-vendoring its own
+  `ai/skills/` would be circular) — ships that classifier natively in its own
+  tree at `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, so
+  it already satisfies that intent. The guard detects a usable classifier there
+  and waives both the skills-sync and universal-category requirements for it
+  while keeping them for every other repo. This carve-out is mirrored in
+  `mode-audit.md` (G4) and `standards-catalog.md` so audit mode does not then
+  report the same configuration as drift. Review it
   explicitly and keep it false unless the maintainer has
   connected Codex cloud review, accepts plan-dependent availability/quotas, and
   has granted explicit connector permission for a private repository. The
@@ -487,8 +491,15 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # classifier natively in its own tree, so it satisfies the intent directly and
 # is exempt (matching Copier's validator, which gates the option on
 # use_codex_review alone). The guards below re-test this asset and waive both
-# requirements when it is present, keeping them for every other repo.
+# requirements only when it is a real executable helper — a regular, executable
+# file, not a bare directory or placeholder that `test -e` alone would accept —
+# keeping the requirements for every other repo.
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
+if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] && [ -x "$SKILLS_SOURCE_CLASSIFIER" ]; then
+  SHIPS_CLASSIFIER_NATIVELY=true
+else
+  SHIPS_CLASSIFIER_NATIVELY=false
+fi
 if test -e "$REVIEWED_DATA"; then
   yq -e \
     'tag == "!!map" and
@@ -523,7 +534,7 @@ case "$USE_SKILLS_SYNC" in true | false) ;; *) echo "USE_SKILLS_SYNC must be tru
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_CODEX_REVIEW" = "true" ] ||
   { echo "use_codex_cloud_review requires use_codex_review" >&2; exit 1; }
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_SKILLS_SYNC" = "true" ] ||
-  test -e "$SKILLS_SOURCE_CLASSIFIER" ||
+  [ "$SHIPS_CLASSIFIER_NATIVELY" = "true" ] ||
   { echo "use_codex_cloud_review requires use_skills_sync (waived when this repo ships the classifier natively at $SKILLS_SOURCE_CLASSIFIER)" >&2; exit 1; }
 case "$USE_CODERABBIT" in true | false) ;; *) echo "USE_CODERABBIT must be true or false" >&2; exit 1 ;; esac
 if [ "$USE_CODEQL" = "false" ]; then
@@ -732,9 +743,9 @@ case "$USE_SKILLS_SYNC" in true | false) ;; *) echo "reviewed use_skills_sync mu
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_CODEX_REVIEW" = "true" ] ||
   { echo "use_codex_cloud_review requires use_codex_review" >&2; exit 1; }
 [ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$USE_SKILLS_SYNC" = "true" ] ||
-  test -e "$SKILLS_SOURCE_CLASSIFIER" ||
+  [ "$SHIPS_CLASSIFIER_NATIVELY" = "true" ] ||
   { echo "use_codex_cloud_review requires use_skills_sync (waived when this repo ships the classifier natively at $SKILLS_SOURCE_CLASSIFIER)" >&2; exit 1; }
-[ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || test -e "$SKILLS_SOURCE_CLASSIFIER" ||
+[ "$USE_CODEX_CLOUD_REVIEW" != "true" ] || [ "$SHIPS_CLASSIFIER_NATIVELY" = "true" ] ||
   printf '%s\n' "$SKILL_CATEGORIES" | yq -e 'contains(["universal"])' - >/dev/null ||
   { echo "use_codex_cloud_review requires the universal skill category (waived when this repo ships the classifier natively at $SKILLS_SOURCE_CLASSIFIER)" >&2; exit 1; }
 case "$USE_CODERABBIT" in true | false) ;; *) echo "reviewed use_coderabbit must be boolean" >&2; exit 1 ;; esac

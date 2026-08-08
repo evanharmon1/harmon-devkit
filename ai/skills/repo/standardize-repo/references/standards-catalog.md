@@ -665,7 +665,11 @@ install the Renovate GitHub App on the repo. Conventions:
   and `infra` when Terraform/Ansible or the iac type applies. The generated
   `use_codex_cloud_review=true` option overrides that ordinary freedom: it
   requires skills sync and the `universal` category because that category ships
-  the mandatory current-head shepherd classifier. Its human setup also disables
+  the mandatory current-head shepherd classifier — except on a skills-source
+  repo (harmon-devkit) that already ships that classifier natively as an
+  executable `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`,
+  which satisfies the requirement directly and so may keep `use_skills_sync=false`
+  (the update guard and G4 audit both waive sync/`universal` for it). Its human setup also disables
   Codex Automatic reviews so the explicit draft-time cycle remains authoritative
   when the PR is promoted to ready for review.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
