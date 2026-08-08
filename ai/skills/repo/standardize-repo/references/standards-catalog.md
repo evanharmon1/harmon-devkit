@@ -11,10 +11,11 @@ that have been generated from the template: `harmonops/harmon-infra` (an `iac`
 project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
 was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
 **§1.13 (project management) alone was re-verified against harmon-init v4.7.2 on
-2026-07-28** — the rest still carries the v3.26.1 baseline, so treat a §1.13
-statement as current and anything else as possibly lagging. (The v4.7.0 pass
-recorded the setup scripts as create-if-missing; `e235d43`, released in v4.7.2,
-made them append missing starter options to existing single-selects.)
+2026-07-28; its agent-vocabulary target was re-verified against the registry and
+ADR on 2026-08-08** — the rest still carries the v3.26.1 baseline, so treat a
+§1.13 statement as current and anything else as possibly lagging. (The v4.7.0
+pass recorded the setup scripts as create-if-missing; `e235d43`, released in
+v4.7.2, made them append missing starter options to existing single-selects.)
 The platform and client repos are kept current via mode-update passes, so their
 remaining divergences are often **deliberate customizations** (Part 3.2), not lag
 — but they can drift between passes, so
@@ -448,14 +449,20 @@ Workflow inventory:
 | Workflow | Triggers / role | Source |
 |---|---|---|
 | `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; jobs `lint`, `security` (+ `build-test` node, `lighthouse` web-astro); Semgrep runs for free private repos or profiles without CodeQL; aggregate `verify` | [copier] |
-| `claude-plan.yml` | `@claude plan` / `claude-plan` label → posts a plan, no writes (`--disallowedTools Edit Write Bash`, `--model opus`) | [copier] |
-| `claude-implement.yml` | `@claude implement` / label → opens a PR on a `claude/` branch (`--model sonnet`) | [copier] |
-| `claude-review.yml` | `@claude review` / label → review comment, no writes (sticky comment) | [copier] |
+| `claude-plan.yml` | Pre-rollout: `@claude plan` / `claude-plan` label → posts a plan, no writes (`--disallowedTools Edit Write Bash`, `--model opus`) | [copier] |
+| `claude-implement.yml` | Pre-rollout: `@claude implement` / `claude-implement` label → opens a PR on a `claude/` branch (`--model sonnet`) | [copier] |
+| `claude-review.yml` | Pre-rollout: `@claude review` / `claude-review` label → review comment, no writes (sticky comment) | [copier] |
 | `release.yml` | release-please; only when `use_release_please` | [copier] |
 | `codeql.yml` | only when `use_codeql=true`; triggers on PR and `merge_group` so required `codeql-verify` reports; matrix is exactly `codeql_languages`; automatic/free for public repos; private/internal requires GitHub Code Security + `FULL_SECURITY_SCAN=true` | [copier] |
 | `snyk-scheduled.yml` | only when `snyk_scan_schedule` is `weekly` or `daily`; schedule/manual advisory SAST + SCA, no PR/push trigger or required check | [copier] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
+
+The three `claude-*` rows describe current pre-rollout template behavior. The
+registry/ADR target is mention-only and `claim:claude`-aware with unconditional
+claim cleanup; harmon-init#664 owns that workflow migration. Until a selected
+release contains it, report the difference as template-version lag rather than
+claiming the target behavior is already present.
 
 **GitHub App auth** (the claude-* workflows, `release.yml`, and
 `project-automation.yml`): authenticate as a **`<owner>-ci` GitHub App** (one App
@@ -792,21 +799,43 @@ milestones, hierarchy, cross-repo, views) — plus the setup tasks/scripts below
 for the doc/tasks/workflows; **[manual]** to run the setup (they hit the live
 GitHub API and are shellcheck/shfmt-gated only, never CI-tested).
 
+The agent vocabulary is not locally invented. Its source contract is
+harmon-init's
+[`agent-registry.json`](https://github.com/evanharmon1/harmon-init/blob/cc5b735b6c512738cf8689df393df8a20d409cee/agent-registry.json),
+with the axis and lifecycle decisions recorded in
+[ADR 0005](https://github.com/evanharmon1/harmon-init/blob/cc5b735b6c512738cf8689df393df8a20d409cee/docs/decisions/0005-unified-agent-vocabulary.md).
+Those links pin the immutable contract revision reviewed for this catalog. When
+auditing, compare against the target's selected immutable harmon-init revision.
+If that revision lacks the registry, report template-version lag and follow the
+applicable mode's existing remote-verified release-selection procedure. Never
+infer the target's current roster from these reference links or mutable `main`.
+
 **One default Project (V2) per owner**, titled after the owner's GitHub login
-(`<owner> Project`); every repo feeds the one board. Slice it by the **fields**
-`Product` / `Domain` / `Layer` / `Agent` — for `Domain` and `Layer`, slice by the
-field and not by the mirrored `domain:`/`layer:` labels, which carry the same
-option names but are never synced to the field values (`Product` and `Agent` have
-no label family at all) — instead of spinning up more projects.
+(`<owner> Project`); every repo feeds the one board. Its six planning axes are
+**Status, Priority, Size, Product, Domain, and Layer**. Slice it by those
+single-valued fields — for `Domain` and `Layer`, use the field rather than the
+mirrored `domain:`/`layer:` labels, which carry the same option names but are
+never synced to field values. Advisory agent routing is multi-valued label
+metadata, not a seventh field. The retired `Agent` field is not part of the
+target state; on an older board, review and migrate its values before deleting
+it because the setup scripts are deliberately additive-only. Live field removal
+belongs to harmon-init's migration units, not this catalog; until those units
+verify the owner-wide associations and fleet state, leave the field in place.
 
 **Setup tasks** (idempotent + non-destructive; **[copier]** generates them, **[manual]** to run):
 
 | Task | Needs | Rendered when | Does |
 |---|---|---|---|
-| `setup:github-project` | `gh` + `project` scope | `project_management: github` | Create/sync the board + `Status` pipeline + the `Size` number field (both owner types); write the `ORG_PROJECT_ID` org var (org only); on a **personal** account also create Priority/Product/Agent/Domain/Layer as project fields |
-| `setup:github-labels` | `gh` + repo write | `project_management: github` | `gh label create --force` for the five label families |
-| `setup:github-issue-fields` | `gh` + `admin:org` | `github` **and** org owner | Add the org **issue fields** Product + Agent + Domain + Layer (public preview) |
+| `setup:github-project` | `gh` + `project` scope | `project_management: github` | Create/sync the board + `Status` pipeline + the `Size` number field (both owner types); write the `ORG_PROJECT_ID` org var (org only); on a **personal** account also create Priority/Product/Agent/Domain/Layer as project fields in pre-rollout releases |
+| `setup:github-labels` | `gh` + repo write | `project_management: github` | Create/update the release-defined static label list; pre-rollout releases still include legacy `agent:*` rows and, when `use_foreman` is enabled, phantom `foreman:*` rows rather than the registry-driven target |
+| `setup:github-issue-fields` | `gh` + `admin:org` | `github` **and** org owner | Add the org **issue fields** Product + Agent + Domain + Layer in pre-rollout releases (public preview) |
 | `setup:github-issue-types` | `gh` + `admin:org` | **org owner** (independent of `project_management`) | Ensure org issue types Bug/Feature/Task/Research (Task is GitHub's default; adds Research) |
+
+Those rows describe executable behavior in pre-rollout harmon-init releases,
+not the registry's completed target. The ordered rollout is owned by
+harmon-init#661–#665 and the linked devkit session-suite unit, not re-specified
+here. Until those changes reach the selected releases, report the difference as
+template-version lag and leave live fields and labels unchanged.
 
 **Conventions the doc encodes** (audit the doc + the field/label/workflow
 artifacts; the prose rules are guidance, not lint):
@@ -822,17 +851,18 @@ artifacts; the prose rules are guidance, not lint):
   group headers, so it lives on the project even for orgs. The GitHub built-in
   issue fields (**Priority**, single-select **Effort**, Start/Target date) are
   left at their defaults — **`Effort` is never re-created as a project field**;
-  `Size` is the numeric, summable estimate. **Product + Agent + Domain + Layer**
-  are org issue fields from `setup:github-issue-fields` (Domain = which part of
-  the product, Layer = which slice of the stack). On a personal account (no issue
-  fields) `setup:github-project` creates Priority/Product/Agent/Domain/Layer/Size
-  as project fields. Both scripts are **create-if-missing then additive** for
-  these fields: an existing field keeps every option it has, and a re-run appends
-  whatever **starter** option it lacks — `Status` and the custom
-  Domain/Layer/Agent fields alike, so items already assigned an option are never
-  orphaned. Neither script ever **removes** an option or a field, so a starter the
-  template retires survives until you delete it by hand (only after re-mapping —
-  deleting an assigned option clears those values). **[manual]**
+  `Size` is the numeric, summable estimate. In the target state, **Product +
+  Domain + Layer** are org issue fields from `setup:github-issue-fields` (Domain
+  = which part of the product, Layer = which slice of the stack). On a personal
+  account (no issue fields), their equivalents plus Priority/Size are project
+  fields. Pre-rollout scripts also create the retired `Agent` field. Both scripts
+  are **create-if-missing then additive** for every field they declare: an
+  existing field keeps every option it has, and a re-run appends whatever
+  **starter** option it lacks — `Status` and the custom fields alike, so items
+  already assigned an option are never orphaned. Neither script ever **removes**
+  an option or a field, so a starter the template retires survives until you
+  delete it by hand (only after re-mapping — deleting an assigned option clears
+  those values). **[manual]**
   What a re-run still will not do: add **repo-specific** options (the scripts ship
   only the `auth`/`billing`/`platform` floor — this product's real domains are
   yours to add), or fix anything the script *warned and continued* past. Both
@@ -857,7 +887,8 @@ artifacts; the prose rules are guidance, not lint):
 - **Issue types** — Bug/Feature/Task/Research (org). The Issue Forms set `type:` on
   org repos and a **default assignee**, and apply **no labels** (type is the Type
   field, not a label).
-- **Labels** — repo-level, five color families, orthogonal to Status and Type:
+- **Labels** — repo-level, multi-valued, and orthogonal to Status and Type. The
+  base taxonomy includes:
   **Concerns** (purple `5319E7`) `sec`, `a11y`, `perf`, `tech-debt`, `i18n`,
   `l10n`; **Source** (pink `EC4899`) `customer-request`, `ai-generated`;
   **Workflow** (orange `E36209`) `needs-triage`, `needs-requirements`, `blocked`,
@@ -877,12 +908,31 @@ artifacts; the prose rules are guidance, not lint):
   `ui`/`logic`/`data`/`integration` keeps orphaned `layer:frontend`,
   `layer:backend`, `layer:infra` labels — re-map those issues and delete the three
   by hand. **[manual]**
+- **Model-centric routing and claims** — use
+  `suggest:<family>[:<model>]` for human-authored, advisory triage and
+  `claim:<family>[:<model>]` for agent-authored live ownership. Both accept a
+  family-level label; add the optional model segment only when it is known and
+  useful. Interactive session claims are released at wrap or shepherd completion;
+  Claude Action claims are always released, including on failure.
+  Transition-compatible consumers also recognize documented legacy `agent:*`
+  claims. Neither family arms execution or records historical doneness. Harness
+  slugs never belong on either model-centric axis, and the `Agent` field is not a
+  planning axis. For a post-rollout target, `docs/project-management.md` is the
+  human authority and includes family and harness tables derived from the
+  target's selected registry revision, not an independently maintained roster.
+- **Foreman arming** — only an authorized actor's `foreman:<adapter>` label arms
+  dispatch; `suggest:*` remains advisory even when its family resembles an
+  adapter. The registry maps the harness-centric adapter and only adapters in the
+  pinned Foreman release are provisionable; test-only `mock` is not. Detailed
+  dispatch and input-trust enforcement belong to Foreman and the selected
+  target's configuration, not a second procedure in this catalog.
 - **Milestones** — named after release versions (title == git tag), small +
   rolling, preferred over iterations pre-launch.
   `.github/workflows/close-milestone-on-release.yml` closes the matching milestone
   on release publish — **[copier]** when `use_release_please` + `github`.
 - **Views** (Board / Triage / Agent queue / Planning / Mine) are **UI-only** —
-  Projects V2 has no view API. **[manual]**.
+  Projects V2 has no view API. The Agent queue view keys on `Status: Agent Queue`
+  and may filter by `suggest:*`; it never depends on an `Agent` field. **[manual]**.
 - **Auto-add** — the project's built-in **"Auto-add to project"** workflow
   (Settings → Workflows, filter `is:open`) puts every issue/PR on the board, for
   both owner types. UI-only, no API. **[manual]**. Three limits bound the "every
