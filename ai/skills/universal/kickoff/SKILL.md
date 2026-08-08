@@ -55,8 +55,9 @@ gh issue list --repo <owner/repo> --label agent:claude-code --state all --limit 
   --json number,title,state,assignees,url
 # Known narrow gap: `gh issue list --label` is exact-match, so a *model-pinned*
 # claim (`claim:claude:opus`) that ALSO lost its assignee is not caught by this
-# label prong. It is opt-in and rare, its claim comment still exists, and the
-# event-driven release (`release-claim.sh`) recovers it on close — so this
+# label prong. It is opt-in and rare, and its claim comment still exists, so a
+# maintainer — or the event-driven release on close, where the claim is still
+# trusted (claim-lifecycle.md's trust rules) — can still recover it. This
 # supplement deliberately does not enumerate every model variant.
 ```
 

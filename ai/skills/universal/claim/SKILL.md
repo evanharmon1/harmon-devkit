@@ -269,9 +269,10 @@ actually added.
   (`--limit` matters — the default returns only 30 labels):
 
   ```sh
+  target=claim:claude                 # or claim:claude:<model> to pin the model
   labels="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')"
-  if printf '%s\n' "$labels" | grep -qx claim:claude; then
-    gh issue edit <n> --repo "$repo" --add-label claim:claude
+  if printf '%s\n' "$labels" | grep -qx "$target"; then
+    gh issue edit <n> --repo "$repo" --add-label "$target"
   elif printf '%s\n' "$labels" | grep -qx agent:claude-code; then
     gh issue edit <n> --repo "$repo" --add-label agent:claude-code   # legacy, until claim:* is provisioned
   fi
