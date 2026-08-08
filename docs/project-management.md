@@ -113,9 +113,12 @@ it's shaped and ready for an *agent* rather than a human to implement — a
 `suggest:<family>[:<model>]` label says which intelligence should (see
 [Labels](#labels)). Today the hand-off is manual: apply the suggestion and trigger
 it (a `claude-*` workflow, or point Claude Code at the item). The lane is built for
-future automation, though — an agent can watch *Agent Queue + `suggest:*` +
-priority* (the Agent-queue view below) and pull the top item on its own — and
-either way the item moves to **In Progress** once work starts.
+future automation, though — but the trigger for autonomous dispatch is an
+authorized `foreman:*` arming label (the Foreman note below), **never** the
+advisory `suggest:*`, which only records which intelligence *should* work the
+item. Treating a `suggest:*` label as consent to execute would let any repo
+writer arm dispatch, bypassing the actor-attributable `foreman:*` trust gate.
+Either way the item moves to **In Progress** once work starts.
 
 > **Foreman is that automation** for issue-driven delivery: arm the issue with
 > a `foreman:*` label (label arming is the supported mode — issue-field arming
@@ -251,9 +254,12 @@ The work-metadata fields:
 There is deliberately **no `Agent` field.** *Which* intelligence should implement
 an issue is advisory routing, and it now lives in the `suggest:*` **label**; which
 one *is* implementing it lives in the `claim:*` label (both under
-[Labels](#labels)). Both are labels rather than fields because a project field
-records no actor for its changes and cannot be written on a personal-account board
-at all — the reasoning is in
+[Labels](#labels)). Both are labels rather than fields because a label's change
+carries in the issue timeline the actor who made it while a project field's does
+not, and because the retired `Agent` field was an *org issue field* the Projects V2
+API could not write at all (a personal-account project field is writable with the
+`project` scope — see [Token scopes](#token-scopes) — but an org issue field is
+not) — the fuller reasoning is in
 [Claiming](#claiming--making-an-agents-work-visible-while-it-happens).
 
 Domain and Layer are orthogonal to each other and to `Type`/`Status`: an issue
@@ -321,9 +327,10 @@ required; the model segment is optional (`claim:claude` is a valid family-level
 claim, `claim:claude:opus` pins the model). The family vocabulary — `claude`,
 `codex`, `copilot`, `qwen`, `deepseek`, `glm`, `kimi`, `minimax`, `gemini` — and
 its per-family models are defined once in harmon-init's `agent-registry.json` and
-provisioned by `task setup:github-labels`; don't invent a per-repo slug. Foreman
-arming stays separate and harness-centric (`foreman:<adapter>`) — a `suggest:*`
-label is advice, never an arming signal.
+provisioned by `task setup:github-labels` (mid-migration — see the transition note
+under **Claiming** below); don't invent a per-repo slug. Foreman arming stays
+separate and harness-centric (`foreman:<adapter>`) — a `suggest:*` label is
+advice, never an arming signal.
 
 GitHub labels live per-repository (there's no shared org label pool).
 `setup-github-labels` seeds the set into one repo — run it in each, or set the
@@ -379,18 +386,30 @@ These labels ship with `task setup:github-labels`, which is generated only for
 `project_management: github`. A repo on `none` or `linear` gets no label
 families at all, so a claim there rests on the assignee and the claim comment.
 
-**During the rolling transition, the skills and the label provisioning move on
-separate clocks.** The vendored `claim` / `shepherd` / `wrap` skills arrive via
-`task sync:skills`; the `claim:*` / `suggest:*` label set is provisioned by
-`task setup:github-labels`. Nothing makes the two atomic, so a repo can carry
-skills that speak `claim:*` before its labels have migrated from the legacy
-`agent:*` family — or the reverse. The skills absorb the skew: a claim prefers
-`claim:claude` and falls back to the legacy `agent:claude-code` label only when
-`claim:*` is not yet provisioned, and the release and stale-claim sweeps still
-*recognize* a legacy `agent:*` claim so in-flight work started under the old
-vocabulary is not stranded. That read-side recognition is also why a plain grep
-for the literal `agent:claude-code` no longer proves a legacy *writer* is
-installed — the automation check below accounts for it.
+**During the rolling transition, the skills and the label/field provisioning move
+on separate clocks.** The vendored `claim` / `shepherd` / `wrap` skills arrive via
+`task sync:skills` and already speak `claim:*` / `suggest:*`. Migrating the
+*provisioning* to that vocabulary is a separate rollout unit (registry-driven —
+harmon-init#661/#663), so until it reaches a given repo, `task setup:github-labels`
+still creates the legacy `agent:*` labels and `task setup:github-project` still
+creates the retired `Agent` field. Nothing makes the two clocks atomic, so a repo
+routinely carries skills that speak `claim:*` before its labels have migrated —
+or the reverse. The skills absorb the skew: a claim prefers `claim:claude` and
+falls back to the legacy `agent:claude-code` label only when `claim:*` is not yet
+provisioned, and the release and stale-claim sweeps still *recognize* a legacy
+`agent:*` claim so in-flight work started under the old vocabulary is not
+stranded. That read-side recognition is also why a plain grep for the literal
+`agent:claude-code` no longer proves a legacy *writer* is installed — the
+automation check below accounts for it.
+
+**Migrating an already-populated `Agent` field is manual, and precedes trusting
+the re-keyed view.** Setup is additive-only — it never deletes the old field or
+copies its values — so on a board that already routed issues through the `Agent`
+field, those assignments are not carried into `suggest:*` labels automatically.
+Re-key the **Agent-queue view** onto `suggest:*` (below) only after applying the
+equivalent `suggest:*` label to each still-routed issue; otherwise the new filter
+hides every issue that was routed the old way. The upstream unit that removes the
+live field and re-keys planning is harmon-init#662.
 
 **A board write can fail without anyone learning.** Every `Status` write in the
 lifecycle needs the [`project` scope](#token-scopes). Without it each one exits
