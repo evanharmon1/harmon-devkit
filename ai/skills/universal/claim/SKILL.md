@@ -28,6 +28,14 @@ for a separate go-ahead in conversation. This skill is
 and every write targets exactly the issue they named. A conversational
 confirmation re-asks what the invocation already answered.
 
+That reasoning holds only where the user actually **named** the target. §1 may
+instead *infer* it from the branch or the conversation, and an inference is
+this skill's guess, not the user's instruction — a branch left over from
+earlier work would claim whatever issue its name encodes. So confirm an
+inferred target before the step 5 writes. That is not the go-ahead this
+section removes: it asks *which issue*, which the invocation left open, rather
+than *whether to claim*, which it settled.
+
 That covers the **routine** claim only. Three escalations still stop and ask,
 because the invocation authorized none of them: the step 3 blockers (§3),
 displacing another agent's claim label (§5), and claiming where ownership is
@@ -50,6 +58,13 @@ number — prefer it when available. If the target is ambiguous — including
 when multiple remotes point at **different repositories** (a fork with its
 own issue tracker plus an `upstream`) and a bare number could mean either —
 confirm with the user before proceeding.
+
+**An inferred target is confirmed before the step 5 writes, even when it is
+unambiguous.** Approval-by-invocation covers the issue the user named; on this
+path nobody named one. Unambiguous only means a single issue matched the
+branch — not that the branch is the one they meant, and a stale branch matches
+just as cleanly as the right one. Name the issue you inferred and what you
+inferred it from, and get a yes before step 5.
 
 ## 2. Refresh state (read-only)
 
