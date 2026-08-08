@@ -5,14 +5,20 @@
 # Why: a claim is written by a session, but its release is owed after the
 # merge — an event no session is guaranteed to witness (/shepherd stops before
 # the merge on policy). Without an event-driven release, every claim whose
-# session ends before the human merges strands: the assignee, the `agent:*`
-# label, and the claim comment keep advertising an agent mid-flight on work
+# session ends before the human merges strands: the assignee, the claim label
+# (`agent:*` or `claim:*`), and the claim comment keep advertising an agent mid-flight on work
 # that is finished. This script is the release: .github/workflows/
 # claim-release.yml runs it on `issues closed` and on `pull_request closed`
 # (unmerged), and the backfill runs it by hand. Contract and design record:
 # ../references/claim-lifecycle.md.
 #
 # What it does, in order:
+# Vocabulary: the live-claim label is migrating from the harness-named
+# `agent:*` family (legacy) to the model-centric `claim:*` family
+# (`claim:<family>[:<model>]`, e.g. `claim:claude`). This script recognizes
+# BOTH during the rolling transition — a claim record may name either, and the
+# legacy `yes` fallback sweeps every live `agent:*` AND `claim:*` label.
+#
 #   1. Reads the issue (state, labels, assignees) — also the trust anchor:
 #      only comments authored by the repo owner or a CURRENT assignee count,
 #      when selecting the claim AND when deciding it was already released.
@@ -25,10 +31,10 @@
 #      replacement work that reclaimed the issue after the event is not this
 #      event's to release.
 #   3. Parses the comment's "Claim record" and undoes ONLY what it says the
-#      claim added: the `agent:*` label (v1 records name it; a legacy `yes`
-#      falls back to every live `agent:*` label), the claim author's own
-#      assignment, and — only while the issue is still open — restores a
-#      displaced `agent:*` label. A claim with no record at all releases by
+#      claim added: the claim label (v1 records name it — `agent:*` or
+#      `claim:*`; a legacy `yes` falls back to every live `agent:*`/`claim:*`
+#      label), the claim author's own assignment, and — only while the issue
+#      is still open — restores a displaced label. A claim with no record at all releases by
 #      comment only and touches no marker. Record values are data: labels and
 #      logins are validated before they become arguments, never executed.
 #   4. Re-reads the comments immediately before writing and aborts (exit 3)
@@ -142,11 +148,14 @@ done
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
+# Accepts both the legacy harness-named family (`agent:*`) and the
+# model-centric family (`claim:*`) during the rolling transition; a bare
+# prefix with no segment is rejected either way.
 valid_label() {
     case "$1" in
-    agent:) return 1 ;;
+    agent: | claim:) return 1 ;;
     *[!a-zA-Z0-9:._-]*) return 1 ;;
-    agent:*) return 0 ;;
+    agent:* | claim:*) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -352,11 +361,13 @@ if [ "$record_present" -eq 1 ]; then
     case "$(lower "$label_added")" in
     no | n/a | none | '') ;;
     yes)
-        # Legacy record: it does not say which label, so take the live ones.
+        # Legacy record: it does not say which label, so take the live ones —
+        # both vocabularies, since a `yes` record predates the rename and the
+        # live label could be either family.
         while IFS= read -r l; do
             [ -n "$l" ] || continue
             case "$l" in
-            agent:*)
+            agent:* | claim:*)
                 if valid_label "$l"; then
                     labels_to_remove="$labels_to_remove$l"$'\n'
                 fi
@@ -454,7 +465,7 @@ if [ -n "$labels_to_remove" ]; then
         fi
     done <<<"$labels_to_remove"
 elif [ "$record_present" -eq 1 ]; then
-    note "agent label: none to remove (the claim record says the claim did not add one, or it is already gone)"
+    note "claim label: none to remove (the claim record says the claim did not add one, or it is already gone)"
 fi
 
 if [ -n "$restore_displaced" ]; then

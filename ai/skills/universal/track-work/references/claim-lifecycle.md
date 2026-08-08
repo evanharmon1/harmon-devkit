@@ -1,7 +1,8 @@
 # Claim lifecycle: who writes what, and the parsed claim-record contract
 
 The claim convention (`track-work` §6) makes an agent's work visible while it
-happens: assignee, `agent:*` label, a card at `In Progress`, and a `Claiming —`
+happens: assignee, `claim:*` label (the legacy `agent:*` family during the
+rolling transition), a card at `In Progress`, and a `Claiming —`
 comment. This reference records the two things the SKILL.md prose cannot carry:
 the **machine contract** for the claim record, and the **design decisions**
 behind event-driven release (harmon-devkit#210).
@@ -12,9 +13,9 @@ A session writes only what only it knows. Every issue mutation GitHub can
 derive from its own state is written by an event, not by a session. Two
 consequences that hold independently of whether any session is running:
 
-1. No closed issue carries a live claim marker — an `agent:*` label, a card at
-   `In Progress`, or a `Claiming —` comment with no `Claim released —`
-   successor.
+1. No closed issue carries a live claim marker — a `claim:*` (or legacy
+   `agent:*`) label, a card at `In Progress`, or a `Claiming —` comment with no
+   `Claim released —` successor.
 2. A card's `Status` matches the delivery state GitHub already knows, rather
    than a snapshot some session took. (Deferred — see the decision below.)
 
@@ -23,9 +24,9 @@ consequences that hold independently of whether any session is running:
 | Stage | Writes |
 | --- | --- |
 | `kickoff` | none — detects drift, never fixes it |
-| `claim` | assignee, `agent:*` label, card `In Progress`, claim comment — nothing in GitHub knows an agent started before a PR exists, so this stays session-written |
+| `claim` | assignee, `claim:*` label, card `In Progress`, claim comment — nothing in GitHub knows an agent started before a PR exists, so this stays session-written |
 | `implement` | ticks criteria as verified; files follow-ups |
-| `shepherd` | review replies; releases the `agent:*` label at its terminal stop-at-green ("implementing right now" is false once the work is with a human); card advances (see decision below) |
+| `shepherd` | review replies; releases the `claim:*` label at its terminal stop-at-green ("implementing right now" is false once the work is with a human); card advances (see decision below) |
 | `retro` | none — distinguishes a claim *pending release* from one that outlived its session |
 | `wrap` | releases what events did not; owns the abandoned/parked case |
 
@@ -44,6 +45,15 @@ release invariant costs no new secret.
 `/claim` writes the claim comment; this file is the contract every parser
 holds it to. `release-claim.sh` is the reference parser.
 
+**Vocabulary transition.** The live-claim label is migrating from the
+harness-named `agent:*` family to the model-centric `claim:<family>[:<model>]`
+family (registry: harmon-init's `agent-registry.json`; e.g. `claim:claude`,
+`claim:codex`). New claims write `claim:*`; the parser and every reader
+recognize **both** families until the live-label migration completes
+downstream, so no in-flight `agent:*` claim strands mid-transition. The harness
+that ran the work (Claude Code, the Action, the codex CLI) is recorded in the
+claim comment's session context, never in the label.
+
 - The claim comment's body **starts with** `Claiming —` (em dash, U+2014).
 - A release comment's body **starts with** `Claim released —` and its first
   line is, verbatim:
@@ -60,15 +70,19 @@ holds it to. `release-claim.sh` is the reference parser.
   - board: <board title, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `agent:` label added by this claim: <agent:claude-code | no | n/a>
-  - `agent:` label displaced by this claim: <agent:codex | none>
+  - `claim:` label added by this claim: <claim:claude | no | n/a>
+  - `claim:` label displaced by this claim: <claim:codex | none>
   ```
 
-- The label fields name the **actual label** (`agent:…`). Legacy records wrote
-  `yes`; the parser falls back to every live `agent:*` label on the issue.
+- The label fields name the **actual label** (`claim:…`, e.g. `claim:claude` —
+  the family segment names the model intelligence, not the harness). The parser
+  anchors on `label added by this claim:`, so the `` `claim:` `` prefix is
+  cosmetic and legacy records written with `` `agent:` `` still parse. Records
+  that wrote `yes` (older still) name no label; the parser falls back to every
+  live `claim:*` **and** `agent:*` label on the issue.
 - Values are untrusted data. Parsers validate before acting: labels against
-  `agent:` + `[a-zA-Z0-9:._-]`, logins against GitHub's alphanumeric-and-hyphen
-  shape — and never execute or interpolate them.
+  the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's
+  alphanumeric-and-hyphen shape — and never execute or interpolate them.
 - **Trust gate, applied at selection**: a `Claiming —` comment counts only
   from the repo owner or a **current** assignee **whose per-comment
   `author_association` is `OWNER`, `MEMBER`, or `COLLABORATOR`** — assignment

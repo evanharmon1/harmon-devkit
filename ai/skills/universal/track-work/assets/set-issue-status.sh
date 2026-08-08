@@ -3,27 +3,26 @@
 #
 # Why: an agent that starts work leaves no trace anyone else can see. The
 # assignee is buried in the issue page, and a claim comment is one entry in a
-# thread. The board is where the work is actually watched, and the taxonomy
-# already has the two fields that answer "is someone on this, and who": the
-# `Status` pipeline (`In Progress`, `In Review`, `Ready to Merge`) and the
-# `Agent` single-select (`Claude Code`, `Codex`, …). Nothing wrote them — the
-# only implementation lived inside the org-only `claude-implement.yml` workflow,
-# so a local agent session moved nothing. This is that logic, usable by hand and
-# on personal accounts too.
+# thread. The board is where the work is actually watched, and the `Status`
+# pipeline (`In Progress`, `In Review`, `Ready to Merge`) is the field that
+# answers "is someone on this". Nothing wrote it — the only implementation
+# lived inside the org-only `claude-implement.yml` workflow, so a local agent
+# session moved nothing. This is that logic, usable by hand and on personal
+# accounts too.
 #
-# Deliberately does ONE thing: sets single-select project fields on an item
+# The retired `Agent` single-select is deliberately NOT written here. Live
+# ownership is the model-centric `claim:*` label and advisory routing is
+# `suggest:*` (see ../references/claim-lifecycle.md); the `Agent` field is gone
+# from the taxonomy. `--show` still reports whatever single-select values a card
+# holds, so a legacy `Agent` value stays visible during the rolling transition —
+# but nothing here sets it.
+#
+# Deliberately does ONE thing: sets the `Status` single-select on an item
 # already on a board. It does not add items to boards, create fields, or invent
 # options — a board whose vocabulary differs is reported, not rewritten.
 #
-# Not covered: on a GitHub **organization**, `Agent` is an org *issue field*
-# (`orgs/{org}/issue-fields`, public preview), not a project field. This script
-# only writes project fields, so `--agent` is reported as skipped there and the
-# `agent:*` label carries the signal instead. `Status` is a project field on both
-# owner types and always works.
-#
 # Usage:
-#   set-issue-status.sh --repo owner/repo --issue N
-#                       [--status NAME] [--agent NAME]
+#   set-issue-status.sh --repo owner/repo --issue N --status NAME
 #                       [--project TITLE] [--dry-run]
 #   set-issue-status.sh --repo owner/repo --issue N --show
 #
@@ -32,27 +31,23 @@
 # BEFORE a claim — the write destroys the previous Status and nothing else
 # records it, so a hand-back cannot restore what was never read.
 #
-# At least one of --status / --agent is required. Names match case-insensitively
+# --status is required (for a write). Names match case-insensitively
 # ("In Progress" and "In progress" are the same option) because boards differ.
 # When the issue sits on more than one board, --project TITLE disambiguates;
 # otherwise the owner's default board ("<owner> Project") is preferred.
 #
 # Needs the `project` token scope: gh auth refresh -s read:project,project
 #
-# Exit: 0 = every requested field applied (or resolved cleanly under --dry-run),
-#       1 = a field resolved but the write failed, and nothing else applied,
+# Exit: 0 = the Status write applied (or resolved cleanly under --dry-run),
+#       1 = the field resolved but the write failed,
 #       2 = usage/environment error (could not verify — treat as unsafe),
-#       3 = nothing to do: the issue is on no board, or no requested field or
-#           option exists on it. Benign — the caller carries on.
-#       4 = partial: some requested fields applied and some were skipped or
-#           failed. Kept distinct from 0 so a Status that never moved cannot
-#           hide behind an Agent that did, and distinct from 1 so a write that
-#           failed after another landed does not understate what changed — the
-#           caller must report neither more nor less than it actually did.
+#       3 = nothing to do: the issue is on no board, or the Status field or the
+#           requested option does not exist on it. Benign — the caller carries
+#           on.
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --repo owner/repo --issue N [--status NAME] [--agent NAME] [--project TITLE] [--dry-run]" >&2
+    echo "Usage: $0 --repo owner/repo --issue N --status NAME [--project TITLE] [--dry-run]" >&2
     echo "       $0 --repo owner/repo --issue N --show" >&2
     exit 2
 }
@@ -60,7 +55,6 @@ usage() {
 repo="${GH_REPO:-}"
 issue=""
 status=""
-agent=""
 project_title=""
 dry_run=0
 show=0
@@ -79,11 +73,6 @@ while [ "$#" -gt 0 ]; do
     --status)
         [ "$#" -ge 2 ] || usage
         status="$2"
-        shift 2
-        ;;
-    --agent)
-        [ "$#" -ge 2 ] || usage
-        agent="$2"
         shift 2
         ;;
     --project)
@@ -106,9 +95,9 @@ done
 
 [ -n "$repo" ] && [ -n "$issue" ] || usage
 if [ "$show" -eq 1 ]; then
-    { [ -n "$status" ] || [ -n "$agent" ] || [ "$dry_run" -eq 1 ]; } && usage
+    { [ -n "$status" ] || [ "$dry_run" -eq 1 ]; } && usage
 else
-    [ -n "$status" ] || [ -n "$agent" ] || usage
+    [ -n "$status" ] || usage
 fi
 case "$issue" in
 '' | *[!0-9]*)
@@ -217,7 +206,6 @@ if ! fields=$(gh api graphql \
     exit 2
 fi
 
-requested=0
 applied=0
 
 # Resolve one field + option and write it. A field or option the board does not
@@ -258,37 +246,14 @@ apply_field() {
     applied=$((applied + 1))
 }
 
-rc=0
-if [ -n "$status" ]; then
-    requested=$((requested + 1))
-    apply_field "Status" "$status" || rc=1
+# One writable field (`Status`), so the outcomes are simple: apply_field
+# returns non-zero only when the field resolved but the mutation failed (exit
+# 1); a board that lacks the field or option is a skip that leaves `applied` at
+# 0 (exit 3); a successful write or dry-run sets `applied` to 1 (exit 0).
+if apply_field "Status" "$status"; then
+    [ "$applied" -eq 1 ] && exit 0
+    # The board exists but lacks the Status field or the requested option.
+    # Benign: the label and assignee still carry the claim.
+    exit 3
 fi
-if [ -n "$agent" ]; then
-    requested=$((requested + 1))
-    apply_field "Agent" "$agent" || rc=1
-fi
-
-if [ "$rc" -ne 0 ]; then
-    # A failed write after a successful one is still partial. Reporting it as a
-    # flat failure would understate what landed just as badly as reporting it
-    # as success would overstate it — the board really did change.
-    if [ "$applied" -gt 0 ]; then
-        echo "applied $applied of $requested requested field(s) before a write failed" >&2
-        exit 4
-    fi
-    exit 1
-fi
-if [ "$applied" -eq "$requested" ]; then
-    exit 0
-fi
-if [ "$applied" -gt 0 ]; then
-    # Partial. Counting any single success as "applied" would let a skipped
-    # Status hide behind a written Agent, and the caller would report a claim
-    # for a card that never moved. Distinguish it so the caller can say which
-    # half landed.
-    echo "applied $applied of $requested requested field(s) — see the skips above" >&2
-    exit 4
-fi
-# Everything requested was skipped — the board exists but does not speak this
-# vocabulary. Benign: the label and assignee still carry the claim.
-exit 3
+exit 1

@@ -851,7 +851,7 @@ loops indefinitely:
    This confirmation is the final lifecycle transition: ready-for-review is the
    human handoff, not another automated workbench. After it, perform only this
    stop condition's coordination cleanup (project-card state, guarded
-   `agent:*` label release, and the final report); do not restart code changes,
+   `claim:*` label release, and the final report); do not restart code changes,
    gates, or automated review on the ready PR.
 
    If the snapshot was already non-draft, promotion is idempotently complete
@@ -875,7 +875,7 @@ loops indefinitely:
    card ([§7](#7-move-the-project-card)) — `Ready to Merge` only when
    `reviewDecision` is `APPROVED`, otherwise `In Review`, because a `BLOCKED`
    or `REVIEW_REQUIRED` PR is ready *and still waiting on a human*.
-   **Release the `agent:*` label** as part of this stop: the label asserts an
+   **Release the `claim:*` label** as part of this stop: the label asserts an
    agent is implementing the issue *right now*, which becomes false the
    moment the work is handed to a human — leaving it is the misleading board
    state harmon-devkit#210 exists to remove. Remove it only when it is
@@ -883,10 +883,12 @@ loops indefinitely:
    added it (read the record — shepherd is routinely a different session
    from the one that claimed, so "I know I added it" is session memory, not
    evidence; the record grammar is in
-   `track-work/references/claim-lifecycle.md`):
+   `track-work/references/claim-lifecycle.md`). Remove the label the record
+   names — `claim:claude` for a current claim, or a legacy `agent:claude-code`
+   for one made before the migration:
 
    ```sh
-   gh issue edit <n> --repo "$repo" --remove-label agent:claude-code
+   gh issue edit <n> --repo "$repo" --remove-label claim:claude
    ```
 
    If the record is missing or unreadable, leave the label and say so in the
@@ -897,7 +899,7 @@ loops indefinitely:
    back into §5 fix rounds, **re-add the label first** (same guard — the
    record said the claim added it), because "implementing right now" has
    become true again and coordination checks read the label as exactly that.
-   Report the release in the ready summary, e.g. `released agent:claude-code
+   Report the release in the ready summary, e.g. `released claim:claude
    — ready for review, awaiting the maintainer; the close event releases the
    rest.`
    Then stop.

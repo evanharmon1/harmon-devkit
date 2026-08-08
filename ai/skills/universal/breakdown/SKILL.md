@@ -374,7 +374,7 @@ them in §6, but write only what the target's own tooling exposes for the
 purpose — `track-work`'s `set-issue-status.sh` for `Status`, nothing
 hand-rolled — and report any proposed field the tooling cannot write instead
 of improvising a GraphQL mutation for it. And never set a claim marker
-(`agent:*` label, assignee, `In Progress`) — a breakdown plans work,
+(`claim:*` label, assignee, `In Progress`) — a breakdown plans work,
 `/claim` claims it.
 
 **The recipes below are written for the default host.** They are the §1 host

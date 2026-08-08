@@ -76,12 +76,12 @@ below evaluate it, and a field you never fetched refuses nothing.
 
 Read the outcomes **in this order**, and stop at the first that matches. The
 order is the whole point: markers are set independently and go stale
-independently, so an issue can carry a live `agent:claude-code` label *and* an
+independently, so an issue can carry a live `claim:claude` label *and* an
 assignee who is not you. Asking "is it mine?" first answers yes on exactly that
 issue, and two agents start implementing.
 
-1. **Claimed by someone else** — a different assignee, or an `agent:*` label
-   naming another agent. Stop and ask; two agents on one issue is a merge
+1. **Claimed by someone else** — a different assignee, or a `claim:*` (or
+   legacy `agent:*`) label naming another agent. Stop and ask; two agents on one issue is a merge
    conflict with extra steps. This is first because it is the only outcome that
    *disqualifies* markers the later ones would accept.
 2. **Already implemented** — an open PR linked by a closing keyword
@@ -120,7 +120,7 @@ issue, and two agents start implementing.
      A failed identity lookup is *unknown*, never *mine* — fall through to
      outcome 4 and offer `/claim` rather than proceeding on an unverified
      comment.
-   - **Corroborating** — an `agent:*` label for this agent. It names the agent
+   - **Corroborating** — a `claim:*` (or legacy `agent:*`) label for this agent. It names the agent
      but not the session, and a repo with no such label family cannot have one
      at all (`/claim` treats that as benign), so its absence proves nothing.
    - **Not ownership on its own** — a card at `In Progress`. `Status` is the

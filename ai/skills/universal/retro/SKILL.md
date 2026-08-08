@@ -29,7 +29,7 @@ remembered status — re-verify each one live:
 - `gh issue view <n> --json state,stateReason,assignees,labels,url,title`
 
 **Read the claim off the markers, not off the issue.** A live claim is an
-`agent:*` label, a card at `In Progress`, or a claim comment **not superseded by
+`claim:*` (or legacy `agent:*`) label, a card at `In Progress`, or a claim comment **not superseded by
 a later `Claim released —` comment** (the claim comment outlives its own
 release, so on its own it proves nothing about now).
 
@@ -38,7 +38,7 @@ claims: a closing PR auto-closes the issue while the label and card stay set,
 and a `/wrap` that removed the assignee before failing on the label or status
 leaves a claim with nobody assigned. Gating on either is how the claim this
 step exists to surface becomes invisible. Do not require the label
-specifically, either — `/claim` treats a missing `agent:*` family as benign
+specifically, either — `/claim` treats a missing `claim:*`/`agent:*` family as benign
 and claims anyway, so demanding it would miss every claim in an older repo or
 one with `project_management: none`, which are exactly the repos where the
 label cannot exist. Report it as "open — claimed,
