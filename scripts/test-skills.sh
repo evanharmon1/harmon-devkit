@@ -1051,8 +1051,14 @@ expect_ok "audit G4 waives sync/universal for the native skills-source classifie
 expect_ok "standards catalog waives cloud-review sync/universal for the skills source" \
     sh -c 'grep -qF "except on a skills-source" "$1" &&
         grep -qF "may keep" "$1" &&
+        grep -qF "as above and in G4" "$1" &&
         grep -qF "check-codex-cloud-review.sh" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "new-repo and adopt guidance note the skills-source waiver" \
+    sh -c 'grep -qF "waived only for a skills-source repo already shipping the shepherd classifier" "$1" &&
+        grep -qF "already ships that classifier natively is exempt" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-new-repo.md" \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
 expect_fail "update guidance does not preseed reviewed skill categories" \
     grep -qF 'failed to seed reviewed skill categories' \
     "$STANDARDIZE_REFS/mode-update.md"

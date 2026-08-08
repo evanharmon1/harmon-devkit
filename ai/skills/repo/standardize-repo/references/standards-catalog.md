@@ -783,7 +783,9 @@ install the Renovate GitHub App on the repo. Conventions:
   (mit/private), `<slug>.code-workspace`, `.vscode/{settings,extensions}.json`,
   the current-head Codex cloud shepherd contract only when
   `use_codex_cloud_review=true` (requires `use_codex_review=true`,
-  `use_skills_sync=true`, and `universal` in `skill_categories`; **[manual]**
+  `use_skills_sync=true`, and `universal` in `skill_categories` — the sync and
+  `universal` requirements waived for a skills-source repo that ships the
+  classifier natively, as above and in G4; **[manual]**
   connect the GitHub integration, confirm plan/quota availability, and grant
   explicit connector permission for a private repository, and disable Codex
   Automatic reviews so ready promotion does not launch an untracked cycle),
