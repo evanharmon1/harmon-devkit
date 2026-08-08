@@ -1035,6 +1035,12 @@ expect_ok "update guidance rejects missing Codex classifier prerequisites" \
     sh -c 'grep -qF "use_codex_cloud_review requires use_skills_sync" "$1" &&
         grep -qF "use_codex_cloud_review requires the universal skill category" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance waives classifier prerequisites for a skills-source repo" \
+    sh -c 'grep -qF "SKILLS_SOURCE_CLASSIFIER=" "$1" &&
+        grep -qF "ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh" "$1" &&
+        test "$(grep -Fc "waived when this repo ships the classifier natively" "$1")" -eq 3 &&
+        grep -qF "waives both the skills-sync and universal-category" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_fail "update guidance does not preseed reviewed skill categories" \
     grep -qF 'failed to seed reviewed skill categories' \
     "$STANDARDIZE_REFS/mode-update.md"
