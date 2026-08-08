@@ -330,10 +330,14 @@ and extend both together so the option sets stay identical.
 
 `suggest:*` and `claim:*` name the model **intelligence**, not the harness that
 runs it — Claude Code vs. the `@claude` Action vs. the codex CLI is operational
-detail, recorded in the claim comment, not the label. Claims and suggestions
+detail that lives in the session context, not the label. Claims and suggestions
 operate at the **family level** (`claim:claude`, `suggest:claude`): that is what
-`task setup:github-labels` provisions and what the skills apply, since a claim
-applies an existing label rather than minting one. The registry vocabulary also
+`task setup:github-labels` provisions and what the vendored claim skill applies,
+since a claim applies an existing label rather than minting one. One unmigrated
+exception: a **provider-rewired** Claude Code session (the shipped Kimi / DeepSeek
+/ GLM wrappers) still claims `claim:claude` today, so its label names the
+wrapper's base family rather than the model actually running — deriving the
+rewired family into the claim label is future skill work. The registry vocabulary also
 allows an optional model segment (`claim:claude:opus`), but standard provisioning
 emits only family-level labels and does not add a model-level one — a model-pinned
 label exists only where it was created by hand. The family vocabulary — `claude`,
