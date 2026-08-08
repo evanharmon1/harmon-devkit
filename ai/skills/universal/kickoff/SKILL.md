@@ -5,7 +5,7 @@ description: >-
   PRs/issues) and compose a descriptive session name, emitting a
   copy-pasteable /rename command for the user. Invoke as /kickoff [topic or issue #].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh pr list:*), Bash(gh issue list:*), Bash(gh label list:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh pr list:*), Bash(gh issue list:*)
 ---
 
 # Kickoff Session
@@ -44,17 +44,20 @@ that made the claim:
 ```sh
 gh issue list --repo <owner/repo> --assignee @me --state all --limit 200 \
   --json number,title,state,labels,url
-# ...and by marker, because a claim can outlive its assignee. `gh issue list
-# --label` is EXACT-match, so a single `claim:claude` query misses a
-# model-pinned `claim:claude:opus` — and a legacy `agent:claude-code` claim
-# still in flight from before the migration. Discover every claude-family claim
-# label the repo actually carries (family-level, model-pinned, and legacy),
-# then query each:
-for lbl in $(gh label list --repo <owner/repo> --limit 1000 --json name -q \
-    '.[].name | select(. == "claim:claude" or startswith("claim:claude:") or . == "agent:claude-code")'); do
-  gh issue list --repo <owner/repo> --label "$lbl" --state all --limit 200 \
-    --json number,title,state,assignees,url
-done
+# ...and by marker, because a claim can outlive its assignee. Two direct
+# queries — the current family-level label and the legacy in-flight one — each
+# fails loudly if the read fails, unlike a `for x in $(gh label list ...)` loop
+# that would run zero iterations and falsely report a clean sweep on an expired
+# token or rate limit (gh-verification.md):
+gh issue list --repo <owner/repo> --label claim:claude --state all --limit 200 \
+  --json number,title,state,assignees,url
+gh issue list --repo <owner/repo> --label agent:claude-code --state all --limit 200 \
+  --json number,title,state,assignees,url
+# Known narrow gap: `gh issue list --label` is exact-match, so a *model-pinned*
+# claim (`claim:claude:opus`) that ALSO lost its assignee is not caught by this
+# label prong. It is opt-in and rare, its claim comment still exists, and the
+# event-driven release (`release-claim.sh`) recovers it on close — so this
+# supplement deliberately does not enumerate every model variant.
 ```
 
 **Query both, and union the results.** `/wrap` runs its cleanup as separate
