@@ -335,9 +335,9 @@ operate at the **family level** (`claim:claude`, `suggest:claude`): that is what
 `task setup:github-labels` provisions and what the skills apply, since a claim
 applies an existing label rather than minting one. The registry vocabulary also
 allows an optional model segment (`claim:claude:opus`), but standard provisioning
-emits only family-level labels — a model-pinned label exists only where it was
-created out of band, and adding a model-level provisioning path is owned by
-harmon-init#661. The family vocabulary — `claude`, `codex`, `copilot`, `qwen`,
+emits only family-level labels and does not add a model-level one — a model-pinned
+label exists only where it was created by hand. The family vocabulary — `claude`,
+`codex`, `copilot`, `qwen`,
 `deepseek`, `glm`, `kimi`, `minimax`, `gemini` — is defined once in harmon-init's
 `agent-registry.json` and provisioned by `task setup:github-labels` (mid-migration
 — see the transition note under **Claiming** below); don't invent a per-repo slug. Foreman arming stays
