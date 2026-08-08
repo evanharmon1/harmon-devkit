@@ -615,10 +615,8 @@ claim depending on it could never have worked there.
 ```
 
 **Exit 0** applied. **Exit 3** nothing to do — the issue is on no board, or the
-board has no such field/option; benign, note it once and never retry. **Exit 4**
-partial (only possible when more than one field was requested) — report which
-half landed rather than claiming the move. **Exit 1** the write failed.
-**Exit 2** it could not verify — usually a missing token scope
+board has no such field/option; benign, note it once and never retry. **Exit 1**
+the write failed. **Exit 2** it could not verify — usually a missing token scope
 (`gh auth refresh -s read:project,project`); treat as unsafe, not as clean.
 
 The script never creates fields, options, or labels: the vocabulary belongs to
