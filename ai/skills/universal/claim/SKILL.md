@@ -343,7 +343,7 @@ actually added.
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `claim:` label added by this claim: <claim:claude | no | n/a>
+  - `claim:` label added by this claim: <the exact label applied — claim:claude or a model-pinned claim:claude:opus | no | n/a>
   - `claim:` label displaced by this claim: <claim:codex | agent:codex (legacy) | none>
   CLAIM_BODY_9f3k
 

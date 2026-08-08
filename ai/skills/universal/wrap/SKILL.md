@@ -210,8 +210,8 @@ read it in the UI) — never guess.
       --project '<the board the claim comment recorded>' \
       --status '<the status the claim comment recorded>'
     # If the record names a displaced label, put it back — the claim removed it:
-    gh issue edit <n> --repo <owner/repo> --add-label <displaced claim: label>
-    gh issue edit <n> --repo <owner/repo> --remove-label claim:claude  # only if the record says the claim added it (a legacy claim names agent:claude-code)
+    gh issue edit <n> --repo <owner/repo> --add-label <the displaced label the record names>
+    gh issue edit <n> --repo <owner/repo> --remove-label <the exact label the record says the claim added>  # e.g. claim:claude, model-pinned claim:claude:opus, or legacy agent:claude-code
     gh issue edit <n> --repo <owner/repo> --remove-assignee @me          # likewise
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```

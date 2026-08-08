@@ -70,7 +70,7 @@ claim comment's session context, never in the label.
   - board: <board title, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `claim:` label added by this claim: <claim:claude | no | n/a>
+  - `claim:` label added by this claim: <the exact label applied — claim:claude or a model-pinned claim:claude:opus | no | n/a>
   - `claim:` label displaced by this claim: <claim:codex | agent:codex (legacy) | none>
   ```
 

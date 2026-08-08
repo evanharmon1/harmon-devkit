@@ -883,12 +883,14 @@ loops indefinitely:
    added it (read the record — shepherd is routinely a different session
    from the one that claimed, so "I know I added it" is session memory, not
    evidence; the record grammar is in
-   `track-work/references/claim-lifecycle.md`). Remove the label the record
-   names — `claim:claude` for a current claim, or a legacy `agent:claude-code`
-   for one made before the migration:
+   `track-work/references/claim-lifecycle.md`). Remove **the exact label the
+   record names** — `claim:claude`, a model-pinned `claim:claude:opus`, or a
+   legacy `agent:claude-code` for a claim made before the migration. Substitute
+   that recorded value for the placeholder below; do not assume the family-level
+   label:
 
    ```sh
-   gh issue edit <n> --repo "$repo" --remove-label claim:claude
+   gh issue edit <n> --repo "$repo" --remove-label <the label the claim record names>
    ```
 
    If the record is missing or unreadable, leave the label and say so in the
@@ -899,9 +901,9 @@ loops indefinitely:
    back into §5 fix rounds, **re-add the label first** (same guard — the
    record said the claim added it), because "implementing right now" has
    become true again and coordination checks read the label as exactly that.
-   Report the release in the ready summary, e.g. `released claim:claude
-   — ready for review, awaiting the maintainer; the close event releases the
-   rest.`
+   Report the release in the ready summary naming the exact label removed, e.g.
+   `released claim:claude — ready for review, awaiting the maintainer; the close
+   event releases the rest.`
    Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
    4 rounds: stop.
@@ -984,10 +986,9 @@ from here `Done` is a prediction rather than a record. Once a merge has
 actually been observed, `/wrap` offers it.
 
 Exit **3** means the issue is on no board or the board lacks that option —
-benign, note it once and never retry. **4** is partial (some fields applied,
-some skipped): say which half landed rather than reporting the move as done.
-**1** and **2** are worth a line in the report; **2** is usually a missing
-token scope (`gh auth refresh -s read:project,project`). These are writes like
+benign, note it once and never retry. **1** and **2** are worth a line in the
+report; **2** is usually a missing token scope
+(`gh auth refresh -s read:project,project`). These are writes like
 any other: they need the user's go-ahead, and where `gh` cannot write, report
 the command instead of failing the round.
 
