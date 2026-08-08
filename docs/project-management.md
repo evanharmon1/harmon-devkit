@@ -288,6 +288,13 @@ them in step afterwards. Two things to know before you extend either:
 On a personal account there are no issue fields, so `task setup:github-project`
 creates **Priority, Product, Domain, Layer, and Size** as project fields.
 
+This describes the **target** field/label schema. Provisioning is mid-migration
+(see the transition note under [Claiming](#claiming--making-an-agents-work-visible-while-it-happens)):
+until the registry-driven change lands for a repo, `task setup:github-project`
+still also creates the retired **`Agent`** field and `task setup:github-labels`
+still provisions the legacy `agent:*` labels. Those are removed by the upstream
+migration (harmon-init#661/#663), not by hand-editing the setup scripts per repo.
+
 TODO: finalize each field's options/values.
 
 ## Labels
@@ -402,14 +409,16 @@ stranded. That read-side recognition is also why a plain grep for the literal
 `agent:claude-code` no longer proves a legacy *writer* is installed — the
 automation check below accounts for it.
 
-**Migrating an already-populated `Agent` field is manual, and precedes trusting
-the re-keyed view.** Setup is additive-only — it never deletes the old field or
-copies its values — so on a board that already routed issues through the `Agent`
-field, those assignments are not carried into `suggest:*` labels automatically.
-Re-key the **Agent-queue view** onto `suggest:*` (below) only after applying the
-equivalent `suggest:*` label to each still-routed issue; otherwise the new filter
-hides every issue that was routed the old way. The upstream unit that removes the
-live field and re-keys planning is harmon-init#662.
+**An already-populated `Agent` field must be migrated before its routing is
+trusted elsewhere.** Setup is additive-only — it never deletes the field or
+copies its values — so on a board that routed issues through the `Agent` field,
+those assignments are not automatically present as `suggest:*` labels. That
+migration — backfilling `suggest:*` from existing `Agent` values and then
+removing the field and re-keying planning, done safely against triage that is
+still writing the field — is owned by the upstream unit harmon-init#662, and
+this guide deliberately does not restate its procedure. Until it lands for a
+repo, keep reading routing from the `Agent` field there rather than from a
+half-migrated `suggest:*` set.
 
 **A board write can fail without anyone learning.** Every `Status` write in the
 lifecycle needs the [`project` scope](#token-scopes). Without it each one exits
@@ -674,9 +683,12 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   **`needs-triage`**, grouped by **Type** (Bug / Feature / Task / Research) so you
   see the shape of the inbox. This is your grooming session — it exists so
   untriaged work can't hide; empty it regularly and it stays useful.
-- **Agent queue** — board, filtered to issues carrying a **`suggest:*`** label,
-  showing only the in-flight `Status` columns (**Ready, Agent Queue, In Progress,
-  Verifying, In Review, Ready to Merge**), sorted by `Priority`.
+- **Agent queue** — board, filtered to **`Status: Agent Queue`**, showing only the
+  in-flight `Status` columns (**Ready, Agent Queue, In Progress, Verifying, In
+  Review, Ready to Merge**), sorted by `Priority`. Projects V2 label filters match
+  concrete label values, not a `suggest:*` glob, so narrow by intelligence by
+  OR-ing the specific `suggest:<family>` labels you use rather than filtering on
+  the family prefix.
 - **Planning** — table, grouped by **`Product`** (or `Type`), sorted by
   `Priority`, with the **`Size` field summed in each group header**. The "how
   big is the pile, and what's the plan" view, and a **dates-free roadmap
@@ -697,9 +709,10 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
 - **Slice the board** — rather than separate per-product / per-layer / per-agent
   saved views, slice the one board: by **`Product`** when you go multi-product, by
   **`Domain`** to focus a product area, by **`Layer`** to focus a slice of the
-  stack, or by the **Labels** axis on the `suggest:*` / `claim:*` families to see
-  the agent split. One board, many lenses — and how multiple products stay legible
-  in one aggregating project instead of fragmenting into project-per-product.
+  stack, or by the **Labels** axis (which lanes by concrete label values,
+  `suggest:*` / `claim:*` among them) to see the agent split. One board, many
+  lenses — and how multiple products stay legible in one aggregating project
+  instead of fragmenting into project-per-product.
 
 ## Notes
 
