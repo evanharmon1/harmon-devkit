@@ -5,7 +5,7 @@ description: >-
   PRs/issues) and compose a descriptive session name, emitting a
   copy-pasteable /rename command for the user. Invoke as /kickoff [topic or issue #].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh pr list:*), Bash(gh issue list:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh pr list:*), Bash(gh issue list:*), Bash(gh label list:*)
 ---
 
 # Kickoff Session
@@ -44,21 +44,24 @@ that made the claim:
 ```sh
 gh issue list --repo <owner/repo> --assignee @me --state all --limit 200 \
   --json number,title,state,labels,url
-# ...and by marker, because a claim can outlive its assignee. Two direct
-# queries — the current family-level label and the legacy in-flight one — each
-# fails loudly if the read fails, unlike a `for x in $(gh label list ...)` loop
-# that would run zero iterations and falsely report a clean sweep on an expired
-# token or rate limit (gh-verification.md):
-gh issue list --repo <owner/repo> --label claim:claude --state all --limit 200 \
-  --json number,title,state,assignees,url
-gh issue list --repo <owner/repo> --label agent:claude-code --state all --limit 200 \
-  --json number,title,state,assignees,url
-# Known narrow gap: `gh issue list --label` is exact-match, so a *model-pinned*
-# claim (`claim:claude:opus`) that ALSO lost its assignee is not caught by this
-# label prong. It is opt-in and rare, and its claim comment still exists, so a
-# maintainer — or the event-driven release on close, where the claim is still
-# trusted (claim-lifecycle.md's trust rules) — can still recover it. This
-# supplement deliberately does not enumerate every model variant.
+# ...and by marker, because a claim can outlive its assignee. `gh issue list
+# --label` is exact-match (no prefix), so enumerate the claude-family claim
+# labels the repo actually carries — family-level, model-pinned, and legacy —
+# and query each. This must be a CHECKED read: a bare `for lbl in $(gh label
+# list ...)` runs zero iterations and falsely reports a clean sweep on an
+# expired token or rate limit, hiding the marker-only claim this exists to find
+# (gh-verification.md). On an org repo the event-driven release cannot recover
+# such a claim once its assignee is gone (its trust gate needs the owner or a
+# current assignee), so this sweep is the only backstop — do not skip it on a
+# failed enumeration, surface it:
+if ! claim_labels="$(gh label list --repo <owner/repo> --limit 1000 --json name -q \
+    '.[].name | select(. == "claim:claude" or startswith("claim:claude:") or . == "agent:claude-code")')"; then
+  echo "warning: could not list claim labels — the marker-only sweep is INCOMPLETE; retry or check auth" >&2
+fi
+for lbl in $claim_labels; do
+  gh issue list --repo <owner/repo> --label "$lbl" --state all --limit 200 \
+    --json number,title,state,assignees,url
+done
 ```
 
 **Query both, and union the results.** `/wrap` runs its cleanup as separate
