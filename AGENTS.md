@@ -20,11 +20,10 @@ for the architecture, and [DESIGN.md](DESIGN.md) for design/UX intent.
 
 ## harmon-platform
 
-One of five repos in **harmon-platform** (Evan's developer & DevOps platform + homelab):
+One of four repos in **harmon-platform** (Evan's developer & DevOps platform + homelab):
 [harmon-init](https://github.com/evanharmon1/harmon-init) (the Copier repo template),
 [**harmon-devkit**](https://github.com/evanharmon1/harmon-devkit) (this repo — boilerplates/scripts/AI assets),
 [harmon-dotfiles](https://github.com/evanharmon1/harmon-dotfiles) (chezmoi dotfiles),
-[harmon-ops](https://github.com/evanharmon1/harmon-ops) (machine setup),
 [harmon-infra](https://github.com/harmonops/harmon-infra) (homelab IaC). See the README for the full table.
 
 ## Repository Layout
