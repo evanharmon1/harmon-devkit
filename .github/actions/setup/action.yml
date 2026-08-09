@@ -8,7 +8,7 @@ description: >-
 inputs:
   lint-tools:
     description: >-
-      Install shellcheck, shfmt, actionlint, yamllint — required by
+      Install shellcheck, shfmt, actionlint, yamllint, yq — required by
       `task check` / `task verify`.
     default: "false"
   gitleaks:
@@ -28,14 +28,15 @@ runs:
     - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
       with:
         python-version: "3.13"
-    # uv provides uvx for pinned Semgrep CE.
+    # uv provides uvx for pinned Semgrep CE and the pinned
+    # foreman CLI (see taskfiles/foreman.yml).
     - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
     - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
       with:
         # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
         version: 3.51.1
         repo-token: ${{ github.token }}
-    - name: Install lint tools (file, shellcheck, shfmt, actionlint, yamllint)
+    - name: Install lint tools (file, shellcheck, shfmt, actionlint, yamllint, yq)
       if: inputs.lint-tools == 'true'
       shell: bash
       run: |
@@ -66,6 +67,15 @@ runs:
         curl -fsSL --retry 3 "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
           | tar -xz -C /tmp actionlint
         sudo mv /tmp/actionlint /usr/local/bin/
+        # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
+        YQ_VERSION=4.44.3
+        # Raw-binary download: fail closed on a checksum mismatch (a version
+        # bump must update the pinned hash).
+        YQ_SHA256=a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7
+        curl -fsSL --retry 3 -o /tmp/yq \
+          "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
+        echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
+        sudo install -m 0755 /tmp/yq /usr/local/bin/yq
         # renovate: datasource=pypi depName=yamllint
         YAMLLINT_VERSION=1.38.0
         python3 -m pip install "yamllint==${YAMLLINT_VERSION}"
@@ -74,7 +84,7 @@ runs:
       shell: bash
       run: |
         # renovate: datasource=github-releases depName=gitleaks/gitleaks extractVersion=^v?(?<version>.+)$
-        GITLEAKS_VERSION=8.30.1
+        GITLEAKS_VERSION=8.24.3
         curl -fsSL --retry 3 -o /tmp/gitleaks.tgz \
           "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
         tar -xzf /tmp/gitleaks.tgz -C /tmp
