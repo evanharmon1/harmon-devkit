@@ -29,7 +29,9 @@ trap 'rm -rf "$test_tmp"' EXIT
 mkdir -p "${test_tmp}/bin"
 cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
-printf "STUB-ARGS:%s %s %s\n" "$1" "$2" "${3:-}"
+printf 'STUB-ARGS:'
+printf ' %s' "$@"
+printf '\n'
 if [ -n "${STUB_BIG_STDERR:-}" ]; then
     # One over-long stderr line (the models-JSON dump), ordinary narration
     # around it, and a long prose line on stdout standing in for a verdict.
@@ -37,7 +39,9 @@ if [ -n "${STUB_BIG_STDERR:-}" ]; then
     echo "short stderr narration" >&2
     awk 'BEGIN { p = ""; while (length(p) < 4000) p = p "verdict prose "; printf "P0 finding: %s\n", p }'
 fi
-if [ "${3:-}" = "-" ]; then printf "STUB-PROMPT:%s\n" "$(cat)"; fi
+last=''
+for arg in "$@"; do last=$arg; done
+if [ "$last" = "-" ]; then printf "STUB-PROMPT:%s\n" "$(cat)"; fi
 exit "${STUB_EXIT:-0}"
 CODEXSTUB
 chmod +x "${test_tmp}/bin/codex"
@@ -85,7 +89,9 @@ run() {
 
 echo "==> clean tree, no local main/master: falls back to origin/HEAD's branch"
 out="$(run challenge)" || fail "challenge exited non-zero: $out"
-echo "$out" | grep -q "STUB-ARGS:exec review" || fail "codex exec review not invoked: $out"
+echo "$out" | grep -q "STUB-ARGS: exec review" || fail "codex exec review not invoked: $out"
+echo "$out" | grep -q -- "--model gpt-5.6-sol" || fail "review model is not pinned to gpt-5.6-sol: $out"
+echo "$out" | grep -q -- "--config model_reasoning_effort=high" || fail "review reasoning is not pinned high: $out"
 echo "$out" | grep -q "base branch 'origin/develop'" || fail "remote-qualified fallback base missing: $out"
 echo "$out" | grep -q "ADVERSARIAL" || fail "challenge mode instructions missing: $out"
 echo "$out" | grep -q "feature.txt" || fail "changed-file manifest missing from branch-scope prompt: $out"
@@ -143,7 +149,7 @@ git_t merge -q --no-edit origin/develop
 out="$(run review --base basestale)" || fail "stale-base run exited non-zero (must stay advisory): $out"
 # Advisory, not fatal: the review still has to happen, or the warning has
 # turned a nudge into a refusal.
-echo "$out" | grep -q "STUB-ARGS:exec review" || fail "stale-base warning suppressed the review: $out"
+echo "$out" | grep -q "STUB-ARGS: exec review" || fail "stale-base warning suppressed the review: $out"
 echo "$out" | grep -q "lags its upstream 'origin/develop'" || fail "stale-base warning missing: $out"
 echo "$out" | grep -q "contains 2 commits that already merged upstream" || fail "stale-base warning miscounted the carried commits: $out"
 echo "$out" | grep -q -- "--base origin/develop" || fail "stale-base warning does not name the remote-qualified ref: $out"
@@ -176,7 +182,7 @@ echo "==> --base refs with no upstream never warn"
 git tag basetag basestale
 for ref in basetag "$(git rev-parse basestale)" origin/develop; do
     out="$(run review --base "$ref")" || fail "--base '$ref' exited non-zero: $out"
-    echo "$out" | grep -q "STUB-ARGS:exec review" || fail "--base '$ref' did not reach codex: $out"
+    echo "$out" | grep -q "STUB-ARGS: exec review" || fail "--base '$ref' did not reach codex: $out"
     echo "$out" | grep -q "lags its upstream" && fail "--base '$ref' has no upstream but warned: $out"
 done
 
@@ -244,7 +250,7 @@ while [ "$i" -le 250 ]; do
     i=$((i + 1))
 done
 out="$(run review)" || fail "large dirty tree aborted the review (pipefail/SIGPIPE regression): $out"
-echo "$out" | grep -q "STUB-ARGS:exec review" || fail "codex not invoked on large dirty tree: $out"
+echo "$out" | grep -q "STUB-ARGS: exec review" || fail "codex not invoked on large dirty tree: $out"
 echo "$out" | grep -q "manifest truncated at 200 entries" || fail "truncation marker missing on >200-entry manifest: $out"
 rm -f bulk_f*.txt
 

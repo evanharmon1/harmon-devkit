@@ -8,7 +8,7 @@
 # The destination is SHARED with the repo's own local skills. The sync manages
 # ONLY the skill directories it vendored — recorded on the provenance
 # `# managed:` line. Any other directory in dest is a local skill: create,
-# edit, and delete it like any normal `.claude/skills/<name>` — the sync and
+# edit, and delete it like any normal `.agents/skills/<name>` — the sync and
 # both verify modes never touch or report it. If a local directory's name
 # collides with an incoming vendored skill, the sync dies before deleting
 # anything (rename the local skill or drop the category from the manifest).
@@ -30,7 +30,7 @@
 #     ref: v1.2.0            # pinned tag (or branch) — NOT a bare SHA
 #     path: ai/skills        # optional; where skills live in the source (default)
 #   categories: [universal, backend, frontend]
-#   dest: .claude/skills     # shared with local skills; sync manages only what it vendored
+#   dest: .agents/skills     # shared with local skills; sync manages only what it vendored
 #   agents:                  # OPTIONAL — omit the block entirely and nothing changes
 #     names: [implementer]   # explicit list, or ["*"] for every agent at the pin
 #     path: ai/agents        # optional; where agents live in the source (default)
@@ -38,7 +38,7 @@
 #
 # Agents ride the SAME manifest and therefore the same pinned ref as skills.
 # That is deliberate: a shared agent is thin and defers to a skill by reading it
-# (`.claude/skills/<name>/SKILL.md`), so a version skew between the two would
+# (`.agents/skills/<name>/SKILL.md`), so a version skew between the two would
 # leave an agent following a procedure that no longer exists. One ref, one
 # `task sync:skills`, both kinds of asset.
 #

@@ -8,7 +8,7 @@ source:
 categories:
   - universal
   - frontend
-dest: .claude/skills # fully managed by sync — do not hand-edit vendored skills here
+dest: .claude/skills # Claude-first default; expose it through .agents/skills for other harnesses
 
 # OPTIONAL. Delete this block and the sync behaves exactly as it did before
 # agents existed. Agents ride the SAME pinned ref as skills on purpose: a shared

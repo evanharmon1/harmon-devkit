@@ -48,8 +48,8 @@ ignores the frontmatter.
 - **Reference skills by reading the file, never by invoking one.** A subagent
   has no slash commands, and the dev-workflow skills are user-invocable only
   (`disable-model-invocation: true`), so nothing can invoke them on a model's
-  behalf. `Read .claude/skills/<name>/SKILL.md` works in every harness that has
-  a file-read tool.
+  behalf. Prefer `.agents/skills/<name>/SKILL.md`, then fall back to the
+  harness-specific location or one bounded glob.
 - **Discover the skill, don't require it.** Check the conventional path, fall
   back to a glob, and degrade to `AGENTS.md` plus the brief when there is
   nothing to read. A consumer that vendors no skills still gets a working agent.
@@ -66,8 +66,8 @@ directory name under `ai/skills/`. It runs in `task verify`, in CI, and in the
 pre-commit hook. `README.md` is not an agent and is skipped.
 
 The collision check is the one rule that has no skills-side equivalent. Agents
-and skills land in sibling directories (`.claude/agents/` and
-`.claude/skills/`), so a shared name never collides on disk — it collides in the
+and skills land in separate directories (`.claude/agents/` and
+`.agents/skills/` by default), so a shared name never collides on disk — it collides in the
 reader, which is worse, because nothing fails.
 
 ## Dogfooding

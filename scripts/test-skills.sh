@@ -88,6 +88,29 @@ expect_ok_contains() {
 }
 
 git_init() { git init -q -b main "$1"; }
+
+echo "==> portable skill layout"
+expect_ok "skills-sync example preserves the Claude-first migration-safe destination" \
+    grep -q '^dest: \.claude/skills' "$repo/templates/skills-sync/.skills-sync.yaml"
+expect_ok "Claude compatibility path is a symlink" \
+    test -L "$repo/.claude/skills"
+expect_ok "Claude compatibility path targets the portable skill tree" \
+    test "$(readlink "$repo/.claude/skills")" = "../.agents/skills"
+expect_ok "portable dogfood tree exposes the implement skill" \
+    test -f "$repo/.agents/skills/implement/SKILL.md"
+expect_ok "skills-sync compatibility step recognizes its directory symlink" \
+    grep -qF 'readlink .agents/skills)" = "../.claude/skills"' \
+    "$repo/templates/skills-sync/README.md"
+expect_ok "skills-sync compatibility step rejects other directory symlinks" \
+    grep -qF 'elif [ -L .agents/skills ]; then' \
+    "$repo/templates/skills-sync/README.md"
+expect_ok "skills-sync compatibility step skips an unmatched skill glob" \
+    grep -qF '[ -d "$skill" ] || continue' \
+    "$repo/templates/skills-sync/README.md"
+expect_ok "track-work pre-approves portable asset paths" \
+    grep -qF 'Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*)' \
+    "$repo/ai/skills/universal/track-work/SKILL.md"
+
 git_commit_all() {
     git -C "$1" add -A
     git -C "$1" -c user.email=test@example.com -c user.name=test \
