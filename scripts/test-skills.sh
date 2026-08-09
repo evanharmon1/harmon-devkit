@@ -3402,11 +3402,22 @@ printf '%s\n' 'export EXAMPLE_SETTING=template-default' \
 # because withholding is keyed on the path rather than on the class.
 printf '%s\n' 'EXAMPLE_TOKEN=template-default' \
     >"$DT_TEMPLATE/template/secrets.env"
-# docs/* is co-owned prose, so an executable file under it is the only shape
-# that can prove MODE is checked independently of the content class.
+# Two files under docs/ that land in DIFFERENT classes. The co-owned globs
+# cover the PROSE in that tree, so guide.md is CO-OWNED while the build script
+# beside it is an ordinary uncurated file — a generated script is not prose
+# anybody rewrote, and inheriting the presence-only exemption for its directory
+# alone would be the opposite of safe-by-default.
+printf '%s\n' '# Guide' 'seeded guide prose' \
+    >"$DT_TEMPLATE/template/docs/guide.md"
 printf '%s\n' '#!/usr/bin/env bash' 'echo docs' \
     >"$DT_TEMPLATE/template/docs/build-docs.sh"
 chmod +x "$DT_TEMPLATE/template/docs/build-docs.sh"
+# .claude/settings.json is the CURATED ignore-matched case: it is on the real
+# template-owned-files.txt manifest, so the curated loop owns it, and it is
+# exactly the shape a repo gitignores because its local copy holds credentials.
+mkdir -p "$DT_TEMPLATE/template/.claude"
+printf '%s\n' '{ "permissions": { "allow": [] } }' \
+    >"$DT_TEMPLATE/template/.claude/settings.json"
 for terraform_file in main.tf variables.tf outputs.tf; do
     printf '%s\n' '# starter' >"$DT_TEMPLATE/template/terraform/$terraform_file"
 done
@@ -3434,15 +3445,20 @@ cp "$DT_TEMPLATE/template/AGENTS.md" "$DT_TARGET/AGENTS.md"
 ln -s AGENTS.md "$DT_TARGET/CLAUDE.md"
 cp "$DT_TEMPLATE/template/renovate.json" "$DT_TARGET/renovate.json"
 cp "$DT_TEMPLATE/template/secrets.env" "$DT_TARGET/secrets.env"
+cp "$DT_TEMPLATE/template/docs/guide.md" "$DT_TARGET/docs/guide.md"
 cp "$DT_TEMPLATE/template/docs/build-docs.sh" "$DT_TARGET/docs/build-docs.sh"
 chmod +x "$DT_TARGET/docs/build-docs.sh"
+mkdir -p "$DT_TARGET/.claude"
+cp "$DT_TEMPLATE/template/.claude/settings.json" "$DT_TARGET/.claude/settings.json"
 # .envrc diverges from the render permanently and is gitignored, so it stays
 # untracked (git_commit_all honors .gitignore) and reports as informational
 # IGNORED rather than drift — the class exists precisely because a resolved
 # local config can hold real values that must not be printed. secrets.env
 # matches an ignore rule too but is force-added below, which is what separates
 # the two axes: it gates like any tracked file, yet its body stays withheld.
-printf '%s\n' '.envrc' 'secrets.env' >"$DT_TARGET/.gitignore"
+# .claude/settings.json is the same shape one level up — force-added AND on the
+# curated manifest, so it proves withholding is not a sweep-only guarantee.
+printf '%s\n' '.envrc' 'secrets.env' '.claude/settings.json' >"$DT_TARGET/.gitignore"
 printf '%s\n' 'export EXAMPLE_SETTING=envrc-sentinel-withheld' >"$DT_TARGET/.envrc"
 cat >"$DT_TARGET/.copier-answers.yml" <<EOF
 _commit: v1.0.0
@@ -3462,7 +3478,7 @@ git_init "$DT_TARGET"
 # `git add -A` honors .gitignore, so the tracked-and-ignore-matched case has to
 # be forced into the index — which is exactly the `git add -f` a repo runs for a
 # resolved local config it nonetheless wants under version control.
-git -C "$DT_TARGET" add -f -- secrets.env
+git -C "$DT_TARGET" add -f -- secrets.env .claude/settings.json
 git_commit_all "$DT_TARGET" "record mature target layout"
 
 if equivalent_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
@@ -3594,19 +3610,89 @@ else
 fi
 git -C "$DT_TARGET" checkout HEAD -- secrets.env
 
-# The exec bit is settled independently of, and before, the content class. A
-# co-owned regular file that lost `+x` used to `continue` out on the
-# presence-only class and exit 0 — a generated script nobody can run, filed as
-# expected prose drift. Content is IDENTICAL here, so MODE must be the only line.
-chmod -x "$DT_TARGET/docs/build-docs.sh"
-if co_owned_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
-    bad "diff-template gates an exec-bit loss on a co-owned file (expected non-zero exit)"
-elif printf '%s\n' "$co_owned_mode_out" | grep -qF "MODE     docs/build-docs.sh"; then
-    ok "diff-template gates an exec-bit loss on a co-owned file"
+# Withholding is not a sweep-only guarantee. .claude/settings.json is on the
+# curated manifest AND matches an ignore rule — being template-owned says the
+# template owns the path, not that the repo's local copy (credentials, in the
+# real thing) is safe to echo. The curated loop must gate it and withhold it.
+printf '%s\n' '{ "permissions": { "token": "curated-secret-sentinel" } }' \
+    >"$DT_TARGET/.claude/settings.json"
+if curated_withheld_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a curated ignore-matched file (expected non-zero exit)"
+elif printf '%s\n' "$curated_withheld_out" | grep -qF "DRIFT    .claude/settings.json"; then
+    ok "diff-template gates a curated ignore-matched file"
 else
-    bad "diff-template gates an exec-bit loss on a co-owned file (MODE diagnostic missing)"
+    bad "diff-template gates a curated ignore-matched file (DRIFT diagnostic missing)"
 fi
-if printf '%s\n' "$co_owned_mode_out" | grep -qF "CO-OWNED docs/build-docs.sh"; then
+if printf '%s\n' "$curated_withheld_out" | grep -qF 'curated-secret-sentinel'; then
+    bad "diff-template --show withholds a CURATED ignore-matched diff body"
+else
+    ok "diff-template --show withholds a CURATED ignore-matched diff body"
+fi
+if printf '%s\n' "$curated_withheld_out" |
+    grep -qF '(diff withheld — path matches an ignore pattern'; then
+    ok "diff-template --show says why a curated ignore-matched diff was withheld"
+else
+    bad "diff-template --show says why a curated ignore-matched diff was withheld"
+fi
+git -C "$DT_TARGET" checkout HEAD -- .claude/settings.json
+
+# The co-owned tree globs cover PROSE, not whole trees. A build script under
+# docs/ is not prose anybody rewrote, so it must gate as ordinary uncurated
+# DRIFT with a printed body instead of collecting the presence-only exemption
+# for its directory alone.
+printf '%s\n' '#!/usr/bin/env bash' 'echo docs' 'docs-script-sentinel' \
+    >"$DT_TARGET/docs/build-docs.sh"
+if docs_script_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a non-prose file under docs/ (expected non-zero exit)"
+elif printf '%s\n' "$docs_script_out" | grep -qF "DRIFT    docs/build-docs.sh  (uncurated"; then
+    ok "diff-template gates a non-prose file under docs/"
+else
+    bad "diff-template gates a non-prose file under docs/ (DRIFT diagnostic missing)"
+fi
+if printf '%s\n' "$docs_script_out" | grep -qF "CO-OWNED docs/build-docs.sh"; then
+    bad "diff-template does not co-own a non-prose file under docs/"
+else
+    ok "diff-template does not co-own a non-prose file under docs/"
+fi
+if printf '%s\n' "$docs_script_out" | grep -qF 'docs-script-sentinel'; then
+    ok "diff-template --show prints the body of a non-prose docs/ file"
+else
+    bad "diff-template --show prints the body of a non-prose docs/ file"
+fi
+git -C "$DT_TARGET" checkout HEAD -- docs/build-docs.sh
+
+# Markdown under docs/ is still prose, so the glob restriction must not
+# over-correct: guide.md stays presence-only and non-gating.
+printf '%s\n' '# Guide' 'seeded guide prose' 'docs-prose-sentinel' \
+    >"$DT_TARGET/docs/guide.md"
+if docs_prose_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template still co-owns Markdown prose under docs/"
+else
+    bad "diff-template still co-owns Markdown prose under docs/: $docs_prose_out"
+fi
+if printf '%s\n' "$docs_prose_out" | grep -qF "CO-OWNED docs/guide.md"; then
+    ok "diff-template reports divergent docs/ prose as CO-OWNED"
+else
+    bad "diff-template reports divergent docs/ prose as CO-OWNED (line missing)"
+fi
+git -C "$DT_TARGET" checkout HEAD -- docs/guide.md
+
+# The exec bit is settled independently of, and before, the content class. A
+# co-owned regular file whose mode diverges used to `continue` out on the
+# presence-only class and exit 0. Content is IDENTICAL here, so MODE must be the
+# only line: gaining `+x` on a Markdown file is a real accident, and a class
+# that is informational about PROSE says nothing about the file's mode.
+chmod +x "$DT_TARGET/docs/guide.md"
+if co_owned_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a mode change on a co-owned file (expected non-zero exit)"
+elif printf '%s\n' "$co_owned_mode_out" | grep -qF "MODE     docs/guide.md"; then
+    ok "diff-template gates a mode change on a co-owned file"
+else
+    bad "diff-template gates a mode change on a co-owned file (MODE diagnostic missing)"
+fi
+if printf '%s\n' "$co_owned_mode_out" | grep -qF "CO-OWNED docs/guide.md"; then
     bad "diff-template reports no content class for a mode-only co-owned divergence"
 else
     ok "diff-template reports no content class for a mode-only co-owned divergence"
@@ -3614,17 +3700,17 @@ fi
 
 # Diverging in BOTH gets the gating MODE line AND the informational CO-OWNED
 # line: independent findings, and the withheld body is still withheld.
-printf '%s\n' '#!/usr/bin/env bash' 'echo docs' 'co-owned-mode-sentinel' \
-    >"$DT_TARGET/docs/build-docs.sh"
+printf '%s\n' '# Guide' 'seeded guide prose' 'co-owned-mode-sentinel' \
+    >"$DT_TARGET/docs/guide.md"
 if co_owned_both_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates mode drift on a divergent co-owned file (expected non-zero exit)"
-elif printf '%s\n' "$co_owned_both_out" | grep -qF "MODE     docs/build-docs.sh"; then
+elif printf '%s\n' "$co_owned_both_out" | grep -qF "MODE     docs/guide.md"; then
     ok "diff-template gates mode drift on a divergent co-owned file"
 else
     bad "diff-template gates mode drift on a divergent co-owned file (MODE diagnostic missing)"
 fi
-if printf '%s\n' "$co_owned_both_out" | grep -qF "CO-OWNED docs/build-docs.sh"; then
+if printf '%s\n' "$co_owned_both_out" | grep -qF "CO-OWNED docs/guide.md"; then
     ok "diff-template keeps the co-owned content class alongside a MODE finding"
 else
     bad "diff-template keeps the co-owned content class alongside a MODE finding"
@@ -3634,7 +3720,24 @@ if printf '%s\n' "$co_owned_both_out" | grep -qF 'co-owned-mode-sentinel'; then
 else
     ok "diff-template --show withholds a co-owned body that also has mode drift"
 fi
-git -C "$DT_TARGET" checkout HEAD -- docs/build-docs.sh
+git -C "$DT_TARGET" checkout HEAD -- docs/guide.md
+chmod -x "$DT_TARGET/docs/guide.md"
+
+# An uncurated regular file keeps the same mode-independence guarantee — the
+# exec-bit check must not have become a co-owned-only special case.
+chmod -x "$DT_TARGET/docs/build-docs.sh"
+if uncurated_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates an exec-bit loss on an uncurated file (expected non-zero exit)"
+elif printf '%s\n' "$uncurated_mode_out" | grep -qF "MODE     docs/build-docs.sh"; then
+    ok "diff-template gates an exec-bit loss on an uncurated file"
+else
+    bad "diff-template gates an exec-bit loss on an uncurated file (MODE diagnostic missing)"
+fi
+if printf '%s\n' "$uncurated_mode_out" | grep -qF "DRIFT    docs/build-docs.sh"; then
+    bad "diff-template reports no content class for a mode-only uncurated divergence"
+else
+    ok "diff-template reports no content class for a mode-only uncurated divergence"
+fi
 chmod +x "$DT_TARGET/docs/build-docs.sh"
 
 # A co-owned symlink flattened into a regular file is a STRUCTURAL divergence,
@@ -3684,6 +3787,73 @@ else
     bad "diff-template reports curated content drift (DRIFT diagnostic missing)"
 fi
 git -C "$DT_TARGET" checkout HEAD -- scripts/status.sh
+
+# A manifest-listed regular file swapped for a symlink to a byte-identical
+# referent. `diff -q` and `-x` both FOLLOW links, so the curated loop used to
+# call this perfectly clean while the sweep gated the identical shape — the
+# header's "a structural divergence always gates" rule held for uncurated files
+# only. The referent is a copy, so nothing about the CONTENT differs.
+cp "$DT_TARGET/scripts/status.sh" "$DT_TARGET/scripts/status-impl.sh"
+rm "$DT_TARGET/scripts/status.sh"
+ln -s status-impl.sh "$DT_TARGET/scripts/status.sh"
+if curated_link_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a curated file flattened into a symlink (expected non-zero exit)"
+elif printf '%s\n' "$curated_link_out" |
+    grep -qF "DRIFT    scripts/status.sh  (symlink mismatch"; then
+    ok "diff-template gates a curated file flattened into a symlink"
+else
+    bad "diff-template gates a curated file flattened into a symlink (diagnostic missing)"
+fi
+rm -f "$DT_TARGET/scripts/status.sh" "$DT_TARGET/scripts/status-impl.sh"
+git -C "$DT_TARGET" checkout HEAD -- scripts/status.sh
+
+# --- staged removal with a surviving worktree copy ---------------------------
+# `git rm --cached` drops the index entry and LEAVES the file on disk, so the
+# audit compared the survivor and saw nothing wrong while the next commit
+# deletes a template-owned file. Three shapes, all previously silent or
+# downgraded: an identical uncurated file, an ignore-matched one (dropping the
+# index entry is what makes check-ignore start calling it ignored), and a
+# curated one.
+git -C "$DT_TARGET" rm --cached -q -- renovate.json
+if staged_rm_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a staged removal whose worktree copy survives (expected non-zero exit)"
+elif printf '%s\n' "$staged_rm_out" |
+    grep -qF "MISSING  renovate.json  (tracked in HEAD but staged for removal"; then
+    ok "diff-template gates a staged removal whose worktree copy survives"
+else
+    bad "diff-template gates a staged removal whose worktree copy survives (MISSING diagnostic absent)"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- renovate.json
+
+printf '%s\n' 'EXAMPLE_TOKEN=staged-removal-sentinel' >"$DT_TARGET/secrets.env"
+git -C "$DT_TARGET" rm --cached -q -- secrets.env
+if staged_rm_ignored_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a staged removal of an ignore-matched path (expected non-zero exit)"
+elif printf '%s\n' "$staged_rm_ignored_out" |
+    grep -qF "MISSING  secrets.env  (tracked in HEAD but staged for removal"; then
+    ok "diff-template gates a staged removal of an ignore-matched path"
+else
+    bad "diff-template gates a staged removal of an ignore-matched path (MISSING diagnostic absent)"
+fi
+if printf '%s\n' "$staged_rm_ignored_out" | grep -qF "IGNORED  secrets.env"; then
+    bad "diff-template grants no IGNORED exemption to a staged removal"
+else
+    ok "diff-template grants no IGNORED exemption to a staged removal"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- secrets.env
+git -C "$DT_TARGET" checkout HEAD -- secrets.env
+
+git -C "$DT_TARGET" rm --cached -q -- scripts/status.sh
+if staged_rm_curated_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a staged removal of a curated file (expected non-zero exit)"
+elif printf '%s\n' "$staged_rm_curated_out" |
+    grep -qF "MISSING  scripts/status.sh  (tracked in HEAD but staged for removal"; then
+    ok "diff-template gates a staged removal of a curated file"
+else
+    bad "diff-template gates a staged removal of a curated file (MISSING diagnostic absent)"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- scripts/status.sh
+
 expect_ok "diff-template returns to a clean baseline after the sweep cases" \
     env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
 

@@ -106,7 +106,11 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
   whole render (it does **not** depend on the curated list), so a file the
   template added later, or one a previous hand-reconciled update dropped, can't
   slip through silently. A tracked path deleted only from the working tree is
-  compared from the index; staging that deletion makes it real `MISSING`.
+  compared from the index; staging that deletion makes it real `MISSING` — and
+  that includes a `git rm --cached` whose working-tree copy **survives**
+  (present in `HEAD`, gone from the index). The surviving copy makes the audit
+  look clean while the next commit deletes a template-owned file, so the staged
+  removal is reported instead of the comparison.
   (`.gitkeep` dir-stubs show as benign `ABSENT`.) Some
   `MISSING` findings are **intentional divergences, not gaps** — see the
   known-false-`MISSING` list in [`mode-audit.md`](./mode-audit.md) §3 (drift
@@ -118,9 +122,14 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
 - **`CO-OWNED`** — the template *seeds* the file but the repo owns its prose:
   `AGENTS.md` and its `CLAUDE.md` / `GEMINI.md` /
   `.github/copilot-instructions.md` symlink aliases, `README.md`, `DESIGN.md`,
-  `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`, `SECURITY.md`, `docs/`,
-  `specs/`, `todo.md`, the `*.code-workspace`, `.meta/`, and the devcontainer
-  `config/zshrc`. Divergence there is the expected steady state, so the line is
+  `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`, `SECURITY.md`, the
+  **`*.md` under** `docs/` and `specs/`, `todo.md`, the `*.code-workspace`,
+  `.meta/`, and the devcontainer `config/zshrc`. Those two tree globs are
+  filtered to Markdown on purpose: a build script or generated config under a
+  docs tree is not prose anybody rewrote, and letting it inherit the exemption
+  for its directory alone is the opposite of safe-by-default — non-prose there
+  gates as ordinary uncurated `DRIFT`.
+  Divergence in the prose is the expected steady state, so the line is
   **presence-only**: no diff is printed, not even under `--show`, and its
   *content* never affects the exit status (a `MODE` finding on the same file
   still does). The useful reading is the inverse one — see §4.
@@ -136,11 +145,15 @@ this safe to print?" are different questions:
 - **Classification** follows repo *state*. Only an untracked pattern-matched
   file is the informational `IGNORED` class; a **tracked** one gates as ordinary
   `DRIFT`, ignore rules or not, because tracked content is template-relevant.
-- **Withholding** follows the *path* alone. No diff for a pattern-matching path
-  is ever printed — not even for a finding that gates — because a repo can
-  `git add -f` a resolved config, and tracking it makes that file reviewable,
-  not publishable. You get `(diff withheld — path matches an ignore pattern;
-  review manually)` under the `DRIFT` line and review it locally.
+- **Withholding** follows the *path* alone, and applies to **every** diff the
+  script prints — curated and swept alike, and not even a finding that gates is
+  exempt. Being on the hand-maintained manifest says the template owns the path,
+  not that the repo's copy is safe to echo: the manifest lists
+  `.claude/settings.json`, exactly the shape whose local copy holds credentials.
+  A repo can also `git add -f` a resolved config, and tracking it makes that
+  file reviewable, not publishable. You get `(diff withheld — path matches an
+  ignore pattern; review manually)` under the `DRIFT` line and review it
+  locally.
 
 Both axes need the audited directory to be a repository root of its **own**. A
 plain directory nested inside another repo's work tree gets neither: inheriting
@@ -155,7 +168,10 @@ other — or a link pointing somewhere else — is a **structural** divergence a
 always gates, `CO-OWNED` or not: a flattened alias means the repo now carries
 two independent copies of the agent instructions that will silently
 desynchronize, and the finding is one line of metadata rather than a diff worth
-withholding.
+withholding. This holds for **curated** entries too. A plain `diff -q` follows a
+symlink, so a manifest-listed regular file swapped for a link to a
+byte-identical referent used to read as clean while the sweep gated the same
+shape; both paths now share one comparison routine.
 
 ### Preview the release and review new answers
 

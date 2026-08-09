@@ -29,12 +29,24 @@
 #                dir-stubs are listed as benign ABSENT, not flagged as drift.)
 #                A tracked file deleted only from the working tree is compared
 #                from the index, so an unstaged/transient delete is not reported
-#                as drift; once the deletion is staged it is real MISSING.
+#                as drift; once the deletion is staged it is real MISSING. That
+#                includes a `git rm --cached` whose working-tree copy SURVIVES:
+#                present in HEAD, gone from the index, so the next commit deletes
+#                a template-owned file. The surviving copy otherwise compared
+#                clean — or collected the IGNORED exemption, since dropping the
+#                index entry is what makes check-ignore start calling it
+#                ignored — and the deletion went unreported.
 #   • EQUIV    — a mature nested Terraform layout, or a renumbered/established ADR
 #                log, intentionally replacing a generated seed path. Benign.
-#   • CO-OWNED — the template SEEDS the file but the repo owns its prose
-#                (AGENTS.md and its symlink aliases, README, docs/, specs/, the
-#                devcontainer zshrc, …). Divergence is the expected steady state
+#   • CO-OWNED — the template SEEDS the file but the repo owns its PROSE
+#                (AGENTS.md and its symlink aliases, README, the *.md under
+#                docs/ and specs/, the devcontainer zshrc, …). The docs/ and
+#                specs/ globs are filtered to Markdown deliberately: a build
+#                script or generated config under a docs tree is not prose
+#                anybody rewrote, and letting it inherit this exemption for its
+#                directory alone is the opposite of safe-by-default. Non-prose
+#                there gates as ordinary uncurated DRIFT.
+#                Divergence is the expected steady state
 #                there, so these are reported PRESENCE-ONLY: no diff is printed,
 #                not even under --show, and their CONTENT never affects the exit
 #                status (a MODE finding on one still gates — see above).
@@ -55,14 +67,18 @@
 #     `git check-ignore` answers exactly that — it consults the index, so it
 #     never calls a tracked file ignored.
 #   – WITHHOLDING follows the PATH alone, tested with `check-ignore --no-index`
-#     so the index cannot mask the pattern. NO sweep diff for a pattern-matching
-#     path is ever printed, not even for a finding that gates: a repo can
-#     `git add -f` a resolved config, and tracking it makes that file
-#     reviewable, not publishable. A one-line note replaces the body.
+#     so the index cannot mask the pattern. NO diff this script prints for a
+#     pattern-matching path is ever emitted — CURATED AND SWEPT ALIKE, and not
+#     even for a finding that gates. Being on the hand-maintained manifest says
+#     the template owns the path, not that the repo's copy is safe to echo: the
+#     manifest lists .claude/settings.json, exactly the shape whose local copy
+#     holds credentials. A repo can also `git add -f` a resolved config, and
+#     tracking it makes that file reviewable, not publishable. A one-line note
+#     replaces the body.
 # Both axes require the target to be a repository root of its OWN. A plain
 # directory nested inside somebody else's work tree gets neither, because
 # inheriting a stranger's ignore rules would silently downgrade real drift;
-# everything there falls through to gating, printable, uncurated DRIFT.
+# everything there falls through to gating, printable DRIFT.
 # Symlinks are compared by LINK TARGET, not by content: the template ships
 # CLAUDE.md, GEMINI.md, and .github/copilot-instructions.md as symlinks to
 # AGENTS.md (_preserve_symlinks), so content-diffing them would report a single
@@ -71,6 +87,10 @@
 # STRUCTURAL divergence and always gates — the CO-OWNED/IGNORED exemptions cover
 # content, because prose is what a repo owns; nobody "owns" an alias that stopped
 # being an alias, and the finding is one line of metadata, not a diff to withhold.
+# The CURATED loop enforces this too. It used a bare `diff -q`, which FOLLOWS a
+# symlink, so a manifest-listed regular file swapped for a link to a
+# byte-identical referent passed clean there while the sweep gated the identical
+# shape; both now share one comparison routine so they cannot diverge again.
 # This is a REVIEW AID for apply/update/audit, not a pass/fail gate. For each
 # DRIFT/MISSING, inspect and reconcile — pull template improvements in via
 # `copier update`, keep legit local customizations.
@@ -369,6 +389,145 @@ variant_display() {
     echo "$d"
 }
 
+# --- Shared comparison machinery ---------------------------------------------
+# Everything from here to the curated loop is used by BOTH loops. It lived below
+# the curated loop while only the sweep needed it, which is precisely how the
+# curated set ended up with weaker guarantees than the uncurated one: the sweep
+# gated symlink swaps and withheld ignore-matched diffs, and the manifest — the
+# more curated, more load-bearing set — did neither.
+
+# Ask git about ignore rules only when the target is a repository root of its
+# OWN. `rev-parse --is-inside-work-tree` is not that test: it answers true for a
+# plain directory that merely SITS INSIDE somebody else's work tree — the audit
+# accepts a plain directory and the hermetic tests point it at exactly that
+# shape — and git would then answer about whatever repository happens to contain
+# the temp dir, silently downgrading real divergence to a non-gating IGNORED.
+# Compare the detected toplevel against the target's own path instead,
+# normalizing both with `cd` + `pwd -P`: `$target` above is a LOGICAL pwd while
+# git always reports a resolved one, so on macOS's symlinked /var a real repo
+# root would never match otherwise (`realpath` is not portable to those hosts).
+# When they differ, treat the target as the plain directory it is: no IGNORED
+# class and no pattern probes at all, so everything falls through to gating,
+# printable DRIFT. That is the deliberate choice — a plain directory has no
+# ignore rules of its own, and inheriting a stranger's is worse than printing.
+target_owns_worktree=0
+target_physical="$(cd "$target" && pwd -P)"
+if toplevel="$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" &&
+    [ -d "$toplevel" ]; then
+    if [ "$(cd "$toplevel" && pwd -P)" = "$target_physical" ]; then
+        target_owns_worktree=1
+    fi
+fi
+
+# Ignore rules drive two INDEPENDENT axes, because "does this gate?" and "is
+# this safe to print?" are different questions with different answers.
+#
+# CLASSIFICATION — repo STATE. Only an UNTRACKED pattern-matched file is the
+# informational IGNORED class. `git check-ignore` consults the index, so it
+# never calls a TRACKED file ignored, and that is exactly right here: tracked
+# content is template-relevant however the ignore rules read, so it must keep
+# gating like any other file. Sweep-only: the curated set has no IGNORED class,
+# because a manifest-listed path is template-owned by definition.
+is_repo_ignored() {
+    [ "$target_owns_worktree" -eq 1 ] || return 1
+    git -C "$target" check-ignore -q -- "$1" 2>/dev/null
+}
+
+# WITHHOLDING — the PATH alone, with `--no-index` so the index cannot mask the
+# pattern. Deliberately NOT the classification test above: a repo can `git add
+# -f` a resolved .envrc-shaped config, and tracking it makes `check-ignore`
+# answer "not ignored", so keying the diff on classification printed the full
+# contents of precisely the paths the repo had marked local-only. Tracking makes
+# such a file reviewable, not publishable. This applies to EVERY diff this
+# script prints, curated and swept alike — being on the hand-maintained manifest
+# says the template owns the path, not that the repo's copy is safe to echo. The
+# manifest lists `.claude/settings.json`, which is exactly the shape a repo
+# ignores because its local copy holds credentials.
+is_ignore_pattern_match() {
+    [ "$target_owns_worktree" -eq 1 ] || return 1
+    git -C "$target" check-ignore -q --no-index -- "$1" 2>/dev/null
+}
+
+# A path can be STAGED FOR REMOVAL while its working-tree copy survives, which
+# is what `git rm --cached` does. resolve_variant then hands back that surviving
+# copy and the comparison passes clean — or, if the path also matches an ignore
+# rule, collects the non-gating IGNORED exemption, because dropping the index
+# entry is what makes `check-ignore` start calling it ignored. Either way the
+# audit reports nothing while the very next commit DELETES a template-managed
+# file. Detect the state directly: present in HEAD, absent from the index.
+#
+# Reported as MISSING, which is the contract index_variant already sets: an
+# unstaged delete is compared from the index and stays quiet, a STAGED delete is
+# real MISSING. `git rm --cached` is a staged delete whose worktree copy happens
+# to survive — the commit removes the file just the same — so it earns that
+# established class rather than a new one.
+is_staged_removal() {
+    p="$1"
+    [ "$target_owns_worktree" -eq 1 ] || return 1
+    # An unborn HEAD (`git init` with no commit yet) has no committed state to
+    # have removed anything from. Checking it explicitly keeps the intent legible
+    # and the failure quiet, rather than leaning on `cat-file` to error out.
+    git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1 || return 1
+    git -C "$target" cat-file -e "HEAD:$p" 2>/dev/null || return 1
+    if git -C "$target" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+        return 1 # still in the index — nothing is staged for removal
+    fi
+    return 0
+}
+
+# Compare one rendered path against its resolved repo counterpart. Sets
+# compare_note (a human-readable reason) and compare_structural (1 when the
+# difference is symlink-ness rather than content). Returns 0 when they match.
+compare_note=""
+compare_structural=0
+same_as_render() {
+    rp="$1" # path inside the render
+    lp="$2" # resolved repo path
+    compare_note=""
+    compare_structural=0
+    if [ -L "$rp" ] || [ -L "$lp" ]; then
+        compare_structural=1
+        if [ ! -L "$rp" ]; then
+            compare_note="template ships a regular file; repo has a symlink"
+            return 1
+        fi
+        if [ ! -L "$lp" ]; then
+            compare_note="template ships a symlink; repo has a regular file"
+            return 1
+        fi
+        # Plain `readlink`, never `readlink -f`: -f is a GNU extension absent on
+        # the macOS bash 3.2 hosts this script has to stay portable to, and the
+        # raw link text is what we want to compare anyway.
+        if [ "$(readlink "$rp")" = "$(readlink "$lp")" ]; then
+            compare_structural=0
+            return 0
+        fi
+        compare_note="symlink target differs (template: $(readlink "$rp"))"
+        return 1
+    fi
+    if diff -q "$rp" "$lp" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+# Print a drifting file's body under --show, or a one-line note when the path is
+# ignore-matched. Both loops call this so neither can drift from the other.
+show_diff_body() {
+    if is_ignore_pattern_match "$1"; then
+        # The finding still GATES — the template owns this path — but the repo
+        # marked it local-only and a resolved local config can hold real
+        # secrets. Withholding is keyed on the path, not on the class or the
+        # loop: keep the finding, drop the body.
+        echo "    (diff withheld — path matches an ignore pattern; review manually)"
+        return
+    fi
+    # `diff` exits 1 when files differ (they always do here); `|| true` keeps
+    # that from aborting the caller's loop under `set -euo pipefail`, so --show
+    # prints EVERY drifting file, not just the first.
+    diff -u "$2" "$3" | sed 's/^/    /' || true
+}
+
 drift=0
 checked=0
 drift_count=0
@@ -403,29 +562,47 @@ while IFS= read -r f; do
         continue
     fi
     rv_display="$(variant_display "$rv")"
-    render_exec=0
-    repo_exec=0
-    [ -x "$render/$f" ] && render_exec=1
-    [ -x "$rv" ] && repo_exec=1
-    if [ "$render_exec" -ne "$repo_exec" ]; then
-        if [ "$render_exec" -eq 1 ]; then
-            mode_note="template is executable; repo is not"
-        else
-            mode_note="repo is executable; template is not"
-        fi
-        echo "MODE     $rv_display  ($mode_note)"
+    if is_staged_removal "$rv_display"; then
+        echo "MISSING  $rv_display  (tracked in HEAD but staged for removal — the next commit deletes a template-owned file)"
         drift=1
-        mode_count=$((mode_count + 1))
+        missing_count=$((missing_count + 1))
+        continue
     fi
-    if ! diff -q "$render/$f" "$rv" >/dev/null 2>&1; then
-        echo "DRIFT    $rv_display"
+    # Structure, mode, and content are compared exactly as the sweep does it.
+    # A bare `diff -q` FOLLOWS symlinks, so a manifest-listed regular file
+    # swapped for a link to a byte-identical referent read as perfectly clean
+    # here while the sweep gated that same shape — the header's "a structural
+    # divergence always gates" rule held for uncurated files only. `-x` follows
+    # links too, hence the same exec-bit exemption the sweep uses: the bit
+    # belongs to the link target, not to the alias.
+    if [ ! -L "$render/$f" ] && [ ! -L "$rv" ]; then
+        render_exec=0
+        repo_exec=0
+        [ -x "$render/$f" ] && render_exec=1
+        [ -x "$rv" ] && repo_exec=1
+        if [ "$render_exec" -ne "$repo_exec" ]; then
+            if [ "$render_exec" -eq 1 ]; then
+                mode_note="template is executable; repo is not"
+            else
+                mode_note="repo is executable; template is not"
+            fi
+            echo "MODE     $rv_display  ($mode_note)"
+            drift=1
+            mode_count=$((mode_count + 1))
+        fi
+    fi
+    if ! same_as_render "$render/$f" "$rv"; then
+        if [ "$compare_structural" -eq 1 ]; then
+            echo "DRIFT    $rv_display  (symlink mismatch — $compare_note)"
+        else
+            echo "DRIFT    $rv_display"
+        fi
         drift=1
         drift_count=$((drift_count + 1))
-        if [ "$show" -eq 1 ]; then
-            # `diff` exits 1 when files differ (they always do here); `|| true`
-            # keeps that from aborting the loop under `set -euo pipefail`, so
-            # --show prints EVERY drifting file, not just the first.
-            diff -u "$rv" "$render/$f" | sed 's/^/    /' || true
+        # A structural mismatch has nothing readable to diff (and `diff -u` on a
+        # dangling link just errors); the note above already says it all.
+        if [ "$show" -eq 1 ] && [ "$compare_structural" -eq 0 ]; then
+            show_diff_body "$rv_display" "$rv" "$render/$f"
         fi
     fi
 done <"$manifest"
@@ -493,8 +670,12 @@ has_repo_equivalent() {
 # Keep these globs TIGHT. Anything the template grows that is not listed here
 # falls through to a visible, gating uncurated DRIFT, which is the safe default:
 # a new template file nobody has classified should be seen, not silently
-# tolerated. Case globs are not path-aware — `*` matches `/` — so `docs/*`
-# covers `docs/architecture/README.md` as intended.
+# tolerated. Case globs are not path-aware — `*` matches `/` — which cuts both
+# ways: `docs/*` reaches `docs/architecture/README.md` at any depth as intended,
+# but it also reached every NON-prose artifact under those trees, handing a
+# generated script or config the presence-only exemption purely for living in a
+# docs directory. The class is about PROSE the repo rewrites, so the two tree
+# globs are filtered to Markdown basenames below.
 is_co_owned() {
     case "$1" in
     # Agent instructions: the one real file plus the aliases copier keeps as
@@ -506,8 +687,18 @@ is_co_owned() {
     # The template ships SECURITY.md under .github/; accept a root copy too, for
     # repos that keep GitHub's other supported location.
     SECURITY.md | .github/SECURITY.md) return 0 ;;
-    # Per-repo documentation and specification trees.
-    docs/* | specs/*) return 0 ;;
+    # Per-repo documentation and specification trees — the PROSE in them only.
+    # A nested case rather than `docs/*.md | docs/*/*.md | …`: that form is
+    # depth-capped, and the first artifact one level deeper than anybody
+    # enumerated silently changes class. Matching the basename is depth-free and
+    # says what it means. Anything non-Markdown under these trees is a build
+    # script, a config, or a generated asset — none of it prose the repo owns —
+    # so it falls through to visible, gating uncurated DRIFT.
+    docs/* | specs/*)
+        case "${1##*/}" in
+        *.md) return 0 ;;
+        esac
+        ;;
     # Per-repo scratch, workspace, and note-taking metadata.
     todo.md | *.code-workspace | .meta/*) return 0 ;;
     # template-owned-files.txt spells this one out in prose: the devcontainer
@@ -515,90 +706,6 @@ is_co_owned() {
     # signal, which is exactly why it is deliberately absent from the manifest.
     .devcontainer/config/zshrc) return 0 ;;
     esac
-    return 1
-}
-
-# Ask git about ignore rules only when the target is a repository root of its
-# OWN. `rev-parse --is-inside-work-tree` is not that test: it answers true for a
-# plain directory that merely SITS INSIDE somebody else's work tree — the audit
-# accepts a plain directory and the hermetic tests point it at exactly that
-# shape — and git would then answer about whatever repository happens to contain
-# the temp dir, silently downgrading real divergence to a non-gating IGNORED.
-# Compare the detected toplevel against the target's own path instead,
-# normalizing both with `cd` + `pwd -P`: `$target` above is a LOGICAL pwd while
-# git always reports a resolved one, so on macOS's symlinked /var a real repo
-# root would never match otherwise (`realpath` is not portable to those hosts).
-# When they differ, treat the target as the plain directory it is: no IGNORED
-# class and no pattern probes at all, so everything falls through to gating,
-# printable, uncurated DRIFT. That is the deliberate choice — a plain directory
-# has no ignore rules of its own, and inheriting a stranger's is worse than
-# printing.
-target_owns_worktree=0
-target_physical="$(cd "$target" && pwd -P)"
-if toplevel="$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" &&
-    [ -d "$toplevel" ]; then
-    if [ "$(cd "$toplevel" && pwd -P)" = "$target_physical" ]; then
-        target_owns_worktree=1
-    fi
-fi
-
-# Ignore rules drive two INDEPENDENT axes below, because "does this gate?" and
-# "is this safe to print?" are different questions with different answers.
-#
-# CLASSIFICATION — repo STATE. Only an UNTRACKED pattern-matched file is the
-# informational IGNORED class. `git check-ignore` consults the index, so it
-# never calls a TRACKED file ignored, and that is exactly right here: tracked
-# content is template-relevant however the ignore rules read, so it must keep
-# gating like any other file.
-is_repo_ignored() {
-    [ "$target_owns_worktree" -eq 1 ] || return 1
-    git -C "$target" check-ignore -q -- "$1" 2>/dev/null
-}
-
-# WITHHOLDING — the PATH alone, with `--no-index` so the index cannot mask the
-# pattern. Deliberately NOT the classification test above: a repo can `git add
-# -f` a resolved .envrc-shaped config, and tracking it makes `check-ignore`
-# answer "not ignored", so keying the diff on classification printed the full
-# contents of precisely the paths the repo had marked local-only. Tracking makes
-# such a file reviewable, not publishable.
-is_ignore_pattern_match() {
-    [ "$target_owns_worktree" -eq 1 ] || return 1
-    git -C "$target" check-ignore -q --no-index -- "$1" 2>/dev/null
-}
-
-# Compare one rendered path against its resolved repo counterpart. Sets
-# compare_note (a human-readable reason) and compare_structural (1 when the
-# difference is symlink-ness rather than content). Returns 0 when they match.
-compare_note=""
-compare_structural=0
-same_as_render() {
-    rp="$1" # path inside the render
-    lp="$2" # resolved repo path
-    compare_note=""
-    compare_structural=0
-    if [ -L "$rp" ] || [ -L "$lp" ]; then
-        compare_structural=1
-        if [ ! -L "$rp" ]; then
-            compare_note="template ships a regular file; repo has a symlink"
-            return 1
-        fi
-        if [ ! -L "$lp" ]; then
-            compare_note="template ships a symlink; repo has a regular file"
-            return 1
-        fi
-        # Plain `readlink`, never `readlink -f`: -f is a GNU extension absent on
-        # the macOS bash 3.2 hosts this script has to stay portable to, and the
-        # raw link text is what we want to compare anyway.
-        if [ "$(readlink "$rp")" = "$(readlink "$lp")" ]; then
-            compare_structural=0
-            return 0
-        fi
-        compare_note="symlink target differs (template: $(readlink "$rp"))"
-        return 1
-    fi
-    if diff -q "$rp" "$lp" >/dev/null 2>&1; then
-        return 0
-    fi
     return 1
 }
 
@@ -622,11 +729,23 @@ while IFS= read -r abs; do
     grep -qxF "$g" "$manifest" 2>/dev/null && continue # manifest loop owns it
     rv="$(repo_variant "$g")"
     if [ -n "$rv" ]; then
+        rv_display="$(variant_display "$rv")"
+        # Settled before anything can accept or exempt the surviving worktree
+        # copy: `git rm --cached` leaves that copy in place, so an identical file
+        # would pass silently and an ignore-matched one would collect the
+        # non-gating IGNORED exemption, both while the next commit deletes it.
+        # Counted as MISSING rather than compared, like every other sweep path
+        # the repo does not really have.
+        if is_staged_removal "$rv_display"; then
+            echo "MISSING  $rv_display  (tracked in HEAD but staged for removal — the next commit deletes a template-owned file)"
+            drift=1
+            missing_count=$((missing_count + 1))
+            continue
+        fi
         # The repo HAS this path and the curated manifest does not list it.
         # Compare it rather than skipping — the silent skip here is what kept
         # uncurated divergence invisible (issue 346).
         swept_compared=$((swept_compared + 1))
-        rv_display="$(variant_display "$rv")"
         # Exec bit and content are independent findings, exactly as in the
         # curated loop: a byte-identical hook script that lost +x is still
         # broken. Symlinks are exempt because the bit belongs to the target.
@@ -685,19 +804,7 @@ while IFS= read -r abs; do
         # A structural mismatch has nothing readable to diff (and `diff -u` on a
         # dangling link just errors); the note above already says it all.
         if [ "$show" -eq 1 ] && [ "$compare_structural" -eq 0 ]; then
-            if is_ignore_pattern_match "$rv_display"; then
-                # This finding GATES — the repo tracks the file, so its content
-                # is template-relevant — but the path is marked local-only and a
-                # resolved local config can hold real secrets. Withholding is
-                # keyed on the path, not on the class, so it applies here too:
-                # keep the finding, drop the body.
-                echo "    (diff withheld — path matches an ignore pattern; review manually)"
-            else
-                # `diff` exits 1 when files differ (they always do here);
-                # `|| true` keeps that from aborting the loop under
-                # `set -euo pipefail`.
-                diff -u "$rv" "$render/$g" | sed 's/^/    /' || true
-            fi
+            show_diff_body "$rv_display" "$rv" "$render/$g"
         fi
         continue
     fi
