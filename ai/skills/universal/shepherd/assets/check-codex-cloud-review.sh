@@ -641,13 +641,17 @@ reap)
         rmdir "$reap_lock" 2>/dev/null || true
         reap_lock=
 
-        if [ "$action" = reaped ]; then
-            # Both are plain rmdir, which refuses a non-empty directory — so a
-            # sibling PR's state, or a lock leaked by an interrupted run, keeps
-            # its directory rather than being swept up with it.
-            rmdir "$candidate_parent" 2>/dev/null || true
-            rmdir "$candidate_grandparent" 2>/dev/null || true
-        fi
+        # The emptied <owner>/ and <owner>/<repo>/ directories are deliberately
+        # LEFT BEHIND. Pruning them read as tidiness and was a race:
+        # `acquire_state_lock` does `mkdir -p "$parent"` and then
+        # `mkdir "$lock_dir"` non-atomically, so an rmdir landing between the
+        # two makes the second call fail ENOENT — and its error says "state is
+        # locked by another shepherd", naming a lock that does not exist, for a
+        # reservation of a different PR that was entitled to proceed. An empty
+        # directory costs an inode inside the git directory, is invisible to
+        # `git status`, is never pushed, and is reused verbatim by the next
+        # `reserve`. Best-effort cleanup must not be able to abort a concurrent
+        # reservation, so the cosmetic half of it is simply not done.
 
         reap_record "$candidate" "$state_repo" "$state_pr" "$pr_state" \
             "$action" "$detail"

@@ -924,8 +924,30 @@ assert_reap '.skipped' 0
 [ ! -f "${reap_root}/example/beta/22.json" ] || fail "closed state survived"
 [ -f "${reap_root}/example/gamma/33.json" ] || fail "open state was reaped"
 assert_reap '[.entries[] | select(.pr == 33) | .action] | first' kept
-[ ! -d "${reap_root}/example/alpha" ] ||
-    fail "an emptied state directory was left behind"
+# The emptied directory is left in place on purpose. Pruning it raced
+# `acquire_state_lock`, whose `mkdir -p "$parent"` and `mkdir "$lock_dir"` are
+# not atomic — an rmdir between them fails a concurrent reservation for a
+# DIFFERENT PR with a "locked by another shepherd" error naming no real lock.
+[ -d "${reap_root}/example/alpha" ] ||
+    fail "reap pruned an emptied directory — that races a concurrent reserve"
+
+echo "==> a reservation still works in a directory the sweep just emptied"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+run_reap "$reap_root"
+assert_reap '.reaped' 1
+# The concurrent case this guards cannot be scheduled deterministically, so pin
+# the property instead: the repo directory outlives the sweep, and reserving a
+# DIFFERENT PR in it succeeds. When reap pruned the directory, an interleaved
+# reserve died with "state is locked by another shepherd" over a lock that
+# never existed.
+"$helper" reserve --state "${reap_root}/example/alpha/44.json" \
+    --repo example/alpha --pr 44 --head "$head_sha" --attempt 1 >/dev/null ||
+    fail "reserve failed in a directory the sweep had emptied"
+[ -f "${reap_root}/example/alpha/44.json" ] ||
+    fail "reserve wrote no state after a sweep emptied its directory"
 
 echo "==> an unreadable PR state keeps its file rather than deleting it"
 write_defaults
