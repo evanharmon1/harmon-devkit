@@ -25,5 +25,4 @@
 # alongside harmon-devkit when the devcontainer is created.
 https://github.com/evanharmon1/harmon-init
 https://github.com/evanharmon1/harmon-dotfiles
-https://github.com/evanharmon1/harmon-ops
 https://github.com/evanharmon1/evanharmon-site

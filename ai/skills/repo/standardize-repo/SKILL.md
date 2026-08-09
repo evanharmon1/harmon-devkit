@@ -17,7 +17,7 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Task, WebFetch
 Bring a repo in line with the **harmon-init** Copier template — the shared baseline
 of DevOps tooling, CI/CD, linting, secrets scanning, lefthook git hooks, and a
 `Taskfile.yml` task runner. harmon-init is the **template** repo of harmon-platform
-(siblings: harmon-devkit, harmon-ops, harmon-infra); this skill is
+(siblings: harmon-devkit, harmon-infra); this skill is
 how an agent *consumes* that template to scaffold new repos or standardize existing
 ones. harmon-init is NOT an application — it is used via
 [Copier](https://copier.readthedocs.io/en/stable/), so the heavy lifting is

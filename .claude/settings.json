@@ -14,7 +14,6 @@
     "additionalDirectories": [
       "../harmon-init",
       "../harmon-dotfiles",
-      "../harmon-ops",
       "../evanharmon-site"
     ],
     "allow": [
@@ -45,7 +44,6 @@
       "allowRead": [
         "../harmon-init",
         "../harmon-dotfiles",
-        "../harmon-ops",
         "../evanharmon-site"
       ]
     }
