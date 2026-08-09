@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.23.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.23.0...v0.23.1) (2026-08-09)
+
+
+### Bug Fixes
+
+* **shepherd:** reap codex-review state once its PR closes ([#331](https://github.com/evanharmon1/harmon-devkit/issues/331)) ([5e7f135](https://github.com/evanharmon1/harmon-devkit/commit/5e7f13527098d848b9da0b8ac21355d5b571ff4d))
+* **standardize-repo:** let the skills-source repo enable Codex cloud review natively ([#334](https://github.com/evanharmon1/harmon-devkit/issues/334)) ([e0b4f77](https://github.com/evanharmon1/harmon-devkit/commit/e0b4f77e7e28f47d8600fcc12f934e28487c00f1))
+
 ## [0.23.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.22.1...v0.23.0) (2026-08-08)
 
 
