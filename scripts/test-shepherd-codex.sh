@@ -1020,6 +1020,26 @@ if grep -Fq 'pr view' "$log"; then
     fail "reap queried GitHub with a malformed repository slug"
 fi
 
+echo "==> an open PR's lock is never taken, so a live cycle is not disturbed"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+# PR 11 stays OPEN and a live shepherd holds its lock. Reaping must not contend
+# for that lock at all: `acquire_state_lock` is a bare `mkdir` that dies on
+# contention with no retry, so a sweep holding it across a `gh pr view` sends a
+# correct session for a DIFFERENT PR to maintainer reconciliation on exit 2.
+# The discriminator is `kept`, not `skipped` — skipped would mean the sweep
+# tried the lock and lost, which is the behaviour being fixed.
+mkdir "${reap_root}/example/alpha/11.json.lock"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "reap exited $reap_rc: $reap_out"
+assert_reap '.kept' 1
+assert_reap '.skipped' 0
+assert_reap '[.entries[] | .detail] | first' "PR is still open"
+[ -d "${reap_root}/example/alpha/11.json.lock" ] ||
+    fail "reap released a lock it does not own"
+rmdir "${reap_root}/example/alpha/11.json.lock"
+
 echo "==> a locked state file is skipped and does not abort the sweep"
 write_defaults
 rm -rf "$reap_root"

@@ -581,26 +581,28 @@ reap)
             continue
         fi
 
-        # The same lock `reserve`/`attach`/`check` take. Held means a live
-        # shepherd owns this PR, so skip it — a sweep must never delete state
-        # out from under a cycle in progress, and one busy entry must not
-        # abort the rest of the sweep.
-        reap_lock="${candidate}.lock"
-        if ! mkdir "$reap_lock" 2>/dev/null; then
-            reap_lock=
-            reap_record "$candidate" "$state_repo" "$state_pr" "" skipped \
-                "state is locked by another shepherd"
-            continue
-        fi
-
         if [ "$(date -u '+%s')" -ge "$reap_deadline_epoch" ]; then
-            rmdir "$reap_lock" 2>/dev/null || true
-            reap_lock=
             reap_record "$candidate" "$state_repo" "$state_pr" "" kept \
                 "sweep budget exhausted before this entry was checked"
             continue
         fi
 
+        # Snapshot the state BEFORE the query, so the delete below can prove
+        # nothing rewrote it while GitHub was being asked.
+        state_snapshot=$(cat "$candidate" 2>/dev/null) || {
+            reap_record "$candidate" "$state_repo" "$state_pr" "" skipped \
+                "state vanished before it could be examined"
+            continue
+        }
+
+        # Query FIRST, unlocked. The lock below is the same one
+        # `reserve`/`attach`/`check` take, and `acquire_state_lock` is a bare
+        # `mkdir` that dies on contention with no retry — so holding it across
+        # a network call would abort a live cycle for a DIFFERENT PR that
+        # merely shares this git directory, sending a correct session to
+        # maintainer reconciliation on exit 2. An open PR's lock is therefore
+        # never taken at all: reaping has no business claiming state it has
+        # already decided to keep.
         pr_state=
         if pr_payload=$(run_gh pr view "$state_pr" --repo "$state_repo" \
             --json state 2>/dev/null); then
@@ -611,10 +613,28 @@ reap)
 
         case "$pr_state" in
         CLOSED | MERGED)
-            if rm -f "$candidate"; then
+            # Only a candidate proven dead is worth locking, and only for the
+            # unlink itself.
+            reap_lock="${candidate}.lock"
+            if ! mkdir "$reap_lock" 2>/dev/null; then
+                reap_lock=
+                action=skipped
+                detail="state is locked by another shepherd"
+            elif [ "$(cat "$candidate" 2>/dev/null)" != "$state_snapshot" ]; then
+                # Rewritten (or removed) while we were asking GitHub — the
+                # answer we hold describes a file that no longer exists.
+                rmdir "$reap_lock" 2>/dev/null || true
+                reap_lock=
+                action=skipped
+                detail="state changed while its PR was being checked"
+            elif rm -f "$candidate"; then
+                rmdir "$reap_lock" 2>/dev/null || true
+                reap_lock=
                 action=reaped
                 detail="PR is $pr_state"
             else
+                rmdir "$reap_lock" 2>/dev/null || true
+                reap_lock=
                 action=kept
                 detail="PR is $pr_state but the state file could not be removed"
             fi
@@ -638,8 +658,9 @@ reap)
             ;;
         esac
 
-        rmdir "$reap_lock" 2>/dev/null || true
-        reap_lock=
+        # No release here on purpose: the CLOSED/MERGED arm is the only one
+        # that ever takes the lock, and it releases on every path out. The
+        # EXIT trap still covers an abort mid-arm.
 
         # The emptied <owner>/ and <owner>/<repo>/ directories are deliberately
         # LEFT BEHIND. Pruning them read as tidiness and was a race:
