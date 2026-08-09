@@ -3360,16 +3360,22 @@ expect_fail "template-owned manifest lists no vendored foreman source" \
     grep -q '^scripts/foreman/' "$manifest"
 
 # Exercise executable-mode drift, equivalent mature layouts, legacy CodeRabbit
-# opt-out handling, and index-backed transient deletions end to end with a tiny
+# opt-out handling, index-backed transient deletions, and the whole-render sweep
+# (uncurated / co-owned / gitignored / symlink classes) end to end with a tiny
 # local Copier template. The real manifest is reused.
 DT_TEMPLATE="$TMPROOT/diff-template-source"
 mkdir -p \
     "$DT_TEMPLATE/template/scripts" \
     "$DT_TEMPLATE/template/terraform" \
     "$DT_TEMPLATE/template/docs/decisions"
+# _preserve_symlinks mirrors the real template, which ships CLAUDE.md/GEMINI.md/
+# .github/copilot-instructions.md as symlinks to AGENTS.md. Without it copier
+# dereferences the link into a duplicate file and the sweep's symlink handling
+# is never exercised.
 cat >"$DT_TEMPLATE/copier.yml" <<'EOF'
 _min_copier_version: "9.4.0"
 _subdirectory: template
+_preserve_symlinks: true
 project_name:
   type: str
   default: Test Project
@@ -3380,6 +3386,16 @@ echo status
 EOF
 printf '%s\n' 'reviews:' '  profile: chill' >"$DT_TEMPLATE/template/.coderabbit.yaml"
 chmod +x "$DT_TEMPLATE/template/scripts/status.sh"
+# AGENTS.md is co-owned prose; CLAUDE.md is its symlink alias; renovate.json is
+# an uncurated file that is neither, so it must show as gating DRIFT. .envrc is
+# the gitignored case — a resolved local config whose diff must never be printed.
+printf '%s\n' '# Test Project agents' 'seeded agent prose' \
+    >"$DT_TEMPLATE/template/AGENTS.md"
+ln -s AGENTS.md "$DT_TEMPLATE/template/CLAUDE.md"
+printf '%s\n' '{ "extends": ["config:recommended"] }' \
+    >"$DT_TEMPLATE/template/renovate.json"
+printf '%s\n' 'export EXAMPLE_SETTING=template-default' \
+    >"$DT_TEMPLATE/template/.envrc"
 for terraform_file in main.tf variables.tf outputs.tf; do
     printf '%s\n' '# starter' >"$DT_TEMPLATE/template/terraform/$terraform_file"
 done
@@ -3401,6 +3417,17 @@ printf '%s\n' '# production root' \
     >"$DT_TARGET/terraform/environments/production/main.tf"
 printf '%s\n' '# Record architecture decisions' \
     >"$DT_TARGET/docs/decisions/0007-record-architecture-decisions.md"
+# Mirror the new template files byte-for-byte so the pre-existing cases below
+# keep their exit expectations; each new case mutates one of them in turn.
+cp "$DT_TEMPLATE/template/AGENTS.md" "$DT_TARGET/AGENTS.md"
+ln -s AGENTS.md "$DT_TARGET/CLAUDE.md"
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_TARGET/renovate.json"
+# .envrc diverges from the render permanently and is gitignored, so it stays
+# untracked (git_commit_all honors .gitignore) and reports as informational
+# IGNORED rather than drift — the class exists precisely because a resolved
+# local config can hold real values that must not be printed.
+printf '%s\n' '.envrc' >"$DT_TARGET/.gitignore"
+printf '%s\n' 'export EXAMPLE_SETTING=envrc-sentinel-withheld' >"$DT_TARGET/.envrc"
 cat >"$DT_TARGET/.copier-answers.yml" <<EOF
 _commit: v1.0.0
 _src_path: file://$DT_TEMPLATE
@@ -3440,6 +3467,129 @@ if printf '%s\n' "$equivalent_out" |
 else
     bad "diff-template accepts legacy CodeRabbit opt-out as intentional absence"
 fi
+# That run exits 0, so IGNORED appearing in it is also the proof it never gates.
+if printf '%s\n' "$equivalent_out" | grep -qF "IGNORED  .envrc"; then
+    ok "diff-template reports a gitignored divergence without gating"
+else
+    bad "diff-template reports a gitignored divergence without gating"
+fi
+
+# --- whole-render sweep: uncurated, co-owned, and symlink classes ------------
+# The baseline above is green, so each case below can attribute its exit code to
+# its own mutation. Every case mutates the clean target, runs the real script,
+# asserts the class line AND the exit code, then restores.
+
+# An uncurated file the repo diverges on is the gap issue 346 describes: the
+# repo HAS it, the manifest does not list it, and it used to be skipped outright.
+printf '%s\n' '{ "extends": ["config:base"] }' >"$DT_TARGET/renovate.json"
+if uncurated_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports uncurated content drift (expected non-zero exit)"
+elif printf '%s\n' "$uncurated_out" | grep -qF "DRIFT    renovate.json  (uncurated"; then
+    ok "diff-template reports uncurated content drift"
+else
+    bad "diff-template reports uncurated content drift (DRIFT diagnostic missing)"
+fi
+if printf '%s\n' "$uncurated_out" |
+    grep -qE '^  1 uncurated DRIFT \+ 0 uncurated MODE'; then
+    ok "diff-template counts uncurated drift in its summary"
+else
+    bad "diff-template counts uncurated drift in its summary"
+fi
+
+# A divergent co-owned file is informational: visible, but it must NOT gate, and
+# its alias symlink must stay silent (comparing link targets is what keeps one
+# AGENTS.md divergence from being reported once per alias).
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'co-owned-body-sentinel' \
+    >"$DT_TARGET/AGENTS.md"
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_TARGET/renovate.json"
+if co_owned_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template does not gate on a divergent co-owned file"
+else
+    bad "diff-template does not gate on a divergent co-owned file: $co_owned_out"
+fi
+if printf '%s\n' "$co_owned_out" | grep -qF "CO-OWNED AGENTS.md"; then
+    ok "diff-template reports a divergent co-owned file"
+else
+    bad "diff-template reports a divergent co-owned file (CO-OWNED line missing)"
+fi
+if printf '%s\n' "$co_owned_out" | grep -qF "CLAUDE.md"; then
+    bad "diff-template does not repeat a co-owned divergence per symlink alias"
+else
+    ok "diff-template does not repeat a co-owned divergence per symlink alias"
+fi
+
+# --show must print the uncurated diff body and withhold both presence-only
+# classes: a co-owned diff is noise by design, and a gitignored one can leak.
+printf '%s\n' '{ "extends": ["config:base"] }' >"$DT_TARGET/renovate.json"
+show_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_TARGET" 2>&1 || true)"
+if printf '%s\n' "$show_out" | grep -qF 'config:base'; then
+    ok "diff-template --show prints an uncurated diff body"
+else
+    bad "diff-template --show prints an uncurated diff body"
+fi
+if printf '%s\n' "$show_out" | grep -qF 'co-owned-body-sentinel'; then
+    bad "diff-template --show withholds a co-owned diff body"
+else
+    ok "diff-template --show withholds a co-owned diff body"
+fi
+if printf '%s\n' "$show_out" | grep -qF 'envrc-sentinel-withheld'; then
+    bad "diff-template --show withholds a gitignored diff body"
+else
+    ok "diff-template --show withholds a gitignored diff body"
+fi
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_TARGET/renovate.json"
+cp "$DT_TEMPLATE/template/AGENTS.md" "$DT_TARGET/AGENTS.md"
+
+# A co-owned symlink flattened into a regular file is a STRUCTURAL divergence,
+# not a prose one, so it gates rather than joining the presence-only CO-OWNED
+# class: the repo now carries two independent copies of the agent instructions
+# that will silently desynchronize, which is exactly the defect worth failing on.
+# The CO-OWNED exemption covers content, and there is no content diff to withhold
+# here — the finding is one line of metadata.
+rm "$DT_TARGET/CLAUDE.md"
+cp "$DT_TARGET/AGENTS.md" "$DT_TARGET/CLAUDE.md"
+if flattened_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a co-owned symlink flattened to a file (expected non-zero exit)"
+elif printf '%s\n' "$flattened_out" | grep -qF "DRIFT    CLAUDE.md  (symlink mismatch"; then
+    ok "diff-template gates a co-owned symlink flattened to a file"
+else
+    bad "diff-template gates a co-owned symlink flattened to a file (diagnostic missing)"
+fi
+rm "$DT_TARGET/CLAUDE.md"
+ln -s AGENTS.md "$DT_TARGET/CLAUDE.md"
+
+# A deleted alias is only visible because the sweep walks `-type l` as well as
+# `-type f`. Unstaged, it is rebuilt from the index AS A SYMLINK (a regular-file
+# stand-in holding the link text would read as a type mismatch); staged, it is
+# real MISSING.
+rm "$DT_TARGET/CLAUDE.md"
+expect_ok "diff-template rebuilds an unstaged deleted symlink from the index" \
+    env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
+git -C "$DT_TARGET" add -u -- CLAUDE.md
+if missing_link_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports a staged symlink deletion (expected non-zero exit)"
+elif printf '%s\n' "$missing_link_out" | grep -qF "MISSING  CLAUDE.md"; then
+    ok "diff-template reports a staged symlink deletion as MISSING"
+else
+    bad "diff-template reports a staged symlink deletion (MISSING diagnostic absent)"
+fi
+git -C "$DT_TARGET" checkout HEAD -- CLAUDE.md
+
+# Plain curated content drift — the manifest loop's own headline class, which
+# had no direct case before.
+printf '%s\n' '#!/usr/bin/env bash' 'echo customized status' \
+    >"$DT_TARGET/scripts/status.sh"
+if curated_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports curated content drift (expected non-zero exit)"
+elif printf '%s\n' "$curated_out" | grep -qF "DRIFT    scripts/status.sh"; then
+    ok "diff-template reports curated content drift"
+else
+    bad "diff-template reports curated content drift (DRIFT diagnostic missing)"
+fi
+git -C "$DT_TARGET" checkout HEAD -- scripts/status.sh
+expect_ok "diff-template returns to a clean baseline after the sweep cases" \
+    env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
 
 rm "$DT_TARGET/scripts/status.sh"
 expect_ok "diff-template compares an unstaged tracked deletion from the index" \

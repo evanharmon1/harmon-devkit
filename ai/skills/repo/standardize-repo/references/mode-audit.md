@@ -405,16 +405,39 @@ guarded clone (update mode passes `HARMON_INIT_RECORDED_COMMIT`) or for a
 disposable hermetic test.
 
 The helper renders harmon-init **at the repo's own frozen `_commit`** (from its
-`.copier-answers.yml`) and reports both content **`DRIFT`** in the curated set and
-**`MISSING`** template files the repo lacks entirely (mapping `.yml`↔`.yaml`). The
-`MISSING` scan walks the whole render and is **manifest-independent**, so a file the
-template added after the curated list was last edited — or one a hand-reconciled
-update dropped — is still caught (`.gitkeep` dir-stubs show as benign `ABSENT`).
+`.copier-answers.yml`) and content-compares the **entire render** against the repo
+(mapping `.yml`↔`.yaml`), not just the curated set. Curated entries report plain
+**`DRIFT`**; every other rendered path the repo also has reports the same
+**`DRIFT`** tagged `(uncurated — not in template-owned-files.txt)`, with identical
+review-aid semantics — the tag records that the hand-maintained manifest has not
+adopted the file, not a lower severity. **`MODE`** (executable-bit) differences are
+reported independently of content on both sides of that line. The **`MISSING`**
+scan is likewise **manifest-independent**, so a file the template added after the
+curated list was last edited — or one a hand-reconciled update dropped — is still
+caught (`.gitkeep` dir-stubs show as benign `ABSENT`).
 An absent tracked path that still exists in the index is compared from an index
 snapshot, so a transient, unstaged working-tree deletion does not create false
 drift; once the deletion is staged it is real `MISSING`. Mature nested Terraform
 roots and an established or renumbered ADR log are reported as benign `EQUIV`
 instead of false `MISSING` and do not affect the exit status.
+
+Two further classes are **informational and never affect the exit status**, and
+their diffs are withheld even under `--show`:
+
+- **`CO-OWNED`** — the template seeds the file but the repo owns its prose
+  (`AGENTS.md` and its symlink aliases, `README.md`, `docs/`, `specs/`, the
+  devcontainer `config/zshrc`, …). Divergence is the expected steady state, so
+  the line is presence-only; withholding the diff is what keeps it from drowning
+  the report. Its value is the inverse signal — a `CO-OWNED` path that stops
+  being listed after an update was clobbered back to the template's copy.
+- **`IGNORED`** — the repo's copy is gitignored (a resolved `.envrc`, local
+  editor settings). Presence-only for the same reason plus a harder one: a
+  resolved local config can hold real secrets, so its diff is never printed.
+
+Symlinks are compared by **link target**, so the `CLAUDE.md` / `GEMINI.md` /
+`.github/copilot-instructions.md` aliases stay silent instead of restating one
+`AGENTS.md` divergence four times. A symlink-versus-regular-file mismatch is
+structural and **does** gate, `CO-OWNED` or not.
 Because the render is at `_commit`, each **`DRIFT`** is the repo's **local
 customization** relative to its own baseline — or a **regression** where a past
 hand-reconcile dropped a same-baseline improvement (the status.sh / lint-hygiene /

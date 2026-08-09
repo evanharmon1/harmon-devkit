@@ -78,10 +78,11 @@ guarded source and answers file below exist. The ordinary drift command trusts
 the repo's recorded `_commit`; when that value is a tag, running it first would
 reintroduce the mutable-baseline gap this preflight closes.
 
-This renders harmon-init from the repo's own `.copier-answers.yml` and reports
-the following result classes (mapping `.yml`↔`.yaml`):
+This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
+**whole render** against the repo, and reports the following result classes
+(mapping `.yml`↔`.yaml`):
 
-- **`DRIFT`** — a curated file differs from a render at the repo's **own recorded
+- **`DRIFT`** — a file differs from a render at the repo's **own recorded
   `_commit`** (diff-template.sh renders at `_commit`, not the template's HEAD). So
   DRIFT is the repo's **local customization** relative to its own baseline — or,
   less often, a **regression** where a past hand-reconciled update dropped a
@@ -89,7 +90,16 @@ the following result classes (mapping `.yml`↔`.yaml`):
   bootstrap class). It is **not** "an improvement from a newer template version":
   those arrive through the `copier update` three-way merge (§2), never via
   diff-template. Read the diff to tell a deliberate customization from a regression
-  to restore.
+  to restore. Files **outside** the curated
+  [`template-owned-files.txt`](../assets/template-owned-files.txt) set are compared
+  too and tagged `(uncurated — not in template-owned-files.txt)`. They carry
+  exactly the same review-aid meaning; the tag only records that the
+  hand-maintained manifest has not adopted the file, which is a fact about the
+  manifest, not about the finding.
+- **`MODE`** — the executable bit differs. Copier can preserve content while a
+  hand copy silently drops `+x`, leaving a generated script present but
+  unusable, so this is reported independently of content. Symlinks are exempt:
+  the bit belongs to the link target.
 - **`MISSING`** — a template file the repo lacks entirely. This scan walks the
   whole render (it does **not** depend on the curated list), so a file the
   template added later, or one a previous hand-reconciled update dropped, can't
@@ -103,6 +113,28 @@ the following result classes (mapping `.yml`↔`.yaml`):
 - **`EQUIV`** — a mature nested Terraform layout or established/renumbered ADR
   log intentionally replaces a generated seed path. This is informational and
   does not fail the comparison.
+- **`CO-OWNED`** — the template *seeds* the file but the repo owns its prose:
+  `AGENTS.md` and its `CLAUDE.md` / `GEMINI.md` /
+  `.github/copilot-instructions.md` symlink aliases, `README.md`, `DESIGN.md`,
+  `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`, `SECURITY.md`, `docs/`,
+  `specs/`, `todo.md`, the `*.code-workspace`, `.meta/`, and the devcontainer
+  `config/zshrc`. Divergence there is the expected steady state, so the line is
+  **presence-only**: no diff is printed, not even under `--show`, and it never
+  affects the exit status. The useful reading is the inverse one — see §4.
+- **`IGNORED`** — the repo's copy is gitignored (a resolved `.envrc`, local
+  editor settings, and friends). Presence-only for the same reason as
+  `CO-OWNED` plus a harder one: a resolved local config can hold real secrets,
+  so its diff is never printed. Never affects the exit status.
+
+Symlinks are compared by **link target**, not content. The template ships
+`CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md` as links to
+`AGENTS.md`, so content-diffing them would report one `AGENTS.md` divergence
+four times over. A path that is a symlink on one side and a regular file on the
+other — or a link pointing somewhere else — is a **structural** divergence and
+always gates, `CO-OWNED` or not: a flattened alias means the repo now carries
+two independent copies of the agent instructions that will silently
+desynchronize, and the finding is one line of metadata rather than a diff worth
+withholding.
 
 ### Preview the release and review new answers
 
@@ -1392,18 +1424,33 @@ name and confirm your customization survived. Cross-check the §1 `diff-template
 worklist — any file that was `DRIFT` *before* the update but is now byte-identical to
 the template was silently reverted; restore the customization.
 
-**AGENTS.md is co-owned — always 3-way-merge it by hand; the safety net above does
-NOT cover it.** `AGENTS.md` is deliberately **not** in
-[`template-owned-files.txt`](../assets/template-owned-files.txt), so `diff-template.sh`
-never checks it and the silent-revert cross-check cannot catch an AGENTS.md clobber —
-yet it is usually the most heavily customized file in the repo (project overview,
-architecture, real commands, project-specific conventions). Treat every update as a
+**AGENTS.md is co-owned — always 3-way-merge it by hand; the safety net above covers
+only its PRESENCE.** `AGENTS.md` is deliberately **not** in
+[`template-owned-files.txt`](../assets/template-owned-files.txt), yet it is usually the
+most heavily customized file in the repo (project overview, architecture, real
+commands, project-specific conventions). `diff-template.sh` does compare it — as a
+`CO-OWNED` line, deliberately **presence-only**: it tells you the repo's copy still
+differs from the template's, never *how*, and it never fails the run. That is enough
+for the clobber check and nothing like enough for the merge. Treat every update as a
 genuine three-way merge on AGENTS.md, section by section: **keep the repo's
 substantive customizations**, but **do adopt the template's real improvements** —
 some template sections legitimately supersede the repo's (e.g. a corrected
 Conventional-Commits type enum, a reworded workflow rule). It is a judgment call, not
 a wholesale `--ours`/`--theirs`. Diff the merged result against the pre-update file
 (`git show HEAD:AGENTS.md`) and confirm both sides survived where each should.
+
+**A `CO-OWNED` line that DISAPPEARS is the clobber signal.** Read this class
+inversely to `DRIFT`: for a co-owned file, *differing from the template is the
+healthy state*, so the alarming transition is the line vanishing between the §1
+run and the post-update re-run. Gone means the repo's copy is now byte-identical
+to the template's — the customizations were overwritten wholesale. Note the §1
+`CO-OWNED` paths before you update and confirm every one of them is still listed
+afterwards; a missing entry gets the same treatment as the silent-revert
+cross-check above, restored from `git show HEAD:<path>`. The same reading applies
+to the aliases: `CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md`
+are symlinks compared by link target, so they stay silent while they remain
+links — a `DRIFT … (symlink mismatch …)` on one of them means an update flattened
+it into a second, independently drifting copy of the instructions.
 
 **Heavily-forked files: take `--ours` and re-apply the new bits.** When a file is
 *heavily* customized (a forked `Taskfile.yml`, a bespoke `status.sh`), copier's
@@ -1622,6 +1669,13 @@ Re-run `diff-template.sh`: every remaining `DRIFT` should be an intentional loca
 customization you can explain, not a missed update. In particular, a `DRIFT` on a
 file the repo *renamed* (e.g. `.yaml`) may be an update copier skipped, not a
 customization — confirm against the §2 renamed-files note before dismissing it.
+**`(uncurated …)` findings get the identical treatment**: the tag is a statement
+about the hand-maintained manifest, not a lower severity, so each one is still
+either an explainable customization or a missed update, and the ones nobody has
+ever looked at are exactly where a silently dropped template improvement hides.
+`CO-OWNED` and `IGNORED` lines need no such adjudication — they are expected to
+differ — but do check them for *absences*: a `CO-OWNED` path that stopped being
+listed was clobbered (see the AGENTS.md note in §2 above).
 
 **Check the git hooks aren't shadowed or stale, too.** Even in an already-templated
 repo two non-lefthook hook managers can lurk: a **pre-commit.com** stub in

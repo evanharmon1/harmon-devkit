@@ -2,25 +2,54 @@
 # diff-template.sh — show how a repo's template-owned files differ from a fresh
 # harmon-init render, so the agent can find missed template improvements.
 #
-# Renders harmon-init using the TARGET repo's own .copier-answers.yml, then runs
-# two checks against that render:
-#   • DRIFT   — content differences in the curated template-owned-files.txt set
-#               (mapping .yml<->.yaml). A listed file may differ because the repo
-#               legitimately customized it (terraform tasks, a custom status
-#               section) OR because it's missing template improvements (the
-#               recurring status.sh / lint-hygiene / bootstrap class).
-#   • MODE    — executable-bit differences in that same curated set. Copier can
-#               preserve content while a manual copy silently drops `+x`, leaving
-#               a generated script present but unusable.
-#   • MISSING — template files the repo lacks ENTIRELY. This scan is
-#               manifest-INDEPENDENT (it walks the whole render), because the
-#               manifest is hand-maintained and lags the template — a file added
-#               after the last manifest edit, or dropped by a hand-reconciled
-#               `copier update`, would otherwise slip through silently. (.gitkeep
-#               dir-stubs are listed as benign ABSENT, not flagged as drift.)
-#               A tracked file deleted only from the working tree is compared
-#               from the index, so an unstaged/transient delete is not reported
-#               as drift; once the deletion is staged it is real MISSING.
+# Renders harmon-init using the TARGET repo's own .copier-answers.yml, then
+# compares the WHOLE render against the repo and reports:
+#   • DRIFT    — content differences. In the curated template-owned-files.txt set
+#                (mapping .yml<->.yaml) a listed file may differ because the repo
+#                legitimately customized it (terraform tasks, a custom status
+#                section) OR because it's missing template improvements (the
+#                recurring status.sh / lint-hygiene / bootstrap class). The same
+#                DRIFT is reported — tagged "uncurated" — for rendered files the
+#                manifest does NOT list: the manifest is hand-maintained, covers
+#                58 entries and no prose at all, so comparing content only within
+#                it left most of the render unchecked. A rendered path the repo
+#                HAD was skipped outright, however far it had diverged.
+#   • MODE     — executable-bit differences, in the curated set and the sweep
+#                alike. Copier can preserve content while a manual copy silently
+#                drops `+x`, leaving a generated script present but unusable.
+#                Symlinks are exempt: the bit belongs to the link target.
+#   • MISSING  — template files the repo lacks ENTIRELY. This scan is
+#                manifest-INDEPENDENT (it walks the whole render), because the
+#                manifest is hand-maintained and lags the template — a file added
+#                after the last manifest edit, or dropped by a hand-reconciled
+#                `copier update`, would otherwise slip through silently. (.gitkeep
+#                dir-stubs are listed as benign ABSENT, not flagged as drift.)
+#                A tracked file deleted only from the working tree is compared
+#                from the index, so an unstaged/transient delete is not reported
+#                as drift; once the deletion is staged it is real MISSING.
+#   • EQUIV    — a mature nested Terraform layout, or a renumbered/established ADR
+#                log, intentionally replacing a generated seed path. Benign.
+#   • CO-OWNED — the template SEEDS the file but the repo owns its prose
+#                (AGENTS.md and its symlink aliases, README, docs/, specs/, the
+#                devcontainer zshrc, …). Divergence is the expected steady state
+#                there, so these are reported PRESENCE-ONLY: no diff is printed,
+#                not even under --show, and they never affect the exit status.
+#                Their value is the INVERSE signal — a CO-OWNED line that
+#                DISAPPEARS after a `copier update` means the repo's copy is now
+#                byte-identical to the template's, i.e. the customizations were
+#                clobbered.
+#   • IGNORED  — the repo's copy is gitignored (a resolved .envrc and friends).
+#                Presence-only for the same reason plus a harder one: a resolved
+#                local config can hold real secrets, so its diff is never printed.
+#                Never affects the exit status.
+# Symlinks are compared by LINK TARGET, not by content: the template ships
+# CLAUDE.md, GEMINI.md, and .github/copilot-instructions.md as symlinks to
+# AGENTS.md (_preserve_symlinks), so content-diffing them would report a single
+# AGENTS.md divergence four times over. A path that is a symlink on one side and
+# a regular file on the other, or a link pointing somewhere else, is a
+# STRUCTURAL divergence and always gates — the CO-OWNED/IGNORED exemptions cover
+# content, because prose is what a repo owns; nobody "owns" an alias that stopped
+# being an alias, and the finding is one line of metadata, not a diff to withhold.
 # This is a REVIEW AID for apply/update/audit, not a pass/fail gate. For each
 # DRIFT/MISSING, inspect and reconcile — pull template improvements in via
 # `copier update`, keep legit local customizations.
@@ -253,15 +282,32 @@ index_variant() {
     git -C "$target" cat-file -e ":$p" 2>/dev/null || return 1
     out="$index_root/$p"
     mkdir -p "$(dirname "$out")"
-    git -C "$target" show ":$p" >"$out" 2>/dev/null || return 1
+    rm -f "$out"
     mode="$(git -C "$target" ls-files -s -- "$p" | awk 'NR == 1 { print $1 }')"
+    if [ "$mode" = "120000" ]; then
+        # A tracked symlink's blob content IS its link target. Re-materialize it
+        # as a symlink rather than a regular file holding that text: the sweep
+        # compares symlinks by link target, so a regular-file stand-in would read
+        # as a type mismatch for every transiently deleted alias (CLAUDE.md,
+        # GEMINI.md, .github/copilot-instructions.md).
+        link="$(git -C "$target" show ":$p" 2>/dev/null)" || return 1
+        [ -n "$link" ] || return 1
+        ln -s "$link" "$out" || return 1
+        echo "$out"
+        return 0
+    fi
+    git -C "$target" show ":$p" >"$out" 2>/dev/null || return 1
     [ "$mode" != "100755" ] || chmod +x "$out"
     echo "$out"
 }
 
 resolve_variant() {
     p="$1"
-    if [ -f "$target/$p" ]; then
+    # `-f` follows symlinks, so a repo alias whose target is missing (a DANGLING
+    # symlink) reads as absent here. Test `-L` as well: the path does exist, the
+    # sweep's link-target comparison works fine on a dangling link, and falling
+    # through to the index instead would compare the link TEXT as file content.
+    if [ -f "$target/$p" ] || [ -L "$target/$p" ]; then
         echo "$target/$p"
         return 0
     fi
@@ -292,6 +338,16 @@ repo_variant() {
     echo ""
 }
 
+# Repo-relative display path for a resolved variant, which may live in the index
+# snapshot instead of the work tree.
+variant_display() {
+    d="${1#"$target"/}"
+    if [ "$d" = "$1" ]; then
+        d="${1#"$index_root"/}"
+    fi
+    echo "$d"
+}
+
 drift=0
 checked=0
 drift_count=0
@@ -300,7 +356,12 @@ missing_count=0
 while IFS= read -r f; do
     case "$f" in '' | \#*) continue ;; esac
     if [ "$f" = ".coderabbit.yaml" ] && [ "$effective_use_coderabbit" = "false" ]; then
-        checked=$((checked + 1))
+        # Count it as examined only when the render actually ships it, so the
+        # summary's "compared" total can never exceed the rendered total. The
+        # finding below stands either way: a repo carrying .coderabbit.yaml
+        # against a disabling answer is drift whether or not this profile
+        # renders the file.
+        [ -f "$render/$f" ] && checked=$((checked + 1))
         rv="$(repo_variant "$f")"
         if [ -n "$rv" ]; then
             echo "DRIFT    .coderabbit.yaml  (CodeRabbit is disabled by the effective answer)"
@@ -320,10 +381,7 @@ while IFS= read -r f; do
         missing_count=$((missing_count + 1))
         continue
     fi
-    rv_display="${rv#"$target"/}"
-    if [ "$rv_display" = "$rv" ]; then
-        rv_display="${rv#"$index_root"/}"
-    fi
+    rv_display="$(variant_display "$rv")"
     render_exec=0
     repo_exec=0
     [ -x "$render/$f" ] && render_exec=1
@@ -351,15 +409,17 @@ while IFS= read -r f; do
     fi
 done <"$manifest"
 
-# --- Missing-file scan (manifest-INDEPENDENT) --------------------------------
-# Walk the ENTIRE render and flag any template file the repo lacks. The manifest
-# loop above only catches CONTENT drift in curated files; a file the repo is
-# missing outright — added after the last manifest edit, or dropped by a
-# hand-reconciled `copier update` — needs this manifest-free scan or it slips
-# through silently. A mature repo can intentionally replace two seed shapes:
-# flat Terraform starter files with nested/split Terraform roots, and the seed
-# ADR with a renumbered equivalent or an already-active ADR log. Report those as
-# benign EQUIV instead of false MISSING. .gitkeep dir-stubs are likewise benign.
+# --- Whole-render sweep (manifest-INDEPENDENT) -------------------------------
+# Walk the ENTIRE render and reconcile every rendered path against the repo. The
+# manifest loop above only compares the curated entries, so a file the repo was
+# MISSING was reported here but a file the repo HAD was skipped outright,
+# however far it had diverged — the manifest is hand-maintained, lists no prose,
+# and lags the template. Comparing what the repo has is the point of this sweep;
+# the missing-file scan is one of its outcomes, not its whole job.
+# A mature repo can intentionally replace two seed shapes: flat Terraform
+# starter files with nested/split Terraform roots, and the seed ADR with a
+# renumbered equivalent or an already-active ADR log. Report those as benign
+# EQUIV instead of false MISSING. .gitkeep dir-stubs are likewise benign.
 equivalent_note=""
 has_repo_equivalent() {
     g="$1"
@@ -401,13 +461,174 @@ has_repo_equivalent() {
     return 1
 }
 
+# CO-OWNED — files the template SEEDS but whose prose the repo owns. The
+# template's copy is a starting point that every repo rewrites, so byte drift is
+# the expected steady state and printing the diff would be pure noise. Surfacing
+# is therefore PRESENCE-ONLY: you learn THAT the repo's copy still diverges,
+# never how. That inverse reading is the useful one — a CO-OWNED line that
+# disappears after a `copier update` means the repo's copy went byte-identical
+# to the template's, i.e. the customizations were clobbered.
+#
+# Keep these globs TIGHT. Anything the template grows that is not listed here
+# falls through to a visible, gating uncurated DRIFT, which is the safe default:
+# a new template file nobody has classified should be seen, not silently
+# tolerated. Case globs are not path-aware — `*` matches `/` — so `docs/*`
+# covers `docs/architecture/README.md` as intended.
+is_co_owned() {
+    case "$1" in
+    # Agent instructions: the one real file plus the aliases copier keeps as
+    # symlinks to it (_preserve_symlinks). A type or link-target mismatch on
+    # these still gates — see the structural-divergence note in the header.
+    AGENTS.md | CLAUDE.md | GEMINI.md | .github/copilot-instructions.md) return 0 ;;
+    # Root prose and licensing.
+    README.md | DESIGN.md | CONTRIBUTING.md | CODE_OF_CONDUCT.md | LICENSE) return 0 ;;
+    # The template ships SECURITY.md under .github/; accept a root copy too, for
+    # repos that keep GitHub's other supported location.
+    SECURITY.md | .github/SECURITY.md) return 0 ;;
+    # Per-repo documentation and specification trees.
+    docs/* | specs/*) return 0 ;;
+    # Per-repo scratch, workspace, and note-taking metadata.
+    todo.md | *.code-workspace | .meta/*) return 0 ;;
+    # template-owned-files.txt spells this one out in prose: the devcontainer
+    # zshrc is heavily per-repo customized, so its drift is expected rather than
+    # signal, which is exactly why it is deliberately absent from the manifest.
+    .devcontainer/config/zshrc) return 0 ;;
+    esac
+    return 1
+}
+
+# Ask git about ignore status only when the target really is a work tree. The
+# audit accepts a plain directory (the hermetic tests point it at one), where
+# `git check-ignore` would either fail or answer about whatever repository
+# happens to contain the temp dir. Not a work tree => not classifiable as
+# IGNORED, and the path falls through to ordinary uncurated DRIFT.
+target_is_worktree=0
+if git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    target_is_worktree=1
+fi
+is_repo_ignored() {
+    [ "$target_is_worktree" -eq 1 ] || return 1
+    git -C "$target" check-ignore -q -- "$1" 2>/dev/null
+}
+
+# Compare one rendered path against its resolved repo counterpart. Sets
+# compare_note (a human-readable reason) and compare_structural (1 when the
+# difference is symlink-ness rather than content). Returns 0 when they match.
+compare_note=""
+compare_structural=0
+same_as_render() {
+    rp="$1" # path inside the render
+    lp="$2" # resolved repo path
+    compare_note=""
+    compare_structural=0
+    if [ -L "$rp" ] || [ -L "$lp" ]; then
+        compare_structural=1
+        if [ ! -L "$rp" ]; then
+            compare_note="template ships a regular file; repo has a symlink"
+            return 1
+        fi
+        if [ ! -L "$lp" ]; then
+            compare_note="template ships a symlink; repo has a regular file"
+            return 1
+        fi
+        # Plain `readlink`, never `readlink -f`: -f is a GNU extension absent on
+        # the macOS bash 3.2 hosts this script has to stay portable to, and the
+        # raw link text is what we want to compare anyway.
+        if [ "$(readlink "$rp")" = "$(readlink "$lp")" ]; then
+            compare_structural=0
+            return 0
+        fi
+        compare_note="symlink target differs (template: $(readlink "$rp"))"
+        return 1
+    fi
+    if diff -q "$rp" "$lp" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+uncurated_drift_count=0
+uncurated_mode_count=0
+co_owned_count=0
+ignored_count=0
+swept_compared=0
+rendered_total=0
+
+# `-type l` alongside `-type f`: the template ships CLAUDE.md, GEMINI.md, and
+# .github/copilot-instructions.md as symlinks, which a plain `-type f` walk never
+# even visits. `LC_ALL=C sort` pins the ordering so output is byte-stable
+# regardless of the caller's locale.
 while IFS= read -r abs; do
     g="${abs#"$render"/}"
     case "$g" in
     .git/* | .copier-answers.yml | CHANGELOG.md) continue ;;
     esac
+    rendered_total=$((rendered_total + 1))
     grep -qxF "$g" "$manifest" 2>/dev/null && continue # manifest loop owns it
-    [ -n "$(repo_variant "$g")" ] && continue          # repo has it (or .yml/.yaml twin)
+    rv="$(repo_variant "$g")"
+    if [ -n "$rv" ]; then
+        # The repo HAS this path and the curated manifest does not list it.
+        # Compare it rather than skipping — the silent skip here is what kept
+        # uncurated divergence invisible (issue 346).
+        swept_compared=$((swept_compared + 1))
+        rv_display="$(variant_display "$rv")"
+        # Exec bit and content are independent findings, exactly as in the
+        # curated loop: a byte-identical hook script that lost +x is still
+        # broken. Symlinks are exempt because the bit belongs to the target.
+        mode_divergent=0
+        if [ ! -L "$render/$g" ] && [ ! -L "$rv" ]; then
+            render_exec=0
+            repo_exec=0
+            [ -x "$render/$g" ] && render_exec=1
+            [ -x "$rv" ] && repo_exec=1
+            [ "$render_exec" -eq "$repo_exec" ] || mode_divergent=1
+        fi
+        content_divergent=0
+        same_as_render "$render/$g" "$rv" || content_divergent=1
+        if [ "$mode_divergent" -eq 0 ] && [ "$content_divergent" -eq 0 ]; then
+            continue
+        fi
+        # Classification order: a structural (symlink) mismatch always gates,
+        # then the two presence-only classes, then ordinary uncurated drift.
+        if [ "$compare_structural" -eq 0 ] && is_co_owned "$g"; then
+            echo "CO-OWNED $rv_display  (template seeds it; repo owns the prose — diff withheld)"
+            co_owned_count=$((co_owned_count + 1))
+            continue
+        fi
+        if [ "$compare_structural" -eq 0 ] && is_repo_ignored "$rv_display"; then
+            echo "IGNORED  $rv_display  (gitignored — diff withheld; a resolved config can hold secrets)"
+            ignored_count=$((ignored_count + 1))
+            continue
+        fi
+        if [ "$mode_divergent" -eq 1 ]; then
+            if [ "$render_exec" -eq 1 ]; then
+                mode_note="template is executable; repo is not"
+            else
+                mode_note="repo is executable; template is not"
+            fi
+            echo "MODE     $rv_display  ($mode_note)"
+            drift=1
+            uncurated_mode_count=$((uncurated_mode_count + 1))
+        fi
+        if [ "$content_divergent" -eq 1 ]; then
+            if [ "$compare_structural" -eq 1 ]; then
+                echo "DRIFT    $rv_display  (symlink mismatch — $compare_note)"
+            else
+                echo "DRIFT    $rv_display  (uncurated — not in template-owned-files.txt)"
+            fi
+            drift=1
+            uncurated_drift_count=$((uncurated_drift_count + 1))
+            # A structural mismatch has nothing readable to diff (and `diff -u`
+            # on a dangling link just errors); the note above already says it all.
+            if [ "$show" -eq 1 ] && [ "$compare_structural" -eq 0 ]; then
+                # `diff` exits 1 when files differ (they always do here);
+                # `|| true` keeps that from aborting the loop under
+                # `set -euo pipefail`.
+                diff -u "$rv" "$render/$g" | sed 's/^/    /' || true
+            fi
+        fi
+        continue
+    fi
     if has_repo_equivalent "$g"; then
         echo "EQUIV    $g  ($equivalent_note)"
         continue
@@ -420,16 +641,24 @@ while IFS= read -r abs; do
         missing_count=$((missing_count + 1))
         ;;
     esac
-done < <(find "$render" -type f | sort)
+done < <(find "$render" \( -type f -o -type l \) | LC_ALL=C sort)
 
+compared=$((checked + swept_compared))
 echo ""
 if [ "$drift" -ne 0 ]; then
-    # The counts make truncated output self-evident: if you can't see
-    # $drift_count DRIFT + $missing_count MISSING lines above, you cut them off.
-    echo "diff-template: ${drift_count} DRIFT + ${mode_count} MODE + ${missing_count} MISSING across $checked curated files"
-    echo "  checked and a whole-render missing-file scan. Findings above. For each,"
-    echo "  review the diff (\`diff-template.sh --show\`): pull missed template"
-    echo "  improvements in with \`copier update\`, keep legit local customizations."
+    # The counts make truncated output self-evident: if you can't see every
+    # DRIFT / MODE / MISSING line above, you cut them off.
+    echo "diff-template: ${drift_count} DRIFT + ${mode_count} MODE across $checked curated files;"
+    echo "  ${uncurated_drift_count} uncurated DRIFT + ${uncurated_mode_count} uncurated MODE, ${co_owned_count} CO-OWNED and ${ignored_count} IGNORED from the"
+    echo "  whole-render sweep; ${missing_count} MISSING overall. ${compared} of ${rendered_total} rendered files compared."
+    echo "  Findings above. For each, review the diff (\`diff-template.sh --show\`):"
+    echo "  pull missed template improvements in with \`copier update\`, keep legit"
+    echo "  local customizations. CO-OWNED and IGNORED are informational — they never"
+    echo "  fail this check and their diffs are withheld even under --show."
     exit 1
 fi
-echo "diff-template: OK — $checked curated files match and no template files missing."
+echo "diff-template: OK — $checked curated files match, no template files missing, and"
+echo "  ${compared} of ${rendered_total} rendered files compared clean."
+if [ "$co_owned_count" -ne 0 ] || [ "$ignored_count" -ne 0 ]; then
+    echo "  (${co_owned_count} CO-OWNED and ${ignored_count} IGNORED diverge as expected — informational, not drift.)"
+fi
