@@ -491,11 +491,16 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # classifier natively in its own tree, so it satisfies the intent directly and
 # is exempt (matching Copier's validator, which gates the option on
 # use_codex_review alone). The guards below re-test this asset and waive both
-# requirements only when it is a real executable helper — a regular, executable
-# file, not a bare directory or placeholder that `test -e` alone would accept —
-# keeping the requirements for every other repo.
+# requirements only when it is a real, repo-shipped executable helper: a
+# git-tracked, non-symlink, executable regular file. `test -e`/-x alone would
+# accept a bare directory, a placeholder, or an ignored/untracked file or a
+# symlink to a machine-local binary that a fresh clone does not ship — none of
+# which give later PRs a usable classifier for the required review gate. The
+# requirements stay in force for every other repo.
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
-if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] && [ -x "$SKILLS_SOURCE_CLASSIFIER" ]; then
+if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] && [ ! -L "$SKILLS_SOURCE_CLASSIFIER" ] &&
+  [ -x "$SKILLS_SOURCE_CLASSIFIER" ] &&
+  git ls-files --error-unmatch -- "$SKILLS_SOURCE_CLASSIFIER" >/dev/null 2>&1; then
   SHIPS_CLASSIFIER_NATIVELY=true
 else
   SHIPS_CLASSIFIER_NATIVELY=false

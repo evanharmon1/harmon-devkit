@@ -1039,7 +1039,9 @@ expect_ok "update guidance waives classifier prerequisites for a skills-source r
     sh -c 'grep -qF "SKILLS_SOURCE_CLASSIFIER=" "$1" &&
         grep -qF "ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh" "$1" &&
         grep -qF "SHIPS_CLASSIFIER_NATIVELY=true" "$1" &&
-        grep -qF "] && [ -x " "$1" &&
+        grep -qF "[ -x " "$1" &&
+        grep -qF "[ ! -L " "$1" &&
+        grep -qF "git ls-files --error-unmatch -- \"\$SKILLS_SOURCE_CLASSIFIER\"" "$1" &&
         grep -qF "SHIPS_CLASSIFIER_NATIVELY\" != \"true\"" "$1" &&
         test "$(grep -Fc "SHIPS_CLASSIFIER_NATIVELY" "$1")" -eq 6 &&
         test "$(grep -Fc "waived when this repo ships the classifier natively" "$1")" -eq 3 &&
