@@ -465,7 +465,18 @@ issue may be moved at all.
   in flight. `reap` exits 0 for any completed sweep and prints a JSON summary
   (`scanned`, `reaped`, `kept`, `skipped`, and a per-entry list with the reason
   for each), so it is run unconditionally rather than adjudicated; exit 2 means
-  the sweep could not run at all. Audit a checkout at any time with:
+  the sweep could not run at all.
+
+  Because it runs *ahead* of the work that matters, the whole sweep is bounded
+  by one deadline — `--budget-sec`, 60 by default — not merely by a per-call
+  timeout. Sequential entries each carrying their own timeout is how a slow or
+  unreachable GitHub turns a stale backlog into minutes of delay before the
+  current PR is even reserved. Past the deadline the remaining entries are
+  **kept** unexamined, which is the same answer reaping gives for any other
+  unreadable state; the next sweep tries again. Best-effort cleanup must never
+  be able to block shepherding.
+
+  Audit a checkout at any time with:
 
   ```bash
   "$helper" reap --root "$(git rev-parse --git-path shepherd-codex)" |

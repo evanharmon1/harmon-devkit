@@ -30,7 +30,7 @@ Usage:
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh check --state FILE --actor-id N [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
-  check-codex-cloud-review.sh reap --root DIR
+  check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
 EOF
     exit 2
 }
@@ -74,10 +74,12 @@ now=
 lock_dir=
 reap_entries=
 reap_lock=
+reap_budget_sec=60
+reap_deadline_epoch=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --now)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -90,6 +92,7 @@ while [ "$#" -gt 0 ]; do
         --actor-id) actor_id=$2 ;;
         --actor-login) actor_login=$2 ;;
         --timeout-min) timeout_min=$2 ;;
+        --budget-sec) reap_budget_sec=$2 ;;
         --now) now=$2 ;;
         esac
         shift 2
@@ -136,6 +139,16 @@ run_gh() {
             return 1
         current_epoch=$(date -u '+%s')
         remaining=$((reserved_epoch + timeout_min * 60 - current_epoch))
+        if [ "$remaining" -le 0 ]; then
+            call_timeout=1
+        elif [ "$remaining" -lt "$call_timeout" ]; then
+            call_timeout=$remaining
+        fi
+    elif [ -n "${reap_deadline_epoch:-}" ]; then
+        # A sweep has no reservation to budget against, so without this every
+        # call would get the flat 60s and a sequential sweep of N entries could
+        # spend N minutes before the work that matters begins.
+        remaining=$((reap_deadline_epoch - $(date -u '+%s')))
         if [ "$remaining" -le 0 ]; then
             call_timeout=1
         elif [ "$remaining" -lt "$call_timeout" ]; then
@@ -493,6 +506,15 @@ reap)
         exit 0
     fi
     [ -d "$root_dir" ] || die "state root is not a directory: $root_dir"
+    valid_uint "$reap_budget_sec" || die "budget must be a positive integer"
+    # Reaping is best-effort cleanup that runs ahead of the work that matters,
+    # so it gets a whole-sweep deadline rather than only a per-call one.
+    # Sequential entries each carrying their own timeout is how a slow or
+    # unreachable GitHub turns a stale backlog into minutes of delay before the
+    # current PR is even reserved. Past the deadline the remaining entries are
+    # KEPT unexamined — the same answer as any other unreadable state, and the
+    # next sweep will try again.
+    reap_deadline_epoch=$(($(date -u '+%s') + reap_budget_sec))
 
     reap_workdir=$(mktemp -d -t codex-cloud-review-reap-XXXXXX) ||
         die "cannot create a temporary sweep directory"
@@ -568,6 +590,14 @@ reap)
             reap_lock=
             reap_record "$candidate" "$state_repo" "$state_pr" "" skipped \
                 "state is locked by another shepherd"
+            continue
+        fi
+
+        if [ "$(date -u '+%s')" -ge "$reap_deadline_epoch" ]; then
+            rmdir "$reap_lock" 2>/dev/null || true
+            reap_lock=
+            reap_record "$candidate" "$state_repo" "$state_pr" "" kept \
+                "sweep budget exhausted before this entry was checked"
             continue
         fi
 

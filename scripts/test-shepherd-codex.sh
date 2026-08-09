@@ -37,6 +37,7 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     # pr-state-<n> file overrides one PR and fail-pr-<n> makes it unreadable.
     pr_number="${3:-}"
     [ ! -f "$GH_FIXTURES/fail-pr-$pr_number" ] || exit 94
+    [ ! -f "$GH_FIXTURES/slow-pr" ] || sleep 5
     pr_state=OPEN
     if [ -f "$GH_FIXTURES/pr-state-$pr_number" ]; then
         pr_state="$(cat "$GH_FIXTURES/pr-state-$pr_number")"
@@ -111,6 +112,7 @@ write_defaults() {
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
+    rm -f "${fixtures}/slow-pr"
     : >"$log"
 }
 
@@ -889,8 +891,10 @@ seed_state() {
 }
 
 run_reap() {
+    reap_target=$1
+    shift
     set +e
-    reap_out="$("$helper" reap --root "$1" 2>&1)"
+    reap_out="$("$helper" reap --root "$reap_target" "$@" 2>&1)"
     reap_rc=$?
     set -e
 }
@@ -1022,6 +1026,41 @@ assert_reap '.scanned' 1
 assert_reap '.reaped' 1
 [ -f "${reap_root}/example/alpha/11.json.tmp.abcdef" ] ||
     fail "reap deleted a file outside the layout reserve writes"
+
+echo "==> a stalled sweep is bounded and keeps what it never examined"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+seed_state example/beta 22
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+printf '%s\n' MERGED >"${fixtures}/pr-state-22"
+# Every pr view now stalls past the whole-sweep budget. Reaping runs ahead of
+# the work that matters, so it must give up rather than spend one timeout per
+# entry — and giving up means KEEPING, never deleting on an answer it lacks.
+: >"${fixtures}/slow-pr"
+reap_started="$(date -u '+%s')"
+run_reap "$reap_root" --budget-sec 1
+reap_elapsed=$(($(date -u '+%s') - reap_started))
+[ "$reap_rc" -eq 0 ] || fail "a stalled sweep exited $reap_rc: $reap_out"
+assert_reap '.scanned' 2
+assert_reap '.reaped' 0
+assert_reap '.kept' 2
+[ -f "${reap_root}/example/alpha/11.json" ] || fail "a stalled sweep deleted state"
+[ -f "${reap_root}/example/beta/22.json" ] || fail "a stalled sweep deleted state"
+# Two entries x the flat 60s per-call timeout is the unbounded behaviour; the
+# budget has to hold this well under even one of them.
+[ "$reap_elapsed" -lt 30 ] ||
+    fail "sweep ran ${reap_elapsed}s — the budget did not bound it"
+printf '%s' "$reap_out" | jq -e \
+    '[.entries[] | select(.detail | test("budget exhausted"))] | length >= 1' \
+    >/dev/null || fail "no entry reported the exhausted budget: $reap_out"
+
+echo "==> reap rejects a non-numeric budget"
+set +e
+"$helper" reap --root "$reap_root" --budget-sec zero >/dev/null 2>&1
+reap_rc=$?
+set -e
+[ "$reap_rc" -eq 2 ] || fail "a bad budget should exit 2, got $reap_rc"
 
 echo "==> a checkout that has never shepherded sweeps cleanly"
 write_defaults
