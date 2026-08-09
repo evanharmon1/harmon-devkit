@@ -101,6 +101,12 @@ expect_ok "portable dogfood tree exposes the implement skill" \
 expect_ok "skills-sync compatibility step recognizes its directory symlink" \
     grep -qF 'readlink .agents/skills)" = "../.claude/skills"' \
     "$repo/templates/skills-sync/README.md"
+expect_ok "skills-sync compatibility step rejects other directory symlinks" \
+    grep -qF 'elif [ -L .agents/skills ]; then' \
+    "$repo/templates/skills-sync/README.md"
+expect_ok "skills-sync compatibility step skips an unmatched skill glob" \
+    grep -qF '[ -d "$skill" ] || continue' \
+    "$repo/templates/skills-sync/README.md"
 expect_ok "track-work pre-approves portable asset paths" \
     grep -qF 'Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*)' \
     "$repo/ai/skills/universal/track-work/SKILL.md"

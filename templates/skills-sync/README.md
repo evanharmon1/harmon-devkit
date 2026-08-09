@@ -120,7 +120,10 @@ That works because the skills stamp records `# agents-dest:`. It has to: `agents
    ```sh
    if [ -L .agents/skills ] && [ "$(readlink .agents/skills)" = "../.claude/skills" ]; then
      : # directory-level compatibility link is already current
-   elif [ ! -e .agents/skills ] && [ ! -L .agents/skills ]; then
+   elif [ -L .agents/skills ]; then
+     echo "refusing divergent portable skills symlink: .agents/skills" >&2
+     exit 1
+   elif [ ! -e .agents/skills ]; then
      mkdir -p .agents
      ln -s ../.claude/skills .agents/skills
    elif [ -d .agents/skills ]; then
@@ -131,6 +134,7 @@ That works because the skills stamp records `# agents-dest:`. It has to: `agents
        esac
      done
      for skill in .claude/skills/*/; do
+       [ -d "$skill" ] || continue
        name="$(basename "${skill%/}")"
        link=".agents/skills/$name"
        target="../../.claude/skills/$name"
