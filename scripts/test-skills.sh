@@ -2246,6 +2246,66 @@ expect_ok "update guidance pins collation on every comm invocation" \
         pinned="$(grep -cE "LC_ALL=C comm -[0-9]" "$1")"
         test "$total" -gt 0 && test "$total" -eq "$pinned"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+# The §1 non-adoption classifier is lifted out of the doc and RUN against the
+# guarded-update fixture far below, so the marker pair has to stay unique: a
+# second copy of either marker would make the sed range swallow whatever sits
+# between them and hand `bash -eu` a truncated program.
+GU_NONADOPT_SNIPPET="$TMPROOT/nonadoption-classify.sh"
+sed -n '/# >>> nonadoption-classify >>>/,/# <<< nonadoption-classify <<</p' \
+    "$STANDARDIZE_REFS/mode-update.md" >"$GU_NONADOPT_SNIPPET"
+expect_ok "non-adoption snippet carries exactly one extraction marker pair" \
+    sh -c 'test "$(grep -cF "# >>> nonadoption-classify >>>" "$1")" -eq 1 &&
+        test "$(grep -cF "# <<< nonadoption-classify <<<" "$1")" -eq 1' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# The same count invariant as the file-wide one above, scoped to the extracted
+# snippet — it reads two `LC_ALL=C sort -u` inventories, so an unpinned `comm`
+# rejects its own input under an ambient UTF-8 locale. Counting rather than
+# asserting three literals keeps this true as sites are added.
+expect_ok "non-adoption snippet pins collation on every comm invocation" \
+    sh -c 'total="$(grep -cE "comm -[0-9]" "$1")"
+        pinned="$(grep -cE "LC_ALL=C comm -[0-9]" "$1")"
+        test "$total" -gt 0 && test "$total" -eq "$pinned"' sh \
+    "$GU_NONADOPT_SNIPPET"
+# §2 promotion deletes $GUARDED_STATE outright, and both §4 and §5 still need
+# the report, so it has to be copied somewhere that survives — the git dir,
+# same idiom as the deferred-findings notes.
+expect_ok "update guidance persists the non-adoption report past guarded teardown" \
+    sh -c 'grep -qF "cp \"\$GUARDED_STATE/nonadoption-report.tsv\"" "$1" &&
+        grep -qF -- "--git-path guarded-update-nonadoption" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update verification re-checks every non-adoption class after the merge" \
+    sh -c 'grep -qF "CONFIRMED silent non-adoption" "$1" &&
+        grep -qF "an anomaly, not a disclosure" "$1" &&
+        grep -qF "still present on disk" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# The table is the whole deliverable: classification nobody reads changes
+# nothing, so hand-off has to name the section, its columns, and the explicit
+# wording for the empty case an omitted section is otherwise indistinguishable
+# from.
+expect_ok "update hand-off requires a silent non-adoption disposition table" \
+    sh -c 'grep -qF "## Silent non-adoption" "$1" &&
+        grep -qF "| Path |" "$1" &&
+        grep -qF "| Disposition |" "$1" &&
+        grep -qF "No silent non-adoptions" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "copier gotchas own the permanent non-adoption reasoning" \
+    sh -c 'grep -qE "^## 9\. " "$1" &&
+        grep -qF "never adopts a file you deleted (or never had)" "$1" &&
+        grep -qF "permanent opt-out" "$1"' sh \
+    "$STANDARDIZE_REFS/copier-gotchas.md"
+expect_ok "audit drift class K routes MISSING to the non-adoption gotcha" \
+    sh -c 'grep -qF "PERMANENT non-adoption candidate" "$1" &&
+        grep -qF "(./copier-gotchas.md) §9" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-audit.md"
+# The snippet duplicates diff-template.sh's co-owned globs by hand, because a
+# markdown recipe cannot source a shell function. Spot-check that the copy has
+# not drifted from the original on the load-bearing entries.
+expect_ok "co-owned globs agree between diff-template.sh and the non-adoption snippet" \
+    sh -c 'for glob in AGENTS.md "docs/*" .devcontainer/config/zshrc; do
+        grep -qF "$glob" "$1" || exit 1
+        grep -qF "$glob" "$2" || exit 1
+    done' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh" "$GU_NONADOPT_SNIPPET"
 # The reviewed-keyset probe runs on the designed first pass, where
 # $REVIEWED_DATA does not exist yet. Folding its `test -e` guard into the
 # command substitution made the assignment inherit exit 1, so a `bash -eu` shell
@@ -5441,6 +5501,18 @@ printf '%s\n' '{"setting":"baseline"}' \
 printf '%s\n' '{"legacy":"baseline"}' \
     >"$GU_TEMPLATE/template/.vscode/legacy.json"
 printf '%s\n' 'baseline' >"$GU_TEMPLATE/template/version.txt"
+# Three non-adoption fixtures, all plain files that no ignore rule covers:
+#   shared-note.md — shipped by BOTH renders, byte-identical across the range,
+#                    and deleted from the repo below. The merge has no diff to
+#                    apply and reads the absence as the user's own deletion:
+#                    `nonadopt-both`, the permanent blind spot.
+#   retired-doc.md — baseline-only (the target template drops it) while the repo
+#                    still carries it: `delete-expected`.
+#   new-doc.md     — added by the target template only: `new-in-target`.
+printf '%s\n' 'shared across the update range' \
+    >"$GU_TEMPLATE/template/shared-note.md"
+printf '%s\n' 'retired by the target template' \
+    >"$GU_TEMPLATE/template/retired-doc.md"
 git_init "$GU_TEMPLATE"
 git_commit_all "$GU_TEMPLATE" "baseline template"
 GU_BASELINE="$(git -C "$GU_TEMPLATE" rev-parse HEAD)"
@@ -5458,6 +5530,11 @@ printf '%s\n' '{"legacy":"custom"}' >"$GU_TARGET/.vscode/legacy.json"
 git_init "$GU_TARGET"
 git_commit_all "$GU_TARGET" "generated baseline"
 GU_TARGET_REAL="$(cd "$GU_TARGET" && pwd -P)"
+# The repo declines shared-note.md, staged and committed — indistinguishable
+# from a removal made three versions ago and forgotten. From here on no
+# `copier update` will ever put it back, and none will say so.
+rm "$GU_TARGET/shared-note.md"
+git_commit_all "$GU_TARGET" "drop the shared note"
 
 printf '%s\n' 'target' >"$GU_TEMPLATE/template/version.txt"
 printf '%s\n' '.vscode/*' \
@@ -5469,6 +5546,9 @@ printf '%s\n' '{"setting":"target"}' \
 rm "$GU_TEMPLATE/template/.vscode/legacy.json"
 printf '%s\n' '{"new":"target"}' \
     >"$GU_TEMPLATE/template/.vscode/new.json"
+rm "$GU_TEMPLATE/template/retired-doc.md"
+printf '%s\n' 'added by the target template' \
+    >"$GU_TEMPLATE/template/new-doc.md"
 cat >>"$GU_TEMPLATE/copier.yml" <<'EOF'
 use_codex_review:
   type: bool
@@ -5725,6 +5805,41 @@ expect_ok "guarded ignored backup includes baseline-only existing paths" \
 expect_ok "guarded ignored backup records target-only absent paths" \
     grep -qxF .vscode/new.json \
     "$GU_TARGET/.copier-guarded-update/ignored-absent-paths"
+
+# Run the §1 non-adoption classifier extracted from mode-update.md against this
+# fixture's frozen inventories and its two real discovery renders. The doc IS
+# the implementation — an operator pastes it into a shell — so extracting and
+# executing it is the only way to prove the recipe works rather than merely
+# reads well. Everything it needs already exists here: both managed-path
+# inventories, ignored-absent-paths, and both renders.
+expect_ok "non-adoption classifier snippet runs clean under bash -eu" \
+    bash -c 'cd "$1" || exit 1
+        GUARDED_STATE=.copier-guarded-update \
+            BASELINE_DISCOVERY="$2" \
+            TARGET_DISCOVERY="$3" \
+            bash -eu "$4"' bash \
+    "$GU_TARGET" "$GU_BASELINE_DISCOVERY" "$GU_DISCOVERY_SECOND" \
+    "$GU_NONADOPT_SNIPPET"
+GU_NONADOPT_TSV="$GU_TARGET/.copier-guarded-update/nonadoption-report.tsv"
+expect_ok "non-adoption classifier flags a file both renders ship and the repo lacks" \
+    grep -qxF "$(printf 'shared-note.md\tnonadopt-both\tno\tbaseline+target')" \
+    "$GU_NONADOPT_TSV"
+expect_ok "non-adoption classifier expects the template-side deletion it can see" \
+    grep -qxF "$(printf 'retired-doc.md\tdelete-expected\tn/a-removed\tbaseline-only')" \
+    "$GU_NONADOPT_TSV"
+expect_ok "non-adoption classifier assigns a target-only file to the update" \
+    grep -qxF "$(printf 'new-doc.md\tnew-in-target\tn/a-new\ttarget-only')" \
+    "$GU_NONADOPT_TSV"
+# Filtered classes are RECORDED, never dropped: .vscode/new.json is absent by
+# repo ignore policy, and a report that silently omitted it would be the same
+# invisible-decision failure the whole mechanism exists to end.
+expect_ok "non-adoption classifier records rather than drops a gitignored path" \
+    grep -qxF "$(printf '.vscode/new.json\tignored-policy\tn/a-new\ttarget-only')" \
+    "$GU_NONADOPT_TSV"
+# Adopted paths carry no row — otherwise every render file would be a finding
+# and the report would be as useless as no report.
+expect_fail "non-adoption classifier stays silent about paths the repo already has" \
+    grep -qF version.txt "$GU_NONADOPT_TSV"
 chmod -R a-w "$GU_SNAPSHOT"
 
 # Move the original mutable tag after the guarded snapshot exists. Copier 9.16
@@ -5777,6 +5892,18 @@ expect_fail "guarded recovery never promotes an ambiguous applying state" \
 printf '%s\n' applied >"$GU_TARGET/.copier-guarded-update/apply-phase"
 expect_ok "guarded Copier update applies the intended target content" \
     grep -qxF target "$GU_TARGET/version.txt"
+# The gotcha, proven end to end by a real `copier update`. shared-note.md is in
+# both renders and unchanged between them, so the baseline→target diff says
+# nothing about it and the repo's deletion stands — no conflict, no mention.
+# The two assertions after it are the control: the deletion the TEMPLATE made is
+# applied and the file the template ADDED is created, so the absence above is
+# not an inert merge, it is the merge working exactly as designed.
+expect_ok "copier update never restores a file absent from the repo" \
+    test ! -e "$GU_TARGET/shared-note.md"
+expect_ok "copier update applies a template-side deletion" \
+    test ! -e "$GU_TARGET/retired-doc.md"
+expect_ok "copier update creates a file the target template added" \
+    test -f "$GU_TARGET/new-doc.md"
 if git -C "$GU_TARGET" diff --name-only --diff-filter=U |
     grep -qxF .gitignore; then
     printf '%s\n' '.vscode/*' \

@@ -814,7 +814,7 @@ while IFS= read -r f; do
     checked=$((checked + 1))
     rv="$(repo_variant "$f")"
     if [ -z "$rv" ]; then
-        echo "MISSING  $f  (template ships it; repo doesn't)"
+        echo "MISSING  $f  (template ships it; repo doesn't; a copier update will NOT restore it — copier-gotchas.md §9)"
         drift=1
         missing_count=$((missing_count + 1))
         continue
@@ -932,6 +932,11 @@ has_repo_equivalent() {
 # never how. That inverse reading is the useful one — a CO-OWNED line that
 # disappears after a `copier update` means the repo's copy went byte-identical
 # to the template's, i.e. the customizations were clobbered.
+#
+# This glob set is duplicated verbatim by the guarded update's non-adoption
+# classifier (mode-update.md §1, the `nonadoption-classify` markers), which uses
+# it to explain why a MISSING path is not an unexplained non-adoption. The two
+# lists must agree — change one, change the other.
 #
 # Keep these globs TIGHT. Anything the template grows that is not listed here
 # falls through to a visible, gating uncurated DRIFT, which is the safe default:
@@ -1099,7 +1104,7 @@ while IFS= read -r abs; do
     case "$g" in
     *.gitkeep) echo "ABSENT   $g  (template dir-stub — benign if the dir has real content)" ;;
     *)
-        echo "MISSING  $g  (template ships it; repo lacks it — review)"
+        echo "MISSING  $g  (template ships it; repo lacks it — review; a copier update will NOT restore it — copier-gotchas.md §9)"
         drift=1
         missing_count=$((missing_count + 1))
         ;;

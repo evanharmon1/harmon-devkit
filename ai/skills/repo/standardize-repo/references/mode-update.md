@@ -1037,6 +1037,192 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       fi
     fi
   done <"$GUARDED_STATE/managed-paths"
+  # >>> nonadoption-classify >>>
+  # Classify what the three-way merge will NOT do. `copier update` diffs
+  # baseline-render → target-render against the repo, so a path BOTH renders
+  # ship but the repo lacks reads as YOUR deletion and is preserved as such —
+  # no conflict, no note — and the update then rebaselines it out of reach for
+  # good (copier-gotchas.md §9). Record every such path; §5 turns this TSV into
+  # the PR body's disposition table.
+  LC_ALL=C comm -12 \
+    "$GUARDED_STATE/baseline-managed-paths" \
+    "$GUARDED_STATE/target-managed-paths" \
+    >"$GUARDED_STATE/nonadoption-both-renders" ||
+    { echo "failed to derive paths shipped by both renders" >&2; exit 1; }
+  LC_ALL=C comm -13 \
+    "$GUARDED_STATE/baseline-managed-paths" \
+    "$GUARDED_STATE/target-managed-paths" \
+    >"$GUARDED_STATE/nonadoption-target-only" ||
+    { echo "failed to derive target-only render paths" >&2; exit 1; }
+  LC_ALL=C comm -23 \
+    "$GUARDED_STATE/baseline-managed-paths" \
+    "$GUARDED_STATE/target-managed-paths" \
+    >"$GUARDED_STATE/nonadoption-baseline-only" ||
+    { echo "failed to derive baseline-only render paths" >&2; exit 1; }
+  # §1 already proved the worktree clean, so disk state IS index state here: a
+  # plain `test -e`/`test -L` answers "does the repo have this path" with no
+  # `git` call. `-L` is not redundant — `-e` reports a dangling symlink absent.
+  # diff-template.sh's `repo_variant` is the canonical .yml<->.yaml mapping;
+  # this is the two-branch subset of it that a path inventory needs.
+  nonadoption_repo_has() {
+    if test -e "$1" || test -L "$1"; then
+      return 0
+    fi
+    case "$1" in
+    *.yml) NONADOPT_TWIN="${1%.yml}.yaml" ;;
+    *.yaml) NONADOPT_TWIN="${1%.yaml}.yml" ;;
+    *) return 1 ;;
+    esac
+    test -e "$NONADOPT_TWIN" || test -L "$NONADOPT_TWIN"
+  }
+  # Duplicated VERBATIM from diff-template.sh's `is_co_owned`, which carries the
+  # canonical list and the reasoning for it. Change one, change the other.
+  nonadoption_is_co_owned() {
+    case "$1" in
+    AGENTS.md | CLAUDE.md | GEMINI.md | .github/copilot-instructions.md) return 0 ;;
+    README.md | DESIGN.md | CONTRIBUTING.md | CODE_OF_CONDUCT.md | LICENSE) return 0 ;;
+    SECURITY.md | .github/SECURITY.md) return 0 ;;
+    docs/* | specs/*) return 0 ;;
+    todo.md | *.code-workspace | .meta/*) return 0 ;;
+    .devcontainer/config/zshrc) return 0 ;;
+    esac
+    return 1
+  }
+  # The known-false-`MISSING` list from mode-audit.md §3 (drift class K):
+  # absences that are deliberate divergences, not gaps. Only the Brewfile is
+  # conditional — it is a false MISSING exactly when a chezmoi source repo
+  # carries the renamed twin that becomes `~/Brewfile`.
+  nonadoption_is_filtered_known() {
+    case "$1" in
+    Brewfile) test -e private_Brewfile || test -e home/private_Brewfile ;;
+    docs/decisions/0001-record-architecture-decisions.md) return 0 ;;
+    terraform/main.tf | terraform/variables.tf) return 0 ;;
+    terraform/outputs.tf | terraform/tfvars.env.example) return 0 ;;
+    .envrc) return 0 ;;
+    prettier.config.cjs) return 0 ;;
+    *) return 1 ;;
+    esac
+  }
+  # Filtered classes win over the three main ones: a path gitignored by repo
+  # policy, a known-false MISSING, or a co-owned file already has its
+  # explanation and must not be reported as unexplained non-adoption. The row is
+  # still written, so a reviewer can see that nothing was dropped on the floor.
+  nonadoption_filtered_class() {
+    case "$1" in
+    *.gitkeep)
+      printf '%s\n' gitkeep-benign
+      return 0
+      ;;
+    esac
+    if grep -qxF "$1" "$GUARDED_STATE/ignored-absent-paths"; then
+      printf '%s\n' ignored-policy
+      return 0
+    fi
+    if nonadoption_is_filtered_known "$1"; then
+      printf '%s\n' filtered-known
+      return 0
+    fi
+    if nonadoption_is_co_owned "$1"; then
+      printf '%s\n' co-owned
+      return 0
+    fi
+    return 1
+  }
+  # Did the template itself change the file across the update range? A `no` says
+  # the repo is declining a file that has sat unchanged since its own baseline;
+  # a `yes` says it is also missing upstream work.
+  nonadoption_changed_in_range() {
+    NONADOPT_BASE="$BASELINE_DISCOVERY/$1"
+    NONADOPT_TGT="$TARGET_DISCOVERY/$1"
+    if test -L "$NONADOPT_BASE" || test -L "$NONADOPT_TGT"; then
+      # A symlink has no readable content of its own: `cmp` would follow it, or
+      # fail outright on a dangling one. Compare link targets instead.
+      if ! test -L "$NONADOPT_BASE" || ! test -L "$NONADOPT_TGT"; then
+        printf '%s\n' unknown
+        return 0
+      fi
+      NONADOPT_BASE_LINK="$(readlink "$NONADOPT_BASE")" &&
+        NONADOPT_TGT_LINK="$(readlink "$NONADOPT_TGT")" ||
+        {
+          printf '%s\n' unknown
+          return 0
+        }
+      if test "$NONADOPT_BASE_LINK" = "$NONADOPT_TGT_LINK"; then
+        printf '%s\n' no
+      else
+        printf '%s\n' yes
+      fi
+      return 0
+    fi
+    if ! test -f "$NONADOPT_BASE" || ! test -r "$NONADOPT_BASE" ||
+      ! test -f "$NONADOPT_TGT" || ! test -r "$NONADOPT_TGT"; then
+      printf '%s\n' unknown
+      return 0
+    fi
+    if cmp -s "$NONADOPT_BASE" "$NONADOPT_TGT"; then
+      printf '%s\n' no
+    else
+      printf '%s\n' yes
+    fi
+  }
+  # path<TAB>class<TAB>changed_in_range<TAB>baseline_membership
+  : >"$GUARDED_STATE/nonadoption-report.tsv"
+  while IFS= read -r NONADOPT_PATH; do
+    test -n "$NONADOPT_PATH" || continue
+    # Present in the repo: the merge has nothing to adopt, so nothing to report.
+    if nonadoption_repo_has "$NONADOPT_PATH"; then
+      continue
+    fi
+    NONADOPT_CLASS="$(nonadoption_filtered_class "$NONADOPT_PATH")" ||
+      NONADOPT_CLASS=nonadopt-both
+    NONADOPT_CHANGED="$(nonadoption_changed_in_range "$NONADOPT_PATH")" ||
+      { echo "failed to compare rendered copies: $NONADOPT_PATH" >&2; exit 1; }
+    printf '%s\t%s\t%s\t%s\n' \
+      "$NONADOPT_PATH" "$NONADOPT_CLASS" "$NONADOPT_CHANGED" baseline+target \
+      >>"$GUARDED_STATE/nonadoption-report.tsv" ||
+      { echo "failed to record non-adoption row: $NONADOPT_PATH" >&2; exit 1; }
+  done <"$GUARDED_STATE/nonadoption-both-renders"
+  while IFS= read -r NONADOPT_PATH; do
+    test -n "$NONADOPT_PATH" || continue
+    if nonadoption_repo_has "$NONADOPT_PATH"; then
+      continue
+    fi
+    # The target render adds it and the repo lacks it, so `copier update`
+    # SHOULD create it. §4 rechecks: still missing means the update failed.
+    NONADOPT_CLASS="$(nonadoption_filtered_class "$NONADOPT_PATH")" ||
+      NONADOPT_CLASS=new-in-target
+    printf '%s\t%s\t%s\t%s\n' \
+      "$NONADOPT_PATH" "$NONADOPT_CLASS" n/a-new target-only \
+      >>"$GUARDED_STATE/nonadoption-report.tsv" ||
+      { echo "failed to record non-adoption row: $NONADOPT_PATH" >&2; exit 1; }
+  done <"$GUARDED_STATE/nonadoption-target-only"
+  while IFS= read -r NONADOPT_PATH; do
+    test -n "$NONADOPT_PATH" || continue
+    # Absent already: the repo and the target render agree it is gone.
+    if ! nonadoption_repo_has "$NONADOPT_PATH"; then
+      continue
+    fi
+    # The template dropped it and the repo still has it, so expect the update
+    # to delete it. §4 routes any survivor to §3's deletion reconciliation.
+    NONADOPT_CLASS="$(nonadoption_filtered_class "$NONADOPT_PATH")" ||
+      NONADOPT_CLASS=delete-expected
+    printf '%s\t%s\t%s\t%s\n' \
+      "$NONADOPT_PATH" "$NONADOPT_CLASS" n/a-removed baseline-only \
+      >>"$GUARDED_STATE/nonadoption-report.tsv" ||
+      { echo "failed to record non-adoption row: $NONADOPT_PATH" >&2; exit 1; }
+  done <"$GUARDED_STATE/nonadoption-baseline-only"
+  for NONADOPT_CLASS in \
+    nonadopt-both new-in-target delete-expected \
+    ignored-policy co-owned filtered-known gitkeep-benign; do
+    NONADOPT_COUNT="$(
+      awk -F '\t' -v cls="$NONADOPT_CLASS" \
+        '$2 == cls { n++ } END { print n + 0 }' \
+        "$GUARDED_STATE/nonadoption-report.tsv"
+    )" ||
+      { echo "failed to count non-adoption class: $NONADOPT_CLASS" >&2; exit 1; }
+    printf 'non-adoption %-16s %s\n' "$NONADOPT_CLASS" "$NONADOPT_COUNT"
+  done
+  # <<< nonadoption-classify <<<
   tar -cf "$GUARDED_STATE/ignored-backup.tar" \
     -T "$GUARDED_STATE/ignored-existing-paths" ||
     { echo "failed to back up ignored managed paths" >&2; exit 1; }
@@ -1115,6 +1301,19 @@ temporary directory, repeat the guarded-source preparation there, run the same
 update without `--pretend`, and inspect its full `git diff` before touching the
 working branch. A preview complements the guarded-baseline drift report; neither
 replaces the post-update reconciliation in §3.
+
+**Silent non-adoption is the one gap a preview cannot show you.** Having both
+renders in hand is what makes it visible at all, which is why the block above
+ends by classifying it into `$GUARDED_STATE/nonadoption-report.tsv` — one row
+per path, `path<TAB>class<TAB>changed_in_range<TAB>baseline_membership`, with
+`nonadopt-both` naming the blind spot itself and `ignored-policy` / `co-owned` /
+`filtered-known` / `gitkeep-benign` recording the paths that have an explanation
+already rather than dropping them. The mechanism, and why `copier update` can
+never close it on its own, is [`copier-gotchas.md`](./copier-gotchas.md) §9; §4
+re-checks the rows against the applied result and §5 turns the survivors into a
+disposition table in the PR body. Only `nonadopt-both` reaches that table — the
+other classes are carried so that the report can be read as complete rather than
+as whatever survived an undocumented filter.
 
 ## 2. Run the update
 
@@ -1205,6 +1404,25 @@ atomically recorded before Copier can mutate the worktree. `applied` records a
 normal return, but promotion does not trust either phase by itself: it validates
 the complete resulting state below. After a crash or nonzero return, never
 blindly rerun Copier.
+
+**Persist the non-adoption report before anything tears `$GUARDED_STATE` down.**
+Promotion below deletes that directory, and §4 and §5 both still need the TSV:
+
+```bash
+cp "$GUARDED_STATE/nonadoption-report.tsv" \
+  "$(
+    git rev-parse --path-format=absolute \
+      --git-path guarded-update-nonadoption
+  )" ||
+  { echo "failed to persist the non-adoption report" >&2; exit 1; }
+```
+
+This mirrors the deferred-findings git-path idiom: the git directory is
+deterministic for any later session in this checkout, resolves correctly inside
+a linked worktree, and is invisible to `git status`, so the note can never be
+handed to a reviewer as part of the change under review. It needs no cleanup on
+the rollback path — rollback re-runs §1, which regenerates the report from
+scratch.
 
 Copier can return success while leaving merge conflicts. Reconcile those as
 described in §3 before promotion. Then prove that the canonical answers record
@@ -1857,6 +2075,22 @@ ever looked at are exactly where a silently dropped template improvement hides.
 differ — but do check them for *absences*: a `CO-OWNED` path that stopped being
 listed was clobbered (see the AGENTS.md note in §2 above).
 
+**Cross-check that same re-run against the persisted non-adoption report** —
+`git rev-parse --path-format=absolute --git-path guarded-update-nonadoption`.
+No new render is needed; the re-run above already produced the `MISSING` set.
+Each class answers a different question:
+
+- **`nonadopt-both` still `MISSING`** — CONFIRMED silent non-adoption. The
+  update was never going to create these, and the freshly reset baseline means
+  nothing will offer them again. These are the rows of §5's disposition table.
+- **`new-in-target` reported `MISSING`** — an anomaly, not a disclosure. The
+  target render ships the file and the repo lacked it, so `copier update` should
+  have created it; that it did not means something went wrong in the apply.
+  Investigate before hand-off rather than writing it up as a decline.
+- **`delete-expected` still present on disk** — the template dropped the file
+  and the expected deletion did not happen. Route it to §3's deletion
+  reconciliation; do not simply leave it as an unexplained leftover.
+
 **Check the git hooks aren't shadowed or stale, too.** Even in an already-templated
 repo two non-lefthook hook managers can lurk: a **pre-commit.com** stub in
 `.git/hooks/pre-commit` (globally seeded by `~/.git-template`, silently no-oping next
@@ -1898,6 +2132,68 @@ merges**: §6. It applies to any `project_management: github` repo, *and* to any
 is rendered for every org repo, so a `linear`/`none` org repo still has live
 issue types to reconcile. Say so in the PR description — it is the operator's cue
 that the merge is not the end of the update.
+
+**The PR body must carry a `## Silent non-adoption` section.** This is the whole
+point of the classification in §1: the reviewer is the only party who can decide
+whether a file the merge will never offer again should be adopted, and they can
+only decide it if the PR tells them it exists. Read the persisted TSV
+(`git rev-parse --path-format=absolute --git-path guarded-update-nonadoption`)
+and write the section from the rows §4 confirmed:
+
+```markdown
+## Silent non-adoption
+
+Files the template ships that this repo does not have. `copier update` reads
+each absence as a deliberate deletion and will never restore it — see
+copier-gotchas.md §9.
+
+| Path | In template since | Renders under | Changed upstream in range | Why not adopted | Disposition |
+| --- | --- | --- | --- | --- | --- |
+| `scripts/lint-hygiene.sh` | baseline+target (≤ v3.12.0) | always | no | Deliberate: `Taskfile.yml` has no `lint:hygiene` target and nothing calls it. Nothing breaks without it. | decline — the repo lints hygiene through its own `lint:shell` |
+| `.github/workflows/codeql.yml` | target-only since v3.21.0 | `use_codeql: true` | yes | unclear — needs your judgment; the answer is `true`, so the absence looks accidental | adopt — restore from the render and re-run `task ci` |
+
+Filtered, not silent: 4 co-owned, 2 gitignored by repo policy, 1 known-false
+MISSING.
+```
+
+Column by column:
+
+- **Path** — one row per **confirmed** `nonadopt-both`. Nothing else belongs in
+  the table. A `new-in-target` row that §4 flagged as an anomaly is a defect in
+  the update, not a disclosure about the repo: call it out separately, above the
+  table, and resolve it before hand-off.
+- **In template since** — seed it from `baseline_membership`
+  (`baseline+target` means at least as old as the repo's own baseline). Sharpen
+  it with `git -C "$GUARDED_TEMPLATE" log --oneline --diff-filter=A -- <path>`
+  when that is cheap; leave it "unclear" when it is not. A wrong date is worse
+  than no date.
+- **Renders under** — the answers and conditions that gate the file in
+  `copier.yml` (`always`, or the condition), so the reviewer can see whether the
+  repo's own answers even ask for it. "unclear" is allowed.
+- **Changed upstream in range** — the TSV's `changed_in_range` flag verbatim.
+  A `no` means the repo is declining something that has not moved since its
+  baseline; a `yes` means it is also missing real upstream work.
+- **Why not adopted** — the one column only you can write, and the reason the
+  table is worth the effort. Read the repo and say whether the absence looks
+  **deliberate** or **accidental**, citing the evidence: a file that references
+  the path, a task that depends on it, a replacement that does the same job, or
+  the absence of any of those. State the consequence plainly, including when the
+  consequence is "nothing breaks". **Uncertainty is permitted and expected** —
+  write "unclear — needs your judgment" where you do not know. A confident wrong
+  rationale is worse than none, because it is the sentence the reviewer will
+  trust instead of looking.
+- **Disposition** — `adopt` or `decline`, plus a one-line rationale. Both are
+  legitimate outcomes; the point is that one of them was chosen on the record.
+
+Collapse the filtered classes to one labeled count line each below the table —
+`co-owned`, `ignored-policy`, `filtered-known` — rather than listing them. They
+are recorded so the reviewer can see the classification dropped nothing, not so
+they have to read them.
+
+If no row survives, say so outright: **"No silent non-adoptions — every path
+present in both renders exists in the repo."** An omitted section is
+indistinguishable from a forgotten one. Once the section is in the PR body,
+delete the git-path file — the PR is the record from then on.
 
 ## 6. Reconcile live GitHub metadata (`project_management: github`) — post-merge
 

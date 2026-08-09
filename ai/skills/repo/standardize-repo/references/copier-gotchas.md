@@ -218,6 +218,48 @@ updatable everywhere.
 
 ---
 
+## 9. `copier update` never adopts a file you deleted (or never had)
+
+**Symptom:** a template file the repo does not have stays absent through every
+update, forever. No conflict, no prompt, no line in the output. `diff-template.sh`
+keeps reporting it `MISSING` and each `copier update` keeps not fixing it, so the
+gap looks like a tooling bug and gets shrugged off as one.
+
+**Why:** the update is a **three-way merge**, and the repo is one of the three
+sides. Copier renders the template at the recorded `_commit` (the baseline) and
+at the target ref, then applies the baseline→target diff to the repo's actual
+files. A path present in **both** renders is unchanged by that diff, so the merge
+has nothing to apply; the repo's copy — which does not exist — is left exactly as
+it found it. That is not a failure. Reading an absence as the user's own deletion
+and preserving it is precisely what a merge is supposed to do, and it is the same
+behavior that stops an update from re-adding every file a repo has deliberately
+removed.
+
+The trap is what happens next. A successful update rewrites `_commit` to the
+target, so the *next* update's baseline already contains the file too — and
+diffs it against a repo that still lacks it, to the same conclusion. Every
+subsequent update reaches the same answer for the same reason. **Deletion, or
+never having had the file at all, is a permanent opt-out**, and nothing in the
+repo records that anyone chose it. A file removed in a hurry three versions ago
+is indistinguishable from one nobody ever noticed was missing.
+
+Note the second half of that: this is not only about files you deleted. A repo
+adopted onto the template mid-life, or generated before a file existed and
+updated past the version that added it, is opted out of paths it never saw. The
+mechanism does not care how the absence arose.
+
+**Rule:** adopt deliberately or record the decline — never let an absence stand
+unexamined just because the tooling is quiet about it. `MISSING` is a decision
+you owe an answer to, not a warning you can wait out. The guarded update makes
+that mechanical: [`mode-update.md`](./mode-update.md) §1 classifies every path
+the two renders disagree on (or agree on and the repo lacks) into
+`nonadoption-report.tsv`, and §5 requires the survivors in the PR body with a
+disposition per row. In audit mode, where there is only one render, treat every
+whole-render `MISSING` as a permanent non-adoption candidate —
+[`mode-audit.md`](./mode-audit.md) §3 drift class K.
+
+---
+
 ## Quick checklist when touching the template
 
 - Rendering local WIP to test? → `--vcs-ref=HEAD`.
@@ -228,4 +270,6 @@ updatable everywhere.
 - New side-effect question? → default `no`.
 - New conditionally-named file? → cover it with a `test-template.sh` profile.
 - New ignore pattern? → anchor to `/` and negate `template/` copies.
+- A repo is `MISSING` a template file? → no update will ever restore it; adopt it
+  or record the decline (gotcha 9).
 - After any `copier.yml` / `template/**` change → `task test:template:all` must pass.

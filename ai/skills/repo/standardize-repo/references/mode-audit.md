@@ -518,6 +518,20 @@ standards; re-adding the template's seed is wrong. The recurring ones:
   versions, so nothing is added and no dead second config results. Confirm the repo
   actually has a `.prettierrc*`/`prettier` package.json key, then leave it.
 
+**Everything that survives that list is a PERMANENT non-adoption candidate.**
+Audit mode has a single render, at the repo's own `_commit`, so it cannot split
+`MISSING` into "the template just added this" and "the template has shipped this
+all along" — that baseline-versus-target classification exists only in update
+mode ([`mode-update.md`](./mode-update.md) §1). What audit mode *can* say is the
+part that matters: `copier update` will never restore any of them. The
+three-way merge reads the absence as the repo's own deletion and preserves it,
+and each update resets the baseline so the file is never offered again
+([`copier-gotchas.md`](./copier-gotchas.md) §9). The absence **is** the opt-out,
+whether or not anyone chose it. That is why a `MISSING` finding must be
+dispositioned — restored, or declined with a reason on the record — and not
+shrugged at as something the next update will pick up. There is no next update
+that will.
+
 **L. Workflow ↔ Taskfile/runtime contract.** Every `task <target>` referenced in
 `.github/workflows/*.yml` must exist in `Taskfile.yml`. CI's `lint`/`build` jobs
 call targets `task verify` never runs (e.g. `test:tasks`, `test:hooks`,
