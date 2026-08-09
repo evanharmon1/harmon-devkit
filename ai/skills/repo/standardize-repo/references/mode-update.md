@@ -490,17 +490,19 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # skills sync of the universal category. A skills-source repo hosts that
 # classifier natively in its own tree, so it satisfies the intent directly and
 # is exempt (matching Copier's validator, which gates the option on
-# use_codex_review alone). The guards below re-test this asset and waive both
-# requirements only when it is a real, repo-shipped executable helper: a
-# git-tracked, non-symlink, executable regular file. `test -e`/-x alone would
-# accept a bare directory, a placeholder, or an ignored/untracked file or a
-# symlink to a machine-local binary that a fresh clone does not ship — none of
-# which give later PRs a usable classifier for the required review gate. The
-# requirements stay in force for every other repo.
+# use_codex_review alone). The guards below waive both requirements only when
+# this asset is a real, repo-shipped executable helper — proven from Git's
+# index, not the filesystem. The authoritative test is the tracked mode being
+# `100755`: `git ls-files --stage` reports it, and a `100755` blob is by
+# definition tracked, a regular file, non-symlink, and executable for every
+# fresh clone. A filesystem `[ -x ]` is the wrong test — under
+# `core.fileMode=false` or a mount that reports everything executable it passes
+# for a `100644` blob a Linux clone checks out non-runnable. Require the working
+# tree to also hold that regular file (`-f`), so a staged-but-deleted path does
+# not qualify. The requirements stay in force for every other repo.
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
-if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] && [ ! -L "$SKILLS_SOURCE_CLASSIFIER" ] &&
-  [ -x "$SKILLS_SOURCE_CLASSIFIER" ] &&
-  git ls-files --error-unmatch -- "$SKILLS_SOURCE_CLASSIFIER" >/dev/null 2>&1; then
+if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
+  [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ]; then
   SHIPS_CLASSIFIER_NATIVELY=true
 else
   SHIPS_CLASSIFIER_NATIVELY=false
