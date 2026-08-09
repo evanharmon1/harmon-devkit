@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.24.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.24.0...v0.24.1) (2026-08-09)
+
+
+### Bug Fixes
+
+* drop deprecated harmon-ops from the platform roster and skill docs ([#349](https://github.com/evanharmon1/harmon-devkit/issues/349)) ([2f6b743](https://github.com/evanharmon1/harmon-devkit/commit/2f6b743573e230714174fb222922a6b8b0bc737e))
+
 ## [0.24.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.23.1...v0.24.0) (2026-08-09)
 
 
