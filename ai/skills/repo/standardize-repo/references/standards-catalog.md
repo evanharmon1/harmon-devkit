@@ -302,7 +302,11 @@ Project-type stages (added conditionally): pre-commit `prettier`/`eslint`/
   Code, Codex, Gemini). **No Tailscale and no 1Password CLI feature** — the bot
   container must hold no path to the tailnet or a credential store
   (`devcontainer-assert.sh` enforces both structurally, per profile).
-  `containerName: devcontainer-<slug>-bot`. `CLAUDE_CODE_EFFORT_LEVEL: max`.
+  `containerName: devcontainer-<slug>-bot`. No `CLAUDE_CODE_EFFORT_LEVEL` in
+  `containerEnv` — the env var outranks Claude Code's own settings, so pinning
+  it silently overrides the user's saved effort and mid-session `/model`
+  changes; effort selection belongs to Claude Code's precedence (`/model`,
+  `settings.json` `effortLevel`, model default).
 - **DEV profile** (`.devcontainer/dev/devcontainer.json`) — human dev. Adds the
   Tailscale feature + `--device=/dev/net/tun` + `TS_AUTHKEY` + the 1Password
   CLI feature.
