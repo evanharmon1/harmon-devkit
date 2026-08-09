@@ -296,7 +296,15 @@ finding.
 `use_codex_cloud_review` from `.copier-answers.yml`; for legacy answers that
 omit it, use `false`. When true, `use_codex_review` must also be true and the
 repository must set `use_skills_sync=true` with `universal` in
-`skill_categories`. The rendered `AGENTS.md` plus shepherd skill must require a terminal result
+`skill_categories` — **unless the repo is the skills source itself**, i.e. it
+ships the classifier natively as a git-tracked, non-symlink executable regular
+file at `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`
+(harmon-devkit, which may keep `use_skills_sync=false`). For such a repo the
+sync/`universal` requirement is waived, matching the update-mode guard in
+`mode-update.md` — which applies exactly that tracked/non-symlink/executable
+test, so an ignored, untracked, or symlinked helper does **not** qualify here
+either. Do not report its `use_skills_sync=false` as G4 drift when that native
+classifier is present. The rendered `AGENTS.md` plus shepherd skill must require a terminal result
 attributable to every current PR head, preserve exact trigger-attempt state,
 and escalate after two unavailable attempts without a CI-only fallback. The
 repository cannot prove external connector access or plan/quota availability,

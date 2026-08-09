@@ -665,7 +665,13 @@ install the Renovate GitHub App on the repo. Conventions:
   and `infra` when Terraform/Ansible or the iac type applies. The generated
   `use_codex_cloud_review=true` option overrides that ordinary freedom: it
   requires skills sync and the `universal` category because that category ships
-  the mandatory current-head shepherd classifier. Its human setup also disables
+  the mandatory current-head shepherd classifier — except on a skills-source
+  repo (harmon-devkit) that already ships that classifier natively as a
+  git-tracked, non-symlink executable regular file at
+  `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, which
+  satisfies the requirement directly and so may keep `use_skills_sync=false`
+  (the update guard and G4 audit both waive sync/`universal` for it on exactly
+  that tracked-executable test). Its human setup also disables
   Codex Automatic reviews so the explicit draft-time cycle remains authoritative
   when the PR is promoted to ready for review.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
@@ -779,7 +785,9 @@ install the Renovate GitHub App on the repo. Conventions:
   (mit/private), `<slug>.code-workspace`, `.vscode/{settings,extensions}.json`,
   the current-head Codex cloud shepherd contract only when
   `use_codex_cloud_review=true` (requires `use_codex_review=true`,
-  `use_skills_sync=true`, and `universal` in `skill_categories`; **[manual]**
+  `use_skills_sync=true`, and `universal` in `skill_categories` — the sync and
+  `universal` requirements waived for a skills-source repo that ships the
+  classifier natively, as above and in G4; **[manual]**
   connect the GitHub integration, confirm plan/quota availability, and grant
   explicit connector permission for a private repository, and disable Codex
   Automatic reviews so ready promotion does not launch an untracked cycle),
