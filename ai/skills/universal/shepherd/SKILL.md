@@ -401,6 +401,9 @@ issue may be moved at all.
 
   ```bash
   helper="$skill_dir/assets/check-codex-cloud-review.sh"
+  # Collect state left behind by PRs that have since closed or merged. Safe to
+  # run unconditionally — it removes nothing whose PR is still open.
+  "$helper" reap --root "$(git rev-parse --git-path shepherd-codex)"
   state="$(git rev-parse --git-path "shepherd-codex/$repo/<n>.json")"
   head="$(gh pr view <n> --repo "$repo" --json headRefOid --jq .headRefOid)"
   "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
@@ -437,6 +440,49 @@ issue may be moved at all.
   indeterminate, stop for the maintainer. Every push creates a new head and
   resets this procedure to attempt 1. There is no CI-only fallback when this
   option is enabled.
+
+  `show --state "$state"` prints the state file back unchanged. It decides
+  nothing; it is the read for reconciling an interrupted cycle by hand.
+
+  **That state has a second half to its lifecycle, and `reap` is it.**
+  `reserve` creates one file per PR and nothing in the cycle above removes it —
+  a shepherded PR is still *open* when this skill stops, because promotion to
+  ready-for-review is not a merge. A cycle therefore cannot collect its own
+  state, and without a sweep the directory grows by one file per PR for the
+  life of the checkout, with nothing to distinguish a live entry from a dead
+  one. The snippet runs `reap` at entry so each session collects what earlier
+  ones left; skipping it is what made the accumulation invisible for as long as
+  it was.
+
+  A sweep walks every `<owner>/<repo>/<pr>.json` the layout defines, asks
+  GitHub for that PR's state, and deletes **only** the closed and merged ones.
+  Everything else is kept or skipped: an open PR, a PR whose state cannot be
+  read (a rate limit, an expired token, a repository gone inaccessible), a file
+  whose contents do not identify it as this helper's own or disagree with the
+  path holding it, and a file whose lock a live shepherd holds. The asymmetry
+  is deliberate — keeping a dead file costs one stale entry until the next
+  sweep, while deleting on an unreadable answer discards a cycle that is still
+  in flight. `reap` exits 0 for any completed sweep and prints a JSON summary
+  (`scanned`, `reaped`, `kept`, `skipped`, and a per-entry list with the reason
+  for each), so it is run unconditionally rather than adjudicated; exit 2 means
+  the sweep could not run at all.
+
+  Because it runs *ahead* of the work that matters, the whole sweep is bounded
+  by one deadline — `--budget-sec`, 60 by default — not merely by a per-call
+  timeout. Sequential entries each carrying their own timeout is how a slow or
+  unreachable GitHub turns a stale backlog into minutes of delay before the
+  current PR is even reserved. Past the deadline the remaining entries are
+  **kept** unexamined, which is the same answer reaping gives for any other
+  unreadable state; the next sweep tries again. Best-effort cleanup must never
+  be able to block shepherding.
+
+  Audit a checkout at any time with:
+
+  ```bash
+  "$helper" reap --root "$(git rev-parse --git-path shepherd-codex)" |
+    jq '{scanned,reaped,kept,skipped}'
+  ```
+
 - Wait for **both** signals before deciding anything: let every check
   conclude (bounded — if a check hangs past ~30 minutes, treat it as a
   failure to diagnose, not something to wait on forever), and finish the

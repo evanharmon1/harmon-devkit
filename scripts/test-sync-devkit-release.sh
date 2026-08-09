@@ -84,7 +84,13 @@ write_task_stub() {
     cat >"$BIN_DIR/task" <<SCRIPT
 #!/usr/bin/env bash
 echo "task \$*" >>"$TASK_LOG"
-[  -n "${GH_TOKEN:-}" ] && echo "LEAKED GH_TOKEN" >>"$TASK_LOG"
+# \$GH_TOKEN must stay escaped: this heredoc is unquoted, so an unescaped
+# reference would bake the GENERATING shell's token in as a constant instead of
+# reading the stub's own environment. That inverted the test in both
+# directions — vacuously green wherever GH_TOKEN was unset (the leak branch
+# could never fire, so scrubbing went unverified), and unconditionally red
+# wherever a developer had one exported, whatever run_untrusted did.
+[ -n "\${GH_TOKEN:-}" ] && echo "LEAKED GH_TOKEN" >>"$TASK_LOG"
 case "\${1:-}" in
 sync:skills)
     if [ "$_ts_mode" = "pass" ]; then

@@ -32,8 +32,18 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
 
 if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
-    jq -cn --arg head "$(cat "$GH_FIXTURES/head")" \
-        '{headRefOid:$head,state:"OPEN"}'
+    # PR state defaults to OPEN, so every classifier fixture behaves exactly as
+    # it did before reaping existed. `reap` needs per-PR control, so a
+    # pr-state-<n> file overrides one PR and fail-pr-<n> makes it unreadable.
+    pr_number="${3:-}"
+    [ ! -f "$GH_FIXTURES/fail-pr-$pr_number" ] || exit 94
+    [ ! -f "$GH_FIXTURES/slow-pr" ] || sleep 5
+    pr_state=OPEN
+    if [ -f "$GH_FIXTURES/pr-state-$pr_number" ]; then
+        pr_state="$(cat "$GH_FIXTURES/pr-state-$pr_number")"
+    fi
+    jq -cn --arg head "$(cat "$GH_FIXTURES/head")" --arg state "$pr_state" \
+        '{headRefOid:$head,state:$state}'
     exit 0
 fi
 
@@ -101,6 +111,8 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/slow-endpoint"
+    rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
+    rm -f "${fixtures}/slow-pr"
     : >"$log"
 }
 
@@ -856,5 +868,254 @@ jq -cn \
     ]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 2 indeterminate
+
+# ── reap: the other half of the state lifecycle ────────────────────────────
+#
+# `reserve` is the only thing that creates state and, until `reap`, nothing
+# removed it. A shepherded PR is still open when its session stops, so a cycle
+# can never reap its own state — every case below is therefore a LATER sweep
+# observing a PR that has since closed, which is the only way state is ever
+# collected.
+
+reap_root="${test_tmp}/reap-root"
+reap_out=
+
+seed_state() {
+    seed_slug=$1
+    seed_pr=$2
+    rm -f "${fixtures}/pr-state-${seed_pr}" "${fixtures}/fail-pr-${seed_pr}"
+    "$helper" reserve \
+        --state "${reap_root}/${seed_slug}/${seed_pr}.json" \
+        --repo "$seed_slug" --pr "$seed_pr" \
+        --head "$head_sha" --attempt 1 >/dev/null
+}
+
+run_reap() {
+    reap_target=$1
+    shift
+    set +e
+    reap_out="$("$helper" reap --root "$reap_target" "$@" 2>&1)"
+    reap_rc=$?
+    set -e
+}
+
+assert_reap() {
+    reap_actual="$(printf '%s' "$reap_out" | jq -r "$1" 2>/dev/null || true)"
+    [ "$reap_actual" = "$2" ] ||
+        fail "reap: expected ($1) = '$2', got '$reap_actual': $reap_out"
+}
+
+echo "==> reap collects merged and closed PRs and keeps open ones"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+seed_state example/beta 22
+seed_state example/gamma 33
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+printf '%s\n' CLOSED >"${fixtures}/pr-state-22"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "reap exited $reap_rc: $reap_out"
+assert_reap '.status' swept
+assert_reap '.scanned' 3
+assert_reap '.reaped' 2
+assert_reap '.kept' 1
+assert_reap '.skipped' 0
+[ ! -f "${reap_root}/example/alpha/11.json" ] || fail "merged state survived"
+[ ! -f "${reap_root}/example/beta/22.json" ] || fail "closed state survived"
+[ -f "${reap_root}/example/gamma/33.json" ] || fail "open state was reaped"
+assert_reap '[.entries[] | select(.pr == 33) | .action] | first' kept
+# The emptied directory is left in place on purpose. Pruning it raced
+# `acquire_state_lock`, whose `mkdir -p "$parent"` and `mkdir "$lock_dir"` are
+# not atomic — an rmdir between them fails a concurrent reservation for a
+# DIFFERENT PR with a "locked by another shepherd" error naming no real lock.
+[ -d "${reap_root}/example/alpha" ] ||
+    fail "reap pruned an emptied directory — that races a concurrent reserve"
+
+echo "==> a reservation still works in a directory the sweep just emptied"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+run_reap "$reap_root"
+assert_reap '.reaped' 1
+# The concurrent case this guards cannot be scheduled deterministically, so pin
+# the property instead: the repo directory outlives the sweep, and reserving a
+# DIFFERENT PR in it succeeds. When reap pruned the directory, an interleaved
+# reserve died with "state is locked by another shepherd" over a lock that
+# never existed.
+"$helper" reserve --state "${reap_root}/example/alpha/44.json" \
+    --repo example/alpha --pr 44 --head "$head_sha" --attempt 1 >/dev/null ||
+    fail "reserve failed in a directory the sweep had emptied"
+[ -f "${reap_root}/example/alpha/44.json" ] ||
+    fail "reserve wrote no state after a sweep emptied its directory"
+
+echo "==> an unreadable PR state keeps its file rather than deleting it"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+: >"${fixtures}/fail-pr-11"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "reap exited $reap_rc: $reap_out"
+assert_reap '.reaped' 0
+assert_reap '.kept' 1
+assert_reap '[.entries[] | .detail] | first' "PR state is unreadable"
+[ -f "${reap_root}/example/alpha/11.json" ] ||
+    fail "unreadable PR state was deleted — it must be kept"
+
+echo "==> an unrecognized PR state keeps its file"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+printf '%s\n' WITHDRAWN >"${fixtures}/pr-state-11"
+run_reap "$reap_root"
+assert_reap '.reaped' 0
+assert_reap '.kept' 1
+[ -f "${reap_root}/example/alpha/11.json" ] ||
+    fail "an unrecognized PR state was treated as closed"
+
+echo "==> a file reap cannot identify is skipped, never deleted"
+write_defaults
+rm -rf "$reap_root"
+mkdir -p "${reap_root}/example/alpha"
+printf '%s\n' 'not json at all' >"${reap_root}/example/alpha/11.json"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "reap exited $reap_rc: $reap_out"
+assert_reap '.skipped' 1
+assert_reap '.reaped' 0
+[ -f "${reap_root}/example/alpha/11.json" ] ||
+    fail "an unidentifiable file was deleted"
+if grep -Fq 'pr view' "$log"; then
+    fail "reap queried GitHub for a file it could not identify"
+fi
+
+echo "==> state whose contents disagree with its path is skipped"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+mkdir -p "${reap_root}/example/impostor"
+mv "${reap_root}/example/alpha/11.json" "${reap_root}/example/impostor/11.json"
+run_reap "$reap_root"
+assert_reap '.skipped' 1
+assert_reap '.reaped' 0
+[ -f "${reap_root}/example/impostor/11.json" ] ||
+    fail "a relocated state file was deleted on the strength of its contents"
+
+echo "==> state naming a malformed repo is skipped without querying GitHub"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+# Schema-valid — .repo is still a string — but not a repository slug. The
+# schema check cannot catch this, and both fields become `gh` arguments.
+jq '.repo = "not-a-slug"' "${reap_root}/example/alpha/11.json" \
+    >"${reap_root}/example/alpha/11.json.next"
+mv "${reap_root}/example/alpha/11.json.next" "${reap_root}/example/alpha/11.json"
+: >"$log"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "reap exited $reap_rc: $reap_out"
+assert_reap '.skipped' 1
+assert_reap '.reaped' 0
+[ -f "${reap_root}/example/alpha/11.json" ] || fail "a malformed slug was deleted"
+if grep -Fq 'pr view' "$log"; then
+    fail "reap queried GitHub with a malformed repository slug"
+fi
+
+echo "==> an open PR's lock is never taken, so a live cycle is not disturbed"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+# PR 11 stays OPEN and a live shepherd holds its lock. Reaping must not contend
+# for that lock at all: `acquire_state_lock` is a bare `mkdir` that dies on
+# contention with no retry, so a sweep holding it across a `gh pr view` sends a
+# correct session for a DIFFERENT PR to maintainer reconciliation on exit 2.
+# The discriminator is `kept`, not `skipped` — skipped would mean the sweep
+# tried the lock and lost, which is the behaviour being fixed.
+mkdir "${reap_root}/example/alpha/11.json.lock"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "reap exited $reap_rc: $reap_out"
+assert_reap '.kept' 1
+assert_reap '.skipped' 0
+assert_reap '[.entries[] | .detail] | first' "PR is still open"
+[ -d "${reap_root}/example/alpha/11.json.lock" ] ||
+    fail "reap released a lock it does not own"
+rmdir "${reap_root}/example/alpha/11.json.lock"
+
+echo "==> a locked state file is skipped and does not abort the sweep"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+seed_state example/beta 22
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+printf '%s\n' MERGED >"${fixtures}/pr-state-22"
+mkdir "${reap_root}/example/alpha/11.json.lock"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] || fail "a locked entry aborted the sweep: $reap_out"
+assert_reap '.skipped' 1
+assert_reap '.reaped' 1
+[ -f "${reap_root}/example/alpha/11.json" ] ||
+    fail "state locked by a live shepherd was deleted"
+[ ! -f "${reap_root}/example/beta/22.json" ] ||
+    fail "one locked entry stopped the rest of the sweep"
+
+echo "==> non-state siblings are left alone"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+printf '%s\n' 'leftover' >"${reap_root}/example/alpha/11.json.tmp.abcdef"
+run_reap "$reap_root"
+assert_reap '.scanned' 1
+assert_reap '.reaped' 1
+[ -f "${reap_root}/example/alpha/11.json.tmp.abcdef" ] ||
+    fail "reap deleted a file outside the layout reserve writes"
+
+echo "==> a stalled sweep is bounded and keeps what it never examined"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+seed_state example/beta 22
+printf '%s\n' MERGED >"${fixtures}/pr-state-11"
+printf '%s\n' MERGED >"${fixtures}/pr-state-22"
+# Every pr view now stalls past the whole-sweep budget. Reaping runs ahead of
+# the work that matters, so it must give up rather than spend one timeout per
+# entry — and giving up means KEEPING, never deleting on an answer it lacks.
+: >"${fixtures}/slow-pr"
+reap_started="$(date -u '+%s')"
+run_reap "$reap_root" --budget-sec 1
+reap_elapsed=$(($(date -u '+%s') - reap_started))
+[ "$reap_rc" -eq 0 ] || fail "a stalled sweep exited $reap_rc: $reap_out"
+assert_reap '.scanned' 2
+assert_reap '.reaped' 0
+assert_reap '.kept' 2
+[ -f "${reap_root}/example/alpha/11.json" ] || fail "a stalled sweep deleted state"
+[ -f "${reap_root}/example/beta/22.json" ] || fail "a stalled sweep deleted state"
+# Two entries x the flat 60s per-call timeout is the unbounded behaviour; the
+# budget has to hold this well under even one of them.
+[ "$reap_elapsed" -lt 30 ] ||
+    fail "sweep ran ${reap_elapsed}s — the budget did not bound it"
+printf '%s' "$reap_out" | jq -e \
+    '[.entries[] | select(.detail | test("budget exhausted"))] | length >= 1' \
+    >/dev/null || fail "no entry reported the exhausted budget: $reap_out"
+
+echo "==> reap rejects a non-numeric budget"
+set +e
+"$helper" reap --root "$reap_root" --budget-sec zero >/dev/null 2>&1
+reap_rc=$?
+set -e
+[ "$reap_rc" -eq 2 ] || fail "a bad budget should exit 2, got $reap_rc"
+
+echo "==> a checkout that has never shepherded sweeps cleanly"
+write_defaults
+run_reap "${test_tmp}/never-shepherded"
+[ "$reap_rc" -eq 0 ] || fail "a missing state root is not a failure"
+assert_reap '.scanned' 0
+assert_reap '.reaped' 0
+
+echo "==> reap requires a root"
+set +e
+"$helper" reap >/dev/null 2>&1
+reap_rc=$?
+set -e
+[ "$reap_rc" -eq 2 ] || fail "reap without --root should exit 2, got $reap_rc"
 
 echo "shepherd Codex cloud-review classifier: PASS"
