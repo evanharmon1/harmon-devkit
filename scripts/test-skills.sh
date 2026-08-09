@@ -1049,12 +1049,14 @@ expect_ok "update guidance waives classifier prerequisites for a skills-source r
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "audit G4 waives sync/universal for the native skills-source classifier" \
     sh -c 'grep -qF "unless the repo is the skills source itself" "$1" &&
+        grep -qF "git-tracked, non-symlink executable" "$1" &&
         grep -qF "check-codex-cloud-review.sh" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "standards catalog waives cloud-review sync/universal for the skills source" \
     sh -c 'grep -qF "except on a skills-source" "$1" &&
         grep -qF "may keep" "$1" &&
         grep -qF "as above and in G4" "$1" &&
+        grep -qF "git-tracked, non-symlink executable" "$1" &&
         grep -qF "check-codex-cloud-review.sh" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "new-repo and adopt guidance note the skills-source waiver" \
