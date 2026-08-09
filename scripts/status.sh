@@ -886,7 +886,26 @@ if [[ "${SECTION}" == "setup" ]]; then
                     # only when the repo uses foreman — the wrapper taskfile is
                     # its render-time marker), so expect it only there or a
                     # non-foreman repo reports 11 permanently-missing labels.
-                    want_labels="$(sed -n -E 's/^([A-Za-z0-9:._-]+)\|[0-9A-Fa-f]{6}\|.*/\1/p' scripts/setup-github-labels.sh)"
+                    #
+                    # The suggest:/claim:/foreman:<adapter> families are NOT
+                    # literal `name|color|desc` lines in the setup script — it
+                    # renders them from the agent registry — so parse the same
+                    # renderer here too, or this check would silently ignore
+                    # every registry-driven label and call an unsynced repo green.
+                    # If the registry ships but node is missing we CANNOT enumerate
+                    # those labels, so the inventory is incomplete: report unknown
+                    # rather than grading the reduced set as "all seeded".
+                    registry_incomplete=0
+                    if [ -f scripts/agent-registry-labels.mjs ] && ! command -v node >/dev/null 2>&1; then
+                        registry_incomplete=1
+                    fi
+                    want_labels="$(
+                        sed -n -E 's/^([A-Za-z0-9:._-]+)\|[0-9A-Fa-f]{6}\|.*/\1/p' scripts/setup-github-labels.sh
+                        if [ -f scripts/agent-registry-labels.mjs ] && command -v node >/dev/null 2>&1; then
+                            node scripts/agent-registry-labels.mjs all 2>/dev/null |
+                                sed -n -E 's/^([A-Za-z0-9:._-]+)\|[0-9A-Fa-f]{6}\|.*/\1/p'
+                        fi
+                    )"
                     if [ ! -f taskfiles/foreman.yml ]; then
                         want_labels="$(printf '%s\n' "${want_labels}" | grep -v '^foreman:')"
                     fi
@@ -898,7 +917,9 @@ if [[ "${SECTION}" == "setup" ]]; then
                         printf '%s\n' "${have_labels}" | grep -qxF "${want}" ||
                             missing_count=$((missing_count + 1))
                     done
-                    if [ -z "${have_labels}" ] || [ "${want_count}" -eq 0 ]; then
+                    if [ "${registry_incomplete}" -eq 1 ]; then
+                        checkline unknown "Starter labels" "node unavailable — registry labels unchecked"
+                    elif [ -z "${have_labels}" ] || [ "${want_count}" -eq 0 ]; then
                         checkline no "Starter labels" "run task setup:github-labels"
                     elif [ "${missing_count}" -eq 0 ]; then
                         checkline ok "Starter labels" "all ${want_count} seeded"
@@ -924,14 +945,17 @@ if [[ "${SECTION}" == "setup" ]]; then
                     field_rows="$(jq -r '(if type == "object" then (.issue_fields // []) elif type == "array" then . else [] end) | .[] | "\(.name)\t\(.data_type // "")"' "${d}/issue-fields.json" 2>/dev/null || echo "")"
                     # Every non-built-in field setup-github-issue-fields.sh creates
                     # must be present AND of the right type: an org set up before
-                    # Domain and Layer joined the set already has Product + Agent,
-                    # and one that happens to own a text field named `Domain` can
-                    # never get the taxonomy options (GitHub cannot change a
-                    # field's data type in place). Reporting either as done would
-                    # hide exactly what the setup script warns about.
+                    # Domain and Layer joined the set already has Product, and one
+                    # that happens to own a text field named `Domain` can never get
+                    # the taxonomy options (GitHub cannot change a field's data
+                    # type in place). Reporting either as done would hide exactly
+                    # what the setup script warns about. The retired Agent field is
+                    # deliberately NOT wanted here: the setup script no longer
+                    # creates it, so requiring it would report a permanent false
+                    # failure on every fresh org (#662).
                     missing_fields=""
                     wrong_fields=""
-                    for want in Product:text Agent:single_select Domain:single_select Layer:single_select; do
+                    for want in Product:text Domain:single_select Layer:single_select; do
                         wname="${want%%:*}"
                         wtype="${want##*:}"
                         htype="$(printf '%s\n' "${field_rows}" | awk -F'\t' -v n="${wname}" '$1 == n { print $2; exit }')"
@@ -946,7 +970,7 @@ if [[ "${SECTION}" == "setup" ]]; then
                     elif [ -n "${wrong_fields}" ]; then
                         checkline no "Org issue fields" "wrong type: ${wrong_fields} — rename/delete, then re-run task setup:github-issue-fields"
                     elif [ -z "${missing_fields}" ]; then
-                        checkline ok "Org issue fields" "Product + Agent + Domain + Layer"
+                        checkline ok "Org issue fields" "Product + Domain + Layer"
                     else
                         checkline no "Org issue fields" "missing ${missing_fields} — run task setup:github-issue-fields"
                     fi

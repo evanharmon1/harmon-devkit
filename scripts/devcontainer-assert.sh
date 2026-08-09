@@ -295,7 +295,113 @@ assert_unit() {
     *) fail "tailscale-connect.sh did not report tailscale unavailable: ${ts_out}" ;;
     esac
 
-    # 8. The shared post-create guidance must never steer a BOT container to an
+    # 8. Antigravity runs without permission prompts inside the container,
+    #    which is the isolation boundary. The apply helper must enforce those
+    #    keys while preserving unrelated settings in the persistent volume.
+    local agy_defaults agy_apply agy_ensure agy_home agy_settings agy_backup agy_workspace agy_workspace_moved
+    agy_defaults="${repo_root}/.devcontainer/config/antigravity-settings.json"
+    agy_apply="${repo_root}/.devcontainer/config/apply-antigravity-settings.sh"
+    agy_ensure="${repo_root}/.devcontainer/config/ensure-antigravity-cli.sh"
+    [ -f "$agy_defaults" ] || fail "Antigravity defaults not found at ${agy_defaults}"
+    [ -f "$agy_apply" ] || fail "Antigravity settings helper not found at ${agy_apply}"
+    [ -f "$agy_ensure" ] || fail "Antigravity compatibility installer not found at ${agy_ensure}"
+
+    local agy_roll_home agy_system_binary
+    agy_roll_home="${work_dir}/agy-roll-home"
+    agy_system_binary="${work_dir}/agy-system-binary"
+    mkdir -p "${agy_roll_home}/.local/bin"
+    printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "1.1.11"' >"$agy_system_binary"
+    printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "1.0.0"' >"${agy_roll_home}/.local/bin/agy"
+    chmod 0755 "$agy_system_binary" "${agy_roll_home}/.local/bin/agy"
+
+    local agy_image_home
+    agy_image_home="${work_dir}/agy-image-home"
+    mkdir -p "$agy_image_home"
+    HOME="$agy_image_home" HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy_system_binary" \
+        bash "$agy_ensure" >/dev/null
+    [ ! -e "${agy_image_home}/.local/bin/agy" ] ||
+        fail "current shared-image Antigravity binary created a persistent shadow copy"
+
+    HOME="$agy_roll_home" HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy_system_binary" \
+        bash "$agy_ensure" >/dev/null
+    [ "$("${agy_roll_home}/.local/bin/agy" --version)" = "1.1.11" ] ||
+        fail "stale user-local Antigravity binary still shadows the shared-image pin"
+
+    agy_home="${work_dir}/agy-home"
+    agy_settings="${agy_home}/.gemini/antigravity-cli/settings.json"
+    agy_backup="${agy_settings}.harmon-init-autonomy-backup"
+    agy_workspace="${work_dir}/trusted-workspace"
+    agy_workspace_moved="${work_dir}/trusted-workspace-renamed"
+    mkdir -p "$(dirname "$agy_settings")"
+    printf '%s\n' '{"model":"Gemini test","toolPermission":"request-review","permissions":{"allow":["command(task)"]}}' >"$agy_settings"
+    HOME="$agy_home" bash "$agy_apply" apply "$agy_defaults" "$agy_workspace" >/dev/null
+    jq -e '
+        .model == "Gemini test" and
+        .permissions.allow == ["command(task)"] and
+        .toolPermission == "always-proceed" and
+        .artifactReviewPolicy == "always-proceed" and
+        .allowNonWorkspaceAccess == true and
+        .enableTerminalSandbox == false and
+        .trustedWorkspaces == [$workspace]
+    ' --arg workspace "$agy_workspace" "$agy_settings" >/dev/null ||
+        fail "Antigravity dev container policy was not merged correctly"
+    jq -e '
+        .schemaVersion == 3 and
+        .present == ["toolPermission"] and
+        .values.toolPermission == "request-review" and
+        .introducedWorkspaces == [$workspace] and
+        .trustedWorkspacesKeyWasPresent == false
+    ' --arg workspace "$agy_workspace" "$agy_backup" >/dev/null ||
+        fail "Antigravity policy rollback state was not recorded correctly"
+
+    HOME="$agy_home" bash "$agy_apply" apply "$agy_defaults" "$agy_workspace_moved" >/dev/null
+    jq -e '.trustedWorkspaces == [$first, $second]' \
+        --arg first "$agy_workspace" --arg second "$agy_workspace_moved" \
+        "$agy_settings" >/dev/null ||
+        fail "Antigravity did not trust the repository after its workspace path changed"
+    jq -e '.introducedWorkspaces == [$first, $second]' \
+        --arg first "$agy_workspace" --arg second "$agy_workspace_moved" \
+        "$agy_backup" >/dev/null ||
+        fail "Antigravity rollback state did not track every introduced workspace"
+
+    jq '.model = "changed after opt-in"' "$agy_settings" >"${agy_settings}.new"
+    mv "${agy_settings}.new" "$agy_settings"
+    HOME="$agy_home" bash "$agy_apply" restore >/dev/null
+    jq -e '
+        .model == "changed after opt-in" and
+        .toolPermission == "request-review" and
+        has("artifactReviewPolicy") == false and
+        has("allowNonWorkspaceAccess") == false and
+        has("enableTerminalSandbox") == false and
+        has("trustedWorkspaces") == false
+    ' "$agy_settings" >/dev/null ||
+        fail "Antigravity policy rollback did not restore only the managed keys"
+    [ ! -e "$agy_backup" ] ||
+        fail "Antigravity policy rollback state remains after a successful restore"
+
+    local agy_before
+    printf '%s\n' '{"model":"first"}' '{"model":"second"}' >"$agy_settings"
+    agy_before="${work_dir}/agy-settings-before"
+    cp "$agy_settings" "$agy_before"
+    HOME="$agy_home" bash "$agy_apply" apply "$agy_defaults" "$agy_workspace" >/dev/null 2>&1
+    cmp -s "$agy_settings" "$agy_before" ||
+        fail "invalid Antigravity settings were overwritten"
+
+    if grep -q 'apply-antigravity-settings.sh apply' "${repo_root}/.devcontainer/post-create.sh"; then
+        grep -q 'ensure-antigravity-cli.sh' "${repo_root}/.devcontainer/post-create.sh" ||
+            fail "opted-in bot profile cannot bootstrap Antigravity before the shared-image pin advances"
+        grep -q 'AGY_CLI_DISABLE_AUTO_UPDATE.*true' "${repo_root}/.devcontainer/devcontainer.json" ||
+            fail "opted-in bot profile permits the compatibility Antigravity binary to auto-update"
+    elif ! grep -q 'apply-antigravity-settings.sh restore' "${repo_root}/.devcontainer/post-create.sh"; then
+        fail "bot profile has neither the Antigravity apply nor restore lifecycle"
+    elif grep -q 'ensure-antigravity-cli.sh' "${repo_root}/.devcontainer/post-create.sh"; then
+        fail "default-off bot profile downloads Antigravity without explicit opt-in"
+    fi
+    if grep -q 'apply-antigravity-settings.sh' "${repo_root}/.devcontainer/dev/post-create.sh"; then
+        fail "human dev profile applies the bot-only Antigravity autonomy policy"
+    fi
+
+    # 9. The shared post-create guidance must never steer a BOT container to an
     #    operator `gh auth login`. Following that advice would put a human
     #    credential — `workflow` scope included — inside a bypassPermissions
     #    agent container, which is the escalation the bot PAT's denials exist to
@@ -327,7 +433,7 @@ assert_unit() {
         fail "post-create gh guidance omits the operator login where the profile declares one"
     fi
 
-    # 9. Static devcontainer.json invariants via the devcontainers CLI.
+    # 10. Static devcontainer.json invariants via the devcontainers CLI.
     assert_config_invariants "$repo_root" "$bot_config" bot
     assert_config_invariants "$repo_root" "$dev_config" dev
 

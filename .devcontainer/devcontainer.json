@@ -68,6 +68,7 @@
   "containerEnv": {
     "CODER": "${localEnv:CODER}",
     "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
     "FOREMAN_DEVCONTAINER": "bot"
   },
   "postCreateCommand": "bash .devcontainer/post-create.sh",

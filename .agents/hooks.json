@@ -1,0 +1,25 @@
+{
+  "claude-hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.agents/agy-adapter.sh ./.claude/hooks/block-no-verify.sh PreToolUse"
+          },
+          {
+            "type": "command",
+            "command": "./.agents/agy-adapter.sh ./.claude/hooks/enforce-conventional-commits.sh PreToolUse"
+          }
+        ]
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "./.agents/agy-adapter.sh ./.claude/hooks/session-start-context.sh PreInvocation"
+      }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "Version Tag Creation",
+  "target": "tag",
+  "source_type": "Repository",
+  "source": "evanharmon1/harmon-devkit",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/tags/v*"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "creation"
+    }
+  ],
+  "bypass_actors": [
+    {
+      "actor_id": 5,
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "always"
+    }
+  ]
+}

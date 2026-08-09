@@ -16,6 +16,12 @@ bash .devcontainer/scripts/post-create-common.sh
 # this so a human gets the normal prompt-on-action default.
 bash .devcontainer/scripts/enable-claude-bypass.sh
 
+# Opted-in bot profile: run Antigravity without permission prompts too. The
+# helper preserves unrelated settings and records prior policy for rollback.
+bash /usr/local/share/devcontainer-config/ensure-antigravity-cli.sh
+bash /usr/local/share/devcontainer-config/apply-antigravity-settings.sh apply \
+    /usr/local/share/devcontainer-config/antigravity-settings.json "$PWD"
+
 # Install repo-managed git hooks (source of truth: .devcontainer/hooks/).
 # This replaces the default git-lfs hooks with versions that also handle
 # auto-installing node_modules in new worktrees.

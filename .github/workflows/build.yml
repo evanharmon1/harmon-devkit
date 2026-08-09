@@ -54,6 +54,8 @@ jobs:
         run: task check
       - run: task validate
       - run: task test:tasks
+      - run: task test:agent-registry
+      - run: task test:registry-drift
       - run: task test:codex-review
       - run: task test:meta-install
       - run: task test:shepherd-codex

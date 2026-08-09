@@ -38,7 +38,11 @@ primary agent to adjudicate — the protocol and the loop caps live in AGENTS.md
    depend on the maintainer's ChatGPT plan, and private repositories require
    explicit connector access. Cloud review is a required shepherd signal, not
    a required GitHub status check; if it stays unavailable for both bounded
-   attempts, the agent stops and escalates.
+   attempts, the agent stops and escalates. Where Foreman is also enabled,
+   `.foreman.toml`'s `[reviewer]` table holds the same contract for
+   foreman-shepherded PRs: foreman posts the configured `@codex review`
+   request itself and promotes a draft only on a current-head result from the
+   configured login — fail-closed, with bounded attempts.
 
 6. **Then disable Codex Automatic reviews** — personal Auto review off, and the
    repository's Auto code review preference set to **Follow personal**. Codex

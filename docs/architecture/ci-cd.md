@@ -18,7 +18,8 @@ plus an aggregate **`verify`** job; branch protection requires `verify` +
 - `devcontainer-build.yml` — prebuilds the devcontainer images to GHCR on `.devcontainer/**` changes.
 - `claim-release.yml` — on `issues closed` and on `pull_request closed`
   **unmerged**, releases the claim markers an agent session left on an issue
-  (assignee, `agent:*` label, and the `Claiming —` comment's supersede). It
+  (assignee, `claim:*` label — or a legacy `agent:*` one, both of which
+  `release-claim.sh` accepts — and the `Claiming —` comment's supersede). It
   holds `issues: write` and parses attacker-writable comment bodies, so it
   always checks out the **default branch** and never a PR head. It only wires
   events to `release-claim.sh` in the vendored `track-work` skill, so it

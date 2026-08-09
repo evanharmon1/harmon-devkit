@@ -104,6 +104,20 @@ task challenge   # adversarial Codex second-model review — advisory, not in ve
 task review      # Codex verification checkpoint before task ci
 ```
 
+**Foreman** (`task foreman:*`) is the deterministic supervisor that dispatches
+armed issues to headless agents, verifies their output, opens draft PRs, and
+shepherds them to ready-for-review — merging is always a human decision.
+Foreman's own PRs follow the same draft-first lifecycle as the Dev Loop
+below: it opens draft PRs (labelled `foreman:dispatched`) under its own
+verify gate and promotes them only through its readiness gate — checks
+green, review threads resolved, and the `[reviewer]` current-head Codex gate
+configured in `.foreman.toml` (the same `@codex review` contract the
+shepherd stage uses — fail-closed, bounded attempts) — to
+`foreman:ready-for-review`, the hand-off to human review.
+The CLI is pinned in `taskfiles/foreman.yml` and fetched via `uvx`;
+configuration is `.foreman.toml`. See
+https://github.com/ponderousdev/foreman.
+
 `check` is deliberately kept fast (lint) so editors, git hooks, and
 AI agents can run it on every change without getting bogged down. `verify` is
 the definition-of-done gate — check + validate + test plus the quick

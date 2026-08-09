@@ -101,15 +101,6 @@ complete='{"data":{"node":{"fields":{"nodes":[
    {"id":"p2","name":"High","color":"ORANGE","description":""},
    {"id":"p3","name":"Medium","color":"YELLOW","description":""},
    {"id":"p4","name":"Low","color":"GRAY","description":""}]},
- {"id":"F_agt","name":"Agent","dataType":"SINGLE_SELECT","options":[
-   {"id":"a1","name":"Claude Code","color":"ORANGE","description":""},
-   {"id":"a2","name":"Codex","color":"BLUE","description":""},
-   {"id":"a3","name":"Gemini CLI","color":"PURPLE","description":""},
-   {"id":"a4","name":"Qwen Code","color":"GREEN","description":""},
-   {"id":"a5","name":"DeepSeek","color":"RED","description":""},
-   {"id":"a6","name":"Kimi K2","color":"YELLOW","description":""},
-   {"id":"a7","name":"GLM","color":"PINK","description":""},
-   {"id":"a8","name":"GitHub Copilot","color":"GRAY","description":""}]},
  {"id":"F_dom","name":"Domain","dataType":"SINGLE_SELECT","options":[
    {"id":"d1","name":"auth","color":"PURPLE","description":"Authentication and authorization"},
    {"id":"d2","name":"billing","color":"GREEN","description":"Billing and payments"},
@@ -125,6 +116,14 @@ echo "==> a re-run against an already-synced project writes nothing"
 run_with "$complete"
 [ "$(updates)" = 0 ] || fail "expected no mutations on an unchanged project, got $(updates)"
 grep -q "leaving it as-is" "$tmp/out" || fail "expected 'leaving it as-is' output"
+
+echo "==> the retired Agent field is never created"
+# The fixture above deliberately has no Agent field, so any mutation naming one
+# is the script recreating it. Advisory routing is the suggest:* label family
+# plus Status: Agent Queue; the live claim is a claim:* label (ADR 0005 D4).
+case "$(cat "$MUTATIONS")" in
+*'name:"Agent"'*) fail "the retired Agent field was created — routing lives in suggest:*/claim:* labels" ;;
+esac
 
 echo "==> a field missing a starter option gains ONLY that option"
 # Domain lacks `billing` and carries an owner-added `crm`.

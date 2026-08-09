@@ -438,36 +438,69 @@ open_pr_number() {
     printf '%s\n' "$_pn"
 }
 
-# pr_title N — the current title of PR N. Empty rather than fatal when the PR
-# cannot be read: the caller only uses it to decide whether metadata needs
-# repairing, and "unknown" should mean "repair", not "abort".
+# pr_title N — the current title of PR N. A failed read is indeterminate, not
+# stale metadata: repairing an unchanged ready-for-review PR would demote it,
+# and a later reconciliation has no authority to restore that human handoff.
 pr_title() {
-    gh pr view "$1" --json title --jq '.title // empty' 2>/dev/null || true
+    gh pr view "$1" --json title --jq '.title // empty' 2>/dev/null
+}
+
+# ensure_pr_draft N [HEAD] — fail closed unless PR N is confirmed draft and,
+# when HEAD is supplied, points at that exact verified commit. A rolling
+# sync PR may have been promoted after its previous head passed review; before
+# replacing that head, and again after editing its metadata, return it to the
+# draft workbench so no unverified revision is published to reviewers.
+ensure_pr_draft() {
+    _epd_pr="$1" _epd_expected="${2:-}"
+    _epd_snapshot="$(gh pr view "$_epd_pr" --json headRefOid,isDraft \
+        --jq '[.headRefOid, (.isDraft | tostring)] | join(" ")' 2>/dev/null)" ||
+        die "could not confirm the head and draft state of PR #$_epd_pr"
+    IFS=' ' read -r _epd_head _epd_state <<EOF
+$_epd_snapshot
+EOF
+    if [ -n "$_epd_expected" ] && [ "$_epd_head" != "$_epd_expected" ]; then
+        die "PR #$_epd_pr points at $_epd_head, not the verified head $_epd_expected"
+    fi
+    case "$_epd_state" in
+    true) return 0 ;;
+    false)
+        note "returning sync PR #$_epd_pr to draft"
+        gh pr ready --undo "$_epd_pr" ||
+            die "could not return PR #$_epd_pr to draft"
+        _epd_snapshot="$(gh pr view "$_epd_pr" --json headRefOid,isDraft \
+            --jq '[.headRefOid, (.isDraft | tostring)] | join(" ")' 2>/dev/null)" ||
+            die "could not confirm PR #$_epd_pr became draft"
+        IFS=' ' read -r _epd_head _epd_state <<EOF
+$_epd_snapshot
+EOF
+        if [ -n "$_epd_expected" ] && [ "$_epd_head" != "$_epd_expected" ]; then
+            die "PR #$_epd_pr changed to $_epd_head while returning it to draft (expected $_epd_expected)"
+        fi
+        [ "$_epd_state" = "true" ] ||
+            die "PR #$_epd_pr remained non-draft after conversion"
+        ;;
+    *) die "unexpected draft state '$_epd_state' for PR #$_epd_pr" ;;
+    esac
 }
 
 open_or_update_pr() {
-    _pr_title="$1" _pr_existing="$2"
+    _pr_title="$1" _pr_existing="$2" _pr_expected="${3:-}"
     if [ -n "$_pr_existing" ]; then
         note "updating the open sync PR #$_pr_existing"
         gh pr edit "$_pr_existing" --title "$_pr_title" --body-file "$BODY_FILE" ||
             die "could not update PR #$_pr_existing"
-        gh pr ready --undo "$_pr_existing" ||
-            note "could not return PR #$_pr_existing to draft (may already be draft)"
+        ensure_pr_draft "$_pr_existing" "$_pr_expected"
     else
         note "opening a sync PR"
         gh pr create --draft --base "$BASE_BRANCH" --head "$SYNC_BRANCH" \
             --title "$_pr_title" --body-file "$BODY_FILE" ||
             die "could not open the sync PR"
-        # Confirm the PR landed as draft — a non-draft result silently
-        # publishes an unverified head to reviewers.
-        if _pr_number=$(gh pr view "$SYNC_BRANCH" --json number -q .number 2>/dev/null) &&
-            [ -n "$_pr_number" ]; then
-            _pr_is_draft=$(gh pr view "$_pr_number" --json isDraft -q .isDraft 2>/dev/null)
-            if [ "$_pr_is_draft" != "true" ]; then
-                gh pr ready --undo "$_pr_number" 2>/dev/null ||
-                    die "sync PR #$_pr_number was not draft and could not be returned to draft"
-            fi
-        fi
+        _pr_created="$(gh pr view "$SYNC_BRANCH" --json number --jq '.number // empty' 2>/dev/null)" ||
+            die "could not resolve the newly created sync PR"
+        case "$_pr_created" in
+        '' | *[!0-9]*) die "could not resolve the newly created sync PR" ;;
+        esac
+        ensure_pr_draft "$_pr_created" "$_pr_expected"
     fi
 }
 
@@ -647,13 +680,15 @@ cmd_run() {
         # here rather than leaving it wrong until someone notices. Either way
         # the push and the verification are skipped — this exact tree already
         # passed them on the open PR.
-        if [ "$(pr_title "$_run_open_pr")" = "$_run_title" ]; then
+        _run_open_title="$(pr_title "$_run_open_pr")" ||
+            die "could not read the title of PR #$_run_open_pr — refusing to change its handoff state"
+        if [ "$_run_open_title" = "$_run_title" ]; then
             note "PR #$_run_open_pr already carries this exact sync at $_run_target — leaving it untouched"
             return 0
         fi
         note "PR #$_run_open_pr has the right branch but stale metadata — repairing it"
         write_pr_body "$_run_current" "$_run_target" "$_run_prov"
-        open_or_update_pr "$_run_title" "$_run_open_pr"
+        open_or_update_pr "$_run_title" "$_run_open_pr" ""
         return 0
     fi
 
@@ -662,17 +697,16 @@ cmd_run() {
     # Force-push: this branch is owned solely by this workflow and is rebuilt
     # from the base every run, so its remote history is disposable by design.
     # Only $SYNC_BRANCH is ever written — never $BASE_BRANCH.
-    # Return any existing rolling PR to draft first so the new head is never
-    # published ready-for-review before CI and the shepherd cycle run.
+    # Convert an existing PR before the push: doing this afterward would expose
+    # the replacement head as ready-for-review during the network/write window.
     if [ -n "$_run_open_pr" ]; then
-        gh pr ready --undo "$_run_open_pr" ||
-            note "could not return PR #$_run_open_pr to draft (may already be draft)"
+        ensure_pr_draft "$_run_open_pr"
     fi
     note "pushing $SYNC_BRANCH"
     push_sync_branch || die "could not push $SYNC_BRANCH"
 
     write_pr_body "$_run_current" "$_run_target" "$_run_prov"
-    open_or_update_pr "$_run_title" "$_run_open_pr"
+    open_or_update_pr "$_run_title" "$_run_open_pr" "$(git rev-parse HEAD)"
     note "done — merging $SYNC_BRANCH stays a human decision"
 }
 

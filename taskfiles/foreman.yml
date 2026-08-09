@@ -11,7 +11,7 @@ version: "3"
 
 vars:
   # renovate: datasource=github-tags depName=ponderousdev/foreman extractVersion=^v(?<version>.*)$
-  FOREMAN_VERSION: 2.1.0
+  FOREMAN_VERSION: 2.3.0
   FOREMAN: uvx --from git+https://github.com/ponderousdev/foreman@v{{.FOREMAN_VERSION}} foreman
 
 tasks:
@@ -31,7 +31,7 @@ tasks:
       - "{{.FOREMAN}} preflight {{.CLI_ARGS}}"
 
   dispatch:
-    desc: "Dispatch ready units to agents in worktrees, verify, open PRs (idempotent)"
+    desc: "Dispatch ready units to agents in worktrees, verify, open draft PRs (idempotent)"
     cmds:
       - "{{.FOREMAN}} dispatch {{.CLI_ARGS}}"
 
@@ -64,3 +64,12 @@ tasks:
     desc: "Prune worktrees + foreman-created branches for closed units (in-flight untouched)"
     cmds:
       - "{{.FOREMAN}} cleanup {{.CLI_ARGS}}"
+
+  audit-adapters:
+    # NOT a Foreman CLI wrapper: compares agent-registry.json's declared adapter
+    # roster against the backends the PINNED Foreman release actually ships. Needs
+    # the network, so it is deliberately out of `verify`/`ci` (the offline gate is
+    # `task test:registry-drift`); run it after bumping FOREMAN_VERSION.
+    desc: "Audit the registry's foreman_adapters against the pinned Foreman release (network; not in verify/ci)"
+    cmds:
+      - "./scripts/audit-foreman-adapters.sh --foreman-version {{.FOREMAN_VERSION}}"
