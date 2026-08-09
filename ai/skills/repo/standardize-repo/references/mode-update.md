@@ -35,10 +35,14 @@ is guarded on `run_task_install` alone — unlike every other entry, it carries 
 `_copier_operation == 'copy'` guard — so an update on a repo that answered yes
 re-runs brew deps and `lefthook install`. See §2.)
 
-**How to run the snippets below.** They are written to survive `bash -eu`: every
-command carries its own `|| { …; exit 1; }` handler so a failure names itself
-instead of aborting the run anonymously, so keep the handlers when you copy a
-block into a fresh shell rather than trimming them as noise. Every sorted-list
+**How to run the snippets below.** They are written to survive `bash -eu`: the
+load-bearing steps carry an explicit `|| { …; exit 1; }` handler so the failure
+names itself, and a command without one still stops the run under errexit, just
+anonymously — so keep the handlers when you copy a block into a fresh shell.
+They are not proven under `pipefail`, though: without it a mid-pipeline failure
+can be masked by a succeeding final stage, so run a lifted block with
+`bash -euo pipefail` care and treat the recipes' own gates and frozen-OID
+cross-checks as the real backstop. Every sorted-list
 comparison pins `LC_ALL=C` on both the producer and the consumer, because `sort`
 and `comm` must agree on collation — an ambient UTF-8 locale orders `_` against
 letters differently than byte order does (`github_org` sorts before `git_init`
