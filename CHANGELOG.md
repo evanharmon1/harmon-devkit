@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.24.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.23.1...v0.24.0) (2026-08-09)
+
+
+### Features
+
+* make shared agent assets portable across harnesses ([#339](https://github.com/evanharmon1/harmon-devkit/issues/339)) ([6b88cb4](https://github.com/evanharmon1/harmon-devkit/commit/6b88cb46eadaf4572683128571819440fff8fe7c))
+
+
+### Bug Fixes
+
+* close three template gaps — Foreman runtime hygiene and the pinned yq install ([#348](https://github.com/evanharmon1/harmon-devkit/issues/348)) ([78035f8](https://github.com/evanharmon1/harmon-devkit/commit/78035f823bdec02362f5d0360b7ac18043d9733b))
+* update to harmon-init v4.23.1 ([#340](https://github.com/evanharmon1/harmon-devkit/issues/340)) ([898ae8a](https://github.com/evanharmon1/harmon-devkit/commit/898ae8a577d5ec8283b5f6d2925fda4959072275))
+
 ## [0.23.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.23.0...v0.23.1) (2026-08-09)
 
 
