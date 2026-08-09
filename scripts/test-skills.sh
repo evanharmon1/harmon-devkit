@@ -3396,6 +3396,17 @@ printf '%s\n' '{ "extends": ["config:recommended"] }' \
     >"$DT_TEMPLATE/template/renovate.json"
 printf '%s\n' 'export EXAMPLE_SETTING=template-default' \
     >"$DT_TEMPLATE/template/.envrc"
+# secrets.env is the TRACKED-and-pattern-matched case. `git check-ignore`
+# consults the index, so tracking makes it not-ignored and it must gate as
+# ordinary uncurated DRIFT — while its body must still never reach stdout,
+# because withholding is keyed on the path rather than on the class.
+printf '%s\n' 'EXAMPLE_TOKEN=template-default' \
+    >"$DT_TEMPLATE/template/secrets.env"
+# docs/* is co-owned prose, so an executable file under it is the only shape
+# that can prove MODE is checked independently of the content class.
+printf '%s\n' '#!/usr/bin/env bash' 'echo docs' \
+    >"$DT_TEMPLATE/template/docs/build-docs.sh"
+chmod +x "$DT_TEMPLATE/template/docs/build-docs.sh"
 for terraform_file in main.tf variables.tf outputs.tf; do
     printf '%s\n' '# starter' >"$DT_TEMPLATE/template/terraform/$terraform_file"
 done
@@ -3422,11 +3433,16 @@ printf '%s\n' '# Record architecture decisions' \
 cp "$DT_TEMPLATE/template/AGENTS.md" "$DT_TARGET/AGENTS.md"
 ln -s AGENTS.md "$DT_TARGET/CLAUDE.md"
 cp "$DT_TEMPLATE/template/renovate.json" "$DT_TARGET/renovate.json"
+cp "$DT_TEMPLATE/template/secrets.env" "$DT_TARGET/secrets.env"
+cp "$DT_TEMPLATE/template/docs/build-docs.sh" "$DT_TARGET/docs/build-docs.sh"
+chmod +x "$DT_TARGET/docs/build-docs.sh"
 # .envrc diverges from the render permanently and is gitignored, so it stays
 # untracked (git_commit_all honors .gitignore) and reports as informational
 # IGNORED rather than drift — the class exists precisely because a resolved
-# local config can hold real values that must not be printed.
-printf '%s\n' '.envrc' >"$DT_TARGET/.gitignore"
+# local config can hold real values that must not be printed. secrets.env
+# matches an ignore rule too but is force-added below, which is what separates
+# the two axes: it gates like any tracked file, yet its body stays withheld.
+printf '%s\n' '.envrc' 'secrets.env' >"$DT_TARGET/.gitignore"
 printf '%s\n' 'export EXAMPLE_SETTING=envrc-sentinel-withheld' >"$DT_TARGET/.envrc"
 cat >"$DT_TARGET/.copier-answers.yml" <<EOF
 _commit: v1.0.0
@@ -3443,6 +3459,10 @@ else
 fi
 chmod +x "$DT_TARGET/scripts/status.sh"
 git_init "$DT_TARGET"
+# `git add -A` honors .gitignore, so the tracked-and-ignore-matched case has to
+# be forced into the index — which is exactly the `git add -f` a repo runs for a
+# resolved local config it nonetheless wants under version control.
+git -C "$DT_TARGET" add -f -- secrets.env
 git_commit_all "$DT_TARGET" "record mature target layout"
 
 if equivalent_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
@@ -3541,6 +3561,82 @@ fi
 cp "$DT_TEMPLATE/template/renovate.json" "$DT_TARGET/renovate.json"
 cp "$DT_TEMPLATE/template/AGENTS.md" "$DT_TARGET/AGENTS.md"
 
+# Classification and withholding are INDEPENDENT axes. secrets.env is tracked
+# AND matches an ignore rule: `git check-ignore` consults the index, so tracking
+# makes it not-ignored and it must gate as ordinary uncurated DRIFT rather than
+# being downgraded to the informational IGNORED class. Its PATH is still marked
+# local-only, though, so --show must replace the body with a note instead of
+# printing what a resolved config of that shape can really hold.
+printf '%s\n' 'EXAMPLE_TOKEN=tracked-secret-sentinel' >"$DT_TARGET/secrets.env"
+if tracked_ignored_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a tracked ignore-matched file (expected non-zero exit)"
+elif printf '%s\n' "$tracked_ignored_out" | grep -qF "DRIFT    secrets.env  (uncurated"; then
+    ok "diff-template gates a tracked ignore-matched file"
+else
+    bad "diff-template gates a tracked ignore-matched file (DRIFT diagnostic missing)"
+fi
+if printf '%s\n' "$tracked_ignored_out" | grep -qF "IGNORED  secrets.env"; then
+    bad "diff-template does not downgrade a tracked ignore-matched file to IGNORED"
+else
+    ok "diff-template does not downgrade a tracked ignore-matched file to IGNORED"
+fi
+if printf '%s\n' "$tracked_ignored_out" | grep -qF 'tracked-secret-sentinel'; then
+    bad "diff-template --show withholds a gating ignore-matched diff body"
+else
+    ok "diff-template --show withholds a gating ignore-matched diff body"
+fi
+if printf '%s\n' "$tracked_ignored_out" |
+    grep -qF '(diff withheld — path matches an ignore pattern'; then
+    ok "diff-template --show says why a gating ignore-matched diff was withheld"
+else
+    bad "diff-template --show says why a gating ignore-matched diff was withheld"
+fi
+git -C "$DT_TARGET" checkout HEAD -- secrets.env
+
+# The exec bit is settled independently of, and before, the content class. A
+# co-owned regular file that lost `+x` used to `continue` out on the
+# presence-only class and exit 0 — a generated script nobody can run, filed as
+# expected prose drift. Content is IDENTICAL here, so MODE must be the only line.
+chmod -x "$DT_TARGET/docs/build-docs.sh"
+if co_owned_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates an exec-bit loss on a co-owned file (expected non-zero exit)"
+elif printf '%s\n' "$co_owned_mode_out" | grep -qF "MODE     docs/build-docs.sh"; then
+    ok "diff-template gates an exec-bit loss on a co-owned file"
+else
+    bad "diff-template gates an exec-bit loss on a co-owned file (MODE diagnostic missing)"
+fi
+if printf '%s\n' "$co_owned_mode_out" | grep -qF "CO-OWNED docs/build-docs.sh"; then
+    bad "diff-template reports no content class for a mode-only co-owned divergence"
+else
+    ok "diff-template reports no content class for a mode-only co-owned divergence"
+fi
+
+# Diverging in BOTH gets the gating MODE line AND the informational CO-OWNED
+# line: independent findings, and the withheld body is still withheld.
+printf '%s\n' '#!/usr/bin/env bash' 'echo docs' 'co-owned-mode-sentinel' \
+    >"$DT_TARGET/docs/build-docs.sh"
+if co_owned_both_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates mode drift on a divergent co-owned file (expected non-zero exit)"
+elif printf '%s\n' "$co_owned_both_out" | grep -qF "MODE     docs/build-docs.sh"; then
+    ok "diff-template gates mode drift on a divergent co-owned file"
+else
+    bad "diff-template gates mode drift on a divergent co-owned file (MODE diagnostic missing)"
+fi
+if printf '%s\n' "$co_owned_both_out" | grep -qF "CO-OWNED docs/build-docs.sh"; then
+    ok "diff-template keeps the co-owned content class alongside a MODE finding"
+else
+    bad "diff-template keeps the co-owned content class alongside a MODE finding"
+fi
+if printf '%s\n' "$co_owned_both_out" | grep -qF 'co-owned-mode-sentinel'; then
+    bad "diff-template --show withholds a co-owned body that also has mode drift"
+else
+    ok "diff-template --show withholds a co-owned body that also has mode drift"
+fi
+git -C "$DT_TARGET" checkout HEAD -- docs/build-docs.sh
+chmod +x "$DT_TARGET/docs/build-docs.sh"
+
 # A co-owned symlink flattened into a regular file is a STRUCTURAL divergence,
 # not a prose one, so it gates rather than joining the presence-only CO-OWNED
 # class: the repo now carries two independent copies of the agent instructions
@@ -3590,6 +3686,38 @@ fi
 git -C "$DT_TARGET" checkout HEAD -- scripts/status.sh
 expect_ok "diff-template returns to a clean baseline after the sweep cases" \
     env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
+
+# --- nested-worktree guard ---------------------------------------------------
+# A plain directory that merely SITS INSIDE another repository's work tree is
+# still a plain directory. `rev-parse --is-inside-work-tree` answers true there,
+# so the sweep used to apply the PARENT repo's ignore rules and downgrade real
+# divergence to a non-gating IGNORED. The clean copy below is the same target
+# shape as DT_TARGET minus its .git, so the mutation's exit code is its own.
+DT_NESTED_PARENT="$TMPROOT/diff-template-nested-parent"
+mkdir -p "$DT_NESTED_PARENT"
+git_init "$DT_NESTED_PARENT"
+printf '%s\n' 'renovate.json' >"$DT_NESTED_PARENT/.gitignore"
+DT_NESTED_TARGET="$DT_NESTED_PARENT/plain-target"
+cp -pR "$DT_TARGET" "$DT_NESTED_TARGET"
+rm -rf "$DT_NESTED_TARGET/.git"
+# Without a repo of its own the copy's .envrc can no longer be IGNORED, so sync
+# it to the render; this case is about renovate.json alone.
+cp "$DT_TEMPLATE/template/.envrc" "$DT_NESTED_TARGET/.envrc"
+expect_ok "diff-template baselines clean against a plain dir nested in another repo" \
+    env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_NESTED_TARGET"
+printf '%s\n' '{ "extends": ["config:base"] }' >"$DT_NESTED_TARGET/renovate.json"
+if nested_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_NESTED_TARGET" 2>&1)"; then
+    bad "diff-template gates a nested plain target the parent repo ignores (expected non-zero exit)"
+elif printf '%s\n' "$nested_out" | grep -qF "DRIFT    renovate.json  (uncurated"; then
+    ok "diff-template gates a nested plain target the parent repo ignores"
+else
+    bad "diff-template gates a nested plain target the parent repo ignores (DRIFT diagnostic missing)"
+fi
+if printf '%s\n' "$nested_out" | grep -qF "IGNORED  "; then
+    bad "diff-template borrows no IGNORED class from a nested target's parent repo"
+else
+    ok "diff-template borrows no IGNORED class from a nested target's parent repo"
+fi
 
 rm "$DT_TARGET/scripts/status.sh"
 expect_ok "diff-template compares an unstaged tracked deletion from the index" \

@@ -98,8 +98,10 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
   manifest, not about the finding.
 - **`MODE`** — the executable bit differs. Copier can preserve content while a
   hand copy silently drops `+x`, leaving a generated script present but
-  unusable, so this is reported independently of content. Symlinks are exempt:
-  the bit belongs to the link target.
+  unusable, so this is reported independently of content — and independently of
+  the class the file lands in: a `CO-OWNED` or `IGNORED` file that lost `+x` is
+  a broken script rather than expected drift, so it **gates** like any other
+  `MODE` finding. Symlinks are exempt: the bit belongs to the link target.
 - **`MISSING`** — a template file the repo lacks entirely. This scan walks the
   whole render (it does **not** depend on the curated list), so a file the
   template added later, or one a previous hand-reconciled update dropped, can't
@@ -119,12 +121,31 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
   `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`, `SECURITY.md`, `docs/`,
   `specs/`, `todo.md`, the `*.code-workspace`, `.meta/`, and the devcontainer
   `config/zshrc`. Divergence there is the expected steady state, so the line is
-  **presence-only**: no diff is printed, not even under `--show`, and it never
-  affects the exit status. The useful reading is the inverse one — see §4.
-- **`IGNORED`** — the repo's copy is gitignored (a resolved `.envrc`, local
-  editor settings, and friends). Presence-only for the same reason as
-  `CO-OWNED` plus a harder one: a resolved local config can hold real secrets,
-  so its diff is never printed. Never affects the exit status.
+  **presence-only**: no diff is printed, not even under `--show`, and its
+  *content* never affects the exit status (a `MODE` finding on the same file
+  still does). The useful reading is the inverse one — see §4.
+- **`IGNORED`** — the repo's copy is **untracked and matches an ignore rule** (a
+  resolved `.envrc`, local editor settings, and friends). Presence-only for the
+  same reason as `CO-OWNED` plus a harder one: a resolved local config can hold
+  real secrets, so its diff is never printed. Its content never affects the exit
+  status.
+
+Ignore rules drive two **independent** axes, because "does this gate?" and "is
+this safe to print?" are different questions:
+
+- **Classification** follows repo *state*. Only an untracked pattern-matched
+  file is the informational `IGNORED` class; a **tracked** one gates as ordinary
+  `DRIFT`, ignore rules or not, because tracked content is template-relevant.
+- **Withholding** follows the *path* alone. No diff for a pattern-matching path
+  is ever printed — not even for a finding that gates — because a repo can
+  `git add -f` a resolved config, and tracking it makes that file reviewable,
+  not publishable. You get `(diff withheld — path matches an ignore pattern;
+  review manually)` under the `DRIFT` line and review it locally.
+
+Both axes need the audited directory to be a repository root of its **own**. A
+plain directory nested inside another repo's work tree gets neither: inheriting
+a stranger's ignore rules would silently downgrade real drift, so everything
+there falls through to gating, printable `DRIFT`.
 
 Symlinks are compared by **link target**, not content. The template ships
 `CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md` as links to
