@@ -66,6 +66,17 @@ settings.local.json
 # `.DS_Store` above still keeps macOS cruft out of `.meta/`.)
 /todo.md
 
+# Foreman runtime artifacts (logs, prompts, resume states — never state-of-record)
+.foreman/
+.foreman-stop
+
+# Python bytecode. Foreman used to ship in-repo Python; a checkout that ran that
+# version keeps an orphaned scripts/foreman/__pycache__ which was never tracked,
+# so `git status` is dirty before anyone edits anything. (Python projects ignore
+# these in the block above.)
+__pycache__/
+*.pyc
+
 # Devcontainer env files (injected locally via 1Password, never committed)
 .devcontainer/**/devcontainer.env
 

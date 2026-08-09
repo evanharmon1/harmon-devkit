@@ -9,4 +9,5 @@ paths = [
     '''\.git/''',
     '''\.task/''',
     '''\.worktrees/''',
+    '''\.foreman/''',
 ]
