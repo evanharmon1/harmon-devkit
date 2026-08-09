@@ -223,7 +223,7 @@ tasks:
       - ./scripts/sync-devkit-release.sh run {{.CLI_ARGS}}
 
   sync:skills:
-    desc: Vendor the pinned skill categories from harmon-devkit into .claude/skills
+    desc: Vendor the pinned skill categories from harmon-devkit into .agents/skills
     cmds:
       - ./scripts/sync-skills.sh sync
 

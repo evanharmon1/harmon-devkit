@@ -40,13 +40,15 @@ PR body (`tracking-guard.yml`), so the skill's rules and the enforced rules are
 the same code.
 
 **harmon-devkit uses the `universal/` skills itself.** Each is symlinked into
-`.claude/skills/` — consumers vendor a pinned copy, but the source repo cannot
+`.agents/skills/`, with `.claude/skills` pointing at that directory for Claude
+Code compatibility. Consumers vendor a pinned copy, but the source repo cannot
 vendor from itself without waiting on its own release. The symlink makes the
 authored skill the live one, so a change is dogfooded in the session that writes
 it instead of a release and a pin bump later:
 
 ```sh
-ln -s ../../ai/skills/universal/<name> .claude/skills/<name>
+ln -s ../../ai/skills/universal/<name> .agents/skills/<name>
+ln -s ../.agents/skills .claude/skills
 ```
 
 Safe with the repo's gates: `lint-hygiene.sh` skips symlinks, `.claude/**` is
@@ -67,7 +69,7 @@ here without any consumer editing a per-skill list.
 
 ## The unique-name rule
 
-Categories are **flattened** when vendored (a consumer's `.claude/skills/` holds
+Categories are **flattened** when vendored (a consumer's `.agents/skills/` holds
 `<skill>/`, not `<category>/<skill>/`). So **skill directory names must be
 unique across all categories** — `backend/foo` and `frontend/foo` would collide
 in a consumer.

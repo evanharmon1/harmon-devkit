@@ -343,8 +343,9 @@ actually added.
   longer writes it). **Do this after the
   comment below**, not here in list order: the comment is what preserves the
   status this write destroys. The script ships with `track-work`, so
-  `<track-work-dir>` is `.claude/skills/track-work` in a repo that vendors the
-  skills and `ai/skills/universal/track-work` in harmon-devkit itself:
+  `<track-work-dir>` is `.agents/skills/track-work` when the portable path is
+  present, `.claude/skills/track-work` in a Claude-first consumer, and
+  `ai/skills/universal/track-work` in harmon-devkit itself:
 
   ```sh
   <track-work-dir>/assets/set-issue-status.sh \

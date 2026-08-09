@@ -17,9 +17,10 @@ files).
 
 - **Source of truth.** Skills live in harmon-devkit under `ai/skills/<category>/<skill>/SKILL.md`, grouped by category (`universal`, `backend`, `frontend`, `infra`, `mobile`, `repo`).
 - **Category-selective.** A consumer requests whole **categories**, not individual skills — so skills can move between categories in one place (harmon-devkit) without touching every consumer.
-- **Flattened on vendor.** Requested categories are flattened into the destination (`.claude/skills/<skill>/`), which is why skill directory names must be **unique across categories**. harmon-devkit enforces this at source with `task validate:skills`; the sync fails loudly if two requested categories collide.
+- **Flattened on vendor.** Requested categories are flattened into the destination (`.claude/skills/<skill>/` by default), which is why skill directory names must be **unique across categories**. harmon-devkit enforces this at source with `task validate:skills`; the sync fails loudly if two requested categories collide.
 - **Pinned tag.** The manifest pins a git tag, so updates are a deliberate manifest bump — never a surprise from upstream `main`.
-- **Shared destination — local skills are first-class.** The dest (`.claude/skills`) is shared between vendored and local skills. The sync manages **only** the dirs it vendored (recorded on the provenance `# managed:` line); any other directory is a local skill the repo owns — the sync and both verify modes never touch or report it. If a local dir's name collides with an incoming vendored skill, the sync fails loudly **before deleting anything** (rename the local skill or drop the category).
+- **Shared destination — local skills are first-class.** The dest (`.claude/skills` in the example) is shared between vendored and local skills. The sync manages **only** the dirs it vendored (recorded on the provenance `# managed:` line); any other directory is a local skill the repo owns — the sync and both verify modes never touch or report it. If a local dir's name collides with an incoming vendored skill, the sync fails loudly **before deleting anything** (rename the local skill or drop the category).
+- **Harness compatibility.** The example preserves the historical Claude-first destination so updating consumers do not strand their old managed tree. Codex and other harnesses can expose those same files through `.agents/skills`; harmon-init maintains migration-safe per-skill links automatically. Do not vendor two copies, because duplicated skill trees drift independently.
 - **Provenance.** Every synced destination gets a `.SKILLS_PROVENANCE` stamp recording the source, ref, resolved commit SHA, and the `# managed:` list of vendored dirs, with a do-not-edit marker for the managed skills.
 - **Agents ride along, optionally.** An `agents:` block vendors shared subagents (single `<name>.md` files) into their own dest, at the **same pinned ref**, in the same `task sync:skills` run. Omit the block and nothing about the sync changes.
 
@@ -45,7 +46,7 @@ Everything the skills pass guarantees, the agents pass guarantees too: pinned re
 
 Three things are specific to agents:
 
-- **One ref for both.** Agents and skills are pinned by the same `source.ref`, and that is deliberate rather than incidental. A shared agent is thin: it defers to a skill by _reading_ it (`.claude/skills/<name>/SKILL.md`). Pinning the two separately would let an agent follow a procedure that no longer exists at the other pin.
+- **One ref for both.** Agents and skills are pinned by the same `source.ref`, and that is deliberate rather than incidental. A shared agent is thin: it defers to a skill by discovering and _reading_ its `SKILL.md`. Pinning the two separately would let an agent follow a procedure that no longer exists at the other pin.
 - **`names`, not categories.** Agents are few and flat, so a consumer names them — or asks for all of them with `["*"]`. Mixing `"*"` with explicit names is a manifest error, not a union.
 - **Separate dest, always.** `agents.dest` must differ from `dest`. Two independent managed sets over one directory would each have to reason about the other's deletions; the sync refuses the arrangement instead.
 
@@ -111,6 +112,45 @@ That works because the skills stamp records `# agents-dest:`. It has to: `agents
    Stage the agents dest too, or the committed manifest requests agents that no
    commit contains — and the drift check fails on the next clone or CI run,
    correctly, for a reason that looks nothing like "you forgot to `git add`".
+
+   Expose the same tree to Codex and other portable harnesses. The first branch
+   handles a repo without `.agents/skills`; the second preserves an existing
+   native portable tree and adds only missing per-skill links:
+
+   ```sh
+   if [ ! -e .agents/skills ]; then
+     mkdir -p .agents
+     ln -s ../.claude/skills .agents/skills
+   else
+     for link in .agents/skills/*; do
+       [ -L "$link" ] || continue
+       case "$(readlink "$link")" in
+         ../../.claude/skills/*) [ -d "$link" ] || unlink "$link" ;;
+       esac
+     done
+     for skill in .claude/skills/*/; do
+       name="$(basename "${skill%/}")"
+       link=".agents/skills/$name"
+       target="../../.claude/skills/$name"
+       if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
+         continue
+       fi
+       if [ -e "$link" ] || [ -L "$link" ]; then
+         echo "refusing divergent same-name skill: $link" >&2
+         exit 1
+       fi
+       ln -s "$target" "$link"
+     done
+   fi
+   git add .agents/skills
+   ```
+
+   Repeat the compatibility step after every sync; it adds new links and prunes
+   only broken links that point back into the Claude-managed tree. A native
+   same-name skill is an explicit collision to reconcile, never an implicit
+   harness-specific override.
+   Never change an existing consumer's `dest` merely to add another harness:
+   that would leave the old managed destination and provenance behind.
 
 Requires `yq` ([mikefarah/yq](https://github.com/mikefarah/yq)) and `git` on `PATH`. Step 1 also uses `gh` to resolve the newest release; without it, open the [releases page](https://github.com/evanharmon1/harmon-devkit/releases/latest) and substitute the tag by hand — just don't reuse your manifest `ref` for it, which is the mistake the warning above describes.
 

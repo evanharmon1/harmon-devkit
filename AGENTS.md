@@ -203,7 +203,7 @@ error silently reverts the lifecycle rather than fixing anything.
   Where the optional
   `/shepherd` skill is vendored it is the procedure, and it is **user-invocable
   only** (`disable-model-invocation: true`): an agent enters the stage by
-  reading `.claude/skills/shepherd/SKILL.md` and following it, not by calling a
+  reading `.agents/skills/shepherd/SKILL.md` and following it, not by calling a
   slash command it cannot call. Where it is not vendored, this bullet is the
   procedure. Start by
   re-reading any **unsettled** findings the PR description defers to this

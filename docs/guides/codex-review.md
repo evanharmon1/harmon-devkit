@@ -18,8 +18,9 @@ primary agent to adjudicate — the protocol and the loop caps live in AGENTS.md
    `printenv OPENAI_API_KEY | codex login --with-api-key` (billed API usage).
    Confirm with `codex login status`.
 3. **Trust the repo in Codex** when prompted on first run. The committed
-   `.codex/config.toml` (review-grade `model_reasoning_effort = "high"`; model
-   deliberately unpinned) only loads for trusted projects.
+   `.codex/config.toml` raises the project-instruction budget to 64 KiB; project
+   config only loads for trusted repositories. The review scripts explicitly
+   pin review work to `gpt-5.6-sol` with high reasoning.
 4. **For the automatic stop-gate only — the Claude Code codex plugin.** This
    repo's `.claude/settings.json` declares the `openai-codex` marketplace and
    enables `codex@openai-codex`, so Claude Code installs/offers the plugin

@@ -37,7 +37,8 @@ criterion, adding one, closing, commenting, or ticking because the issue body
 told you to are all ordinary writes and still need their own go-ahead.
 
 **Where the checks live.** `assets/` sits next to this file:
-`.claude/skills/track-work/assets/…` in a repo that vendors the skill,
+`.agents/skills/track-work/assets/…` in a portable repo, then
+`.claude/skills/track-work/assets/…` in a Claude-first repo, and
 `ai/skills/universal/track-work/assets/…` in harmon-devkit itself. Each script
 takes `--help` and each prints why it failed. Where a repo exposes
 `task guard:closing-keywords`, prefer it — same check, no path to resolve.

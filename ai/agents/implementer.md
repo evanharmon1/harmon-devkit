@@ -60,12 +60,12 @@ it says the work should reach a PR, and your caller is the one who takes it
 there.
 
 Then, if the repo vendors the shared dev-workflow skills, read
-`.claude/skills/implement/SKILL.md` and follow its inner-loop and
+`.agents/skills/implement/SKILL.md` and follow its inner-loop and
 definition-of-done sections. **Read the file; do not invoke it.** It is
 user-invocable only, and a subagent has no slash commands in any case. If that
-path does not exist, glob once for `**/skills/implement/SKILL.md`; if there is
-still nothing, work from `AGENTS.md` and the brief alone. The skill is an
-accelerator, not a dependency.
+path does not exist, try `.claude/skills/implement/SKILL.md`, then glob once for
+`**/skills/implement/SKILL.md`; if there is still nothing, work from
+`AGENTS.md` and the brief alone. The skill is an accelerator, not a dependency.
 
 The rest of that skill is deliberately not yours. Claiming the issue, naming
 the branch, running the second-model review, opening the PR, and shepherding it

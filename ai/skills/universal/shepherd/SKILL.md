@@ -1006,8 +1006,9 @@ Before the first write, re-read the issue's live state
 issue, or one claimed by a different agent since, is not yours to move.
 
 **When.** Match the status to what is *actually* true, using `track-work`'s
-asset (paths resolve as in `track-work`: `.claude/skills/track-work/assets/…`
-vendored, `ai/skills/universal/track-work/assets/…` in harmon-devkit). The
+asset (paths resolve as in `track-work`: `.agents/skills/track-work/assets/…`
+portable, `.claude/skills/track-work/assets/…` Claude-first, and
+`ai/skills/universal/track-work/assets/…` in harmon-devkit). The
 pipeline distinguishes these three, so do not collapse them:
 
 | Condition | Status |

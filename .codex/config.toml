@@ -2,7 +2,6 @@
 # Loaded only once the repo is trusted by Codex (`codex` prompts on first run,
 # or set [projects."<path>"] trust_level = "trusted" in ~/.codex/config.toml).
 #
-# Reviews (task review / task challenge) benefit from deeper reasoning than a
-# fast interactive default. The model is deliberately left unpinned so reviews
-# track the Codex CLI's current default instead of an aging snapshot.
-model_reasoning_effort = "high"
+# Keep this source repo portable across harness defaults while allowing Codex to
+# read the full project policy when it grows beyond the default 32 KiB budget.
+project_doc_max_bytes = 65536
