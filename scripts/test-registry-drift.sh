@@ -125,9 +125,13 @@ if [ -f "$labels_script" ]; then
 exit 0
 STUB
     chmod +x "$stub_dir/gh"
-    emitted="$(PATH="$stub_dir:$PATH" bash "$labels_script" --repo drift/check --foreman 2>/dev/null | sort -u)"
+    emitted="$(PATH="$stub_dir:$PATH" bash "$labels_script" --repo drift/check --foreman 2>/dev/null | LC_ALL=C sort -u)"
     rm -rf "$stub_dir"
-    missing="$(comm -23 <(printf '%s\n' "$names" | sort -u) <(printf '%s\n' "$emitted"))"
+    # LC_ALL=C on the producers AND the consumer: `comm` re-derives the ordering
+    # its inputs must already be in, so both sides have to agree on collation,
+    # and label names carry `:`/`-`, which UTF-8 locales order differently than
+    # byte value does.
+    missing="$(LC_ALL=C comm -23 <(printf '%s\n' "$names" | LC_ALL=C sort -u) <(printf '%s\n' "$emitted"))"
     if [ -n "$missing" ]; then
         fail "$labels_script did not provision registry label(s) [$(echo "$missing" | tr '\n' ' ')] when run — it must render every mode (suggest-claim AND foreman-adapters) from agent-registry-labels.mjs"
     fi

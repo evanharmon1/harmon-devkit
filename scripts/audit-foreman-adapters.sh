@@ -79,17 +79,21 @@ shipped="$(printf '%s' "$tree_json" |
     jq -r '.tree[].path
            | select(startswith("src/foreman/backends/") and endswith(".sh"))
            | ltrimstr("src/foreman/backends/")
-           | select(contains("/") | not)' | sort -u)"
+           | select(contains("/") | not)' | LC_ALL=C sort -u)"
 
 if [ -z "$shipped" ]; then
     echo "no *.sh adapters found under src/foreman/backends/ at ${ref} — the path may have moved upstream (indeterminate, not a pass)" >&2
     exit 2
 fi
 
-declared="$(jq -r '.foreman_adapters[].source_file' "$registry" | sort -u)"
+declared="$(jq -r '.foreman_adapters[].source_file' "$registry" | LC_ALL=C sort -u)"
 
-only_foreman="$(comm -23 <(printf '%s\n' "$shipped") <(printf '%s\n' "$declared"))"
-only_registry="$(comm -13 <(printf '%s\n' "$shipped") <(printf '%s\n' "$declared"))"
+# LC_ALL=C on the producers AND the consumers: `comm` re-derives the ordering
+# its inputs must already be in, so both sides have to agree on collation, and
+# adapter filenames carry `-`/`.`, which UTF-8 locales order differently than
+# byte value does.
+only_foreman="$(LC_ALL=C comm -23 <(printf '%s\n' "$shipped") <(printf '%s\n' "$declared"))"
+only_registry="$(LC_ALL=C comm -13 <(printf '%s\n' "$shipped") <(printf '%s\n' "$declared"))"
 
 if [ -z "$only_foreman" ] && [ -z "$only_registry" ]; then
     echo "Foreman ${ref} adapters match agent-registry.json foreman_adapters:"
