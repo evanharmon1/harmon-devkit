@@ -98,6 +98,12 @@ expect_ok "Claude compatibility path targets the portable skill tree" \
     test "$(readlink "$repo/.claude/skills")" = "../.agents/skills"
 expect_ok "portable dogfood tree exposes the implement skill" \
     test -f "$repo/.agents/skills/implement/SKILL.md"
+expect_ok "skills-sync compatibility step recognizes its directory symlink" \
+    grep -qF 'readlink .agents/skills)" = "../.claude/skills"' \
+    "$repo/templates/skills-sync/README.md"
+expect_ok "track-work pre-approves portable asset paths" \
+    grep -qF 'Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*)' \
+    "$repo/ai/skills/universal/track-work/SKILL.md"
 
 git_commit_all() {
     git -C "$1" add -A

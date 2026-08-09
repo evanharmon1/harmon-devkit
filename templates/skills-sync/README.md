@@ -118,10 +118,12 @@ That works because the skills stamp records `# agents-dest:`. It has to: `agents
    native portable tree and adds only missing per-skill links:
 
    ```sh
-   if [ ! -e .agents/skills ]; then
+   if [ -L .agents/skills ] && [ "$(readlink .agents/skills)" = "../.claude/skills" ]; then
+     : # directory-level compatibility link is already current
+   elif [ ! -e .agents/skills ] && [ ! -L .agents/skills ]; then
      mkdir -p .agents
      ln -s ../.claude/skills .agents/skills
-   else
+   elif [ -d .agents/skills ]; then
      for link in .agents/skills/*; do
        [ -L "$link" ] || continue
        case "$(readlink "$link")" in
@@ -141,6 +143,9 @@ That works because the skills stamp records `# agents-dest:`. It has to: `agents
        fi
        ln -s "$target" "$link"
      done
+   else
+     echo "refusing divergent portable skills path: .agents/skills" >&2
+     exit 1
    fi
    git add .agents/skills
    ```
