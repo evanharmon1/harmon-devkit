@@ -26,8 +26,10 @@ expected_login = "evanharmon1-bot"
 # Accounts (humans and apps) whose content and arming events are trusted:
 # who may arm an issue, and whose review/comment content may be embedded in
 # agent prompts. Empty = nobody is trusted (fail closed). App accounts are
-# spelled with the `[bot]` suffix.
-trusted_actors = ["evanharmon1", "evanharmon1-bot", "Copilot"]
+# spelled with the `[bot]` suffix. A configured `[reviewer]` login belongs in
+# this list — requiring review evidence whose content cannot be embedded
+# would wedge shepherding on unadjudicatable findings.
+trusted_actors = ["evanharmon1", "evanharmon1-bot", "Copilot", "chatgpt-codex-connector[bot]"]
 
 # Hard capability requirements: the baseline gate cannot run without these;
 # a mismatch is refused before dispatch.
@@ -59,3 +61,15 @@ shepherd_usd = 10.0
 [timeouts]
 dispatch_min = 90
 shepherd_min = 30
+
+# Current-head reviewer gate (foreman >= 2.2.0): the same `@codex review`
+# contract the shepherd stage documents in AGENTS.md — fail-closed, bounded
+# attempts, evidence bound to the current head. Success is an APPROVED review
+# at the head or a thumbs-up from `login` on foreman's own request comment;
+# missing, stale, pending, contradictory, or unreadable evidence blocks
+# promotion.
+[reviewer]
+login = "chatgpt-codex-connector[bot]"
+request = "@codex review"
+timeout_min = 15
+max_attempts = 2

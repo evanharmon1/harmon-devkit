@@ -22,6 +22,18 @@ default so a human stays in the loop. The shared managed settings
 at create time via `scripts/enable-claude-bypass.sh`. `bypassPermissions` is only
 safe because it is container-scoped — it is never set on the host.
 
+**Antigravity autonomy is enabled for the bot profile.** It applies
+`always-proceed`, always accepts artifact reviews, allows non-workspace access,
+disables Antigravity's inner terminal sandbox, and trusts the current container
+workspace. The human profile keeps Antigravity's normal prompts. Run `agy`
+interactively once to complete Google sign-in; the pinned CLI falls back to
+file-backed credentials when the headless container has no D-Bus keyring, and
+the `~/.gemini` named volume persists that login. A checksum-verified
+compatibility installer covers the interval before the shared-image pin
+advances, then becomes a network-free no-op. The settings helper backs up the
+four policy keys it owns and tracks its workspace-trust entry, so turning the
+Copier option off restores both while preserving unrelated settings.
+
 ## Run it locally
 
 - **VS Code:** "Dev Containers: Reopen in Container" → pick the **Dev** profile

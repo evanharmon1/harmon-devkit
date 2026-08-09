@@ -136,10 +136,41 @@ api--repos/*/releases/tags/*)
     *) echo "$_tag false false" ;;
     esac
     ;;
-pr--list) echo '';;
+pr--list) echo "${STUB_PR_LIST:-}";;
 pr--create) echo "created";;
-pr--edit) echo "edited";;
-pr--view) echo '{"title":""}';;
+pr--edit)
+    if [ -n "${STUB_EDIT_MAKES_READY:-}" ]; then
+        rm -f "${STUB_PR_DRAFT_MARKER:-/nonexistent}"
+    fi
+    echo "edited"
+    ;;
+pr--view)
+    case "$*" in
+    *"--json title"*)
+        [ -z "${STUB_FAIL_PR_TITLE_VIEW:-}" ] || exit 1
+        echo "${STUB_PR_TITLE:-}"
+        ;;
+    *"--json number"*)
+        [ -z "${STUB_FAIL_PR_NUMBER_VIEW:-}" ] || exit 1
+        echo "${STUB_PR_NUMBER:-42}"
+        ;;
+    *"--json headRefOid,isDraft"*)
+        [ -z "${STUB_FAIL_PR_DRAFT_VIEW:-}" ] || exit 1
+        _stub_head="${STUB_PR_HEAD:-$(git rev-parse HEAD)}"
+        if [ -f "${STUB_PR_DRAFT_MARKER:-/nonexistent}" ]; then
+            echo "$_stub_head true"
+        else
+            echo "$_stub_head ${STUB_PR_IS_DRAFT:-true}"
+        fi
+        ;;
+    *) exit 1;;
+    esac
+    ;;
+pr--ready)
+    [ "${3:-}" = "--undo" ] || exit 1
+    [ -z "${STUB_FAIL_READY_UNDO:-}" ] || exit 1
+    : >"$STUB_PR_DRAFT_MARKER"
+    ;;
 api--/users/*) echo '12345' ;;
 *) exit 0;;
 esac
@@ -149,11 +180,33 @@ SCRIPT
 
 export TASK_LOG="$TEST_ROOT/task.log"
 export GH_LOG="$TEST_ROOT/gh.log"
+export STUB_PR_LIST=""
+export STUB_PR_TITLE=""
+export STUB_FAIL_PR_TITLE_VIEW=""
+export STUB_PR_NUMBER="42"
+export STUB_PR_HEAD=""
+export STUB_PR_IS_DRAFT="true"
+export STUB_PR_DRAFT_MARKER="$TEST_ROOT/pr-draft"
+export STUB_FAIL_PR_NUMBER_VIEW=""
+export STUB_FAIL_PR_DRAFT_VIEW=""
+export STUB_FAIL_READY_UNDO=""
+export STUB_EDIT_MAKES_READY=""
 
 clear_logs() {
     rm -f "$TASK_LOG" "$GH_LOG"
     : >"$TASK_LOG"
     : >"$GH_LOG"
+    STUB_PR_LIST=""
+    STUB_PR_TITLE=""
+    STUB_FAIL_PR_TITLE_VIEW=""
+    STUB_PR_NUMBER="42"
+    STUB_PR_HEAD=""
+    STUB_PR_IS_DRAFT="true"
+    rm -f "$STUB_PR_DRAFT_MARKER"
+    STUB_FAIL_PR_NUMBER_VIEW=""
+    STUB_FAIL_PR_DRAFT_VIEW=""
+    STUB_FAIL_READY_UNDO=""
+    STUB_EDIT_MAKES_READY=""
 }
 
 # ── Assertions ────────────────────────────────────────────────────────
@@ -296,7 +349,117 @@ test_happy_path() {
     assert_task_not_logged "task verify:skills" || return 1
     assert_task_not_logged "task verify" || return 1
     assert_gh_logged "gh pr create" || return 1
+    assert_gh_logged "gh pr create --draft" || return 1
+    assert_gh_logged "gh pr view 42 --json headRefOid,isDraft" || return 1
     assert_commit_title "$FIXTURE" "fix: sync harmon-devkit skills to v0.9.0" || return 1
+}
+
+test_ready_created_pr_is_reverted() {
+    note "a created PR that lands ready is returned to draft"
+    FIXTURE="$(build_fixture v0.1.0)"
+    clear_logs
+    STUB_PR_IS_DRAFT="false"
+    write_gh_stub
+    write_task_stub pass
+    run_helper_with_tag v0.9.0 || return 1
+    assert_gh_logged "gh pr ready --undo 42" || return 1
+    [ "$(grep -cF 'gh pr view 42 --json headRefOid,isDraft' "$GH_LOG")" -ge 2 ] || {
+        echo "draft conversion was not re-confirmed" >&2
+        return 1
+    }
+}
+
+test_created_pr_head_mismatch_fails() {
+    note "a created PR on a different head fails closed"
+    FIXTURE="$(build_fixture v0.1.0)"
+    clear_logs
+    STUB_PR_HEAD="0000000000000000000000000000000000000000"
+    write_gh_stub
+    write_task_stub pass
+    ! run_helper_with_tag v0.9.0 || {
+        echo "a PR on an unverified head was reported as success" >&2
+        return 1
+    }
+}
+
+test_unresolvable_created_pr_fails() {
+    note "an unresolvable created PR fails closed"
+    FIXTURE="$(build_fixture v0.1.0)"
+    clear_logs
+    STUB_FAIL_PR_NUMBER_VIEW="true"
+    write_gh_stub
+    write_task_stub pass
+    ! run_helper_with_tag v0.9.0 || {
+        echo "an unresolvable PR was reported as success" >&2
+        return 1
+    }
+}
+
+test_ready_existing_pr_is_drafted_before_push() {
+    note "a ready existing PR must become draft before force-push"
+    FIXTURE="$(build_fixture v0.1.0)"
+    clear_logs
+    STUB_PR_LIST="42"
+    STUB_PR_IS_DRAFT="false"
+    STUB_FAIL_READY_UNDO="true"
+    write_gh_stub
+    write_task_stub pass
+    ! run_helper_with_tag v0.9.0 || {
+        echo "a ready PR was overwritten without draft conversion" >&2
+        return 1
+    }
+    ! git --git-dir="$TEST_ROOT/origin.git" show-ref --verify --quiet "refs/heads/bot/sync-harmon-devkit" || {
+        echo "sync branch was pushed before draft conversion" >&2
+        return 1
+    }
+}
+
+test_updated_pr_is_rechecked_after_edit() {
+    note "an updated PR is re-converted if editing publishes it ready"
+    FIXTURE="$(build_fixture v0.1.0)"
+    clear_logs
+    STUB_PR_LIST="42"
+    STUB_PR_IS_DRAFT="false"
+    STUB_EDIT_MAKES_READY="true"
+    write_gh_stub
+    write_task_stub pass
+    run_helper_with_tag v0.9.0 || return 1
+    [ "$(grep -cF 'gh pr ready --undo 42' "$GH_LOG")" -eq 2 ] || {
+        echo "PR was not converted before push and after edit" >&2
+        return 1
+    }
+}
+
+test_indeterminate_title_preserves_handoff() {
+    note "an indeterminate title read preserves an unchanged handed-off PR"
+    FIXTURE="$(build_fixture v0.1.0)"
+    clear_logs
+    write_gh_stub
+    write_task_stub pass
+    run_helper_with_tag v0.9.0 || return 1
+    _pushed_before="$(git --git-dir="$TEST_ROOT/origin.git" rev-parse bot/sync-harmon-devkit)"
+    git -C "$FIXTURE" checkout --quiet main
+    clear_logs
+    STUB_PR_LIST="42"
+    STUB_PR_IS_DRAFT="false"
+    STUB_FAIL_PR_TITLE_VIEW="true"
+    write_gh_stub
+    ! run_helper_with_tag v0.9.0 || {
+        echo "an unreadable title was treated as stale metadata" >&2
+        return 1
+    }
+    [ "$(git --git-dir="$TEST_ROOT/origin.git" rev-parse bot/sync-harmon-devkit)" = "$_pushed_before" ] || {
+        echo "an unreadable title churned the remote branch" >&2
+        return 1
+    }
+    ! grep -qF "gh pr edit" "$GH_LOG" || {
+        echo "an unreadable title triggered metadata repair" >&2
+        return 1
+    }
+    ! grep -qF "gh pr ready --undo" "$GH_LOG" || {
+        echo "an unreadable title revoked the human handoff" >&2
+        return 1
+    }
 }
 
 test_happy_path_with_agents() {
@@ -490,6 +653,12 @@ TESTS=(
     test_reject_unknown_release
     test_pinned
     test_happy_path
+    test_ready_created_pr_is_reverted
+    test_unresolvable_created_pr_fails
+    test_created_pr_head_mismatch_fails
+    test_ready_existing_pr_is_drafted_before_push
+    test_updated_pr_is_rechecked_after_edit
+    test_indeterminate_title_preserves_handoff
     test_happy_path_with_agents
     test_noop_when_current
     test_dirty_tree_refused

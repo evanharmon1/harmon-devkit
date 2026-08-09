@@ -67,6 +67,8 @@ tasks:
     cmds:
       - task: check
       - task: validate
+      - task: test:agent-registry
+      - task: test:registry-drift
       - task: test:tasks
       - task: test:ci-results
       - task: test:status
@@ -277,6 +279,16 @@ tasks:
       - test:track-work
       - test:skill-index-lifecycle
       - test:independence
+
+  test:agent-registry:
+    desc: Schema-check the machine-readable agent registry and its cross-record invariants
+    cmds:
+      - ./scripts/test-agent-registry.sh
+
+  test:registry-drift:
+    desc: Bind label provisioning, provider wrappers, and Foreman adapters to the agent registry (offline drift gate)
+    cmds:
+      - ./scripts/test-registry-drift.sh
 
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)

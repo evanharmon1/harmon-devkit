@@ -1,0 +1,220 @@
+{
+  "$schema": "./agent-registry.schema.json",
+  "schema_version": 1,
+  "labels": {
+    "suggest": {
+      "prefix": "suggest",
+      "axis": "model",
+      "scopes": ["family", "model"],
+      "arming": false
+    },
+    "claim": {
+      "prefix": "claim",
+      "axis": "model",
+      "scopes": ["family", "model"],
+      "arming": false
+    }
+  },
+  "families": [
+    {
+      "slug": "claude",
+      "display_name": "Claude",
+      "models": [
+        { "slug": "opus", "display_name": "Opus" },
+        { "slug": "sonnet", "display_name": "Sonnet" },
+        { "slug": "haiku", "display_name": "Haiku" }
+      ]
+    },
+    {
+      "slug": "codex",
+      "display_name": "OpenAI Codex",
+      "models": [
+        { "slug": "sol", "display_name": "Sol" },
+        { "slug": "terra", "display_name": "Terra" },
+        { "slug": "luna", "display_name": "Luna" }
+      ]
+    },
+    { "slug": "copilot", "display_name": "GitHub Copilot", "models": [] },
+    {
+      "slug": "qwen",
+      "display_name": "Qwen",
+      "models": [{ "slug": "coder", "display_name": "Coder" }]
+    },
+    { "slug": "deepseek", "display_name": "DeepSeek", "models": [] },
+    {
+      "slug": "glm",
+      "display_name": "GLM",
+      "models": [{ "slug": "5-2", "display_name": "5.2" }]
+    },
+    {
+      "slug": "kimi",
+      "display_name": "Kimi",
+      "models": [{ "slug": "k3", "display_name": "K3" }]
+    },
+    { "slug": "minimax", "display_name": "MiniMax", "models": [] },
+    { "slug": "gemini", "display_name": "Gemini", "models": [] }
+  ],
+  "harnesses": [
+    {
+      "slug": "claude-code",
+      "display_name": "Claude Code",
+      "product": "Claude Code CLI",
+      "family_constraint": { "kind": "fixed", "family": "claude" },
+      "model_resolution": {
+        "owner": "runner-config",
+        "details": "The runner or repository configuration selects the Claude model; labels do not."
+      },
+      "provider_rewired": false
+    },
+    {
+      "slug": "claude-code-action",
+      "display_name": "Claude Code Action",
+      "product": "claude-code-action",
+      "family_constraint": { "kind": "fixed", "family": "claude" },
+      "model_resolution": {
+        "owner": "workflow-config",
+        "details": "The GitHub Actions workflow input selects the Claude model."
+      },
+      "provider_rewired": false
+    },
+    {
+      "slug": "claude-code-deepseek",
+      "display_name": "Claude Code with DeepSeek",
+      "product": "Claude Code provider wrapper",
+      "family_constraint": { "kind": "fixed", "family": "deepseek" },
+      "model_resolution": {
+        "owner": "provider-wrapper",
+        "details": "The provider-rewired wrapper fixes the family and its runtime configuration selects the model."
+      },
+      "provider_rewired": true
+    },
+    {
+      "slug": "claude-code-glm",
+      "display_name": "Claude Code with GLM",
+      "product": "Claude Code provider wrapper",
+      "family_constraint": { "kind": "fixed", "family": "glm" },
+      "model_resolution": {
+        "owner": "provider-wrapper",
+        "details": "The provider-rewired wrapper fixes the family and its runtime configuration selects the model."
+      },
+      "provider_rewired": true
+    },
+    {
+      "slug": "claude-code-kimi",
+      "display_name": "Claude Code with Kimi",
+      "product": "Claude Code provider wrapper",
+      "family_constraint": { "kind": "fixed", "family": "kimi" },
+      "model_resolution": {
+        "owner": "provider-wrapper",
+        "details": "The provider-rewired wrapper fixes the family and its runtime configuration selects the model."
+      },
+      "provider_rewired": true
+    },
+    {
+      "slug": "claude-code-minimax",
+      "display_name": "Claude Code with MiniMax",
+      "product": "Claude Code provider wrapper",
+      "family_constraint": { "kind": "fixed", "family": "minimax" },
+      "model_resolution": {
+        "owner": "provider-wrapper",
+        "details": "The provider-rewired wrapper fixes the family and its runtime configuration selects the model."
+      },
+      "provider_rewired": true
+    },
+    {
+      "slug": "codex-cli",
+      "display_name": "OpenAI Codex CLI",
+      "product": "OpenAI Codex CLI",
+      "family_constraint": { "kind": "fixed", "family": "codex" },
+      "model_resolution": {
+        "owner": "runner-config",
+        "details": "The runner or CLI invocation selects the Codex model."
+      },
+      "provider_rewired": false
+    },
+    {
+      "slug": "copilot-cli",
+      "display_name": "GitHub Copilot CLI",
+      "product": "GitHub Copilot CLI",
+      "family_constraint": { "kind": "fixed", "family": "copilot" },
+      "model_resolution": {
+        "owner": "runner-config",
+        "details": "The runner or Copilot configuration selects the model."
+      },
+      "provider_rewired": false
+    },
+    {
+      "slug": "qwen-code",
+      "display_name": "Qwen Code",
+      "product": "Qwen Code CLI",
+      "family_constraint": { "kind": "fixed", "family": "qwen" },
+      "model_resolution": {
+        "owner": "runner-config",
+        "details": "The runner or Qwen Code configuration selects the Qwen model."
+      },
+      "provider_rewired": false
+    },
+    {
+      "slug": "antigravity",
+      "display_name": "Google Antigravity",
+      "product": "Google Antigravity",
+      "family_constraint": { "kind": "fixed", "family": "gemini" },
+      "model_resolution": {
+        "owner": "harness-runtime",
+        "details": "The Antigravity session selects the Gemini model."
+      },
+      "provider_rewired": false
+    },
+    {
+      "slug": "opencode",
+      "display_name": "OpenCode",
+      "product": "OpenCode",
+      "family_constraint": { "kind": "none" },
+      "model_resolution": {
+        "owner": "harness-runtime",
+        "details": "The multi-provider harness selects both provider family and model at runtime."
+      },
+      "provider_rewired": false
+    },
+    {
+      "slug": "pi",
+      "display_name": "Pi",
+      "product": "Pi",
+      "family_constraint": { "kind": "none" },
+      "model_resolution": {
+        "owner": "harness-runtime",
+        "details": "The multi-provider harness selects both provider family and model at runtime."
+      },
+      "provider_rewired": false
+    }
+  ],
+  "foreman_adapters": [
+    {
+      "slug": "claude",
+      "display_name": "Claude",
+      "source_file": "claude.sh",
+      "harness": "claude-code",
+      "classification": "production",
+      "production_dispatchable": true,
+      "provision_label": true
+    },
+    {
+      "slug": "claude-code-deepseek",
+      "display_name": "Claude Code with DeepSeek",
+      "source_file": "claude-code-deepseek.sh",
+      "harness": "claude-code-deepseek",
+      "classification": "production",
+      "production_dispatchable": false,
+      "provision_label": false
+    },
+    {
+      "slug": "mock",
+      "display_name": "Mock (tests only)",
+      "source_file": "mock.sh",
+      "harness": null,
+      "classification": "test-only",
+      "production_dispatchable": false,
+      "provision_label": false
+    }
+  ]
+}

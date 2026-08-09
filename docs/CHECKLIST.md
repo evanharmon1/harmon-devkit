@@ -84,6 +84,39 @@ config, toolchain, devcontainer, and dev environment — against the items below
       with `claude setup-token`; the value must start **`sk-ant-oat01-`** (an OAuth
       token, billed to your Claude subscription), **not** `sk-ant-api03-` (a raw API
       key, billed at pay-as-you-go API rates). Then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`
+- [ ] **Foreman operator setup** — provision the separate READ-ONLY PAT that
+      foreman hands to dispatched agents: export/store it as
+      `FOREMAN_AGENT_GH_TOKEN` where the bot devcontainer's `init-env.sh` can
+      inject it (1Password → devcontainer.env). Run `task setup:github-labels`
+      so the `foreman:*` arming labels exist. Import the two tag rulesets
+      (`.github/Tag Protection Ruleset - Version Tag Creation.json` /
+      `… Immutability.json`, same UI import as the branch ruleset), then add
+      the CI GitHub App to the **Creation** ruleset's bypass list (`always`) —
+      release-please tags via that App, and bypass-actor App IDs are
+      per-installation so the JSON cannot ship them. (Immutability keeps an
+      empty bypass list on purpose: a moved `v*` tag is code execution in
+      every consumer, so nobody bypasses it.) Create the standing probe tag on
+      an **orphan commit**, so it is reachable from no branch:
+      `git tag v0.0.0-probe "$(git commit-tree "$(git hash-object -t tree /dev/null)" -m 'foreman tag-immutability probe target (orphan; keep unreachable from any branch)')" && git push origin v0.0.0-probe`.
+      Do not tag `HEAD` or any commit on `main`: `git describe` considers only
+      tags reachable from `HEAD` and prefers the nearest, so a probe tag on a
+      release commit outranks the release tag, and everything deriving a
+      version from `git describe` — release tooling, image tags, package
+      builds — then reports `0.0.0-probe` instead of the release. The probe
+      only needs the remote tag's sha to differ from `main`'s, so an orphan
+      target satisfies it permanently. Preflight
+      empirically asserts `v*` tags are immutable and fails until both
+      rulesets and the tag exist. Then `task foreman:preflight` (inside the
+      bot devcontainer — foreman refuses to start anywhere else) to assert
+      the security controls before any dispatch.
+- [ ] **[human-only] Foreman reviewer-gate check** — `.foreman.toml`'s
+      `[reviewer]` table is foreman's current-head review gate for the PRs it
+      shepherds. Before the first dispatch (and again after any Foreman bump),
+      confirm the configured `login` still matches the live Codex connector
+      identity (actor ID `199175422`), that its terminal results — an APPROVED
+      review at the head, or a 👍 from that login on foreman's own request
+      comment — still mean what the readiness gate assumes, and that required
+      checks run on draft PRs (foreman promotes only after they conclude).
 - [ ] **SAST coverage** — this profile has no CodeQL workflow, so Semgrep CE runs
       in `build.yml` for public and private repositories. Add CodeQL later if the
       repo gains supported first-party source: set `use_codeql=true`, select its
@@ -129,6 +162,66 @@ config, toolchain, devcontainer, and dev environment — against the items below
       docs/architecture/security.md.
 - [ ] GHCR: ensure the org/user allows publishing packages; the first
       devcontainer prebuild populates `ghcr.io/evanharmon1/harmon-devkit-devcontainer` on merge to main
+- [ ] GitHub Project: run `task setup:github-project` (needs
+      `gh auth refresh -s project`) to create the owner's default project (titled
+      `evanharmon1 Project`) and idempotently sync its `Status` pipeline and
+      `Size` number field — see
+      [project-management.md](project-management.md).
+      On a personal account it also creates Priority/Product/Domain/Layer/
+      Size as project fields (issue fields are org-only); status automation is a
+      separate follow-up — the board is set up, but issue/PR status isn't
+      auto-synced yet. `Domain` is seeded with `auth`/`billing`/`platform` only —
+      add this product's real domains in the Project UI, and matching `domain:`
+      labels in `scripts/setup-github-labels.sh`. Re-runs **append** any starter
+      option a single-select field is missing (so a value added by a later
+      harmon-init release lands on the next run) and never touch, reorder, or
+      delete the options you added.
+- [ ] Labels: run `task setup:github-labels` to seed this repo's starter label
+      families (concerns/source/workflow/layer/domain — see
+      [project-management.md](project-management.md)). Labels are per-repo, so run
+      it in each repo; org default labels (org Settings → Repository, UI-only) only
+      seed new repos.
+- [ ] **[human-only] Retire any legacy `agent:*` claim labels** — needed only
+      where `gh label list --limit 200` still shows the harness-named family
+      (`agent:claude-code`, `agent:gemini-cli`, …) a pre-registry harmon-init
+      seeded. **Pass an explicit `--limit` to every `gh label list`,
+      `gh issue list`, and `gh pr list` in this step**: all three default to 30,
+      the starter set alone is over 40 labels, and an unbounded read reports a
+      clean repo — or a finished migration — while legacy labels, in-flight
+      claims, and labelled pull requests remain.
+      `setup-github-labels` never deletes a label, so the old family
+      survives beside the registry-rendered `claim:*` one, and every reader
+      tolerates both — this is cleanup, not a fix for something broken.
+      **Rename, never re-create**: `gh label edit agent:claude-code --name
+      claim:claude --repo <owner/repo>` edits the label object in place, so every
+      issue and PR carrying it keeps it, where create-then-delete would silently
+      drop those associations. Map by **model family, not harness** —
+      `agent:gemini-cli` → `claim:gemini`, `agent:kimi-k2` → `claim:kimi`,
+      `agent:qwen-code` → `claim:qwen`, `agent:github-copilot` →
+      `claim:copilot` — taking the target names from
+      `node scripts/agent-registry-labels.mjs suggest-claim`. A rename whose
+      target already exists is rejected by GitHub — migrate that one by hand,
+      and enumerate **`gh pr list` as well as `gh issue list`**: labels apply to
+      pull requests too and `gh issue list` never returns them, so deleting the
+      legacy label afterwards would drop exactly the associations the re-labelling
+      missed — the loss this whole item exists to avoid. Check for in-flight
+      claims first — `gh issue list --label agent:… --state all --limit 200`
+      **and** `gh pr list --label agent:… --state all --limit 200`: a claim
+      record naming the old label will not release the renamed one, so settle or
+      amend those records in the same sitting. Re-read `gh label list --limit 200` afterwards — no `agent:*`
+      should remain.
+- [ ] Project views: create the starter views (Board / Triage / Agent queue /
+      Planning / Mine) in the Project UI — Projects V2 has no view API,
+      so this is a one-time manual step. Filters/layouts are in
+      [project-management.md](project-management.md).
+- [ ] GitHub Project auto-add (**adds every issue to the board**): in the
+      Project's **Settings → Workflows**, turn on **"Auto-add to project"** and
+      point it at this repo (filter `is:issue`, `is:pr`) so *every* new issue and
+      PR lands on the board automatically, however it's created. GitHub's native
+      built-in — no Actions or tokens, and it's the reliable way to guarantee
+      coverage (the issue-form `projects:` key only covers form-created issues and
+      needs a static project number). See
+      [project-management.md](project-management.md).
 
 ## 3. Framework scaffolding (conventions-only template)
 

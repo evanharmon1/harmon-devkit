@@ -6,9 +6,9 @@
 # because only project number fields sum in view group headers (issue-field
 # columns can group/filter/sort, not sum). The other metadata on an ORGANIZATION
 # are org-level ISSUE fields (Priority/Effort are GitHub built-ins, left at
-# their defaults; setup-github-issue-fields.sh adds Product, Agent, Domain, and
+# their defaults; setup-github-issue-fields.sh adds Product, Domain, and
 # Layer); on a personal account (no org issue fields) this script creates
-# Priority/Product/Agent/Domain/Layer as project fields too.
+# Priority/Product/Domain/Layer as project fields too.
 #
 # Safe to re-run and safe to run from every repo the owner controls: it looks the
 # project up by title, so the first run creates it and later runs just reconcile
@@ -478,11 +478,11 @@ create_number "Size"
 # Other metadata: on an ORGANIZATION these are org-level ISSUE fields (durable —
 # the value is on the issue, shared across every project; see
 # docs/project-management.md). Priority is a GitHub built-in;
-# setup-github-issue-fields.sh adds Product, Agent, Domain, and Layer. A personal
+# setup-github-issue-fields.sh adds Product, Domain, and Layer. A personal
 # account has no org issue fields, so fall back to creating them as project
 # fields here.
 if [ "$owner_type" = "Organization" ]; then
-    echo "==> Other metadata are org issue fields (Priority/Effort built-ins, left at their defaults; run setup-github-issue-fields.sh for Product/Agent/Domain/Layer)"
+    echo "==> Other metadata are org issue fields (Priority/Effort built-ins, left at their defaults; run setup-github-issue-fields.sh for Product/Domain/Layer)"
     report_incompatible
     echo "==> Done — project #$project_number: $title"
     exit 0
@@ -496,24 +496,11 @@ create_single_select "Priority" '[
   {"name":"Low","color":"GRAY","description":""}
 ]'
 create_text "Product"
-# Agent shares its option names with the `agent:` label family in
-# setup-github-labels.sh, so extend both together — but they answer different
-# questions and nothing syncs them. This FIELD is planning metadata: which agent
-# SHOULD implement the issue, set at triage, and what the Agent-queue view
-# filters on. The LABEL is the live claim: which agent IS working it, written by
-# the agent itself. A claim must never write this field, or it overwrites the
-# plan and changes what appears in the queue (docs/project-management.md,
-# "Claiming").
-create_single_select "Agent" '[
-  {"name":"Claude Code","color":"ORANGE","description":""},
-  {"name":"Codex","color":"BLUE","description":""},
-  {"name":"Gemini CLI","color":"PURPLE","description":""},
-  {"name":"Qwen Code","color":"GREEN","description":""},
-  {"name":"DeepSeek","color":"RED","description":""},
-  {"name":"Kimi K2","color":"YELLOW","description":""},
-  {"name":"GLM","color":"PINK","description":""},
-  {"name":"GitHub Copilot","color":"GRAY","description":""}
-]'
+# There is deliberately no Agent field. Advisory agent routing is the
+# `suggest:*` label family (registry-driven via setup-github-labels.sh) plus
+# the `Status: Agent Queue` lane; the live claim is a `claim:*` label written
+# by the agent itself. A single-select field could carry neither answer without
+# duplicating the label vocabulary (docs/project-management.md, ADR 0005 D4).
 # Domain (what part of the product) and Layer (which slice of the stack) mirror
 # the `domain:` / `layer:` label families in setup-github-labels.sh — keep the
 # lists in step. Domain is a starter set; real domains come from your product's
