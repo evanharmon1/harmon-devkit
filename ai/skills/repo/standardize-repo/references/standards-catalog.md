@@ -302,17 +302,18 @@ Project-type stages (added conditionally): pre-commit `prettier`/`eslint`/
   Code, Codex, Gemini). **No Tailscale and no 1Password CLI feature** — the bot
   container must hold no path to the tailnet or a credential store
   (`devcontainer-assert.sh` enforces both structurally, per profile).
-  `containerName: devcontainer-<slug>-bot`. No `CLAUDE_CODE_EFFORT_LEVEL` in
-  `containerEnv` — the env var outranks Claude Code's own settings, so pinning
-  it silently overrides the user's saved effort and mid-session `/model`
-  changes; effort selection belongs to Claude Code's precedence (`/model`,
-  `settings.json` `effortLevel`, model default).
+  `containerName: devcontainer-<slug>-bot`.
 - **DEV profile** (`.devcontainer/dev/devcontainer.json`) — human dev. Adds the
   Tailscale feature + `--device=/dev/net/tun` + `TS_AUTHKEY` + the 1Password
   CLI feature.
 
 Shared structure:
 
+- **No `CLAUDE_CODE_EFFORT_LEVEL` in either profile's `containerEnv`** (or
+  anywhere else the container exports it) — the env var outranks Claude Code's
+  own settings, so pinning it silently overrides the user's saved effort and
+  mid-session `/model` changes; effort selection belongs to Claude Code's
+  precedence (`/model`, `settings.json` `effortLevel`, model default).
 - **`Dockerfile`** — single Dockerfile, base
   `mcr.microsoft.com/devcontainers/base:ubuntu-24.04`. Tool version pins are
   **`ARG <NAME>_VERSION=…` annotated with `# renovate: datasource=… depName=…`**
