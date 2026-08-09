@@ -54,31 +54,47 @@
 #                DISAPPEARS after a `copier update` means the repo's copy is now
 #                byte-identical to the template's, i.e. the customizations were
 #                clobbered.
-#   • IGNORED  — the repo's copy is UNTRACKED and matches an ignore rule (a
-#                resolved .envrc and friends). Presence-only for the same reason
-#                plus a harder one: a resolved local config can hold real
-#                secrets, so its diff is never printed. Its content never
-#                affects the exit status.
+#   • IGNORED  — the repo's copy is UNTRACKED and BOTH the repo and the TEMPLATE
+#                ignore the path (a resolved .envrc and friends). Presence-only
+#                for the same reason plus a harder one: a resolved local config
+#                can hold real secrets, so its diff is never printed. Its
+#                content never affects the exit status.
+#                The template's declaration is what grants this, never the
+#                repo's habits. A repo that adds .vscode/ to its OWN .gitignore
+#                has said nothing about the artifact — every other clone still
+#                renders it — so a path the repo ignores and the template TRACKS
+#                is gating DRIFT, tagged "repo-ignored, but the template tracks
+#                this file". Its body is still withheld: somebody marked that
+#                path local-only, and being wrong about whether it is drift does
+#                not make its contents safe to print.
 # Ignore rules drive two INDEPENDENT axes, because "does this gate?" and "is
 # this safe to print?" are different questions:
-#   – CLASSIFICATION follows repo STATE. Only an UNTRACKED pattern-matched file
-#     is the informational IGNORED class; a TRACKED one gates like any other
-#     file, ignore rules or not, because tracked content is template-relevant.
-#     `git check-ignore` answers exactly that — it consults the index, so it
-#     never calls a tracked file ignored.
-#   – WITHHOLDING follows the PATH alone, tested with `check-ignore --no-index`
-#     so the index cannot mask the pattern. NO diff this script prints for a
-#     pattern-matching path is ever emitted — CURATED AND SWEPT ALIKE, and not
-#     even for a finding that gates. Being on the hand-maintained manifest says
-#     the template owns the path, not that the repo's copy is safe to echo: the
-#     manifest lists .claude/settings.json, exactly the shape whose local copy
-#     holds credentials. A repo can also `git add -f` a resolved config, and
-#     tracking it makes that file reviewable, not publishable. A one-line note
-#     replaces the body.
-# Both axes require the target to be a repository root of its OWN. A plain
-# directory nested inside somebody else's work tree gets neither, because
-# inheriting a stranger's ignore rules would silently downgrade real drift;
-# everything there falls through to gating, printable DRIFT.
+#   – CLASSIFICATION follows repo STATE and then the TEMPLATE's declaration.
+#     Only an UNTRACKED file that BOTH sides ignore is the informational IGNORED
+#     class; a TRACKED one gates like any other file, ignore rules or not,
+#     because tracked content is template-relevant, and a repo-only ignore gates
+#     too, because ignoring a file is a habit rather than a statement about the
+#     artifact. `git check-ignore` answers the tracked half exactly — it
+#     consults the index, so it never calls a tracked file ignored — and a
+#     scratch repo built from the RENDER's .gitignore files answers the other.
+#   – WITHHOLDING follows the PATH alone, under the UNION of both rule sets
+#     (`check-ignore --no-index` on the repo side so the index cannot mask the
+#     pattern). NO diff this script prints for a pattern-matching path is ever
+#     emitted — CURATED AND SWEPT ALIKE, and not even for a finding that gates.
+#     Being on the hand-maintained manifest says the template owns the path, not
+#     that the repo's copy is safe to echo: the manifest lists
+#     .claude/settings.json, exactly the shape whose local copy holds
+#     credentials. A repo can also `git add -f` a resolved config, and tracking
+#     it makes that file reviewable, not publishable — or simply FAIL to ignore
+#     what the template declares local, which is the same secret in a less
+#     careful repo. A one-line note replaces the body.
+# CLASSIFICATION requires the target to be a repository root of its OWN. A plain
+# directory nested inside somebody else's work tree gets no IGNORED class,
+# because inheriting a stranger's ignore rules would silently downgrade real
+# drift; everything there falls through to gating DRIFT. The render half of
+# WITHHOLDING still applies there — it needs no work tree, and a
+# template-declared-local body is no safer to print for having landed in a
+# directory that is not a repo.
 # Symlinks are compared by LINK TARGET, not by content: the template ships
 # CLAUDE.md, GEMINI.md, and .github/copilot-instructions.md as symlinks to
 # AGENTS.md (_preserve_symlinks), so content-diffing them would report a single
@@ -407,9 +423,11 @@ variant_display() {
 # git always reports a resolved one, so on macOS's symlinked /var a real repo
 # root would never match otherwise (`realpath` is not portable to those hosts).
 # When they differ, treat the target as the plain directory it is: no IGNORED
-# class and no pattern probes at all, so everything falls through to gating,
-# printable DRIFT. That is the deliberate choice — a plain directory has no
-# ignore rules of its own, and inheriting a stranger's is worse than printing.
+# class and no REPO-side pattern probes, so everything falls through to gating
+# DRIFT. That is the deliberate choice — a plain directory has no ignore rules
+# of its own, and inheriting a stranger's is worse than surfacing the drift. The
+# RENDER-side probe is unaffected and still withholds bodies here: it asks what
+# the template declared, which no property of the target can change.
 target_owns_worktree=0
 target_physical="$(cd "$target" && pwd -P)"
 if toplevel="$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" &&
@@ -419,33 +437,80 @@ if toplevel="$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" &&
     fi
 fi
 
+# The TEMPLATE's own ignore rules, evaluated in a scratch repo built from the
+# .gitignore files the RENDER ships. This is the authority on whether a rendered
+# file is meant to be local-only, and the repo's rules are not: a repo that adds
+# `.vscode/` to its own .gitignore was silencing real drift on a template
+# artifact every other clone still gets. Ignoring something is a habit a repo
+# can acquire for its own reasons; the template DECLARING a path local is a
+# statement about the artifact.
+#
+# `git init` in the workdir is the script's existing idiom (the guarded clone
+# does more), but two things have to be shut off or the evaluator answers "what
+# does this MACHINE ignore" — the very question it exists to stop asking. An
+# empty --template dir keeps `init.templateDir`/`~/.git-template` from seeding
+# an info/exclude, and core.excludesFile=/dev/null keeps the auditor's personal
+# ignore file (and the XDG default) out of the answer.
+render_ignore_root="$workdir/render-ignore"
+render_has_ignore_rules=0
+if mkdir -p "$workdir/empty-git-template" &&
+    git init -q --template="$workdir/empty-git-template" \
+        "$render_ignore_root" 2>/dev/null; then
+    # Every .gitignore in the render, at its own relative path: a nested one
+    # only governs its own subtree, so flattening them would change what they
+    # mean. Today the template ships just the root file; copying all of them
+    # costs one `find` and stops that from being an assumption.
+    while IFS= read -r render_gitignore; do
+        render_gitignore_rel="${render_gitignore#"$render"/}"
+        render_gitignore_dest="$render_ignore_root/$render_gitignore_rel"
+        mkdir -p "$(dirname "$render_gitignore_dest")" || continue
+        cp "$render_gitignore" "$render_gitignore_dest" || continue
+        render_has_ignore_rules=1
+    done < <(find "$render" -type f -name .gitignore | LC_ALL=C sort)
+fi
+is_render_ignored() {
+    [ "$render_has_ignore_rules" -eq 1 ] || return 1
+    git -C "$render_ignore_root" -c core.excludesFile=/dev/null \
+        check-ignore -q --no-index -- "$1" 2>/dev/null
+}
+
 # Ignore rules drive two INDEPENDENT axes, because "does this gate?" and "is
 # this safe to print?" are different questions with different answers.
 #
-# CLASSIFICATION — repo STATE. Only an UNTRACKED pattern-matched file is the
-# informational IGNORED class. `git check-ignore` consults the index, so it
-# never calls a TRACKED file ignored, and that is exactly right here: tracked
-# content is template-relevant however the ignore rules read, so it must keep
-# gating like any other file. Sweep-only: the curated set has no IGNORED class,
-# because a manifest-listed path is template-owned by definition.
+# CLASSIFICATION — repo STATE, and then the TEMPLATE's declaration. Only an
+# UNTRACKED pattern-matched file can be the informational IGNORED class, and
+# only the template can grant it: see the caller, which requires
+# is_render_ignored too. `git check-ignore` consults the index, so it never
+# calls a TRACKED file ignored, and that is exactly right here — tracked content
+# is template-relevant however the ignore rules read, so it must keep gating
+# like any other file. Sweep-only: the curated set has no IGNORED class, because
+# a manifest-listed path is template-owned by definition.
 is_repo_ignored() {
     [ "$target_owns_worktree" -eq 1 ] || return 1
     git -C "$target" check-ignore -q -- "$1" 2>/dev/null
 }
 
-# WITHHOLDING — the PATH alone, with `--no-index` so the index cannot mask the
-# pattern. Deliberately NOT the classification test above: a repo can `git add
-# -f` a resolved .envrc-shaped config, and tracking it makes `check-ignore`
-# answer "not ignored", so keying the diff on classification printed the full
-# contents of precisely the paths the repo had marked local-only. Tracking makes
-# such a file reviewable, not publishable. This applies to EVERY diff this
-# script prints, curated and swept alike — being on the hand-maintained manifest
-# says the template owns the path, not that the repo's copy is safe to echo. The
-# manifest lists `.claude/settings.json`, which is exactly the shape a repo
-# ignores because its local copy holds credentials.
+# WITHHOLDING — the PATH alone, under the UNION of both rule sets, with
+# `--no-index` on the repo side so the index cannot mask the pattern.
+# Deliberately NOT the classification test above, on either axis:
+#   • a repo can `git add -f` a resolved .envrc-shaped config, and tracking it
+#     makes `check-ignore` answer "not ignored", so keying the diff on repo
+#     classification printed the contents of precisely the paths the repo had
+#     marked local-only — tracking makes such a file reviewable, not publishable;
+#   • and a repo can simply FAIL to ignore a file the template declares local,
+#     which is the same secret in a repo that was less careful, so the render
+#     side has to withhold on its own. That half needs no work tree of its own
+#     and so applies to a plain-directory target too, where the repo side cannot.
+# This covers EVERY diff this script prints, curated and swept alike: being on
+# the hand-maintained manifest says the template owns the path, not that the
+# repo's copy is safe to echo. The manifest lists `.claude/settings.json`,
+# exactly the shape a repo ignores because its local copy holds credentials.
 is_ignore_pattern_match() {
-    [ "$target_owns_worktree" -eq 1 ] || return 1
-    git -C "$target" check-ignore -q --no-index -- "$1" 2>/dev/null
+    if [ "$target_owns_worktree" -eq 1 ] &&
+        git -C "$target" check-ignore -q --no-index -- "$1" 2>/dev/null; then
+        return 0
+    fi
+    is_render_ignored "$2"
 }
 
 # A path can be STAGED FOR REMOVAL while its working-tree copy survives, which
@@ -514,8 +579,11 @@ same_as_render() {
 # Print a drifting file's body under --show, or a one-line note when the path is
 # ignore-matched. Both loops call this so neither can drift from the other.
 show_diff_body() {
-    if is_ignore_pattern_match "$1"; then
-        # The finding still GATES — the template owns this path — but the repo
+    # $3 is the path inside the render, so the render-relative path the
+    # template's own rules are written against comes straight off it — no extra
+    # argument, and no chance of a caller passing the two out of step.
+    if is_ignore_pattern_match "$1" "${3#"$render"/}"; then
+        # The finding still GATES — the template owns this path — but somebody
         # marked it local-only and a resolved local config can hold real
         # secrets. Withholding is keyed on the path, not on the class or the
         # loop: keep the finding, drop the body.
@@ -789,16 +857,26 @@ while IFS= read -r abs; do
             co_owned_count=$((co_owned_count + 1))
             continue
         fi
-        if [ "$compare_structural" -eq 0 ] && is_repo_ignored "$rv_display"; then
-            echo "IGNORED  $rv_display  (gitignored — diff withheld; a resolved config can hold secrets)"
-            ignored_count=$((ignored_count + 1))
-            continue
-        fi
+        drift_note="uncurated — not in template-owned-files.txt"
         if [ "$compare_structural" -eq 1 ]; then
-            echo "DRIFT    $rv_display  (symlink mismatch — $compare_note)"
-        else
-            echo "DRIFT    $rv_display  (uncurated — not in template-owned-files.txt)"
+            drift_note="symlink mismatch — $compare_note"
+        elif is_repo_ignored "$rv_display"; then
+            # Untracked and ignored by the repo. Which of the two outcomes this
+            # is comes down to WHOSE rule it matched: the exemption belongs to
+            # the template's declaration, never to the repo's habits.
+            if is_render_ignored "$g"; then
+                echo "IGNORED  $rv_display  (template ships it gitignored — diff withheld; a resolved config can hold secrets)"
+                ignored_count=$((ignored_count + 1))
+                continue
+            fi
+            # The template TRACKS this file and the repo quietly stopped
+            # carrying it. Every other clone renders it, so the divergence is
+            # real drift, not a local resolution — and it used to be the single
+            # easiest finding in this script to silence by accident, since
+            # adding one line to your own .gitignore did it.
+            drift_note="repo-ignored, but the template tracks this file — other clones will not have it"
         fi
+        echo "DRIFT    $rv_display  ($drift_note)"
         drift=1
         uncurated_drift_count=$((uncurated_drift_count + 1))
         # A structural mismatch has nothing readable to diff (and `diff -u` on a

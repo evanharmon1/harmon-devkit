@@ -133,32 +133,43 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
   **presence-only**: no diff is printed, not even under `--show`, and its
   *content* never affects the exit status (a `MODE` finding on the same file
   still does). The useful reading is the inverse one — see §4.
-- **`IGNORED`** — the repo's copy is **untracked and matches an ignore rule** (a
-  resolved `.envrc`, local editor settings, and friends). Presence-only for the
-  same reason as `CO-OWNED` plus a harder one: a resolved local config can hold
-  real secrets, so its diff is never printed. Its content never affects the exit
-  status.
+- **`IGNORED`** — the copy is **untracked, and both the repo *and the template*
+  ignore the path** (a resolved `.envrc`, local editor settings, and friends).
+  Presence-only for the same reason as `CO-OWNED` plus a harder one: a resolved
+  local config can hold real secrets, so its diff is never printed. Its content
+  never affects the exit status. **The template's declaration is what grants
+  this exemption, never the repo's habits** — see below.
 
 Ignore rules drive two **independent** axes, because "does this gate?" and "is
 this safe to print?" are different questions:
 
-- **Classification** follows repo *state*. Only an untracked pattern-matched
-  file is the informational `IGNORED` class; a **tracked** one gates as ordinary
-  `DRIFT`, ignore rules or not, because tracked content is template-relevant.
-- **Withholding** follows the *path* alone, and applies to **every** diff the
-  script prints — curated and swept alike, and not even a finding that gates is
-  exempt. Being on the hand-maintained manifest says the template owns the path,
-  not that the repo's copy is safe to echo: the manifest lists
-  `.claude/settings.json`, exactly the shape whose local copy holds credentials.
-  A repo can also `git add -f` a resolved config, and tracking it makes that
-  file reviewable, not publishable. You get `(diff withheld — path matches an
-  ignore pattern; review manually)` under the `DRIFT` line and review it
-  locally.
+- **Classification** follows repo *state*, then the *template's* declaration.
+  Only an untracked file that **both** sides ignore is the informational
+  `IGNORED` class. A **tracked** one gates as ordinary `DRIFT`, ignore rules or
+  not, because tracked content is template-relevant. And a path the repo ignores
+  while the template **tracks** it gates too, tagged `(repo-ignored, but the
+  template tracks this file — other clones will not have it)`: adding
+  `.vscode/` to your own `.gitignore` says nothing about the artifact, and every
+  other clone still renders it, so silencing it there hid real drift behind a
+  local habit.
+- **Withholding** follows the *path* alone, under the **union** of both rule
+  sets, and applies to **every** diff the script prints — curated and swept
+  alike, and not even a finding that gates is exempt. Being on the
+  hand-maintained manifest says the template owns the path, not that the repo's
+  copy is safe to echo: the manifest lists `.claude/settings.json`, exactly the
+  shape whose local copy holds credentials. A repo can also `git add -f` a
+  resolved config (tracking it makes that file reviewable, not publishable), or
+  simply *fail* to ignore what the template declares local — the same secret in
+  a less careful repo. You get `(diff withheld — path matches an ignore pattern;
+  review manually)` under the `DRIFT` line and review it locally.
 
-Both axes need the audited directory to be a repository root of its **own**. A
-plain directory nested inside another repo's work tree gets neither: inheriting
-a stranger's ignore rules would silently downgrade real drift, so everything
-there falls through to gating, printable `DRIFT`.
+**Classification** needs the audited directory to be a repository root of its
+**own**. A plain directory nested inside another repo's work tree gets no
+`IGNORED` class: inheriting a stranger's ignore rules would silently downgrade
+real drift, so everything there falls through to gating `DRIFT`. The render half
+of **withholding** still applies there — it needs no work tree, and a
+template-declared-local body is no safer to print for having landed in a
+directory that is not a repo.
 
 Symlinks are compared by **link target**, not content. The template ships
 `CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md` as links to

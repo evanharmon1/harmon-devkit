@@ -3418,6 +3418,17 @@ chmod +x "$DT_TEMPLATE/template/docs/build-docs.sh"
 mkdir -p "$DT_TEMPLATE/template/.claude"
 printf '%s\n' '{ "permissions": { "allow": [] } }' \
     >"$DT_TEMPLATE/template/.claude/settings.json"
+# The template's OWN .gitignore is what declares a rendered path local-only, and
+# it is the only thing that can grant the informational IGNORED class. It ships
+# seeds for both resolved-config files and ignores them, which is the shape the
+# class exists for.
+printf '%s\n' '.envrc' 'secrets.env' >"$DT_TEMPLATE/template/.gitignore"
+# .vscode/settings.json is the counter-case: the template TRACKS it (no ignore
+# rule covers it here), so a repo that ignores it locally has silenced a real
+# template artifact every other clone still gets.
+mkdir -p "$DT_TEMPLATE/template/.vscode"
+printf '%s\n' '{ "editor.tabSize": 2 }' \
+    >"$DT_TEMPLATE/template/.vscode/settings.json"
 for terraform_file in main.tf variables.tf outputs.tf; do
     printf '%s\n' '# starter' >"$DT_TEMPLATE/template/terraform/$terraform_file"
 done
@@ -3425,6 +3436,11 @@ printf '%s\n' '# Example values' >"$DT_TEMPLATE/template/terraform/tfvars.env.ex
 printf '%s\n' '# Record architecture decisions' \
     >"$DT_TEMPLATE/template/docs/decisions/0001-record-architecture-decisions.md"
 git_init "$DT_TEMPLATE"
+# The .gitignore the template SHIPS also applies to the template repo itself, so
+# `git add -A` would skip the very seeds it ignores and they would never reach
+# the render. A real template has to force-add them for the same reason: it
+# tracks the seed .envrc while telling generated repos to ignore the resolved one.
+git -C "$DT_TEMPLATE" add -f -- template/.envrc template/secrets.env
 git_commit_all "$DT_TEMPLATE" "test template"
 git -C "$DT_TEMPLATE" tag v1.0.0
 
@@ -3448,17 +3464,21 @@ cp "$DT_TEMPLATE/template/secrets.env" "$DT_TARGET/secrets.env"
 cp "$DT_TEMPLATE/template/docs/guide.md" "$DT_TARGET/docs/guide.md"
 cp "$DT_TEMPLATE/template/docs/build-docs.sh" "$DT_TARGET/docs/build-docs.sh"
 chmod +x "$DT_TARGET/docs/build-docs.sh"
-mkdir -p "$DT_TARGET/.claude"
+mkdir -p "$DT_TARGET/.claude" "$DT_TARGET/.vscode"
 cp "$DT_TEMPLATE/template/.claude/settings.json" "$DT_TARGET/.claude/settings.json"
+cp "$DT_TEMPLATE/template/.vscode/settings.json" "$DT_TARGET/.vscode/settings.json"
 # .envrc diverges from the render permanently and is gitignored, so it stays
 # untracked (git_commit_all honors .gitignore) and reports as informational
 # IGNORED rather than drift — the class exists precisely because a resolved
 # local config can hold real values that must not be printed. secrets.env
 # matches an ignore rule too but is force-added below, which is what separates
 # the two axes: it gates like any tracked file, yet its body stays withheld.
-# .claude/settings.json is the same shape one level up — force-added AND on the
-# curated manifest, so it proves withholding is not a sweep-only guarantee.
-printf '%s\n' '.envrc' 'secrets.env' '.claude/settings.json' >"$DT_TARGET/.gitignore"
+# The target's .gitignore is the RENDER's, byte-for-byte — it is a rendered file
+# now, so any divergence would be drift in its own right. Rules the repo added
+# on its own therefore go in .git/info/exclude below, which is where a
+# repo-local habit actually belongs and cannot be confused with a declaration
+# the template made.
+cp "$DT_TEMPLATE/template/.gitignore" "$DT_TARGET/.gitignore"
 printf '%s\n' 'export EXAMPLE_SETTING=envrc-sentinel-withheld' >"$DT_TARGET/.envrc"
 cat >"$DT_TARGET/.copier-answers.yml" <<EOF
 _commit: v1.0.0
@@ -3478,6 +3498,14 @@ git_init "$DT_TARGET"
 # `git add -A` honors .gitignore, so the tracked-and-ignore-matched case has to
 # be forced into the index — which is exactly the `git add -f` a repo runs for a
 # resolved local config it nonetheless wants under version control.
+# Ignore rules this repo added for its own reasons, kept out of the tracked
+# .gitignore so they cannot be mistaken for the template's declaration.
+# .claude/settings.json is force-added anyway (tracked → gates → body withheld);
+# .vscode/settings.json stays untracked, which is the repo-only-ignored shape
+# that must gate rather than collect the IGNORED exemption.
+mkdir -p "$DT_TARGET/.git/info"
+printf '%s\n' '.claude/settings.json' '.vscode/settings.json' \
+    >"$DT_TARGET/.git/info/exclude"
 git -C "$DT_TARGET" add -f -- secrets.env .claude/settings.json
 git_commit_all "$DT_TARGET" "record mature target layout"
 
@@ -3508,6 +3536,14 @@ if printf '%s\n' "$equivalent_out" | grep -qF "IGNORED  .envrc"; then
     ok "diff-template reports a gitignored divergence without gating"
 else
     bad "diff-template reports a gitignored divergence without gating"
+fi
+# …and the exemption is granted by the TEMPLATE's own .gitignore, not by the
+# repo's, which is what the parenthetical records.
+if printf '%s\n' "$equivalent_out" |
+    grep -qF "IGNORED  .envrc  (template ships it gitignored"; then
+    ok "diff-template credits the template's declaration for an IGNORED file"
+else
+    bad "diff-template credits the template's declaration for an IGNORED file"
 fi
 
 # --- whole-render sweep: uncurated, co-owned, and symlink classes ------------
@@ -3636,6 +3672,35 @@ else
     bad "diff-template --show says why a curated ignore-matched diff was withheld"
 fi
 git -C "$DT_TARGET" checkout HEAD -- .claude/settings.json
+
+# Ignoring a file in the REPO's own rules is a habit, not a statement about the
+# artifact: the template tracks .vscode/settings.json, so every other clone gets
+# it, and letting a local .gitignore line downgrade that to informational
+# IGNORED silenced real drift. It gates — and its body is still withheld,
+# because somebody did mark the path local-only and being wrong about whether it
+# is drift does not make the contents safe to print.
+printf '%s\n' '{ "editor.tabSize": 4, "note": "repo-only-ignored-sentinel" }' \
+    >"$DT_TARGET/.vscode/settings.json"
+if repo_only_ignored_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a repo-only-ignored template file (expected non-zero exit)"
+elif printf '%s\n' "$repo_only_ignored_out" |
+    grep -qF "DRIFT    .vscode/settings.json  (repo-ignored, but the template tracks this file"; then
+    ok "diff-template gates a repo-only-ignored template file"
+else
+    bad "diff-template gates a repo-only-ignored template file (DRIFT diagnostic missing)"
+fi
+if printf '%s\n' "$repo_only_ignored_out" | grep -qF "IGNORED  .vscode/settings.json"; then
+    bad "diff-template grants no IGNORED exemption on a repo-only ignore rule"
+else
+    ok "diff-template grants no IGNORED exemption on a repo-only ignore rule"
+fi
+if printf '%s\n' "$repo_only_ignored_out" | grep -qF 'repo-only-ignored-sentinel'; then
+    bad "diff-template --show withholds a repo-only-ignored body that gates"
+else
+    ok "diff-template --show withholds a repo-only-ignored body that gates"
+fi
+cp "$DT_TEMPLATE/template/.vscode/settings.json" "$DT_TARGET/.vscode/settings.json"
 
 # The co-owned tree globs cover PROSE, not whole trees. A build script under
 # docs/ is not prose anybody rewrote, so it must gate as ordinary uncurated
@@ -3887,6 +3952,74 @@ if printf '%s\n' "$nested_out" | grep -qF "IGNORED  "; then
     bad "diff-template borrows no IGNORED class from a nested target's parent repo"
 else
     ok "diff-template borrows no IGNORED class from a nested target's parent repo"
+fi
+
+# The render half of withholding needs no work tree, so it still applies to a
+# plain-directory target where the repo half cannot: a repo that FAILED to
+# ignore a template-declared-local file holds the same secret as one that did.
+printf '%s\n' 'export EXAMPLE_SETTING=plain-dir-envrc-sentinel' \
+    >"$DT_NESTED_TARGET/.envrc"
+if nested_envrc_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_NESTED_TARGET" 2>&1)"; then
+    bad "diff-template gates a template-ignored file in a plain dir (expected non-zero exit)"
+elif printf '%s\n' "$nested_envrc_out" | grep -qF "DRIFT    .envrc"; then
+    ok "diff-template gates a template-ignored file in a plain dir"
+else
+    bad "diff-template gates a template-ignored file in a plain dir (DRIFT diagnostic missing)"
+fi
+if printf '%s\n' "$nested_envrc_out" | grep -qF 'plain-dir-envrc-sentinel'; then
+    bad "diff-template --show withholds a template-ignored body without a repo rule"
+else
+    ok "diff-template --show withholds a template-ignored body without a repo rule"
+fi
+
+# --- a render that ships no .gitignore at all --------------------------------
+# With nothing declaring anything local, the IGNORED class cannot be granted:
+# every path the repo's own rules match still gates. This is the guard on the
+# render-side evaluator having no rules to evaluate.
+DT_NOIGNORE_TEMPLATE="$TMPROOT/diff-template-noignore-source"
+mkdir -p "$DT_NOIGNORE_TEMPLATE/template"
+cat >"$DT_NOIGNORE_TEMPLATE/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+project_name:
+  type: str
+  default: No Ignore
+EOF
+printf '%s\n' 'export EXAMPLE_SETTING=template-default' \
+    >"$DT_NOIGNORE_TEMPLATE/template/.envrc"
+git_init "$DT_NOIGNORE_TEMPLATE"
+git_commit_all "$DT_NOIGNORE_TEMPLATE" "no-ignore template"
+git -C "$DT_NOIGNORE_TEMPLATE" tag v1.0.0
+DT_NOIGNORE_TARGET="$TMPROOT/diff-template-noignore-target"
+mkdir -p "$DT_NOIGNORE_TARGET"
+printf '%s\n' 'export EXAMPLE_SETTING=noignore-sentinel' >"$DT_NOIGNORE_TARGET/.envrc"
+printf '%s\n' '.envrc' >"$DT_NOIGNORE_TARGET/.gitignore"
+cat >"$DT_NOIGNORE_TARGET/.copier-answers.yml" <<EOF
+_commit: v1.0.0
+_src_path: file://$DT_NOIGNORE_TEMPLATE
+project_name: No Ignore
+EOF
+git_init "$DT_NOIGNORE_TARGET"
+git_commit_all "$DT_NOIGNORE_TARGET" "no-ignore target"
+if noignore_out="$(HARMON_INIT="$DT_NOIGNORE_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_NOIGNORE_TARGET" 2>&1)"; then
+    bad "diff-template grants no IGNORED class when the render ships no .gitignore (expected non-zero exit)"
+elif printf '%s\n' "$noignore_out" |
+    grep -qF "DRIFT    .envrc  (repo-ignored, but the template tracks this file"; then
+    ok "diff-template grants no IGNORED class when the render ships no .gitignore"
+else
+    bad "diff-template grants no IGNORED class when the render ships no .gitignore (DRIFT diagnostic missing)"
+fi
+if printf '%s\n' "$noignore_out" | grep -qF "IGNORED  "; then
+    bad "diff-template emits no IGNORED line for a render with no ignore rules"
+else
+    ok "diff-template emits no IGNORED line for a render with no ignore rules"
+fi
+if printf '%s\n' "$noignore_out" | grep -qF 'noignore-sentinel'; then
+    bad "diff-template --show still withholds a repo-ignored body with no render rules"
+else
+    ok "diff-template --show still withholds a repo-ignored body with no render rules"
 fi
 
 rm "$DT_TARGET/scripts/status.sh"
