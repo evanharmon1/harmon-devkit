@@ -108,8 +108,7 @@ and compare against the local branch and HEAD. Requirements, all hard:
   or pushing it fires their hooks wherever it happens and whoever does it.
   Handing over a patch hands over the *decision*, never the exposure — so
   anyone who commits or pushes untrusted-head content, you or the maintainer,
-  does it inside credential-free isolation, or onto a base that does not
-  include the untrusted head. If no isolation is available,
+  does it inside credential-free isolation. If no isolation is available,
   don't work on the fork checkout at all: stop, report what the remote CI
   shows, and hand the fix decision to the maintainer.
 
