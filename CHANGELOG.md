@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.25.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.24.2...v0.25.0) (2026-08-10)
+
+
+### Features
+
+* extend diff-template.sh to a full render-to-repo sweep ([#356](https://github.com/evanharmon1/harmon-devkit/issues/356)) ([17b54cc](https://github.com/evanharmon1/harmon-devkit/commit/17b54cc779df0b51b8fa1105c461a00c162ac375))
+
+
+### Bug Fixes
+
+* **shepherd:** promotable BLOCKED, push-read settle, untrusted-head isolation, helper-only polling ([#355](https://github.com/evanharmon1/harmon-devkit/issues/355)) ([8c71b27](https://github.com/evanharmon1/harmon-devkit/commit/8c71b27e21bcc4acbf069b3542498ed3ccf66ae8))
+
 ## [0.24.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.24.1...v0.24.2) (2026-08-10)
 
 
