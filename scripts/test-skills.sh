@@ -2288,6 +2288,22 @@ expect_ok "update hand-off requires a silent non-adoption disposition table" \
         grep -qF "| Disposition |" "$1" &&
         grep -qF "No silent non-adoptions" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+# The worked example is the part an operator actually copies, so a row that
+# contradicts the contract above it is worse than no example. The contract says
+# the table holds confirmed `nonadopt-both` only and that a `new-in-target`
+# anomaly is called out separately; the example put a target-only CodeQL row
+# straight into the table. It is the anomaly call-out now — and every remaining
+# table row must be one the contract admits.
+expect_ok "the hand-off example keeps apply anomalies out of the disposition table" \
+    sh -c 'grep -qF "Apply anomaly, not a non-adoption" "$1" &&
+        ! grep -qE "^\| \`\.github/workflows/codeql\.yml\` \|" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "the hand-off contract carries the note column and the earned classes" \
+    sh -c 'grep -qF "repo-ignored-only" "$1" &&
+        grep -qF "unverified-equivalent" "$1" &&
+        grep -qF "repo-path-is-directory" "$1" &&
+        grep -qF "docs/specs prose" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "copier gotchas own the permanent non-adoption reasoning" \
     sh -c 'grep -qE "^## 9\. " "$1" &&
         grep -qF "never adopts a file you deleted (or never had)" "$1" &&
@@ -2297,26 +2313,49 @@ expect_ok "audit drift class K routes MISSING to the non-adoption gotcha" \
     sh -c 'grep -qF "PERMANENT non-adoption candidate" "$1" &&
         grep -qF "(./copier-gotchas.md) §9" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
-# The snippet duplicates diff-template.sh's co-owned globs by hand, because a
-# markdown recipe cannot source a shell function. Spot-check that the copy has
-# not drifted from the original on the load-bearing entries — and on the SHAPE,
-# not only the literals. `docs/`/`specs/` are co-owned for their PROSE alone, and
-# a copy that kept the old one-line `docs/* | specs/*) return 0 ;;` still matches
-# every literal grep below while classifying a missing generated asset as owned
-# prose and filtering it out of the report. So require the tree label to stand
-# alone on its line (the pre-filter form cannot) and the Markdown basename test
-# to sit directly under it. Two greps per file, no parser.
-expect_ok "co-owned globs agree between diff-template.sh and the non-adoption snippet" \
+# The snippet duplicates ONE branch of diff-template.sh's `is_co_owned` by hand —
+# the `docs/`/`specs/` prose case — because a markdown recipe cannot source a
+# shell function. Check the SHAPE, not only the literals: a copy that kept the
+# old one-line `docs/* | specs/*) return 0 ;;` still matches a literal `docs/*`
+# grep while classifying a missing generated asset as owned prose and collapsing
+# it out of the report. So require the tree label to stand alone on its line (the
+# pre-filter form cannot) and the Markdown basename test directly under it.
+expect_ok "co-owned prose globs agree between diff-template.sh and the non-adoption snippet" \
     sh -c 'for f in "$1" "$2"; do
-        for glob in AGENTS.md "docs/*" .devcontainer/config/zshrc; do
-            grep -qF "$glob" "$f" || exit 1
-        done
         grep -A2 -E "^[[:space:]]*docs/\* \| specs/\*\)$" "$f" |
             grep -qF "case \"\${1##*/}\" in" || exit 1
         grep -A2 -E "^[[:space:]]*docs/\* \| specs/\*\)$" "$f" |
             grep -qE "^[[:space:]]*\*\.md\) return 0 ;;$" || exit 1
     done' sh \
     "$STANDARDIZE_ASSETS/diff-template.sh" "$GU_NONADOPT_SNIPPET"
+# The REST of the co-owned list must NOT be mirrored. Co-ownership is a content
+# exemption and absence is not content, so a missing AGENTS.md or LICENSE is a
+# disposition row, not a collapsed count. Re-adding those globs to the snippet is
+# the regression this catches — it reads as harmless "keeping the copy in sync"
+# and silently re-buries every root-file non-adoption.
+expect_ok "the non-adoption snippet collapses documentation prose only" \
+    sh -c 'grep -qF "nonadoption_is_collapsible_prose" "$1" &&
+        ! grep -qE "^[[:space:]]*(AGENTS\.md|README\.md|SECURITY\.md)[[:space:]]*\|" "$1" &&
+        ! grep -qF ".devcontainer/config/zshrc)" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
+# Every filtered class is earned. These three are the load-bearing guards, and
+# each one reverts to a silent exemption if the line disappears: the render-side
+# probe (repo habits are not the template's declaration), the three-valued
+# known-false state (2 = on the list, equivalent absent), and the note column
+# that carries the reason a path is a row rather than a count.
+expect_ok "non-adoption snippet requires template-side declaration for ignored-policy" \
+    sh -c 'grep -qF "nonadoption_is_render_ignored" "$1" &&
+        grep -qF "check-ignore -q --no-index" "$1" &&
+        grep -qF "core.excludesFile=/dev/null" "$1" &&
+        grep -qF "repo-ignored-only" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
+expect_ok "non-adoption snippet verifies known-false equivalents before filtering" \
+    sh -c 'grep -qF "nonadoption_known_false_state" "$1" &&
+        grep -qF "nonadoption_has_adr_log" "$1" &&
+        grep -qF "nonadoption_has_nested_terraform" "$1" &&
+        grep -qF "unverified-equivalent" "$1" &&
+        ! grep -qE "^[[:space:]]*\.envrc\) return 0 ;;$" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
 # The reviewed-keyset probe runs on the designed first pass, where
 # $REVIEWED_DATA does not exist yet. Folding its `test -e` guard into the
 # command substitution made the assignment inherit exit 1, so a `bash -eu` shell
@@ -5833,25 +5872,203 @@ expect_ok "non-adoption classifier snippet runs clean under bash -eu" \
     "$GU_NONADOPT_SNIPPET"
 GU_NONADOPT_TSV="$GU_TARGET/.copier-guarded-update/nonadoption-report.tsv"
 expect_ok "non-adoption classifier flags a file both renders ship and the repo lacks" \
-    grep -qxF "$(printf 'shared-note.md\tnonadopt-both\tno\tbaseline+target')" \
+    grep -qxF "$(printf 'shared-note.md\tnonadopt-both\tno\tbaseline+target\t-')" \
     "$GU_NONADOPT_TSV"
 expect_ok "non-adoption classifier expects the template-side deletion it can see" \
-    grep -qxF "$(printf 'retired-doc.md\tdelete-expected\tn/a-removed\tbaseline-only')" \
+    grep -qxF "$(printf 'retired-doc.md\tdelete-expected\tn/a-removed\tbaseline-only\t-')" \
     "$GU_NONADOPT_TSV"
 expect_ok "non-adoption classifier assigns a target-only file to the update" \
-    grep -qxF "$(printf 'new-doc.md\tnew-in-target\tn/a-new\ttarget-only')" \
+    grep -qxF "$(printf 'new-doc.md\tnew-in-target\tn/a-new\ttarget-only\t-')" \
     "$GU_NONADOPT_TSV"
-# Filtered classes are RECORDED, never dropped: .vscode/new.json is absent by
-# repo ignore policy, and a report that silently omitted it would be the same
-# invisible-decision failure the whole mechanism exists to end.
-expect_ok "non-adoption classifier records rather than drops a gitignored path" \
-    grep -qxF "$(printf '.vscode/new.json\tignored-policy\tn/a-new\ttarget-only')" \
+# .vscode/new.json is the repo-only-ignore case, and this fixture states it
+# unusually plainly: the repo's .gitignore is a bare `.vscode/*`, while the target
+# template's NEGATES the path (`!.vscode/new.json`) — the template is saying, as
+# loudly as a .gitignore can, that this file is meant to be tracked. Keying the
+# exemption on the repo's rule alone read that as "gitignored by policy" and
+# collapsed it into a count. It is a row, and the note says whose rule it was.
+expect_ok "non-adoption classifier refuses a repo-only ignore as adoption policy" \
+    grep -qxF "$(printf '.vscode/new.json\tnew-in-target\tn/a-new\ttarget-only\trepo-ignored-only')" \
     "$GU_NONADOPT_TSV"
+expect_fail "non-adoption classifier grants no ignored-policy on the repo's rule alone" \
+    grep -qF "ignored-policy" "$GU_NONADOPT_TSV"
 # Adopted paths carry no row — otherwise every render file would be a finding
 # and the report would be as useless as no report.
 expect_fail "non-adoption classifier stays silent about paths the repo already has" \
     grep -qF version.txt "$GU_NONADOPT_TSV"
 chmod -R a-w "$GU_SNAPSHOT"
+
+# --- classification matrix, on hand-built renders ----------------------------
+# The fixture above proves the snippet runs against REAL copier renders. What it
+# cannot cheaply express is the matrix: a repo that is chezmoi-shaped, one that
+# outgrew the flat Terraform seed, a directory sitting where the render ships a
+# file, a mode-only upstream change. Copier renders those awkwardly and some of
+# them would break the real `copier update` further up (a directory at a rendered
+# file's path makes the apply fail), so the two renders here are plain
+# directories — which is all the snippet ever reads them as: `$BASELINE_DISCOVERY
+# /<path>`, `$TARGET_DISCOVERY/<path>`, and the frozen path inventories.
+GU_NA_ROOT="$TMPROOT/nonadoption-matrix"
+GU_NA_REPO="$GU_NA_ROOT/repo"
+GU_NA_BASE="$GU_NA_ROOT/baseline-render"
+GU_NA_TGT="$GU_NA_ROOT/target-render"
+GU_NA_STATE="$GU_NA_REPO/.copier-guarded-update"
+mkdir -p "$GU_NA_REPO" "$GU_NA_BASE" "$GU_NA_TGT" "$GU_NA_STATE"
+na_render_file() {
+    mkdir -p "$(dirname "$1")"
+    printf '%s\n' "${2:-rendered body}" >"$1"
+}
+for na_render in "$GU_NA_BASE" "$GU_NA_TGT"; do
+    # Root co-owned prose (rows) versus documentation-tree prose (collapsed).
+    na_render_file "$na_render/AGENTS.md"
+    na_render_file "$na_render/LICENSE"
+    na_render_file "$na_render/docs/guide.md"
+    # Non-prose under docs/ is not co-owned at all — the Markdown-only filter.
+    na_render_file "$na_render/docs/build.sh"
+    # Drift class K seeds, each needing its documented equivalent verified.
+    na_render_file "$na_render/docs/decisions/0001-record-architecture-decisions.md"
+    na_render_file "$na_render/terraform/main.tf"
+    na_render_file "$na_render/prettier.config.cjs"
+    na_render_file "$na_render/Brewfile"
+    # Ignore policy: local.json is ignored by BOTH sides, stray.md by the repo
+    # only, and the template's own rules are what the render ships.
+    na_render_file "$na_render/.vscode/local.json"
+    na_render_file "$na_render/stray.md"
+    printf '%s\n' '.vscode/*' >"$na_render/.gitignore"
+    # A rendered script whose CONTENT never changes across the range.
+    na_render_file "$na_render/scripts/hook.sh" '#!/bin/sh'
+done
+# ...but whose mode does. `cmp -s` calls these identical; the update still ships
+# real work, and a `no` here would tell the reviewer nothing had moved.
+chmod +x "$GU_NA_TGT/scripts/hook.sh"
+git init -q "$GU_NA_REPO" >/dev/null
+git -C "$GU_NA_REPO" config user.email test@example.com
+git -C "$GU_NA_REPO" config user.name "Test"
+printf '%s\n' '/.copier-guarded-update/' >>"$GU_NA_REPO/.git/info/exclude"
+printf '%s\n' '.vscode/*' 'stray.md' >"$GU_NA_REPO/.gitignore"
+# A DIRECTORY where both renders ship a file. `test -e` called this adopted.
+mkdir -p "$GU_NA_REPO/LICENSE"
+printf '%s\n' 'not the license' >"$GU_NA_REPO/LICENSE/NOTICE.txt"
+git -C "$GU_NA_REPO" add -A >/dev/null
+git -C "$GU_NA_REPO" commit -qm "matrix repo" >/dev/null
+for na_side in BASE TGT; do
+    eval "na_dir=\$GU_NA_$na_side"
+    (cd "$na_dir" && find . \( -type f -o -type l \) -print) |
+        sed 's#^\./##' | LC_ALL=C sort -u \
+        >"$GU_NA_STATE/$(test "$na_side" = BASE &&
+            printf baseline || printf target)-managed-paths"
+done
+: >"$GU_NA_STATE/ignored-absent-paths"
+while IFS= read -r na_path; do
+    git -C "$GU_NA_REPO" check-ignore -q -- "$na_path" || continue
+    test -e "$GU_NA_REPO/$na_path" ||
+        printf '%s\n' "$na_path" >>"$GU_NA_STATE/ignored-absent-paths"
+done <"$GU_NA_STATE/target-managed-paths"
+na_classify() {
+    (cd "$GU_NA_REPO" &&
+        GUARDED_STATE=.copier-guarded-update \
+            BASELINE_DISCOVERY="$GU_NA_BASE" \
+            TARGET_DISCOVERY="$GU_NA_TGT" \
+            bash -eu "$GU_NONADOPT_SNIPPET" >/dev/null)
+}
+GU_NA_TSV="$GU_NA_STATE/nonadoption-report.tsv"
+expect_ok "non-adoption matrix classifier runs clean under bash -eu" na_classify
+# Finding 2: co-ownership is a CONTENT exemption, and absence is not content.
+expect_ok "absent root co-owned prose is a disposition row, not a collapsed count" \
+    grep -qxF "$(printf 'AGENTS.md\tnonadopt-both\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+expect_ok "documentation-tree prose still collapses" \
+    grep -qxF "$(printf 'docs/guide.md\tco-owned\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+expect_ok "non-prose under docs/ is neither collapsed nor exempt" \
+    grep -qxF "$(printf 'docs/build.sh\tnonadopt-both\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+# Finding 4: a directory is not the file the render ships.
+expect_ok "a directory at a rendered file's path is reported, not read as adopted" \
+    grep -qxF "$(printf 'LICENSE\tnonadopt-both\tno\tbaseline+target\trepo-path-is-directory')" \
+    "$GU_NA_TSV"
+# Finding 5: the exec bit is upstream work `cmp` cannot see.
+expect_ok "a mode-only upstream change counts as changed in range" \
+    grep -qxF "$(printf 'scripts/hook.sh\tnonadopt-both\tyes\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+# Finding 3, both halves: the template's declaration grants the exemption.
+expect_ok "a path both the repo and the template ignore is ignored-policy" \
+    grep -qxF "$(printf '.vscode/local.json\tignored-policy\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+expect_ok "a path only the repo ignores is a row noting whose rule it was" \
+    grep -qxF "$(printf 'stray.md\tnonadopt-both\tno\tbaseline+target\trepo-ignored-only')" \
+    "$GU_NA_TSV"
+# Finding 1: drift class K is conditional, so each entry is verified. Unverified
+# first — this repo has no ADR log, no nested Terraform, no .prettierrc.cjs and no
+# chezmoi marker, so every one of these seeds is a real absence.
+for na_seed in docs/decisions/0001-record-architecture-decisions.md \
+    terraform/main.tf prettier.config.cjs Brewfile; do
+    expect_ok "unverified class-K equivalent is a row: $na_seed" \
+        grep -qxF "$(printf '%s\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent' \
+            "$na_seed")" "$GU_NA_TSV"
+done
+expect_fail "no class-K path is filtered while its equivalent is missing" \
+    grep -qF "filtered-known" "$GU_NA_TSV"
+# The seed ADR is a docs/**.md, so a two-valued known-false answer would have let
+# it fall through to the prose collapse — the enumerated path with the missing
+# replacement, filed as ordinary documentation noise.
+expect_fail "an unverified seed ADR is not swallowed by the prose collapse" \
+    grep -qF "$(printf 'decisions/0001-record-architecture-decisions.md\tco-owned')" \
+    "$GU_NA_TSV"
+# Now supply every documented equivalent and re-run: each seed flips to filtered.
+mkdir -p "$GU_NA_REPO/docs/decisions" "$GU_NA_REPO/terraform/environments/prod"
+printf '%s\n' 'renumbered' \
+    >"$GU_NA_REPO/docs/decisions/0007-record-architecture-decisions.md"
+printf '%s\n' 'real infra' \
+    >"$GU_NA_REPO/terraform/environments/prod/main.tf"
+printf '%s\n' 'module.exports = {}' >"$GU_NA_REPO/.prettierrc.cjs"
+printf '%s\n' 'chezmoi' >"$GU_NA_REPO/.chezmoiroot"
+printf '%s\n' 'brew bundle' >"$GU_NA_REPO/private_Brewfile"
+expect_ok "non-adoption matrix re-runs clean once equivalents exist" na_classify
+for na_seed in docs/decisions/0001-record-architecture-decisions.md \
+    terraform/main.tf prettier.config.cjs Brewfile; do
+    expect_ok "verified class-K equivalent filters the seed: $na_seed" \
+        grep -qxF "$(printf '%s\tfiltered-known\tno\tbaseline+target\t-' \
+            "$na_seed")" "$GU_NA_TSV"
+done
+# A FLAT terraform/*.tf is the seed layout itself and proves nothing; only a root
+# below terraform/ makes the seed redundant. Same for a `private_Brewfile` in a
+# repo that is not a chezmoi source.
+rm -rf "$GU_NA_REPO/terraform/environments"
+printf '%s\n' 'flat' >"$GU_NA_REPO/terraform/other.tf"
+rm -f "$GU_NA_REPO/.chezmoiroot"
+expect_ok "non-adoption matrix re-runs clean on the negative controls" na_classify
+expect_ok "a flat terraform root does not verify the nested-layout equivalent" \
+    grep -qxF "$(printf 'terraform/main.tf\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
+    "$GU_NA_TSV"
+expect_ok "private_Brewfile without a chezmoi marker does not verify the Brewfile" \
+    grep -qxF "$(printf 'Brewfile\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
+    "$GU_NA_TSV"
+# The render-side evaluator must answer for the TEMPLATE, never for this machine:
+# a personal core.excludesFile leaking in would hand `ignored-policy` to whatever
+# the operator happens to ignore locally.
+printf '%s\n' 'AGENTS.md' >"$GU_NA_ROOT/machine-excludes"
+expect_ok "non-adoption matrix re-runs clean under a hostile machine excludesFile" \
+    env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.excludesFile \
+    "GIT_CONFIG_VALUE_0=$GU_NA_ROOT/machine-excludes" \
+    sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update \
+        BASELINE_DISCOVERY="$2" TARGET_DISCOVERY="$3" \
+        bash -eu "$4" >/dev/null' sh \
+    "$GU_NA_REPO" "$GU_NA_BASE" "$GU_NA_TGT" "$GU_NONADOPT_SNIPPET"
+expect_ok "the operator's own ignore file grants no template declaration" \
+    grep -qxF "$(printf 'AGENTS.md\tnonadopt-both\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+# A render that declares nothing local grants the exemption to nobody — the same
+# fail-safe direction diff-template.sh takes when the template ships no
+# .gitignore at all.
+rm -f "$GU_NA_BASE/.gitignore" "$GU_NA_TGT/.gitignore"
+(cd "$GU_NA_TGT" && find . \( -type f -o -type l \) -print) |
+    sed 's#^\./##' | LC_ALL=C sort -u >"$GU_NA_STATE/target-managed-paths"
+(cd "$GU_NA_BASE" && find . \( -type f -o -type l \) -print) |
+    sed 's#^\./##' | LC_ALL=C sort -u >"$GU_NA_STATE/baseline-managed-paths"
+expect_ok "non-adoption matrix re-runs clean when the render ships no ignore rules" \
+    na_classify
+expect_ok "a render declaring nothing local grants no ignored-policy" \
+    grep -qxF "$(printf '.vscode/local.json\tnonadopt-both\tno\tbaseline+target\trepo-ignored-only')" \
+    "$GU_NA_TSV"
 
 # Move the original mutable tag after the guarded snapshot exists. Copier 9.16
 # re-describes the baseline internally, so this proves its nested clone resolves

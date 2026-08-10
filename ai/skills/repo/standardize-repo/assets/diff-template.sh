@@ -945,13 +945,21 @@ has_repo_equivalent() {
 # disappears after a `copier update` means the repo's copy went byte-identical
 # to the template's, i.e. the customizations were clobbered.
 #
-# This classification is duplicated by the guarded update's non-adoption
-# classifier (mode-update.md §1, the `nonadoption-classify` markers), which uses
-# it to explain why a MISSING path is not an unexplained non-adoption. What must
-# agree is the whole shape, not just the glob list: the Markdown-only filter on
-# the two tree globs below is load-bearing there too, because a copy that kept
-# the bare `docs/*` would file a missing generated asset as somebody's owned
-# prose and drop it from the report. Change one, change the other.
+# The `docs/`/`specs/` branch below — and ONLY that branch — is duplicated by
+# the guarded update's non-adoption classifier (mode-update.md §1, the
+# `nonadoption-classify` markers), as `nonadoption_is_collapsible_prose`. What
+# must agree is the whole shape, not just the two globs: the Markdown-only filter
+# is load-bearing there too, because a copy that kept the bare `docs/*` would
+# file a missing generated asset as somebody's owned prose and collapse it out of
+# the report. Change one, change the other.
+#
+# The rest of this list is intentionally NOT mirrored there, and the asymmetry is
+# the point. Co-ownership is a CONTENT exemption — this script withholds a diff
+# because the repo's prose is expected to differ — and absence is not content.
+# Over there the question is whether a file the repo does not have was declined
+# on purpose, which no amount of prose ownership answers: a missing AGENTS.md or
+# LICENSE earns a disposition row. Only the two documentation trees collapse
+# there, and only because a repo carries tens of them.
 #
 # Keep these globs TIGHT. Anything the template grows that is not listed here
 # falls through to a visible, gating uncurated DRIFT, which is the safe default:

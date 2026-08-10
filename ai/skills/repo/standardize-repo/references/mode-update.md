@@ -1060,79 +1060,253 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     >"$GUARDED_STATE/nonadoption-baseline-only" ||
     { echo "failed to derive baseline-only render paths" >&2; exit 1; }
   # §1 already proved the worktree clean, so disk state IS index state here: a
-  # plain `test -e`/`test -L` answers "does the repo have this path" with no
-  # `git` call. `-L` is not redundant — `-e` reports a dangling symlink absent.
+  # plain `test -f`/`test -L` answers "does the repo have this path" with no
+  # `git` call. `-L` is not redundant — `-f` reports a dangling symlink absent,
+  # and a dangling link is still a path the repo has.
+  #
+  # `-f` rather than `-e`, because every path in these inventories is a rendered
+  # FILE. `-e` is true of a DIRECTORY sitting at that path, which called the file
+  # adopted when the repo does not have it at all — a structural oddity that then
+  # never reached the report. It is a row now, carrying a note.
+  #
   # diff-template.sh's `repo_variant` is the canonical .yml<->.yaml mapping;
   # this is the two-branch subset of it that a path inventory needs.
   nonadoption_repo_has() {
-    if test -e "$1" || test -L "$1"; then
+    if test -f "$1" || test -L "$1"; then
       return 0
+    fi
+    if test -d "$1"; then
+      NONADOPT_NOTE=repo-path-is-directory
+      return 1
     fi
     case "$1" in
     *.yml) NONADOPT_TWIN="${1%.yml}.yaml" ;;
     *.yaml) NONADOPT_TWIN="${1%.yaml}.yml" ;;
     *) return 1 ;;
     esac
-    test -e "$NONADOPT_TWIN" || test -L "$NONADOPT_TWIN"
+    test -f "$NONADOPT_TWIN" || test -L "$NONADOPT_TWIN"
   }
-  # Duplicated from diff-template.sh's `is_co_owned`, which carries the canonical
-  # list and the reasoning for it. Change one, change the other — including the
-  # SHAPE: `docs/`/`specs/` are PROSE-only there, so the nested basename case is
-  # part of the contract, not a paraphrase. A non-Markdown file under those trees
-  # is a build script, a config, or a generated asset — nothing the repo rewrote —
-  # so it is NOT co-owned, and its absence is unexplained non-adoption that has to
-  # be reported rather than filtered away.
-  nonadoption_is_co_owned() {
+  # The `docs/`/`specs/` PROSE branch of diff-template.sh's `is_co_owned`, and
+  # ONLY that branch. Change one, change the other — including the SHAPE: the
+  # nested basename case is part of the contract, not a paraphrase. A
+  # non-Markdown file under those trees is a build script, a config, or a
+  # generated asset that nobody rewrote, so it is not prose and its absence is
+  # unexplained non-adoption.
+  #
+  # The rest of `is_co_owned` is deliberately absent. Co-ownership is a CONTENT
+  # exemption — the repo's prose is expected to differ from the template's — and
+  # absence is not content. A missing `AGENTS.md`, `LICENSE`, `SECURITY.md`, or
+  # `.devcontainer/config/zshrc` is a file the repo does not have and will never
+  # be offered again; reading "the repo owns its prose" as "the repo meant to
+  # delete it" invents a decision nobody made, which is the exact failure this
+  # report exists to end. Those paths get table rows.
+  #
+  # The two documentation trees collapse for one reason only, and it is volume:
+  # a repo carries tens of them, and listing every declined page would bury the
+  # rows a reviewer has to act on.
+  nonadoption_is_collapsible_prose() {
     case "$1" in
-    AGENTS.md | CLAUDE.md | GEMINI.md | .github/copilot-instructions.md) return 0 ;;
-    README.md | DESIGN.md | CONTRIBUTING.md | CODE_OF_CONDUCT.md | LICENSE) return 0 ;;
-    SECURITY.md | .github/SECURITY.md) return 0 ;;
     docs/* | specs/*)
       case "${1##*/}" in
       *.md) return 0 ;;
       esac
       ;;
-    todo.md | *.code-workspace | .meta/*) return 0 ;;
-    .devcontainer/config/zshrc) return 0 ;;
     esac
     return 1
   }
-  # The known-false-`MISSING` list from mode-audit.md §3 (drift class K):
-  # absences that are deliberate divergences, not gaps. Only the Brewfile is
-  # conditional — it is a false MISSING exactly when a chezmoi source repo
-  # carries the renamed twin that becomes `~/Brewfile`.
-  nonadoption_is_filtered_known() {
-    case "$1" in
-    Brewfile) test -e private_Brewfile || test -e home/private_Brewfile ;;
-    docs/decisions/0001-record-architecture-decisions.md) return 0 ;;
-    terraform/main.tf | terraform/variables.tf) return 0 ;;
-    terraform/outputs.tf | terraform/tfvars.env.example) return 0 ;;
-    .envrc) return 0 ;;
-    prettier.config.cjs) return 0 ;;
-    *) return 1 ;;
-    esac
+  # Any ADR log the repo is actually keeping: a renumbered record-decisions ADR,
+  # or numbered ADRs under a log of its own. Either makes the seed redundant —
+  # the same two shapes diff-template.sh's `has_repo_equivalent` accepts, and the
+  # glob subsumes the renumbered case because the seed path itself is absent by
+  # the time this runs.
+  nonadoption_has_adr_log() {
+    for NONADOPT_ADR in docs/decisions/[0-9]*.md; do
+      test -f "$NONADOPT_ADR" || continue
+      return 0
+    done
+    return 1
   }
-  # Filtered classes win over the three main ones: a path gitignored by repo
-  # policy, a known-false MISSING, or a co-owned file already has its
-  # explanation and must not be reported as unexplained non-adoption. The row is
-  # still written, so a reviewer can see that nothing was dropped on the floor.
+  # Nested/split Terraform roots — a `*.tf` at least one directory BELOW
+  # `terraform/`, which is what makes the flat seed files redundant. A flat
+  # `terraform/*.tf` proves nothing: that is the seed layout itself.
+  nonadoption_has_nested_terraform() {
+    test -d terraform || return 1
+    find terraform -type f -name '*.tf' 2>/dev/null |
+      awk '{
+             rel = substr($0, length("terraform/") + 1)
+             if (rel ~ /\//) found = 1
+           }
+           END { exit(found ? 0 : 1) }'
+  }
+  # The known-false-`MISSING` list from mode-audit.md §3 (drift class K):
+  # absences that are deliberate divergences, not gaps. Every entry there is
+  # CONDITIONAL — it is a false MISSING *because the repo carries a documented
+  # equivalent* — so each is verified against this repo rather than granted on
+  # the strength of the path name. An unverified path falls through to a table
+  # row, which is the safe direction: the reviewer sees something that may need
+  # adopting, instead of the classifier certifying a replacement nobody checked
+  # for. Granting the exemption unconditionally made a repo that simply never had
+  # `terraform/main.tf` indistinguishable from one that outgrew it.
+  #
+  # `.envrc` is deliberately NOT here. Its legitimacy is ignore policy — the
+  # template ships it gitignored — so it is settled by the probe below, on the
+  # template's own declaration rather than on this list's say-so.
+  # A chezmoi source repo renames the template's root Brewfile to the
+  # `private_`-prefixed twin that becomes `~/Brewfile`. Two cheap conditions,
+  # because either alone is wrong: a chezmoi marker without the twin means the
+  # Brewfile really is missing, and the twin without a marker is an ordinary repo
+  # that happens to use the prefix.
+  nonadoption_has_chezmoi_brewfile() {
+    test -f .chezmoiroot || test -f .chezmoi.toml ||
+      test -f .chezmoi.yaml || test -f .chezmoi.json || return 1
+    test -f private_Brewfile || test -f home/private_Brewfile
+  }
+  # THREE-valued, and the third value is the point:
+  #   0 — on the list, and the documented equivalent is present. Filtered.
+  #   2 — on the list, equivalent NOT found. A row, with a note.
+  #   1 — not on the list at all. Carry on classifying.
+  #
+  # State 2 must not fall through to the prose collapse below. The seed ADR is a
+  # `docs/**.md`, so a two-valued answer would have let an unverified ADR land in
+  # the collapsed `co-owned` count — the enumerated path with the missing
+  # replacement, filed as ordinary documentation noise. The list is more specific
+  # than the tree heuristic and wins over it.
+  nonadoption_known_false_state() {
+    case "$1" in
+    Brewfile)
+      if nonadoption_has_chezmoi_brewfile; then
+        return 0
+      fi
+      return 2
+      ;;
+    docs/decisions/0001-record-architecture-decisions.md)
+      if nonadoption_has_adr_log; then
+        return 0
+      fi
+      return 2
+      ;;
+    terraform/main.tf | terraform/variables.tf | \
+      terraform/outputs.tf | terraform/tfvars.env.example)
+      if nonadoption_has_nested_terraform; then
+        return 0
+      fi
+      return 2
+      ;;
+    prettier.config.cjs)
+      if test -f .prettierrc.cjs; then
+        return 0
+      fi
+      return 2
+      ;;
+    esac
+    return 1
+  }
+  # Whether the TEMPLATE declares a path local-only, evaluated in a scratch repo
+  # built from the .gitignore files the TARGET render ships. The repo's own rules
+  # are not the authority and never were: `ignored-absent-paths` is keyed on this
+  # repo's `check-ignore`, so a repo that added `.vscode/` to its own .gitignore
+  # was granting itself an adoption exemption on a template artifact every other
+  # clone still gets. Ignoring something is a habit a repo can acquire for its own
+  # reasons; the template DECLARING a path local is a statement about the artifact
+  # — the same correction diff-template.sh's IGNORED class already makes.
+  #
+  # The TARGET render is the right side to ask, not the baseline: the question is
+  # whether the file the update is about to decline to create is one the template
+  # still means to keep local, and the target render is the post-update truth.
+  #
+  # Two things have to be shut off or this answers "what does this MACHINE
+  # ignore" — the very question it exists to stop asking. An empty `--template`
+  # keeps `init.templateDir`/`~/.git-template` from seeding an info/exclude, and
+  # `core.excludesFile=/dev/null` keeps the operator's personal ignore file out of
+  # the answer.
+  NONADOPT_IGNORE_ROOT="$(mktemp -d -t copier-nonadoption-ignore-XXXXXX)" ||
+    { echo "failed to create the render ignore evaluator" >&2; exit 1; }
+  NONADOPT_IGNORE_SEEDED=0
+  mkdir -p "$NONADOPT_IGNORE_ROOT/empty-git-template" ||
+    { echo "failed to prepare the render ignore evaluator" >&2; exit 1; }
+  git init -q --template="$NONADOPT_IGNORE_ROOT/empty-git-template" \
+    "$NONADOPT_IGNORE_ROOT/tree" >/dev/null 2>&1 ||
+    { echo "failed to initialize the render ignore evaluator" >&2; exit 1; }
+  # Every .gitignore in the render, at its own relative path: a nested one governs
+  # only its own subtree, so flattening them would change what they mean.
+  find "$TARGET_DISCOVERY" -type f -name .gitignore |
+    LC_ALL=C sort >"$GUARDED_STATE/render-ignore-files" ||
+    { echo "failed to inventory the target render's ignore files" >&2; exit 1; }
+  while IFS= read -r NONADOPT_IGNORE_SRC; do
+    test -n "$NONADOPT_IGNORE_SRC" || continue
+    NONADOPT_IGNORE_REL="${NONADOPT_IGNORE_SRC#"$TARGET_DISCOVERY"/}"
+    mkdir -p "$(dirname "$NONADOPT_IGNORE_ROOT/tree/$NONADOPT_IGNORE_REL")" &&
+      cp "$NONADOPT_IGNORE_SRC" \
+        "$NONADOPT_IGNORE_ROOT/tree/$NONADOPT_IGNORE_REL" ||
+      { echo "failed to stage $NONADOPT_IGNORE_REL for ignore evaluation" >&2; exit 1; }
+    NONADOPT_IGNORE_SEEDED=1
+  done <"$GUARDED_STATE/render-ignore-files"
+  # `git check-ignore` is THREE-valued: 0 = matches an ignore rule, 1 = does not,
+  # anything else = the probe itself failed. Folding the last two together is
+  # fail-OPEN — a broken evaluator would answer "the template declares nothing
+  # local" and turn every `ignored-policy` path into a table row the operator then
+  # adopts back into a repo that never wanted it. There is no safe default for "I
+  # could not tell", so an errored probe stops the run.
+  nonadoption_is_render_ignored() {
+    test "$NONADOPT_IGNORE_SEEDED" -eq 1 || return 1
+    NONADOPT_IGNORE_RC=0
+    NONADOPT_IGNORE_ERR="$(
+      git -C "$NONADOPT_IGNORE_ROOT/tree" -c core.excludesFile=/dev/null \
+        check-ignore -q --no-index -- "$1" 2>&1
+    )" || NONADOPT_IGNORE_RC=$?
+    case "$NONADOPT_IGNORE_RC" in
+    0) return 0 ;;
+    1) return 1 ;;
+    esac
+    echo "failed to evaluate the target render's ignore rules for $1 (git check-ignore exit $NONADOPT_IGNORE_RC)" >&2
+    test -z "$NONADOPT_IGNORE_ERR" || printf '  %s\n' "$NONADOPT_IGNORE_ERR" >&2
+    exit 1
+  }
+  # Filtered classes win over the three main ones: a path both the repo and the
+  # template treat as local, a VERIFIED known-false MISSING, or a docs/specs
+  # prose page already has its explanation and must not be reported as
+  # unexplained non-adoption. The row is still written, so a reviewer can see
+  # that nothing was dropped on the floor.
+  #
+  # Sets NONADOPT_FILTERED and may set NONADOPT_NOTE; returns 1 when the path has
+  # no filtered explanation. Called DIRECTLY rather than in a command
+  # substitution — a subshell would discard the note, and on the repo-only-ignore
+  # path the note is the whole finding.
   nonadoption_filtered_class() {
+    NONADOPT_FILTERED=""
     case "$1" in
     *.gitkeep)
-      printf '%s\n' gitkeep-benign
+      NONADOPT_FILTERED=gitkeep-benign
       return 0
       ;;
     esac
     if grep -qxF "$1" "$GUARDED_STATE/ignored-absent-paths"; then
-      printf '%s\n' ignored-policy
+      # Repo-ignored. Exempt only if the TEMPLATE says so too — otherwise this is
+      # the repo's own habit deciding what the template meant, and the path is a
+      # real non-adoption wearing an ignore rule.
+      if nonadoption_is_render_ignored "$1"; then
+        NONADOPT_FILTERED=ignored-policy
+        return 0
+      fi
+      if test "$NONADOPT_NOTE" = -; then
+        NONADOPT_NOTE=repo-ignored-only
+      fi
+      return 1
+    fi
+    NONADOPT_KNOWN_RC=0
+    nonadoption_known_false_state "$1" || NONADOPT_KNOWN_RC=$?
+    if test "$NONADOPT_KNOWN_RC" -eq 0; then
+      NONADOPT_FILTERED=filtered-known
       return 0
     fi
-    if nonadoption_is_filtered_known "$1"; then
-      printf '%s\n' filtered-known
-      return 0
+    if test "$NONADOPT_KNOWN_RC" -eq 2; then
+      if test "$NONADOPT_NOTE" = -; then
+        NONADOPT_NOTE=unverified-equivalent
+      fi
+      return 1
     fi
-    if nonadoption_is_co_owned "$1"; then
-      printf '%s\n' co-owned
+    if nonadoption_is_collapsible_prose "$1"; then
+      NONADOPT_FILTERED=co-owned
       return 0
     fi
     return 1
@@ -1168,55 +1342,90 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       printf '%s\n' unknown
       return 0
     fi
+    # The exec bit is upstream work too, and `cmp` cannot see it. A template that
+    # fixed a rendered script from 100644 to 100755 across the range changed the
+    # file in the only way that mattered, and reporting `no` would tell the
+    # reviewer the repo is declining something that has not moved. Symlinks never
+    # reach here — the branch above returns — so the bit always belongs to the
+    # file itself rather than to a link target.
+    NONADOPT_BASE_EXEC=0
+    NONADOPT_TGT_EXEC=0
+    test ! -x "$NONADOPT_BASE" || NONADOPT_BASE_EXEC=1
+    test ! -x "$NONADOPT_TGT" || NONADOPT_TGT_EXEC=1
+    if test "$NONADOPT_BASE_EXEC" != "$NONADOPT_TGT_EXEC"; then
+      printf '%s\n' yes
+      return 0
+    fi
     if cmp -s "$NONADOPT_BASE" "$NONADOPT_TGT"; then
       printf '%s\n' no
     else
       printf '%s\n' yes
     fi
   }
-  # path<TAB>class<TAB>changed_in_range<TAB>baseline_membership
+  # path<TAB>class<TAB>changed_in_range<TAB>baseline_membership<TAB>note
+  # `note` is `-` unless the row carries something the class alone cannot say:
+  # `repo-ignored-only` (this repo ignores the path, the template does not),
+  # `unverified-equivalent` (a drift-class-K path whose documented replacement is
+  # not in the repo), or `repo-path-is-directory` (a directory sits where the
+  # render ships a file).
+  # NONADOPT_NOTE is reset per path rather than inside the classifier, because
+  # `nonadoption_repo_has` runs first and may already have set it.
   : >"$GUARDED_STATE/nonadoption-report.tsv"
   while IFS= read -r NONADOPT_PATH; do
     test -n "$NONADOPT_PATH" || continue
+    NONADOPT_NOTE=-
     # Present in the repo: the merge has nothing to adopt, so nothing to report.
     if nonadoption_repo_has "$NONADOPT_PATH"; then
       continue
     fi
-    NONADOPT_CLASS="$(nonadoption_filtered_class "$NONADOPT_PATH")" ||
+    if nonadoption_filtered_class "$NONADOPT_PATH"; then
+      NONADOPT_CLASS="$NONADOPT_FILTERED"
+    else
       NONADOPT_CLASS=nonadopt-both
+    fi
     NONADOPT_CHANGED="$(nonadoption_changed_in_range "$NONADOPT_PATH")" ||
       { echo "failed to compare rendered copies: $NONADOPT_PATH" >&2; exit 1; }
-    printf '%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\n' \
       "$NONADOPT_PATH" "$NONADOPT_CLASS" "$NONADOPT_CHANGED" baseline+target \
+      "$NONADOPT_NOTE" \
       >>"$GUARDED_STATE/nonadoption-report.tsv" ||
       { echo "failed to record non-adoption row: $NONADOPT_PATH" >&2; exit 1; }
   done <"$GUARDED_STATE/nonadoption-both-renders"
   while IFS= read -r NONADOPT_PATH; do
     test -n "$NONADOPT_PATH" || continue
+    NONADOPT_NOTE=-
     if nonadoption_repo_has "$NONADOPT_PATH"; then
       continue
     fi
     # The target render adds it and the repo lacks it, so `copier update`
     # SHOULD create it. §4 rechecks: still missing means the update failed.
-    NONADOPT_CLASS="$(nonadoption_filtered_class "$NONADOPT_PATH")" ||
+    if nonadoption_filtered_class "$NONADOPT_PATH"; then
+      NONADOPT_CLASS="$NONADOPT_FILTERED"
+    else
       NONADOPT_CLASS=new-in-target
-    printf '%s\t%s\t%s\t%s\n' \
-      "$NONADOPT_PATH" "$NONADOPT_CLASS" n/a-new target-only \
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$NONADOPT_PATH" "$NONADOPT_CLASS" n/a-new target-only "$NONADOPT_NOTE" \
       >>"$GUARDED_STATE/nonadoption-report.tsv" ||
       { echo "failed to record non-adoption row: $NONADOPT_PATH" >&2; exit 1; }
   done <"$GUARDED_STATE/nonadoption-target-only"
   while IFS= read -r NONADOPT_PATH; do
     test -n "$NONADOPT_PATH" || continue
+    NONADOPT_NOTE=-
     # Absent already: the repo and the target render agree it is gone.
     if ! nonadoption_repo_has "$NONADOPT_PATH"; then
       continue
     fi
     # The template dropped it and the repo still has it, so expect the update
     # to delete it. §4 routes any survivor to §3's deletion reconciliation.
-    NONADOPT_CLASS="$(nonadoption_filtered_class "$NONADOPT_PATH")" ||
+    if nonadoption_filtered_class "$NONADOPT_PATH"; then
+      NONADOPT_CLASS="$NONADOPT_FILTERED"
+    else
       NONADOPT_CLASS=delete-expected
-    printf '%s\t%s\t%s\t%s\n' \
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' \
       "$NONADOPT_PATH" "$NONADOPT_CLASS" n/a-removed baseline-only \
+      "$NONADOPT_NOTE" \
       >>"$GUARDED_STATE/nonadoption-report.tsv" ||
       { echo "failed to record non-adoption row: $NONADOPT_PATH" >&2; exit 1; }
   done <"$GUARDED_STATE/nonadoption-baseline-only"
@@ -1231,6 +1440,13 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       { echo "failed to count non-adoption class: $NONADOPT_CLASS" >&2; exit 1; }
     printf 'non-adoption %-16s %s\n' "$NONADOPT_CLASS" "$NONADOPT_COUNT"
   done
+  # Scratch, and outside the repo: nothing below reads it. A fail-closed exit
+  # above leaves it behind on purpose — the guarded run is aborting, and a
+  # `mktemp -d` under the system temp dir is the operator's to inspect.
+  if test -n "$NONADOPT_IGNORE_ROOT"; then
+    rm -rf -- "$NONADOPT_IGNORE_ROOT" ||
+      { echo "failed to remove the render ignore evaluator" >&2; exit 1; }
+  fi
   # <<< nonadoption-classify <<<
   tar -cf "$GUARDED_STATE/ignored-backup.tar" \
     -T "$GUARDED_STATE/ignored-existing-paths" ||
@@ -1314,7 +1530,8 @@ replaces the post-update reconciliation in §3.
 **Silent non-adoption is the one gap a preview cannot show you.** Having both
 renders in hand is what makes it visible at all, which is why the block above
 ends by classifying it into `$GUARDED_STATE/nonadoption-report.tsv` — one row
-per path, `path<TAB>class<TAB>changed_in_range<TAB>baseline_membership`, with
+per path,
+`path<TAB>class<TAB>changed_in_range<TAB>baseline_membership<TAB>note`, with
 `nonadopt-both` naming the blind spot itself and `ignored-policy` / `co-owned` /
 `filtered-known` / `gitkeep-benign` recording the paths that have an explanation
 already rather than dropping them. The mechanism, and why `copier update` can
@@ -1323,6 +1540,31 @@ re-checks the rows against the applied result and §5 turns the survivors into a
 disposition table in the PR body. Only `nonadopt-both` reaches that table — the
 other classes are carried so that the report can be read as complete rather than
 as whatever survived an undocumented filter.
+
+**Every filtered class is earned, never assumed** — that is what keeps the
+collapsed counts honest, because a filter nobody can audit is just a smaller
+blind spot:
+
+- **`ignored-policy` needs BOTH sides.** The path must be ignored by this repo
+  *and* declared local by the **target render's** own `.gitignore` files, probed
+  in a scratch evaluator built from them. The repo's rules alone are a habit it
+  acquired for its own reasons — a repo that once added `.vscode/` to its
+  `.gitignore` would otherwise be granting itself an adoption exemption on a
+  template artifact every other clone still receives. The target render is the
+  side that gets asked because it is the post-update truth: the question is
+  whether the file the merge is about to decline to create is one the template
+  still means to keep local. A repo-only match is a `nonadopt-both` row carrying
+  the note `repo-ignored-only`.
+- **`filtered-known` needs the equivalent to exist.** Drift class K's entries
+  are false `MISSING`s *because the repo carries a documented replacement* — a
+  renumbered ADR log, nested Terraform roots, `.prettierrc.cjs`, the chezmoi
+  `private_Brewfile`. Each is checked against this repo. A path on the list whose
+  replacement is not there is a `nonadopt-both` row noted
+  `unverified-equivalent`, never a silent exemption.
+- **`co-owned` collapses `docs/`/`specs/` prose only.** Co-ownership is a
+  *content* exemption, and absence is not content: a missing `AGENTS.md`,
+  `LICENSE`, or `.devcontainer/config/zshrc` gets a row like anything else. The
+  two documentation trees collapse purely for volume.
 
 ## 2. Run the update
 
@@ -2152,6 +2394,12 @@ and write the section from the rows §4 confirmed:
 ```markdown
 ## Silent non-adoption
 
+**Apply anomaly, not a non-adoption — resolve before review.**
+`.github/workflows/codeql.yml` is `new-in-target` (`n/a-new`) and `use_codeql`
+is `true`, so the update should have created it; §4 found it still `MISSING`.
+That is a defect in the apply, not a decision this repo made, so it is called
+out here instead of being written up as a decline.
+
 Files the template ships that this repo does not have. `copier update` reads
 each absence as a deliberate deletion and will never restore it — see
 copier-gotchas.md §9.
@@ -2159,10 +2407,12 @@ copier-gotchas.md §9.
 | Path | In template since | Renders under | Changed upstream in range | Why not adopted | Disposition |
 | --- | --- | --- | --- | --- | --- |
 | `scripts/lint-hygiene.sh` | baseline+target (≤ v3.12.0) | always | no | Deliberate: `Taskfile.yml` has no `lint:hygiene` target and nothing calls it. Nothing breaks without it. | decline — the repo lints hygiene through its own `lint:shell` |
-| `.github/workflows/codeql.yml` | target-only since v3.21.0 | `use_codeql: true` | yes | unclear — needs your judgment; the answer is `true`, so the absence looks accidental | adopt — restore from the render and re-run `task ci` |
+| `scripts/status.sh` | baseline+target (≤ v3.4.0) | always | yes | unclear — needs your judgment; `Taskfile.yml` still has a `status` target that calls it, so the absence looks accidental | adopt — restore from the render and re-run `task verify` |
+| `AGENTS.md` | baseline+target (≤ v3.0.0) | always | yes | Accidental: the repo has `CLAUDE.md` as a regular file, so the symlink alias was flattened and the real file never landed. | adopt — restore and re-point the aliases |
+| `.envrc` | baseline+target (≤ v3.20.2) | always | no | note `repo-ignored-only`: this repo gitignores `.envrc`, but the template does not ship it ignored, so the exemption is this repo's habit rather than the template's declaration. | decline — the repo resolves env through `op run`; record it |
 
-Filtered, not silent: 4 co-owned, 2 gitignored by repo policy, 1 known-false
-MISSING.
+Filtered, not silent: 4 co-owned (docs/specs prose), 2 ignored by both the repo
+and the template, 1 known-false MISSING with its equivalent verified.
 ```
 
 Column by column:
@@ -2181,7 +2431,16 @@ Column by column:
   repo's own answers even ask for it. "unclear" is allowed.
 - **Changed upstream in range** — the TSV's `changed_in_range` flag verbatim.
   A `no` means the repo is declining something that has not moved since its
-  baseline; a `yes` means it is also missing real upstream work.
+  baseline; a `yes` means it is also missing real upstream work. It compares
+  content *and* the executable bit, so a template that only fixed a rendered
+  script's mode across the range still reads `yes`.
+- **The TSV's `note`, where it is not `-`** — fold it into *Why not adopted*
+  rather than dropping it; it is the reason the path is a row instead of a
+  collapsed count, and the reviewer cannot reconstruct it. `repo-ignored-only`:
+  the repo ignores the path but the template never declared it local.
+  `unverified-equivalent`: a drift-class-K path whose documented replacement is
+  not in this repo. `repo-path-is-directory`: a directory sits where the render
+  ships a file.
 - **Why not adopted** — the one column only you can write, and the reason the
   table is worth the effort. Read the repo and say whether the absence looks
   **deliberate** or **accidental**, citing the evidence: a file that references
@@ -2195,9 +2454,15 @@ Column by column:
   legitimate outcomes; the point is that one of them was chosen on the record.
 
 Collapse the filtered classes to one labeled count line each below the table —
-`co-owned`, `ignored-policy`, `filtered-known` — rather than listing them. They
-are recorded so the reviewer can see the classification dropped nothing, not so
-they have to read them.
+`co-owned` (say **docs/specs prose**, which is all it now covers),
+`ignored-policy`, `filtered-known` — rather than listing them. They are recorded
+so the reviewer can see the classification dropped nothing, not so they have to
+read them. Label them for what was actually established, since each one is a
+claim the reviewer is being asked to skip: `co-owned` is documentation-tree
+prose, `ignored-policy` is ignored by the repo **and** the template, and
+`filtered-known` is a class-K path whose equivalent was **found**. Anything that
+failed one of those checks is not in these counts — it is a row above, with its
+note.
 
 If no row survives, say so outright: **"No silent non-adoptions — every path
 present in both renders exists in the repo."** An omitted section is
