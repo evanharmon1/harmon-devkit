@@ -1059,31 +1059,45 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     "$GUARDED_STATE/target-managed-paths" \
     >"$GUARDED_STATE/nonadoption-baseline-only" ||
     { echo "failed to derive baseline-only render paths" >&2; exit 1; }
-  # §1 already proved the worktree clean, so disk state IS index state here: a
-  # plain `test -f`/`test -L` answers "does the repo have this path" with no
-  # `git` call. `-L` is not redundant — `-f` reports a dangling symlink absent,
-  # and a dangling link is still a path the repo has.
+  # Notes ACCUMULATE. Every explanation this classifier can find is evidence
+  # attached to a row, never a reason to withhold one — see the header above.
+  nonadoption_add_note() {
+    if test "$NONADOPT_NOTE" = -; then
+      NONADOPT_NOTE="$1"
+    else
+      NONADOPT_NOTE="$NONADOPT_NOTE; $1"
+    fi
+  }
+  # EXACT-path presence, which is the only presence copier acts on: it creates
+  # and deletes the paths its templates name, not variants of them.
   #
-  # `-f` rather than `-e`, because every path in these inventories is a rendered
-  # FILE. `-e` is true of a DIRECTORY sitting at that path, which called the file
-  # adopted when the repo does not have it at all — a structural oddity that then
-  # never reached the report. It is a row now, carrying a note.
-  #
-  # diff-template.sh's `repo_variant` is the canonical .yml<->.yaml mapping;
-  # this is the two-branch subset of it that a path inventory needs.
-  nonadoption_repo_has() {
+  # §1 already proved the worktree clean, so disk state IS index state here and a
+  # plain `test -f`/`test -L` answers the question with no `git` call. `-L` is
+  # not redundant — `-f` reports a dangling symlink absent, and a dangling link
+  # is still a path the repo has. `-f` rather than `-e`, because every path in
+  # these inventories is a rendered FILE: `-e` is true of a DIRECTORY sitting at
+  # that path, which called the file adopted when the repo does not have it.
+  nonadoption_repo_has_exact() {
     if test -f "$1" || test -L "$1"; then
       return 0
     fi
     if test -d "$1"; then
-      NONADOPT_NOTE=repo-path-is-directory
-      return 1
+      nonadoption_add_note repo-path-is-directory
     fi
+    return 1
+  }
+  # diff-template.sh's `repo_variant` is the canonical .yml<->.yaml mapping; this
+  # is the two-branch subset a path inventory needs. Prints the twin, or nothing
+  # for a path that has none.
+  nonadoption_twin_of() {
     case "$1" in
-    *.yml) NONADOPT_TWIN="${1%.yml}.yaml" ;;
-    *.yaml) NONADOPT_TWIN="${1%.yaml}.yml" ;;
-    *) return 1 ;;
+    *.yml) printf '%s\n' "${1%.yml}.yaml" ;;
+    *.yaml) printf '%s\n' "${1%.yaml}.yml" ;;
     esac
+  }
+  nonadoption_twin_present() {
+    NONADOPT_TWIN="$(nonadoption_twin_of "$1")"
+    test -n "$NONADOPT_TWIN" || return 1
     test -f "$NONADOPT_TWIN" || test -L "$NONADOPT_TWIN"
   }
   # The `docs/`/`specs/` PROSE branch of diff-template.sh's `is_co_owned`, and
@@ -1101,10 +1115,13 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # delete it" invents a decision nobody made, which is the exact failure this
   # report exists to end. Those paths get table rows.
   #
-  # The two documentation trees collapse for one reason only, and it is volume:
-  # a repo carries tens of them, and listing every declined page would bury the
-  # rows a reviewer has to act on.
-  nonadoption_is_collapsible_prose() {
+  # This is a NOTE, not a filter. §5 groups rows whose every note is noise into a
+  # compact list under the table — still one line per path, still auditable —
+  # because a repo carries tens of documentation pages and listing each in the
+  # disposition table would bury the rows a reviewer must act on. Grouping is a
+  # presentation choice made where a human can see all of it; suppression was a
+  # decision made here, where nobody could.
+  nonadoption_is_doc_prose() {
     case "$1" in
     docs/* | specs/*)
       case "${1##*/}" in
@@ -1187,7 +1204,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       # that text is multi-line and would corrupt the TSV row it lands in, so the
       # detail goes to stderr where it has room.
       echo "could not parse package.json for a prettier config (yq exit $NONADOPT_PRETTIER_RC); reporting prettier.config.cjs as a row" >&2
-      NONADOPT_NOTE=package-json-unparseable
+      nonadoption_add_note package-json-unparseable
       return 1
     fi
     test -n "$NONADOPT_PRETTIER_KEY"
@@ -1229,39 +1246,37 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       test -f .chezmoi.yaml || test -f .chezmoi.json || return 1
     test -f private_Brewfile || test -f home/private_Brewfile
   }
-  # THREE-valued, and the third value is the point:
-  #   0 — on the list, and the documented equivalent is present. Filtered.
-  #   2 — on the list, equivalent NOT found. A row, with a note.
-  #   1 — not on the list at all. Carry on classifying.
-  #
-  # State 2 must not fall through to the prose collapse below. The seed ADR is a
-  # `docs/**.md`, so a two-valued answer would have let an unverified ADR land in
-  # the collapsed `co-owned` count — the enumerated path with the missing
-  # replacement, filed as ordinary documentation noise. The list is more specific
-  # than the tree heuristic and wins over it.
-  nonadoption_known_false_state() {
+  # Drift class K's entries are false `MISSING`s only *because the repo carries a
+  # documented replacement*, so each is checked against this repo and the ANSWER
+  # is recorded either way: `known-false-verified` when the replacement is there,
+  # `unverified-equivalent` when it is not. Neither outcome decides whether the
+  # path is reported — the transition class already did that. This function only
+  # says what the evidence was.
+  nonadoption_known_false_note() {
     case "$1" in
     docs/decisions/0001-record-architecture-decisions.md)
       if nonadoption_has_adr_log; then
-        return 0
+        nonadoption_add_note known-false-verified
+      else
+        nonadoption_add_note unverified-equivalent
       fi
-      return 2
       ;;
     terraform/main.tf | terraform/variables.tf | \
       terraform/outputs.tf | terraform/tfvars.env.example)
       if nonadoption_has_nested_terraform; then
-        return 0
+        nonadoption_add_note known-false-verified
+      else
+        nonadoption_add_note unverified-equivalent
       fi
-      return 2
       ;;
     prettier.config.cjs)
       if nonadoption_has_prettier_config; then
-        return 0
+        nonadoption_add_note known-false-verified
+      else
+        nonadoption_add_note unverified-equivalent
       fi
-      return 2
       ;;
     esac
-    return 1
   }
   # Whether the TEMPLATE declares a path local-only, evaluated in a scratch repo
   # built from the .gitignore files the TARGET render ships. The repo's own rules
@@ -1369,63 +1384,42 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     done <"$GUARDED_STATE/skip-if-exists-patterns"
     return 1
   }
-  # Filtered classes win over the three main ones: a path both the repo and the
-  # template treat as local, a VERIFIED known-false MISSING, or a docs/specs
-  # prose page already has its explanation and must not be reported as
-  # unexplained non-adoption. The row is still written, so a reviewer can see
-  # that nothing was dropped on the floor.
+  # Gather EVERY explanation that applies, in no particular order, because none
+  # of them competes with any other any more. There is no precedence chain to get
+  # wrong and no early return to suppress a row: each probe either has something
+  # to say about this path or does not.
   #
-  # Sets NONADOPT_FILTERED and may set NONADOPT_NOTE; returns 1 when the path has
-  # no filtered explanation. Called DIRECTLY rather than in a command
-  # substitution — a subshell would discard the note, and on the repo-only-ignore
-  # path the note is the whole finding.
-  nonadoption_filtered_class() {
-    NONADOPT_FILTERED=""
-    # Annotation, not a filter: the root Brewfile is always a row (see above),
-    # and this only tells the reviewer which argument they are adjudicating.
+  # Notes join with `; `. Callers reset NONADOPT_NOTE once per path, before the
+  # presence test, because presence may already have something to add.
+  nonadoption_collect_notes() {
+    case "$1" in
+    *.gitkeep) nonadoption_add_note gitkeep ;;
+    esac
+    if nonadoption_is_doc_prose "$1"; then
+      nonadoption_add_note co-owned-prose
+    fi
+    # Repo-ignored, but the exemption belongs to the TEMPLATE's declaration: a
+    # repo that added `.vscode/` to its own .gitignore is stating a habit, not a
+    # fact about the artifact every other clone receives.
+    if grep -qxF "$1" "$GUARDED_STATE/ignored-absent-paths"; then
+      if nonadoption_is_render_ignored "$1"; then
+        nonadoption_add_note ignored-policy
+      else
+        nonadoption_add_note repo-ignored-only
+      fi
+    fi
+    nonadoption_known_false_note "$1"
+    # The root Brewfile: class K calls its absence a false MISSING in a chezmoi
+    # source repo, mode-adopt-existing.md §4.7 says the repo needs one anyway for
+    # its own toolchain. Two documents in one skill disagree, so the note names
+    # the argument and the reviewer settles it.
     case "$1" in
     Brewfile)
-      if test "$NONADOPT_NOTE" = - && nonadoption_has_chezmoi_brewfile; then
-        NONADOPT_NOTE="chezmoi-managed — verify per mode-audit class K"
+      if nonadoption_has_chezmoi_brewfile; then
+        nonadoption_add_note "chezmoi-managed — verify per mode-audit class K"
       fi
       ;;
     esac
-    case "$1" in
-    *.gitkeep)
-      NONADOPT_FILTERED=gitkeep-benign
-      return 0
-      ;;
-    esac
-    if grep -qxF "$1" "$GUARDED_STATE/ignored-absent-paths"; then
-      # Repo-ignored. Exempt only if the TEMPLATE says so too — otherwise this is
-      # the repo's own habit deciding what the template meant, and the path is a
-      # real non-adoption wearing an ignore rule.
-      if nonadoption_is_render_ignored "$1"; then
-        NONADOPT_FILTERED=ignored-policy
-        return 0
-      fi
-      if test "$NONADOPT_NOTE" = -; then
-        NONADOPT_NOTE=repo-ignored-only
-      fi
-      return 1
-    fi
-    NONADOPT_KNOWN_RC=0
-    nonadoption_known_false_state "$1" || NONADOPT_KNOWN_RC=$?
-    if test "$NONADOPT_KNOWN_RC" -eq 0; then
-      NONADOPT_FILTERED=filtered-known
-      return 0
-    fi
-    if test "$NONADOPT_KNOWN_RC" -eq 2; then
-      if test "$NONADOPT_NOTE" = -; then
-        NONADOPT_NOTE=unverified-equivalent
-      fi
-      return 1
-    fi
-    if nonadoption_is_collapsible_prose "$1"; then
-      NONADOPT_FILTERED=co-owned
-      return 0
-    fi
-    return 1
   }
   # Did the template itself change the file across the update range? A `no` says
   # the repo is declining a file that has sat unchanged since its own baseline;
@@ -1479,89 +1473,98 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     fi
   }
   # path<TAB>class<TAB>changed_in_range<TAB>baseline_membership<TAB>note
-  # `note` is `-` unless the row carries something the class alone cannot say:
-  # `repo-ignored-only` (this repo ignores the path, the template does not),
-  # `unverified-equivalent` (a drift-class-K path whose documented replacement is
-  # not in the repo), `package-json-unparseable` (the prettier-key probe could
-  # not read package.json, so it verified nothing), `repo-path-is-directory` (a
-  # directory sits where the render ships a file), or the chezmoi Brewfile
-  # annotation, which names the contested doctrine rather than settling it.
-  # NONADOPT_NOTE is reset per path rather than inside the classifier, because
-  # `nonadoption_repo_has` runs first and may already have set it.
+  #
+  # `class` is ALWAYS a transition class — what the apply will do to this path:
+  # `nonadopt-both` (nothing; the absence stands), `new-in-target` (created),
+  # `delete-expected` (deleted), `recreate-expected` (rendered fresh because
+  # `_skip_if_exists` covers it). Nothing suppresses a transition class, so §4
+  # can check all four uniformly and the report has no hidden population.
+  #
+  # `note` is `-`, or the accumulated evidence: `co-owned-prose`,
+  # `ignored-policy`, `repo-ignored-only`, `known-false-verified`,
+  # `unverified-equivalent`, `package-json-unparseable`, `repo-path-is-directory`,
+  # `gitkeep`, `twin-exists: <path>`, and the chezmoi Brewfile annotation.
+  # §5 decides presentation from these; the classifier decides nothing.
+  # One emitter, because three copies of the row format had to stay in step on
+  # the column count and the note variable — and a fifth column was added to all
+  # three by hand last round.
+  nonadoption_emit_row() {
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$NONADOPT_NOTE" \
+      >>"$GUARDED_STATE/nonadoption-report.tsv" ||
+      { echo "failed to record non-adoption row: $1" >&2; exit 1; }
+  }
   : >"$GUARDED_STATE/nonadoption-report.tsv"
   while IFS= read -r NONADOPT_PATH; do
     test -n "$NONADOPT_PATH" || continue
     NONADOPT_NOTE=-
-    # Present in the repo: the merge has nothing to adopt, so nothing to report.
-    if nonadoption_repo_has "$NONADOPT_PATH"; then
+    if nonadoption_repo_has_exact "$NONADOPT_PATH"; then
       continue
     fi
-    # Asked FIRST, because it is a different question. The filtered classes all
-    # explain why an absence is acceptable; this one says the absence will not
-    # survive the update at all, which makes every such explanation moot.
+    # Twin-aware presence, and ONLY here. Both renders ship this path, so copier
+    # will neither create nor delete anything whatever the repo has — no apply
+    # action means no row for §4 to check. And a repo holding `config.yaml` where
+    # the template ships `config.yml` did adopt the file; calling that a silent
+    # non-adoption is a false finding the operator dismisses every single run.
+    if nonadoption_twin_present "$NONADOPT_PATH"; then
+      continue
+    fi
     if nonadoption_is_recreated_on_update "$NONADOPT_PATH"; then
       NONADOPT_CLASS=recreate-expected
-    elif nonadoption_filtered_class "$NONADOPT_PATH"; then
-      NONADOPT_CLASS="$NONADOPT_FILTERED"
     else
       NONADOPT_CLASS=nonadopt-both
     fi
+    nonadoption_collect_notes "$NONADOPT_PATH"
     NONADOPT_CHANGED="$(nonadoption_changed_in_range "$NONADOPT_PATH")" ||
       { echo "failed to compare rendered copies: $NONADOPT_PATH" >&2; exit 1; }
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-      "$NONADOPT_PATH" "$NONADOPT_CLASS" "$NONADOPT_CHANGED" baseline+target \
-      "$NONADOPT_NOTE" \
-      >>"$GUARDED_STATE/nonadoption-report.tsv" ||
-      { echo "failed to record non-adoption row: $NONADOPT_PATH" >&2; exit 1; }
+    nonadoption_emit_row "$NONADOPT_PATH" "$NONADOPT_CLASS" \
+      "$NONADOPT_CHANGED" baseline+target
   done <"$GUARDED_STATE/nonadoption-both-renders"
   while IFS= read -r NONADOPT_PATH; do
     test -n "$NONADOPT_PATH" || continue
     NONADOPT_NOTE=-
-    if nonadoption_repo_has "$NONADOPT_PATH"; then
+    # EXACT-path only, no twin arm. The target render adds this path and copier
+    # will create THIS path — a repo holding the `.yaml` twin does not stop that,
+    # it just means the repo ends the update carrying both files. Treating the
+    # twin as presence dropped the row and the operator never learned that a
+    # second config had appeared beside the one they were using.
+    if nonadoption_repo_has_exact "$NONADOPT_PATH"; then
       continue
     fi
-    # The target render adds it and the repo lacks it, so `copier update`
-    # SHOULD create it. §4 rechecks: still missing means the update failed.
-    # `recreate-expected` is the more specific label where it applies: same
-    # "will exist afterwards" check, plus the review-the-content warning that
-    # `_skip_if_exists` content earns.
+    if nonadoption_twin_present "$NONADOPT_PATH"; then
+      nonadoption_add_note "twin-exists: $NONADOPT_TWIN"
+    fi
     if nonadoption_is_recreated_on_update "$NONADOPT_PATH"; then
       NONADOPT_CLASS=recreate-expected
-    elif nonadoption_filtered_class "$NONADOPT_PATH"; then
-      NONADOPT_CLASS="$NONADOPT_FILTERED"
     else
       NONADOPT_CLASS=new-in-target
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-      "$NONADOPT_PATH" "$NONADOPT_CLASS" n/a-new target-only "$NONADOPT_NOTE" \
-      >>"$GUARDED_STATE/nonadoption-report.tsv" ||
-      { echo "failed to record non-adoption row: $NONADOPT_PATH" >&2; exit 1; }
+    nonadoption_collect_notes "$NONADOPT_PATH"
+    nonadoption_emit_row "$NONADOPT_PATH" "$NONADOPT_CLASS" n/a-new target-only
   done <"$GUARDED_STATE/nonadoption-target-only"
   while IFS= read -r NONADOPT_PATH; do
     test -n "$NONADOPT_PATH" || continue
     NONADOPT_NOTE=-
-    # Absent already: the repo and the target render agree it is gone.
-    if ! nonadoption_repo_has "$NONADOPT_PATH"; then
+    # EXACT-path again, for the mirror reason: copier deletes the path it named.
+    # A repo holding only the twin has nothing for the apply to remove, so there
+    # is no deletion to verify and no row — the leftover twin is ordinary
+    # uncurated drift that diff-template.sh reports on its own.
+    if ! nonadoption_repo_has_exact "$NONADOPT_PATH"; then
       continue
     fi
-    # The template dropped it and the repo still has it, so expect the update
-    # to delete it. §4 routes any survivor to §3's deletion reconciliation.
-    # No `recreate-expected` arm here: the target render does not ship the path,
-    # so there is nothing for `_skip_if_exists` to render fresh.
-    if nonadoption_filtered_class "$NONADOPT_PATH"; then
-      NONADOPT_CLASS="$NONADOPT_FILTERED"
-    else
-      NONADOPT_CLASS=delete-expected
+    if nonadoption_twin_present "$NONADOPT_PATH"; then
+      nonadoption_add_note "twin-exists: $NONADOPT_TWIN"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-      "$NONADOPT_PATH" "$NONADOPT_CLASS" n/a-removed baseline-only \
-      "$NONADOPT_NOTE" \
-      >>"$GUARDED_STATE/nonadoption-report.tsv" ||
-      { echo "failed to record non-adoption row: $NONADOPT_PATH" >&2; exit 1; }
+    # No `recreate-expected` arm: the target render does not ship the path, so
+    # there is nothing for `_skip_if_exists` to render fresh.
+    NONADOPT_CLASS=delete-expected
+    nonadoption_collect_notes "$NONADOPT_PATH"
+    nonadoption_emit_row "$NONADOPT_PATH" "$NONADOPT_CLASS" n/a-removed \
+      baseline-only
   done <"$GUARDED_STATE/nonadoption-baseline-only"
+  # Four classes, and every row is in exactly one of them. There is no longer a
+  # second list of "filtered" classes to reconcile this against.
   for NONADOPT_CLASS in \
-    nonadopt-both new-in-target delete-expected recreate-expected \
-    ignored-policy co-owned filtered-known gitkeep-benign; do
+    nonadopt-both new-in-target delete-expected recreate-expected; do
     NONADOPT_COUNT="$(
       awk -F '\t' -v cls="$NONADOPT_CLASS" \
         '$2 == cls { n++ } END { print n + 0 }' \
@@ -1682,48 +1685,40 @@ rather than a nicety — it encodes who must review, and a review requirement th
 returns silently is a change nobody approved. §4 asserts these paths **exist**
 after the apply, the mirror image of every other check here.
 
-**Every filtered class is earned, never assumed** — that is what keeps the
-collapsed counts honest, because a filter nobody can audit is just a smaller
-blind spot:
+**Classification and explanation are separate axes, and only the first one is a
+class.** Every row's `class` says what the apply will do to that path —
+`nonadopt-both`, `new-in-target`, `delete-expected`, `recreate-expected` — and
+that is decided from the two inventories and the repo's exact-path presence
+alone. Nothing suppresses it. The `note` column then carries whatever evidence
+the classifier could find about *why* the path is in that state:
 
-- **`ignored-policy` needs BOTH sides.** The path must be ignored by this repo
-  *and* declared local by the **target render's** own `.gitignore` files, probed
-  in a scratch evaluator built from them. The repo's rules alone are a habit it
-  acquired for its own reasons — a repo that once added `.vscode/` to its
-  `.gitignore` would otherwise be granting itself an adoption exemption on a
-  template artifact every other clone still receives. The target render is the
-  side that gets asked because it is the post-update truth: the question is
-  whether the file the merge is about to decline to create is one the template
-  still means to keep local. A repo-only match is a `nonadopt-both` row carrying
-  the note `repo-ignored-only`.
-- **`filtered-known` needs the equivalent to exist.** Drift class K's entries
-  are false `MISSING`s *because the repo carries a documented replacement* — a
-  renumbered record-decisions ADR or a README-backed numbered log, a real
-  Terraform root nested below `terraform/`, any of Prettier's supported config
-  filenames or a parsed `prettier` key in `package.json`. Each is checked against
-  this repo, and the check is held to the *documented* evidence: an unrelated
-  numbered ADR is not a re-recorded decision, the `*.tf` files `terraform init`
-  vendors into `.terraform/` are generated cache rather than a layout the repo
-  grew into, and a `"prettier"` devDependency is not a prettier config. A path on
-  the list whose replacement is not there is a `nonadopt-both` row noted
-  `unverified-equivalent`, never a silent exemption.
-- **A contested entry is disclosed, not decided.** The root `Brewfile` is class
-  K's one genuinely disputed case: class K calls its absence a false `MISSING` in
-  a chezmoi source repo, while
-  [`mode-adopt-existing.md`](./mode-adopt-existing.md) §4.7 says such a repo
-  needs a root `Brewfile` regardless, for its own toolchain — `private_Brewfile`
-  renders to `~/Brewfile`, a different file for a different job. Two documents in
-  one skill disagree, so the classifier refuses to pick: the path always gets a
-  row, annotated `chezmoi-managed — verify per mode-audit class K` when the repo
-  really is a chezmoi source. Collapsing it would settle a doctrinal argument by
-  omission, in a report whose entire purpose is to stop absences being settled
-  that way.
-- **`co-owned` collapses `docs/`/`specs/` prose only.** Co-ownership is a
-  *content* exemption, and absence is not content: a missing `AGENTS.md`,
-  `LICENSE`, or `.devcontainer/config/zshrc` gets a row like anything else. The
-  two documentation trees collapse purely for volume.
+- `co-owned-prose` — a `docs/`/`specs/` Markdown page the repo owns.
+- `ignored-policy` — ignored by this repo **and** declared local by the target
+  render's own `.gitignore` files, probed in a scratch evaluator built from them.
+- `repo-ignored-only` — the repo ignores it; the template never declared it
+  local. A habit this repo acquired is not a fact about the artifact every other
+  clone receives.
+- `known-false-verified` / `unverified-equivalent` — drift class K's documented
+  replacement was found, or was looked for and was not there.
+- `twin-exists: <path>` — the repo carries the `.yml`/`.yaml` counterpart.
+- `package-json-unparseable`, `repo-path-is-directory`, `gitkeep`, and the
+  chezmoi Brewfile annotation.
 
-## 2. Run the update
+**The evidence never removes the row.** That is the one structural rule here,
+and it exists because the alternative kept failing in the same way: when an
+explanation could *suppress* a path, every new transition the classifier learned
+about — a repo-only ignore, an unverified equivalent, an absent root
+`AGENTS.md`, a `_skip_if_exists` recreate, a renamed `.yaml` twin — arrived as a
+path that had silently stopped being reported, and each was found only because
+somebody went looking. Notes cannot do that. The worst a wrong note can do is
+mislabel a row that is still there, in a report §4 still checks and §5 still
+prints.
+
+Readability is handled where a human can see the whole thing: §5 puts rows with
+routine notes in a compact list under the table, one line each, instead of
+collapsing them into counts.
+
+## 2. Run the update## 2. Run the update
 
 **Preflight — ensure the recorded lineage tuple is resolvable.** `copier update`
 reuses both `_src_path` and `_commit` from `.copier-answers.yml`. A relative or
@@ -1817,6 +1812,8 @@ blindly rerun Copier.
 Promotion below deletes that directory, and §4 and §5 both still need the TSV:
 
 ```bash
+test "$(cat "$GUARDED_STATE/start-checkout")" = "$(guarded_checkout_id)" ||
+  { echo "checkout changed since guarded preparation; refusing to write the non-adoption report" >&2; exit 1; }
 GUARDED_NONADOPT_BRANCH="$(git branch --show-current)"
 test -n "$GUARDED_NONADOPT_BRANCH" ||
   { echo "detached HEAD: no branch to key the non-adoption report to" >&2; exit 1; }
@@ -1826,7 +1823,8 @@ GUARDED_NONADOPT_FILE="$(
 )" || { echo "failed to resolve the non-adoption report path" >&2; exit 1; }
 mkdir -p "$(dirname "$GUARDED_NONADOPT_FILE")" ||
   { echo "failed to create the non-adoption report directory" >&2; exit 1; }
-cp "$GUARDED_STATE/nonadoption-report.tsv" "$GUARDED_NONADOPT_FILE" ||
+cp "$GUARDED_STATE/nonadoption-report.tsv" "$GUARDED_NONADOPT_FILE.$$.tmp" &&
+  mv "$GUARDED_NONADOPT_FILE.$$.tmp" "$GUARDED_NONADOPT_FILE" ||
   { echo "failed to persist the non-adoption report" >&2; exit 1; }
 ```
 
@@ -1840,6 +1838,17 @@ overwrite branch A's report before A's PR body was ever written, and A's only
 copy of its own findings is gone — the classification survived §1, survived
 promotion, and was then destroyed by an unrelated run. The branch is the key
 because the branch is what owns the report.
+
+**The binding is re-checked immediately before the write, and the write is
+atomic.** Everything above ran minutes ago at best, and the branch key is read
+from live git state, not from the frozen record — so a checkout that moved in
+between would file this run's report under someone else's name, destroying
+theirs and hiding this one. The same `start-checkout` comparison the promotion
+block makes is therefore repeated here, at the last moment it can still matter,
+and it refuses rather than guessing. The copy then lands via a temp file and
+`mv` **within the same directory**, so a crash mid-write leaves either the old
+report or the new one, never a truncated file that reads as a short list of
+findings.
 
 The branch name becomes a **path, verbatim** — no `/`-folding, no extension.
 Folding `/` to `-` would collide `feat/x` with `feat-x` and reintroduce exactly
@@ -2508,39 +2517,61 @@ listed was clobbered (see the AGENTS.md note in §2 above).
 file §2 wrote. No new render is needed; the re-run above already produced the
 `MISSING` set. Each class answers a different question:
 
-- **`nonadopt-both` still `MISSING`** — CONFIRMED silent non-adoption. The
-  update was never going to create these, and the freshly reset baseline means
-  nothing will offer them again. These are the rows of §5's disposition table.
-- **`new-in-target` reported `MISSING`** — an anomaly, not a disclosure. The
-  target render ships the file and the repo lacked it, so `copier update` should
-  have created it; that it did not means something went wrong in the apply.
-  Investigate before hand-off rather than writing it up as a decline.
-- **`delete-expected` still present on disk** — the template dropped the file
-  and the expected deletion did not happen. Route it to §3's deletion
-  reconciliation; do not simply leave it as an unexplained leftover.
-- **`recreate-expected` — assert it EXISTS.** This is the one row whose check
-  runs the other way: `_skip_if_exists` renders an absent path fresh, so after
-  the apply the file must be there. One still `MISSING` is an anomaly to
-  investigate, exactly like a `new-in-target` that never landed. And when it did
-  land, **read it** — it arrives untracked, carrying the target render's
-  content, not whatever the repo had before someone removed it:
+Every row carries a **transition class** saying what the apply was going to do
+to that path, and nothing is filtered out of the report, so the cross-check is
+one loop with no carve-outs — each class is simply asserted in its own
+direction:
 
-  ```bash
-  awk -F '\t' '$2 == "recreate-expected" { print $1 }' \
-    "$(git rev-parse --path-format=absolute --git-path \
-      "guarded-update-nonadoption/$(git branch --show-current)")" |
-    while IFS= read -r RECREATED_PATH; do
-      test -e "$RECREATED_PATH" ||
-        echo "ANOMALY: _skip_if_exists path not recreated: $RECREATED_PATH"
-      git status --porcelain -- "$RECREATED_PATH"
-    done
-  ```
+```bash
+NONADOPT_REPORT="$(
+  git rev-parse --path-format=absolute \
+    --git-path "guarded-update-nonadoption/$(git branch --show-current)"
+)"
+awk -F '\t' '{ print $2 "\t" $1 }' "$NONADOPT_REPORT" |
+  while IFS="$(printf '\t')" read -r ROW_CLASS ROW_PATH; do
+    case "$ROW_CLASS" in
+    nonadopt-both)
+      test ! -e "$ROW_PATH" ||
+        echo "RESOLVED  $ROW_PATH (present after apply — not a non-adoption)"
+      ;;
+    new-in-target | recreate-expected)
+      test -e "$ROW_PATH" ||
+        echo "ANOMALY   $ROW_PATH ($ROW_CLASS, still missing after apply)"
+      ;;
+    delete-expected)
+      test ! -e "$ROW_PATH" ||
+        echo "ANOMALY   $ROW_PATH (delete-expected, still present — see §3)"
+      ;;
+    esac
+  done
+```
+
+What each outcome means:
+
+- **`nonadopt-both` still missing** — CONFIRMED silent non-adoption. The update
+  was never going to create these, and the freshly reset baseline means nothing
+  will offer them again. These are the rows of §5's disposition table.
+- **`new-in-target` still missing** — an anomaly, not a disclosure. The target
+  render ships the file and the repo lacked it, so `copier update` should have
+  created it; that it did not means something went wrong in the apply.
+  Investigate before hand-off rather than writing it up as a decline.
+- **`recreate-expected` still missing** — the same anomaly for a
+  `_skip_if_exists` path. And when it *did* land, **read it**: it arrives
+  untracked, carrying the target render's content, not whatever the repo had
+  before someone removed it.
 
   `.github/CODEOWNERS` is the one to look at first. It encodes who must review
   and is auto-requested on every PR; the render writes `* @code_owner` from a
   single answer, which cannot express a second owner or a team. A repo that
   deliberately widened or narrowed its owners gets the single-owner version back
   — silently, unless you diff it here.
+- **`delete-expected` still present** — the template dropped the file and the
+  expected deletion did not happen. Route it to §3's deletion reconciliation; do
+  not simply leave it as an unexplained leftover.
+- **A `twin-exists:` note on any of them** — the repo carries the `.yml`/`.yaml`
+  counterpart. On a `new-in-target` row that means the apply just gave the repo
+  **both** files; decide which one survives before hand-off, because two configs
+  for one tool is a silent precedence bug rather than a cosmetic duplicate.
 
 **Check the git hooks aren't shadowed or stale, too.** Even in an already-templated
 repo two non-lefthook hook managers can lurk: a **pre-commit.com** stub in
@@ -2612,8 +2643,17 @@ never restore it — see copier-gotchas.md §9.
 | `AGENTS.md` | baseline+target (≤ v3.0.0) | always | yes | Accidental: the repo has `CLAUDE.md` as a regular file, so the symlink alias was flattened and the real file never landed. | adopt — restore and re-point the aliases |
 | `.envrc` | baseline+target (≤ v3.20.2) | always | no | note `repo-ignored-only`: this repo gitignores `.envrc`, but the template does not ship it ignored, so the exemption is this repo's habit rather than the template's declaration. | decline — the repo resolves env through `op run`; record it |
 
-Filtered, not silent: 4 co-owned (docs/specs prose), 2 ignored by both the repo
-and the template, 1 known-false MISSING with its equivalent verified.
+### Explained absences — same finding, evidence attached
+
+One line each, never a bare count: these are `nonadopt-both` rows whose only
+notes are routine, listed so the classification can be audited rather than
+trusted.
+
+- `docs/architecture/adr.md` — co-owned-prose
+- `docs/runbooks/restore.md` — co-owned-prose
+- `.envrc` — ignored-policy
+- `terraform/main.tf` — known-false-verified (nested roots under `terraform/`)
+- `.github/ISSUE_TEMPLATE/.gitkeep` — gitkeep
 
 ### The update will recreate these — review their content after apply
 
@@ -2673,26 +2713,42 @@ Column by column:
 - **Disposition** — `adopt` or `decline`, plus a one-line rationale. Both are
   legitimate outcomes; the point is that one of them was chosen on the record.
 
-Collapse the filtered classes to one labeled count line each below the table —
-`co-owned` (say **docs/specs prose**, which is all it now covers),
-`ignored-policy`, `filtered-known` — rather than listing them. They are recorded
-so the reviewer can see the classification dropped nothing, not so they have to
-read them. Label them for what was actually established, since each one is a
-claim the reviewer is being asked to skip: `co-owned` is documentation-tree
-prose, `ignored-policy` is ignored by the repo **and** the template, and
-`filtered-known` is a class-K path whose equivalent was **found**. Anything that
-failed one of those checks is not in these counts — it is a row above, with its
-note.
+**Split the `nonadopt-both` rows by their notes, and by nothing else.** A row
+goes in the table when its note is `-` — nobody found any explanation, which is
+the most important row in the report — or when it carries a **load-bearing**
+note: `unverified-equivalent`, `repo-ignored-only`, `package-json-unparseable`,
+`repo-path-is-directory`, `twin-exists:`, or the chezmoi Brewfile annotation.
+Each of those says an explanation was *attempted and did not hold*, which is a
+finding, not a dismissal.
 
-If no row survives, say so outright: **"No unexplained silent non-adoptions —
-every absence both renders ship is accounted for."** Then keep the filtered
-counts and any recreate list underneath it, because they are what "accounted
-for" refers to. The older phrasing — *every path present in both renders exists
-in the repo* — was simply false whenever a filtered row existed, which is nearly
-always: those paths are absent, and the claim that they exist is the one
-sentence in this section a reviewer would take at face value. An omitted section
-is indistinguishable from a forgotten one; a section that overstates is worse
-than either.
+Everything else — a row whose notes are all **routine**: `co-owned-prose`,
+`ignored-policy`, `known-false-verified`, `gitkeep` — goes in the explained-
+absences list above, one line per path with its note. A row with several notes
+is routine only if **every** note is; one load-bearing note puts it in the
+table.
+
+This is grouping, not filtering, and the difference is the whole point of the
+report's shape. Earlier revisions collapsed these into counts like "4 co-owned",
+and every round of review since found another transition the count was hiding —
+because a count cannot be audited: nobody can tell whether the fourth item
+belonged there. A line per path can be scanned in seconds and checked against
+the repo in one command. The classifier no longer decides what the reviewer sees;
+it records what it found, and this section decides how to lay it out.
+
+The other three transition classes never reach this section at all: they
+describe what the apply *did*, and §4 settles them. Only `nonadopt-both` is a
+question for a human.
+
+If the table is empty, say so outright: **"No unexplained silent
+non-adoptions — every absence both renders ship carries a recorded
+explanation."** Then keep the explained-absences list and any recreate list
+underneath it, because they are precisely what "a recorded explanation" refers
+to and the sentence is only true while they are visible. The older phrasing —
+*every path present in both renders exists in the repo* — was simply false
+whenever an explained row existed, which is nearly always: those paths are
+absent, and claiming they exist is the one sentence here a reviewer would take
+at face value. An omitted section is indistinguishable from a forgotten one; a
+section that overstates is worse than either.
 
 **Sweep for orphans before you delete anything.** List the whole tree —
 `ls -R "$(git rev-parse --git-path guarded-update-nonadoption)"` — and account

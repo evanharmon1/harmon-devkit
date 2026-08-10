@@ -2338,7 +2338,7 @@ expect_fail "the persistence recipe refuses a detached HEAD" \
 expect_ok "update verification re-checks every non-adoption class after the merge" \
     sh -c 'grep -qF "CONFIRMED silent non-adoption" "$1" &&
         grep -qF "an anomaly, not a disclosure" "$1" &&
-        grep -qF "still present on disk" "$1"' sh \
+        grep -qF "delete-expected, still present" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # The table is the whole deliverable: classification nobody reads changes
 # nothing, so hand-off has to name the section, its columns, and the explicit
@@ -2348,7 +2348,7 @@ expect_ok "update hand-off requires a silent non-adoption disposition table" \
     sh -c 'grep -qF "## Silent non-adoption" "$1" &&
         grep -qF "| Path |" "$1" &&
         grep -qF "| Disposition |" "$1" &&
-        grep -qF "No unexplained silent non-adoptions" "$1"' sh \
+        grep -qF "No unexplained silent" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # The worked example is the part an operator actually copies, so a row that
 # contradicts the contract above it is worse than no example. The contract says
@@ -2360,11 +2360,42 @@ expect_ok "the hand-off example keeps apply anomalies out of the disposition tab
     sh -c 'grep -qF "Apply anomaly, not a non-adoption" "$1" &&
         ! grep -qE "^\| \`\.github/workflows/codeql\.yml\` \|" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
-expect_ok "the hand-off contract carries the note column and the earned classes" \
+expect_ok "the hand-off contract carries the note vocabulary" \
     sh -c 'grep -qF "repo-ignored-only" "$1" &&
         grep -qF "unverified-equivalent" "$1" &&
         grep -qF "repo-path-is-directory" "$1" &&
-        grep -qF "docs/specs prose" "$1"' sh \
+        grep -qF "known-false-verified" "$1" &&
+        grep -qF "co-owned-prose" "$1" &&
+        grep -qF "twin-exists:" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# The two axes, stated in the guidance itself: a class says what the apply does,
+# a note says what was found out about it, and the note never removes the row.
+expect_ok "update guidance separates transition class from explanation" \
+    sh -c 'grep -qF "Classification and explanation are separate axes" "$1" &&
+        grep -qF "The evidence never removes the row" "$1" &&
+        grep -qF "grouping, not filtering" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# Explained absences are LISTED, one line each, not collapsed to counts — a count
+# cannot be audited, which is how five rounds of review each found another
+# transition hiding inside one.
+expect_ok "explained absences are listed per path, never collapsed to a count" \
+    sh -c 'grep -qF "### Explained absences" "$1" &&
+        grep -qF "One line each, never a bare count" "$1" &&
+        ! grep -qF "Filtered, not silent:" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# One loop, four classes, no carve-outs — possible only because nothing is
+# suppressed out of the report.
+expect_ok "the post-apply cross-check covers all four transition classes" \
+    sh -c 'grep -qF "new-in-target | recreate-expected)" "$1" &&
+        grep -qF "delete-expected, still present" "$1" &&
+        grep -qF "present after apply — not a non-adoption" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# The persistence write races the branch it is keyed by, so the binding is
+# re-checked at the last moment and the write is atomic.
+expect_ok "the non-adoption write re-checks its checkout binding and lands atomically" \
+    sh -c 'grep -qF "refusing to write the non-adoption report" "$1" &&
+        grep -qF "mv \"\$GUARDED_NONADOPT_FILE.\$\$.tmp\" \"\$GUARDED_NONADOPT_FILE\"" "$1" &&
+        grep -qF "The binding is re-checked immediately before the write" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "copier gotchas own the permanent non-adoption reasoning" \
     sh -c 'grep -qE "^## 9\. " "$1" &&
@@ -2386,6 +2417,14 @@ expect_ok "gotcha 9 scopes permanence to paths the baseline already shipped" \
 # The second carve-out, and the one that runs the other way: `_skip_if_exists`
 # on an absent path RECREATES it. A permanence claim that omits this is not
 # merely imprecise for CODEOWNERS, it is backwards.
+# The Why must name copier's actual mechanism. "Presence in both renders means an
+# empty diff" is wrong and predicts the wrong thing: it would have a changed-in-
+# range deleted path conflict or come back, and it does neither.
+expect_ok "gotcha 9 attributes permanence to copier's exclusion, not an empty diff" \
+    sh -c 'grep -qF "not because the diff is empty" "$1" &&
+        grep -qF "excludes them from creation" "$1" &&
+        grep -qF "The exclusion is explicit, not emergent" "$1"' sh \
+    "$STANDARDIZE_REFS/copier-gotchas.md"
 expect_ok "gotcha 9 carves out _skip_if_exists as a recreate, not a permanence" \
     sh -c 'grep -qF "_skip_if_exists\` is the one carve-out" "$1" &&
         grep -qF "it renders the file fresh" "$1" &&
@@ -2405,13 +2444,13 @@ expect_ok "the MISSING annotations qualify permanence for _skip_if_exists" \
     "$STANDARDIZE_ASSETS/diff-template.sh"
 expect_ok "update guidance routes recreate-expected to its own list and check" \
     sh -c 'grep -qF "The update will recreate these" "$1" &&
-        grep -qF "recreate-expected\` — assert it EXISTS" "$1" &&
+        grep -qF "\`recreate-expected\` still missing" "$1" &&
         grep -qF "One class is the opposite of a non-adoption" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # The empty-result sentence claimed every both-renders path EXISTS in the repo,
 # which is false the moment a filtered row exists — and one nearly always does.
 expect_ok "the empty-result sentence claims only what the report established" \
-    sh -c 'grep -qF "No unexplained silent non-adoptions" "$1" &&
+    sh -c 'grep -qF "No unexplained silent" "$1" &&
         test "$(grep -cF "every path present in both renders exists" "$1")" \
             -eq 1' sh \
     "$STANDARDIZE_REFS/mode-update.md"
@@ -2436,19 +2475,39 @@ expect_ok "co-owned prose globs agree between diff-template.sh and the non-adopt
     "$STANDARDIZE_ASSETS/diff-template.sh" "$GU_NONADOPT_SNIPPET"
 # The REST of the co-owned list must NOT be mirrored. Co-ownership is a content
 # exemption and absence is not content, so a missing AGENTS.md or LICENSE is a
-# disposition row, not a collapsed count. Re-adding those globs to the snippet is
-# the regression this catches — it reads as harmless "keeping the copy in sync"
-# and silently re-buries every root-file non-adoption.
-expect_ok "the non-adoption snippet collapses documentation prose only" \
-    sh -c 'grep -qF "nonadoption_is_collapsible_prose" "$1" &&
+# row like any other — now carrying a note instead of vanishing into a count.
+expect_ok "the non-adoption snippet treats documentation prose as a note" \
+    sh -c 'grep -qF "nonadoption_is_doc_prose" "$1" &&
+        grep -qF "nonadoption_add_note co-owned-prose" "$1" &&
         ! grep -qE "^[[:space:]]*(AGENTS\.md|README\.md|SECURITY\.md)[[:space:]]*\|" "$1" &&
         ! grep -qF ".devcontainer/config/zshrc)" "$1"' sh \
     "$GU_NONADOPT_SNIPPET"
-# Every filtered class is earned. These three are the load-bearing guards, and
-# each one reverts to a silent exemption if the line disappears: the render-side
-# probe (repo habits are not the template's declaration), the three-valued
-# known-false state (2 = on the list, equivalent absent), and the note column
-# that carries the reason a path is a row rather than a count.
+# THE structural invariant, and the one that ends the finding family five rounds
+# of review kept re-opening: evidence ANNOTATES a row, it never withholds one.
+# Concretely — the `class` column may only ever hold a transition class, and the
+# former filter classes survive only as note strings. Re-introducing any of them
+# as a class is exactly how a path silently stops being reported.
+expect_ok "non-adoption evidence annotates rows and never suppresses them" \
+    sh -c 'grep -qF "nonadoption_add_note" "$1" &&
+        grep -qF "nonadoption_collect_notes" "$1" &&
+        ! grep -qF "nonadoption_filtered_class" "$1" &&
+        ! grep -qF "NONADOPT_FILTERED" "$1" &&
+        ! grep -qE "NONADOPT_CLASS=(co-owned|ignored-policy|filtered-known|gitkeep)" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
+expect_ok "the class column carries only the four transition classes" \
+    sh -c 'assigned="$(grep -oE "NONADOPT_CLASS=[a-z-]+" "$1" |
+            sed "s/NONADOPT_CLASS=//" | LC_ALL=C sort -u | paste -sd, -)"
+        test "$assigned" = \
+            "delete-expected,new-in-target,nonadopt-both,recreate-expected"' sh \
+    "$GU_NONADOPT_SNIPPET"
+# Copier creates and deletes EXACT paths. Treating a `.yaml` twin as presence on
+# a target-only path dropped the row for a file copier was about to create, so
+# nobody learned the repo would end the update carrying both.
+expect_ok "non-adoption snippet decides create/delete rows on exact-path presence" \
+    sh -c 'grep -qF "nonadoption_repo_has_exact" "$1" &&
+        grep -qF "twin-exists: \$NONADOPT_TWIN" "$1" &&
+        ! grep -qF "nonadoption_repo_has()" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
 expect_ok "non-adoption snippet reads _skip_if_exists from the frozen target copier.yml" \
     sh -c 'grep -qF "yq -r '\''._skip_if_exists // [] | .[]'\''" "$1" &&
         grep -qF "\$HARMON_INIT_COMMIT\":copier.yml" "$1" &&
@@ -2461,17 +2520,18 @@ expect_ok "non-adoption snippet requires template-side declaration for ignored-p
         grep -qF "core.excludesFile=/dev/null" "$1" &&
         grep -qF "repo-ignored-only" "$1"' sh \
     "$GU_NONADOPT_SNIPPET"
-expect_ok "non-adoption snippet verifies known-false equivalents before filtering" \
-    sh -c 'grep -qF "nonadoption_known_false_state" "$1" &&
+expect_ok "non-adoption snippet records the known-false verdict either way" \
+    sh -c 'grep -qF "nonadoption_known_false_note" "$1" &&
         grep -qF "nonadoption_has_adr_log" "$1" &&
         grep -qF "nonadoption_has_nested_terraform" "$1" &&
         grep -qF "nonadoption_has_prettier_config" "$1" &&
         grep -qF "unverified-equivalent" "$1" &&
+        grep -qF "known-false-verified" "$1" &&
         ! grep -qE "^[[:space:]]*\.envrc\) return 0 ;;$" "$1"' sh \
     "$GU_NONADOPT_SNIPPET"
-# Each equivalence is held to the documented evidence, and each of these three
-# lines is the whole of that restriction — drop any one and the check silently
-# widens back to "something that looks vaguely like a replacement".
+# Each equivalence is held to the documented evidence, and each of these lines is
+# the whole of that restriction — drop one and the check silently widens back to
+# "something that looks vaguely like a replacement".
 expect_ok "non-adoption snippet holds each equivalence to its documented evidence" \
     sh -c 'grep -qF "*-record-architecture-decisions.md) return 0 ;;" "$1" &&
         grep -qF "test -f docs/decisions/README.md" "$1" &&
@@ -2479,17 +2539,11 @@ expect_ok "non-adoption snippet holds each equivalence to its documented evidenc
         grep -qF "yq -r '\''.prettier // \"\"'\'' package.json" "$1" &&
         ! grep -qF "grep -q '\''\"prettier\"'\'' package.json" "$1"' sh \
     "$GU_NONADOPT_SNIPPET"
-# The Brewfile must never re-enter the filter list. Re-adding it would read as
-# tidy consistency with the other class-K entries and would silently pick a side
-# in a doctrinal disagreement the skill has not resolved — so the guard looks
-# inside `nonadoption_known_false_state` specifically, not at the whole snippet,
-# where the annotation legitimately mentions the same path.
+# The Brewfile stays disclosed. There is no filter list to re-enter now, so the
+# guard is simply that its chezmoi evidence lands as a note.
 expect_ok "non-adoption snippet discloses the contested Brewfile instead of filtering it" \
-    sh -c 'grep -qF "chezmoi-managed — verify per mode-audit class K" "$1" &&
-        grep -qF "nonadoption_has_chezmoi_brewfile" "$1" &&
-        window="$(sed -n "/nonadoption_known_false_state() {/,/^  }$/p" "$1")" &&
-        test -n "$window" &&
-        ! printf "%s\n" "$window" | grep -qE "^[[:space:]]*Brewfile\)"' sh \
+    sh -c 'grep -qF "nonadoption_add_note \"chezmoi-managed — verify per mode-audit class K\"" "$1" &&
+        grep -qF "nonadoption_has_chezmoi_brewfile" "$1"' sh \
     "$GU_NONADOPT_SNIPPET"
 # The reviewed-keyset probe runs on the designed first pass, where
 # $REVIEWED_DATA does not exist yet. Folding its `test -e` guard into the
@@ -6165,8 +6219,8 @@ expect_fail "recreate-expected never displaces an ordinary permanent absence" \
 expect_ok "absent root co-owned prose is a disposition row, not a collapsed count" \
     grep -qxF "$(printf 'AGENTS.md\tnonadopt-both\tno\tbaseline+target\t-')" \
     "$GU_NA_TSV"
-expect_ok "documentation-tree prose still collapses" \
-    grep -qxF "$(printf 'docs/guide.md\tco-owned\tno\tbaseline+target\t-')" \
+expect_ok "documentation-tree prose is a row carrying its note" \
+    grep -qxF "$(printf 'docs/guide.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose')" \
     "$GU_NA_TSV"
 expect_ok "non-prose under docs/ is neither collapsed nor exempt" \
     grep -qxF "$(printf 'docs/build.sh\tnonadopt-both\tno\tbaseline+target\t-')" \
@@ -6180,8 +6234,8 @@ expect_ok "a mode-only upstream change counts as changed in range" \
     grep -qxF "$(printf 'scripts/hook.sh\tnonadopt-both\tyes\tbaseline+target\t-')" \
     "$GU_NA_TSV"
 # Finding 3, both halves: the template's declaration grants the exemption.
-expect_ok "a path both the repo and the template ignore is ignored-policy" \
-    grep -qxF "$(printf '.vscode/local.json\tignored-policy\tno\tbaseline+target\t-')" \
+expect_ok "a path both the repo and the template ignore is noted ignored-policy" \
+    grep -qxF "$(printf '.vscode/local.json\tnonadopt-both\tno\tbaseline+target\tignored-policy')" \
     "$GU_NA_TSV"
 expect_ok "a path only the repo ignores is a row noting whose rule it was" \
     grep -qxF "$(printf 'stray.md\tnonadopt-both\tno\tbaseline+target\trepo-ignored-only')" \
@@ -6189,8 +6243,13 @@ expect_ok "a path only the repo ignores is a row noting whose rule it was" \
 # Finding 1: drift class K is conditional, so each entry is verified. Unverified
 # first — this repo has no ADR log, no nested Terraform and no prettier config,
 # so every one of these seeds is a real absence.
-for na_seed in docs/decisions/0001-record-architecture-decisions.md \
-    terraform/main.tf prettier.config.cjs; do
+# The seed ADR is BOTH a docs/**.md and a class-K path, so it collects two
+# notes. That is the model working: evidence accumulates, and no piece of it
+# competes with another or with the row's existence.
+expect_ok "notes accumulate when several explanations apply" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; unverified-equivalent')" \
+    "$GU_NA_TSV"
+for na_seed in terraform/main.tf prettier.config.cjs; do
     expect_ok "unverified class-K equivalent is a row: $na_seed" \
         grep -qxF "$(printf '%s\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent' \
             "$na_seed")" "$GU_NA_TSV"
@@ -6201,13 +6260,14 @@ done
 expect_ok "the root Brewfile is a plain row in a repo that is not chezmoi-shaped" \
     grep -qxF "$(printf 'Brewfile\tnonadopt-both\tno\tbaseline+target\t-')" \
     "$GU_NA_TSV"
-expect_fail "no class-K path is filtered while its equivalent is missing" \
-    grep -qF "filtered-known" "$GU_NA_TSV"
-# The seed ADR is a docs/**.md, so a two-valued known-false answer would have let
-# it fall through to the prose collapse — the enumerated path with the missing
-# replacement, filed as ordinary documentation noise.
-expect_fail "an unverified seed ADR is not swallowed by the prose collapse" \
-    grep -qF "$(printf 'decisions/0001-record-architecture-decisions.md\tco-owned')" \
+# The invariant, asserted over the whole report rather than path by path: no row
+# may carry anything but a transition class. This is what the three separate
+# "X is never filtered" assertions were each approximating.
+expect_ok "every row in the matrix report carries a transition class" \
+    sh -c 'bad="$(awk -F "\t" '"'"'$2 != "nonadopt-both" && $2 != "new-in-target" &&
+            $2 != "delete-expected" && $2 != "recreate-expected" { print $2 }'"'"' \
+        "$1" | LC_ALL=C sort -u | paste -sd, -)"
+        test -z "$bad" || { echo "non-transition classes: $bad" >&2; exit 1; }' sh \
     "$GU_NA_TSV"
 # Now supply every documented equivalent and re-run: each seed flips to filtered.
 mkdir -p "$GU_NA_REPO/docs/decisions" "$GU_NA_REPO/terraform/environments/prod"
@@ -6219,10 +6279,12 @@ printf '%s\n' 'module.exports = {}' >"$GU_NA_REPO/.prettierrc.cjs"
 printf '%s\n' 'chezmoi' >"$GU_NA_REPO/.chezmoiroot"
 printf '%s\n' 'brew bundle' >"$GU_NA_REPO/private_Brewfile"
 expect_ok "non-adoption matrix re-runs clean once equivalents exist" na_classify
-for na_seed in docs/decisions/0001-record-architecture-decisions.md \
-    terraform/main.tf prettier.config.cjs; do
-    expect_ok "verified class-K equivalent filters the seed: $na_seed" \
-        grep -qxF "$(printf '%s\tfiltered-known\tno\tbaseline+target\t-' \
+expect_ok "notes accumulate when the class-K evidence verifies" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; known-false-verified')" \
+    "$GU_NA_TSV"
+for na_seed in terraform/main.tf prettier.config.cjs; do
+    expect_ok "verified class-K equivalent is noted, not filtered: $na_seed" \
+        grep -qxF "$(printf '%s\tnonadopt-both\tno\tbaseline+target\tknown-false-verified' \
             "$na_seed")" "$GU_NA_TSV"
 done
 # The chezmoi Brewfile is the one class-K entry that is DISCLOSED rather than
@@ -6233,8 +6295,6 @@ done
 expect_ok "a chezmoi-shaped repo still gets a Brewfile row, annotated not filtered" \
     grep -qxF "$(printf 'Brewfile\tnonadopt-both\tno\tbaseline+target\tchezmoi-managed — verify per mode-audit class K')" \
     "$GU_NA_TSV"
-expect_fail "the Brewfile is never filtered, chezmoi markers or not" \
-    grep -qE "^Brewfile	(filtered-known|co-owned|ignored-policy)" "$GU_NA_TSV"
 # Every equivalence is held to the DOCUMENTED evidence, and each of these
 # near-misses filtered the seed away before this round. A FLAT terraform/*.tf is
 # the seed layout itself; `private_Brewfile` in a repo that is not a chezmoi
@@ -6261,21 +6321,21 @@ expect_ok "private_Brewfile without a chezmoi marker earns no chezmoi annotation
     grep -qxF "$(printf 'Brewfile\tnonadopt-both\tno\tbaseline+target\t-')" \
     "$GU_NA_TSV"
 expect_ok "an unrelated numbered ADR does not verify the seed ADR" \
-    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; unverified-equivalent')" \
     "$GU_NA_TSV"
 # A README-backed log does verify it — that is the second documented shape, and
 # the numbered ADR above is what the README is an index of.
 printf '%s\n' '# Decisions' >"$GU_NA_REPO/docs/decisions/README.md"
 expect_ok "non-adoption matrix re-runs clean with a README-backed ADR log" na_classify
-expect_ok "a README-backed numbered ADR log verifies the seed ADR" \
-    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tfiltered-known\tno\tbaseline+target\t-')" \
+expect_ok "a README-backed numbered ADR log is recorded as verified" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; known-false-verified')" \
     "$GU_NA_TSV"
 # ...and a README with no numbered ADR beside it does not: an empty index is not
 # an active log.
 rm -f "$GU_NA_REPO/docs/decisions/0002-use-postgres.md"
 expect_ok "non-adoption matrix re-runs clean with an empty ADR index" na_classify
 expect_ok "a README with no numbered ADR does not verify the seed ADR" \
-    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; unverified-equivalent')" \
     "$GU_NA_TSV"
 # Prettier reads a dozen config filenames and any of them replaces the seed.
 # Requiring `.prettierrc.cjs` specifically invented a row for every repo that
@@ -6284,8 +6344,8 @@ for na_prettier in .prettierrc.json .prettierrc.yaml prettier.config.mjs \
     .prettierrc.ts prettier.config.cts; do
     printf '%s\n' '{}' >"$GU_NA_REPO/$na_prettier"
     expect_ok "non-adoption matrix re-runs clean with $na_prettier" na_classify
-    expect_ok "$na_prettier verifies the prettier seed" \
-        grep -qxF "$(printf 'prettier.config.cjs\tfiltered-known\tno\tbaseline+target\t-')" \
+    expect_ok "$na_prettier is recorded as verified evidence" \
+        grep -qxF "$(printf 'prettier.config.cjs\tnonadopt-both\tno\tbaseline+target\tknown-false-verified')" \
         "$GU_NA_TSV"
     rm -f "$GU_NA_REPO/$na_prettier"
 done
@@ -6293,8 +6353,8 @@ printf '%s\n' '{"name":"matrix","prettier":{"semi":false}}' \
     >"$GU_NA_REPO/package.json"
 expect_ok "non-adoption matrix re-runs clean with a package.json prettier key" \
     na_classify
-expect_ok "a package.json prettier key verifies the prettier seed" \
-    grep -qxF "$(printf 'prettier.config.cjs\tfiltered-known\tno\tbaseline+target\t-')" \
+expect_ok "a package.json prettier key is recorded as verified evidence" \
+    grep -qxF "$(printf 'prettier.config.cjs\tnonadopt-both\tno\tbaseline+target\tknown-false-verified')" \
     "$GU_NA_TSV"
 # The key is PARSED, so a devDependency entry no longer counts. This is the
 # literal string the old `grep '"prettier"'` matched, and it certified a config
@@ -6311,8 +6371,8 @@ expect_ok "a prettier devDependency is not a prettier config" \
 printf '%s\n' '{"name":"matrix","prettier":"./shared-prettier.json"}' \
     >"$GU_NA_REPO/package.json"
 expect_ok "non-adoption matrix re-runs clean with a prettier path value" na_classify
-expect_ok "a prettier key holding a config path verifies the seed" \
-    grep -qxF "$(printf 'prettier.config.cjs\tfiltered-known\tno\tbaseline+target\t-')" \
+expect_ok "a prettier key holding a config path is recorded as verified" \
+    grep -qxF "$(printf 'prettier.config.cjs\tnonadopt-both\tno\tbaseline+target\tknown-false-verified')" \
     "$GU_NA_TSV"
 printf '%s\n' '{"name":"matrix"}' >"$GU_NA_REPO/package.json"
 expect_ok "non-adoption matrix re-runs clean with a prettier-free package.json" \
@@ -6326,7 +6386,7 @@ expect_ok "a package.json without prettier verifies nothing" \
 printf '%s\n' '{"name":"matrix",,,' >"$GU_NA_REPO/package.json"
 expect_ok "a malformed package.json does not abort the classifier" na_classify
 expect_ok "an unparseable package.json verifies nothing and says so" \
-    grep -qxF "$(printf 'prettier.config.cjs\tnonadopt-both\tno\tbaseline+target\tpackage-json-unparseable')" \
+    grep -qxF "$(printf 'prettier.config.cjs\tnonadopt-both\tno\tbaseline+target\tpackage-json-unparseable; unverified-equivalent')" \
     "$GU_NA_TSV"
 rm -f "$GU_NA_REPO/package.json"
 # The render-side evaluator must answer for the TEMPLATE, never for this machine:
@@ -6392,6 +6452,11 @@ printf '%s\n' '* @owner' >"$SKIP_TPL/template/.github/CODEOWNERS"
 printf '%s\n' 'peacock' >"$SKIP_TPL/template/proj.code-workspace"
 # The control: same shape, NOT covered by _skip_if_exists.
 printf '%s\n' 'shared' >"$SKIP_TPL/template/shared-note.md"
+# The mechanism control. Same shape as shared-note.md, except its CONTENT changes
+# across the range — so a diff-driven merge would have a real hunk and no file to
+# apply it to, and would conflict or recreate. Copier does neither, which is what
+# distinguishes "excluded from creation" from "the diff happened to be empty".
+printf '%s\n' 'v1 content' 'line two' >"$SKIP_TPL/template/changed-note.md"
 printf '%s\n' 'baseline' >"$SKIP_TPL/template/version.txt"
 git_init "$SKIP_TPL"
 git_commit_all "$SKIP_TPL" "skip baseline"
@@ -6401,13 +6466,15 @@ copier copy --trust --defaults --vcs-ref=v1.0.0 \
 git_init "$SKIP_PROJ"
 git_commit_all "$SKIP_PROJ" "generated"
 rm "$SKIP_PROJ/.github/CODEOWNERS" "$SKIP_PROJ/proj.code-workspace" \
-    "$SKIP_PROJ/shared-note.md"
+    "$SKIP_PROJ/shared-note.md" "$SKIP_PROJ/changed-note.md"
 git_commit_all "$SKIP_PROJ" "decline all three"
 expect_fail "skip-if-exists fixture starts with the declined paths absent" \
     test -e "$SKIP_PROJ/.github/CODEOWNERS"
 # Only version.txt moves across the range; the three declined files are
 # byte-identical in both renders, so nothing about THEM is in the applied diff.
 printf '%s\n' 'target' >"$SKIP_TPL/template/version.txt"
+printf '%s\n' 'v2 content' 'line two rewritten' 'line three' \
+    >"$SKIP_TPL/template/changed-note.md"
 git_commit_all "$SKIP_TPL" "skip target"
 git -C "$SKIP_TPL" tag v2.0.0
 expect_ok "skip-if-exists fixture updates cleanly to the target" \
@@ -6421,6 +6488,15 @@ expect_ok "_skip_if_exists RECREATES an absent globbed path" \
 # The control, in the same update: this is what "permanent" actually looks like.
 expect_fail "an ordinary both-renders absence stays absent in the same update" \
     test -e "$SKIP_PROJ/shared-note.md"
+# The mechanism control. changed-note.md is byte-DIFFERENT between the two
+# renders, so "both renders ship it, therefore the diff is empty" does not apply
+# to it — and it still stays gone. Copier excluded it from creation because the
+# repo deleted it, full stop. A diff-driven apply would have produced a conflict
+# or recreated the file; neither happens, and no reject artifact is written.
+expect_fail "a deleted path stays absent even when its content changed in range" \
+    test -e "$SKIP_PROJ/changed-note.md"
+expect_ok "the changed-in-range exclusion leaves no conflict artifacts" \
+    sh -c 'test -z "$(find "$1" -name "*.rej" -o -name "*.orig")"' sh "$SKIP_PROJ"
 # It comes back with the TARGET render's content, and untracked — which is why §4
 # tells the operator to read it rather than assume their old version returned.
 expect_ok "the recreated file carries the render's content, not the repo's" \

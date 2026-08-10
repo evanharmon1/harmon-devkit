@@ -225,15 +225,26 @@ update, forever. No conflict, no prompt, no line in the output. `diff-template.s
 keeps reporting it `MISSING` and each `copier update` keeps not fixing it, so the
 gap looks like a tooling bug and gets shrugged off as one.
 
-**Why:** the update is a **three-way merge**, and the repo is one of the three
-sides. Copier renders the template at the recorded `_commit` (the baseline) and
-at the target ref, then applies the baseline→target diff to the repo's actual
-files. A path present in **both** renders is unchanged by that diff, so the merge
-has nothing to apply; the repo's copy — which does not exist — is left exactly as
-it found it. That is not a failure. Reading an absence as the user's own deletion
-and preserving it is precisely what a merge is supposed to do, and it is the same
+**Why:** not because the diff is empty — that explanation is wrong and it
+predicts the wrong things. Copier renders the template at the recorded `_commit`
+(the baseline) and at the target ref and reconciles the two against the repo,
+but before it applies anything it computes which paths the subproject **no
+longer has** and *excludes them from creation*. The absence is honoured as a
+decision, whatever the two renders say about the file's content.
+
+The difference is testable, and this repo's suite tests it: take a file both
+renders ship whose content **changed** across the range, delete it from the
+repo, and update. A diff-driven merge has a real hunk to apply and nothing to
+apply it to, so it would conflict or recreate the file. Copier does neither — the
+file stays absent, the update returns clean, and no `.rej` or `.orig` appears.
+The exclusion is explicit, not emergent.
+
+That is not a failure. Reading an absence as the user's own deletion and
+preserving it is precisely what an update is supposed to do, and it is the same
 behavior that stops an update from re-adding every file a repo has deliberately
-removed.
+removed. The one documented way back in is `_skip_if_exists`, below — which is
+exactly what you would expect of an explicit exclusion list: it needs an
+explicit exception.
 
 The trap is what happens next. A successful update rewrites `_commit` to the
 target, so the *next* update's baseline already contains the file too — and
