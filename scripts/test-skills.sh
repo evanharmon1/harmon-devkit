@@ -1148,20 +1148,23 @@ expect_ok "classifier frontmatter probe follows block scalars to their content" 
     sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET" \
     'in_block = 1' 'ok_desc = 1; in_block = 0'
-# The header test must run on a comment-stripped COPY, and the value branch must
-# keep the original — stripping `d` itself would truncate a real value into its
-# pre-comment prefix.
-expect_ok "classifier frontmatter probe strips comments only for the header test" \
+# The comment is stripped once, up front, into the SAME scalar every later check
+# reads. Comments compose with every other spelling, so a second unstripped copy
+# in scope is a standing invitation to test the wrong one — which is exactly how
+# `null # TODO` got through. Assert the strip happens on `d` itself.
+expect_ok "classifier frontmatter probe strips comments from the value it judges" \
     sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET" \
-    'h = d; sub(/[[:space:]]#.*$/, "", h)' \
-    'if (h ~ /^[|>]([0-9]*[+-]?|[+-][0-9]*)$/)'
+    'sub(/[[:space:]]#.*$/, "", d)' \
+    'if (d ~ /^[|>]([0-9]*[+-]?|[+-][0-9]*)$/)'
+# ...and that no second, unstripped copy of the value exists to be judged
+# instead. This is the structural half of the fix: one scalar, no wrong choice.
+expect_fail "classifier frontmatter probe keeps no unstripped copy of the value" \
+    grep -qE '\bh = d\b' "$GU_CLASSIFIER_SNIPPET"
 # Both legal indicator orderings, so a chomp-first header cannot slip past.
 expect_ok "classifier frontmatter probe accepts either block-header ordering" \
     sh -c 'grep -qF "$2" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET" '([0-9]*[+-]?|[+-][0-9]*)'
-expect_fail "classifier frontmatter probe never strips comments from the value" \
-    grep -qF 'sub(/[[:space:]]#.*$/, "", d)' "$GU_CLASSIFIER_SNIPPET"
 # The verb probes must anchor on the helper's dispatch arms, not on the usage
 # strings a comment can print — that difference is the whole finding.
 for cls_verb in reserve attach check show reap; do
@@ -1213,7 +1216,9 @@ CLASSIFIER_SKILL_REL="ai/skills/universal/shepherd/SKILL.md"
 # `unclosed` | `bodyonly` | `emptydq` | `emptysq` | `commentdesc` | `nulldesc` |
 # `tildedesc` | `emptyscalar` | `flowseqdesc` | `commentedheader` |
 # `commentedheadercontent` | `commentedpipe` | `inlinecomment` |
-# `chompfirstfold` | `chompfirstliteral` | `chompfirstcontent`),
+# `chompfirstfold` | `chompfirstliteral` | `chompfirstcontent` |
+# `nullcomment` | `emptydqcomment` | `tildecomment` | `flowcomment` |
+# `quotednull`),
 # $4 helper shape:
 #   dispatch — a real-shaped miniature: a `case` on the command with all five
 #              arms, and the pending/escalate verdicts with their exit codes.
@@ -1347,6 +1352,26 @@ make_classifier_fixture() {
     chompfirstcontent)
         printf '%s\n' '---' 'name: shepherd' 'description: >+2' \
             '  Content behind a chomp-first header.' '---' 'Body.'
+        ;;
+    nullcomment)
+        printf '%s\n' '---' 'name: shepherd' 'description: null # TODO' \
+            '---' 'Body.'
+        ;;
+    emptydqcomment)
+        printf '%s\n' '---' 'name: shepherd' 'description: "" # TODO' \
+            '---' 'Body.'
+        ;;
+    tildecomment)
+        printf '%s\n' '---' 'name: shepherd' 'description: ~ # x' \
+            '---' 'Body.'
+        ;;
+    flowcomment)
+        printf '%s\n' '---' 'name: shepherd' 'description: [] # x' \
+            '---' 'Body.'
+        ;;
+    quotednull)
+        printf '%s\n' '---' 'name: shepherd' 'description: "null"' \
+            '---' 'Body.'
         ;;
     *)
         printf '%s\n' '---' 'name: shepherd' \
@@ -1568,11 +1593,50 @@ else
     SHIPS_CLASSIFIER_NATIVELY=false
 fi
 SUPERSEDEDORDER
+# The description rules once both indicator orderings were covered, but with the
+# comment strip still confined to a throwaway header copy: every value judgment
+# read the unstripped scalar, so `null # TODO` and `"" # TODO` passed.
+freeze_classifier_probe value-composition <<'SUPERSEDEDCOMPOSE'
+SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+classifier_skill_frontmatter_ok() {
+    awk '
+    NR == 1 && $0 != "---" { exit }
+    $0 == "---" { fence++; if (fence >= 2) exit; next }
+    fence == 1 && /^name:[[:space:]]*/ {
+      if (!seen_name) {
+        seen_name = 1
+        v = $0; sub(/^name:[[:space:]]*/, "", v); sub(/\r$/, "", v)
+        if (v == "shepherd" || v == "\"shepherd\"" || v == "\047shepherd\047") ok_name = 1
+      }
+    }
+    fence == 1 && /^description:[[:space:]]*/ {
+      d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
+      sub(/[[:space:]]+$/, "", d)
+      h = d; sub(/[[:space:]]#.*$/, "", h); sub(/[[:space:]]+$/, "", h)
+      if (h ~ /^[|>]([0-9]*[+-]?|[+-][0-9]*)$/) { in_block = 1; next }
+      if (d != "" && d != "\"\"" && d != "\047\047" &&
+          d != "null" && d != "Null" && d != "NULL" && d != "~" &&
+          d != "[]" && d != "{}" && d !~ /^#/) ok_desc = 1
+      next
+    }
+    fence == 1 && in_block {
+      if ($0 ~ /^[^[:space:]]/) in_block = 0
+      else if ($0 ~ /[^[:space:]]/) { ok_desc = 1; in_block = 0 }
+    }
+    END { exit (fence >= 2 && ok_name && ok_desc) ? 0 : 1 }
+  ' "$SKILLS_SOURCE_SHEPHERD_SKILL"
+}
+if classifier_skill_frontmatter_ok; then
+    SHIPS_CLASSIFIER_NATIVELY=true
+else
+    SHIPS_CLASSIFIER_NATIVELY=false
+fi
+SUPERSEDEDCOMPOSE
 # Every frozen probe must still be a runnable program. A control that silently
 # became unparseable would report `false` for the wrong reason, which for a
 # control expecting a reject is a passing test that proves nothing.
 for frozen_key in usage-strings frontmatter-greps code-pipeline skill-probes \
-    desc-header header-ordering; do
+    desc-header header-ordering value-composition; do
     expect_ok "frozen control $frozen_key is a runnable snippet" \
         sh -c 'test -s "$1" && bash -n "$1"' sh \
         "$CLASSIFIER_FROZEN_DIR/$frozen_key.sh"
@@ -1603,6 +1667,11 @@ CLS_INLINECMT="$TMPROOT/classifier-inline-comment-value"
 CLS_CHOMPFOLD="$TMPROOT/classifier-chomp-first-fold"
 CLS_CHOMPLIT="$TMPROOT/classifier-chomp-first-literal"
 CLS_CHOMPOK="$TMPROOT/classifier-chomp-first-content"
+CLS_NULLCMT="$TMPROOT/classifier-null-with-comment"
+CLS_DQCMT="$TMPROOT/classifier-empty-dq-with-comment"
+CLS_TILDECMT="$TMPROOT/classifier-tilde-with-comment"
+CLS_FLOWCMT="$TMPROOT/classifier-flow-with-comment"
+CLS_QUOTEDNULL="$TMPROOT/classifier-quoted-null-value"
 make_classifier_fixture "$CLS_FULL" +x valid dispatch
 make_classifier_fixture "$CLS_MODE" -x valid dispatch
 make_classifier_fixture "$CLS_NOSKILL" +x untracked dispatch
@@ -1629,6 +1698,11 @@ make_classifier_fixture "$CLS_INLINECMT" +x inlinecomment dispatch
 make_classifier_fixture "$CLS_CHOMPFOLD" +x chompfirstfold dispatch
 make_classifier_fixture "$CLS_CHOMPLIT" +x chompfirstliteral dispatch
 make_classifier_fixture "$CLS_CHOMPOK" +x chompfirstcontent dispatch
+make_classifier_fixture "$CLS_NULLCMT" +x nullcomment dispatch
+make_classifier_fixture "$CLS_DQCMT" +x emptydqcomment dispatch
+make_classifier_fixture "$CLS_TILDECMT" +x tildecomment dispatch
+make_classifier_fixture "$CLS_FLOWCMT" +x flowcomment dispatch
+make_classifier_fixture "$CLS_QUOTEDNULL" +x quotednull dispatch
 expect_ok_contains "classifier detector accepts a complete skills-source tree" \
     "RESULT=true" classifier_verdict "$CLS_FULL"
 # The exec bit is read from the index, never the filesystem: this helper is
@@ -1703,6 +1777,23 @@ expect_ok_contains "classifier detector rejects an empty chomp-first literal hea
     "RESULT=false" classifier_verdict "$CLS_CHOMPLIT"
 expect_ok_contains "classifier detector accepts a chomp-first header with content" \
     "RESULT=true" classifier_verdict "$CLS_CHOMPOK"
+# A comment composes with every other null spelling, so each had to be checked
+# on the stripped scalar rather than the raw one. These are that composition.
+expect_ok_contains "classifier detector rejects a null description with a comment" \
+    "RESULT=false" classifier_verdict "$CLS_NULLCMT"
+expect_ok_contains "classifier detector rejects a null-with-comment under pipefail" \
+    "RESULT=false" classifier_verdict_pipefail "$CLS_NULLCMT"
+expect_ok_contains "classifier detector rejects empty quotes with a comment" \
+    "RESULT=false" classifier_verdict "$CLS_DQCMT"
+expect_ok_contains "classifier detector rejects a tilde-null with a comment" \
+    "RESULT=false" classifier_verdict "$CLS_TILDECMT"
+expect_ok_contains "classifier detector rejects an empty flow form with a comment" \
+    "RESULT=false" classifier_verdict "$CLS_FLOWCMT"
+# The other side of the same change: stripping must not turn real values into
+# rejections. A quoted "null" is a string, not YAML's null, and keeps its quotes
+# through the strip — so it is a description and stays accepted.
+expect_ok_contains "classifier detector accepts a quoted null string as a value" \
+    "RESULT=true" classifier_verdict "$CLS_QUOTEDNULL"
 # Every content probe reads straight through a symlink; only the index mode
 # distinguishes it, which is why the entry point is mode-checked like the
 # classifier path. verify-skills.sh takes the same stance by finding with -type f.
@@ -1797,6 +1888,16 @@ expect_ok_contains "superseded header ordering accepted an empty chomp-first hea
 expect_ok_contains "superseded header ordering still handled indent-first headers" \
     "RESULT=false" \
     classifier_verdict_frozen header-ordering "$CLS_EMPTYSCALAR"
+# Negative control for the composition fix, with the accepts it had to preserve.
+expect_ok_contains "superseded value checks accepted a null with a comment" \
+    "RESULT=true" \
+    classifier_verdict_frozen value-composition "$CLS_NULLCMT"
+expect_ok_contains "superseded value checks accepted empty quotes with a comment" \
+    "RESULT=true" \
+    classifier_verdict_frozen value-composition "$CLS_DQCMT"
+expect_ok_contains "superseded value checks already rejected a bare null" \
+    "RESULT=false" \
+    classifier_verdict_frozen value-composition "$CLS_NULLDESC"
 expect_ok "audit G4 waives sync/universal for the native skills-source classifier" \
     sh -c 'grep -qF "unless the repo is the skills source itself" "$1" &&
         grep -qF "git-tracked, non-symlink executable" "$1" &&

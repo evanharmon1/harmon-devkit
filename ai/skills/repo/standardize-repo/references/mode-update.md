@@ -658,14 +658,20 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # closing `---` (the fence rule exits first) or at the next line starting in
 # column 0, which at this indent is the next key — cheap and right for
 # frontmatter, where keys are unindented and block bodies are not.
-# A header may carry a legal trailing comment (`>- # folded`), which would
-# otherwise miss the header test and fall through to the value branch, where it
-# is non-empty and so passes — granting the waiver on an empty block. The test
-# therefore runs against a COPY with a trailing ` #…` removed. Only the header
-# test uses that copy: if it does not look like a header, the ORIGINAL value is
-# evaluated, so `description: real value # trailing` is still a real value
-# rather than being silently truncated. Requiring whitespace before the `#`
-# matches YAML, where a `#` mid-token does not open a comment.
+# A trailing comment is stripped ONCE, up front, and every judgment below reads
+# that single stripped scalar — header test, null shapes, comment-only, and the
+# final non-emptiness alike. That is structural, not stylistic. Comments compose
+# with every other spelling (`>- # folded`, `null # TODO`, `"" # TODO`), so any
+# check left reading an unstripped copy is a hole, and holding both forms in
+# scope means the next check added is one keystroke from picking the wrong one.
+# With one scalar there is no wrong one to pick, and the composition axis is
+# closed by construction rather than case by case.
+# Requiring whitespace before the `#` matches YAML, where a `#` mid-token opens
+# no comment. The strip is a heuristic, not a lexer — it can cut a quoted scalar
+# that itself contains ` #` — but only ever to a shorter non-empty prefix, which
+# still accepts, and the reject set is exact literals a truncated prefix cannot
+# accidentally equal. So it never turns a real description into a rejection;
+# `description: real value # trailing` is accepted on `real value`.
 # The two indicators may appear in EITHER order — YAML's block header is
 # `(indentation chomping?) | (chomping indentation?)` — so `|-2` and `>2-` are
 # both legal and the alternation covers both. With that, the header grammar is
@@ -747,9 +753,8 @@ classifier_skill_frontmatter_ok() {
     }
     fence == 1 && /^description:[[:space:]]*/ {
       d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
-      sub(/[[:space:]]+$/, "", d)
-      h = d; sub(/[[:space:]]#.*$/, "", h); sub(/[[:space:]]+$/, "", h)
-      if (h ~ /^[|>]([0-9]*[+-]?|[+-][0-9]*)$/) { in_block = 1; next }
+      sub(/[[:space:]]#.*$/, "", d); sub(/[[:space:]]+$/, "", d)
+      if (d ~ /^[|>]([0-9]*[+-]?|[+-][0-9]*)$/) { in_block = 1; next }
       if (d != "" && d != "\"\"" && d != "\047\047" &&
           d != "null" && d != "Null" && d != "NULL" && d != "~" &&
           d != "[]" && d != "{}" && d !~ /^#/) ok_desc = 1
