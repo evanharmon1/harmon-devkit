@@ -148,7 +148,12 @@ issue may be moved at all.
   a legitimately ready PR still needs. Routing rule, not prohibition. Writes
   to the *issue* and its project card (claim labels, card moves, §7) are not
   PR writes and are not gated here; §6's ready stop releases the claim label
-  after promotion by design.
+  after promotion by design. One PR write is exempt: the single blocker
+  comment the escalate branch below posts to name a standing unexplained
+  promotion. It *is* that procedure's output, so routing it through the
+  procedure would deadlock — the guard has already spent the undo and cannot
+  reconcile an unverified head. That one comment only; every other write
+  still routes.
 - **Unexplained promotion — `isDraft` flips to false with no `gh pr ready`
   issued by this session.** Read the `isDraft` from the round-start fetch every
   poll, not only at the gate: a flip caught late looks exactly like a PR that
@@ -180,7 +185,8 @@ issue may be moved at all.
     **blocked-with-report and necessarily leaves the PR non-draft** — the one
     sanctioned exception to a stop leaving the PR draft. Name the standing
     unexplained promotion in the report: the timeline evidence, the head it
-    sits on, and what about that head is still unverified. For this PR the
+    sits on, and what about that head is still unverified — posting it is the
+    one write exempt from the pre-write gate above. For this PR the
     draft-means-workbench reading is suspended until a human intervenes, which
     is why the stop is loud rather than quiet. That is deliberately
     conservative,
@@ -510,7 +516,7 @@ you rather than the bot):
   The attempt window starts when the trigger is created, so posting during CI
   would consume the reviewer's promised post-CI response window. The trigger
   is a PR write, so it takes §2's pre-write read first — the snippet below
-  re-reads `headRefOid` alone.
+  does exactly that, and reserves against the SHA that read returned.
 
   ```bash
   helper="$skill_dir/assets/check-codex-cloud-review.sh"
@@ -518,7 +524,13 @@ you rather than the bot):
   # run unconditionally — it removes nothing whose PR is still open.
   "$helper" reap --root "$(git rev-parse --git-path shepherd-codex)"
   state="$(git rev-parse --git-path "shepherd-codex/$repo/<n>.json")"
-  head="$(gh pr view <n> --repo "$repo" --json headRefOid --jq .headRefOid)"
+  # §2's pre-write read: the trigger below is a PR write.
+  pre="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)"
+  [ "$(jq -r .isDraft <<<"$pre")" = true ] || {
+    echo 'promoted since the last poll — §2 unexplained-promotion procedure'
+    exit 1
+  }
+  head="$(jq -r .headRefOid <<<"$pre")"
   "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
     --head "$head" --attempt 1
   trigger_id="$(
