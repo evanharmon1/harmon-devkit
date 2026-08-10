@@ -350,13 +350,15 @@ issue may be moved at all.
   to the **exact current head**. Use
   `assets/check-codex-cloud-review.sh`; it is deliberately read-only toward
   GitHub and classifies all paginated evidence from the immutable Codex bot
-  actor ID `199175422`. **Run it; never hand-roll the polling loop** — it reads
-  all four surfaces every cycle (trigger reactions, top-level comments,
-  reviews, inline comments), and a poller that skips one false-negatives: one
-  watching only reviews and reactions missed a clean terminal verdict that
-  arrived as a top-level `Reviewed commit:` comment, and reported an
-  already-green attempt "incomplete" (`harmon-devkit#334`). A clean result is
-  exactly one of:
+  actor ID `199175422`. **Run it; never hand-roll the evidence collection or
+  its classification** — `check` reads all four surfaces (trigger reactions,
+  top-level comments, reviews, inline comments), and a substitute that drops
+  one false-negatives: a poller watching only reviews and reactions missed a
+  clean terminal verdict that arrived as a top-level `Reviewed commit:`
+  comment, and reported an already-green attempt "incomplete"
+  (`harmon-devkit#334`). `check` is one-shot and implements no loop of its own;
+  while it reports pending, re-run it within the bounded window below rather
+  than standing up a poller of your own. A clean result is exactly one of:
 
   - an authenticated review for the full current commit;
   - an authenticated top-level result whose `Reviewed commit` value is an
@@ -817,10 +819,14 @@ loops indefinitely:
    mergeStateStatus,statusCheckRollup` again and repeat every readiness check
    against that one snapshot. The `headRefOid` must equal the head whose CI,
    Codex result, comments, and deferred findings were just adjudicated. A
-   changed head invalidates the gate and returns to step 2 — but give that read
-   step 5's settle window: one racing fetch is not evidence either way, so a
-   `headRefOid` that disagrees with what you just adjudicated earns a brief
-   re-poll before you conclude the head moved.
+   changed head invalidates the gate and returns to step 2 — immediately, on
+   the first mismatch. Step 5's settle window does **not** generalize here:
+   there you had just pushed and the remote confirmed it, so a stale read
+   contradicted a known local fact. Here nothing of yours moved, and a
+   mismatch is as easily a *fresh* replica showing someone else's newer push —
+   re-polling until it returns the SHA you adjudicated would discard that
+   evidence and promote an unverified head. Never wait out a pre-promotion
+   mismatch hoping it converges back.
 
    Freeze a stable content fingerprint from fresh, paginated reads of the PR
    body, reviews, top-level comments, inline comments (including replies), and
