@@ -1130,6 +1130,24 @@ expect_ok "classifier frontmatter probe cross-references its canonical source" \
     sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET" \
     'verify-skills.sh' 'frontmatter_is_closed'
+# The entry point is mode-checked from the index, same idiom as the classifier
+# path: only regular blobs qualify, so a 120000 symlink cannot stand in.
+expect_ok "classifier detector requires a regular-file shepherd entry point" \
+    sh -c 'grep -qF "classifier_skill_is_regular_file" "$1" &&
+        grep -qF "100644 | 100755" "$1"' sh \
+    "$GU_CLASSIFIER_SNIPPET"
+# Null-shaped descriptions are matched as whole values, and a block-scalar
+# header is followed rather than compared.
+expect_ok "classifier frontmatter probe rejects null-shaped description values" \
+    sh -c 'for needle in "$2" "$3" "$4" "$5" "$6" "$7"; do
+        grep -qF "$needle" "$1" || exit 1
+    done' sh \
+    "$GU_CLASSIFIER_SNIPPET" \
+    'd != "null"' 'd != "Null"' 'd != "NULL"' 'd != "~"' 'd != "[]"' 'd != "{}"'
+expect_ok "classifier frontmatter probe follows block scalars to their content" \
+    sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
+    "$GU_CLASSIFIER_SNIPPET" \
+    'in_block = 1' 'ok_desc = 1; in_block = 0'
 # The verb probes must anchor on the helper's dispatch arms, not on the usage
 # strings a comment can print — that difference is the whole finding.
 for cls_verb in reserve attach check show reap; do
@@ -1178,7 +1196,8 @@ CLASSIFIER_HELPER_REL="ai/skills/universal/shepherd/assets/check-codex-cloud-rev
 CLASSIFIER_SKILL_REL="ai/skills/universal/shepherd/SKILL.md"
 # $1 repo root, $2 `git add --chmod` flag for the helper, $3 SKILL.md shape
 # (`valid` | `untracked` | `nofrontmatter` | `quotedname` | `blockscalar` |
-# `unclosed` | `bodyonly` | `emptydq` | `emptysq` | `commentdesc`),
+# `unclosed` | `bodyonly` | `emptydq` | `emptysq` | `commentdesc` | `nulldesc` |
+# `tildedesc` | `emptyscalar` | `flowseqdesc`),
 # $4 helper shape:
 #   dispatch — a real-shaped miniature: a `case` on the command with all five
 #              arms, and the pending/escalate verdicts with their exit codes.
@@ -1275,6 +1294,18 @@ make_classifier_fixture() {
     commentdesc)
         printf '%s\n' '---' 'name: shepherd' 'description: # TODO' '---' 'Body.'
         ;;
+    nulldesc)
+        printf '%s\n' '---' 'name: shepherd' 'description: null' '---' 'Body.'
+        ;;
+    tildedesc)
+        printf '%s\n' '---' 'name: shepherd' 'description: ~' '---' 'Body.'
+        ;;
+    emptyscalar)
+        printf '%s\n' '---' 'name: shepherd' 'description: >-' '---' 'Body.'
+        ;;
+    flowseqdesc)
+        printf '%s\n' '---' 'name: shepherd' 'description: []' '---' 'Body.'
+        ;;
     *)
         printf '%s\n' '---' 'name: shepherd' \
             'description: Shepherd a draft PR to ready for review.' '---' \
@@ -1284,6 +1315,20 @@ make_classifier_fixture() {
     if [ "$skill_shape" != untracked ]; then
         git -C "$root" add -- "$CLASSIFIER_SKILL_REL"
     fi
+}
+# A skills source whose entry point is a tracked SYMLINK to a perfectly valid
+# SKILL.md. Every content-based probe reads straight through it; only the index
+# mode tells them apart, so this needs its own builder rather than a shape.
+make_classifier_symlink_fixture() {
+    local root="$1" target="ai/skills/universal/shepherd/SKILL-target.md"
+    make_classifier_fixture "$root" +x valid dispatch
+    rm -f "$root/$CLASSIFIER_SKILL_REL"
+    git -C "$root" rm -q --cached -- "$CLASSIFIER_SKILL_REL"
+    printf '%s\n' '---' 'name: shepherd' \
+        'description: A completely valid target file.' '---' 'Body.' \
+        >"$root/$target"
+    ln -s SKILL-target.md "$root/$CLASSIFIER_SKILL_REL"
+    git -C "$root" add -- "$target" "$CLASSIFIER_SKILL_REL"
 }
 # Run a detector snippet ($1) with a fixture ($2) as cwd; report its verdict.
 classifier_verdict_with() {
@@ -1323,6 +1368,40 @@ else
     SHIPS_CLASSIFIER_NATIVELY=false
 fi
 SUPERSEDEDPIPE
+# A frozen copy of the superseded SKILL.md side: the tracked-only check with no
+# index-mode probe, and the frontmatter awk before it learned the null
+# spellings and block scalars. It is the negative control for both fixes in
+# this round — a symlinked entry point and a `description: null` each waived
+# all three guards under it.
+CLASSIFIER_R3SKILL_SNIPPET="$TMPROOT/classifier-skill-superseded.sh"
+cat >"$CLASSIFIER_R3SKILL_SNIPPET" <<'SUPERSEDEDSKILL'
+SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+classifier_skill_frontmatter_ok() {
+    awk '
+    NR == 1 && $0 != "---" { exit }
+    $0 == "---" { fence++; if (fence >= 2) exit; next }
+    fence == 1 && /^name:[[:space:]]*/ {
+      if (!seen_name) {
+        seen_name = 1
+        v = $0; sub(/^name:[[:space:]]*/, "", v); sub(/\r$/, "", v)
+        if (v == "shepherd" || v == "\"shepherd\"" || v == "\047shepherd\047") ok_name = 1
+      }
+    }
+    fence == 1 && /^description:[[:space:]]*/ {
+      d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
+      sub(/[[:space:]]+$/, "", d)
+      if (d != "" && d != "\"\"" && d != "\047\047" && d !~ /^#/) ok_desc = 1
+    }
+    END { exit (fence >= 2 && ok_name && ok_desc) ? 0 : 1 }
+  ' "$SKILLS_SOURCE_SHEPHERD_SKILL"
+}
+if git ls-files --error-unmatch -- "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1 &&
+    classifier_skill_frontmatter_ok; then
+    SHIPS_CLASSIFIER_NATIVELY=true
+else
+    SHIPS_CLASSIFIER_NATIVELY=false
+fi
+SUPERSEDEDSKILL
 # A frozen copy of the SUPERSEDED usage-string detector. It exists for exactly
 # one assertion — that the comment-only stub used to pass — because a hardening
 # claim nobody can see failing is not evidence of anything.
@@ -1373,6 +1452,11 @@ CLS_EMPTYDQ="$TMPROOT/classifier-empty-dq-description"
 CLS_EMPTYSQ="$TMPROOT/classifier-empty-sq-description"
 CLS_COMMENTDESC="$TMPROOT/classifier-comment-description"
 CLS_PADDED="$TMPROOT/classifier-padded-dispatch"
+CLS_NULLDESC="$TMPROOT/classifier-null-description"
+CLS_TILDEDESC="$TMPROOT/classifier-tilde-description"
+CLS_EMPTYSCALAR="$TMPROOT/classifier-empty-block-scalar"
+CLS_FLOWSEQ="$TMPROOT/classifier-empty-flow-description"
+CLS_SYMLINK="$TMPROOT/classifier-symlinked-entry-point"
 make_classifier_fixture "$CLS_FULL" +x valid dispatch
 make_classifier_fixture "$CLS_MODE" -x valid dispatch
 make_classifier_fixture "$CLS_NOSKILL" +x untracked dispatch
@@ -1387,6 +1471,11 @@ make_classifier_fixture "$CLS_EMPTYDQ" +x emptydq dispatch
 make_classifier_fixture "$CLS_EMPTYSQ" +x emptysq dispatch
 make_classifier_fixture "$CLS_COMMENTDESC" +x commentdesc dispatch
 make_classifier_fixture "$CLS_PADDED" +x valid padded
+make_classifier_fixture "$CLS_NULLDESC" +x nulldesc dispatch
+make_classifier_fixture "$CLS_TILDEDESC" +x tildedesc dispatch
+make_classifier_fixture "$CLS_EMPTYSCALAR" +x emptyscalar dispatch
+make_classifier_fixture "$CLS_FLOWSEQ" +x flowseqdesc dispatch
+make_classifier_symlink_fixture "$CLS_SYMLINK"
 expect_ok_contains "classifier detector accepts a complete skills-source tree" \
     "RESULT=true" classifier_verdict "$CLS_FULL"
 # The exec bit is read from the index, never the filesystem: this helper is
@@ -1420,6 +1509,33 @@ expect_ok_contains "classifier detector rejects a single-quoted empty descriptio
     "RESULT=false" classifier_verdict "$CLS_EMPTYSQ"
 expect_ok_contains "classifier detector rejects a comment-only description" \
     "RESULT=false" classifier_verdict "$CLS_COMMENTDESC"
+# The null spellings and empty flow forms are all whole-value matches, so a real
+# description that merely starts with one of those words is unaffected.
+expect_ok_contains "classifier detector rejects a null description" \
+    "RESULT=false" classifier_verdict "$CLS_NULLDESC"
+expect_ok_contains "classifier detector rejects a tilde-null description" \
+    "RESULT=false" classifier_verdict "$CLS_TILDEDESC"
+expect_ok_contains "classifier detector rejects an empty flow-sequence description" \
+    "RESULT=false" classifier_verdict "$CLS_FLOWSEQ"
+# A block-scalar header is not a value: it is followed to the end of the block,
+# which here is the closing fence with nothing in between.
+expect_ok_contains "classifier detector rejects an empty block-scalar description" \
+    "RESULT=false" classifier_verdict "$CLS_EMPTYSCALAR"
+expect_ok_contains "classifier detector rejects an empty block scalar under pipefail" \
+    "RESULT=false" classifier_verdict_pipefail "$CLS_EMPTYSCALAR"
+# Every content probe reads straight through a symlink; only the index mode
+# distinguishes it, which is why the entry point is mode-checked like the
+# classifier path. verify-skills.sh takes the same stance by finding with -type f.
+expect_ok_contains "classifier detector rejects a symlinked shepherd entry point" \
+    "RESULT=false" classifier_verdict "$CLS_SYMLINK"
+expect_ok_contains "classifier detector rejects a symlinked entry point under pipefail" \
+    "RESULT=false" classifier_verdict_pipefail "$CLS_SYMLINK"
+# The symlink fixture must be a genuine 120000 pointing at a valid file, or the
+# rejection above would be proving something else entirely.
+expect_ok "symlinked entry point fixture stages a real 120000 symlink" \
+    sh -c 'test "$(git -C "$1" ls-files --stage -- "$2" | cut -c1-6)" = 120000 &&
+        test -L "$1/$2" && test -f "$1/$2"' sh \
+    "$CLS_SYMLINK" "$CLASSIFIER_SKILL_REL"
 expect_ok_contains "classifier detector rejects a tracked executable stub" \
     "RESULT=false" classifier_verdict "$CLS_STUB"
 # The negative control, and the reason this round exists. The comment-only stub
@@ -1473,6 +1589,18 @@ expect_ok_contains "classifier detector accepts a padded helper under bash -eu" 
     "RESULT=true" classifier_verdict "$CLS_PADDED"
 expect_ok_contains "classifier detector accepts a padded helper under pipefail" \
     "RESULT=true" classifier_verdict_pipefail "$CLS_PADDED"
+# Negative controls for this round: both shapes waived all three guards under
+# the superseded SKILL.md probes, so the rejections above are a behavior change
+# rather than an assertion about code that was already strict enough.
+expect_ok_contains "superseded skill probes accepted a null description" \
+    "RESULT=true" \
+    classifier_verdict_with "$CLASSIFIER_R3SKILL_SNIPPET" "$CLS_NULLDESC"
+expect_ok_contains "superseded skill probes accepted an empty block scalar" \
+    "RESULT=true" \
+    classifier_verdict_with "$CLASSIFIER_R3SKILL_SNIPPET" "$CLS_EMPTYSCALAR"
+expect_ok_contains "superseded skill probes accepted a symlinked entry point" \
+    "RESULT=true" \
+    classifier_verdict_with "$CLASSIFIER_R3SKILL_SNIPPET" "$CLS_SYMLINK"
 expect_ok "audit G4 waives sync/universal for the native skills-source classifier" \
     sh -c 'grep -qF "unless the repo is the skills source itself" "$1" &&
         grep -qF "git-tracked, non-symlink executable" "$1" &&
@@ -1489,7 +1617,8 @@ expect_ok "audit G4 names the entry-point and dispatch-structure requirements" \
         grep -qF "comments merely print" "$1" &&
         grep -qF "never that it runs" "$1" &&
         grep -qF "scripts/verify-skills.sh" "$1" &&
-        grep -qF "matched pair of single or" "$1"' sh \
+        grep -qF "matched pair of single or" "$1" &&
+        grep -qF "120000" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "standards catalog waives cloud-review sync/universal for the skills source" \
     sh -c 'grep -qF "except on a skills-source" "$1" &&
@@ -1507,7 +1636,9 @@ expect_ok "standards catalog names the entry-point and dispatch-structure requir
         grep -qF "prints the usage forms in comments" "$1" &&
         grep -qF "rather than that it works" "$1" &&
         grep -qF "scripts/verify-skills.sh" "$1" &&
-        grep -qF "matched pair" "$1"' sh \
+        grep -qF "matched pair" "$1" &&
+        grep -qF "120000" "$1" &&
+        grep -qF "non-empty *to YAML*" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "new-repo and adopt guidance note the skills-source waiver" \
     sh -c 'grep -qF "waived only for a skills-source repo already shipping the shepherd classifier" "$1" &&

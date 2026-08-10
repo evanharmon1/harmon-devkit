@@ -646,13 +646,22 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # One deliberate divergence: `description:` must be NON-EMPTY here, where
 # verify-skills.sh accepts a bare `description:`. A skills source whose shepherd
 # skill has no description is not one this waiver should trust. "Non-empty"
-# means non-empty to YAML, not merely to `grep`: `description: ""`,
-# `description: ''`, and `description: # TODO` all carry text yet load as null
-# or nothing at all, so they are rejected too (trailing blanks trimmed first, so
-# one stray space cannot slip a value past those three). This is not full YAML
-# comment semantics — an inline `#` after a real value is left alone, since
-# quoting rules decide whether it starts a comment and that needs a parser.
-# These are the shapes that read as a description and are not one.
+# means non-empty to YAML, not merely to `grep`. Rejected as whole values, after
+# trailing blanks are trimmed so one stray space cannot slip past: `""`, `''`,
+# the null spellings `null`, `Null`, `NULL`, `~`, the empty flow forms `[]` and
+# `{}`, and a line that is only a `#` comment. Each carries text and loads as
+# null or nothing.
+# A block scalar (`>`, `>-`, `|`, `|-`, with optional indent/chomp indicators)
+# is a header, not a value, so it is followed instead of compared: scan until
+# the block ends and require one line with content in it. The block ends at the
+# closing `---` (the fence rule exits first) or at the next line starting in
+# column 0, which at this indent is the next key — cheap and right for
+# frontmatter, where keys are unindented and block bodies are not.
+# This is not a YAML parser and does not try to be. An inline `#` after a real
+# value stays accepted, since quoting rules decide whether it opens a comment;
+# non-empty flow collections and anchors/aliases are likewise out of scope.
+# What is covered is the set of spellings that read as a description and are
+# not one.
 #
 # Every probe sits in the `if` condition, where a non-zero exit selects the
 # else-branch instead of tripping errexit — these are questions about the repo,
@@ -690,6 +699,19 @@ classifier_code_has() {
     END { exit found ? 0 : 1 }
   ' "$SKILLS_SOURCE_CLASSIFIER"
 }
+# The entry point must be a REGULAR file, proven from the index the same way
+# the classifier path is: `git ls-files --stage` reports the tracked mode, and
+# only `100644`/`100755` are regular blobs. A `120000` is a symlink, which
+# `verify-skills.sh` also refuses by finding skills with `-type f` — a symlinked
+# SKILL.md resolves fine in this checkout and can dangle in a fresh clone, or
+# point outside the skill tree entirely. Checked before the frontmatter awk,
+# which would happily read straight through the link.
+classifier_skill_is_regular_file() {
+  case "$(git ls-files --stage -- "$SKILLS_SOURCE_SHEPHERD_SKILL" 2>/dev/null | cut -c1-6)" in
+  100644 | 100755) return 0 ;;
+  esac
+  return 1
+}
 # Mirror of verify-skills.sh's frontmatter rules, scoped to the opening block.
 # `\047` is a single quote — spelled octally so the awk program can stay inside
 # a single-quoted shell string. awk's `exit` runs END, so every path routes
@@ -708,7 +730,15 @@ classifier_skill_frontmatter_ok() {
     fence == 1 && /^description:[[:space:]]*/ {
       d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
       sub(/[[:space:]]+$/, "", d)
-      if (d != "" && d != "\"\"" && d != "\047\047" && d !~ /^#/) ok_desc = 1
+      if (d ~ /^[|>][0-9]*[+-]?$/) { in_block = 1; next }
+      if (d != "" && d != "\"\"" && d != "\047\047" &&
+          d != "null" && d != "Null" && d != "NULL" && d != "~" &&
+          d != "[]" && d != "{}" && d !~ /^#/) ok_desc = 1
+      next
+    }
+    fence == 1 && in_block {
+      if ($0 ~ /^[^[:space:]]/) in_block = 0
+      else if ($0 ~ /[^[:space:]]/) { ok_desc = 1; in_block = 0 }
     }
     END { exit (fence >= 2 && ok_name && ok_desc) ? 0 : 1 }
   ' "$SKILLS_SOURCE_SHEPHERD_SKILL"
@@ -716,6 +746,7 @@ classifier_skill_frontmatter_ok() {
 if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
   [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ] &&
   git ls-files --error-unmatch -- "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1 &&
+  classifier_skill_is_regular_file &&
   classifier_skill_frontmatter_ok &&
   classifier_code_has '^reserve\)' &&
   classifier_code_has '^attach\)' &&
