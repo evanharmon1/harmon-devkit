@@ -96,30 +96,20 @@ and compare against the local branch and HEAD. Requirements, all hard:
   the only vector: `git commit` and `git push` fire repo-configured hooks
   (here, lefthook delegates them to the checked-out Taskfile), so *any*
   local mutation of the checkout can execute contributor code — and
-  bypassing hooks is forbidden anyway. On an untrusted fork, do inspection
-  and gating only inside a sandbox/container **with no credentials in it**,
-  and never perform an authenticated push from the fork checkout at all —
-  even sandboxed, the contributor's pre-push hook runs during the push and
-  can reuse whatever SSH agent, credential helper, or token the push
-  needed. Deliver the fix as a patch/branch from a trusted checkout for
-  the maintainer to decide on instead — remembering that "trusted checkout"
-  is about credentials, not content: a branch based on the untrusted head
-  still carries the contributor's Taskfile and lefthook config, so committing
-  or pushing it fires their hooks wherever it happens and whoever does it.
-  Handing over a patch hands over the *decision*, never the exposure — so
-  whoever acts on it, you or the maintainer, splits the two halves: create
-  and verify the commit inside credential-free isolation, then import that
-  object into a checkout whose working tree holds only trusted content
-  (`git fetch <sandbox-path> <sha>`) and push that commit *by name* from
-  there — `git push <remote> <sha>:refs/heads/<branch>`, never step 5's
-  `HEAD:` form, which would push the trusted checkout's own commit instead of
-  the fix, and never check the imported commit out. Hooks run from the
-  pushing checkout's working tree, never from the tree the pushed ref names —
-  which is why the working tree must stay on trusted content, why that push
-  is safe, and why an authenticated one from the fork checkout is not. If no
-  isolation is available, don't work on the fork checkout at all: stop,
-  report what the remote CI shows, and hand the fix decision to the
-  maintainer.
+  bypassing hooks is forbidden anyway. "Trusted checkout" is about
+  credentials, not content: a branch based on the untrusted head carries the
+  contributor's Taskfile and lefthook config, so committing or pushing it
+  runs their code wherever it happens. Everything you do locally with that
+  content — inspection, gating, committing a candidate fix — therefore
+  happens inside a sandbox/container **with no credentials in it**, and you
+  never perform an authenticated push of it at all: even sandboxed, the
+  contributor's pre-push hook runs during the push and can reuse whatever
+  SSH agent, credential helper, or token the push needed. Deliver the fix as
+  a plain patch with your verification evidence and hand the decision to the
+  maintainer — how they land it in their own environment is theirs, not this
+  skill's to prescribe. If no isolation is available, don't work on the fork
+  checkout at all: stop, report what the remote CI shows, and hand the fix
+  decision to the maintainer.
 
 Once the PR is confirmed `OPEN` and the checkout matches, move the claimed
 issue's card to `Verifying` while checks run — see
