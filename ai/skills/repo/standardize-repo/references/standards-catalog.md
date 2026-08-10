@@ -816,7 +816,9 @@ install the Renovate GitHub App on the repo. Conventions:
   classifier natively, as above and in G4; **[manual]**
   connect the GitHub integration, confirm plan/quota availability, and grant
   explicit connector permission for a private repository, and disable Codex
-  Automatic reviews so ready promotion does not launch an untracked cycle),
+  Automatic reviews — review **Trigger** knob included; the post-generation
+  checklist states the full knob list — so ready promotion does not launch an
+  untracked cycle),
   `.coderabbit.yaml` only when `use_coderabbit=true` (CodeRabbit reviews —
   [manual] install the app),
   `.github/PULL_REQUEST_TEMPLATE.md`, the `.github/ISSUE_TEMPLATE/` YAML **Issue

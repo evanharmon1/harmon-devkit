@@ -85,8 +85,10 @@ Defaults worth knowing so you only override what's wrong (from `copier.yml`):
   the required shepherd classifier is installed (a skills-source repo that
   already ships that classifier natively is exempt from the sync/`universal`
   pair — see the update guard and G4 audit). The maintainer must also
-  disable Codex Automatic reviews so ready-for-review promotion does not start
-  an untracked review after the explicit draft-time cycle.
+  disable Codex Automatic reviews — review **Trigger** knob included; the
+  post-generation checklist states the full knob list — so ready-for-review
+  promotion does not start an untracked review after the explicit draft-time
+  cycle.
 - **All side-effect answers must stay `no`** when adopting: `git_init`,
   `github_remote_create`, `github_release_init`, `bunch_add`,
   `obsidian_project_add`, `run_task_install`. The repo already exists and has a

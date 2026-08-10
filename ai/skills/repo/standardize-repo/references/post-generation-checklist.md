@@ -85,6 +85,11 @@ push so the remote exists.
       from local Codex CLI authentication. Disable **Codex Automatic reviews**:
       the draft-workbench lifecycle uses explicit `@codex review` cycles, and
       marking a clean draft ready must not start a second asynchronous review.
+      Three knobs, all of them: personal **Auto review** off, the repository's
+      **Auto code review** preference on **Follow personal**, and the
+      repository's review **Trigger** on Follow personal too — an "On every
+      push" trigger is dormant while Auto review is off, and arms across every
+      Follow-personal repo the moment the personal toggle changes.
       GitHub exposes no reliable repository API for that setting, so record the
       human confirmation rather than reporting it as mechanically verified. On
       a draft PR, post `@codex review` and verify the generated shepherd

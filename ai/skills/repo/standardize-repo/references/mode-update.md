@@ -530,8 +530,10 @@ important for a feature with a material footprint or an external capability:
   explicitly and keep it false unless the maintainer has
   connected Codex cloud review, accepts plan-dependent availability/quotas, and
   has granted explicit connector permission for a private repository. The
-  maintainer must also disable Codex Automatic reviews so ready-for-review
-  promotion cannot start an untracked review. Legacy omission starts false.
+  maintainer must also disable Codex Automatic reviews — review **Trigger**
+  knob included; the post-generation checklist states the full knob list — so
+  ready-for-review promotion cannot start an untracked review. Legacy omission
+  starts false.
   Enabling it changes the PR exit contract: a current-head terminal Codex result
   is required, with escalation after two unavailable attempts rather than a
   CI-only fallback.
