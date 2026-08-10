@@ -6170,6 +6170,12 @@ gu_nonadopt_classify() {
             REVIEWED_DATA=".copier-guarded-update/reviewed-data.yml" \
             bash -eu "$GU_NONADOPT_RUNNER" >/dev/null)
 }
+# Counted before and after rather than globbed absolutely: another process's
+# temp directory is not this suite's to assert on. Captured HERE, immediately
+# before the rehearsal — taken afterwards it would include any scratch this very
+# run leaked, sit in both counts, and make `after -le before` vacuously true.
+GU_SCRATCH_BEFORE="$(find "${TMPDIR:-/tmp}" -maxdepth 1 \
+    -name 'copier-nonadoption-apply-*' 2>/dev/null | wc -l)"
 expect_ok "non-adoption classifier rehearses the apply and runs clean under bash -eu" \
     gu_nonadopt_classify
 # The rehearsal must not disturb the tree it rehearses on: it copies, applies to
@@ -6177,10 +6183,6 @@ expect_ok "non-adoption classifier rehearses the apply and runs clean under bash
 # the worktree would be the worst possible bug in this design.
 expect_ok "the scratch rehearsal leaves the real worktree untouched" \
     sh -c 'test -z "$(git -C "$1" status --porcelain)"' sh "$GU_TARGET"
-# Counted before and after rather than globbed absolutely: another process's
-# temp directory is not this suite's to assert on.
-GU_SCRATCH_BEFORE="$(find "${TMPDIR:-/tmp}" -maxdepth 1 \
-    -name 'copier-nonadoption-apply-*' 2>/dev/null | wc -l)"
 expect_ok "the scratch rehearsal removes its own copy" \
     sh -c 'after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 \
             -name "copier-nonadoption-apply-*" 2>/dev/null | wc -l)"
@@ -6490,7 +6492,29 @@ expect_ok "the operator's own ignore file grants no template declaration" \
 mkdir -p "$GU_NA_REPO/AGENTS.md"
 printf '%s\n' 'not the agents file' >"$GU_NA_REPO/AGENTS.md/NOTICE.txt"
 git_commit_all "$GU_NA_REPO" "a directory where a file belongs"
+NA_SCRATCH_BEFORE="$TMPROOT/dir-refusal-scratch-before"
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'copier-nonadoption-apply-*' \
+    2>/dev/null | LC_ALL=C sort >"$NA_SCRATCH_BEFORE"
 expect_fail "the rehearsal refuses a directory at a rendered file's path" na_classify
+# The classifier RETAINS the scratch on a diagnostic exit deliberately — when the
+# apply fails, that half-applied tree and copier's own output are the diagnosis,
+# and the error message names its location. So the leak is the fixture's to clean
+# up, not the recipe's to stop: remove only what THIS assertion provoked.
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'copier-nonadoption-apply-*' \
+    2>/dev/null | LC_ALL=C sort >"$TMPROOT/dir-refusal-scratch-after"
+while IFS= read -r na_leaked; do
+    test -n "$na_leaked" || continue
+    rm -rf -- "$na_leaked"
+done < <(LC_ALL=C comm -13 "$NA_SCRATCH_BEFORE" \
+    "$TMPROOT/dir-refusal-scratch-after")
+expect_ok "the provoked scratch is cleaned up by the fixture" \
+    sh -c 'now="$(find "${TMPDIR:-/tmp}" -maxdepth 1 \
+            -name "copier-nonadoption-apply-*" 2>/dev/null | LC_ALL=C sort)"
+        test "$now" = "$(cat "$1")"' sh "$NA_SCRATCH_BEFORE"
+# The retention is only defensible if the operator is told where to look.
+expect_ok "a failed rehearsal names the scratch it left behind" \
+    sh -c 'test "$(grep -cF "inspect \$NONADOPT_SCRATCH" "$1")" -eq 2' sh \
+    "$GU_NONADOPT_SNIPPET"
 rm -rf "$GU_NA_REPO/AGENTS.md"
 git_commit_all "$GU_NA_REPO" "remove the blocking directory"
 
@@ -6665,6 +6689,11 @@ git_init "$VV_DIR"
 printf '%s\n' 'seed' >"$VV_DIR/seed.txt"
 git_commit_all "$VV_DIR" "seed"
 VV_COMMIT=cccccccccccccccccccccccccccccccccccccccc
+VV_OLD_COMMIT=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+vv_write_answers() {
+    printf '_commit: %s\n_src_path: https://example.invalid/vv\n' "$1" \
+        >"$VV_DIR/.copier-answers.yml"
+}
 vv_paths() {
     VV_BR="$(git -C "$VV_DIR" branch --show-current)"
     VV_REPORT="$VV_DIR/.git/guarded-update-nonadoption/$VV_BR"
@@ -6681,13 +6710,20 @@ vv_write_clean() {
         printf 'start-head: %s\n' "$(git -C "$VV_DIR" rev-parse HEAD)"
     } >"$VV_VERDICT"
 }
+vv_write_clean_run() {
+    vv_write_clean
+    vv_write_answers "$VV_COMMIT"
+}
+# No HARMON_INIT_COMMIT in the environment at all: the verification must read the
+# lineage the tree actually carries, and passing the variable would let a broken
+# implementation keep passing on the intent instead of the fact.
 vv_run() {
-    (cd "$VV_DIR" && HARMON_INIT_COMMIT="$VV_COMMIT" bash -eu "$GU_VERIFY")
+    (cd "$VV_DIR" && bash -eu "$GU_VERIFY")
 }
 # The clean path has to pass, or every refusal below proves nothing. This is the
 # assertion that would have caught the unset variable: under `bash -eu` it aborts
 # before reaching any check.
-vv_write_clean
+vv_write_clean_run
 expect_ok "verdict verification accepts a bound, clean, current verdict" vv_run
 # ...and each way it must refuse.
 mv "$VV_VERDICT" "$VV_VERDICT.away"
@@ -6695,16 +6731,29 @@ expect_fail "verdict verification refuses a missing verdict" vv_run
 mv "$VV_VERDICT.away" "$VV_VERDICT"
 printf 'reconciled: clean\n' >"$VV_VERDICT"
 expect_fail "verdict verification refuses a verdict with no binding" vv_run
-vv_write_clean
+vv_write_clean_run
 printf 'q\tnonadopt-both\tno\tbaseline+target\t-\n' >"$VV_REPORT"
 expect_fail "verdict verification refuses a verdict describing another report" vv_run
-vv_write_clean
-expect_fail "verdict verification refuses a verdict from another target commit" \
-    sh -c 'cd "$1" && HARMON_INIT_COMMIT=dddddddddddddddddddddddddddddddddddddddd \
-        bash -eu "$2"' sh "$VV_DIR" "$GU_VERIFY"
-vv_write_clean
+# THE lineage case. Reverting `.copier-answers.yml` to the pre-update baseline —
+# what §3's manual reconciliation or a `git restore` does — leaves a tree at the
+# old version beside a verdict describing the new one. Comparing the verdict to
+# the session's own `$HARMON_INIT_COMMIT` passed happily; comparing it to the
+# lineage the tree carries does not.
+vv_write_clean_run
+vv_write_answers "$VV_OLD_COMMIT"
+expect_fail "verdict verification refuses a verdict when the answers file was reverted" \
+    vv_run
+vv_write_clean_run
+printf '_src_path: https://example.invalid/vv\n' >"$VV_DIR/.copier-answers.yml"
+expect_fail "verdict verification refuses an answers file recording no _commit" \
+    vv_run
+vv_write_clean_run
 : >"$VV_REPORT"
 expect_fail "verdict verification refuses an empty persisted report" vv_run
+expect_ok "the verification reads the lineage rather than the session variable" \
+    sh -c 'grep -qF "yq -r '\''._commit // \"\"'\'' .copier-answers.yml" "$1" &&
+        ! grep -qE "^[^#]*target-commit: \\\$HARMON_INIT_COMMIT" "$1"' sh \
+    "$GU_VERIFY"
 
 # --- conflict artefacts are not adoptions -------------------------------------
 # A `.rej`/`.orig` copier leaves behind is created by the apply but shipped by

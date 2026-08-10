@@ -1136,7 +1136,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   test -z "$(git status --porcelain)" ||
     { echo "worktree not clean; the rehearsal would not reproduce the real index" >&2; exit 1; }
   git clone --no-hardlinks --quiet . "$NONADOPT_SCRATCH/repo" ||
-    { echo "failed to clone the worktree for the scratch apply" >&2; exit 1; }
+    { echo "failed to clone the worktree for the scratch apply; inspect $NONADOPT_SCRATCH" >&2; exit 1; }
   # Ignored files are untracked, so the clone does not carry them; overlay the
   # ones the TEMPLATE manages and this repo has. Unmanaged ignored content
   # (`node_modules`, `.venv`, `.terraform`) is left behind deliberately: it is in
@@ -1201,7 +1201,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     --vcs-ref="$HARMON_INIT_COMMIT" \
     --data-file="$REVIEWED_DATA" \
     "$NONADOPT_SCRATCH/repo" ||
-    { echo "scratch apply failed; the guarded update would fail the same way" >&2; exit 1; }
+    { echo "scratch apply failed; the guarded update would fail the same way — inspect $NONADOPT_SCRATCH" >&2; exit 1; }
   nonadoption_inventory "$NONADOPT_SCRATCH/repo" \
     >"$GUARDED_STATE/apply-after-paths" ||
     { echo "failed to inventory the scratch apply result" >&2; exit 1; }
@@ -1242,8 +1242,14 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   nonadoption_path_present() {
     test -f "$1/$2" || test -L "$1/$2"
   }
+  # `--` because these patterns are template-controlled paths: a rendered file
+  # named `-x` would otherwise be read as a grep option. The same reason the
+  # overlay list is `./`-prefixed before it reaches tar. The three greps in
+  # `nonadoption_reconcile` and `nonadoption_verify_verdict` need no `--`: their
+  # patterns are literal prefixes (`reconciled: `, `report: `, `target-commit: `)
+  # that cannot begin with a dash.
   nonadoption_in_set() {
-    grep -qxF "$2" "$GUARDED_STATE/$1"
+    grep -qxF -- "$2" "$GUARDED_STATE/$1"
   }
   nonadoption_add_note() {
     if test "$NONADOPT_NOTE" = -; then
@@ -1517,7 +1523,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     # Repo-ignored, but the exemption belongs to the TEMPLATE's declaration: a
     # repo that added `.vscode/` to its own .gitignore is stating a habit, not a
     # fact about the artifact every other clone receives.
-    if grep -qxF "$1" "$GUARDED_STATE/ignored-absent-paths"; then
+    if grep -qxF -- "$1" "$GUARDED_STATE/ignored-absent-paths"; then
       if nonadoption_is_render_ignored "$1"; then
         nonadoption_add_note ignored-policy
       else
@@ -1697,9 +1703,11 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       { echo "failed to count non-adoption class: $NONADOPT_CLASS" >&2; exit 1; }
     printf 'non-adoption %-14s %s\n' "$NONADOPT_CLASS" "$NONADOPT_COUNT"
   done
-  # The rehearsal is spent. An aborted run leaves it behind on purpose, exactly
-  # like the discovery renders above — a failed guarded update is a thing to
-  # inspect, and `mktemp -d` puts it where the operator can.
+  # The rehearsal is spent. An aborted run leaves it behind ON PURPOSE, exactly
+  # like the discovery renders above: when the scratch apply fails, that scratch
+  # IS the diagnosis — it holds the half-applied tree and copier's own output —
+  # so the error paths name its location instead of deleting the evidence. Only
+  # the success path cleans up.
   if test "$NONADOPT_REHEARSED" -eq 1 && test -n "$NONADOPT_SCRATCH"; then
     rm -rf -- "$NONADOPT_SCRATCH" ||
       { echo "failed to remove the scratch apply directory" >&2; exit 1; }
@@ -2818,8 +2826,18 @@ nonadoption_verify_verdict() {
     { echo "failed to hash the persisted non-adoption report" >&2; return 1; }
   grep -qx "report: $VERIFY_REPORT_OID" "$VERIFY_VERDICT" ||
     { echo "the frozen verdict does not describe the persisted report; it is left over from an earlier run" >&2; return 1; }
-  grep -qx "target-commit: $HARMON_INIT_COMMIT" "$VERIFY_VERDICT" ||
-    { echo "the frozen verdict was recorded for a different target commit" >&2; return 1; }
+  # The LIVE lineage, not the shell variable. `$HARMON_INIT_COMMIT` says which
+  # update this session intended to run; `.copier-answers.yml` says which one the
+  # tree actually carries. Those differ precisely when it matters — §3's manual
+  # reconciliation or a `git restore` can put the pre-update answers file back,
+  # leaving a tree at the old version beside a verdict describing the new one,
+  # and comparing the verdict to the variable happily passed.
+  VERIFY_LIVE_COMMIT="$(yq -r '._commit // ""' .copier-answers.yml)" ||
+    { echo "failed to read _commit from .copier-answers.yml" >&2; return 1; }
+  test -n "$VERIFY_LIVE_COMMIT" ||
+    { echo "the applied answers file records no _commit; the update did not complete" >&2; return 1; }
+  grep -qx "target-commit: $VERIFY_LIVE_COMMIT" "$VERIFY_VERDICT" ||
+    { echo "the frozen verdict's target commit is not the lineage .copier-answers.yml now records; the tree was reset or reconciled back to another version" >&2; return 1; }
 }
 nonadoption_verify_verdict ||
   { echo "the reconciliation for this branch is missing, stale or unclean; do not hand off" >&2; exit 1; }
