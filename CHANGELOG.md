@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.24.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.24.1...v0.24.2) (2026-08-10)
+
+
+### Bug Fixes
+
+* make mode-update snippets survive UTF-8 collation and set -e ([#352](https://github.com/evanharmon1/harmon-devkit/issues/352)) ([2beee0c](https://github.com/evanharmon1/harmon-devkit/commit/2beee0cf6cda3318d458fcce8e136d57727f3c68))
+* **standardize-repo:** drop the forced CLAUDE_CODE_EFFORT_LEVEL=max devcontainer standard ([#353](https://github.com/evanharmon1/harmon-devkit/issues/353)) ([e66488f](https://github.com/evanharmon1/harmon-devkit/commit/e66488f6a1211bd042c0745cbeef6eec3b5c67ca))
+
 ## [0.24.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.24.0...v0.24.1) (2026-08-09)
 
 
