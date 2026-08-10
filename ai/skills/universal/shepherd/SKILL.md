@@ -140,19 +140,23 @@ issue may be moved at all.
 - **Re-read draft state immediately before every write to the PR** — push,
   inline reply, top-level comment, `@codex review` trigger, body edit:
   `gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid`, fresh. One
-  rule rather than a check bolted onto each call site. A false `isDraft` means
+  rule rather than a check bolted onto each call site. Three conditions come
+  off that one read, and their remedies differ. `state` must be `OPEN`:
+  anything else stops the stage outright — step 1's rule that a closed or
+  merged PR is never shepherded holds mid-round too, and no round can continue
+  on one, so this is neither a route nor a retry. A false `isDraft` means
   the write would land on a PR already requesting human review, so route it
   through the unexplained-promotion procedure below **before** writing; that
   procedure's reconcile branch may then authorize it, since replying to
   threads, ticking deferred findings, and auditing the handoff are exactly what
-  a legitimately ready PR still needs. Routing rule, not prohibition. The same
-  read's `headRefOid` carries the second condition: write only while it still
-  equals the head the write was prepared against. A mismatch means someone
-  pushed since this round began, so the disposition you are about to post — a
-  reply claiming a fix, a tick settling a finding — was derived from premises
-  that no longer exist; do not write, return to the round-start fetch above and
-  re-derive against the new head. Writes to the *issue* and its project card
-  (claim labels, card moves, §7) are not
+  a legitimately ready PR still needs. Routing rule, not prohibition. Third,
+  `headRefOid` must still equal the head the write was prepared against. A
+  mismatch means someone pushed since this round began, so the disposition
+  you are about to post — a reply claiming a fix, a tick settling a
+  finding — was derived from premises that no longer exist; do not write,
+  return to the
+  round-start fetch above and re-derive against the new head. Writes to the
+  *issue* and its project card (claim labels, card moves, §7) are not
   PR writes and are not gated here; §6's ready stop releases the claim label
   after promotion by design. One PR write is exempt: the single blocker
   comment the escalate branch below posts to name a standing unexplained
@@ -532,8 +536,8 @@ you rather than the bot):
   state="$(git rev-parse --git-path "shepherd-codex/$repo/<n>.json")"
   # §2's pre-write read: the trigger below is a PR write.
   pre="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)"
-  [ "$(jq -r .isDraft <<<"$pre")" = true ] || {
-    echo 'promoted since the last poll — §2 unexplained-promotion procedure'
+  [ "$(jq -r '.state == "OPEN" and .isDraft' <<<"$pre")" = true ] || {
+    echo 'not an open draft — see §2: CLOSED stops, promoted routes'
     exit 1
   }
   head="$(jq -r .headRefOid <<<"$pre")"
