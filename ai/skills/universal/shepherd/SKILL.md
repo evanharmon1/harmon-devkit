@@ -145,8 +145,14 @@ issue may be moved at all.
   through the unexplained-promotion procedure below **before** writing; that
   procedure's reconcile branch may then authorize it, since replying to
   threads, ticking deferred findings, and auditing the handoff are exactly what
-  a legitimately ready PR still needs. Routing rule, not prohibition. Writes
-  to the *issue* and its project card (claim labels, card moves, §7) are not
+  a legitimately ready PR still needs. Routing rule, not prohibition. The same
+  read's `headRefOid` carries the second condition: write only while it still
+  equals the head the write was prepared against. A mismatch means someone
+  pushed since this round began, so the disposition you are about to post — a
+  reply claiming a fix, a tick settling a finding — was derived from premises
+  that no longer exist; do not write, return to the round-start fetch above and
+  re-derive against the new head. Writes to the *issue* and its project card
+  (claim labels, card moves, §7) are not
   PR writes and are not gated here; §6's ready stop releases the claim label
   after promotion by design. One PR write is exempt: the single blocker
   comment the escalate branch below posts to name a standing unexplained
