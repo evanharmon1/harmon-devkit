@@ -696,7 +696,9 @@ install the Renovate GitHub App on the repo. Conventions:
   git-tracked, non-symlink executable regular file at
   `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, alongside a
   tracked `ai/skills/universal/shepherd/SKILL.md` entry point whose frontmatter
-  is valid (`---`, `name: shepherd`, non-empty `description:`), with that
+  is valid — a **closed** `---` block carrying `name: shepherd` (a matched pair
+  of quotes is fine) and a non-empty `description:`, scoped to that block and
+  mirroring the canonical rules in `scripts/verify-skills.sh` — with that
   helper's **executable body** carrying the five dispatch `case` arms
   (`reserve)`, `attach)`, `check)`, `show)`, `reap)`) and the exit contract
   shepherd reads — `emit pending`/`exit 11` and `emit escalate`/`exit 13` —

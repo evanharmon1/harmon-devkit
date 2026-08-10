@@ -300,8 +300,11 @@ repository must set `use_skills_sync=true` with `universal` in
 ships the classifier natively as a git-tracked, non-symlink executable regular
 file at `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`,
 *and* tracks the shepherd skill's entry point
-`ai/skills/universal/shepherd/SKILL.md` with valid frontmatter (opens `---`,
-carries `name: shepherd` and a non-empty `description:`), *and* that helper's
+`ai/skills/universal/shepherd/SKILL.md` with valid frontmatter — the opening
+`---` block must **close**, and within that block (not merely somewhere in the
+file) carry `name: shepherd`, optionally wrapped in a matched pair of single or
+double quotes, plus a non-empty `description:`; these mirror
+`scripts/verify-skills.sh`, which is the canonical definition — *and* that helper's
 **executable body** carries the dispatch `case` arms for all five verbs
 (`reserve)`, `attach)`, `check)`, `show)`, `reap)`) together with the exit-code
 contract the shepherd stage reads — `emit pending` with `exit 11` and

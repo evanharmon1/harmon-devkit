@@ -1111,10 +1111,25 @@ expect_ok "classifier detector extraction is non-empty and parses as bash" \
 expect_ok "classifier detector validates the shepherd entry point frontmatter" \
     sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
         grep -qF "git ls-files --error-unmatch" "$1" &&
-        grep -qF "head -n 1" "$1" &&
-        grep -qF "name:[[:space:]]*shepherd" "$1" &&
-        grep -qF "description:[[:space:]]*[^[:space:]]" "$1"' sh \
+        grep -qF "classifier_skill_frontmatter_ok" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET"
+# The frontmatter probe must stay block-scoped and quote-tolerant: a closing
+# fence is required, and the name is compared against all three accepted YAML
+# spellings. `\047` is how the single-quoted forms survive the shell quoting.
+expect_ok "classifier frontmatter probe is block-scoped and quote-tolerant" \
+    sh -c 'for needle in "$2" "$3" "$4" "$5" "$6"; do
+        grep -qF "$needle" "$1" || exit 1
+    done' sh \
+    "$GU_CLASSIFIER_SNIPPET" \
+    'fence >= 2' 'seen_name' '"shepherd"' '\047shepherd\047' \
+    'sub(/^description:[[:space:]]*/, "", d)'
+# verify-skills.sh owns these rules; the detector replicates them because it
+# runs in target repos where that script does not exist. Name it, so the next
+# reader knows which side to change first.
+expect_ok "classifier frontmatter probe cross-references its canonical source" \
+    sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
+    "$GU_CLASSIFIER_SNIPPET" \
+    'verify-skills.sh' 'frontmatter_is_closed'
 # The verb probes must anchor on the helper's dispatch arms, not on the usage
 # strings a comment can print — that difference is the whole finding.
 for cls_verb in reserve attach check show reap; do
@@ -1151,7 +1166,8 @@ expect_ok "classifier detector reads helper code with comment lines stripped" \
 CLASSIFIER_HELPER_REL="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
 CLASSIFIER_SKILL_REL="ai/skills/universal/shepherd/SKILL.md"
 # $1 repo root, $2 `git add --chmod` flag for the helper, $3 SKILL.md shape
-# (`valid` | `untracked` | `nofrontmatter`), $4 helper shape:
+# (`valid` | `untracked` | `nofrontmatter` | `quotedname` | `blockscalar` |
+# `unclosed` | `bodyonly`), $4 helper shape:
 #   dispatch — a real-shaped miniature: a `case` on the command with all five
 #              arms, and the pending/escalate verdicts with their exit codes.
 #   usage    — a no-op whose COMMENTS print the five usage forms. This is the
@@ -1204,14 +1220,33 @@ make_classifier_fixture() {
     esac
     chmod +x "$root/$CLASSIFIER_HELPER_REL"
     git -C "$root" add "--chmod=$chmod_flag" -- "$CLASSIFIER_HELPER_REL"
-    if [ "$skill_shape" = nofrontmatter ]; then
-        printf '%s\n' '# Shepherd' 'No frontmatter here.' \
-            >"$root/$CLASSIFIER_SKILL_REL"
-    else
+    case "$skill_shape" in
+    nofrontmatter)
+        printf '%s\n' '# Shepherd' 'No frontmatter here.'
+        ;;
+    quotedname)
+        printf '%s\n' '---' 'name: "shepherd"' \
+            'description: Double-quoted name, valid YAML.' '---' 'Body.'
+        ;;
+    blockscalar)
+        printf '%s\n' '---' 'name: shepherd' 'description: >-' \
+            '  A folded block scalar, the form the real SKILL.md uses.' \
+            '---' 'Body.'
+        ;;
+    unclosed)
+        printf '%s\n' '---' 'name: shepherd' \
+            'description: The block never closes.' 'Straight into the body.'
+        ;;
+    bodyonly)
+        printf '%s\n' '---' '---' 'name: shepherd' \
+            'description: These live in the body, not the block.'
+        ;;
+    *)
         printf '%s\n' '---' 'name: shepherd' \
             'description: Shepherd a draft PR to ready for review.' '---' \
-            'Body.' >"$root/$CLASSIFIER_SKILL_REL"
-    fi
+            'Body.'
+        ;;
+    esac >"$root/$CLASSIFIER_SKILL_REL"
     if [ "$skill_shape" != untracked ]; then
         git -C "$root" add -- "$CLASSIFIER_SKILL_REL"
     fi
@@ -1245,18 +1280,42 @@ else
     SHIPS_CLASSIFIER_NATIVELY=false
 fi
 SUPERSEDED
+# A frozen copy of the superseded whole-file frontmatter greps — the half of the
+# SKILL.md probe this round replaces. Kept to just those three tests rather than
+# re-freezing a whole detector, so the control isolates the changed semantics:
+# they must reject a valid quoted name (too strict) and accept keys that only
+# appear in the body (too loose). Both directions were wrong at once.
+CLASSIFIER_R1FM_SNIPPET="$TMPROOT/classifier-frontmatter-superseded.sh"
+cat >"$CLASSIFIER_R1FM_SNIPPET" <<'SUPERSEDEDFM'
+SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+if head -n 1 "$SKILLS_SOURCE_SHEPHERD_SKILL" | grep -qxF -- '---' &&
+    grep -qE '^name:[[:space:]]*shepherd[[:space:]]*$' "$SKILLS_SOURCE_SHEPHERD_SKILL" &&
+    grep -qE '^description:[[:space:]]*[^[:space:]]' "$SKILLS_SOURCE_SHEPHERD_SKILL"; then
+    SHIPS_CLASSIFIER_NATIVELY=true
+else
+    SHIPS_CLASSIFIER_NATIVELY=false
+fi
+SUPERSEDEDFM
 CLS_FULL="$TMPROOT/classifier-dispatch"
 CLS_MODE="$TMPROOT/classifier-nonexec"
 CLS_NOSKILL="$TMPROOT/classifier-untracked-skill"
 CLS_BADFM="$TMPROOT/classifier-bad-frontmatter"
 CLS_USAGE="$TMPROOT/classifier-usage-stub"
 CLS_STUB="$TMPROOT/classifier-empty-stub"
+CLS_QUOTED="$TMPROOT/classifier-quoted-name"
+CLS_SCALAR="$TMPROOT/classifier-block-scalar"
+CLS_UNCLOSED="$TMPROOT/classifier-unclosed-frontmatter"
+CLS_BODYONLY="$TMPROOT/classifier-body-only-keys"
 make_classifier_fixture "$CLS_FULL" +x valid dispatch
 make_classifier_fixture "$CLS_MODE" -x valid dispatch
 make_classifier_fixture "$CLS_NOSKILL" +x untracked dispatch
 make_classifier_fixture "$CLS_BADFM" +x nofrontmatter dispatch
 make_classifier_fixture "$CLS_USAGE" +x valid usage
 make_classifier_fixture "$CLS_STUB" +x valid empty
+make_classifier_fixture "$CLS_QUOTED" +x quotedname dispatch
+make_classifier_fixture "$CLS_SCALAR" +x blockscalar dispatch
+make_classifier_fixture "$CLS_UNCLOSED" +x unclosed dispatch
+make_classifier_fixture "$CLS_BODYONLY" +x bodyonly dispatch
 expect_ok_contains "classifier detector accepts a complete skills-source tree" \
     "RESULT=true" classifier_verdict "$CLS_FULL"
 # The exec bit is read from the index, never the filesystem: this helper is
@@ -1267,6 +1326,20 @@ expect_ok_contains "classifier detector rejects an untracked shepherd entry poin
     "RESULT=false" classifier_verdict "$CLS_NOSKILL"
 expect_ok_contains "classifier detector rejects a SKILL.md without frontmatter" \
     "RESULT=false" classifier_verdict "$CLS_BADFM"
+# Frontmatter acceptance mirrors verify-skills.sh: a matched pair of quotes
+# around the name is valid YAML that script accepts, and the folded block
+# scalar is the form the real SKILL.md actually uses.
+expect_ok_contains "classifier detector accepts a double-quoted skill name" \
+    "RESULT=true" classifier_verdict "$CLS_QUOTED"
+expect_ok_contains "classifier detector accepts a folded block-scalar description" \
+    "RESULT=true" classifier_verdict "$CLS_SCALAR"
+# ...and rejects what only LOOKS like frontmatter. An unterminated block reads
+# fine line-by-line while a real YAML parser sees none at all, and keys sitting
+# in the body after a closed empty block are not frontmatter either.
+expect_ok_contains "classifier detector rejects an unclosed frontmatter block" \
+    "RESULT=false" classifier_verdict "$CLS_UNCLOSED"
+expect_ok_contains "classifier detector rejects name and description in the body" \
+    "RESULT=false" classifier_verdict "$CLS_BODYONLY"
 expect_ok_contains "classifier detector rejects a tracked executable stub" \
     "RESULT=false" classifier_verdict "$CLS_STUB"
 # The negative control, and the reason this round exists. The comment-only stub
@@ -1279,6 +1352,11 @@ expect_ok_contains "superseded detector accepted a comment-only usage stub" \
     "RESULT=true" classifier_verdict_with "$CLASSIFIER_OLD_SNIPPET" "$CLS_USAGE"
 expect_ok_contains "classifier detector rejects a comment-only usage stub" \
     "RESULT=false" classifier_verdict "$CLS_USAGE"
+# The frontmatter negative control, both directions of the same defect.
+expect_ok_contains "superseded frontmatter greps rejected a valid quoted name" \
+    "RESULT=false" classifier_verdict_with "$CLASSIFIER_R1FM_SNIPPET" "$CLS_QUOTED"
+expect_ok_contains "superseded frontmatter greps accepted body-only keys" \
+    "RESULT=true" classifier_verdict_with "$CLASSIFIER_R1FM_SNIPPET" "$CLS_BODYONLY"
 # This checkout ships the real thing, so the detector must say so. This is also
 # what keeps every anchor above honest: they are asserted against the helper's
 # actual dispatch and exit contract, not just against the doc that greps them.
@@ -1298,7 +1376,9 @@ expect_ok "audit G4 names the entry-point and dispatch-structure requirements" \
         grep -qF "emit escalate" "$1" &&
         grep -qF "exit 13" "$1" &&
         grep -qF "comments merely print" "$1" &&
-        grep -qF "never that it runs" "$1"' sh \
+        grep -qF "never that it runs" "$1" &&
+        grep -qF "scripts/verify-skills.sh" "$1" &&
+        grep -qF "matched pair of single or" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "standards catalog waives cloud-review sync/universal for the skills source" \
     sh -c 'grep -qF "except on a skills-source" "$1" &&
@@ -1314,7 +1394,9 @@ expect_ok "standards catalog names the entry-point and dispatch-structure requir
         grep -qF "emit escalate" "$1" &&
         grep -qF "exit 13" "$1" &&
         grep -qF "prints the usage forms in comments" "$1" &&
-        grep -qF "rather than that it works" "$1"' sh \
+        grep -qF "rather than that it works" "$1" &&
+        grep -qF "scripts/verify-skills.sh" "$1" &&
+        grep -qF "matched pair" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "new-repo and adopt guidance note the skills-source waiver" \
     sh -c 'grep -qF "waived only for a skills-source repo already shipping the shepherd classifier" "$1" &&

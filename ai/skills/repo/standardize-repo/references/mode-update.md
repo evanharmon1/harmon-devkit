@@ -625,11 +625,27 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # `classifier_code_has` strips leading whitespace and drops every `#` line
 # first, so no comment can answer a probe.
 #
-# The `SKILL.md` probe likewise checks the frontmatter rather than the path:
-# tracked, opening with `---`, carrying `name: shepherd` and a non-empty
-# `description:` — the cheap grep-only mirror of `verify-skills.sh`'s rules, no
-# YAML parsing. A helper with no valid skill around it is a stripped tree, not
-# a shipped skill.
+# The `SKILL.md` probe likewise checks the frontmatter rather than the path: a
+# helper with no valid skill around it is a stripped tree, not a shipped skill.
+# It must be BLOCK-SCOPED, and plain greps could not be. Scanning the whole file
+# for `^name:` accepts a malformed skill whose body happens to contain the line,
+# and pinning `^name:[[:space:]]*shepherd$` rejects `name: "shepherd"` — valid
+# YAML that a legitimate skills source may well use. Wrong in both directions at
+# once, so the probe is one awk pass over the opening `---` block instead.
+#
+# `scripts/verify-skills.sh` in harmon-devkit is the CANONICAL definition of
+# these rules; this replicates its `frontmatter_is_closed`, `frontmatter_name`,
+# and `frontmatter_has_description` semantics. It deliberately does not call
+# that script: the detector runs inside arbitrary target repos, where it does
+# not exist. Replicated exactly: the file must open `---`; the block must CLOSE
+# with a second `---` (an unterminated block reads fine line-by-line but a real
+# YAML parser sees no frontmatter at all); only the FIRST `name:` in the block
+# counts; its value may carry a MATCHED pair of single or double quotes, and a
+# mismatched one is invalid — comparing against the three accepted literals is
+# equivalent to that script's unquote-then-compare for a fixed expected name.
+# One deliberate divergence: `description:` must be NON-EMPTY here, where
+# verify-skills.sh accepts a bare `description:`. A skills source whose shepherd
+# skill has no description is not one this waiver should trust.
 #
 # Every probe sits in the `if` condition, where a non-zero exit selects the
 # else-branch instead of tripping errexit — these are questions about the repo,
@@ -650,12 +666,32 @@ SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
 classifier_code_has() {
   sed 's/^[[:space:]]*//' "$SKILLS_SOURCE_CLASSIFIER" | grep -v '^#' | grep -qE "$1"
 }
+# Mirror of verify-skills.sh's frontmatter rules, scoped to the opening block.
+# `\047` is a single quote — spelled octally so the awk program can stay inside
+# a single-quoted shell string. awk's `exit` runs END, so every path routes
+# through it rather than returning a status directly.
+classifier_skill_frontmatter_ok() {
+  awk '
+    NR == 1 && $0 != "---" { exit }
+    $0 == "---" { fence++; if (fence >= 2) exit; next }
+    fence == 1 && /^name:[[:space:]]*/ {
+      if (!seen_name) {
+        seen_name = 1
+        v = $0; sub(/^name:[[:space:]]*/, "", v); sub(/\r$/, "", v)
+        if (v == "shepherd" || v == "\"shepherd\"" || v == "\047shepherd\047") ok_name = 1
+      }
+    }
+    fence == 1 && /^description:[[:space:]]*/ {
+      d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
+      if (d != "") ok_desc = 1
+    }
+    END { exit (fence >= 2 && ok_name && ok_desc) ? 0 : 1 }
+  ' "$SKILLS_SOURCE_SHEPHERD_SKILL"
+}
 if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
   [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ] &&
   git ls-files --error-unmatch -- "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1 &&
-  head -n 1 "$SKILLS_SOURCE_SHEPHERD_SKILL" | grep -qxF -- '---' &&
-  grep -qE '^name:[[:space:]]*shepherd[[:space:]]*$' "$SKILLS_SOURCE_SHEPHERD_SKILL" &&
-  grep -qE '^description:[[:space:]]*[^[:space:]]' "$SKILLS_SOURCE_SHEPHERD_SKILL" &&
+  classifier_skill_frontmatter_ok &&
   classifier_code_has '^reserve\)' &&
   classifier_code_has '^attach\)' &&
   classifier_code_has '^check\)' &&
