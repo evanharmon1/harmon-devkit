@@ -102,13 +102,14 @@ and compare against the local branch and HEAD. Requirements, all hard:
   even sandboxed, the contributor's pre-push hook runs during the push and
   can reuse whatever SSH agent, credential helper, or token the push
   needed. Deliver the fix as a patch/branch from a trusted checkout for
-  the maintainer to apply instead — remembering that "trusted checkout" is
-  about credentials, not content: a branch based on the untrusted head still
-  carries the contributor's Taskfile and lefthook config, so committing or
-  pushing it fires their hooks wherever it happens. Keep any commit or push
-  of untrusted-head content inside the credential-free sandbox too, or let
-  the fix travel as a plain diff (`git format-patch`, a `.patch` file) the
-  maintainer applies in their own environment. If no isolation is available,
+  the maintainer to decide on instead — remembering that "trusted checkout"
+  is about credentials, not content: a branch based on the untrusted head
+  still carries the contributor's Taskfile and lefthook config, so committing
+  or pushing it fires their hooks wherever it happens and whoever does it.
+  Handing over a patch hands over the *decision*, never the exposure — so
+  anyone who commits or pushes untrusted-head content, you or the maintainer,
+  does it inside credential-free isolation, or onto a base that does not
+  include the untrusted head. If no isolation is available,
   don't work on the fork checkout at all: stop, report what the remote CI
   shows, and hand the fix decision to the maintainer.
 
