@@ -318,8 +318,9 @@ everything it reports is by definition a path the baseline ships —
 - New conditionally-named file? → cover it with a `test-template.sh` profile.
 - New ignore pattern? → anchor to `/` and negate `template/` copies.
 - A repo is `MISSING` a file its baseline already shipped? → no update will ever
-  restore it; adopt it or record the decline (gotcha 9). Two exceptions, both
-  created by the update: a file added upstream *after* that baseline is
-  target-only, and a path listed under `_skip_if_exists` is rendered fresh
-  whenever it is absent.
+  restore it; adopt it or record the decline (gotcha 9). Two carve-outs come
+  back regardless, both because copier's deleted-path scan cannot see them: a
+  path listed under `_skip_if_exists`, and any path the render's own
+  `.gitignore` covers. A file added upstream *after* your baseline is not a
+  carve-out — it is target-only, and the update creates it in the ordinary way.
 - After any `copier.yml` / `template/**` change → `task test:template:all` must pass.

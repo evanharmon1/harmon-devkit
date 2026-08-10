@@ -1110,25 +1110,40 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # The index is reproduced rather than approximated, because copier's
   # deleted-path exclusion diffs the old render's tree against the SUBPROJECT'S
   # INDEX. §1 has already proved this worktree clean, so index == HEAD ==
-  # worktree: `git add -A` picks up exactly the non-ignored files, and
-  # force-adding `git ls-files` covers the tracked-but-ignored remainder. The
-  # union is precisely the real repo's tracked set, and ignored-untracked files
-  # stay on disk and out of the index exactly as they are here.
+  # worktree and `git ls-files` IS the index.
+  #
+  # Only MANAGED content is copied: every tracked file, plus the ignored paths
+  # the template manages and this repo has — which `ignored-existing-paths`
+  # already enumerates, a few lines above. A whole-tree copy dragged in
+  # `node_modules`, `.venv` and `.terraform`, which on a real repo is gigabytes
+  # and minutes for content that cannot change the answer. Unmanaged ignored
+  # content is invisible to copier twice over: it is in neither render
+  # inventory, so it is not a path copier renders, excludes or skips; and it is
+  # not in the index, so it cannot appear in the tree diff that decides which
+  # paths were deleted. Nothing copier does depends on it.
   test -z "$(git status --porcelain)" ||
     { echo "worktree not clean; the rehearsal would not reproduce the real index" >&2; exit 1; }
   mkdir -p "$NONADOPT_SCRATCH/repo" "$NONADOPT_SCRATCH/empty-git-template" ||
     { echo "failed to prepare the scratch apply directory" >&2; exit 1; }
-  # A checked copy per top-level entry. `-exec ... +` would need `{}` last, and
-  # `cp -t` is GNU-only; `-exec ... \;` swallows failures. An explicit loop is
-  # the portable form that still notices when a copy fails.
-  find . -mindepth 1 -maxdepth 1 ! -name .git \
-    >"$GUARDED_STATE/scratch-copy-entries" ||
-    { echo "failed to enumerate the worktree for the scratch apply" >&2; exit 1; }
-  while IFS= read -r NONADOPT_ENTRY; do
-    test -n "$NONADOPT_ENTRY" || continue
-    cp -a "$NONADOPT_ENTRY" "$NONADOPT_SCRATCH/repo/" ||
-      { echo "failed to copy $NONADOPT_ENTRY for the scratch apply" >&2; exit 1; }
-  done <"$GUARDED_STATE/scratch-copy-entries"
+  git ls-files >"$GUARDED_STATE/scratch-tracked-paths" ||
+    { echo "failed to list tracked paths for the scratch apply" >&2; exit 1; }
+  cat \
+    "$GUARDED_STATE/scratch-tracked-paths" \
+    "$GUARDED_STATE/ignored-existing-paths" |
+    LC_ALL=C sort -u >"$GUARDED_STATE/scratch-copy-paths" ||
+    { echo "failed to derive the scratch copy set" >&2; exit 1; }
+  # `tar -T` is this document's existing idiom for copying a path list (the
+  # ignored-path backup uses it), it recreates parent directories on its own, and
+  # it preserves symlinks. Written to a file and extracted as two checked steps
+  # rather than piped: in a pipeline only the last command's status survives, so
+  # a failed `tar -c` would be masked by a successful `tar -x`.
+  tar -cf "$NONADOPT_SCRATCH/content.tar" \
+    -T "$GUARDED_STATE/scratch-copy-paths" ||
+    { echo "failed to archive the managed worktree content" >&2; exit 1; }
+  (cd "$NONADOPT_SCRATCH/repo" && tar -xf "$NONADOPT_SCRATCH/content.tar") ||
+    { echo "failed to unpack the managed worktree content into the scratch" >&2; exit 1; }
+  rm -f "$NONADOPT_SCRATCH/content.tar" ||
+    { echo "failed to remove the scratch content archive" >&2; exit 1; }
   # Empty --template so the machine's git template cannot seed hooks into a repo
   # this block is about to commit in.
   git -C "$NONADOPT_SCRATCH/repo" init -q \
@@ -1136,9 +1151,28 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     { echo "failed to initialize the scratch repository" >&2; exit 1; }
   git -C "$NONADOPT_SCRATCH/repo" add -A ||
     { echo "failed to stage the scratch worktree" >&2; exit 1; }
-  git ls-files -z |
-    (cd "$NONADOPT_SCRATCH/repo" && xargs -0r git add -f --) ||
-    { echo "failed to stage tracked-but-ignored files in the scratch" >&2; exit 1; }
+  # `add -A` skips anything the repo's own ignore rules match, so a file that is
+  # BOTH tracked and ignore-matched would be left out of the scratch index and
+  # read as deleted. Force-add exactly those. `git check-ignore` is three-valued
+  # here — 0 matched, 1 none matched, anything else is a broken probe — and
+  # `xargs -r` is a GNU extension absent on the macOS hosts this recipe supports,
+  # so the list is filtered first and walked with the same loop idiom as
+  # everything else.
+  NONADOPT_TRACKED_RC=0
+  git check-ignore --stdin <"$GUARDED_STATE/scratch-tracked-paths" \
+    >"$GUARDED_STATE/scratch-tracked-ignored" || NONADOPT_TRACKED_RC=$?
+  case "$NONADOPT_TRACKED_RC" in
+  0 | 1) ;;
+  *)
+    echo "failed to identify tracked-but-ignored paths (git check-ignore exit $NONADOPT_TRACKED_RC)" >&2
+    exit 1
+    ;;
+  esac
+  while IFS= read -r NONADOPT_TRACKED; do
+    test -n "$NONADOPT_TRACKED" || continue
+    git -C "$NONADOPT_SCRATCH/repo" add -f -- "$NONADOPT_TRACKED" ||
+      { echo "failed to stage tracked-but-ignored path: $NONADOPT_TRACKED" >&2; exit 1; }
+  done <"$GUARDED_STATE/scratch-tracked-ignored"
   git -C "$NONADOPT_SCRATCH/repo" \
     -c user.email=guarded@example.invalid -c user.name=guarded \
     -c commit.gpgsign=false commit -q -m "rehearsal baseline" ||
@@ -1950,13 +1984,43 @@ nonadoption_reconcile() {
       }
       ;;
     unknown-until-apply)
-      # No prediction to confirm — the rehearsal was refused. Record what the
-      # real apply did, which is the same observation, taken later.
-      if test "$ROW_PRESENT" -eq 1; then
-        ROW_CLASS=created
-      else
-        ROW_CLASS=nonadopt-both
-      fi
+      # No prediction to confirm — the rehearsal was refused, so this resolves
+      # the row into exactly the class the rehearsed path would have recorded.
+      # `baseline_membership` carries the before-state: §1 rows a `baseline-only`
+      # path only when the repo HAS it, and every other membership only when the
+      # repo lacks it. Reading present-after alone would have called a surviving
+      # baseline-only file `created` and a removed one `nonadopt-both` — both
+      # backwards.
+      case "$ROW_MEMBER" in
+      baseline-only)
+        if test "$ROW_PRESENT" -eq 1; then
+          # Present before and after: no transition at all. The rehearsed path
+          # emits no row for this, so neither does the resolution — inventing a
+          # `retained` class would put a non-event in a report of events.
+          continue
+        fi
+        ROW_CLASS=deleted
+        ;;
+      *)
+        if test "$ROW_PRESENT" -eq 1; then
+          ROW_CLASS=created
+          if test "$ROW_MEMBER" = baseline+target; then
+            ROW_KIND=recreated
+          else
+            ROW_KIND=new-in-target
+          fi
+          # Same note and same ordering the rehearsed path produces: the kind
+          # first, then whatever evidence §1 already attached.
+          if test "$ROW_NOTE" = -; then
+            ROW_NOTE="$ROW_KIND"
+          else
+            ROW_NOTE="$ROW_KIND; $ROW_NOTE"
+          fi
+        else
+          ROW_CLASS=nonadopt-both
+        fi
+        ;;
+      esac
       ;;
     *)
       echo "DIVERGED  $ROW_PATH: unknown class '$ROW_CLASS' in the report" >&2

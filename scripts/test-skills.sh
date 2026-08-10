@@ -2421,7 +2421,8 @@ expect_ok "the rehearsal is refused when the target declares _migrations" \
 # Zero shared git metadata: a linked worktree's `.git` is a pointer file, and
 # copier runs `git write-tree` in the subproject.
 expect_ok "the rehearsal builds independent git metadata for the scratch" \
-    sh -c 'grep -qF -- "-mindepth 1 -maxdepth 1 ! -name .git" "$1" &&
+    sh -c 'grep -qF "tar -cf \"\$NONADOPT_SCRATCH/content.tar\"" "$1" &&
+        ! grep -qF "cp -a ." "$1" &&
         grep -qF "init -q" "$1" &&
         grep -qF "rev-parse --absolute-git-dir" "$1" &&
         grep -qF "refusing to rehearse" "$1" &&
@@ -2467,6 +2468,14 @@ expect_ok "gotcha 9 attributes permanence to copier's exclusion, not an empty di
     sh -c 'grep -qF "not because the diff is empty" "$1" &&
         grep -qF "excludes them from creation" "$1" &&
         grep -qF "The exclusion is explicit, not emergent" "$1"' sh \
+    "$STANDARDIZE_REFS/copier-gotchas.md"
+# The quick checklist is the version people quote, so it has to name the same
+# two carve-outs §9 does — and not name target-only, which is ordinary creation.
+expect_ok "the gotcha checklist names both carve-outs and no phantom third" \
+    sh -c 'grep -qF "Two carve-outs come" "$1" &&
+        grep -qF "render'\''s own" "$1" &&
+        grep -qF "is not a" "$1" &&
+        ! grep -qF "Two exceptions, both" "$1"' sh \
     "$STANDARDIZE_REFS/copier-gotchas.md"
 expect_ok "gotcha 9 carves out _skip_if_exists as a recreate, not a permanence" \
     sh -c 'grep -qF "There are TWO carve-outs" "$1" &&
@@ -2549,7 +2558,7 @@ expect_ok "the class column carries only the observed classes" \
 # the copy, and reads the result. If any of these three go missing it has gone
 # back to predicting.
 expect_ok "the snippet rehearses the apply instead of modelling it" \
-    sh -c 'grep -qF -- "-mindepth 1 -maxdepth 1 ! -name .git" "$1" &&
+    sh -c 'grep -qF "scratch-copy-paths" "$1" &&
         grep -qF "run_guarded_copier update --trust --defaults --skip-tasks" "$1" &&
         grep -qF "nonadoption_path_present" "$1" &&
         grep -qF "apply-created" "$1" &&
@@ -2557,6 +2566,23 @@ expect_ok "the snippet rehearses the apply instead of modelling it" \
     "$GU_NONADOPT_SNIPPET"
 # The rehearsal must mirror §2 or it predicts nothing. These are the flags §2
 # uses; `--skip-tasks` and the destination are the only sanctioned differences.
+# BSD/macOS portability. `xargs -r` is a GNU extension and the recipe is
+# explicitly supported on macOS bash 3.2 hosts, where the rehearsal would simply
+# die. `cp --parents` and `cp -t` are the same trap; `tar -T` is the idiom this
+# document already uses for copying a path list.
+expect_ok "the rehearsal uses no GNU-only utility flags" \
+    sh -c '! grep -qE "^[^#]*(xargs|cp --parents|cp -t )" "$1" &&
+        grep -qF -- "-T \"\$GUARDED_STATE/scratch-copy-paths\"" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
+# The scratch carries MANAGED content only. A whole-tree copy dragged in
+# node_modules/.venv/.terraform — gigabytes on a real repo, for content copier
+# cannot consult: it is in neither render inventory and not in the index.
+expect_ok "the scratch copy set is tracked content plus managed ignored paths" \
+    sh -c 'grep -qF "git ls-files >\"\$GUARDED_STATE/scratch-tracked-paths\"" "$1" &&
+        grep -qF "\$GUARDED_STATE/ignored-existing-paths" "$1" &&
+        grep -qF "scratch-copy-paths" "$1" &&
+        ! grep -qF -- "-mindepth 1 -maxdepth 1 ! -name .git" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
 expect_ok "the rehearsal mirrors the real update's invocation" \
     sh -c 'grep -qF -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" "$1" &&
         grep -qF -- "--data-file=\"\$REVIEWED_DATA\"" "$1" &&
@@ -6464,6 +6490,126 @@ git_commit_all "$GU_NA_REPO" "a directory where a file belongs"
 expect_fail "the rehearsal refuses a directory at a rendered file's path" na_classify
 rm -rf "$GU_NA_REPO/AGENTS.md"
 git_commit_all "$GU_NA_REPO" "remove the blocking directory"
+
+# --- the rehearsal copies managed content only --------------------------------
+# A whole-tree copy pulled in every ignored byte the repo happened to hold. This
+# fixture plants an unmanaged cache beside a managed ignored path and checks
+# which one reaches the scratch. `scratch-copy-paths` survives the run, so the
+# copy set is directly assertable rather than inferred.
+SCOPE_ROOT="$TMPROOT/rehearsal-scope"
+SCOPE_TPL="$SCOPE_ROOT/template"
+mkdir -p "$SCOPE_TPL/template/.vscode" "$SCOPE_ROOT/cache"
+cat >"$SCOPE_TPL/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+project_name:
+  type: str
+  default: Scope
+EOF
+printf '%s\n' '{{ _copier_answers|to_nice_yaml -}}' \
+    >"$SCOPE_TPL/template/.copier-answers.yml.jinja"
+printf '%s\n' '{"local":true}' >"$SCOPE_TPL/template/.vscode/local.json"
+printf '%s\n' 'agents' >"$SCOPE_TPL/template/AGENTS.md"
+printf '%s\n' 'baseline' >"$SCOPE_TPL/template/version.txt"
+printf '%s\n' '.vscode/*' 'node_modules/' >"$SCOPE_TPL/template/.gitignore"
+git_init "$SCOPE_TPL"
+# Render-ignored yet template-managed: force-add or the template's own
+# .gitignore keeps it out of the template repo and it never renders.
+git -C "$SCOPE_TPL" add -f template/.vscode/local.json
+git_commit_all "$SCOPE_TPL" "scope baseline"
+SCOPE_BASE_COMMIT="$(git -C "$SCOPE_TPL" rev-parse HEAD)"
+copier copy --trust --defaults --skip-tasks --vcs-ref="$SCOPE_BASE_COMMIT" \
+    "$SCOPE_TPL" "$SCOPE_ROOT/repo" >/dev/null
+git_init "$SCOPE_ROOT/repo"
+git_commit_all "$SCOPE_ROOT/repo" "generated"
+printf '%s\n' '/.copier-guarded-update/' >>"$SCOPE_ROOT/repo/.git/info/exclude"
+# The unmanaged cache: ignored, present, and nothing to do with the template.
+mkdir -p "$SCOPE_ROOT/repo/node_modules/pkg/deep"
+for scope_n in 1 2 3 4 5; do
+    printf '%s\n' "junk $scope_n" \
+        >"$SCOPE_ROOT/repo/node_modules/pkg/deep/f$scope_n.js"
+done
+printf '%s\n' 'target' >"$SCOPE_TPL/template/version.txt"
+git_commit_all "$SCOPE_TPL" "scope target"
+SCOPE_TGT_COMMIT="$(git -C "$SCOPE_TPL" rev-parse HEAD)"
+SCOPE_STATE="$SCOPE_ROOT/repo/.copier-guarded-update"
+mkdir -p "$SCOPE_STATE"
+printf '{}\n' >"$SCOPE_STATE/reviewed-data.yml"
+copier copy --trust --defaults --skip-tasks --vcs-ref="$SCOPE_BASE_COMMIT" \
+    "$SCOPE_TPL" "$SCOPE_ROOT/base-render" >/dev/null
+copier copy --trust --defaults --skip-tasks --vcs-ref="$SCOPE_TGT_COMMIT" \
+    "$SCOPE_TPL" "$SCOPE_ROOT/target-render" >/dev/null
+for scope_side in base target; do
+    (cd "$SCOPE_ROOT/$scope_side-render" && find . \( -type f -o -type l \) -print) |
+        sed 's#^\./##' | LC_ALL=C sort -u \
+        >"$SCOPE_STATE/$(test "$scope_side" = base &&
+            printf baseline || printf target)-managed-paths"
+done
+: >"$SCOPE_STATE/ignored-existing-paths"
+: >"$SCOPE_STATE/ignored-absent-paths"
+while IFS= read -r scope_path; do
+    git -C "$SCOPE_ROOT/repo" check-ignore -q -- "$scope_path" || continue
+    if test -e "$SCOPE_ROOT/repo/$scope_path"; then
+        printf '%s\n' "$scope_path" >>"$SCOPE_STATE/ignored-existing-paths"
+    else
+        printf '%s\n' "$scope_path" >>"$SCOPE_STATE/ignored-absent-paths"
+    fi
+done <"$SCOPE_STATE/target-managed-paths"
+expect_ok "the scope fixture really has a managed ignored path" \
+    grep -qx '.vscode/local.json' "$SCOPE_STATE/ignored-existing-paths"
+expect_ok "the rehearsal runs clean against a repo holding an unmanaged cache" \
+    sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update \
+        BASELINE_DISCOVERY="$2" TARGET_DISCOVERY="$3" \
+        GUARDED_TEMPLATE="$4" HARMON_INIT_SOURCE="https://example.invalid/scope" \
+        GUARDED_COPIER_CACHE="$5" HARMON_INIT_COMMIT="$6" \
+        REVIEWED_DATA=".copier-guarded-update/reviewed-data.yml" \
+        bash -eu "$7" >/dev/null' sh \
+    "$SCOPE_ROOT/repo" "$SCOPE_ROOT/base-render" "$SCOPE_ROOT/target-render" \
+    "$SCOPE_TPL" "$SCOPE_ROOT/cache" "$SCOPE_TGT_COMMIT" "$GU_NONADOPT_RUNNER"
+expect_fail "the unmanaged ignored cache is not copied into the scratch" \
+    grep -q node_modules "$SCOPE_STATE/scratch-copy-paths"
+expect_ok "the managed ignored path IS copied into the scratch" \
+    grep -qx '.vscode/local.json' "$SCOPE_STATE/scratch-copy-paths"
+expect_ok "tracked content is copied into the scratch" \
+    sh -c 'grep -qx AGENTS.md "$1" && grep -qx .copier-answers.yml "$1"' sh \
+    "$SCOPE_STATE/scratch-copy-paths"
+
+# --- the degraded path resolves with class-appropriate before/after -----------
+# Exercised as a unit on the reconciliation recipe: a real `_migrations` update
+# cannot produce a surviving baseline-only file on demand, and the label logic is
+# what is under test. Reading present-after alone called a surviving
+# baseline-only file `created` and a removed one `nonadopt-both`, both backwards.
+DEG_DIR="$TMPROOT/degraded-resolution"
+mkdir -p "$DEG_DIR/.copier-guarded-update"
+for deg_present in keep.md made.md newf.md; do
+    printf '%s\n' 'present' >"$DEG_DIR/$deg_present"
+done
+{
+    printf 'keep.md\tunknown-until-apply\tn/a-removed\tbaseline-only\t-\n'
+    printf 'gone.md\tunknown-until-apply\tn/a-removed\tbaseline-only\t-\n'
+    printf 'made.md\tunknown-until-apply\tno\tbaseline+target\t-\n'
+    printf 'newf.md\tunknown-until-apply\tn/a-new\ttarget-only\tco-owned-prose\n'
+    printf 'never.md\tunknown-until-apply\tno\tbaseline+target\t-\n'
+} >"$DEG_DIR/.copier-guarded-update/nonadoption-report.tsv"
+DEG_TSV="$DEG_DIR/.copier-guarded-update/nonadoption-report.tsv"
+expect_ok "reconciliation resolves a degraded report cleanly" \
+    sh -c 'cd "$1" && bash -eu "$2"' sh "$DEG_DIR" "$GU_RECONCILE"
+# Present before AND after is not a transition; the rehearsed path emits no row
+# for it, so the resolution must not invent one.
+expect_fail "a surviving baseline-only file yields no row" \
+    grep -q '^keep\.md' "$DEG_TSV"
+expect_ok "a removed baseline-only file resolves to deleted" \
+    grep -qxF "$(printf 'gone.md\tdeleted\tn/a-removed\tbaseline-only\t-')" \
+    "$DEG_TSV"
+expect_ok "a both-renders file the apply wrote resolves to created/recreated" \
+    grep -qxF "$(printf 'made.md\tcreated\tno\tbaseline+target\trecreated')" \
+    "$DEG_TSV"
+expect_ok "a target-only file the apply wrote keeps its evidence in order" \
+    grep -qxF "$(printf 'newf.md\tcreated\tn/a-new\ttarget-only\tnew-in-target; co-owned-prose')" \
+    "$DEG_TSV"
+expect_ok "a file the apply never wrote resolves to nonadopt-both" \
+    grep -qxF "$(printf 'never.md\tnonadopt-both\tno\tbaseline+target\t-')" \
+    "$DEG_TSV"
 
 # --- the rehearsal must not touch the repo it rehearses on --------------------
 # A LINKED worktree's `.git` is a POINTER FILE. Copying it verbatim leaves the
