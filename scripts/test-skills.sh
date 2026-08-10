@@ -1154,7 +1154,12 @@ expect_ok "classifier frontmatter probe follows block scalars to their content" 
 expect_ok "classifier frontmatter probe strips comments only for the header test" \
     sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET" \
-    'h = d; sub(/[[:space:]]#.*$/, "", h)' 'if (h ~ /^[|>][0-9]*[+-]?$/)'
+    'h = d; sub(/[[:space:]]#.*$/, "", h)' \
+    'if (h ~ /^[|>]([0-9]*[+-]?|[+-][0-9]*)$/)'
+# Both legal indicator orderings, so a chomp-first header cannot slip past.
+expect_ok "classifier frontmatter probe accepts either block-header ordering" \
+    sh -c 'grep -qF "$2" "$1"' sh \
+    "$GU_CLASSIFIER_SNIPPET" '([0-9]*[+-]?|[+-][0-9]*)'
 expect_fail "classifier frontmatter probe never strips comments from the value" \
     grep -qF 'sub(/[[:space:]]#.*$/, "", d)' "$GU_CLASSIFIER_SNIPPET"
 # The verb probes must anchor on the helper's dispatch arms, not on the usage
@@ -1207,7 +1212,8 @@ CLASSIFIER_SKILL_REL="ai/skills/universal/shepherd/SKILL.md"
 # (`valid` | `untracked` | `nofrontmatter` | `quotedname` | `blockscalar` |
 # `unclosed` | `bodyonly` | `emptydq` | `emptysq` | `commentdesc` | `nulldesc` |
 # `tildedesc` | `emptyscalar` | `flowseqdesc` | `commentedheader` |
-# `commentedheadercontent` | `commentedpipe` | `inlinecomment`),
+# `commentedheadercontent` | `commentedpipe` | `inlinecomment` |
+# `chompfirstfold` | `chompfirstliteral` | `chompfirstcontent`),
 # $4 helper shape:
 #   dispatch — a real-shaped miniature: a `case` on the command with all five
 #              arms, and the pending/escalate verdicts with their exit codes.
@@ -1332,6 +1338,16 @@ make_classifier_fixture() {
         printf '%s\n' '---' 'name: shepherd' \
             'description: A real value # with a trailing comment' '---' 'Body.'
         ;;
+    chompfirstfold)
+        printf '%s\n' '---' 'name: shepherd' 'description: >+2' '---' 'Body.'
+        ;;
+    chompfirstliteral)
+        printf '%s\n' '---' 'name: shepherd' 'description: |-2' '---' 'Body.'
+        ;;
+    chompfirstcontent)
+        printf '%s\n' '---' 'name: shepherd' 'description: >+2' \
+            '  Content behind a chomp-first header.' '---' 'Body.'
+        ;;
     *)
         printf '%s\n' '---' 'name: shepherd' \
             'description: Shepherd a draft PR to ready for review.' '---' \
@@ -1379,11 +1395,30 @@ classifier_verdict_pipefail_with() {
 classifier_verdict_pipefail() {
     classifier_verdict_pipefail_with "$GU_CLASSIFIER_SNIPPET" "$1"
 }
-# A frozen copy of the superseded `sed | grep -v | grep -qE` probe. It is the
-# negative control for the pipefail defect: identical input, opposite answers
-# depending only on the shell mode, which is what made it so easy to miss.
-CLASSIFIER_PIPE_SNIPPET="$TMPROOT/classifier-pipeline-superseded.sh"
-cat >"$CLASSIFIER_PIPE_SNIPPET" <<'SUPERSEDEDPIPE'
+
+# --- frozen predecessor probes -----------------------------------------------
+# Each hardening round of the classifier waiver leaves one frozen copy of the
+# probe it replaced, so its negative control can show a BEHAVIOR CHANGE rather
+# than assert about code that was already strict enough. They accumulate one per
+# round, so they live in a single keyed registry instead of a fresh ad-hoc
+# variable and heredoc each time: `freeze_classifier_probe <key>` reads the
+# snippet from stdin, and the controls name the key.
+#
+# Snippet bodies are verbatim copies of the shipped detector at the commit named
+# in each comment. Do not tidy them — a control that has drifted from its
+# predecessor proves nothing about that predecessor.
+CLASSIFIER_FROZEN_DIR="$TMPROOT/classifier-frozen"
+mkdir -p "$CLASSIFIER_FROZEN_DIR"
+freeze_classifier_probe() { cat >"$CLASSIFIER_FROZEN_DIR/$1.sh"; }
+classifier_verdict_frozen() {
+    classifier_verdict_with "$CLASSIFIER_FROZEN_DIR/$1.sh" "$2"
+}
+classifier_verdict_frozen_pipefail() {
+    classifier_verdict_pipefail_with "$CLASSIFIER_FROZEN_DIR/$1.sh" "$2"
+}
+# The `sed | grep -v | grep -qE` probe: same input, opposite answers depending
+# only on the shell mode, which is what made the pipefail defect easy to miss.
+freeze_classifier_probe code-pipeline <<'SUPERSEDEDPIPE'
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
 classifier_code_has() {
     sed 's/^[[:space:]]*//' "$SKILLS_SOURCE_CLASSIFIER" | grep -v '^#' | grep -qE "$1"
@@ -1394,13 +1429,10 @@ else
     SHIPS_CLASSIFIER_NATIVELY=false
 fi
 SUPERSEDEDPIPE
-# A frozen copy of the superseded SKILL.md side: the tracked-only check with no
-# index-mode probe, and the frontmatter awk before it learned the null
-# spellings and block scalars. It is the negative control for both fixes in
-# this round — a symlinked entry point and a `description: null` each waived
-# all three guards under it.
-CLASSIFIER_R3SKILL_SNIPPET="$TMPROOT/classifier-skill-superseded.sh"
-cat >"$CLASSIFIER_R3SKILL_SNIPPET" <<'SUPERSEDEDSKILL'
+# The SKILL.md side with a tracked-only check and no index-mode probe, and the
+# frontmatter awk before it learned the null spellings and block scalars: a
+# symlinked entry point and a `description: null` each waived the guards.
+freeze_classifier_probe skill-probes <<'SUPERSEDEDSKILL'
 SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
 classifier_skill_frontmatter_ok() {
     awk '
@@ -1428,12 +1460,10 @@ else
     SHIPS_CLASSIFIER_NATIVELY=false
 fi
 SUPERSEDEDSKILL
-# A frozen copy of the description rules from the round that introduced the
-# block walk but tested the header with a bare regex. It is the negative
-# control for the commented-header fix: the header form with a trailing comment
-# missed that regex, fell through to the value branch, and passed.
-CLASSIFIER_R4DESC_SNIPPET="$TMPROOT/classifier-header-superseded.sh"
-cat >"$CLASSIFIER_R4DESC_SNIPPET" <<'SUPERSEDEDHEADER'
+# The description rules from the round that introduced the block walk but
+# tested the header with a bare regex: a header carrying a trailing comment
+# missed it, fell through to the value branch, and passed.
+freeze_classifier_probe desc-header <<'SUPERSEDEDHEADER'
 SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
 classifier_skill_frontmatter_ok() {
     awk '
@@ -1468,11 +1498,9 @@ else
     SHIPS_CLASSIFIER_NATIVELY=false
 fi
 SUPERSEDEDHEADER
-# A frozen copy of the SUPERSEDED usage-string detector. It exists for exactly
-# one assertion — that the comment-only stub used to pass — because a hardening
-# claim nobody can see failing is not evidence of anything.
-CLASSIFIER_OLD_SNIPPET="$TMPROOT/classifier-detector-superseded.sh"
-cat >"$CLASSIFIER_OLD_SNIPPET" <<'SUPERSEDED'
+# The original usage-string detector, for the one assertion that a comment-only
+# stub used to pass — a hardening claim nobody can see failing is not evidence.
+freeze_classifier_probe usage-strings <<'SUPERSEDED'
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
 SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
 if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
@@ -1488,13 +1516,10 @@ else
     SHIPS_CLASSIFIER_NATIVELY=false
 fi
 SUPERSEDED
-# A frozen copy of the superseded whole-file frontmatter greps — the half of the
-# SKILL.md probe this round replaces. Kept to just those three tests rather than
-# re-freezing a whole detector, so the control isolates the changed semantics:
-# they must reject a valid quoted name (too strict) and accept keys that only
-# appear in the body (too loose). Both directions were wrong at once.
-CLASSIFIER_R1FM_SNIPPET="$TMPROOT/classifier-frontmatter-superseded.sh"
-cat >"$CLASSIFIER_R1FM_SNIPPET" <<'SUPERSEDEDFM'
+# The whole-file frontmatter greps, scoped to just those three tests so the
+# control isolates the changed semantics: they rejected a valid quoted name
+# (too strict) and accepted keys appearing only in the body (too loose).
+freeze_classifier_probe frontmatter-greps <<'SUPERSEDEDFM'
 SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
 if head -n 1 "$SKILLS_SOURCE_SHEPHERD_SKILL" | grep -qxF -- '---' &&
     grep -qE '^name:[[:space:]]*shepherd[[:space:]]*$' "$SKILLS_SOURCE_SHEPHERD_SKILL" &&
@@ -1504,6 +1529,54 @@ else
     SHIPS_CLASSIFIER_NATIVELY=false
 fi
 SUPERSEDEDFM
+# The description rules once the comment-strip copy existed but the header test
+# still assumed indentation-before-chomping: `|-2` and `>+2` are legal YAML in
+# the other order, missed the test, and an empty block passed as a value.
+freeze_classifier_probe header-ordering <<'SUPERSEDEDORDER'
+SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+classifier_skill_frontmatter_ok() {
+    awk '
+    NR == 1 && $0 != "---" { exit }
+    $0 == "---" { fence++; if (fence >= 2) exit; next }
+    fence == 1 && /^name:[[:space:]]*/ {
+      if (!seen_name) {
+        seen_name = 1
+        v = $0; sub(/^name:[[:space:]]*/, "", v); sub(/\r$/, "", v)
+        if (v == "shepherd" || v == "\"shepherd\"" || v == "\047shepherd\047") ok_name = 1
+      }
+    }
+    fence == 1 && /^description:[[:space:]]*/ {
+      d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
+      sub(/[[:space:]]+$/, "", d)
+      h = d; sub(/[[:space:]]#.*$/, "", h); sub(/[[:space:]]+$/, "", h)
+      if (h ~ /^[|>][0-9]*[+-]?$/) { in_block = 1; next }
+      if (d != "" && d != "\"\"" && d != "\047\047" &&
+          d != "null" && d != "Null" && d != "NULL" && d != "~" &&
+          d != "[]" && d != "{}" && d !~ /^#/) ok_desc = 1
+      next
+    }
+    fence == 1 && in_block {
+      if ($0 ~ /^[^[:space:]]/) in_block = 0
+      else if ($0 ~ /[^[:space:]]/) { ok_desc = 1; in_block = 0 }
+    }
+    END { exit (fence >= 2 && ok_name && ok_desc) ? 0 : 1 }
+  ' "$SKILLS_SOURCE_SHEPHERD_SKILL"
+}
+if classifier_skill_frontmatter_ok; then
+    SHIPS_CLASSIFIER_NATIVELY=true
+else
+    SHIPS_CLASSIFIER_NATIVELY=false
+fi
+SUPERSEDEDORDER
+# Every frozen probe must still be a runnable program. A control that silently
+# became unparseable would report `false` for the wrong reason, which for a
+# control expecting a reject is a passing test that proves nothing.
+for frozen_key in usage-strings frontmatter-greps code-pipeline skill-probes \
+    desc-header header-ordering; do
+    expect_ok "frozen control $frozen_key is a runnable snippet" \
+        sh -c 'test -s "$1" && bash -n "$1"' sh \
+        "$CLASSIFIER_FROZEN_DIR/$frozen_key.sh"
+done
 CLS_FULL="$TMPROOT/classifier-dispatch"
 CLS_MODE="$TMPROOT/classifier-nonexec"
 CLS_NOSKILL="$TMPROOT/classifier-untracked-skill"
@@ -1527,6 +1600,9 @@ CLS_CMTHDR="$TMPROOT/classifier-commented-header-empty"
 CLS_CMTHDROK="$TMPROOT/classifier-commented-header-content"
 CLS_CMTPIPE="$TMPROOT/classifier-commented-pipe-empty"
 CLS_INLINECMT="$TMPROOT/classifier-inline-comment-value"
+CLS_CHOMPFOLD="$TMPROOT/classifier-chomp-first-fold"
+CLS_CHOMPLIT="$TMPROOT/classifier-chomp-first-literal"
+CLS_CHOMPOK="$TMPROOT/classifier-chomp-first-content"
 make_classifier_fixture "$CLS_FULL" +x valid dispatch
 make_classifier_fixture "$CLS_MODE" -x valid dispatch
 make_classifier_fixture "$CLS_NOSKILL" +x untracked dispatch
@@ -1550,6 +1626,9 @@ make_classifier_fixture "$CLS_CMTHDR" +x commentedheader dispatch
 make_classifier_fixture "$CLS_CMTHDROK" +x commentedheadercontent dispatch
 make_classifier_fixture "$CLS_CMTPIPE" +x commentedpipe dispatch
 make_classifier_fixture "$CLS_INLINECMT" +x inlinecomment dispatch
+make_classifier_fixture "$CLS_CHOMPFOLD" +x chompfirstfold dispatch
+make_classifier_fixture "$CLS_CHOMPLIT" +x chompfirstliteral dispatch
+make_classifier_fixture "$CLS_CHOMPOK" +x chompfirstcontent dispatch
 expect_ok_contains "classifier detector accepts a complete skills-source tree" \
     "RESULT=true" classifier_verdict "$CLS_FULL"
 # The exec bit is read from the index, never the filesystem: this helper is
@@ -1612,6 +1691,18 @@ expect_ok_contains "classifier detector accepts a commented header with block co
     "RESULT=true" classifier_verdict "$CLS_CMTHDROK"
 expect_ok_contains "classifier detector accepts a value with a trailing comment" \
     "RESULT=true" classifier_verdict "$CLS_INLINECMT"
+# YAML allows the block header's indicators in either order — `|2-` and `|-2`
+# are both legal — so a chomp-first header missed an indent-first test and its
+# empty block passed as a value. The alternation closes the grammar: there is
+# no remaining legal spelling that reaches the value branch.
+expect_ok_contains "classifier detector rejects an empty chomp-first folded header" \
+    "RESULT=false" classifier_verdict "$CLS_CHOMPFOLD"
+expect_ok_contains "classifier detector rejects an empty chomp-first header under pipefail" \
+    "RESULT=false" classifier_verdict_pipefail "$CLS_CHOMPFOLD"
+expect_ok_contains "classifier detector rejects an empty chomp-first literal header" \
+    "RESULT=false" classifier_verdict "$CLS_CHOMPLIT"
+expect_ok_contains "classifier detector accepts a chomp-first header with content" \
+    "RESULT=true" classifier_verdict "$CLS_CHOMPOK"
 # Every content probe reads straight through a symlink; only the index mode
 # distinguishes it, which is why the entry point is mode-checked like the
 # classifier path. verify-skills.sh takes the same stance by finding with -type f.
@@ -1634,14 +1725,14 @@ expect_ok_contains "classifier detector rejects a tracked executable stub" \
 # Structural anchors reject it. Both halves are asserted: a reject case whose
 # predecessor also rejected it would prove nothing was hardened.
 expect_ok_contains "superseded detector accepted a comment-only usage stub" \
-    "RESULT=true" classifier_verdict_with "$CLASSIFIER_OLD_SNIPPET" "$CLS_USAGE"
+    "RESULT=true" classifier_verdict_frozen usage-strings "$CLS_USAGE"
 expect_ok_contains "classifier detector rejects a comment-only usage stub" \
     "RESULT=false" classifier_verdict "$CLS_USAGE"
 # The frontmatter negative control, both directions of the same defect.
 expect_ok_contains "superseded frontmatter greps rejected a valid quoted name" \
-    "RESULT=false" classifier_verdict_with "$CLASSIFIER_R1FM_SNIPPET" "$CLS_QUOTED"
+    "RESULT=false" classifier_verdict_frozen frontmatter-greps "$CLS_QUOTED"
 expect_ok_contains "superseded frontmatter greps accepted body-only keys" \
-    "RESULT=true" classifier_verdict_with "$CLASSIFIER_R1FM_SNIPPET" "$CLS_BODYONLY"
+    "RESULT=true" classifier_verdict_frozen frontmatter-greps "$CLS_BODYONLY"
 # This checkout ships the real thing, so the detector must say so. This is also
 # what keeps every anchor above honest: they are asserted against the helper's
 # actual dispatch and exit contract, not just against the doc that greps them.
@@ -1669,10 +1760,10 @@ expect_ok_contains "classifier detector rejects a usage stub under pipefail too"
 # ~1 MB of filler after the match makes the writer certain to still be blocked,
 # so the control is deterministic while testing the same failure.
 expect_ok_contains "superseded pipeline probe passed under bash -eu" \
-    "RESULT=true" classifier_verdict_with "$CLASSIFIER_PIPE_SNIPPET" "$CLS_PADDED"
+    "RESULT=true" classifier_verdict_frozen code-pipeline "$CLS_PADDED"
 expect_ok_contains "superseded pipeline probe failed under pipefail" \
     "RESULT=false" \
-    classifier_verdict_pipefail_with "$CLASSIFIER_PIPE_SNIPPET" "$CLS_PADDED"
+    classifier_verdict_frozen_pipefail code-pipeline "$CLS_PADDED"
 # And the fix, on the input that defeats the old form: same fixture, both modes.
 expect_ok_contains "classifier detector accepts a padded helper under bash -eu" \
     "RESULT=true" classifier_verdict "$CLS_PADDED"
@@ -1683,22 +1774,29 @@ expect_ok_contains "classifier detector accepts a padded helper under pipefail" 
 # rather than an assertion about code that was already strict enough.
 expect_ok_contains "superseded skill probes accepted a null description" \
     "RESULT=true" \
-    classifier_verdict_with "$CLASSIFIER_R3SKILL_SNIPPET" "$CLS_NULLDESC"
+    classifier_verdict_frozen skill-probes "$CLS_NULLDESC"
 expect_ok_contains "superseded skill probes accepted an empty block scalar" \
     "RESULT=true" \
-    classifier_verdict_with "$CLASSIFIER_R3SKILL_SNIPPET" "$CLS_EMPTYSCALAR"
+    classifier_verdict_frozen skill-probes "$CLS_EMPTYSCALAR"
 expect_ok_contains "superseded skill probes accepted a symlinked entry point" \
     "RESULT=true" \
-    classifier_verdict_with "$CLASSIFIER_R3SKILL_SNIPPET" "$CLS_SYMLINK"
+    classifier_verdict_frozen skill-probes "$CLS_SYMLINK"
 # Negative control for the commented header, plus the accept it had to preserve:
 # the bare-regex version passed the empty block AND the real trailing-comment
 # value, so only the reject is a behavior change.
 expect_ok_contains "superseded header regex accepted an empty commented header" \
     "RESULT=true" \
-    classifier_verdict_with "$CLASSIFIER_R4DESC_SNIPPET" "$CLS_CMTHDR"
+    classifier_verdict_frozen desc-header "$CLS_CMTHDR"
 expect_ok_contains "superseded header regex also accepted a trailing-comment value" \
     "RESULT=true" \
-    classifier_verdict_with "$CLASSIFIER_R4DESC_SNIPPET" "$CLS_INLINECMT"
+    classifier_verdict_frozen desc-header "$CLS_INLINECMT"
+# Negative control for the header ordering, with the accept it had to preserve.
+expect_ok_contains "superseded header ordering accepted an empty chomp-first header" \
+    "RESULT=true" \
+    classifier_verdict_frozen header-ordering "$CLS_CHOMPFOLD"
+expect_ok_contains "superseded header ordering still handled indent-first headers" \
+    "RESULT=false" \
+    classifier_verdict_frozen header-ordering "$CLS_EMPTYSCALAR"
 expect_ok "audit G4 waives sync/universal for the native skills-source classifier" \
     sh -c 'grep -qF "unless the repo is the skills source itself" "$1" &&
         grep -qF "git-tracked, non-symlink executable" "$1" &&

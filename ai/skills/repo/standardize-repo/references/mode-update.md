@@ -651,7 +651,8 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # the null spellings `null`, `Null`, `NULL`, `~`, the empty flow forms `[]` and
 # `{}`, and a line that is only a `#` comment. Each carries text and loads as
 # null or nothing.
-# A block scalar (`>`, `>-`, `|`, `|-`, with optional indent/chomp indicators)
+# A block scalar (`>` or `|`, with optional indentation and chomping
+# indicators)
 # is a header, not a value, so it is followed instead of compared: scan until
 # the block ends and require one line with content in it. The block ends at the
 # closing `---` (the fence rule exits first) or at the next line starting in
@@ -665,6 +666,15 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # evaluated, so `description: real value # trailing` is still a real value
 # rather than being silently truncated. Requiring whitespace before the `#`
 # matches YAML, where a `#` mid-token does not open a comment.
+# The two indicators may appear in EITHER order — YAML's block header is
+# `(indentation chomping?) | (chomping indentation?)` — so `|-2` and `>2-` are
+# both legal and the alternation covers both. With that, the header grammar is
+# CLOSED: every legal spelling routes to the content walk, and no empty block
+# can reach the value branch by ordering its indicators differently. The match
+# is slightly wider than strict YAML (multi-digit, and `0`), which is harmless
+# and deliberately the safe direction: any value beginning `|` or `>` is a
+# block-scalar header or invalid YAML, so a wider match only ever routes to the
+# content walk rather than accepting something.
 # This is not a YAML parser and does not try to be. An inline `#` after a real
 # value stays accepted, since quoting rules decide whether it opens a comment;
 # non-empty flow collections and anchors/aliases are likewise out of scope.
@@ -739,7 +749,7 @@ classifier_skill_frontmatter_ok() {
       d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
       sub(/[[:space:]]+$/, "", d)
       h = d; sub(/[[:space:]]#.*$/, "", h); sub(/[[:space:]]+$/, "", h)
-      if (h ~ /^[|>][0-9]*[+-]?$/) { in_block = 1; next }
+      if (h ~ /^[|>]([0-9]*[+-]?|[+-][0-9]*)$/) { in_block = 1; next }
       if (d != "" && d != "\"\"" && d != "\047\047" &&
           d != "null" && d != "Null" && d != "NULL" && d != "~" &&
           d != "[]" && d != "{}" && d !~ /^#/) ok_desc = 1
