@@ -357,7 +357,9 @@ issue may be moved at all.
   comment, and reported an already-green attempt "incomplete"
   (`harmon-devkit#334`). `check` is one-shot and implements no loop of its own;
   while it reports pending, re-run it within the bounded window below rather
-  than standing up a poller of your own. A clean result is exactly one of:
+  than standing up a poller of your own. A clean result from Codex itself is
+exactly one of (adjudication, below, is the one clean path that comes from
+you rather than the bot):
 
   - an authenticated review for the full current commit;
   - an authenticated top-level result whose `Reviewed commit` value is an
@@ -367,7 +369,12 @@ issue may be moved at all.
 
   An authenticated inline comment is attributed by its immutable
   `original_commit_id` (GitHub rewrites `commit_id` as the diff advances); a
-  current-head inline comment or non-clean review is a finding. A 👀 is
+  current-head inline comment **without a trusted in-thread reply** — one from
+  the PR author or an OWNER/MEMBER/COLLABORATOR, posted after it and after any
+  edit to it — is a finding, as is a non-clean review. Once every current-head
+  finding carries that reply (fixed, or declined with reasoning), the helper
+  reports the cycle clean as adjudicated rather than re-blocking on findings
+  that are already settled. A 👀 is
   pending, never clean. PR-level reactions, timestamps,
   previous-head verdicts, and reactions on any other comment do not count.
   Actor ambiguity, malformed or incomplete API data, a changed head, and an

@@ -308,16 +308,24 @@ codex_verdict_defs=$(
               gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
           def has_severity_marker:
             (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
+          # Factored out of `rest_is_boilerplate` so the carrier defs below can
+          # reuse the exact same removal and the exact same metadata pattern
+          # instead of restating them. Same regexes, same flags, same order —
+          # `rest_is_boilerplate` behaves identically to before the split.
+          def strip_about_block:
+            gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
+                 ""; "im");
+          def is_reviewed_commit_line:
+            test(
+              "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
+            );
           def rest_is_boilerplate:
             (body_text | split("\n") | .[1:] | join("\n") |
-              gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
-                   ""; "im") |
+              strip_about_block |
               ascii_downcase | split("\n") |
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               map(select(. != "")) |
-              all(test(
-                "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
-              )));
+              all(is_reviewed_commit_line));
           # The verdict line must OPEN with the clean sentence; whatever
           # Codex appends after it is stripped and plays no part in the
           # decision.
@@ -351,6 +359,59 @@ codex_verdict_defs=$(
           # draft to ready-for-review rather than merging, so a human still
           # reads the PR. That is a better trade than a parser that has been
           # wrong three times.
+          # Used only by the review-settlement gate in `check`, but defined
+          # here so they share `body_text`, the About-block removal, and the
+          # Reviewed-commit pattern with `verdict_class` instead of growing a
+          # parallel set of regexes that could drift apart. A findings review's
+          # body is a CARRIER: a heading, one fixed sentence, and Codex's own
+          # metadata, with the findings themselves in the inline comments.
+          # Anything else in it is prose nobody has answered.
+          #
+          # These defs work off `carrier_lines`, NOT `first_line`, because a
+          # real findings-review body begins with a BLANK LINE:
+          # "\n### 💡 Codex Review\n\n…" is what #355 and #273 actually posted.
+          # `first_line` is therefore empty for every genuine findings review,
+          # and a heading test built on it can never match one — the gate would
+          # be permanently inert, re-blocking every PR and reproducing the #275
+          # deadlock from the fail-closed side.
+          #
+          # `first_line` itself is deliberately LEFT ALONE. It serves
+          # `verdict_class`'s clean-verdict prefix test, and clean results are
+          # top-level comments that open directly with the verdict sentence —
+          # a different payload shape from these review bodies, with no leading
+          # blank observed. Loosening the shared def to fix a review-body
+          # problem would change what counts as a clean verdict too, for no
+          # evidence that the clean path needs it.
+          #
+          # The heading match is loose about what sits between the hashes and
+          # the words — "### Codex Review" and "### 💡 Codex Review" have both
+          # been observed — and strict about the words themselves.
+          #
+          # The sentence is pinned as the literal observed on
+          # evanharmon1/harmon-devkit#355. Pinning cuts the other way from the
+          # verdict-line clause deliberately: this is the SETTLED path, so a
+          # reworded sentence fails to match, the review is not settled, and
+          # the check re-blocks. Drift in Codex's format costs a false block,
+          # never a false green.
+          def carrier_sentence:
+            "here are some automated review suggestions for this pull request.";
+          def drop_leading_blanks:
+            if (length > 0) and (.[0] == "") then .[1:] | drop_leading_blanks
+            else . end;
+          def carrier_lines:
+            (body_text | ascii_downcase | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              drop_leading_blanks);
+          def carrier_heading:
+            ((carrier_lines | first) // "" |
+              test("^#{1,6}[^a-z0-9]*codex review$"));
+          def is_carrier_only:
+            carrier_heading and
+            (carrier_lines | .[1:] | join("\n") |
+              strip_about_block | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              map(select(. != "")) |
+              all(is_reviewed_commit_line or (. == carrier_sentence)));
           def verdict_class:
             if (first_line | startswith(clean_sentence) | not) then "findings"
             elif has_severity_marker then "findings"
@@ -803,7 +864,70 @@ check)
         }
     done
 
-    inline_findings=$(jq \
+    # Current-head inline findings are PARTITIONED, not counted
+    # (evanharmon1/harmon-devkit#275). Counting them made the two-attempt
+    # contract unfinishable for any head carrying a declined P2: the settled
+    # finding re-blocked every later check until a new commit moved the head,
+    # which is the opposite of what the shepherd stage asks for — a finding is
+    # settled by fixing it OR by declining it with reasoning in its thread.
+    #
+    # A bot inline comment on this head is ADJUDICATED when its own thread
+    # carries a trusted reply posted after it. The replies come from the SAME
+    # `pulls/<n>/comments` listing already fetched, because a reply to a review
+    # comment IS an inline comment — it is the same resource with
+    # `in_reply_to_id` set to the comment it answers. There is no second
+    # endpoint to fetch and no GraphQL thread walk needed.
+    #
+    # Trust is `author_association` in {OWNER, MEMBER, COLLABORATOR} OR the
+    # reply's immutable numeric user ID equalling the PR author's. The
+    # association alone is not enough: a shepherd driving a fork PR replies as
+    # the PR author with association CONTRIBUTOR, and refusing that would make
+    # the contract unfinishable again for exactly the sessions this helper
+    # exists to serve. The bot may never adjudicate itself.
+    #
+    # What a reply SAYS is deliberately not examined, and that is a knowingly
+    # accepted residual: a content-free trusted reply — "looking into it" —
+    # adjudicates the finding just as a reasoned decline does. Requiring an
+    # explicit disposition would mean parsing reply prose for intent, which is
+    # the exact failure family documented at length above `verdict_class`, and
+    # issue #275's acceptance criterion is reply-from-a-trusted-actor, not
+    # reply-content. It also matches what SKILL.md §2 already says about the
+    # main thread check: it measures whether a thread has been answered, never
+    # who thought about it. The cost is bounded because this gate promotes a
+    # draft to ready-for-review rather than merging, so a human still reads the
+    # disposition that now stands on the PR.
+    #
+    # Malformed or missing fields on a would-be trusted reply — no numeric user
+    # ID, no association, an unparseable timestamp — make that reply untrusted,
+    # so the comment stays UNADJUDICATED and the check reports `findings`. That
+    # is the opposite of `verdict_class`, where unparseable means indeterminate,
+    # and deliberately so: an unreadable verdict says nothing about whether the
+    # PR is clean, but an unreadable reply is simply not proof that a human
+    # answered the finding. Fail-closed here points at `findings`.
+    #
+    # The edited-since-reply rule compares the bot comment's `updated_at`
+    # against the LATEST trusted reply's `created_at`. Codex edits a finding in
+    # place when it revises it, and a reply that predates the edit answered
+    # different text — so an edited comment whose replies are all older is
+    # unresolved again. `updated_at` absent means never edited and falls back to
+    # `created_at`; present but unparseable fails closed, like every other
+    # malformed field here.
+    #
+    # That comparison is STRICT. GitHub timestamps are second-precision, so a
+    # reply stamped the same second as an edit cannot prove it came after the
+    # edit — and a tie resolved in the reply's favour would silently adjudicate
+    # text the replier may never have seen. The never-edited case is unaffected:
+    # `updated_at` then equals `created_at`, and a trusted reply is already
+    # required to be strictly later than that.
+    #
+    # The partition also records which REVIEW each finding belongs to, via the
+    # inline comment's `pull_request_review_id`. A review is settled only by its
+    # OWN findings — see the correlation comment above the review gate below.
+    # A current-head bot inline comment carrying no numeric
+    # `pull_request_review_id` cannot be attributed to anything, so it settles
+    # nothing at all: the whole settled set collapses to empty rather than
+    # letting an unattributable finding be counted against some other review.
+    inline_head_findings=$(jq \
         --argjson id "$actor_id" \
         --arg head "$state_head" '
           [.[] | select(
@@ -811,9 +935,141 @@ check)
             (.original_commit_id? == $head)
           )] | length
         ' "$workdir/inline.json")
-    if [ "$inline_findings" -gt 0 ]; then
-        emit findings "authenticated current-head inline review findings require adjudication"
-        exit 10
+
+    adjudicated_findings=0
+    settled_reviews='[]'
+    attributed_reviews='[]'
+    unattributed_findings=0
+    if [ "$inline_head_findings" -gt 0 ]; then
+        # Fetched lazily and only once: the PR author identity is needed solely
+        # to judge replies, so a head with no inline findings — the ordinary
+        # case — spends no call on it. `gh pr view`'s author `id` is a GraphQL
+        # node ID and could never compare against the REST `user.id` on a
+        # comment, hence the REST pull object rather than the payload
+        # `provider_head` already reads.
+        #
+        # This call lands AFTER the evidence snapshot and after the head check
+        # that closes it, so it is also the last chance to notice a push that
+        # arrived in between — and the payload already carries `head.sha`, so
+        # noticing costs nothing. Without it, the window in which the snapshot
+        # is believed would be longer than the window it was verified over,
+        # which is exactly the failure the second head check exists to prevent.
+        #
+        # Accepted residual, unchanged by any of this: a NEW finding arriving on
+        # the SAME head after the evidence was fetched is invisible to any
+        # single-snapshot design. Only the next check sees it, which is why the
+        # caller re-reads the four surfaces immediately before accepting a
+        # result.
+        pr_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") || {
+            bounded_wait "cannot fetch the pull request author identity"
+        }
+        pr_author_id=$(printf '%s' "$pr_payload" |
+            jq -er 'select(.user.id | type == "number") | .user.id') || {
+            emit indeterminate "pull request payload carries no usable author identity"
+            exit 2
+        }
+        pr_head=$(printf '%s' "$pr_payload" |
+            jq -er 'select(.head.sha | type == "string") | .head.sha') || {
+            emit indeterminate "pull request payload carries no usable head commit"
+            exit 2
+        }
+        valid_sha "$pr_head" || {
+            emit indeterminate "pull request payload reports a malformed head commit"
+            exit 2
+        }
+        [ "$pr_head" = "$state_head" ] || {
+            emit head-changed "PR head changed while findings were being adjudicated"
+            exit 2
+        }
+
+        inline_partition=$(jq -c \
+            --argjson id "$actor_id" \
+            --argjson author "$pr_author_id" \
+            --arg head "$state_head" '
+              def ts($value):
+                if ($value | type) == "string" and
+                   ($value | test(
+                     "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+                   ))
+                then $value else null end;
+              def edited_at:
+                if (.updated_at // null) == null then ts(.created_at)
+                else ts(.updated_at) end;
+              . as $all |
+              [$all[] | select(
+                .user.id? == $id and (.original_commit_id? == $head)
+              )] as $bot |
+              [$bot[] |
+                . as $comment |
+                ts($comment.created_at) as $posted |
+                ($comment | edited_at) as $edited |
+                [$all[] | select(
+                  (($comment.id? | type) == "number") and
+                  (.in_reply_to_id? == $comment.id) and
+                  ((.user.id? | type) == "number") and
+                  (.user.id != $id) and
+                  ((((.author_association? // "") |
+                      (. == "OWNER" or . == "MEMBER" or . == "COLLABORATOR"))) or
+                    (.user.id == $author)) and
+                  ($posted != null) and
+                  (ts(.created_at) != null) and
+                  (ts(.created_at) > $posted)
+                ) | ts(.created_at)] as $replies |
+                {
+                  review: (
+                    if ($comment.pull_request_review_id? | type) == "number"
+                    then $comment.pull_request_review_id else null end
+                  ),
+                  adjudicated: (
+                    ($replies | length) > 0 and $edited != null and
+                    (($replies | max) > $edited)
+                  )
+                }
+              ] as $classified |
+              {
+                unadjudicated:
+                  ([$classified[] | select(.adjudicated | not)] | length),
+                unattributed:
+                  ([$classified[] | select(.review == null)] | length),
+                attributed:
+                  ([$classified[] | select(.review != null) | .review] | unique),
+                settled: (
+                  if ([$classified[] | select(.review == null)] | length) > 0
+                  then []
+                  else
+                    [$classified[] | .review] | unique |
+                    map(select(. as $review |
+                      [$classified[] | select(.review == $review)] |
+                      all(.adjudicated)))
+                  end
+                )
+              }
+            ' "$workdir/inline.json")
+        inline_unadjudicated=$(printf '%s' "$inline_partition" |
+            jq -er '.unadjudicated | select(type == "number")') || {
+            emit indeterminate "current-head inline findings could not be partitioned"
+            exit 2
+        }
+        settled_reviews=$(printf '%s' "$inline_partition" |
+            jq -ce '.settled | select(type == "array")') || {
+            emit indeterminate "current-head inline findings could not be partitioned"
+            exit 2
+        }
+        unattributed_findings=$(printf '%s' "$inline_partition" |
+            jq -er '.unattributed | select(type == "number")') || {
+            emit indeterminate "current-head inline findings could not be partitioned"
+            exit 2
+        }
+        attributed_reviews=$(printf '%s' "$inline_partition" |
+            jq -ce '.attributed | select(type == "array")') || {
+            emit indeterminate "current-head inline findings could not be partitioned"
+            exit 2
+        }
+        if [ "$inline_unadjudicated" -gt 0 ]; then
+            emit findings "authenticated current-head inline review findings are unanswered by a trusted in-thread reply"
+            exit 10
+        fi
+        adjudicated_findings=1
     fi
 
     # Classifying a current-head result is three-way, not binary, because
@@ -883,19 +1139,94 @@ check)
     # And the metadata line is matched WHOLE. `startswith` on the label
     # accepted "**Reviewed commit:** `sha` However a race remains.", which is
     # the same trailing-text hole as the verdict line had, one line lower.
+    # A Codex findings review is a body opening "### Codex Review" whose actual
+    # findings ARE the inline comments partitioned above — `verdict_class` calls
+    # that body `findings` because it does not open with the clean sentence. So
+    # once a review's own findings are adjudicated, re-blocking on the review
+    # that carried them would make the relaxation pointless: the same settled
+    # findings, counted a second time from the other side.
+    #
+    # The correlation is PER REVIEW, via the `pull_request_review_id` each
+    # inline comment carries. Same-head aggregation is not enough, and the
+    # two-attempt contract makes the counterexample routine rather than exotic:
+    # two findings reviews on one head, the first with adjudicated inline
+    # comments and the second stating its finding in the review body alone. A
+    # global "something was adjudicated" flag suppresses BOTH, and the check
+    # reports adjudicated-clean over an unanswered finding.
+    #
+    # So a findings-classified current-head review is settled only when it has
+    # at least one current-head bot inline comment attributed to it AND every
+    # such comment is adjudicated. A findings review with nothing attributed to
+    # it is never in the settled set, which subsumes the earlier rule about a
+    # findings review with no inline comments at all. A settled review
+    # contributes neither `findings` nor `clean` to the aggregate below — it is
+    # answered, not a verdict — so an `unrecognized` sibling is still seen.
+    #
+    # One more condition, and it is not optional: a review whose BODY carries a
+    # P0/P1/P2 badge is never settled by its inline comments, however well
+    # adjudicated those are. Codex states some findings in the review body
+    # itself, and attribution cannot reach them — there is no inline comment to
+    # reply to — so reclassifying the whole review on the strength of its
+    # attributed comments would discard the badged one in silence.
+    #
+    # That test is `has_severity_marker`, the same whole-body scan
+    # `verdict_class` uses, and it is deliberately content-NEGATIVE: it asks
+    # whether a stable, machine-emitted badge is ABSENT, never what the prose
+    # means. It therefore does not reopen the free-text failure family
+    # documented above `verdict_class` — nothing here reads a clause, ranks a
+    # phrasing, or maintains a corpus of observed wording.
+    #
+    # The badge test alone is not enough, for the reason the residual above
+    # `verdict_class` records: an UNBADGED concern carries no marker. So a
+    # settled review's body must additionally be CARRIER-ONLY — heading, the
+    # pinned boilerplate sentence, whole-line Reviewed-commit metadata, the
+    # About block, and nothing else non-blank (`is_carrier_only`). Between the
+    # two tests the settled path has no free-text surface at all: a badge makes
+    # it `findings`, and any other prose makes it not-settled, which is also
+    # `findings`.
+    #
+    # Both failure directions therefore RE-BLOCK. If Codex rewords its
+    # boilerplate or restyles its heading, settlement stops matching and the
+    # check gates a PR it could have released; it never releases one it should
+    # have gated. That is the opposite trade from the verdict line, where
+    # pinning the tail deadlocked real PRs — there the strict reading was
+    # fail-closed toward *blocking clean work*, here it is fail-closed toward
+    # blocking work that still has an open finding.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
+        --argjson settled "$settled_reviews" \
         "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head)
-          ) | verdict_class
+          ) |
+          . as $review | verdict_class as $class |
+          if $class == "findings" then
+            (if (($review.id? | type) == "number") and
+                ($settled | index($review.id)) and
+                ((has_severity_marker) | not) and
+                is_carrier_only
+             then "settled" else "findings" end)
+          else $class end
           ] |
           if index("findings") then "findings"
           elif index("unrecognized") then "unrecognized"
           elif index("clean") then "clean"
           else "none" end
+        ' "$workdir/reviews.json")
+    # The reviews this check actually saw for the current head, by ID. The
+    # adjudicated-clean fallback below reconciles the two endpoints against
+    # each other with it: an inline comment naming a review nobody fetched is
+    # incomplete evidence, not a settled finding.
+    fetched_reviews=$(jq -c \
+        --argjson id "$actor_id" \
+        --arg head "$state_head" '
+          [.[] | select(
+            .user.id? == $id and
+            (.commit_id? == $head) and
+            ((.id? | type) == "number")
+          ) | .id] | unique
         ' "$workdir/reviews.json")
     if [ "$review_result" = "findings" ]; then
         emit findings "authenticated current-head review requires adjudication"
@@ -984,6 +1315,46 @@ check)
         ' "$workdir/reactions.json")
     if [ "$exact_like" -gt 0 ]; then
         emit clean "authenticated bot reacted +1 on the exact current-head trigger"
+        exit 0
+    fi
+
+    # Last of the clean paths, deliberately after the three above: a verdict
+    # Codex itself posted for this head is stronger evidence than findings the
+    # session answered, so it is reported as such. The detail differs from the
+    # others on purpose — the caller must be able to tell "Codex said clean"
+    # from "the findings were all answered", because only the second one means
+    # a human wrote the rationale that now stands on the PR.
+    #
+    # Reaching it requires the two endpoints to AGREE, not merely for the
+    # replies to check out. `unadjudicated == 0` is a statement about inline
+    # comments alone, and on its own it can be true while the attribution that
+    # justifies suppressing the findings review is missing: a comment with no
+    # `pull_request_review_id` belongs to a review this check cannot name, and
+    # an attributed ID absent from the fetched current-head reviews names one
+    # it never saw. Either way the settled-review reasoning above rests on
+    # evidence that is not there.
+    #
+    # That is `indeterminate`, deliberately — not `findings` and not `clean`.
+    # Nothing here says the findings are open (every reply checked out) and
+    # nothing says they are settled (the review side is unaccounted for). It is
+    # the same three-way discipline `verdict_class` uses: incomplete evidence
+    # is its own answer, and the caller escalates rather than acting on a
+    # verdict this check cannot support.
+    if [ "$adjudicated_findings" = "1" ]; then
+        jq -ne \
+            --argjson unattributed "$unattributed_findings" \
+            --argjson attributed "$attributed_reviews" \
+            --argjson settled "$settled_reviews" \
+            --argjson fetched "$fetched_reviews" '
+              ($unattributed == 0) and
+              (($attributed | length) > 0) and
+              all($attributed[]; . as $review | $settled | index($review)) and
+              all($settled[]; . as $review | $fetched | index($review))
+            ' >/dev/null || {
+            emit indeterminate "current-head findings are adjudicated but their review attribution is incomplete across the comment and review endpoints"
+            exit 2
+        }
+        emit clean "current-head findings are all adjudicated by trusted in-thread replies"
         exit 0
     fi
 
