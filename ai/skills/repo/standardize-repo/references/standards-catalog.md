@@ -302,13 +302,27 @@ Project-type stages (added conditionally): pre-commit `prettier`/`eslint`/
   Code, Codex, Gemini). **No Tailscale and no 1Password CLI feature** — the bot
   container must hold no path to the tailnet or a credential store
   (`devcontainer-assert.sh` enforces both structurally, per profile).
-  `containerName: devcontainer-<slug>-bot`. `CLAUDE_CODE_EFFORT_LEVEL: max`.
+  `containerName: devcontainer-<slug>-bot`.
 - **DEV profile** (`.devcontainer/dev/devcontainer.json`) — human dev. Adds the
   Tailscale feature + `--device=/dev/net/tun` + `TS_AUTHKEY` + the 1Password
   CLI feature.
 
 Shared structure:
 
+- **No `CLAUDE_CODE_EFFORT_LEVEL` in either profile's `containerEnv`** (or
+  anywhere else the container exports it) — the env var outranks Claude Code's
+  own settings, so pinning it silently overrides the user's saved effort and
+  mid-session `/model` changes; effort selection belongs to Claude Code's
+  precedence (`/model`, `settings.json` `effortLevel`, model default).
+  Applies once the repo's template baseline is a harmon-init release whose
+  template no longer renders the pin (first shipped in the release containing
+  the removal; every release through v4.24.1 — and any interim release that
+  still renders it — shipped the pin in both profiles). On an older baseline,
+  treat its presence as a template-version gap the next `copier update`
+  resolves, not repo drift to strip by hand: the update preserves a local
+  deletion either way, but a hand-strip is a needless customization of
+  template-owned content, and taking the removal via the update keeps release
+  provenance.
 - **`Dockerfile`** — single Dockerfile, base
   `mcr.microsoft.com/devcontainers/base:ubuntu-24.04`. Tool version pins are
   **`ARG <NAME>_VERSION=…` annotated with `# renovate: datasource=… depName=…`**
