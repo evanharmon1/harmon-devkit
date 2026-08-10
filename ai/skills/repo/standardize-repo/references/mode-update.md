@@ -1065,6 +1065,23 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       sed 's#^\./##' |
       LC_ALL=C sort -u
   }
+  # A previous run's report and verdict must not survive into this one. Rollback
+  # deletes $GUARDED_STATE but leaves the branch-keyed files in the git dir, so a
+  # rollback-then-rerun that dies before persisting would hand §4 a clean verdict
+  # describing a tree that no longer exists. Clear both here, at the one moment
+  # that means "a new guarded run is starting" — and only this branch's, for the
+  # same reason the persistence step is branch-keyed at all.
+  NONADOPT_BRANCH="$(git branch --show-current)"
+  test -n "$NONADOPT_BRANCH" ||
+    { echo "detached HEAD: the guarded update needs a branch to key its report to" >&2; exit 1; }
+  for NONADOPT_STALE_KEY in guarded-update-nonadoption guarded-update-reconciled; do
+    NONADOPT_STALE_FILE="$(
+      git rev-parse --path-format=absolute \
+        --git-path "$NONADOPT_STALE_KEY/$NONADOPT_BRANCH"
+    )" || { echo "failed to resolve $NONADOPT_STALE_KEY for this branch" >&2; exit 1; }
+    rm -f -- "$NONADOPT_STALE_FILE" ||
+      { echo "failed to clear the stale $NONADOPT_STALE_KEY entry" >&2; exit 1; }
+  done
   # The target's own copier.yml, frozen at the pinned commit — the config the
   # real update will obey.
   git -C "$GUARDED_TEMPLATE" show "$HARMON_INIT_COMMIT":copier.yml \
@@ -1100,83 +1117,49 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   if test "$NONADOPT_REHEARSED" -eq 1; then
   NONADOPT_SCRATCH="$(mktemp -d -t copier-nonadoption-apply-XXXXXX)" ||
     { echo "failed to create the scratch apply directory" >&2; exit 1; }
-  # ZERO shared git metadata. A linked worktree's `.git` is a POINTER FILE, so
-  # copying it verbatim would leave the scratch operating on the real worktree's
-  # index and object store — and copier's update runs `git write-tree` in the
-  # subproject, so the rehearsal would stage into the tree it is meant to observe
-  # from a distance. The tree is copied WITHOUT `.git` and a fresh repo is built
-  # over it.
+  # ZERO shared git metadata, via `git clone`. A linked worktree's `.git` is a
+  # POINTER FILE, so copying it verbatim would leave the scratch operating on the
+  # real worktree's index and object store — and copier's update runs
+  # `git write-tree` in the subproject, so the rehearsal would stage into the
+  # tree it is meant to observe from a distance. Cloning gives the scratch its
+  # own admin directory outright, and cloning the WORKTREE path (not the common
+  # git dir) checks out this worktree's branch, linked or not.
   #
-  # The index is reproduced rather than approximated, because copier's
+  # The clone also *is* the index, which is the property that matters: copier's
   # deleted-path exclusion diffs the old render's tree against the SUBPROJECT'S
-  # INDEX. §1 has already proved this worktree clean, so index == HEAD ==
-  # worktree and `git ls-files` IS the index.
-  #
-  # Only MANAGED content is copied: every tracked file, plus the ignored paths
-  # the template manages and this repo has — which `ignored-existing-paths`
-  # already enumerates, a few lines above. A whole-tree copy dragged in
-  # `node_modules`, `.venv` and `.terraform`, which on a real repo is gigabytes
-  # and minutes for content that cannot change the answer. Unmanaged ignored
-  # content is invisible to copier twice over: it is in neither render
-  # inventory, so it is not a path copier renders, excludes or skips; and it is
-  # not in the index, so it cannot appear in the tree diff that decides which
-  # paths were deleted. Nothing copier does depends on it.
+  # INDEX, and a clone reproduces it exactly — tracked-but-ignored files still
+  # tracked, gitlinks still mode 160000 and uninitialized, filenames that look
+  # like options carried as data. Every one of those was a defect in the
+  # hand-built copy-init-add-commit construction this replaces, and each was
+  # found by somebody thinking of a case rather than by the design excluding it.
+  # §1 has already proved the worktree clean, so HEAD is the worktree.
   test -z "$(git status --porcelain)" ||
     { echo "worktree not clean; the rehearsal would not reproduce the real index" >&2; exit 1; }
-  mkdir -p "$NONADOPT_SCRATCH/repo" "$NONADOPT_SCRATCH/empty-git-template" ||
-    { echo "failed to prepare the scratch apply directory" >&2; exit 1; }
-  git ls-files >"$GUARDED_STATE/scratch-tracked-paths" ||
-    { echo "failed to list tracked paths for the scratch apply" >&2; exit 1; }
-  cat \
-    "$GUARDED_STATE/scratch-tracked-paths" \
-    "$GUARDED_STATE/ignored-existing-paths" |
-    LC_ALL=C sort -u >"$GUARDED_STATE/scratch-copy-paths" ||
-    { echo "failed to derive the scratch copy set" >&2; exit 1; }
-  # `tar -T` is this document's existing idiom for copying a path list (the
-  # ignored-path backup uses it), it recreates parent directories on its own, and
-  # it preserves symlinks. Written to a file and extracted as two checked steps
-  # rather than piped: in a pipeline only the last command's status survives, so
-  # a failed `tar -c` would be masked by a successful `tar -x`.
-  tar -cf "$NONADOPT_SCRATCH/content.tar" \
-    -T "$GUARDED_STATE/scratch-copy-paths" ||
-    { echo "failed to archive the managed worktree content" >&2; exit 1; }
-  (cd "$NONADOPT_SCRATCH/repo" && tar -xf "$NONADOPT_SCRATCH/content.tar") ||
-    { echo "failed to unpack the managed worktree content into the scratch" >&2; exit 1; }
-  rm -f "$NONADOPT_SCRATCH/content.tar" ||
-    { echo "failed to remove the scratch content archive" >&2; exit 1; }
-  # Empty --template so the machine's git template cannot seed hooks into a repo
-  # this block is about to commit in.
-  git -C "$NONADOPT_SCRATCH/repo" init -q \
-    --template="$NONADOPT_SCRATCH/empty-git-template" ||
-    { echo "failed to initialize the scratch repository" >&2; exit 1; }
-  git -C "$NONADOPT_SCRATCH/repo" add -A ||
-    { echo "failed to stage the scratch worktree" >&2; exit 1; }
-  # `add -A` skips anything the repo's own ignore rules match, so a file that is
-  # BOTH tracked and ignore-matched would be left out of the scratch index and
-  # read as deleted. Force-add exactly those. `git check-ignore` is three-valued
-  # here — 0 matched, 1 none matched, anything else is a broken probe — and
-  # `xargs -r` is a GNU extension absent on the macOS hosts this recipe supports,
-  # so the list is filtered first and walked with the same loop idiom as
-  # everything else.
-  NONADOPT_TRACKED_RC=0
-  git check-ignore --stdin <"$GUARDED_STATE/scratch-tracked-paths" \
-    >"$GUARDED_STATE/scratch-tracked-ignored" || NONADOPT_TRACKED_RC=$?
-  case "$NONADOPT_TRACKED_RC" in
-  0 | 1) ;;
-  *)
-    echo "failed to identify tracked-but-ignored paths (git check-ignore exit $NONADOPT_TRACKED_RC)" >&2
-    exit 1
-    ;;
-  esac
-  while IFS= read -r NONADOPT_TRACKED; do
-    test -n "$NONADOPT_TRACKED" || continue
-    git -C "$NONADOPT_SCRATCH/repo" add -f -- "$NONADOPT_TRACKED" ||
-      { echo "failed to stage tracked-but-ignored path: $NONADOPT_TRACKED" >&2; exit 1; }
-  done <"$GUARDED_STATE/scratch-tracked-ignored"
-  git -C "$NONADOPT_SCRATCH/repo" \
-    -c user.email=guarded@example.invalid -c user.name=guarded \
-    -c commit.gpgsign=false commit -q -m "rehearsal baseline" ||
-    { echo "failed to commit the scratch baseline" >&2; exit 1; }
+  git clone --no-hardlinks --quiet . "$NONADOPT_SCRATCH/repo" ||
+    { echo "failed to clone the worktree for the scratch apply" >&2; exit 1; }
+  # Ignored files are untracked, so the clone does not carry them; overlay the
+  # ones the TEMPLATE manages and this repo has. Unmanaged ignored content
+  # (`node_modules`, `.venv`, `.terraform`) is left behind deliberately: it is in
+  # neither render inventory, so it is not a path copier renders, excludes or
+  # skips, and it is not in the index, so it cannot appear in the tree diff that
+  # decides which paths were deleted. Nothing copier does can depend on it.
+  #
+  # Each name is prefixed `./` before it reaches `tar -T`: GNU tar treats a
+  # leading `-` in a file list as an option, and these names come from the
+  # template's own render inventory rather than from anything this recipe
+  # controls.
+  sed 's#^#./#' "$GUARDED_STATE/ignored-existing-paths" \
+    >"$GUARDED_STATE/scratch-overlay-paths" ||
+    { echo "failed to derive the ignored-path overlay list" >&2; exit 1; }
+  if test -s "$GUARDED_STATE/scratch-overlay-paths"; then
+    tar -cf "$NONADOPT_SCRATCH/overlay.tar" \
+      -T "$GUARDED_STATE/scratch-overlay-paths" ||
+      { echo "failed to archive the managed ignored paths" >&2; exit 1; }
+    (cd "$NONADOPT_SCRATCH/repo" && tar -xf "$NONADOPT_SCRATCH/overlay.tar") ||
+      { echo "failed to overlay the managed ignored paths" >&2; exit 1; }
+    rm -f "$NONADOPT_SCRATCH/overlay.tar" ||
+      { echo "failed to remove the overlay archive" >&2; exit 1; }
+  fi
   # The isolation invariant, asserted rather than assumed: the scratch's git dir
   # must live inside the scratch. If this ever fails the rehearsal is operating
   # on somebody else's repository.
@@ -1655,7 +1638,12 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       NONADOPT_CLASS=nonadopt-both
     elif test "$NONADOPT_BEFORE" -eq 0; then
       NONADOPT_CLASS=created
-      if test "$NONADOPT_IN_BASELINE" -eq 1; then
+      if test "$NONADOPT_IN_TARGET" -eq 0; then
+        # Written by the apply but shipped by NEITHER render: a `.rej`/`.orig`
+        # left behind by a conflicted merge, not something the repo adopted.
+        # Calling it `new-in-target` put a merge failure in the adoption table.
+        nonadoption_add_note apply-artifact
+      elif test "$NONADOPT_IN_BASELINE" -eq 1; then
         # Both renders ship it and the repo lacked it, yet the apply wrote it
         # anyway — `_skip_if_exists`, observed rather than pattern-matched.
         nonadoption_add_note recreated
@@ -2004,11 +1992,11 @@ nonadoption_reconcile() {
       *)
         if test "$ROW_PRESENT" -eq 1; then
           ROW_CLASS=created
-          if test "$ROW_MEMBER" = baseline+target; then
-            ROW_KIND=recreated
-          else
-            ROW_KIND=new-in-target
-          fi
+          case "$ROW_MEMBER" in
+          baseline+target) ROW_KIND=recreated ;;
+          target-only) ROW_KIND=new-in-target ;;
+          *) ROW_KIND=apply-artifact ;;
+          esac
           # Same note and same ordering the rehearsed path produces: the kind
           # first, then whatever evidence §1 already attached.
           if test "$ROW_NOTE" = -; then
@@ -2036,7 +2024,20 @@ nonadoption_reconcile() {
     return 1
   }
   mv "$RECONCILE_OUT" "$GUARDED_STATE/nonadoption-report.tsv" || return 1
-  printf 'reconciled: clean\n' >"$GUARDED_STATE/nonadoption-reconciled"
+  # Bind the verdict to THIS run and THIS report. "clean" on its own is a claim
+  # with no subject: after a rollback and a rerun that dies before persisting, an
+  # old verdict still reads clean and still sits next to a report describing a
+  # tree that no longer exists. §1 clears both on entry; this makes the pairing
+  # checkable even if that ever fails.
+  RECONCILE_REPORT_OID="$(
+    git hash-object "$GUARDED_STATE/nonadoption-report.tsv"
+  )" || return 1
+  {
+    printf 'reconciled: clean\n'
+    printf 'report: %s\n' "$RECONCILE_REPORT_OID"
+    printf 'target-commit: %s\n' "$(cat "$GUARDED_STATE/target-commit")"
+    printf 'start-head: %s\n' "$(cat "$GUARDED_STATE/start-head")"
+  } >"$GUARDED_STATE/nonadoption-reconciled" || return 1
 }
 nonadoption_reconcile ||
   { echo "reconciliation failed; do not proceed to §3" >&2; exit 1; }
@@ -2784,7 +2785,20 @@ test -s "$NONADOPT_VERDICT" ||
   { echo "no frozen reconciliation for this branch; §2 did not complete — do not hand off" >&2; exit 1; }
 grep -qx 'reconciled: clean' "$NONADOPT_VERDICT" ||
   { echo "the frozen reconciliation is not clean:" >&2; cat "$NONADOPT_VERDICT" >&2; exit 1; }
+NONADOPT_REPORT_OID="$(git hash-object "$NONADOPT_REPORT")"
+grep -qx "report: $NONADOPT_REPORT_OID" "$NONADOPT_VERDICT" ||
+  { echo "the frozen verdict does not describe the persisted report; it is left over from an earlier run" >&2; exit 1; }
+grep -qx "target-commit: $HARMON_INIT_COMMIT" "$NONADOPT_VERDICT" ||
+  { echo "the frozen verdict was recorded for a different target commit" >&2; exit 1; }
 ```
+
+The binding matters more than the word. A verdict that says `clean` is making a
+claim about a specific report produced by a specific run; on its own it is a
+claim with no subject, and a rollback followed by a rerun that dies before
+persisting leaves exactly that — a clean verdict beside a report describing a
+tree nobody has any more. §1 clears both files for this branch when a new
+guarded run starts, and these three lines make the pairing checkable even if
+that ever fails.
 
 Do not re-derive it by re-reading the worktree. The tree §4 sees has had §3
 applied to it deliberately, and the only moment at which "what copier did" was
@@ -2798,6 +2812,10 @@ What the recorded rows mean, once the verdict is clean:
   are the rows of §5's disposition table.
 - **`created`, noted `new-in-target`** — the update added a file the repo did
   not have. Normal, and worth a glance: new surface the repo now owns.
+- **`created`, noted `apply-artifact`** — the apply wrote a path NEITHER render
+  ships: a `.rej` or `.orig` from a conflicted merge. That is a failed merge, not
+  an adoption, so it belongs in the anomalies call-out above §5's table and must
+  be resolved before hand-off — never listed as a file the repo gained.
 - **`created`, noted `recreated`** — the apply wrote the file back over an
   absence the repo had chosen, because the template marks the path
   `_skip_if_exists` or the render's own `.gitignore` hides it from copier's
@@ -2922,7 +2940,9 @@ Observed in the rehearsal and confirmed after the apply.
 Column by column:
 
 - **Path** — one row per **confirmed** `nonadopt-both`. Nothing else belongs in
-  the table. `created` rows get the separate list shown above — they are the
+  the table. An `apply-artifact` row is a conflicted-merge leftover: call it out
+  with the anomalies, resolve it, and never let it reach the table.
+  Other `created` rows get the separate list shown above — they are the
   inverse finding, a file arriving rather than staying away, and folding them
   into a table headed "files this repo does not have" would state the opposite
   of what happened. `deleted` rows belong to §3's reconciliation, not here.

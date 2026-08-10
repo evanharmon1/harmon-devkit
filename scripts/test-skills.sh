@@ -2421,9 +2421,7 @@ expect_ok "the rehearsal is refused when the target declares _migrations" \
 # Zero shared git metadata: a linked worktree's `.git` is a pointer file, and
 # copier runs `git write-tree` in the subproject.
 expect_ok "the rehearsal builds independent git metadata for the scratch" \
-    sh -c 'grep -qF "tar -cf \"\$NONADOPT_SCRATCH/content.tar\"" "$1" &&
-        ! grep -qF "cp -a ." "$1" &&
-        grep -qF "init -q" "$1" &&
+    sh -c 'grep -qF "git clone --no-hardlinks" "$1" &&
         grep -qF "rev-parse --absolute-git-dir" "$1" &&
         grep -qF "refusing to rehearse" "$1" &&
         ! grep -qF "cp -a . \"\$NONADOPT_SCRATCH/repo\"" "$1"' sh \
@@ -2558,7 +2556,7 @@ expect_ok "the class column carries only the observed classes" \
 # the copy, and reads the result. If any of these three go missing it has gone
 # back to predicting.
 expect_ok "the snippet rehearses the apply instead of modelling it" \
-    sh -c 'grep -qF "scratch-copy-paths" "$1" &&
+    sh -c 'grep -qF "git clone --no-hardlinks" "$1" &&
         grep -qF "run_guarded_copier update --trust --defaults --skip-tasks" "$1" &&
         grep -qF "nonadoption_path_present" "$1" &&
         grep -qF "apply-created" "$1" &&
@@ -2566,22 +2564,26 @@ expect_ok "the snippet rehearses the apply instead of modelling it" \
     "$GU_NONADOPT_SNIPPET"
 # The rehearsal must mirror §2 or it predicts nothing. These are the flags §2
 # uses; `--skip-tasks` and the destination are the only sanctioned differences.
-# BSD/macOS portability. `xargs -r` is a GNU extension and the recipe is
-# explicitly supported on macOS bash 3.2 hosts, where the rehearsal would simply
-# die. `cp --parents` and `cp -t` are the same trap; `tar -T` is the idiom this
-# document already uses for copying a path list.
-expect_ok "the rehearsal uses no GNU-only utility flags" \
-    sh -c '! grep -qE "^[^#]*(xargs|cp --parents|cp -t )" "$1" &&
-        grep -qF -- "-T \"\$GUARDED_STATE/scratch-copy-paths\"" "$1"' sh \
+# The scratch is a CLONE. Three rounds of review each found another property the
+# hand-built copy-init-add-commit construction failed to reproduce; a clone
+# reproduces the index by definition, so the guard is that the construction has
+# not grown back. `xargs -r`, `cp --parents` and `cp -t` are GNU-only and this
+# recipe supports macOS bash 3.2, so they stay banned outright.
+expect_ok "the rehearsal clones rather than rebuilding the scratch repository" \
+    sh -c 'grep -qF "git clone --no-hardlinks --quiet . \"\$NONADOPT_SCRATCH/repo\"" "$1" &&
+        ! grep -qE "^[^#]*(xargs|cp --parents|cp -t |cp -a)" "$1" &&
+        ! grep -qF "git ls-files >" "$1" &&
+        ! grep -qF "check-ignore --stdin" "$1" &&
+        ! grep -qF "rehearsal baseline" "$1" &&
+        ! grep -qF "scratch-copy-paths" "$1"' sh \
     "$GU_NONADOPT_SNIPPET"
-# The scratch carries MANAGED content only. A whole-tree copy dragged in
-# node_modules/.venv/.terraform — gigabytes on a real repo, for content copier
-# cannot consult: it is in neither render inventory and not in the index.
-expect_ok "the scratch copy set is tracked content plus managed ignored paths" \
-    sh -c 'grep -qF "git ls-files >\"\$GUARDED_STATE/scratch-tracked-paths\"" "$1" &&
-        grep -qF "\$GUARDED_STATE/ignored-existing-paths" "$1" &&
-        grep -qF "scratch-copy-paths" "$1" &&
-        ! grep -qF -- "-mindepth 1 -maxdepth 1 ! -name .git" "$1"' sh \
+# Ignored files are untracked, so the clone omits them; only the MANAGED ones are
+# overlaid. Unmanaged caches stay behind — copier cannot consult them, being in
+# neither render inventory nor the index.
+expect_ok "the rehearsal overlays managed ignored paths only" \
+    sh -c 'grep -qF "\$GUARDED_STATE/ignored-existing-paths" "$1" &&
+        grep -qF "scratch-overlay-paths" "$1" &&
+        grep -qF "sed '\''s#^#./#'\''" "$1"' sh \
     "$GU_NONADOPT_SNIPPET"
 expect_ok "the rehearsal mirrors the real update's invocation" \
     sh -c 'grep -qF -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" "$1" &&
@@ -6309,6 +6311,7 @@ for na_side in BASE TGT; do
             printf baseline || printf target)-managed-paths"
 done
 : >"$GU_NA_STATE/ignored-absent-paths"
+: >"$GU_NA_STATE/ignored-existing-paths"
 while IFS= read -r na_path; do
     git -C "$GU_NA_REPO" check-ignore -q -- "$na_path" || continue
     test -e "$GU_NA_REPO/$na_path" ||
@@ -6566,13 +6569,95 @@ expect_ok "the rehearsal runs clean against a repo holding an unmanaged cache" \
         bash -eu "$7" >/dev/null' sh \
     "$SCOPE_ROOT/repo" "$SCOPE_ROOT/base-render" "$SCOPE_ROOT/target-render" \
     "$SCOPE_TPL" "$SCOPE_ROOT/cache" "$SCOPE_TGT_COMMIT" "$GU_NONADOPT_RUNNER"
-expect_fail "the unmanaged ignored cache is not copied into the scratch" \
-    grep -q node_modules "$SCOPE_STATE/scratch-copy-paths"
-expect_ok "the managed ignored path IS copied into the scratch" \
-    grep -qx '.vscode/local.json' "$SCOPE_STATE/scratch-copy-paths"
-expect_ok "tracked content is copied into the scratch" \
-    sh -c 'grep -qx AGENTS.md "$1" && grep -qx .copier-answers.yml "$1"' sh \
-    "$SCOPE_STATE/scratch-copy-paths"
+expect_fail "the unmanaged ignored cache is not overlaid into the scratch" \
+    grep -q node_modules "$SCOPE_STATE/scratch-overlay-paths"
+expect_ok "the managed ignored path IS overlaid into the scratch" \
+    grep -qx './.vscode/local.json' "$SCOPE_STATE/scratch-overlay-paths"
+# End-to-end proof that the overlay MATTERS: without it the clone would lack the
+# managed ignored file, copier would render it back, and it would surface as a
+# `created` row. Its absence from the report is the overlay doing its job.
+expect_fail "the overlaid ignored path is not reported as a non-adoption" \
+    grep -q '.vscode/local.json' "$SCOPE_STATE/nonadoption-report.tsv"
+
+# --- the frozen verdict is bound to the run that produced it ------------------
+# "clean" on its own is a claim with no subject. Rollback deletes GUARDED_STATE
+# but leaves the branch-keyed files, so a rollback-then-rerun that dies before
+# persisting used to leave a clean verdict beside a report describing a tree
+# nobody has any more — and §4 accepted it.
+VB_DIR="$TMPROOT/verdict-binding"
+mkdir -p "$VB_DIR/.copier-guarded-update"
+git_init "$VB_DIR"
+printf '%s\n' 'seed' >"$VB_DIR/seed.txt"
+git_commit_all "$VB_DIR" "seed"
+printf '%s\n' '/.copier-guarded-update/' >>"$VB_DIR/.git/info/exclude"
+VB_STATE="$VB_DIR/.copier-guarded-update"
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' >"$VB_STATE/target-commit"
+git -C "$VB_DIR" rev-parse HEAD >"$VB_STATE/start-head"
+printf 'gone.md\tunknown-until-apply\tn/a-removed\tbaseline-only\t-\n' \
+    >"$VB_STATE/nonadoption-report.tsv"
+expect_ok "reconciliation records a verdict for this run" \
+    sh -c 'cd "$1" && bash -eu "$2"' sh "$VB_DIR" "$GU_RECONCILE"
+expect_ok "the verdict names the report it describes" \
+    sh -c 'oid="$(git -C "$1" hash-object \
+            "$1/.copier-guarded-update/nonadoption-report.tsv")"
+        grep -qx "report: $oid" "$1/.copier-guarded-update/nonadoption-reconciled"' sh \
+    "$VB_DIR"
+expect_ok "the verdict names the run's target commit and start head" \
+    sh -c 'grep -qx "target-commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "$1" &&
+        grep -qE "^start-head: [0-9a-f]{40}$" "$1"' sh \
+    "$VB_STATE/nonadoption-reconciled"
+# The rollback-then-rerun shape: the report changes, the old verdict does not.
+# A word-only check passes here; the binding does not.
+printf 'other.md\tnonadopt-both\tno\tbaseline+target\t-\n' \
+    >"$VB_STATE/nonadoption-report.tsv"
+expect_ok "a stale verdict still says clean — which is why the word is not enough" \
+    grep -qx 'reconciled: clean' "$VB_STATE/nonadoption-reconciled"
+expect_fail "a stale verdict no longer matches the report beside it" \
+    sh -c 'oid="$(git -C "$1" hash-object \
+            "$1/.copier-guarded-update/nonadoption-report.tsv")"
+        grep -qx "report: $oid" "$1/.copier-guarded-update/nonadoption-reconciled"' sh \
+    "$VB_DIR"
+# §1 clears both branch-keyed files on entry, so the rerun cannot inherit them.
+expect_ok "section 1 clears this branch's stale report and verdict on entry" \
+    sh -c 'grep -qF "guarded-update-nonadoption guarded-update-reconciled" "$1" &&
+        grep -qF "NONADOPT_STALE_FILE" "$1" &&
+        grep -qF "rm -f -- \"\$NONADOPT_STALE_FILE\"" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
+expect_ok "section 4 verifies the binding, not just the word" \
+    sh -c 'grep -qF "report: \$NONADOPT_REPORT_OID" "$1" &&
+        grep -qF "target-commit: \$HARMON_INIT_COMMIT" "$1" &&
+        grep -qF "left over from an earlier run" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+
+# --- conflict artefacts are not adoptions -------------------------------------
+# A `.rej`/`.orig` copier leaves behind is created by the apply but shipped by
+# neither render. Labelling it `new-in-target` filed a merge failure in the
+# adoption table.
+ART_DIR="$TMPROOT/apply-artifact"
+mkdir -p "$ART_DIR/.copier-guarded-update"
+git_init "$ART_DIR"
+printf '%s\n' 'seed' >"$ART_DIR/seed.txt"
+git_commit_all "$ART_DIR" "seed"
+printf '%s\n' '/.copier-guarded-update/' >>"$ART_DIR/.git/info/exclude"
+ART_STATE="$ART_DIR/.copier-guarded-update"
+printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$ART_STATE/target-commit"
+git -C "$ART_DIR" rev-parse HEAD >"$ART_STATE/start-head"
+printf '%s\n' 'present' >"$ART_DIR/conf.md.rej"
+printf 'conf.md.rej\tunknown-until-apply\tn/a-unrendered\tunrendered\t-\n' \
+    >"$ART_STATE/nonadoption-report.tsv"
+expect_ok "reconciliation resolves an unrendered created path" \
+    sh -c 'cd "$1" && bash -eu "$2"' sh "$ART_DIR" "$GU_RECONCILE"
+expect_ok "a path neither render ships is noted as an apply artefact" \
+    grep -qxF "$(printf 'conf.md.rej\tcreated\tn/a-unrendered\tunrendered\tapply-artifact')" \
+    "$ART_STATE/nonadoption-report.tsv"
+expect_ok "the hand-off routes apply artefacts to the anomalies, not the table" \
+    sh -c 'grep -qF "noted \`apply-artifact\`" "$1" &&
+        grep -qF "never let it reach the table" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "the classifier derives the created note from target membership" \
+    sh -c 'grep -qF "if test \"\$NONADOPT_IN_TARGET\" -eq 0; then" "$1" &&
+        grep -qF "nonadoption_add_note apply-artifact" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
 
 # --- the degraded path resolves with class-appropriate before/after -----------
 # Exercised as a unit on the reconciliation recipe: a real `_migrations` update
@@ -6663,6 +6748,7 @@ for iso_side in base target; do
             printf baseline || printf target)-managed-paths"
 done
 : >"$ISO_STATE/ignored-absent-paths"
+: >"$ISO_STATE/ignored-existing-paths"
 ISO_INDEX="$(git -C "$ISO_ROOT/wt" rev-parse --git-path index)"
 ISO_INDEX_BEFORE="$(git hash-object "$ISO_INDEX")"
 expect_ok "the rehearsal runs clean from inside a linked worktree" \
@@ -6684,6 +6770,36 @@ expect_ok "the real worktree's status is untouched by the rehearsal" \
 expect_ok "the rehearsal still observed the declined path from a linked worktree" \
     grep -qxF "$(printf 'AGENTS.md\tnonadopt-both\tno\tbaseline+target\t-')" \
     "$ISO_STATE/nonadoption-report.tsv"
+# The three index properties the hand-built construction each failed on in turn,
+# now free with the clone. Asserted on a clone of this very worktree rather than
+# on the classifier, because it is `git clone` that is being trusted.
+ISO_PROBE="$ISO_ROOT/clone-probe"
+printf '%s\n' 'tracked yet ignored' >"$ISO_ROOT/wt/tracked-ignored.txt"
+printf '%s\n' 'x' >"$ISO_ROOT/wt/--checkpoint=exec,date"
+printf '%s\n' 'tracked-ignored.txt' 'cache/' >"$ISO_ROOT/wt/.gitignore"
+mkdir -p "$ISO_ROOT/wt/cache"
+printf '%s\n' 'junk' >"$ISO_ROOT/wt/cache/j.txt"
+git -C "$ISO_ROOT/wt" add -A >/dev/null
+git -C "$ISO_ROOT/wt" add -f tracked-ignored.txt './--checkpoint=exec,date' >/dev/null
+git_commit_all "$ISO_ROOT/wt" "awkward index entries"
+expect_ok "cloning a linked worktree reproduces its branch and index" \
+    sh -c 'cd "$1" && git clone --no-hardlinks --quiet . "$2"' sh \
+    "$ISO_ROOT/wt" "$ISO_PROBE"
+expect_ok "the clone checks out the linked worktree's own branch" \
+    sh -c 'test "$(git -C "$1" symbolic-ref --short HEAD)" = feat/rehearse' sh \
+    "$ISO_PROBE"
+# Round-2 P1: `git add -A` in a fresh repo drops tracked-but-ignored files, so
+# copier read them as deleted. A clone keeps them in the index.
+expect_ok "a tracked-but-ignored file stays in the cloned index" \
+    sh -c 'test -n "$(git -C "$1" ls-files tracked-ignored.txt)"' sh "$ISO_PROBE"
+# Round-3 P1: a filename that looks like a tar option was passed through a `-T`
+# list. There is no path list any more, and the name survives as data.
+expect_ok "an option-shaped filename survives as data, not as a flag" \
+    sh -c 'test -f "$1/--checkpoint=exec,date"' sh "$ISO_PROBE"
+# Untracked ignored content is NOT in the clone — which is the point of the
+# managed-only overlay.
+expect_fail "unmanaged ignored content is absent from the clone" \
+    test -e "$ISO_PROBE/cache/j.txt"
 
 # --- `_migrations` are NOT covered by `--skip-tasks` --------------------------
 # Verified against copier 9.17.1: `_execute_tasks(self.template.tasks)` is
@@ -6747,6 +6863,7 @@ for mig_side in base target; do
             printf baseline || printf target)-managed-paths"
 done
 : >"$MIG_STATE/ignored-absent-paths"
+: >"$MIG_STATE/ignored-existing-paths"
 expect_ok "the classifier degrades cleanly when the target declares _migrations" \
     sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update \
         BASELINE_DISCOVERY="$2" TARGET_DISCOVERY="$3" \
