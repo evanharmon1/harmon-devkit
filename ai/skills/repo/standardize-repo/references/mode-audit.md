@@ -298,12 +298,36 @@ omit it, use `false`. When true, `use_codex_review` must also be true and the
 repository must set `use_skills_sync=true` with `universal` in
 `skill_categories` — **unless the repo is the skills source itself**, i.e. it
 ships the classifier natively as a git-tracked, non-symlink executable regular
-file at `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`
-(harmon-devkit, which may keep `use_skills_sync=false`). For such a repo the
-sync/`universal` requirement is waived, matching the update-mode guard in
-`mode-update.md` — which applies exactly that tracked/non-symlink/executable
-test, so an ignored, untracked, or symlinked helper does **not** qualify here
-either. Do not report its `use_skills_sync=false` as G4 drift when that native
+file at `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`,
+*and* tracks the shepherd skill's entry point
+`ai/skills/universal/shepherd/SKILL.md` as a regular file — index mode `100644`
+or `100755`, so a `120000` symlink does not qualify however valid its target,
+the same `-type f` stance `verify-skills.sh` takes — with valid frontmatter: the
+opening `---` block must **close** (checked statically, since a parser given an
+unclosed block whose body is valid YAML reads it happily), and its values are
+then resolved by **yq**, the same hard prerequisite the rest of the guarded
+update already carries. `name` must resolve to the string `shepherd` and
+`description` to a non-empty string, so quoting, block scalars, comments, and
+the null spellings are the parser's problem rather than a pattern's. A
+`description` that resolves to null, a collection, a number, or a boolean is
+not a description. Unparseable YAML answers "not a valid skills source" rather
+than "cannot tell". `scripts/verify-skills.sh` remains canonical for layout —
+*and* that helper's
+**executable body** carries the dispatch `case` arms for all five verbs
+(`reserve)`, `attach)`, `check)`, `show)`, `reap)`) together with the exit-code
+contract the shepherd stage reads — `emit pending` with `exit 11` and
+`emit escalate` with `exit 13` (harmon-devkit, which may keep
+`use_skills_sync=false`). For such a repo the sync/`universal` requirement is
+waived, matching the update-mode guard in `mode-update.md` — which applies
+exactly that tracked/non-symlink/executable test plus those two, so an ignored,
+untracked, or symlinked helper does **not** qualify here, and neither does a
+`100755` stub, a tree whose `SKILL.md` is missing, untracked, or frontmatter-less,
+or a no-op helper whose **comments merely print** the usage forms. That last case
+is why the anchors are structural: the guard strips comment lines before matching,
+so a printed banner cannot stand in for a dispatch table. All of these probes are
+**static**: they establish that the interface is shipped, never that it runs
+correctly — audit is a read-only stage and must not execute the repo to find out,
+and a helper deliberately shaped to match the anchors would still pass. Do not report its `use_skills_sync=false` as G4 drift when that native
 classifier is present. The rendered `AGENTS.md` plus shepherd skill must require a terminal result
 attributable to every current PR head, preserve exact trigger-attempt state,
 and escalate after two unavailable attempts without a CI-only fallback. The

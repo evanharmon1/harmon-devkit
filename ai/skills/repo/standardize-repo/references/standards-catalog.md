@@ -694,10 +694,28 @@ install the Renovate GitHub App on the repo. Conventions:
   the mandatory current-head shepherd classifier — except on a skills-source
   repo (harmon-devkit) that already ships that classifier natively as a
   git-tracked, non-symlink executable regular file at
-  `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, which
-  satisfies the requirement directly and so may keep `use_skills_sync=false`
-  (the update guard and G4 audit both waive sync/`universal` for it on exactly
-  that tracked-executable test). Its human setup also disables
+  `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, alongside a
+  tracked `ai/skills/universal/shepherd/SKILL.md` entry point that is itself a
+  regular file (index mode `100644`/`100755`; a `120000` symlink fails however
+  valid its target) and whose frontmatter
+  is valid — a **closed** `---` block (checked statically) whose values are
+  resolved by **yq**, already a hard prerequisite of the guarded update:
+  `name` must resolve to the string `shepherd` and `description` to a non-empty
+  string, so quoted scalars, block scalars, comments, the null spellings
+  (`null`, `~`), empty quotes, and empty flow forms are all decided by the
+  parser rather than by patterns, and unparseable YAML means "not a valid
+  skills source". `scripts/verify-skills.sh` stays canonical for layout — with that
+  helper's **executable body** carrying the five dispatch `case` arms
+  (`reserve)`, `attach)`, `check)`, `show)`, `reap)`) and the exit contract
+  shepherd reads — `emit pending`/`exit 11` and `emit escalate`/`exit 13` —
+  which together satisfy the requirement directly and so may keep
+  `use_skills_sync=false` (the update guard and G4 audit both waive
+  sync/`universal` on exactly those tests, so a `100755` stub, a missing,
+  untracked, or frontmatter-less `SKILL.md`, or a no-op helper that merely
+  prints the usage forms in comments all fail the waiver — the guard strips
+  comment lines before matching). All of it is static — the helper is never
+  executed, so this proves the interface is shipped rather than that it works,
+  and a file deliberately shaped to match would still pass. Its human setup also disables
   Codex Automatic reviews so the explicit draft-time cycle remains authoritative
   when the PR is promoted to ready for review.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the

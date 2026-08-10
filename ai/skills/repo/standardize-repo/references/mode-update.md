@@ -589,6 +589,7 @@ ORIGINAL_DATA="$GUARDED_STATE/original-data.yml"
 yq 'with_entries(select(.key | test("^_") | not))' \
   "$GUARDED_STATE/original-answers.yml" >"$ORIGINAL_DATA" ||
   { echo "failed to prepare recorded answers for discovery" >&2; exit 1; }
+# >>> classifier-detector >>>
 # use_codex_cloud_review's use_skills_sync / universal-category requirements are
 # a proxy for "the cloud-review classifier is installed": in a consumer repo the
 # shepherd skill and its check-codex-cloud-review.sh reach the repo only via
@@ -605,13 +606,135 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # for a `100644` blob a Linux clone checks out non-runnable. Require the working
 # tree to also hold that regular file (`-f`), so a staged-but-deleted path does
 # not qualify. The requirements stay in force for every other repo.
+#
+# That tracked mode is necessary but nowhere near sufficient on its own: a
+# one-line stub committed `100755` at the right path would pass it and prove
+# nothing about the skill being usable. So "ships the classifier natively"
+# additionally requires the shepherd skill's entry point and the helper's own
+# structure, and it requires them from CODE rather than from prose.
+#
+# Anchoring on the usage strings (`reserve --state`, …) was the obvious version
+# of that and is not enough: a no-op helper whose comments merely PRINT those
+# five forms satisfies every one of them, and a waived config with such a stub
+# is worse than no waiver — shepherd's `check` would read its exit 0 as clean
+# evidence and the composition fails OPEN. So the verb probes anchor on the
+# dispatch `case` arms in the helper's executable body, and are joined by two
+# pairs from the exit-code contract shepherd actually depends on: `emit pending`
+# with `exit 11`, and `emit escalate` with `exit 13`. Those two verdicts are the
+# bounded-attempt lifecycle — a helper that cannot say "still waiting" or "both
+# windows elapsed" cannot drive the stage no matter what its banner claims —
+# and 11/13 are unusual enough that nothing satisfies them incidentally.
+# `classifier_code_has` strips leading whitespace and drops every `#` line
+# first, so no comment can answer a probe.
+#
+# The `SKILL.md` probe likewise checks the frontmatter rather than the path: a
+# helper with no valid skill around it is a stripped tree, not a shipped skill.
+# It splits in two, because the two halves have genuinely different natures.
+#
+# STRUCTURE is checked statically: the file must open with `---` and the block
+# must CLOSE with a second one. These stay hand-rolled because yq does NOT fail
+# closed on either — verified against yq v4, not assumed. Under
+# `--front-matter=extract`, a file with no frontmatter at all, and an unclosed
+# block whose body happens to be valid YAML, both parse happily and resolve
+# `.name`, so a bare `name: shepherd` sitting in a file's BODY would satisfy
+# the value probe. The two checks mirror `verify-skills.sh`'s `head -n 1` test
+# and its `frontmatter_is_closed`, which remains canonical for layout.
+#
+# VALUES are resolved by yq rather than re-implemented. This section already
+# hard-requires yq v4 for the guarded update, so the detector may assume it.
+# The hand-rolled grammar this replaces had to learn YAML one finding at a
+# time — quoted scalars, block-scalar headers, chomping and indentation
+# indicators in either order, the null spellings, and comments composing with
+# every one of them — and each round closed an instance while the next spelling
+# waited. A parser already knows the whole grammar, so that family of findings
+# ends here rather than being enumerated further.
+# `tag == "!!str"` is the load-bearing part: it is what makes `null`, `~`, `[]`,
+# `{ }`, numbers, and booleans fail, which is precisely the "reads like a value,
+# is not one" set the hand-written reject list was chasing.
+#
+# A yq failure — malformed YAML, or an invalid header like `|0` — answers false,
+# so no waiver. That is the safe direction, and unlike the ignore probes it is
+# deliberately NOT an exit-2 "cannot tell" condition: a SKILL.md that does not
+# parse is a definite answer, namely that this is not a valid skills source.
+# Every probe sits in the `if` condition, where a non-zero exit selects the
+# else-branch instead of tripping errexit — these are questions about the repo,
+# not failures.
+#
+# What this still CANNOT prove, plainly: runtime behavior. A read-only stage
+# must not render or execute the repo under update, so every probe above is
+# static, and a tree that passes could still hold a helper that is broken when
+# run — or one deliberately forged to match these anchors, since any static
+# shape can be reproduced by something that does nothing. Issue 336 accepts
+# that residual explicitly. What the probes buy is the accidental case they
+# were written for: a stub, a stripped tree, or a half-vendored copy no longer
+# waives three guards by looking right from a distance.
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
+SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+# Match a POSIX ERE against the helper's code only: leading whitespace stripped,
+# every comment line dropped. Called only after the `-f` test above passes.
+#
+# It is one awk pass over the file, deliberately NOT a pipeline. The obvious
+# `sed | grep -v | grep -qE` form is broken under `pipefail`: `grep -q` exits at
+# the first match, the upstream stages die of SIGPIPE (141), and the whole
+# pipeline then reports failure — so on a real classifier, where every anchor
+# matches early, every probe "fails" and the waiver is denied to exactly the
+# repo it exists for. The preamble tells you to run these blocks with `pipefail`
+# care; this one is safe under it because there is no pipe. awk owns the input,
+# so the early `exit` costs nothing and still runs END.
+# The pattern arrives through the environment rather than `-v`, which would
+# escape-process it and mangle the `\)` in the case-arm anchors.
+classifier_code_has() {
+  CLASSIFIER_PROBE="$1" awk '
+    BEGIN { pat = ENVIRON["CLASSIFIER_PROBE"] }
+    { line = $0; sub(/^[[:space:]]*/, "", line) }
+    line ~ /^#/ { next }
+    line ~ pat { found = 1; exit }
+    END { exit found ? 0 : 1 }
+  ' "$SKILLS_SOURCE_CLASSIFIER"
+}
+# The entry point must be a REGULAR file, proven from the index the same way
+# the classifier path is: `git ls-files --stage` reports the tracked mode, and
+# only `100644`/`100755` are regular blobs. A `120000` is a symlink, which
+# `verify-skills.sh` also refuses by finding skills with `-type f` — a symlinked
+# SKILL.md resolves fine in this checkout and can dangle in a fresh clone, or
+# point outside the skill tree entirely. Checked before the frontmatter awk,
+# which would happily read straight through the link.
+classifier_skill_is_regular_file() {
+  case "$(git ls-files --stage -- "$SKILLS_SOURCE_SHEPHERD_SKILL" 2>/dev/null | cut -c1-6)" in
+  100644 | 100755) return 0 ;;
+  esac
+  return 1
+}
+classifier_skill_frontmatter_ok() {
+  awk '
+    NR == 1 && $0 != "---" { exit }
+    $0 == "---" { fence++ }
+    END { exit (fence >= 2) ? 0 : 1 }
+  ' "$SKILLS_SOURCE_SHEPHERD_SKILL" &&
+    yq --front-matter=extract -e '
+      ((.name | tag) == "!!str") and (.name == "shepherd") and
+      ((.description | tag) == "!!str") and (.description != "")
+    ' "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1
+}
 if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
-  [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ]; then
+  [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ] &&
+  git ls-files --error-unmatch -- "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1 &&
+  classifier_skill_is_regular_file &&
+  classifier_skill_frontmatter_ok &&
+  classifier_code_has '^reserve\)' &&
+  classifier_code_has '^attach\)' &&
+  classifier_code_has '^check\)' &&
+  classifier_code_has '^show\)' &&
+  classifier_code_has '^reap\)' &&
+  classifier_code_has '^emit pending ' &&
+  classifier_code_has '^exit 11$' &&
+  classifier_code_has '^emit escalate ' &&
+  classifier_code_has '^exit 13$'; then
   SHIPS_CLASSIFIER_NATIVELY=true
 else
   SHIPS_CLASSIFIER_NATIVELY=false
 fi
+# <<< classifier-detector <<<
 if test -e "$REVIEWED_DATA"; then
   yq -e \
     'tag == "!!map" and
