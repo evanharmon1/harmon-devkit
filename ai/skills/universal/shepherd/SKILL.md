@@ -526,7 +526,8 @@ you rather than the bot):
   The attempt window starts when the trigger is created, so posting during CI
   would consume the reviewer's promised post-CI response window. The trigger
   is a PR write, so it takes §2's pre-write read first — the snippet below
-  does exactly that, and reserves against the SHA that read returned.
+  does exactly that, and reserves against the verified round head rather than
+  whatever SHA the read happens to return.
 
   ```bash
   helper="$skill_dir/assets/check-codex-cloud-review.sh"
@@ -534,13 +535,19 @@ you rather than the bot):
   # run unconditionally — it removes nothing whose PR is still open.
   "$helper" reap --root "$(git rev-parse --git-path shepherd-codex)"
   state="$(git rev-parse --git-path "shepherd-codex/$repo/<n>.json")"
+  # the SHA from §2's round-start fetch, whose checks you just watched settle
+  round_head="<this round's headRefOid>"
   # §2's pre-write read: the trigger below is a PR write.
   pre="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)"
   [ "$(jq -r '.state == "OPEN" and .isDraft' <<<"$pre")" = true ] || {
     echo 'not an open draft — see §2: CLOSED stops, promoted routes'
     exit 1
   }
-  head="$(jq -r .headRefOid <<<"$pre")"
+  [ "$(jq -r .headRefOid <<<"$pre")" = "$round_head" ] || {
+    echo 'head moved since the round began — restart the round'
+    exit 1
+  }
+  head="$round_head"
   "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
     --head "$head" --attempt 1
   trigger_id="$(
