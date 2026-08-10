@@ -302,11 +302,17 @@ file at `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`,
 *and* tracks the shepherd skill's entry point
 `ai/skills/universal/shepherd/SKILL.md` as a regular file — index mode `100644`
 or `100755`, so a `120000` symlink does not qualify however valid its target,
-the same `-type f` stance `verify-skills.sh` takes — with valid frontmatter: the opening
-`---` block must **close**, and within that block (not merely somewhere in the
-file) carry `name: shepherd`, optionally wrapped in a matched pair of single or
-double quotes, plus a non-empty `description:`; these mirror
-`scripts/verify-skills.sh`, which is the canonical definition — *and* that helper's
+the same `-type f` stance `verify-skills.sh` takes — with valid frontmatter: the
+opening `---` block must **close** (checked statically, since a parser given an
+unclosed block whose body is valid YAML reads it happily), and its values are
+then resolved by **yq**, the same hard prerequisite the rest of the guarded
+update already carries. `name` must resolve to the string `shepherd` and
+`description` to a non-empty string, so quoting, block scalars, comments, and
+the null spellings are the parser's problem rather than a pattern's. A
+`description` that resolves to null, a collection, a number, or a boolean is
+not a description. Unparseable YAML answers "not a valid skills source" rather
+than "cannot tell". `scripts/verify-skills.sh` remains canonical for layout —
+*and* that helper's
 **executable body** carries the dispatch `case` arms for all five verbs
 (`reserve)`, `attach)`, `check)`, `show)`, `reap)`) together with the exit-code
 contract the shepherd stage reads — `emit pending` with `exit 11` and

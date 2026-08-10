@@ -1113,19 +1113,36 @@ expect_ok "classifier detector validates the shepherd entry point frontmatter" \
         grep -qF "git ls-files --error-unmatch" "$1" &&
         grep -qF "classifier_skill_frontmatter_ok" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET"
-# The frontmatter probe must stay block-scoped and quote-tolerant: a closing
-# fence is required, and the name is compared against all three accepted YAML
-# spellings. `\047` is how the single-quoted forms survive the shell quoting.
-expect_ok "classifier frontmatter probe is block-scoped and quote-tolerant" \
-    sh -c 'for needle in "$2" "$3" "$4" "$5" "$6"; do
+# Structure stays static because yq does not fail closed on it: a file with no
+# frontmatter, or an unclosed block whose body is valid YAML, both parse and
+# resolve `.name`. Only the fence checks remain hand-rolled.
+expect_ok "classifier frontmatter probe checks the fences statically" \
+    sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
+    "$GU_CLASSIFIER_SNIPPET" \
+    'NR == 1 && $0 != "---" { exit }' 'exit (fence >= 2) ? 0 : 1'
+# Values come from a real parser. mode-update.md already hard-requires yq v4, so
+# the detector may assume it, and the whole hand-written YAML grammar is gone.
+expect_ok "classifier frontmatter probe resolves values with yq" \
+    sh -c 'for needle in "$2" "$3" "$4" "$5"; do
         grep -qF "$needle" "$1" || exit 1
     done' sh \
     "$GU_CLASSIFIER_SNIPPET" \
-    'fence >= 2' 'seen_name' '"shepherd"' '\047shepherd\047' \
-    'sub(/^description:[[:space:]]*/, "", d)'
-# verify-skills.sh owns these rules; the detector replicates them because it
-# runs in target repos where that script does not exist. Name it, so the next
-# reader knows which side to change first.
+    'yq --front-matter=extract -e' \
+    '(.name | tag) == "!!str"' \
+    '(.description | tag) == "!!str"' \
+    '.description != ""'
+# The grammar re-implementation must be GONE, not merely unused: each of these
+# was a round of findings, and every one of them is the parser's job now.
+expect_ok "classifier frontmatter probe reimplements no YAML grammar" \
+    sh -c 'for needle in "$2" "$3" "$4" "$5" "$6" "$7"; do
+        grep -qF "$needle" "$1" && exit 1
+    done
+    exit 0' sh \
+    "$GU_CLASSIFIER_SNIPPET" \
+    'in_block' 'ok_desc' 'seen_name' 'd != "null"' '\047shepherd\047' \
+    'sub(/[[:space:]]#.*$/'
+# verify-skills.sh stays canonical for LAYOUT; YAML semantics now come from the
+# parser. Name it, so the next reader knows which side owns which question.
 expect_ok "classifier frontmatter probe cross-references its canonical source" \
     sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET" \
@@ -1136,35 +1153,6 @@ expect_ok "classifier detector requires a regular-file shepherd entry point" \
     sh -c 'grep -qF "classifier_skill_is_regular_file" "$1" &&
         grep -qF "100644 | 100755" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET"
-# Null-shaped descriptions are matched as whole values, and a block-scalar
-# header is followed rather than compared.
-expect_ok "classifier frontmatter probe rejects null-shaped description values" \
-    sh -c 'for needle in "$2" "$3" "$4" "$5" "$6" "$7"; do
-        grep -qF "$needle" "$1" || exit 1
-    done' sh \
-    "$GU_CLASSIFIER_SNIPPET" \
-    'd != "null"' 'd != "Null"' 'd != "NULL"' 'd != "~"' 'd != "[]"' 'd != "{}"'
-expect_ok "classifier frontmatter probe follows block scalars to their content" \
-    sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
-    "$GU_CLASSIFIER_SNIPPET" \
-    'in_block = 1' 'ok_desc = 1; in_block = 0'
-# The comment is stripped once, up front, into the SAME scalar every later check
-# reads. Comments compose with every other spelling, so a second unstripped copy
-# in scope is a standing invitation to test the wrong one — which is exactly how
-# `null # TODO` got through. Assert the strip happens on `d` itself.
-expect_ok "classifier frontmatter probe strips comments from the value it judges" \
-    sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
-    "$GU_CLASSIFIER_SNIPPET" \
-    'sub(/[[:space:]]#.*$/, "", d)' \
-    'if (d ~ /^[|>]([0-9]*[+-]?|[+-][0-9]*)$/)'
-# ...and that no second, unstripped copy of the value exists to be judged
-# instead. This is the structural half of the fix: one scalar, no wrong choice.
-expect_fail "classifier frontmatter probe keeps no unstripped copy of the value" \
-    grep -qE '\bh = d\b' "$GU_CLASSIFIER_SNIPPET"
-# Both legal indicator orderings, so a chomp-first header cannot slip past.
-expect_ok "classifier frontmatter probe accepts either block-header ordering" \
-    sh -c 'grep -qF "$2" "$1"' sh \
-    "$GU_CLASSIFIER_SNIPPET" '([0-9]*[+-]?|[+-][0-9]*)'
 # The verb probes must anchor on the helper's dispatch arms, not on the usage
 # strings a comment can print — that difference is the whole finding.
 for cls_verb in reserve attach check show reap; do
@@ -1218,7 +1206,8 @@ CLASSIFIER_SKILL_REL="ai/skills/universal/shepherd/SKILL.md"
 # `commentedheadercontent` | `commentedpipe` | `inlinecomment` |
 # `chompfirstfold` | `chompfirstliteral` | `chompfirstcontent` |
 # `nullcomment` | `emptydqcomment` | `tildecomment` | `flowcomment` |
-# `quotednull`),
+# `quotednull` | `indentzero` | `indentten` | `spacedflowseq` |
+# `spacedflowmap`),
 # $4 helper shape:
 #   dispatch — a real-shaped miniature: a `case` on the command with all five
 #              arms, and the pending/escalate verdicts with their exit codes.
@@ -1372,6 +1361,20 @@ make_classifier_fixture() {
     quotednull)
         printf '%s\n' '---' 'name: shepherd' 'description: "null"' \
             '---' 'Body.'
+        ;;
+    indentzero)
+        printf '%s\n' '---' 'name: shepherd' 'description: |0' \
+            '  Content behind an illegal zero indent indicator.' '---' 'Body.'
+        ;;
+    indentten)
+        printf '%s\n' '---' 'name: shepherd' 'description: |10' \
+            '  Content behind a two-digit indent indicator.' '---' 'Body.'
+        ;;
+    spacedflowseq)
+        printf '%s\n' '---' 'name: shepherd' 'description: [ ]' '---' 'Body.'
+        ;;
+    spacedflowmap)
+        printf '%s\n' '---' 'name: shepherd' 'description: { }' '---' 'Body.'
         ;;
     *)
         printf '%s\n' '---' 'name: shepherd' \
@@ -1632,11 +1635,49 @@ else
     SHIPS_CLASSIFIER_NATIVELY=false
 fi
 SUPERSEDEDCOMPOSE
+# The final hand-written YAML grammar, before a real parser replaced it. It
+# accepted an illegal `|0`, a two-digit `|10`, and the spaced flow forms
+# `[ ]`/`{ }` — the shapes that ended the enumerate-a-spelling-per-round cycle.
+freeze_classifier_probe value-grammar <<'SUPERSEDEDGRAMMAR'
+SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+classifier_skill_frontmatter_ok() {
+  awk '
+    NR == 1 && $0 != "---" { exit }
+    $0 == "---" { fence++; if (fence >= 2) exit; next }
+    fence == 1 && /^name:[[:space:]]*/ {
+      if (!seen_name) {
+        seen_name = 1
+        v = $0; sub(/^name:[[:space:]]*/, "", v); sub(/\r$/, "", v)
+        if (v == "shepherd" || v == "\"shepherd\"" || v == "\047shepherd\047") ok_name = 1
+      }
+    }
+    fence == 1 && /^description:[[:space:]]*/ {
+      d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
+      sub(/[[:space:]]#.*$/, "", d); sub(/[[:space:]]+$/, "", d)
+      if (d ~ /^[|>]([0-9]*[+-]?|[+-][0-9]*)$/) { in_block = 1; next }
+      if (d != "" && d != "\"\"" && d != "\047\047" &&
+          d != "null" && d != "Null" && d != "NULL" && d != "~" &&
+          d != "[]" && d != "{}" && d !~ /^#/) ok_desc = 1
+      next
+    }
+    fence == 1 && in_block {
+      if ($0 ~ /^[^[:space:]]/) in_block = 0
+      else if ($0 ~ /[^[:space:]]/) { ok_desc = 1; in_block = 0 }
+    }
+    END { exit (fence >= 2 && ok_name && ok_desc) ? 0 : 1 }
+  ' "$SKILLS_SOURCE_SHEPHERD_SKILL"
+}
+if classifier_skill_frontmatter_ok; then
+    SHIPS_CLASSIFIER_NATIVELY=true
+else
+    SHIPS_CLASSIFIER_NATIVELY=false
+fi
+SUPERSEDEDGRAMMAR
 # Every frozen probe must still be a runnable program. A control that silently
 # became unparseable would report `false` for the wrong reason, which for a
 # control expecting a reject is a passing test that proves nothing.
 for frozen_key in usage-strings frontmatter-greps code-pipeline skill-probes \
-    desc-header header-ordering value-composition; do
+    desc-header header-ordering value-composition value-grammar; do
     expect_ok "frozen control $frozen_key is a runnable snippet" \
         sh -c 'test -s "$1" && bash -n "$1"' sh \
         "$CLASSIFIER_FROZEN_DIR/$frozen_key.sh"
@@ -1672,6 +1713,10 @@ CLS_DQCMT="$TMPROOT/classifier-empty-dq-with-comment"
 CLS_TILDECMT="$TMPROOT/classifier-tilde-with-comment"
 CLS_FLOWCMT="$TMPROOT/classifier-flow-with-comment"
 CLS_QUOTEDNULL="$TMPROOT/classifier-quoted-null-value"
+CLS_IND0="$TMPROOT/classifier-zero-indent-indicator"
+CLS_IND10="$TMPROOT/classifier-two-digit-indent-indicator"
+CLS_SPSEQ="$TMPROOT/classifier-spaced-flow-sequence"
+CLS_SPMAP="$TMPROOT/classifier-spaced-flow-mapping"
 make_classifier_fixture "$CLS_FULL" +x valid dispatch
 make_classifier_fixture "$CLS_MODE" -x valid dispatch
 make_classifier_fixture "$CLS_NOSKILL" +x untracked dispatch
@@ -1703,6 +1748,10 @@ make_classifier_fixture "$CLS_DQCMT" +x emptydqcomment dispatch
 make_classifier_fixture "$CLS_TILDECMT" +x tildecomment dispatch
 make_classifier_fixture "$CLS_FLOWCMT" +x flowcomment dispatch
 make_classifier_fixture "$CLS_QUOTEDNULL" +x quotednull dispatch
+make_classifier_fixture "$CLS_IND0" +x indentzero dispatch
+make_classifier_fixture "$CLS_IND10" +x indentten dispatch
+make_classifier_fixture "$CLS_SPSEQ" +x spacedflowseq dispatch
+make_classifier_fixture "$CLS_SPMAP" +x spacedflowmap dispatch
 expect_ok_contains "classifier detector accepts a complete skills-source tree" \
     "RESULT=true" classifier_verdict "$CLS_FULL"
 # The exec bit is read from the index, never the filesystem: this helper is
@@ -1794,6 +1843,19 @@ expect_ok_contains "classifier detector rejects an empty flow form with a commen
 # through the strip — so it is a description and stays accepted.
 expect_ok_contains "classifier detector accepts a quoted null string as a value" \
     "RESULT=true" classifier_verdict "$CLS_QUOTEDNULL"
+# The last two grammar findings, and the reason the grammar is now a parser's
+# job: an illegal `|0`, a two-digit `|10`, and the spaced flow forms are all
+# shapes a hand-written regex accepted and YAML does not.
+expect_ok_contains "classifier detector rejects a zero indentation indicator" \
+    "RESULT=false" classifier_verdict "$CLS_IND0"
+expect_ok_contains "classifier detector rejects a zero indent indicator under pipefail" \
+    "RESULT=false" classifier_verdict_pipefail "$CLS_IND0"
+expect_ok_contains "classifier detector rejects a two-digit indentation indicator" \
+    "RESULT=false" classifier_verdict "$CLS_IND10"
+expect_ok_contains "classifier detector rejects a spaced empty flow sequence" \
+    "RESULT=false" classifier_verdict "$CLS_SPSEQ"
+expect_ok_contains "classifier detector rejects a spaced empty flow mapping" \
+    "RESULT=false" classifier_verdict "$CLS_SPMAP"
 # Every content probe reads straight through a symlink; only the index mode
 # distinguishes it, which is why the entry point is mode-checked like the
 # classifier path. verify-skills.sh takes the same stance by finding with -type f.
@@ -1898,6 +1960,17 @@ expect_ok_contains "superseded value checks accepted empty quotes with a comment
 expect_ok_contains "superseded value checks already rejected a bare null" \
     "RESULT=false" \
     classifier_verdict_frozen value-composition "$CLS_NULLDESC"
+# Negative control for replacing the grammar with a parser: the hand-written
+# version accepted all four of the shapes YAML itself rejects, while still
+# handling everything it had already been taught.
+expect_ok_contains "superseded grammar accepted a zero indentation indicator" \
+    "RESULT=true" classifier_verdict_frozen value-grammar "$CLS_IND0"
+expect_ok_contains "superseded grammar accepted a two-digit indent indicator" \
+    "RESULT=true" classifier_verdict_frozen value-grammar "$CLS_IND10"
+expect_ok_contains "superseded grammar accepted a spaced empty flow sequence" \
+    "RESULT=true" classifier_verdict_frozen value-grammar "$CLS_SPSEQ"
+expect_ok_contains "superseded grammar accepted a spaced empty flow mapping" \
+    "RESULT=true" classifier_verdict_frozen value-grammar "$CLS_SPMAP"
 expect_ok "audit G4 waives sync/universal for the native skills-source classifier" \
     sh -c 'grep -qF "unless the repo is the skills source itself" "$1" &&
         grep -qF "git-tracked, non-symlink executable" "$1" &&
@@ -1907,14 +1980,14 @@ expect_ok "audit G4 waives sync/universal for the native skills-source classifie
 # or a repo passes one mode and is reported as drift by the other.
 expect_ok "audit G4 names the entry-point and dispatch-structure requirements" \
     sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
-        grep -qF "name: shepherd" "$1" &&
+        grep -qF "resolve to the string \`shepherd\`" "$1" &&
         grep -qF "dispatch \`case\` arms" "$1" &&
         grep -qF "emit escalate" "$1" &&
         grep -qF "exit 13" "$1" &&
         grep -qF "comments merely print" "$1" &&
         grep -qF "never that it runs" "$1" &&
         grep -qF "scripts/verify-skills.sh" "$1" &&
-        grep -qF "matched pair of single or" "$1" &&
+        grep -qF "resolved by **yq**" "$1" &&
         grep -qF "120000" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "standards catalog waives cloud-review sync/universal for the skills source" \
@@ -1926,16 +1999,16 @@ expect_ok "standards catalog waives cloud-review sync/universal for the skills s
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog names the entry-point and dispatch-structure requirements" \
     sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
-        grep -qF "name: shepherd" "$1" &&
+        grep -qF "resolve to the string \`shepherd\`" "$1" &&
         grep -qF "dispatch \`case\` arms" "$1" &&
         grep -qF "emit escalate" "$1" &&
         grep -qF "exit 13" "$1" &&
         grep -qF "prints the usage forms in comments" "$1" &&
         grep -qF "rather than that it works" "$1" &&
         grep -qF "scripts/verify-skills.sh" "$1" &&
-        grep -qF "matched pair" "$1" &&
+        grep -qF "resolved by **yq**" "$1" &&
         grep -qF "120000" "$1" &&
-        grep -qF "non-empty *to YAML*" "$1"' sh \
+        grep -qF "canonical for layout" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "new-repo and adopt guidance note the skills-source waiver" \
     sh -c 'grep -qF "waived only for a skills-source repo already shipping the shepherd classifier" "$1" &&

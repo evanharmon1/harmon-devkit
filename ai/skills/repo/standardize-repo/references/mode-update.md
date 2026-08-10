@@ -627,66 +627,33 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 #
 # The `SKILL.md` probe likewise checks the frontmatter rather than the path: a
 # helper with no valid skill around it is a stripped tree, not a shipped skill.
-# It must be BLOCK-SCOPED, and plain greps could not be. Scanning the whole file
-# for `^name:` accepts a malformed skill whose body happens to contain the line,
-# and pinning `^name:[[:space:]]*shepherd$` rejects `name: "shepherd"` — valid
-# YAML that a legitimate skills source may well use. Wrong in both directions at
-# once, so the probe is one awk pass over the opening `---` block instead.
+# It splits in two, because the two halves have genuinely different natures.
 #
-# `scripts/verify-skills.sh` in harmon-devkit is the CANONICAL definition of
-# these rules; this replicates its `frontmatter_is_closed`, `frontmatter_name`,
-# and `frontmatter_has_description` semantics. It deliberately does not call
-# that script: the detector runs inside arbitrary target repos, where it does
-# not exist. Replicated exactly: the file must open `---`; the block must CLOSE
-# with a second `---` (an unterminated block reads fine line-by-line but a real
-# YAML parser sees no frontmatter at all); only the FIRST `name:` in the block
-# counts; its value may carry a MATCHED pair of single or double quotes, and a
-# mismatched one is invalid — comparing against the three accepted literals is
-# equivalent to that script's unquote-then-compare for a fixed expected name.
-# One deliberate divergence: `description:` must be NON-EMPTY here, where
-# verify-skills.sh accepts a bare `description:`. A skills source whose shepherd
-# skill has no description is not one this waiver should trust. "Non-empty"
-# means non-empty to YAML, not merely to `grep`. Rejected as whole values, after
-# trailing blanks are trimmed so one stray space cannot slip past: `""`, `''`,
-# the null spellings `null`, `Null`, `NULL`, `~`, the empty flow forms `[]` and
-# `{}`, and a line that is only a `#` comment. Each carries text and loads as
-# null or nothing.
-# A block scalar (`>` or `|`, with optional indentation and chomping
-# indicators)
-# is a header, not a value, so it is followed instead of compared: scan until
-# the block ends and require one line with content in it. The block ends at the
-# closing `---` (the fence rule exits first) or at the next line starting in
-# column 0, which at this indent is the next key — cheap and right for
-# frontmatter, where keys are unindented and block bodies are not.
-# A trailing comment is stripped ONCE, up front, and every judgment below reads
-# that single stripped scalar — header test, null shapes, comment-only, and the
-# final non-emptiness alike. That is structural, not stylistic. Comments compose
-# with every other spelling (`>- # folded`, `null # TODO`, `"" # TODO`), so any
-# check left reading an unstripped copy is a hole, and holding both forms in
-# scope means the next check added is one keystroke from picking the wrong one.
-# With one scalar there is no wrong one to pick, and the composition axis is
-# closed by construction rather than case by case.
-# Requiring whitespace before the `#` matches YAML, where a `#` mid-token opens
-# no comment. The strip is a heuristic, not a lexer — it can cut a quoted scalar
-# that itself contains ` #` — but only ever to a shorter non-empty prefix, which
-# still accepts, and the reject set is exact literals a truncated prefix cannot
-# accidentally equal. So it never turns a real description into a rejection;
-# `description: real value # trailing` is accepted on `real value`.
-# The two indicators may appear in EITHER order — YAML's block header is
-# `(indentation chomping?) | (chomping indentation?)` — so `|-2` and `>2-` are
-# both legal and the alternation covers both. With that, the header grammar is
-# CLOSED: every legal spelling routes to the content walk, and no empty block
-# can reach the value branch by ordering its indicators differently. The match
-# is slightly wider than strict YAML (multi-digit, and `0`), which is harmless
-# and deliberately the safe direction: any value beginning `|` or `>` is a
-# block-scalar header or invalid YAML, so a wider match only ever routes to the
-# content walk rather than accepting something.
-# This is not a YAML parser and does not try to be. An inline `#` after a real
-# value stays accepted, since quoting rules decide whether it opens a comment;
-# non-empty flow collections and anchors/aliases are likewise out of scope.
-# What is covered is the set of spellings that read as a description and are
-# not one.
+# STRUCTURE is checked statically: the file must open with `---` and the block
+# must CLOSE with a second one. These stay hand-rolled because yq does NOT fail
+# closed on either — verified against yq v4, not assumed. Under
+# `--front-matter=extract`, a file with no frontmatter at all, and an unclosed
+# block whose body happens to be valid YAML, both parse happily and resolve
+# `.name`, so a bare `name: shepherd` sitting in a file's BODY would satisfy
+# the value probe. The two checks mirror `verify-skills.sh`'s `head -n 1` test
+# and its `frontmatter_is_closed`, which remains canonical for layout.
 #
+# VALUES are resolved by yq rather than re-implemented. This section already
+# hard-requires yq v4 for the guarded update, so the detector may assume it.
+# The hand-rolled grammar this replaces had to learn YAML one finding at a
+# time — quoted scalars, block-scalar headers, chomping and indentation
+# indicators in either order, the null spellings, and comments composing with
+# every one of them — and each round closed an instance while the next spelling
+# waited. A parser already knows the whole grammar, so that family of findings
+# ends here rather than being enumerated further.
+# `tag == "!!str"` is the load-bearing part: it is what makes `null`, `~`, `[]`,
+# `{ }`, numbers, and booleans fail, which is precisely the "reads like a value,
+# is not one" set the hand-written reject list was chasing.
+#
+# A yq failure — malformed YAML, or an invalid header like `|0` — answers false,
+# so no waiver. That is the safe direction, and unlike the ignore probes it is
+# deliberately NOT an exit-2 "cannot tell" condition: a SKILL.md that does not
+# parse is a definite answer, namely that this is not a valid skills source.
 # Every probe sits in the `if` condition, where a non-zero exit selects the
 # else-branch instead of tripping errexit — these are questions about the repo,
 # not failures.
@@ -736,36 +703,16 @@ classifier_skill_is_regular_file() {
   esac
   return 1
 }
-# Mirror of verify-skills.sh's frontmatter rules, scoped to the opening block.
-# `\047` is a single quote — spelled octally so the awk program can stay inside
-# a single-quoted shell string. awk's `exit` runs END, so every path routes
-# through it rather than returning a status directly.
 classifier_skill_frontmatter_ok() {
   awk '
     NR == 1 && $0 != "---" { exit }
-    $0 == "---" { fence++; if (fence >= 2) exit; next }
-    fence == 1 && /^name:[[:space:]]*/ {
-      if (!seen_name) {
-        seen_name = 1
-        v = $0; sub(/^name:[[:space:]]*/, "", v); sub(/\r$/, "", v)
-        if (v == "shepherd" || v == "\"shepherd\"" || v == "\047shepherd\047") ok_name = 1
-      }
-    }
-    fence == 1 && /^description:[[:space:]]*/ {
-      d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
-      sub(/[[:space:]]#.*$/, "", d); sub(/[[:space:]]+$/, "", d)
-      if (d ~ /^[|>]([0-9]*[+-]?|[+-][0-9]*)$/) { in_block = 1; next }
-      if (d != "" && d != "\"\"" && d != "\047\047" &&
-          d != "null" && d != "Null" && d != "NULL" && d != "~" &&
-          d != "[]" && d != "{}" && d !~ /^#/) ok_desc = 1
-      next
-    }
-    fence == 1 && in_block {
-      if ($0 ~ /^[^[:space:]]/) in_block = 0
-      else if ($0 ~ /[^[:space:]]/) { ok_desc = 1; in_block = 0 }
-    }
-    END { exit (fence >= 2 && ok_name && ok_desc) ? 0 : 1 }
-  ' "$SKILLS_SOURCE_SHEPHERD_SKILL"
+    $0 == "---" { fence++ }
+    END { exit (fence >= 2) ? 0 : 1 }
+  ' "$SKILLS_SOURCE_SHEPHERD_SKILL" &&
+    yq --front-matter=extract -e '
+      ((.name | tag) == "!!str") and (.name == "shepherd") and
+      ((.description | tag) == "!!str") and (.description != "")
+    ' "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1
 }
 if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
   [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ] &&
