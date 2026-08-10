@@ -2399,10 +2399,16 @@ expect_ok "the hand-off example keeps apply anomalies out of the disposition tab
         ! grep -qE "^\| \`\.github/workflows/codeql\.yml\` \|" "$1" &&
         ! grep -qE "^\| \`\.github/CODEOWNERS\` \|" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+# The directory case aborts the rehearsal before any report exists, so the note
+# it used to produce is unreachable. §5 must state the real contract instead of
+# instructing a reviewer to disposition a row that can never appear.
+expect_ok "the hand-off documents the directory abort, not a phantom note" \
+    sh -c 'grep -qF "A directory where the render ships a file never reaches this report" "$1" &&
+        test "$(grep -cF "repo-path-is-directory" "$1")" -eq 1' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "the hand-off contract carries the note vocabulary" \
     sh -c 'grep -qF "repo-ignored-only" "$1" &&
         grep -qF "unverified-equivalent" "$1" &&
-        grep -qF "repo-path-is-directory" "$1" &&
         grep -qF "known-false-verified" "$1" &&
         grep -qF "co-owned-prose" "$1" &&
         grep -qF "twin-exists:" "$1"' sh \
@@ -6215,23 +6221,31 @@ gu_nonadopt_classify() {
             REVIEWED_DATA=".copier-guarded-update/reviewed-data.yml" \
             bash -eu "$GU_NONADOPT_RUNNER" >/dev/null)
 }
-# Counted before and after rather than globbed absolutely: another process's
-# temp directory is not this suite's to assert on. Captured HERE, immediately
-# before the rehearsal — taken afterwards it would include any scratch this very
-# run leaked, sit in both counts, and make `after -le before` vacuously true.
-GU_SCRATCH_BEFORE="$(find "${TMPDIR:-/tmp}" -maxdepth 1 \
-    -name 'copier-nonadoption-apply-*' 2>/dev/null | wc -l)"
+# The rehearsal's `mktemp -d -t` honours TMPDIR, so it is pointed at a directory
+# only this fixture uses. Counting `copier-nonadoption-apply-*` in the SHARED
+# tmpdir was a race: another guarded run on the same machine owns directories
+# matching that glob, and this suite has no business counting — or later
+# deleting — them.
+GU_SCRATCH_TMP="$TMPROOT/gu-rehearsal-tmp"
+mkdir -p "$GU_SCRATCH_TMP"
+gu_nonadopt_classify_private_tmp() {
+    (
+        TMPDIR="$GU_SCRATCH_TMP"
+        export TMPDIR
+        gu_nonadopt_classify
+    )
+}
 expect_ok "non-adoption classifier rehearses the apply and runs clean under bash -eu" \
-    gu_nonadopt_classify
+    gu_nonadopt_classify_private_tmp
 # The rehearsal must not disturb the tree it rehearses on: it copies, applies to
 # the copy, and removes the copy. A guarded run whose observation step mutated
 # the worktree would be the worst possible bug in this design.
 expect_ok "the scratch rehearsal leaves the real worktree untouched" \
     sh -c 'test -z "$(git -C "$1" status --porcelain)"' sh "$GU_TARGET"
+# Emptiness of a directory nobody else writes to, rather than a count of a shared
+# one: an exact assertion instead of a racy inequality.
 expect_ok "the scratch rehearsal removes its own copy" \
-    sh -c 'after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 \
-            -name "copier-nonadoption-apply-*" 2>/dev/null | wc -l)"
-        test "$after" -le "$1"' sh "$GU_SCRATCH_BEFORE"
+    sh -c 'test -z "$(ls -A "$1")"' sh "$GU_SCRATCH_TMP"
 GU_NONADOPT_TSV="$GU_TARGET/.copier-guarded-update/nonadoption-report.tsv"
 # Every row below is an OBSERVATION of a real copier apply against a copy of this
 # fixture, not a prediction about one. The assertions further down re-check each
@@ -6537,25 +6551,30 @@ expect_ok "the operator's own ignore file grants no template declaration" \
 mkdir -p "$GU_NA_REPO/AGENTS.md"
 printf '%s\n' 'not the agents file' >"$GU_NA_REPO/AGENTS.md/NOTICE.txt"
 git_commit_all "$GU_NA_REPO" "a directory where a file belongs"
-NA_SCRATCH_BEFORE="$TMPROOT/dir-refusal-scratch-before"
-find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'copier-nonadoption-apply-*' \
-    2>/dev/null | LC_ALL=C sort >"$NA_SCRATCH_BEFORE"
-expect_fail "the rehearsal refuses a directory at a rendered file's path" na_classify
 # The classifier RETAINS the scratch on a diagnostic exit deliberately — when the
 # apply fails, that half-applied tree and copier's own output are the diagnosis,
-# and the error message names its location. So the leak is the fixture's to clean
-# up, not the recipe's to stop: remove only what THIS assertion provoked.
-find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'copier-nonadoption-apply-*' \
-    2>/dev/null | LC_ALL=C sort >"$TMPROOT/dir-refusal-scratch-after"
-while IFS= read -r na_leaked; do
-    test -n "$na_leaked" || continue
-    rm -rf -- "$na_leaked"
-done < <(LC_ALL=C comm -13 "$NA_SCRATCH_BEFORE" \
-    "$TMPROOT/dir-refusal-scratch-after")
-expect_ok "the provoked scratch is cleaned up by the fixture" \
-    sh -c 'now="$(find "${TMPDIR:-/tmp}" -maxdepth 1 \
-            -name "copier-nonadoption-apply-*" 2>/dev/null | LC_ALL=C sort)"
-        test "$now" = "$(cat "$1")"' sh "$NA_SCRATCH_BEFORE"
+# and the error message names its location. So this fixture must clean up after
+# itself, and it does so by owning the directory rather than by identifying which
+# entries in the shared tmpdir are "its". The earlier shape diffed the system
+# tmpdir before and after and `rm -rf`'d anything new — which on a machine
+# running a second guarded update would have deleted that run's scratch out from
+# under it.
+NA_REFUSAL_TMP="$TMPROOT/dir-refusal-tmp"
+mkdir -p "$NA_REFUSAL_TMP"
+na_classify_private_tmp() {
+    (
+        TMPDIR="$NA_REFUSAL_TMP"
+        export TMPDIR
+        na_classify
+    )
+}
+expect_fail "the rehearsal refuses a directory at a rendered file's path" \
+    na_classify_private_tmp
+expect_ok "the refused rehearsal left its scratch behind for inspection" \
+    sh -c 'test -n "$(ls -A "$1")"' sh "$NA_REFUSAL_TMP"
+rm -rf "$NA_REFUSAL_TMP"
+expect_fail "the fixture's private scratch directory is gone" \
+    test -e "$NA_REFUSAL_TMP"
 # The retention is only defensible if the operator is told where to look.
 expect_ok "a failed rehearsal names the scratch it left behind" \
     sh -c 'test "$(grep -cF "inspect \$NONADOPT_SCRATCH" "$1")" -eq 2' sh \
@@ -6862,9 +6881,15 @@ mkdir -p "$DEG_DIR/.copier-guarded-update"
 for deg_present in keep.md made.md newf.md; do
     printf '%s\n' 'present' >"$DEG_DIR/$deg_present"
 done
+# §1 records the before-state as a `present-before` note, because reconciliation
+# runs after the tree has moved and has no other way to recover it. Membership
+# used to be read as a proxy — `baseline-only` implying present — which was only
+# true while the degraded branch skipped present paths the target still ships.
+# It no longer does, so the note is the contract.
 {
-    printf 'keep.md\tunknown-until-apply\tn/a-removed\tbaseline-only\t-\n'
-    printf 'gone.md\tunknown-until-apply\tn/a-removed\tbaseline-only\t-\n'
+    printf 'keep.md\tunknown-until-apply\tn/a-removed\tbaseline-only\tpresent-before\n'
+    printf 'gone.md\tunknown-until-apply\tn/a-removed\tbaseline-only\tpresent-before\n'
+    printf 'eaten.md\tunknown-until-apply\tno\tbaseline+target\tpresent-before\n'
     printf 'made.md\tunknown-until-apply\tno\tbaseline+target\t-\n'
     printf 'newf.md\tunknown-until-apply\tn/a-new\ttarget-only\tco-owned-prose\n'
     printf 'never.md\tunknown-until-apply\tno\tbaseline+target\t-\n'
@@ -6874,11 +6899,22 @@ expect_ok "reconciliation resolves a degraded report cleanly" \
     sh -c 'cd "$1" && bash -eu "$2"' sh "$DEG_DIR" "$GU_RECONCILE"
 # Present before AND after is not a transition; the rehearsed path emits no row
 # for it, so the resolution must not invent one.
-expect_fail "a surviving baseline-only file yields no row" \
+expect_fail "a surviving present file yields no row" \
     grep -q '^keep\.md' "$DEG_TSV"
 expect_ok "a removed baseline-only file resolves to deleted" \
-    grep -qxF "$(printf 'gone.md\tdeleted\tn/a-removed\tbaseline-only\t-')" \
+    grep -qxF "$(printf 'gone.md\tdeleted\tn/a-removed\tbaseline-only\tpresent-before')" \
     "$DEG_TSV"
+# THE degraded gap. A path the repo had and the target still ships was skipped
+# entirely, on the reasoning that an ordinary apply leaves it alone — but this
+# branch exists BECAUSE migrations run arbitrary commands, and one can delete it.
+# The row exists now, and its disappearance is flagged as a question.
+expect_ok "a present in-target file the apply removed resolves to deleted" \
+    grep -qxF "$(printf 'eaten.md\tdeleted\tno\tbaseline+target\tpresent-before; migration-effect?')" \
+    "$DEG_TSV"
+expect_ok "the degraded branch records the before-state it observed" \
+    sh -c 'grep -qF "nonadoption_add_note present-before" "$1" &&
+        grep -qF "*present-before*)" "$2"' sh \
+    "$GU_NONADOPT_SNIPPET" "$GU_RECONCILE"
 expect_ok "a both-renders file the apply wrote resolves to created/recreated" \
     grep -qxF "$(printf 'made.md\tcreated\tno\tbaseline+target\trecreated')" \
     "$DEG_TSV"

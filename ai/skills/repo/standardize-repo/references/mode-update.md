@@ -1644,13 +1644,23 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       NONADOPT_IN_TARGET=1
     NONADOPT_CLASS=""
     if test "$NONADOPT_REHEARSED" -eq 0; then
-      # Nothing was observed, so nothing is claimed. A path is worth a row when
-      # the apply could plausibly touch it; §2's reconciliation resolves each one
-      # against the real result.
-      if test "$NONADOPT_BEFORE" -eq 0; then
-        test "$NONADOPT_IN_TARGET" -eq 1 || continue
-      else
-        test "$NONADOPT_IN_TARGET" -eq 0 || continue
+      # Nothing was observed, so nothing is claimed: every managed path the apply
+      # could touch gets a row and §2's reconciliation resolves it against the
+      # real result. PRESENT paths included — the earlier shape skipped a path the
+      # repo already had when the target still shipped it, on the reasoning that
+      # an ordinary apply leaves it alone. Migrations are the whole reason this
+      # branch exists and they run arbitrary commands, so one can delete it, and
+      # skipping the row let the report call that update clean. The before-state
+      # is recorded as a note because reconciliation has no other way to know it:
+      # by then the tree has moved.
+      #
+      # Deliberately plain. harmon-init declares no `_migrations`, so this path is
+      # dormant for the platform; it needs to be correct, not elaborate.
+      if test "$NONADOPT_BEFORE" -eq 1; then
+        nonadoption_add_note present-before
+      elif test "$NONADOPT_IN_TARGET" -eq 0; then
+        # Absent, and the target does not ship it: nothing for the apply to do.
+        continue
       fi
       NONADOPT_CLASS=unknown-until-apply
     elif test "$NONADOPT_BEFORE" -eq 0 && test "$NONADOPT_AFTER" -eq 0; then
@@ -2003,13 +2013,12 @@ nonadoption_reconcile() {
     unknown-until-apply)
       # No prediction to confirm — the rehearsal was refused, so this resolves
       # the row into exactly the class the rehearsed path would have recorded.
-      # `baseline_membership` carries the before-state: §1 rows a `baseline-only`
-      # path only when the repo HAS it, and every other membership only when the
-      # repo lacks it. Reading present-after alone would have called a surviving
-      # baseline-only file `created` and a removed one `nonadopt-both` — both
-      # backwards.
-      case "$ROW_MEMBER" in
-      baseline-only)
+      # §1 records the before-state as a `present-before` note, because nothing
+      # else here can recover it: by now the tree has moved. Reading present-after
+      # alone called a surviving file `created` and a removed one `nonadopt-both`,
+      # both backwards.
+      case "$ROW_NOTE" in
+      *present-before*)
         if test "$ROW_PRESENT" -eq 1; then
           # Present before and after: no transition at all. The rehearsed path
           # emits no row for this, so neither does the resolution — inventing a
@@ -2017,6 +2026,13 @@ nonadoption_reconcile() {
           continue
         fi
         ROW_CLASS=deleted
+        # The target render still ships it, so an ordinary apply would have left
+        # it alone. Something else removed it, and on this branch that means a
+        # migration — flagged as a question, not a conclusion.
+        case "$ROW_MEMBER" in
+        baseline-only) ;;
+        *) ROW_NOTE="$ROW_NOTE; migration-effect?" ;;
+        esac
         ;;
       *)
         if test "$ROW_PRESENT" -eq 1; then
@@ -3029,7 +3045,6 @@ Column by column:
   `unverified-equivalent`: a drift-class-K path whose documented replacement is
   not in this repo. `package-json-unparseable`: the prettier-key probe could not
   read `package.json`, so it established nothing — check the file itself.
-  `repo-path-is-directory`: a directory sits where the render ships a file.
   `chezmoi-managed — verify per mode-audit class K`: the root `Brewfile` in a
   chezmoi source repo, where the skill's own guidance is split (see §1). Say
   which way you resolved it and why; that is the whole reason the row exists.
@@ -3056,8 +3071,14 @@ Everything else goes in the table — an empty note `-`, which is the most
 important row in the report because nobody found any explanation at all, and
 every note that describes a *state* rather than a decision:
 `unverified-equivalent`, `repo-ignored-only`, `package-json-unparseable`,
-`repo-path-is-directory`, `twin-exists:`, `co-owned-prose`, and the chezmoi
-Brewfile annotation.
+`twin-exists:`, `co-owned-prose`, and the chezmoi Brewfile annotation.
+
+**A directory where the render ships a file never reaches this report.** It used
+to arrive as a `repo-path-is-directory` note, which was already obsolete when it
+was written: copier asserts on that shape, so §1's rehearsal fails and the
+guarded run stops before any report exists. The operator resolves the directory
+and reruns — there is nothing here to disposition, and the diagnostic names the
+scratch to inspect.
 
 **`co-owned-prose` is on that second list, and it is the interesting one.** It
 used to route a row away from the table, and it is the one note that says
