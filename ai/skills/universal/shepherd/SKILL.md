@@ -110,12 +110,16 @@ and compare against the local branch and HEAD. Requirements, all hard:
   whoever acts on it, you or the maintainer, splits the two halves: create
   and verify the commit inside credential-free isolation, then import that
   object into a checkout whose working tree holds only trusted content
-  (`git fetch <sandbox-path> <sha>`) and push the ref from there. Hooks run
-  from the pushing checkout's working tree, never from the tree the pushed
-  ref names — which is precisely why that push is safe and an authenticated
-  one from the fork checkout is not. If no isolation is available,
-  don't work on the fork checkout at all: stop, report what the remote CI
-  shows, and hand the fix decision to the maintainer.
+  (`git fetch <sandbox-path> <sha>`) and push that commit *by name* from
+  there — `git push <remote> <sha>:refs/heads/<branch>`, never step 5's
+  `HEAD:` form, which would push the trusted checkout's own commit instead of
+  the fix, and never check the imported commit out. Hooks run from the
+  pushing checkout's working tree, never from the tree the pushed ref names —
+  which is why the working tree must stay on trusted content, why that push
+  is safe, and why an authenticated one from the fork checkout is not. If no
+  isolation is available, don't work on the fork checkout at all: stop,
+  report what the remote CI shows, and hand the fix decision to the
+  maintainer.
 
 Once the PR is confirmed `OPEN` and the checkout matches, move the claimed
 issue's card to `Verifying` while checks run — see
