@@ -535,8 +535,12 @@ dispositioned — restored, or declined with a reason on the record — and not
 shrugged at as something the next update will pick up. There is no next update
 that will.
 
-**Check the template's `_skip_if_exists` before dispositioning any of them.** A
-path listed there is not preserved-absent: `copier update` renders it fresh
+**Check BOTH re-creation carve-outs before dispositioning any of them**
+([`copier-gotchas.md`](./copier-gotchas.md) §9): a path listed under
+`_skip_if_exists`, and any path the template's own `.gitignore` covers — copier
+builds its comparison tree with `git add -A`, so a render-ignored path is
+invisible to the deleted-path scan and is re-rendered every update however
+deliberately it was removed. A path in either group is not preserved-absent: `copier update` renders it fresh
 whenever the repo lacks it, so its `MISSING` is temporary and resolves itself on
 the next update. harmon-init lists `CHANGELOG.md`, `*.code-workspace`,
 `.github/CODEOWNERS`, `.release-please-manifest.json`, and

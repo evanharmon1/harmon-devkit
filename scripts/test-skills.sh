@@ -2279,7 +2279,7 @@ expect_ok "update guidance persists the non-adoption report past guarded teardow
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "the non-adoption report is keyed by branch on every path that touches it" \
     sh -c 'test "$(grep -cF -- "guarded-update-nonadoption/\$(git branch --show-current)" \
-            "$1")" -eq 3 &&
+            "$1")" -eq 2 &&
         ! grep -qE -- "--git-path guarded-update-nonadoption[\"[:space:]]*$" "$1" &&
         grep -qF "detached HEAD" "$1" &&
         grep -qF "mkdir -p \"\$(dirname \"\$GUARDED_NONADOPT_FILE\")\"" "$1"' sh \
@@ -2314,6 +2314,10 @@ git -C "$GU_PERSIST_REPO" switch -q -c feat/343-report >/dev/null
 mkdir -p "$GU_PERSIST_REPO/.copier-guarded-update"
 printf 'seeded\tnonadopt-both\tno\tbaseline+target\t-\n' \
     >"$GU_PERSIST_REPO/.copier-guarded-update/nonadoption-report.tsv"
+# Persistence refuses an unreconciled report: §2 reconciles first, and a report
+# published without that verdict would describe an unverified tree.
+printf 'reconciled: clean\n' \
+    >"$GU_PERSIST_REPO/.copier-guarded-update/nonadoption-reconciled"
 expect_ok "the non-adoption persistence recipe runs clean under bash -eu" \
     sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update bash -eu "$2"' sh \
     "$GU_PERSIST_REPO" "$GU_NONADOPT_PERSIST"
@@ -2388,11 +2392,46 @@ expect_ok "explained absences are listed per path, never collapsed to a count" \
     "$STANDARDIZE_REFS/mode-update.md"
 # One loop, four classes, no carve-outs — possible only because nothing is
 # suppressed out of the report.
+# The ordering is the fix: reconcile at the end of §2, before §3's prescribed
+# edits, and have §4 read the frozen verdict rather than the tree.
+expect_ok "reconciliation runs before the manual reconciliation section" \
+    sh -c 'recon="$(grep -nF "nonadoption_reconcile ||" "$1" | cut -d: -f1)"
+        s3="$(grep -nE "^## 3\. " "$1" | cut -d: -f1)"
+        s4="$(grep -nE "^## 4\. " "$1" | cut -d: -f1)"
+        test -n "$recon" && test "$recon" -lt "$s3" &&
+        verdict="$(grep -nF "guarded-update-reconciled/" "$1" | head -1 | cut -d: -f1)"
+        test "$verdict" -lt "$s3" &&
+        later="$(grep -nF "the frozen reconciliation is not clean" "$1" | cut -d: -f1)"
+        test "$later" -gt "$s4"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "section 4 verifies the frozen verdict instead of re-reading the tree" \
+    sh -c 'grep -qF "Confirm the reconciliation was recorded" "$1" &&
+        grep -qF "reconciled: clean" "$1" &&
+        grep -qF "Do not re-derive it by re-reading the worktree" "$1" &&
+        grep -qF "restored in §3: <reason>" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# `--skip-tasks` does not cover `_migrations`; copier runs them unguarded. A
+# rehearsal would fire them a second time against a copy.
+expect_ok "the rehearsal is refused when the target declares _migrations" \
+    sh -c 'grep -qF "_migrations // [] | length" "$1" &&
+        grep -qF "NONADOPT_REHEARSED" "$1" &&
+        grep -qF "unknown-until-apply" "$1" &&
+        grep -qF "migrations must run exactly once" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
+# Zero shared git metadata: a linked worktree's `.git` is a pointer file, and
+# copier runs `git write-tree` in the subproject.
+expect_ok "the rehearsal builds independent git metadata for the scratch" \
+    sh -c 'grep -qF -- "-mindepth 1 -maxdepth 1 ! -name .git" "$1" &&
+        grep -qF "init -q" "$1" &&
+        grep -qF "rev-parse --absolute-git-dir" "$1" &&
+        grep -qF "refusing to rehearse" "$1" &&
+        ! grep -qF "cp -a . \"\$NONADOPT_SCRATCH/repo\"" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
 expect_ok "the post-apply cross-check reconciles every class and fails closed" \
     sh -c 'grep -qF "RECONCILE_BAD" "$1" &&
         grep -qF "reconciliation failed on" "$1" &&
         grep -qF "the real apply created it" "$1" &&
-        grep -qF "return 1" "$1"' sh \
+        grep -qF "reconciled: clean" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # The persistence write races the branch it is keyed by, so the binding is
 # re-checked at the last moment and the write is atomic.
@@ -2430,20 +2469,21 @@ expect_ok "gotcha 9 attributes permanence to copier's exclusion, not an empty di
         grep -qF "The exclusion is explicit, not emergent" "$1"' sh \
     "$STANDARDIZE_REFS/copier-gotchas.md"
 expect_ok "gotcha 9 carves out _skip_if_exists as a recreate, not a permanence" \
-    sh -c 'grep -qF "_skip_if_exists\` is the one carve-out" "$1" &&
+    sh -c 'grep -qF "There are TWO carve-outs" "$1" &&
         grep -qF "it renders the file fresh" "$1" &&
+        grep -qF "never in that tree, can never show" "$1" &&
         grep -qF ".github/CODEOWNERS" "$1" &&
         grep -qF "noted `recreated`" "$1"' sh \
     "$STANDARDIZE_REFS/copier-gotchas.md"
 expect_ok "audit class K sets _skip_if_exists paths aside before dispositioning" \
-    sh -c 'grep -qF "Check the template'\''s \`_skip_if_exists\` before" "$1" &&
-        grep -qF "path listed there is not preserved-absent" "$1"' sh \
+    sh -c 'grep -qF "Check BOTH re-creation carve-outs" "$1" &&
+        grep -qF "invisible to the deleted-path scan" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
 # The sweep's own MISSING lines assert permanence inline, so they carry the
 # qualifier too — a flat "will NOT restore it" is false for these paths.
 expect_ok "the MISSING annotations qualify permanence for _skip_if_exists" \
     sh -c 'test "$(grep -cF \
-        "will not restore it unless it is _skip_if_exists" "$1")" -eq 2 &&
+        "unless _skip_if_exists or the render'\''s own .gitignore covers it" "$1")" -eq 2 &&
         ! grep -qF "a copier update will NOT restore it" "$1"' sh \
     "$STANDARDIZE_ASSETS/diff-template.sh"
 expect_ok "update guidance routes created rows to their own list and check" \
@@ -2502,13 +2542,14 @@ expect_ok "non-adoption evidence annotates rows and never suppresses them" \
 expect_ok "the class column carries only the observed classes" \
     sh -c 'assigned="$(grep -oE "NONADOPT_CLASS=[a-z-]+" "$1" |
             sed "s/NONADOPT_CLASS=//" | LC_ALL=C sort -u | paste -sd, -)"
-        test "$assigned" = "created,deleted,nonadopt-both"' sh \
+        test "$assigned" = \
+            "created,deleted,nonadopt-both,unknown-until-apply"' sh \
     "$GU_NONADOPT_SNIPPET"
 # The inversion itself: the snippet copies the tree, runs §2's own update against
 # the copy, and reads the result. If any of these three go missing it has gone
 # back to predicting.
 expect_ok "the snippet rehearses the apply instead of modelling it" \
-    sh -c 'grep -qF "cp -a . \"\$NONADOPT_SCRATCH/repo\"" "$1" &&
+    sh -c 'grep -qF -- "-mindepth 1 -maxdepth 1 ! -name .git" "$1" &&
         grep -qF "run_guarded_copier update --trust --defaults --skip-tasks" "$1" &&
         grep -qF "nonadoption_path_present" "$1" &&
         grep -qF "apply-created" "$1" &&
@@ -6079,6 +6120,15 @@ GU_NONADOPT_RUNNER="$TMPROOT/nonadoption-runner.sh"
 expect_ok "the guarded copier wrapper is extractable alongside the snippet" \
     sh -c 'grep -qF "run_guarded_copier() {" "$1" &&
         grep -qF "COPIER_CACHE_DIR=" "$1"' sh "$GU_NONADOPT_RUNNER"
+GU_RECONCILE="$TMPROOT/nonadoption-reconcile.sh"
+{
+    printf '%s\n' 'set -eu' 'GUARDED_STATE=.copier-guarded-update'
+    sed -n '/^nonadoption_reconcile() {/,/^}$/p' "$STANDARDIZE_REFS/mode-update.md"
+    printf '%s\n' 'nonadoption_reconcile'
+} >"$GU_RECONCILE"
+expect_ok "the reconciliation recipe is extractable from the guidance" \
+    sh -c 'grep -qF "RECONCILE_BAD" "$1" && grep -qF "nonadoption_reconcile" "$1"' sh \
+    "$GU_RECONCILE"
 printf '{}\n' >"$GU_TARGET/.copier-guarded-update/nonadoption-reviewed.yml"
 gu_nonadopt_classify() {
     (cd "$GU_TARGET" &&
@@ -6415,6 +6465,167 @@ expect_fail "the rehearsal refuses a directory at a rendered file's path" na_cla
 rm -rf "$GU_NA_REPO/AGENTS.md"
 git_commit_all "$GU_NA_REPO" "remove the blocking directory"
 
+# --- the rehearsal must not touch the repo it rehearses on --------------------
+# A LINKED worktree's `.git` is a POINTER FILE. Copying it verbatim leaves the
+# scratch resolving to the real worktree's admin dir, and copier runs
+# `git write-tree` in the subproject during update — so the rehearsal would stage
+# into the very tree it exists to observe from a distance. This repo is itself
+# developed in linked worktrees, so the hazard is the normal case, not a corner.
+ISO_ROOT="$TMPROOT/rehearsal-isolation"
+ISO_TPL="$ISO_ROOT/template"
+mkdir -p "$ISO_TPL/template" "$ISO_ROOT/cache"
+cat >"$ISO_TPL/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+project_name:
+  type: str
+  default: Iso
+EOF
+printf '%s\n' '{{ _copier_answers|to_nice_yaml -}}' \
+    >"$ISO_TPL/template/.copier-answers.yml.jinja"
+printf '%s\n' 'agents' >"$ISO_TPL/template/AGENTS.md"
+printf '%s\n' 'baseline' >"$ISO_TPL/template/version.txt"
+git_init "$ISO_TPL"
+git_commit_all "$ISO_TPL" "iso baseline"
+ISO_BASE_COMMIT="$(git -C "$ISO_TPL" rev-parse HEAD)"
+copier copy --trust --defaults --skip-tasks --vcs-ref="$ISO_BASE_COMMIT" \
+    "$ISO_TPL" "$ISO_ROOT/main" >/dev/null
+git_init "$ISO_ROOT/main"
+git_commit_all "$ISO_ROOT/main" "generated"
+printf '%s\n' 'target' >"$ISO_TPL/template/version.txt"
+git_commit_all "$ISO_TPL" "iso target"
+ISO_TGT_COMMIT="$(git -C "$ISO_TPL" rev-parse HEAD)"
+# The subject: a LINKED worktree, whose .git is a pointer file.
+git -C "$ISO_ROOT/main" worktree add -q "$ISO_ROOT/wt" -b feat/rehearse >/dev/null
+expect_ok "the isolation fixture really is a linked worktree" \
+    test -f "$ISO_ROOT/wt/.git"
+rm "$ISO_ROOT/wt/AGENTS.md"
+git_commit_all "$ISO_ROOT/wt" "decline AGENTS.md"
+ISO_STATE="$ISO_ROOT/wt/.copier-guarded-update"
+mkdir -p "$ISO_STATE"
+printf '{}\n' >"$ISO_STATE/reviewed-data.yml"
+printf '%s\n' '/.copier-guarded-update/' \
+    >>"$(git -C "$ISO_ROOT/wt" rev-parse --git-path info/exclude)"
+copier copy --trust --defaults --skip-tasks --vcs-ref="$ISO_BASE_COMMIT" \
+    "$ISO_TPL" "$ISO_ROOT/base-render" >/dev/null
+copier copy --trust --defaults --skip-tasks --vcs-ref="$ISO_TGT_COMMIT" \
+    "$ISO_TPL" "$ISO_ROOT/target-render" >/dev/null
+for iso_side in base target; do
+    (cd "$ISO_ROOT/$iso_side-render" && find . \( -type f -o -type l \) -print) |
+        sed 's#^\./##' | LC_ALL=C sort -u \
+        >"$ISO_STATE/$(test "$iso_side" = base &&
+            printf baseline || printf target)-managed-paths"
+done
+: >"$ISO_STATE/ignored-absent-paths"
+ISO_INDEX="$(git -C "$ISO_ROOT/wt" rev-parse --git-path index)"
+ISO_INDEX_BEFORE="$(git hash-object "$ISO_INDEX")"
+expect_ok "the rehearsal runs clean from inside a linked worktree" \
+    sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update \
+        BASELINE_DISCOVERY="$2" TARGET_DISCOVERY="$3" \
+        GUARDED_TEMPLATE="$4" HARMON_INIT_SOURCE="https://example.invalid/iso" \
+        GUARDED_COPIER_CACHE="$5" HARMON_INIT_COMMIT="$6" \
+        REVIEWED_DATA=".copier-guarded-update/reviewed-data.yml" \
+        bash -eu "$7" >/dev/null' sh \
+    "$ISO_ROOT/wt" "$ISO_ROOT/base-render" "$ISO_ROOT/target-render" \
+    "$ISO_TPL" "$ISO_ROOT/cache" "$ISO_TGT_COMMIT" "$GU_NONADOPT_RUNNER"
+# THE isolation assertions. At 4c4a84b the pointer-file copy made `git add` in
+# the scratch write straight through to this index.
+expect_ok "the real worktree's index is untouched by the rehearsal" \
+    sh -c 'test "$(git hash-object "$1")" = "$2"' sh \
+    "$ISO_INDEX" "$ISO_INDEX_BEFORE"
+expect_ok "the real worktree's status is untouched by the rehearsal" \
+    sh -c 'test -z "$(git -C "$1" status --porcelain)"' sh "$ISO_ROOT/wt"
+expect_ok "the rehearsal still observed the declined path from a linked worktree" \
+    grep -qxF "$(printf 'AGENTS.md\tnonadopt-both\tno\tbaseline+target\t-')" \
+    "$ISO_STATE/nonadoption-report.tsv"
+
+# --- `_migrations` are NOT covered by `--skip-tasks` --------------------------
+# Verified against copier 9.17.1: `_execute_tasks(self.template.tasks)` is
+# guarded by `skip_tasks`, `migration_tasks("before"/"after")` is not. A
+# rehearsal would therefore run migrations a second time, against a copy, with
+# the real run still to come — so the rehearsal is refused instead.
+MIG_ROOT="$TMPROOT/rehearsal-migrations"
+MIG_TPL="$MIG_ROOT/template"
+mkdir -p "$MIG_TPL/template" "$MIG_ROOT/cache"
+cat >"$MIG_TPL/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+_migrations:
+  - command: ["sh", "-c", "echo ran >> migration-sentinel.txt"]
+_tasks:
+  - ["sh", "-c", "echo ran >> task-sentinel.txt"]
+project_name:
+  type: str
+  default: Mig
+EOF
+printf '%s\n' '{{ _copier_answers|to_nice_yaml -}}' \
+    >"$MIG_TPL/template/.copier-answers.yml.jinja"
+printf '%s\n' 'agents' >"$MIG_TPL/template/AGENTS.md"
+printf '%s\n' 'baseline' >"$MIG_TPL/template/version.txt"
+git_init "$MIG_TPL"
+git_commit_all "$MIG_TPL" "mig baseline"
+MIG_BASE_COMMIT="$(git -C "$MIG_TPL" rev-parse HEAD)"
+git -C "$MIG_TPL" tag v1.0.0
+copier copy --trust --defaults --skip-tasks --vcs-ref=v1.0.0 \
+    "$MIG_TPL" "$MIG_ROOT/repo" >/dev/null
+git_init "$MIG_ROOT/repo"
+git_commit_all "$MIG_ROOT/repo" "generated"
+printf '%s\n' 'target' >"$MIG_TPL/template/version.txt"
+git_commit_all "$MIG_TPL" "mig target"
+git -C "$MIG_TPL" tag v2.0.0
+MIG_TGT_COMMIT="$(git -C "$MIG_TPL" rev-parse HEAD)"
+# The behavioural fact the guard exists for, proved directly on a throwaway copy.
+cp -a "$MIG_ROOT/repo" "$MIG_ROOT/probe"
+expect_ok "the migration probe update succeeds" \
+    sh -c 'cd "$1" && copier update --trust --defaults --skip-tasks \
+        --vcs-ref=v2.0.0 >/dev/null 2>&1' sh "$MIG_ROOT/probe"
+expect_ok "_migrations RUN despite --skip-tasks" \
+    test -e "$MIG_ROOT/probe/migration-sentinel.txt"
+expect_fail "_tasks are correctly suppressed by --skip-tasks" \
+    test -e "$MIG_ROOT/probe/task-sentinel.txt"
+# ...so the classifier must refuse to rehearse.
+rm "$MIG_ROOT/repo/AGENTS.md"
+git_commit_all "$MIG_ROOT/repo" "decline AGENTS.md"
+MIG_STATE="$MIG_ROOT/repo/.copier-guarded-update"
+mkdir -p "$MIG_STATE"
+printf '{}\n' >"$MIG_STATE/reviewed-data.yml"
+printf '%s\n' '/.copier-guarded-update/' >>"$MIG_ROOT/repo/.git/info/exclude"
+copier copy --trust --defaults --skip-tasks --vcs-ref="$MIG_BASE_COMMIT" \
+    "$MIG_TPL" "$MIG_ROOT/base-render" >/dev/null
+copier copy --trust --defaults --skip-tasks --vcs-ref="$MIG_TGT_COMMIT" \
+    "$MIG_TPL" "$MIG_ROOT/target-render" >/dev/null
+for mig_side in base target; do
+    (cd "$MIG_ROOT/$mig_side-render" && find . \( -type f -o -type l \) -print) |
+        sed 's#^\./##' | LC_ALL=C sort -u \
+        >"$MIG_STATE/$(test "$mig_side" = base &&
+            printf baseline || printf target)-managed-paths"
+done
+: >"$MIG_STATE/ignored-absent-paths"
+expect_ok "the classifier degrades cleanly when the target declares _migrations" \
+    sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update \
+        BASELINE_DISCOVERY="$2" TARGET_DISCOVERY="$3" \
+        GUARDED_TEMPLATE="$4" HARMON_INIT_SOURCE="https://example.invalid/mig" \
+        GUARDED_COPIER_CACHE="$5" HARMON_INIT_COMMIT="$6" \
+        REVIEWED_DATA=".copier-guarded-update/reviewed-data.yml" \
+        bash -eu "$7" >/dev/null 2>&1' sh \
+    "$MIG_ROOT/repo" "$MIG_ROOT/base-render" "$MIG_ROOT/target-render" \
+    "$MIG_TPL" "$MIG_ROOT/cache" "$MIG_TGT_COMMIT" "$GU_NONADOPT_RUNNER"
+expect_ok "a migrations target yields unknown-until-apply rows" \
+    grep -qxF "$(printf 'AGENTS.md\tunknown-until-apply\tno\tbaseline+target\t-')" \
+    "$MIG_STATE/nonadoption-report.tsv"
+# The whole point: no migration fired in the repo the classifier ran against.
+expect_fail "the refused rehearsal ran no migration" \
+    test -e "$MIG_ROOT/repo/migration-sentinel.txt"
+# And §2's reconciliation resolves those rows against the real apply.
+expect_ok "the real update applies and runs its migration exactly once" \
+    sh -c 'cd "$1" && copier update --trust --defaults \
+        --vcs-ref="$2" >/dev/null 2>&1' sh "$MIG_ROOT/repo" "$MIG_TGT_COMMIT"
+expect_ok "reconciliation resolves unknown-until-apply against the real result" \
+    sh -c 'cd "$1" && bash -eu "$2" &&
+        grep -qxF "$(printf "AGENTS.md\tnonadopt-both\tno\tbaseline+target\t-")" \
+            .copier-guarded-update/nonadoption-report.tsv' sh \
+    "$MIG_ROOT/repo" "$GU_RECONCILE"
+
 # --- `_skip_if_exists` recreates an absent path: the load-bearing proof --------
 # Every `recreate-expected` claim above rests on one fact about copier that no
 # amount of reading the classifier can establish: that `_skip_if_exists` on an
@@ -6556,18 +6767,14 @@ expect_ok "guarded Copier update applies the intended target content" \
 # rehearsal ran the same copier, ref and answers against a copy; if these ever
 # disagree the environment moved, and §4 stops the hand-off rather than
 # publishing a report about a tree that does not exist.
-GU_RECONCILE="$TMPROOT/nonadoption-reconcile.sh"
-{
-    printf '%s\n' 'set -eu' 'NONADOPT_REPORT="$1"'
-    sed -n '/^nonadoption_reconcile() {/,/^}$/p' "$STANDARDIZE_REFS/mode-update.md"
-    printf '%s\n' 'nonadoption_reconcile'
-} >"$GU_RECONCILE"
-expect_ok "the reconciliation recipe is extractable from the guidance" \
-    sh -c 'grep -qF "RECONCILE_BAD" "$1" && grep -qF "nonadoption_reconcile" "$1"' sh \
-    "$GU_RECONCILE"
+cp "$GU_NONADOPT_TSV" "$TMPROOT/nonadoption-report.pre-reconcile.tsv"
 expect_ok "every rehearsed observation holds against the real apply" \
-    sh -c 'cd "$1" && bash -eu "$2" "$3"' sh \
-    "$GU_TARGET" "$GU_RECONCILE" "$GU_NONADOPT_TSV"
+    sh -c 'cd "$1" && bash -eu "$2"' sh "$GU_TARGET" "$GU_RECONCILE"
+# The verdict is FROZEN at the moment of the apply, because §3 is about to make
+# deliberate changes that a later presence check would read as divergence.
+expect_ok "a clean reconciliation freezes its verdict" \
+    grep -qx 'reconciled: clean' \
+    "$GU_TARGET/.copier-guarded-update/nonadoption-reconciled"
 # The recreate, confirmed on the real tree rather than on the copy.
 expect_ok "the real update recreated the _skip_if_exists path too" \
     test -e "$GU_TARGET/.github/CODEOWNERS"
@@ -6577,10 +6784,14 @@ expect_fail "the real update left the declined both-renders file absent" \
 # rehearsal observed being created and it must report and return non-zero.
 cp "$GU_TARGET/.github/CODEOWNERS" "$TMPROOT/codeowners.bak"
 rm "$GU_TARGET/.github/CODEOWNERS"
+cp "$TMPROOT/nonadoption-report.pre-reconcile.tsv" "$GU_NONADOPT_TSV"
+rm -f "$GU_TARGET/.copier-guarded-update/nonadoption-reconciled"
 expect_fail "reconciliation returns non-zero when the applied tree diverges" \
-    sh -c 'cd "$1" && bash -eu "$2" "$3"' sh \
-    "$GU_TARGET" "$GU_RECONCILE" "$GU_NONADOPT_TSV"
+    sh -c 'cd "$1" && bash -eu "$2"' sh "$GU_TARGET" "$GU_RECONCILE"
+expect_fail "a diverged reconciliation freezes no verdict" \
+    test -e "$GU_TARGET/.copier-guarded-update/nonadoption-reconciled"
 cp "$TMPROOT/codeowners.bak" "$GU_TARGET/.github/CODEOWNERS"
+cp "$TMPROOT/nonadoption-report.pre-reconcile.tsv" "$GU_NONADOPT_TSV"
 # The gotcha, proven end to end by a real `copier update`. shared-note.md is in
 # both renders and unchanged between them, so the baseline→target diff says
 # nothing about it and the repo's deletion stands — no conflict, no mention.

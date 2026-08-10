@@ -266,19 +266,31 @@ creates it, you remove it before committing, and from the next update on it sits
 in both renders. The mechanism does not care how the absence arose, only that
 both sides of the diff agree the file exists.
 
-**`_skip_if_exists` is the one carve-out, and it runs the other way.** The
-option means "do not overwrite this when it is already there" — so on a path
-that is **absent**, it does not preserve the absence, it renders the file fresh.
-A both-renders path covered by `_skip_if_exists` is therefore *not* permanent:
-the update recreates it, untracked, with the target's content. harmon-init lists
-`CHANGELOG.md`, `*.code-workspace`, `.github/CODEOWNERS`,
-`.release-please-manifest.json`, and `.devcontainer/related-repos.txt` there —
-content owned by another generator or by the consumer. Read the target
-`copier.yml` rather than trusting that list, and treat `.github/CODEOWNERS`
-specially: it encodes who must review, the render writes it from one answer, and
-a repo that widened its owners gets the single-owner version back without a
-word. [`mode-update.md`](./mode-update.md) §1 classifies these
-`created` (noted `recreated`) and §4 confirms they landed.
+**There are TWO carve-outs, and both run the other way.** The exclusion above is
+built by diffing the *old render's* committed tree against the subproject's
+**index**: whatever appears as deleted there is withheld from re-creation. Two
+kinds of path never appear in that diff, so neither is ever withheld.
+
+1. **`_skip_if_exists` paths.** The option means "do not overwrite this when it
+   is already there" — on a path that is **absent** it does not preserve the
+   absence, it renders the file fresh. harmon-init lists `CHANGELOG.md`,
+   `*.code-workspace`, `.github/CODEOWNERS`, `.release-please-manifest.json`,
+   and `.devcontainer/related-repos.txt`.
+2. **Paths the render's own `.gitignore` covers.** Copier builds the old
+   render's tree with `git add -A`, which honours the `.gitignore` that render
+   ships. A path matched by it is therefore never in that tree, can never show
+   up as deleted, and is re-rendered every time — no matter how deliberately the
+   repo removed it. This one is easy to miss because the path *looks* settled:
+   the repo ignores it, the template ignores it, and it is still coming back.
+
+Read the target `copier.yml` rather than trusting the list in point 1, and treat
+`.github/CODEOWNERS` specially: it encodes who must review, the render writes it
+from one answer, and a repo that widened its owners gets the single-owner
+version back without a word. [`mode-update.md`](./mode-update.md) §1 needs none
+of this to classify — it rehearses the apply and records what actually
+reappeared, as `created` (noted `recreated`), and §2's reconciliation confirms
+they landed. Audit mode has no rehearsal, so there the two carve-outs have to be
+applied by hand.
 
 **Rule:** adopt deliberately or record the decline — never let an absence stand
 unexamined just because the tooling is quiet about it. `MISSING` is a decision

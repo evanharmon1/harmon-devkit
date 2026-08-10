@@ -1055,15 +1055,107 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # non-zero, and the loop above it rejects any key still holding
   # `__REVIEW_REQUIRED__`. Reaching here means the payload the real update will
   # use is the payload this rehearsal uses.
+  # `-type f -o -type l` is the file-or-symlink predicate applied wholesale: a
+  # DIRECTORY at a rendered file's path simply never appears, which is the
+  # correct answer to "does the repo have this file". `.git` is pruned at any
+  # depth, and the guarded state directory with it.
+  nonadoption_inventory() {
+    (cd "$1" && find . -name .git -prune -o -path "./$GUARDED_STATE" -prune -o \
+      \( -type f -o -type l \) -print) |
+      sed 's#^\./##' |
+      LC_ALL=C sort -u
+  }
+  # The target's own copier.yml, frozen at the pinned commit — the config the
+  # real update will obey.
+  git -C "$GUARDED_TEMPLATE" show "$HARMON_INIT_COMMIT":copier.yml \
+    >"$GUARDED_STATE/target-copier.yml" ||
+    { echo "failed to read the target copier.yml" >&2; exit 1; }
+  # MIGRATIONS MAKE THE REHEARSAL UNSAFE. `--skip-tasks` suppresses `_tasks` and
+  # nothing else: copier 9.17.1 guards `_execute_tasks(self.template.tasks)` with
+  # `skip_tasks` and runs `migration_tasks("before"/"after")` unguarded. Verified
+  # by fixture — a `_migrations` command fired during an update run with exactly
+  # the flags below, while `_tasks` did not. Migrations mutate the project and
+  # must run exactly once, against the real repo; a rehearsal would run them a
+  # second time, against a copy, with the real one still to come. So when the
+  # target declares any, the rehearsal is refused and the report degrades to
+  # inventory facts. harmon-init declares no `_migrations` today, so this stays
+  # a guard rather than the normal path.
+  yq -r '._migrations // [] | length' "$GUARDED_STATE/target-copier.yml" \
+    >"$GUARDED_STATE/target-migration-count" ||
+    { echo "failed to read _migrations from the target copier.yml" >&2; exit 1; }
+  NONADOPT_MIGRATIONS="$(cat "$GUARDED_STATE/target-migration-count")"
+  case "$NONADOPT_MIGRATIONS" in
+  '' | *[!0-9]*)
+    echo "could not determine the target's _migrations count" >&2
+    exit 1
+    ;;
+  esac
+  NONADOPT_REHEARSED=0
+  if test "$NONADOPT_MIGRATIONS" -gt 0; then
+    echo "target declares $NONADOPT_MIGRATIONS _migrations; skipping the rehearsal (migrations must run exactly once, against the real repo)" >&2
+    echo "non-adoption classes will read unknown-until-apply and are resolved by the reconciliation in §2" >&2
+  else
+    NONADOPT_REHEARSED=1
+  fi
+  if test "$NONADOPT_REHEARSED" -eq 1; then
   NONADOPT_SCRATCH="$(mktemp -d -t copier-nonadoption-apply-XXXXXX)" ||
     { echo "failed to create the scratch apply directory" >&2; exit 1; }
-  # The whole repo, `.git` and ignored files included: copier update needs a git
-  # repo and refuses a dirty one, and §1 has already proved this worktree clean,
-  # so a faithful copy is both valid input and the only way the rehearsal sees
-  # what the real apply will see. Ignored content lands in temp state here for
-  # the same reason the ignored-path backup already puts it there.
-  cp -a . "$NONADOPT_SCRATCH/repo" ||
-    { echo "failed to copy the worktree for the scratch apply" >&2; exit 1; }
+  # ZERO shared git metadata. A linked worktree's `.git` is a POINTER FILE, so
+  # copying it verbatim would leave the scratch operating on the real worktree's
+  # index and object store — and copier's update runs `git write-tree` in the
+  # subproject, so the rehearsal would stage into the tree it is meant to observe
+  # from a distance. The tree is copied WITHOUT `.git` and a fresh repo is built
+  # over it.
+  #
+  # The index is reproduced rather than approximated, because copier's
+  # deleted-path exclusion diffs the old render's tree against the SUBPROJECT'S
+  # INDEX. §1 has already proved this worktree clean, so index == HEAD ==
+  # worktree: `git add -A` picks up exactly the non-ignored files, and
+  # force-adding `git ls-files` covers the tracked-but-ignored remainder. The
+  # union is precisely the real repo's tracked set, and ignored-untracked files
+  # stay on disk and out of the index exactly as they are here.
+  test -z "$(git status --porcelain)" ||
+    { echo "worktree not clean; the rehearsal would not reproduce the real index" >&2; exit 1; }
+  mkdir -p "$NONADOPT_SCRATCH/repo" "$NONADOPT_SCRATCH/empty-git-template" ||
+    { echo "failed to prepare the scratch apply directory" >&2; exit 1; }
+  # A checked copy per top-level entry. `-exec ... +` would need `{}` last, and
+  # `cp -t` is GNU-only; `-exec ... \;` swallows failures. An explicit loop is
+  # the portable form that still notices when a copy fails.
+  find . -mindepth 1 -maxdepth 1 ! -name .git \
+    >"$GUARDED_STATE/scratch-copy-entries" ||
+    { echo "failed to enumerate the worktree for the scratch apply" >&2; exit 1; }
+  while IFS= read -r NONADOPT_ENTRY; do
+    test -n "$NONADOPT_ENTRY" || continue
+    cp -a "$NONADOPT_ENTRY" "$NONADOPT_SCRATCH/repo/" ||
+      { echo "failed to copy $NONADOPT_ENTRY for the scratch apply" >&2; exit 1; }
+  done <"$GUARDED_STATE/scratch-copy-entries"
+  # Empty --template so the machine's git template cannot seed hooks into a repo
+  # this block is about to commit in.
+  git -C "$NONADOPT_SCRATCH/repo" init -q \
+    --template="$NONADOPT_SCRATCH/empty-git-template" ||
+    { echo "failed to initialize the scratch repository" >&2; exit 1; }
+  git -C "$NONADOPT_SCRATCH/repo" add -A ||
+    { echo "failed to stage the scratch worktree" >&2; exit 1; }
+  git ls-files -z |
+    (cd "$NONADOPT_SCRATCH/repo" && xargs -0r git add -f --) ||
+    { echo "failed to stage tracked-but-ignored files in the scratch" >&2; exit 1; }
+  git -C "$NONADOPT_SCRATCH/repo" \
+    -c user.email=guarded@example.invalid -c user.name=guarded \
+    -c commit.gpgsign=false commit -q -m "rehearsal baseline" ||
+    { echo "failed to commit the scratch baseline" >&2; exit 1; }
+  # The isolation invariant, asserted rather than assumed: the scratch's git dir
+  # must live inside the scratch. If this ever fails the rehearsal is operating
+  # on somebody else's repository.
+  NONADOPT_SCRATCH_GITDIR="$(
+    git -C "$NONADOPT_SCRATCH/repo" rev-parse --absolute-git-dir
+  )" || { echo "failed to resolve the scratch git directory" >&2; exit 1; }
+  case "$NONADOPT_SCRATCH_GITDIR" in
+  "$NONADOPT_SCRATCH"/*) ;;
+  *)
+    echo "scratch repository shares git metadata with $NONADOPT_SCRATCH_GITDIR; refusing to rehearse" >&2
+    exit 1
+    ;;
+  esac
   # §2's real invocation, verbatim, plus `--skip-tasks` and an explicit
   # destination. Those are the ONLY two differences and both are deliberate:
   # tasks are side effects a rehearsal must not run, and the destination is what
@@ -1075,16 +1167,6 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     --data-file="$REVIEWED_DATA" \
     "$NONADOPT_SCRATCH/repo" ||
     { echo "scratch apply failed; the guarded update would fail the same way" >&2; exit 1; }
-  # `-type f -o -type l` is the file-or-symlink predicate applied wholesale: a
-  # DIRECTORY at a rendered file's path simply never appears, which is the
-  # correct answer to "does the repo have this file". `.git` is pruned at any
-  # depth, and the guarded state directory with it.
-  nonadoption_inventory() {
-    (cd "$1" && find . -name .git -prune -o -path "./$GUARDED_STATE" -prune -o \
-      \( -type f -o -type l \) -print) |
-      sed 's#^\./##' |
-      LC_ALL=C sort -u
-  }
   nonadoption_inventory . >"$GUARDED_STATE/apply-before-paths" ||
     { echo "failed to inventory the worktree before the scratch apply" >&2; exit 1; }
   nonadoption_inventory "$NONADOPT_SCRATCH/repo" \
@@ -1104,6 +1186,13 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     "$GUARDED_STATE/apply-after-paths" \
     >"$GUARDED_STATE/apply-deleted" ||
     { echo "failed to derive paths the apply deleted" >&2; exit 1; }
+  else
+    # Degraded: no rehearsal, so no after-state. Only the inventories are known.
+    nonadoption_inventory . >"$GUARDED_STATE/apply-before-paths" ||
+      { echo "failed to inventory the worktree" >&2; exit 1; }
+    : >"$GUARDED_STATE/apply-created"
+    : >"$GUARDED_STATE/apply-deleted"
+  fi
   # Everything either render ships, plus anything the apply touched that neither
   # does. The second half is belt and braces — copier writes rendered files and
   # its own answers file — but it costs one `cat` and means a path cannot escape
@@ -1502,10 +1591,12 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     test -n "$NONADOPT_PATH" || continue
     NONADOPT_NOTE=-
     NONADOPT_BEFORE=0
-    NONADOPT_AFTER=0
     nonadoption_path_present . "$NONADOPT_PATH" && NONADOPT_BEFORE=1
-    nonadoption_path_present "$NONADOPT_SCRATCH/repo" "$NONADOPT_PATH" &&
-      NONADOPT_AFTER=1
+    NONADOPT_AFTER=0
+    if test "$NONADOPT_REHEARSED" -eq 1; then
+      nonadoption_path_present "$NONADOPT_SCRATCH/repo" "$NONADOPT_PATH" &&
+        NONADOPT_AFTER=1
+    fi
     NONADOPT_IN_BASELINE=0
     NONADOPT_IN_TARGET=0
     nonadoption_in_set baseline-managed-paths "$NONADOPT_PATH" &&
@@ -1513,7 +1604,17 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     nonadoption_in_set target-managed-paths "$NONADOPT_PATH" &&
       NONADOPT_IN_TARGET=1
     NONADOPT_CLASS=""
-    if test "$NONADOPT_BEFORE" -eq 0 && test "$NONADOPT_AFTER" -eq 0; then
+    if test "$NONADOPT_REHEARSED" -eq 0; then
+      # Nothing was observed, so nothing is claimed. A path is worth a row when
+      # the apply could plausibly touch it; §2's reconciliation resolves each one
+      # against the real result.
+      if test "$NONADOPT_BEFORE" -eq 0; then
+        test "$NONADOPT_IN_TARGET" -eq 1 || continue
+      else
+        test "$NONADOPT_IN_TARGET" -eq 0 || continue
+      fi
+      NONADOPT_CLASS=unknown-until-apply
+    elif test "$NONADOPT_BEFORE" -eq 0 && test "$NONADOPT_AFTER" -eq 0; then
       # Only interesting while the target render still ships it: that is a file
       # the repo could have and, as the rehearsal just showed, never will.
       test "$NONADOPT_IN_TARGET" -eq 1 || continue
@@ -1550,7 +1651,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     nonadoption_emit_row "$NONADOPT_PATH" "$NONADOPT_CLASS" \
       "$NONADOPT_CHANGED" "$NONADOPT_MEMBER"
   done <"$GUARDED_STATE/nonadoption-candidates"
-  for NONADOPT_CLASS in nonadopt-both created deleted; do
+  for NONADOPT_CLASS in nonadopt-both created deleted unknown-until-apply; do
     NONADOPT_COUNT="$(
       awk -F '\t' -v cls="$NONADOPT_CLASS" \
         '$2 == cls { n++ } END { print n + 0 }' \
@@ -1562,7 +1663,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # The rehearsal is spent. An aborted run leaves it behind on purpose, exactly
   # like the discovery renders above — a failed guarded update is a thing to
   # inspect, and `mktemp -d` puts it where the operator can.
-  if test -n "$NONADOPT_SCRATCH"; then
+  if test "$NONADOPT_REHEARSED" -eq 1 && test -n "$NONADOPT_SCRATCH"; then
     rm -rf -- "$NONADOPT_SCRATCH" ||
       { echo "failed to remove the scratch apply directory" >&2; exit 1; }
   fi
@@ -1811,6 +1912,77 @@ normal return, but promotion does not trust either phase by itself: it validates
 the complete resulting state below. After a crash or nonzero return, never
 blindly rerun Copier.
 
+**Reconcile the rehearsal against the real apply — now, before anything else
+touches the tree.** This is the only moment the comparison is meaningful: §3 is
+about to make deliberate changes the guidance prescribes, and every one of them
+would read as divergence afterwards.
+
+```bash
+nonadoption_reconcile() {
+  RECONCILE_BAD=0
+  RECONCILE_OUT="$GUARDED_STATE/nonadoption-resolved.tsv"
+  : >"$RECONCILE_OUT"
+  while IFS="$(printf '\t')" read -r ROW_PATH ROW_CLASS ROW_CHANGED ROW_MEMBER ROW_NOTE; do
+    test -n "$ROW_PATH" || continue
+    # The same file-or-symlink predicate the observation used. `-e` would call a
+    # directory at a rendered file's path "present" and pass a mismatch.
+    ROW_PRESENT=0
+    if test -f "$ROW_PATH" || test -L "$ROW_PATH"; then
+      ROW_PRESENT=1
+    fi
+    case "$ROW_CLASS" in
+    nonadopt-both)
+      test "$ROW_PRESENT" -eq 0 || {
+        echo "DIVERGED  $ROW_PATH: rehearsal left it absent, the real apply created it" >&2
+        RECONCILE_BAD=$((RECONCILE_BAD + 1))
+      }
+      ;;
+    created)
+      test "$ROW_PRESENT" -eq 1 || {
+        echo "DIVERGED  $ROW_PATH: rehearsal created it ($ROW_NOTE), the real apply did not" >&2
+        RECONCILE_BAD=$((RECONCILE_BAD + 1))
+      }
+      ;;
+    deleted)
+      test "$ROW_PRESENT" -eq 0 || {
+        echo "DIVERGED  $ROW_PATH: rehearsal deleted it, the real apply left it in place" >&2
+        RECONCILE_BAD=$((RECONCILE_BAD + 1))
+      }
+      ;;
+    unknown-until-apply)
+      # No prediction to confirm — the rehearsal was refused. Record what the
+      # real apply did, which is the same observation, taken later.
+      if test "$ROW_PRESENT" -eq 1; then
+        ROW_CLASS=created
+      else
+        ROW_CLASS=nonadopt-both
+      fi
+      ;;
+    *)
+      echo "DIVERGED  $ROW_PATH: unknown class '$ROW_CLASS' in the report" >&2
+      RECONCILE_BAD=$((RECONCILE_BAD + 1))
+      ;;
+    esac
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$ROW_PATH" "$ROW_CLASS" "$ROW_CHANGED" "$ROW_MEMBER" "$ROW_NOTE" \
+      >>"$RECONCILE_OUT" || return 1
+  done <"$GUARDED_STATE/nonadoption-report.tsv"
+  test "$RECONCILE_BAD" -eq 0 || {
+    echo "non-adoption reconciliation failed on $RECONCILE_BAD path(s); the applied tree does not match the rehearsal — stop and investigate before hand-off" >&2
+    return 1
+  }
+  mv "$RECONCILE_OUT" "$GUARDED_STATE/nonadoption-report.tsv" || return 1
+  printf 'reconciled: clean\n' >"$GUARDED_STATE/nonadoption-reconciled"
+}
+nonadoption_reconcile ||
+  { echo "reconciliation failed; do not proceed to §3" >&2; exit 1; }
+```
+
+A non-zero return stops the run. Do not "note it and continue": the rehearsal
+and the apply ran the same copier with the same ref and the same answers, so a
+disagreement means the environment moved, and the report §5 is about to publish
+describes a tree that does not exist.
+
 **Persist the non-adoption report before anything tears `$GUARDED_STATE` down.**
 Promotion below deletes that directory, and §4 and §5 both still need the TSV:
 
@@ -1826,9 +1998,20 @@ GUARDED_NONADOPT_FILE="$(
 )" || { echo "failed to resolve the non-adoption report path" >&2; exit 1; }
 mkdir -p "$(dirname "$GUARDED_NONADOPT_FILE")" ||
   { echo "failed to create the non-adoption report directory" >&2; exit 1; }
+test -s "$GUARDED_STATE/nonadoption-reconciled" ||
+  { echo "refusing to persist an unreconciled non-adoption report" >&2; exit 1; }
 cp "$GUARDED_STATE/nonadoption-report.tsv" "$GUARDED_NONADOPT_FILE.$$.tmp" &&
   mv "$GUARDED_NONADOPT_FILE.$$.tmp" "$GUARDED_NONADOPT_FILE" ||
   { echo "failed to persist the non-adoption report" >&2; exit 1; }
+GUARDED_VERDICT_FILE="$(
+  git rev-parse --path-format=absolute \
+    --git-path "guarded-update-reconciled/$GUARDED_NONADOPT_BRANCH"
+)" || { echo "failed to resolve the reconciliation verdict path" >&2; exit 1; }
+mkdir -p "$(dirname "$GUARDED_VERDICT_FILE")" ||
+  { echo "failed to create the reconciliation verdict directory" >&2; exit 1; }
+cp "$GUARDED_STATE/nonadoption-reconciled" "$GUARDED_VERDICT_FILE.$$.tmp" &&
+  mv "$GUARDED_VERDICT_FILE.$$.tmp" "$GUARDED_VERDICT_FILE" ||
+  { echo "failed to persist the reconciliation verdict" >&2; exit 1; }
 ```
 
 This mirrors the deferred-findings git-path idiom, **including the branch key**,
@@ -2520,79 +2703,42 @@ listed was clobbered (see the AGENTS.md note in §2 above).
 file §2 wrote. No new render is needed; the re-run above already produced the
 `MISSING` set. Each class answers a different question:
 
-Every row records what a **rehearsal** of this exact update did to that path, so
-the check here is a reconciliation: replay each observation against the real
-worktree and require them to agree. They should agree exactly — the rehearsal
-ran the same copier, the same `--vcs-ref`, the same reviewed answers, against a
-copy of this tree. A disagreement therefore does not mean "the model was a bit
-off"; it means the environment moved between the two runs, and nothing below
-this point can be trusted. **It is fail-closed:**
+**Confirm the reconciliation was recorded.** §2 already replayed every observed
+row against the freshly applied tree, immediately after the apply and *before*
+§3 touched anything. That ordering is the point: §3 legitimately restores files
+the template deleted and removes twins the apply created, so a presence check
+run here would flag prescribed reconciliation work as divergence and block the
+hand-off over changes the guidance itself asked for. What §4 verifies is that
+the frozen verdict exists and is clean:
 
 ```bash
-NONADOPT_REPORT="$(
+NONADOPT_VERDICT="$(
   git rev-parse --path-format=absolute \
-    --git-path "guarded-update-nonadoption/$(git branch --show-current)"
+    --git-path "guarded-update-reconciled/$(git branch --show-current)"
 )"
-nonadoption_reconcile() {
-  RECONCILE_BAD=0
-  while IFS="$(printf '\t')" read -r ROW_PATH ROW_CLASS _ _ ROW_NOTE; do
-    test -n "$ROW_PATH" || continue
-    # The same file-or-symlink predicate the observation used. `-e` would call a
-    # directory at a rendered file's path "present" and pass a mismatch.
-    ROW_PRESENT=0
-    if test -f "$ROW_PATH" || test -L "$ROW_PATH"; then
-      ROW_PRESENT=1
-    fi
-    case "$ROW_CLASS" in
-    nonadopt-both)
-      test "$ROW_PRESENT" -eq 0 || {
-        echo "DIVERGED  $ROW_PATH: rehearsal left it absent, the real apply created it" >&2
-        RECONCILE_BAD=$((RECONCILE_BAD + 1))
-      }
-      ;;
-    created)
-      test "$ROW_PRESENT" -eq 1 || {
-        echo "DIVERGED  $ROW_PATH: rehearsal created it ($ROW_NOTE), the real apply did not" >&2
-        RECONCILE_BAD=$((RECONCILE_BAD + 1))
-      }
-      ;;
-    deleted)
-      test "$ROW_PRESENT" -eq 0 || {
-        echo "DIVERGED  $ROW_PATH: rehearsal deleted it, the real apply left it in place" >&2
-        RECONCILE_BAD=$((RECONCILE_BAD + 1))
-      }
-      ;;
-    *)
-      echo "DIVERGED  $ROW_PATH: unknown class '$ROW_CLASS' in the report" >&2
-      RECONCILE_BAD=$((RECONCILE_BAD + 1))
-      ;;
-    esac
-  done <"$NONADOPT_REPORT"
-  test "$RECONCILE_BAD" -eq 0 || {
-    echo "non-adoption reconciliation failed on $RECONCILE_BAD path(s); the applied tree does not match the rehearsal — stop and investigate before hand-off" >&2
-    return 1
-  }
-}
-nonadoption_reconcile
+test -s "$NONADOPT_VERDICT" ||
+  { echo "no frozen reconciliation for this branch; §2 did not complete — do not hand off" >&2; exit 1; }
+grep -qx 'reconciled: clean' "$NONADOPT_VERDICT" ||
+  { echo "the frozen reconciliation is not clean:" >&2; cat "$NONADOPT_VERDICT" >&2; exit 1; }
 ```
 
-A non-zero return stops the hand-off. Do not "note it and continue": the report
-§5 is about to publish describes a tree that does not exist, and the one thing
-this whole mechanism exists to prevent is a confident statement about an absence
-that is not true.
+Do not re-derive it by re-reading the worktree. The tree §4 sees has had §3
+applied to it deliberately, and the only moment at which "what copier did" was
+observable was the moment §2 finished.
 
-What the surviving rows mean once reconciliation passes:
+What the recorded rows mean, once the verdict is clean:
 
-- **`nonadopt-both`** — CONFIRMED silent non-adoption, now on the strongest
-  evidence available: a real copier apply of this exact update declined to
-  create the file, and the freshly reset baseline means nothing will offer it
-  again. These are the rows of §5's disposition table.
+- **`nonadopt-both`** — CONFIRMED silent non-adoption, on the strongest evidence
+  available: a real copier apply of this exact update declined to create the
+  file, and the freshly reset baseline means nothing will offer it again. These
+  are the rows of §5's disposition table.
 - **`created`, noted `new-in-target`** — the update added a file the repo did
-  not have. Normal, and worth a glance: it is new surface the repo now owns.
-- **`created`, noted `recreated`** — the template marks the path
-  `_skip_if_exists`, so the apply rendered it fresh over an absence the repo had
-  chosen. **Read it.** It arrives with the target render's content, not whatever
-  was there before someone removed it.
+  not have. Normal, and worth a glance: new surface the repo now owns.
+- **`created`, noted `recreated`** — the apply wrote the file back over an
+  absence the repo had chosen, because the template marks the path
+  `_skip_if_exists` or the render's own `.gitignore` hides it from copier's
+  deleted-path scan (copier-gotchas.md §9). **Read it.** It arrives with the
+  target render's content, not whatever was there before someone removed it.
 
   `.github/CODEOWNERS` is the one to look at first. It encodes who must review
   and is auto-requested on every PR; the render writes `* @code_owner` from a
@@ -2602,10 +2748,19 @@ What the surviving rows mean once reconciliation passes:
 - **`deleted`** — the template dropped the file and the apply removed it. Check
   it was not carrying local content; §3's deletion reconciliation covers the
   ones that were.
+- **`unknown-until-apply`** — the rehearsal was refused because the target
+  declares `_migrations`, so §2's reconciliation resolved each of these against
+  the real result rather than confirming a prediction. Read them as ordinary
+  observations; they are simply later ones.
 - **A `twin-exists:` note on any row** — the repo carries the `.yml`/`.yaml`
   counterpart. On a `created` row that means the repo now holds **both**; decide
   which survives before hand-off, because two configs for one tool is a silent
   precedence bug rather than a cosmetic duplicate.
+
+Where §3 deliberately undoes something this report recorded — restoring a
+`deleted` file, removing a `created` twin — say so in §5's *Disposition* column
+(`restored in §3: <reason>`) rather than editing the row. The report is what the
+apply did; the disposition is what you decided about it.
 
 **Check the git hooks aren't shadowed or stale, too.** Even in an already-templated
 repo two non-lefthook hook managers can lurk: a **pre-commit.com** stub in
