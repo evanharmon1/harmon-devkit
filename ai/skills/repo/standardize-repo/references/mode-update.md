@@ -657,6 +657,14 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # closing `---` (the fence rule exits first) or at the next line starting in
 # column 0, which at this indent is the next key — cheap and right for
 # frontmatter, where keys are unindented and block bodies are not.
+# A header may carry a legal trailing comment (`>- # folded`), which would
+# otherwise miss the header test and fall through to the value branch, where it
+# is non-empty and so passes — granting the waiver on an empty block. The test
+# therefore runs against a COPY with a trailing ` #…` removed. Only the header
+# test uses that copy: if it does not look like a header, the ORIGINAL value is
+# evaluated, so `description: real value # trailing` is still a real value
+# rather than being silently truncated. Requiring whitespace before the `#`
+# matches YAML, where a `#` mid-token does not open a comment.
 # This is not a YAML parser and does not try to be. An inline `#` after a real
 # value stays accepted, since quoting rules decide whether it opens a comment;
 # non-empty flow collections and anchors/aliases are likewise out of scope.
@@ -730,7 +738,8 @@ classifier_skill_frontmatter_ok() {
     fence == 1 && /^description:[[:space:]]*/ {
       d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
       sub(/[[:space:]]+$/, "", d)
-      if (d ~ /^[|>][0-9]*[+-]?$/) { in_block = 1; next }
+      h = d; sub(/[[:space:]]#.*$/, "", h); sub(/[[:space:]]+$/, "", h)
+      if (h ~ /^[|>][0-9]*[+-]?$/) { in_block = 1; next }
       if (d != "" && d != "\"\"" && d != "\047\047" &&
           d != "null" && d != "Null" && d != "NULL" && d != "~" &&
           d != "[]" && d != "{}" && d !~ /^#/) ok_desc = 1

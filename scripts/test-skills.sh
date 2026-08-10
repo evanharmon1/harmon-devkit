@@ -1148,6 +1148,15 @@ expect_ok "classifier frontmatter probe follows block scalars to their content" 
     sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET" \
     'in_block = 1' 'ok_desc = 1; in_block = 0'
+# The header test must run on a comment-stripped COPY, and the value branch must
+# keep the original — stripping `d` itself would truncate a real value into its
+# pre-comment prefix.
+expect_ok "classifier frontmatter probe strips comments only for the header test" \
+    sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
+    "$GU_CLASSIFIER_SNIPPET" \
+    'h = d; sub(/[[:space:]]#.*$/, "", h)' 'if (h ~ /^[|>][0-9]*[+-]?$/)'
+expect_fail "classifier frontmatter probe never strips comments from the value" \
+    grep -qF 'sub(/[[:space:]]#.*$/, "", d)' "$GU_CLASSIFIER_SNIPPET"
 # The verb probes must anchor on the helper's dispatch arms, not on the usage
 # strings a comment can print — that difference is the whole finding.
 for cls_verb in reserve attach check show reap; do
@@ -1197,7 +1206,8 @@ CLASSIFIER_SKILL_REL="ai/skills/universal/shepherd/SKILL.md"
 # $1 repo root, $2 `git add --chmod` flag for the helper, $3 SKILL.md shape
 # (`valid` | `untracked` | `nofrontmatter` | `quotedname` | `blockscalar` |
 # `unclosed` | `bodyonly` | `emptydq` | `emptysq` | `commentdesc` | `nulldesc` |
-# `tildedesc` | `emptyscalar` | `flowseqdesc`),
+# `tildedesc` | `emptyscalar` | `flowseqdesc` | `commentedheader` |
+# `commentedheadercontent` | `commentedpipe` | `inlinecomment`),
 # $4 helper shape:
 #   dispatch — a real-shaped miniature: a `case` on the command with all five
 #              arms, and the pending/escalate verdicts with their exit codes.
@@ -1306,6 +1316,22 @@ make_classifier_fixture() {
     flowseqdesc)
         printf '%s\n' '---' 'name: shepherd' 'description: []' '---' 'Body.'
         ;;
+    commentedheader)
+        printf '%s\n' '---' 'name: shepherd' 'description: >- # folded' \
+            '---' 'Body.'
+        ;;
+    commentedheadercontent)
+        printf '%s\n' '---' 'name: shepherd' 'description: >- # folded' \
+            '  Real folded content behind a commented header.' '---' 'Body.'
+        ;;
+    commentedpipe)
+        printf '%s\n' '---' 'name: shepherd' 'description: | # kept' \
+            '---' 'Body.'
+        ;;
+    inlinecomment)
+        printf '%s\n' '---' 'name: shepherd' \
+            'description: A real value # with a trailing comment' '---' 'Body.'
+        ;;
     *)
         printf '%s\n' '---' 'name: shepherd' \
             'description: Shepherd a draft PR to ready for review.' '---' \
@@ -1402,6 +1428,46 @@ else
     SHIPS_CLASSIFIER_NATIVELY=false
 fi
 SUPERSEDEDSKILL
+# A frozen copy of the description rules from the round that introduced the
+# block walk but tested the header with a bare regex. It is the negative
+# control for the commented-header fix: the header form with a trailing comment
+# missed that regex, fell through to the value branch, and passed.
+CLASSIFIER_R4DESC_SNIPPET="$TMPROOT/classifier-header-superseded.sh"
+cat >"$CLASSIFIER_R4DESC_SNIPPET" <<'SUPERSEDEDHEADER'
+SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+classifier_skill_frontmatter_ok() {
+    awk '
+    NR == 1 && $0 != "---" { exit }
+    $0 == "---" { fence++; if (fence >= 2) exit; next }
+    fence == 1 && /^name:[[:space:]]*/ {
+      if (!seen_name) {
+        seen_name = 1
+        v = $0; sub(/^name:[[:space:]]*/, "", v); sub(/\r$/, "", v)
+        if (v == "shepherd" || v == "\"shepherd\"" || v == "\047shepherd\047") ok_name = 1
+      }
+    }
+    fence == 1 && /^description:[[:space:]]*/ {
+      d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
+      sub(/[[:space:]]+$/, "", d)
+      if (d ~ /^[|>][0-9]*[+-]?$/) { in_block = 1; next }
+      if (d != "" && d != "\"\"" && d != "\047\047" &&
+          d != "null" && d != "Null" && d != "NULL" && d != "~" &&
+          d != "[]" && d != "{}" && d !~ /^#/) ok_desc = 1
+      next
+    }
+    fence == 1 && in_block {
+      if ($0 ~ /^[^[:space:]]/) in_block = 0
+      else if ($0 ~ /[^[:space:]]/) { ok_desc = 1; in_block = 0 }
+    }
+    END { exit (fence >= 2 && ok_name && ok_desc) ? 0 : 1 }
+  ' "$SKILLS_SOURCE_SHEPHERD_SKILL"
+}
+if classifier_skill_frontmatter_ok; then
+    SHIPS_CLASSIFIER_NATIVELY=true
+else
+    SHIPS_CLASSIFIER_NATIVELY=false
+fi
+SUPERSEDEDHEADER
 # A frozen copy of the SUPERSEDED usage-string detector. It exists for exactly
 # one assertion — that the comment-only stub used to pass — because a hardening
 # claim nobody can see failing is not evidence of anything.
@@ -1457,6 +1523,10 @@ CLS_TILDEDESC="$TMPROOT/classifier-tilde-description"
 CLS_EMPTYSCALAR="$TMPROOT/classifier-empty-block-scalar"
 CLS_FLOWSEQ="$TMPROOT/classifier-empty-flow-description"
 CLS_SYMLINK="$TMPROOT/classifier-symlinked-entry-point"
+CLS_CMTHDR="$TMPROOT/classifier-commented-header-empty"
+CLS_CMTHDROK="$TMPROOT/classifier-commented-header-content"
+CLS_CMTPIPE="$TMPROOT/classifier-commented-pipe-empty"
+CLS_INLINECMT="$TMPROOT/classifier-inline-comment-value"
 make_classifier_fixture "$CLS_FULL" +x valid dispatch
 make_classifier_fixture "$CLS_MODE" -x valid dispatch
 make_classifier_fixture "$CLS_NOSKILL" +x untracked dispatch
@@ -1476,6 +1546,10 @@ make_classifier_fixture "$CLS_TILDEDESC" +x tildedesc dispatch
 make_classifier_fixture "$CLS_EMPTYSCALAR" +x emptyscalar dispatch
 make_classifier_fixture "$CLS_FLOWSEQ" +x flowseqdesc dispatch
 make_classifier_symlink_fixture "$CLS_SYMLINK"
+make_classifier_fixture "$CLS_CMTHDR" +x commentedheader dispatch
+make_classifier_fixture "$CLS_CMTHDROK" +x commentedheadercontent dispatch
+make_classifier_fixture "$CLS_CMTPIPE" +x commentedpipe dispatch
+make_classifier_fixture "$CLS_INLINECMT" +x inlinecomment dispatch
 expect_ok_contains "classifier detector accepts a complete skills-source tree" \
     "RESULT=true" classifier_verdict "$CLS_FULL"
 # The exec bit is read from the index, never the filesystem: this helper is
@@ -1523,6 +1597,21 @@ expect_ok_contains "classifier detector rejects an empty block-scalar descriptio
     "RESULT=false" classifier_verdict "$CLS_EMPTYSCALAR"
 expect_ok_contains "classifier detector rejects an empty block scalar under pipefail" \
     "RESULT=false" classifier_verdict_pipefail "$CLS_EMPTYSCALAR"
+# A block-scalar header may legally carry a trailing comment. That form misses a
+# bare header regex and lands in the value branch, where it is non-empty and so
+# passes — an empty block granted the waiver. The header test therefore runs on
+# a comment-stripped copy, while the value branch keeps the ORIGINAL, so a real
+# value with a trailing comment is not silently truncated into one.
+expect_ok_contains "classifier detector rejects an empty commented block-scalar header" \
+    "RESULT=false" classifier_verdict "$CLS_CMTHDR"
+expect_ok_contains "classifier detector rejects an empty commented header under pipefail" \
+    "RESULT=false" classifier_verdict_pipefail "$CLS_CMTHDR"
+expect_ok_contains "classifier detector rejects an empty commented literal header" \
+    "RESULT=false" classifier_verdict "$CLS_CMTPIPE"
+expect_ok_contains "classifier detector accepts a commented header with block content" \
+    "RESULT=true" classifier_verdict "$CLS_CMTHDROK"
+expect_ok_contains "classifier detector accepts a value with a trailing comment" \
+    "RESULT=true" classifier_verdict "$CLS_INLINECMT"
 # Every content probe reads straight through a symlink; only the index mode
 # distinguishes it, which is why the entry point is mode-checked like the
 # classifier path. verify-skills.sh takes the same stance by finding with -type f.
@@ -1601,6 +1690,15 @@ expect_ok_contains "superseded skill probes accepted an empty block scalar" \
 expect_ok_contains "superseded skill probes accepted a symlinked entry point" \
     "RESULT=true" \
     classifier_verdict_with "$CLASSIFIER_R3SKILL_SNIPPET" "$CLS_SYMLINK"
+# Negative control for the commented header, plus the accept it had to preserve:
+# the bare-regex version passed the empty block AND the real trailing-comment
+# value, so only the reject is a behavior change.
+expect_ok_contains "superseded header regex accepted an empty commented header" \
+    "RESULT=true" \
+    classifier_verdict_with "$CLASSIFIER_R4DESC_SNIPPET" "$CLS_CMTHDR"
+expect_ok_contains "superseded header regex also accepted a trailing-comment value" \
+    "RESULT=true" \
+    classifier_verdict_with "$CLASSIFIER_R4DESC_SNIPPET" "$CLS_INLINECMT"
 expect_ok "audit G4 waives sync/universal for the native skills-source classifier" \
     sh -c 'grep -qF "unless the repo is the skills source itself" "$1" &&
         grep -qF "git-tracked, non-symlink executable" "$1" &&
