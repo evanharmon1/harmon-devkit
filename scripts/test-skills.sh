@@ -1461,6 +1461,31 @@ expect_fail "post-generation checklist no longer blanket-prohibits org PAT write
 expect_ok "audit guidance reconciles CodeRabbit answers and external access" \
     grep -qF '**G3. CodeRabbit selection drift.**' \
     "$STANDARDIZE_REFS/mode-audit.md"
+# The audit glossary has to describe the predicates diff-template.sh actually
+# applies, not the looser ones it started with: prose-only under the docs/specs
+# trees, and an IGNORED class the TEMPLATE grants rather than the repo's habits.
+# Patterns stay backtick-free and go straight to grep rather than through
+# `sh -c`: a backtick inside the double quotes of an sh -c script is command
+# substitution, so such a pattern silently degrades to its surrounding prose and
+# the assertion stops checking what it names.
+expect_ok "audit glossary scopes the co-owned docs/specs globs to prose" \
+    grep -qF 'globs are filtered to Markdown on purpose' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit glossary gates non-prose under the docs tree" \
+    grep -qF 'not prose anybody rewrote' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit glossary keys IGNORED on the template's own declaration" \
+    grep -qF 'untracked, and both the repo *and the template*' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit glossary gates a repo-only ignore rule" \
+    grep -qF 'repo-ignored, but the template tracks this file' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit glossary records that a MODE finding still gates" \
+    grep -qF 'a `MODE` finding on the same file still gates' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_fail "audit glossary no longer calls every gitignored copy IGNORED" \
+    grep -qF "the repo's copy is gitignored" \
+    "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "audit guidance requires the guarded canonical baseline render" \
     sh -c 'grep -qF "Do not set \`HARMON_INIT\` for a normal audit" "$1" &&
         grep -qF "ACCEPT_LEGACY_BASELINE=true" "$1" &&
@@ -3920,6 +3945,78 @@ fi
 git -C "$DT_TARGET" reset -q HEAD -- scripts/status.sh
 
 expect_ok "diff-template returns to a clean baseline after the sweep cases" \
+    env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
+
+# --- ignore probes must fail CLOSED ------------------------------------------
+# `git check-ignore` is three-valued: 0 = match, 1 = no match, anything else =
+# the probe failed. Folding "failed" in with "no match" makes the withholding
+# guarantee fail OPEN — the run would decide nothing is ignored and print the
+# body of a file somebody marked local-only. An exclude file that is a directory
+# makes check-ignore exit 128 while every other git call in the run is fine, so
+# it isolates the probe; setting it in the TARGET's own config keeps it off the
+# copier render, which reads the ambient config too. .envrc is already the
+# divergent-but-withheld file in this baseline, so the probe is reached with
+# nothing else queued to print.
+#
+# The divergent file is .vscode/settings.json, not .envrc: .envrc is ignored by
+# BOTH rule sets, so the render side would withhold its body even with the repo
+# probe broken and the leak would not show. .vscode/settings.json is ignored by
+# the repo alone, so a probe that reports "not ignored" on error is the only
+# thing standing between its contents and stdout.
+DT_BAD_EXCLUDES="$TMPROOT/diff-template-bad-excludes-dir"
+mkdir -p "$DT_BAD_EXCLUDES"
+printf '%s\n' '{ "editor.tabSize": 4, "token": "vscode-probe-leak-sentinel" }' \
+    >"$DT_TARGET/.vscode/settings.json"
+git -C "$DT_TARGET" config core.excludesFile "$DT_BAD_EXCLUDES"
+probe_fail_rc=0
+probe_fail_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_TARGET" 2>&1)" || probe_fail_rc=$?
+if [ "$probe_fail_rc" -eq 2 ]; then
+    ok "diff-template exits 2 when an ignore probe errors"
+else
+    bad "diff-template exits 2 when an ignore probe errors (got $probe_fail_rc)"
+fi
+if printf '%s\n' "$probe_fail_out" |
+    grep -qF "FAIL: cannot evaluate the repo's ignore rules"; then
+    ok "diff-template names the ignore probe that could not be evaluated"
+else
+    bad "diff-template names the ignore probe that could not be evaluated"
+fi
+if printf '%s\n' "$probe_fail_out" |
+    grep -qE 'vscode-probe-leak-sentinel|envrc-sentinel-withheld'; then
+    bad "diff-template prints no diff body when an ignore probe errors"
+else
+    ok "diff-template prints no diff body when an ignore probe errors"
+fi
+git -C "$DT_TARGET" config --unset core.excludesFile
+cp "$DT_TEMPLATE/template/.vscode/settings.json" "$DT_TARGET/.vscode/settings.json"
+
+# The scratch evaluator built from the render's own .gitignore files must not
+# degrade to "the template declares nothing local" when it cannot be built —
+# that silently downgrades every IGNORED path to a printable one. An invalid
+# init.defaultBranch fails the `git init` for that scratch repo and nothing else
+# in the run.
+init_fail_rc=0
+init_fail_out="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch \
+    GIT_CONFIG_VALUE_0='bad branch name' HARMON_INIT="$DT_TEMPLATE" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" --show "$DT_TARGET" 2>&1)" || init_fail_rc=$?
+if [ "$init_fail_rc" -eq 2 ]; then
+    ok "diff-template exits 2 when the template ignore evaluator cannot be built"
+else
+    bad "diff-template exits 2 when the template ignore evaluator cannot be built (got $init_fail_rc)"
+fi
+if printf '%s\n' "$init_fail_out" |
+    grep -qF "FAIL: cannot initialize the template ignore evaluator"; then
+    ok "diff-template says why the template ignore evaluator is unavailable"
+else
+    bad "diff-template says why the template ignore evaluator is unavailable"
+fi
+if printf '%s\n' "$init_fail_out" | grep -qF 'envrc-sentinel-withheld'; then
+    bad "diff-template prints no diff body when the ignore evaluator is unavailable"
+else
+    ok "diff-template prints no diff body when the ignore evaluator is unavailable"
+fi
+expect_ok "diff-template recovers once the ignore probes work again" \
     env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
 
 # --- nested-worktree guard ---------------------------------------------------

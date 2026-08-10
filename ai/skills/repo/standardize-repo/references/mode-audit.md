@@ -421,18 +421,31 @@ drift; once the deletion is staged it is real `MISSING`. Mature nested Terraform
 roots and an established or renumbered ADR log are reported as benign `EQUIV`
 instead of false `MISSING` and do not affect the exit status.
 
-Two further classes are **informational and never affect the exit status**, and
-their diffs are withheld even under `--show`:
+Two further classes are informational — **their content never affects the exit
+status** (a `MODE` finding on the same file still gates) — and their diffs are
+withheld even under `--show`:
 
-- **`CO-OWNED`** — the template seeds the file but the repo owns its prose
-  (`AGENTS.md` and its symlink aliases, `README.md`, `docs/`, `specs/`, the
-  devcontainer `config/zshrc`, …). Divergence is the expected steady state, so
+- **`CO-OWNED`** — the template seeds the file but the repo owns its **prose**
+  (`AGENTS.md` and its symlink aliases, `README.md`, the **`*.md` under**
+  `docs/` and `specs/`, the devcontainer `config/zshrc`, …). Those two tree
+  globs are filtered to Markdown on purpose: a build script or generated config
+  under a docs tree is not prose anybody rewrote, and it gates as ordinary
+  uncurated `DRIFT`. Divergence in the prose is the expected steady state, so
   the line is presence-only; withholding the diff is what keeps it from drowning
   the report. Its value is the inverse signal — a `CO-OWNED` path that stops
   being listed after an update was clobbered back to the template's copy.
-- **`IGNORED`** — the repo's copy is gitignored (a resolved `.envrc`, local
-  editor settings). Presence-only for the same reason plus a harder one: a
-  resolved local config can hold real secrets, so its diff is never printed.
+- **`IGNORED`** — the copy is **untracked, and both the repo *and the template*
+  ignore the path** (a resolved `.envrc`, local editor settings). Presence-only
+  for the same reason plus a harder one: a resolved local config can hold real
+  secrets, so its diff is never printed. **The template's declaration is what
+  grants this exemption, never the repo's habits**: the check is the render's
+  own `.gitignore`, so a path the repo ignores while the template *tracks* it
+  gates instead, tagged `(repo-ignored, but the template tracks this file —
+  other clones will not have it)` — adding `.vscode/` to your own `.gitignore`
+  says nothing about the artifact, and every other clone still renders it. Its
+  body stays withheld all the same: withholding follows the path under the
+  union of both rule sets, so being wrong about whether something is drift never
+  makes its contents safe to print.
 
 Symlinks are compared by **link target**, so the `CLAUDE.md` / `GEMINI.md` /
 `.github/copilot-instructions.md` aliases stay silent instead of restating one

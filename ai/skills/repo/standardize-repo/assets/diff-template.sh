@@ -451,27 +451,66 @@ fi
 # empty --template dir keeps `init.templateDir`/`~/.git-template` from seeding
 # an info/exclude, and core.excludesFile=/dev/null keeps the auditor's personal
 # ignore file (and the XDG default) out of the answer.
+#
+# Every failure here is fatal rather than a fallback. "Could not build the
+# evaluator" and "the template declares nothing local" are different facts, and
+# collapsing them means a broken setup silently downgrades every IGNORED path to
+# a printable one — the exact direction this whole class of guarantee must not
+# fail in.
 render_ignore_root="$workdir/render-ignore"
 render_has_ignore_rules=0
-if mkdir -p "$workdir/empty-git-template" &&
-    git init -q --template="$workdir/empty-git-template" \
-        "$render_ignore_root" 2>/dev/null; then
-    # Every .gitignore in the render, at its own relative path: a nested one
-    # only governs its own subtree, so flattening them would change what they
-    # mean. Today the template ships just the root file; copying all of them
-    # costs one `find` and stops that from being an assumption.
-    while IFS= read -r render_gitignore; do
-        render_gitignore_rel="${render_gitignore#"$render"/}"
-        render_gitignore_dest="$render_ignore_root/$render_gitignore_rel"
-        mkdir -p "$(dirname "$render_gitignore_dest")" || continue
-        cp "$render_gitignore" "$render_gitignore_dest" || continue
-        render_has_ignore_rules=1
-    done < <(find "$render" -type f -name .gitignore | LC_ALL=C sort)
-fi
+mkdir -p "$workdir/empty-git-template" || {
+    echo "FAIL: cannot prepare the template ignore evaluator" >&2
+    exit 2
+}
+git init -q --template="$workdir/empty-git-template" \
+    "$render_ignore_root" >/dev/null 2>&1 || {
+    echo "FAIL: cannot initialize the template ignore evaluator" >&2
+    exit 2
+}
+# Every .gitignore in the render, at its own relative path: a nested one only
+# governs its own subtree, so flattening them would change what they mean. Today
+# the template ships just the root file; copying all of them costs one `find`
+# and stops that from being an assumption.
+while IFS= read -r render_gitignore; do
+    render_gitignore_rel="${render_gitignore#"$render"/}"
+    render_gitignore_dest="$render_ignore_root/$render_gitignore_rel"
+    if ! mkdir -p "$(dirname "$render_gitignore_dest")" ||
+        ! cp "$render_gitignore" "$render_gitignore_dest"; then
+        echo "FAIL: cannot stage the render's $render_gitignore_rel for ignore evaluation" >&2
+        exit 2
+    fi
+    render_has_ignore_rules=1
+done < <(find "$render" -type f -name .gitignore | LC_ALL=C sort)
+
+# `git check-ignore` is THREE-valued: 0 = the path matches an ignore rule, 1 =
+# it does not, anything else = the probe itself failed. Every caller below folds
+# those last two together unless something stops it, and that is a fail-OPEN
+# guarantee: an unreadable target repo, a broken exclude file, a scratch
+# evaluator that lost its git dir — each would answer "nothing is ignored" and
+# hand `diff -u` the body of a file somebody marked local-only. There is no safe
+# default for "I could not tell", so an errored probe stops the run with the
+# script's setup-error status instead of guessing.
+ignore_probe_verdict() {
+    case "$1" in
+    0) return 0 ;;
+    1) return 1 ;;
+    esac
+    echo "FAIL: cannot evaluate $2 for '$3' (git check-ignore exit $1)" >&2
+    [ -z "$4" ] || printf '  %s\n' "$4" >&2
+    echo "  refusing to continue: an unevaluated ignore rule would print a withheld diff" >&2
+    exit 2
+}
+
 is_render_ignored() {
     [ "$render_has_ignore_rules" -eq 1 ] || return 1
-    git -C "$render_ignore_root" -c core.excludesFile=/dev/null \
-        check-ignore -q --no-index -- "$1" 2>/dev/null
+    ignore_probe_rc=0
+    ignore_probe_err="$(
+        git -C "$render_ignore_root" -c core.excludesFile=/dev/null \
+            check-ignore -q --no-index -- "$1" 2>&1
+    )" || ignore_probe_rc=$?
+    ignore_probe_verdict "$ignore_probe_rc" "the template's ignore rules" \
+        "$1" "$ignore_probe_err"
 }
 
 # Ignore rules drive two INDEPENDENT axes, because "does this gate?" and "is
@@ -487,7 +526,11 @@ is_render_ignored() {
 # a manifest-listed path is template-owned by definition.
 is_repo_ignored() {
     [ "$target_owns_worktree" -eq 1 ] || return 1
-    git -C "$target" check-ignore -q -- "$1" 2>/dev/null
+    ignore_probe_rc=0
+    ignore_probe_err="$(git -C "$target" check-ignore -q -- "$1" 2>&1)" ||
+        ignore_probe_rc=$?
+    ignore_probe_verdict "$ignore_probe_rc" "the repo's ignore rules" \
+        "$1" "$ignore_probe_err"
 }
 
 # WITHHOLDING — the PATH alone, under the UNION of both rule sets, with
@@ -506,9 +549,15 @@ is_repo_ignored() {
 # repo's copy is safe to echo. The manifest lists `.claude/settings.json`,
 # exactly the shape a repo ignores because its local copy holds credentials.
 is_ignore_pattern_match() {
-    if [ "$target_owns_worktree" -eq 1 ] &&
-        git -C "$target" check-ignore -q --no-index -- "$1" 2>/dev/null; then
-        return 0
+    if [ "$target_owns_worktree" -eq 1 ]; then
+        ignore_probe_rc=0
+        ignore_probe_err="$(
+            git -C "$target" check-ignore -q --no-index -- "$1" 2>&1
+        )" || ignore_probe_rc=$?
+        if ignore_probe_verdict "$ignore_probe_rc" "the repo's ignore rules" \
+            "$1" "$ignore_probe_err"; then
+            return 0
+        fi
     fi
     is_render_ignored "$2"
 }
