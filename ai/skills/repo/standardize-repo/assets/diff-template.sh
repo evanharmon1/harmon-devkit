@@ -716,6 +716,18 @@ is_ignore_pattern_match() {
 # real MISSING. `git rm --cached` is a staged delete whose worktree copy happens
 # to survive — the commit removes the file just the same — so it earns that
 # established class rather than a new one.
+#
+# Deliberately WITHOUT the non-adoption pointer the other two MISSING lines
+# carry (copier-gotchas.md §9). That gotcha is about a path the repo LACKS,
+# which the three-way merge reads as your own deletion and never restores. Here
+# the file is in HEAD and its worktree copy is still on disk: there is nothing
+# for an update to restore, and the fix is to reconcile the staged deletion, not
+# to adopt a template file. The guarded update's classifier agrees by
+# construction — its repo-presence test is `test -e`/`test -L`, so the surviving
+# copy produces no non-adoption row at all, and pointing an operator at a report
+# that deliberately omits this path would misdirect. Commit the deletion and the
+# path becomes genuinely absent, at which point the ordinary MISSING lines
+# report it and the §9 pointer is finally the true one.
 is_staged_removal() {
     p="$1"
     [ "$target_owns_worktree" -eq 1 ] || return 1
@@ -933,10 +945,13 @@ has_repo_equivalent() {
 # disappears after a `copier update` means the repo's copy went byte-identical
 # to the template's, i.e. the customizations were clobbered.
 #
-# This glob set is duplicated verbatim by the guarded update's non-adoption
+# This classification is duplicated by the guarded update's non-adoption
 # classifier (mode-update.md §1, the `nonadoption-classify` markers), which uses
-# it to explain why a MISSING path is not an unexplained non-adoption. The two
-# lists must agree — change one, change the other.
+# it to explain why a MISSING path is not an unexplained non-adoption. What must
+# agree is the whole shape, not just the glob list: the Markdown-only filter on
+# the two tree globs below is load-bearing there too, because a copy that kept
+# the bare `docs/*` would file a missing generated asset as somebody's owned
+# prose and drop it from the report. Change one, change the other.
 #
 # Keep these globs TIGHT. Anything the template grows that is not listed here
 # falls through to a visible, gating uncurated DRIFT, which is the safe default:

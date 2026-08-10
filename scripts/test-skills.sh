@@ -2299,11 +2299,22 @@ expect_ok "audit drift class K routes MISSING to the non-adoption gotcha" \
     "$STANDARDIZE_REFS/mode-audit.md"
 # The snippet duplicates diff-template.sh's co-owned globs by hand, because a
 # markdown recipe cannot source a shell function. Spot-check that the copy has
-# not drifted from the original on the load-bearing entries.
+# not drifted from the original on the load-bearing entries — and on the SHAPE,
+# not only the literals. `docs/`/`specs/` are co-owned for their PROSE alone, and
+# a copy that kept the old one-line `docs/* | specs/*) return 0 ;;` still matches
+# every literal grep below while classifying a missing generated asset as owned
+# prose and filtering it out of the report. So require the tree label to stand
+# alone on its line (the pre-filter form cannot) and the Markdown basename test
+# to sit directly under it. Two greps per file, no parser.
 expect_ok "co-owned globs agree between diff-template.sh and the non-adoption snippet" \
-    sh -c 'for glob in AGENTS.md "docs/*" .devcontainer/config/zshrc; do
-        grep -qF "$glob" "$1" || exit 1
-        grep -qF "$glob" "$2" || exit 1
+    sh -c 'for f in "$1" "$2"; do
+        for glob in AGENTS.md "docs/*" .devcontainer/config/zshrc; do
+            grep -qF "$glob" "$f" || exit 1
+        done
+        grep -A2 -E "^[[:space:]]*docs/\* \| specs/\*\)$" "$f" |
+            grep -qF "case \"\${1##*/}\" in" || exit 1
+        grep -A2 -E "^[[:space:]]*docs/\* \| specs/\*\)$" "$f" |
+            grep -qE "^[[:space:]]*\*\.md\) return 0 ;;$" || exit 1
     done' sh \
     "$STANDARDIZE_ASSETS/diff-template.sh" "$GU_NONADOPT_SNIPPET"
 # The reviewed-keyset probe runs on the designed first pass, where

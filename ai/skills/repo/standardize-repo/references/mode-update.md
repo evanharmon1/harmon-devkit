@@ -1075,14 +1075,23 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     esac
     test -e "$NONADOPT_TWIN" || test -L "$NONADOPT_TWIN"
   }
-  # Duplicated VERBATIM from diff-template.sh's `is_co_owned`, which carries the
-  # canonical list and the reasoning for it. Change one, change the other.
+  # Duplicated from diff-template.sh's `is_co_owned`, which carries the canonical
+  # list and the reasoning for it. Change one, change the other — including the
+  # SHAPE: `docs/`/`specs/` are PROSE-only there, so the nested basename case is
+  # part of the contract, not a paraphrase. A non-Markdown file under those trees
+  # is a build script, a config, or a generated asset — nothing the repo rewrote —
+  # so it is NOT co-owned, and its absence is unexplained non-adoption that has to
+  # be reported rather than filtered away.
   nonadoption_is_co_owned() {
     case "$1" in
     AGENTS.md | CLAUDE.md | GEMINI.md | .github/copilot-instructions.md) return 0 ;;
     README.md | DESIGN.md | CONTRIBUTING.md | CODE_OF_CONDUCT.md | LICENSE) return 0 ;;
     SECURITY.md | .github/SECURITY.md) return 0 ;;
-    docs/* | specs/*) return 0 ;;
+    docs/* | specs/*)
+      case "${1##*/}" in
+      *.md) return 0 ;;
+      esac
+      ;;
     todo.md | *.code-workspace | .meta/*) return 0 ;;
     .devcontainer/config/zshrc) return 0 ;;
     esac

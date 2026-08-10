@@ -532,6 +532,14 @@ dispositioned — restored, or declined with a reason on the record — and not
 shrugged at as something the next update will pick up. There is no next update
 that will.
 
+**One `MISSING` line is outside that population**, and it says so in its own
+note: `tracked in HEAD but staged for removal`. That path is still in `HEAD` and
+its worktree copy is still on disk, so nothing is absent for an update to
+restore and there is no non-adoption to disposition — the finding is a pending
+index state, and the answer is to reconcile the staged deletion. Commit it and
+the path becomes genuinely absent, at which point the paragraph above applies
+to it like any other.
+
 **L. Workflow ↔ Taskfile/runtime contract.** Every `task <target>` referenced in
 `.github/workflows/*.yml` must exist in `Taskfile.yml`. CI's `lint`/`build` jobs
 call targets `task verify` never runs (e.g. `test:tasks`, `test:hooks`,
