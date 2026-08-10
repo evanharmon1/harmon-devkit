@@ -1497,6 +1497,21 @@ expect_ok "update glossary states a curated path always gates" \
 expect_ok "update glossary excludes curated paths from the IGNORED class" \
     grep -qF 'a curated path is never a candidate' \
     "$STANDARDIZE_REFS/mode-update.md"
+# The same exception, in the same words, in the other two places that define the
+# class. `.claude/settings.json` is the concrete case: on the manifest, and
+# exactly the shape a repo gitignores.
+expect_ok "audit glossary marks IGNORED as a sweep-only class" \
+    grep -qF 'It is also a **sweep-only** class' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "audit glossary names the curated path that still gates" \
+    grep -qF 'is on that list and reports `DRIFT` however thoroughly a repo ignores it' \
+    "$STANDARDIZE_REFS/mode-audit.md"
+expect_ok "standards catalog marks IGNORED as a sweep-only class" \
+    grep -qF '`IGNORED` is **sweep-only**' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog names the curated path that still gates" \
+    grep -qF 'is on that list and reports `DRIFT` however thoroughly a repo ignores it' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 expect_fail "audit glossary no longer calls every gitignored copy IGNORED" \
     grep -qF "the repo's copy is gitignored" \
     "$STANDARDIZE_REFS/mode-audit.md"
@@ -4196,7 +4211,7 @@ if swapped_dir_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-
     --show "$DT_SWAPPED_DIR" 2>&1)"; then
     bad "diff-template gates a tracked dir swapped for a dangling symlink (expected non-zero exit)"
 elif printf '%s\n' "$swapped_dir_out" |
-    grep -qF "DRIFT    scripts/status.sh  (parent directory cannot be resolved"; then
+    grep -qF "DRIFT    scripts/status.sh  (parent directory is a symlink that leads nowhere"; then
     ok "diff-template gates a tracked dir swapped for a dangling symlink"
 else
     bad "diff-template gates a tracked dir swapped for a dangling symlink (diagnostic missing)"
@@ -4217,6 +4232,80 @@ elif printf '%s\n' "$swapped_out_out" |
     ok "diff-template gates a tracked dir swapped for an outside symlink"
 else
     bad "diff-template gates a tracked dir swapped for an outside symlink (diagnostic missing)"
+fi
+
+# --- an ABSENT parent is not a structural one --------------------------------
+# A failed `cd` cannot tell "the directory was replaced by a link that goes
+# nowhere" from "the directory is not there", and treating both as structural
+# broke the two cases that depend on an absent parent: a template that grew a
+# new nested directory (every file under it is MISSING) and an unstaged deletion
+# of a tracked directory (the index snapshot covers it).
+rm -rf "$DT_TARGET/.vscode"
+if absent_dir_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports a file under an absent directory as MISSING (expected non-zero exit)"
+elif printf '%s\n' "$absent_dir_out" | grep -qF "MISSING  .vscode/settings.json"; then
+    ok "diff-template reports a file under an absent directory as MISSING"
+else
+    bad "diff-template reports a file under an absent directory as MISSING (diagnostic missing)"
+fi
+if printf '%s\n' "$absent_dir_out" | grep -qF ".vscode/settings.json  (parent directory"; then
+    bad "diff-template calls an absent directory absent, not structural"
+else
+    ok "diff-template calls an absent directory absent, not structural"
+fi
+mkdir -p "$DT_TARGET/.vscode"
+cp "$DT_TEMPLATE/template/.vscode/settings.json" "$DT_TARGET/.vscode/settings.json"
+
+# Unstaged deletion of a whole tracked DIRECTORY, not just a file: the
+# documented index-snapshot behaviour has to survive the parent check, which
+# runs before the fallback is even consulted.
+rm -rf "$DT_TARGET/scripts"
+expect_ok "diff-template compares an unstaged tracked directory deletion from the index" \
+    env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
+git -C "$DT_TARGET" checkout HEAD -- scripts
+expect_ok "diff-template returns to a clean baseline after the absent-parent cases" \
+    env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
+
+# A brand-new nested directory two levels deep, so the component walk is
+# exercised past its first step rather than only at the repo root.
+DT_NEWDIR_TEMPLATE="$TMPROOT/diff-template-newdir-source"
+mkdir -p "$DT_NEWDIR_TEMPLATE/template/newdir/nested"
+cat >"$DT_NEWDIR_TEMPLATE/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+project_name:
+  type: str
+  default: New Dir
+EOF
+printf '%s\n' 'kept' >"$DT_NEWDIR_TEMPLATE/template/keep.txt"
+printf '%s\n' 'one' >"$DT_NEWDIR_TEMPLATE/template/newdir/one.txt"
+printf '%s\n' 'two' >"$DT_NEWDIR_TEMPLATE/template/newdir/nested/two.txt"
+git_init "$DT_NEWDIR_TEMPLATE"
+git_commit_all "$DT_NEWDIR_TEMPLATE" "template grows a nested directory"
+git -C "$DT_NEWDIR_TEMPLATE" tag v1.0.0
+DT_NEWDIR_TARGET="$TMPROOT/diff-template-newdir-target"
+mkdir -p "$DT_NEWDIR_TARGET"
+printf '%s\n' 'kept' >"$DT_NEWDIR_TARGET/keep.txt"
+cat >"$DT_NEWDIR_TARGET/.copier-answers.yml" <<EOF
+_commit: v1.0.0
+_src_path: file://$DT_NEWDIR_TEMPLATE
+project_name: New Dir
+EOF
+git_init "$DT_NEWDIR_TARGET"
+git_commit_all "$DT_NEWDIR_TARGET" "target predates the nested directory"
+if newdir_out="$(HARMON_INIT="$DT_NEWDIR_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_NEWDIR_TARGET" 2>&1)"; then
+    bad "diff-template reports a whole absent nested directory as MISSING (expected non-zero exit)"
+elif printf '%s\n' "$newdir_out" | grep -qF "MISSING  newdir/nested/two.txt" &&
+    printf '%s\n' "$newdir_out" | grep -qF "MISSING  newdir/one.txt"; then
+    ok "diff-template reports a whole absent nested directory as MISSING"
+else
+    bad "diff-template reports a whole absent nested directory as MISSING (diagnostic missing)"
+fi
+if printf '%s\n' "$newdir_out" | grep -qF "parent directory"; then
+    bad "diff-template reports no structural finding for an absent nested directory"
+else
+    ok "diff-template reports no structural finding for an absent nested directory"
 fi
 
 # --- nested-worktree guard ---------------------------------------------------

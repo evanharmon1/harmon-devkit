@@ -418,14 +418,52 @@ repo_parent_diverges() {
     esac
     rpd_rel="${rpd_abs#"$target"/}"
     case "$rpd_rel" in
-    */*) rpd_expected="$target_physical/${rpd_rel%/*}" ;;
-    *) rpd_expected="$target_physical" ;;
+    # Nothing sits between a root-level file and the root itself.
+    */*) rpd_dir_rel="${rpd_rel%/*}" ;;
+    *) return 1 ;;
     esac
+    # A parent has THREE states and only one of them is a divergence. The first
+    # version of this collapsed the last two, because a failed `cd` cannot tell
+    # "the directory was replaced by a link that goes nowhere" from "the
+    # directory is not there" — so a template that grew a new nested directory
+    # reported structural DRIFT for every file under it instead of MISSING, and
+    # an unstaged deletion of a tracked directory reported the same instead of
+    # being compared from the index. Walk the components between the root and
+    # the file's directory to tell them apart:
+    #   • a SYMLINK anywhere along the way is structural — the template renders
+    #     real directories, so a link is a divergence whatever it points at;
+    #   • a component that simply does not EXIST is not a divergence at all.
+    #     Fall through and let the ordinary MISSING / index-snapshot handling
+    #     decide, which is what those two cases are for;
+    #   • all present and real drops out of the loop into the physical
+    #     comparison below.
+    rpd_walk="$target"
+    rpd_rest="$rpd_dir_rel"
+    while [ -n "$rpd_rest" ]; do
+        case "$rpd_rest" in
+        */*)
+            rpd_head="${rpd_rest%%/*}"
+            rpd_rest="${rpd_rest#*/}"
+            ;;
+        *)
+            rpd_head="$rpd_rest"
+            rpd_rest=""
+            ;;
+        esac
+        rpd_walk="$rpd_walk/$rpd_head"
+        # `-L` before `-e`: a dangling link exists as a link but not as a
+        # target, and it is the structural case, not the absent one.
+        [ ! -L "$rpd_walk" ] || break
+        [ -e "$rpd_walk" ] || return 1
+    done
+    rpd_expected="$target_physical/$rpd_dir_rel"
     rpd_actual=""
-    rpd_actual="$(cd "$(dirname "$rpd_abs")" 2>/dev/null && pwd -P)" ||
+    rpd_actual="$(cd "$target/$rpd_dir_rel" 2>/dev/null && pwd -P)" ||
         rpd_actual=""
     if [ -z "$rpd_actual" ]; then
-        repo_parent_note="parent directory cannot be resolved — structural divergence"
+        # Only reachable now via the `break` above: a symlinked component whose
+        # destination does not exist, or does not contain the rest of the path.
+        repo_parent_note="parent directory is a symlink that leads nowhere — structural divergence"
         return 0
     fi
     [ "$rpd_actual" != "$rpd_expected" ] || return 1

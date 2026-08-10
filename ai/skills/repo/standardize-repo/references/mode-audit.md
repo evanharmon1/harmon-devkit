@@ -437,7 +437,13 @@ withheld even under `--show`:
 - **`IGNORED`** — the copy is **untracked, and both the repo *and the template*
   ignore the path** (a resolved `.envrc`, local editor settings). Presence-only
   for the same reason plus a harder one: a resolved local config can hold real
-  secrets, so its diff is never printed. **The template's declaration is what
+  secrets, so its diff is never printed. It is also a **sweep-only** class: a
+  path on
+  [`template-owned-files.txt`](../assets/template-owned-files.txt) always gates,
+  ignore rules or not, because the manifest is itself an assertion of template
+  ownership and ignore-based leniency cannot override it — `.claude/settings.json`
+  is on that list and reports `DRIFT` however thoroughly a repo ignores it.
+  Withholding still applies to those paths. **The template's declaration is what
   grants this exemption, never the repo's habits**: the check is the render's
   own `.gitignore`, so a path the repo ignores while the template *tracks* it
   gates instead, tagged `(repo-ignored, but the template tracks this file —

@@ -99,7 +99,12 @@ severity — and the equally manifest-independent `MISSING` scan catches templat
 files the repo lacks entirely. Two classes are informational: `CO-OWNED` (prose
 the repo owns) and `IGNORED` (untracked, and ignored by the repo *and the
 template*); their content never affects the exit status and their diffs are
-withheld even under `--show`. It compares an unstaged tracked
+withheld even under `--show`. `IGNORED` is **sweep-only**: a path on
+[`template-owned-files.txt`](../assets/template-owned-files.txt) always gates,
+ignore rules or not, because the manifest is itself an assertion of template
+ownership and ignore-based leniency cannot override it — `.claude/settings.json`
+is on that list and reports `DRIFT` however thoroughly a repo ignores it.
+It compares an unstaged tracked
 deletion from the index and reports mature nested Terraform/ADR replacements as
 benign `EQUIV`, so an audit/update pulls in missed improvements (the recurring
 status.sh / lint-hygiene / bootstrap class) and missed whole files without losing
