@@ -2286,11 +2286,33 @@ expect_ok "the non-adoption report is keyed by branch on every path that touches
     "$STANDARDIZE_REFS/mode-update.md"
 # Branch-keying without an orphan sweep just moves the loss: a branch renamed
 # mid-update strands its report under the old name, where nothing looks again.
-expect_ok "hand-off sweeps the non-adoption tree for orphans before deleting" \
+# §2 writes TWO branch-keyed files, so hand-off must sweep and retire both.
+# Deleting the report and leaving the verdict left a clean verdict in the git
+# directory forever with nothing to describe — the stale-verdict shape §1's entry
+# clearing exists to prevent, reintroduced at the very end.
+expect_ok "hand-off sweeps both branch-keyed trees for orphans before deleting" \
     sh -c 'grep -qF "ls -R \"\$(git rev-parse --git-path guarded-update-nonadoption)\"" "$1" &&
-        grep -qF "Sweep for orphans before you delete anything" "$1" &&
-        grep -qF "only this branch" "$1"' sh \
+        grep -qF "ls -R \"\$(git rev-parse --git-path guarded-update-reconciled)\"" "$1" &&
+        grep -qF "Sweep BOTH trees for orphans" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "hand-off retires both branch-keyed files together" \
+    sh -c 'grep -qF "for HANDOFF_KEY in guarded-update-nonadoption guarded-update-reconciled" "$1" &&
+        grep -qF "Both, or neither" "$1" &&
+        grep -qF "never the directories" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# The schema overview is what a reader meets first; it has to name the labels the
+# classifier actually emits, not the ones three redesigns ago.
+expect_ok "the schema overview names the classes and notes in use" \
+    sh -c 'over="$(grep -n "Silent non-adoption is the one gap" "$1" | cut -d: -f1)"
+        seg="$(sed -n "${over},$((over + 22))p" "$1")"
+        printf "%s\n" "$seg" | grep -qF "co-owned-prose" &&
+        printf "%s\n" "$seg" | grep -qF "known-false-verified" &&
+        printf "%s\n" "$seg" | grep -qF "unverified-equivalent" &&
+        printf "%s\n" "$seg" | grep -qF "gitkeep" &&
+        printf "%s\n" "$seg" | grep -qF "unknown-until-apply"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "no pre-redesign class label survives in the guidance" \
+    grep -qE "gitkeep-benign|filtered-known" "$STANDARDIZE_REFS/mode-update.md"
 # Grepping the recipe proves it says the right words; running it proves the words
 # work. The branch key is a PATH, and this repo's own branch names contain `/` —
 # so `mkdir -p "$(dirname …)"` is load-bearing and no grep can show that it fires.
@@ -6747,9 +6769,31 @@ vv_write_clean_run
 printf '_src_path: https://example.invalid/vv\n' >"$VV_DIR/.copier-answers.yml"
 expect_fail "verdict verification refuses an answers file recording no _commit" \
     vv_run
-vv_write_clean_run
+# A content-only update — every managed path present, only bytes changed —
+# legitimately reports nothing. That is a successful run, and refusing it on size
+# blocked hand-off on exactly the update that went best. Staleness is caught by
+# the hash and lineage binding, not by emptiness.
+vv_write_answers "$VV_COMMIT"
 : >"$VV_REPORT"
-expect_fail "verdict verification refuses an empty persisted report" vv_run
+{
+    printf 'reconciled: clean\n'
+    printf 'report: %s\n' "$(git -C "$VV_DIR" hash-object "$VV_REPORT")"
+    printf 'target-commit: %s\n' "$VV_COMMIT"
+    printf 'start-head: %s\n' "$(git -C "$VV_DIR" rev-parse HEAD)"
+} >"$VV_VERDICT"
+expect_ok "verdict verification accepts an empty report with a matching verdict" \
+    vv_run
+# ...and an empty report still has to be the one the verdict describes.
+printf 'x\tnonadopt-both\tno\tbaseline+target\t-\n' >"$VV_REPORT"
+expect_fail "an empty verdict binding does not excuse a non-empty report" vv_run
+# Missing entirely is a different fact from empty, and still a refusal.
+vv_write_clean_run
+rm -f "$VV_REPORT"
+expect_fail "verdict verification refuses a missing persisted report" vv_run
+vv_write_clean_run
+expect_ok "the verification tests for existence, not size" \
+    sh -c 'grep -qF "test -f \"\$VERIFY_REPORT\"" "$1" &&
+        ! grep -qF "test -s \"\$VERIFY_REPORT\"" "$1"' sh "$GU_VERIFY"
 expect_ok "the verification reads the lineage rather than the session variable" \
     sh -c 'grep -qF "yq -r '\''._commit // \"\"'\'' .copier-answers.yml" "$1" &&
         ! grep -qE "^[^#]*target-commit: \\\$HARMON_INIT_COMMIT" "$1"' sh \

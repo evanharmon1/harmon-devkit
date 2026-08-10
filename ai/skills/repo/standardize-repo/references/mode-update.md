@@ -1804,14 +1804,18 @@ renders in hand is what makes it visible at all, which is why the block above
 ends by classifying it into `$GUARDED_STATE/nonadoption-report.tsv` — one row
 per path,
 `path<TAB>class<TAB>changed_in_range<TAB>baseline_membership<TAB>note`, with
-`nonadopt-both` naming the blind spot itself and `ignored-policy` / `co-owned` /
-`filtered-known` / `gitkeep-benign` recording the paths that have an explanation
-already rather than dropping them. The mechanism, and why `copier update` can
-never close it on its own, is [`copier-gotchas.md`](./copier-gotchas.md) §9; §4
-re-checks the rows against the applied result and §5 turns the survivors into a
-disposition table in the PR body. Only `nonadopt-both` reaches that table — the
-other classes are carried so that the report can be read as complete rather than
-as whatever survived an undocumented filter.
+where `class` is what the apply was OBSERVED to do — `nonadopt-both` naming the
+blind spot itself, alongside `created`, `deleted`, and `unknown-until-apply` for
+the degraded path — and `note` carries whatever evidence explains it:
+`co-owned-prose`, `ignored-policy`, `repo-ignored-only`, `known-false-verified`,
+`unverified-equivalent`, `package-json-unparseable`, `twin-exists: <path>`,
+`gitkeep`, `new-in-target` / `recreated` / `apply-artifact` on a `created` row,
+and the chezmoi Brewfile annotation. A note never removes a row. The mechanism,
+and why `copier update` can never close it on its own, is
+[`copier-gotchas.md`](./copier-gotchas.md) §9; §2 reconciles the rows against the
+applied result and §5 turns the survivors into a disposition table in the PR
+body. Only `nonadopt-both` reaches that table — the other classes describe what
+the apply did and are settled before hand-off.
 
 **The classification is an observation, not a prediction.** Before writing the
 report, §1 copies the whole worktree to a scratch directory and runs *this exact
@@ -2816,7 +2820,14 @@ nonadoption_verify_verdict() {
     git rev-parse --path-format=absolute \
       --git-path "guarded-update-reconciled/$VERIFY_BRANCH"
   )" || { echo "failed to resolve the frozen reconciliation" >&2; return 1; }
-  test -s "$VERIFY_REPORT" ||
+  # EXISTENCE, not size. A content-only update — every managed path already
+  # present, only bytes changed — legitimately produces a zero-byte report, and
+  # `test -s` turned that successful run into a blocked hand-off. Emptiness is
+  # not evidence of an incomplete run: the hash and lineage binding below already
+  # carry that. A report truncated or replaced after §2 fails the `report:` hash,
+  # one from an earlier run fails it too or fails the lineage check, and §1 clears
+  # both files on entry so a rerun cannot inherit either.
+  test -f "$VERIFY_REPORT" ||
     { echo "no persisted non-adoption report for this branch; §2 did not complete — do not hand off" >&2; return 1; }
   test -s "$VERIFY_VERDICT" ||
     { echo "no frozen reconciliation for this branch; §2 did not complete — do not hand off" >&2; return 1; }
@@ -3070,21 +3081,46 @@ absent, and claiming they exist is the one sentence here a reviewer would take
 at face value. An omitted section is indistinguishable from a forgotten one; a
 section that overstates is worse than either.
 
-**Sweep for orphans before you delete anything.** List the whole tree —
-`ls -R "$(git rev-parse --git-path guarded-update-nonadoption)"` — and account
-for every file it holds, not just this branch's. Renaming a branch
+**Sweep BOTH trees for orphans before you delete anything.** §2 writes two
+branch-keyed files — the report and its reconciliation verdict — so both are
+listed and both are accounted for:
+
+```bash
+ls -R "$(git rev-parse --git-path guarded-update-nonadoption)"
+ls -R "$(git rev-parse --git-path guarded-update-reconciled)"
+```
+
+Account for every file they hold, not just this branch's. Renaming a branch
 (`git branch -m`) or deleting one strands its report under the old name, where
 nothing will ever look for it again, and a rename mid-update is exactly when
 that happens. Adopt an orphan into this PR if it belongs to this work; otherwise
 leave it in place and **say in the PR body that it is there**, so the next
-update does not mistake it for its own. Listing costs one command; migration
+update does not mistake it for its own. Listing costs two commands; migration
 logic would cost a mechanism that then needs its own correctness argument.
 
-Then delete **only this branch's file** — the same path §2 wrote, not the
-directory — once the section is in the PR body and you have re-read the body to
-confirm the rows are actually in it. The PR is the record from then on; the file
-is the sole durable copy until it is. Removing the tree would take every other
-branch's report with it, which is the loss the branch key exists to prevent.
+Then retire **this branch's two files together** — the same paths §2 wrote,
+never the directories — once the section is in the PR body and you have re-read
+the body to confirm the rows are actually in it:
+
+```bash
+HANDOFF_BRANCH="$(git branch --show-current)"
+test -n "$HANDOFF_BRANCH" ||
+  { echo "detached HEAD: refusing to guess which branch's files to retire" >&2; exit 1; }
+for HANDOFF_KEY in guarded-update-nonadoption guarded-update-reconciled; do
+  rm -f -- "$(
+    git rev-parse --path-format=absolute \
+      --git-path "$HANDOFF_KEY/$HANDOFF_BRANCH"
+  )" || { echo "failed to retire $HANDOFF_KEY for this branch" >&2; exit 1; }
+done
+```
+
+Both, or neither. Deleting the report and leaving the verdict is what the
+earlier revision did, and it left a clean verdict sitting in the git directory
+forever with nothing to describe — the exact stale-verdict shape §1's entry
+clearing and the hash binding exist to prevent, reintroduced at hand-off. The PR
+is the record from then on; the files are the sole durable copy until it is.
+Removing the directories would take every other branch's with them, which is the
+loss the branch key exists to prevent.
 
 ## 6. Reconcile live GitHub metadata (`project_management: github`) — post-merge
 
