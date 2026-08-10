@@ -2296,9 +2296,19 @@ expect_ok "hand-off sweeps both branch-keyed trees for orphans before deleting" 
         grep -qF "Sweep BOTH trees for orphans" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "hand-off retires both branch-keyed files together" \
-    sh -c 'grep -qF "for HANDOFF_KEY in guarded-update-nonadoption guarded-update-reconciled" "$1" &&
-        grep -qF "Both, or neither" "$1" &&
+    sh -c 'grep -qF "HANDOFF_VERDICT" "$1" && grep -qF "HANDOFF_REPORT" "$1" &&
         grep -qF "never the directories" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# The ORDER is the fix. A clean verdict with no report beside it is the one
+# combination that lies, so the verdict goes first and a failure there stops
+# before the report is touched. Asserted on line numbers, because a comment
+# saying "verdict first" over a loop that does the opposite would still pass.
+expect_ok "hand-off retires the verdict before the report" \
+    sh -c 'v="$(grep -nF "rm -f -- \"\$HANDOFF_VERDICT\"" "$1" | cut -d: -f1)"
+        r="$(grep -nF "rm -f -- \"\$HANDOFF_REPORT\"" "$1" | cut -d: -f1)"
+        test -n "$v" && test -n "$r" && test "$v" -lt "$r" &&
+        grep -qF "the report is untouched at" "$1" &&
+        grep -qF "either both files still exist or the verdict is already gone" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # The schema overview is what a reader meets first; it has to name the labels the
 # classifier actually emits, not the ones three redesigns ago.
@@ -2411,6 +2421,19 @@ expect_ok "explained absences are listed per path, never collapsed to a count" \
     sh -c 'grep -qF "### Explained absences" "$1" &&
         grep -qF "One line each, never a bare count" "$1" &&
         ! grep -qF "Filtered, not silent:" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# Only notes that record a DECISION route a row out of the table. `co-owned-prose`
+# records none: co-ownership explains why a file the repo HAS differs, and an
+# absent file differs from nothing — so an absent docs page is a permanent
+# non-adoption exactly like an absent AGENTS.md, and owes a Why and a Disposition.
+expect_ok "only decision-bearing notes route a row out of the disposition table" \
+    sh -c 'grep -qF "Exactly three answer it" "$1" &&
+        grep -qF "\`co-owned-prose\` is on that second list" "$1" &&
+        grep -qF "and it is the one note that says" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "the worked example tables its co-owned absence" \
+    sh -c 'grep -qE "^\| \`docs/runbooks/restore\.md\` \|.*co-owned-prose" "$1" &&
+        ! grep -qE "^- \`docs/[^\`]*\` — co-owned-prose" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # One loop, four classes, no carve-outs — possible only because nothing is
 # suppressed out of the report.

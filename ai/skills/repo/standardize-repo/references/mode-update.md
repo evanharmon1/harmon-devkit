@@ -1282,12 +1282,13 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # delete it" invents a decision nobody made, which is the exact failure this
   # report exists to end. Those paths get table rows.
   #
-  # This is a NOTE, not a filter. §5 groups rows whose every note is noise into a
-  # compact list under the table — still one line per path, still auditable —
-  # because a repo carries tens of documentation pages and listing each in the
-  # disposition table would bury the rows a reviewer must act on. Grouping is a
-  # presentation choice made where a human can see all of it; suppression was a
-  # decision made here, where nobody could.
+  # This is a NOTE, not a filter, and §5 keeps it in the disposition TABLE. It
+  # once routed a row to the compact list on the grounds that a repo carries tens
+  # of documentation pages — but volume is not intent, and this note is the one
+  # that establishes none: co-ownership explains why a file the repo HAS may
+  # differ from the template's, and an absent file differs from nothing. Only
+  # `ignored-policy`, `known-false-verified` and `gitkeep` send a row to the
+  # list, because each of those records a decision somebody already made.
   nonadoption_is_doc_prose() {
     case "$1" in
     docs/* | specs/*)
@@ -1868,8 +1869,9 @@ that. The worst a wrong note can do is mislabel a row that is still there, in a
 report §4 still checks and §5 still prints.
 
 Readability is handled where a human can see the whole thing: §5 puts rows with
-routine notes in a compact list under the table, one line each, instead of
-collapsing them into counts.
+notes that record a decision already taken — `ignored-policy`,
+`known-false-verified`, `gitkeep` — in a compact list under the table, one line
+each, instead of collapsing them into counts. Every other absence is tabled.
 
 ## 2. Run the update## 2. Run the update## 2. Run the update
 
@@ -2974,6 +2976,7 @@ never restore it — see copier-gotchas.md §9.
 | `scripts/status.sh` | baseline+target (≤ v3.4.0) | always | yes | unclear — needs your judgment; `Taskfile.yml` still has a `status` target that calls it, so the absence looks accidental | adopt — restore from the render and re-run `task verify` |
 | `AGENTS.md` | baseline+target (≤ v3.0.0) | always | yes | Accidental: the repo has `CLAUDE.md` as a regular file, so the symlink alias was flattened and the real file never landed. | adopt — restore and re-point the aliases |
 | `.envrc` | baseline+target (≤ v3.20.2) | always | no | note `repo-ignored-only`: this repo gitignores `.envrc`, but the template does not ship it ignored, so the exemption is this repo's habit rather than the template's declaration. | decline — the repo resolves env through `op run`; record it |
+| `docs/runbooks/restore.md` | baseline+target (≤ v3.14.0) | always | no | note `co-owned-prose`: prose this repo owns — but it never had this page, and co-ownership explains why content differs, never why a file is absent. Nothing references it. | decline — restore is documented in this repo's own runbook index |
 
 ### Explained absences — same finding, evidence attached
 
@@ -2981,9 +2984,7 @@ One line each, never a bare count: these are `nonadopt-both` rows whose only
 notes are routine, listed so the classification can be audited rather than
 trusted.
 
-- `docs/architecture/adr.md` — co-owned-prose
-- `docs/runbooks/restore.md` — co-owned-prose
-- `.envrc` — ignored-policy
+- `.vscode/settings.json` — ignored-policy
 - `terraform/main.tf` — known-false-verified (nested roots under `terraform/`)
 - `.github/ISSUE_TEMPLATE/.gitkeep` — gitkeep
 
@@ -3044,19 +3045,32 @@ Column by column:
 - **Disposition** — `adopt` or `decline`, plus a one-line rationale. Both are
   legitimate outcomes; the point is that one of them was chosen on the record.
 
-**Split the `nonadopt-both` rows by their notes, and by nothing else.** A row
-goes in the table when its note is `-` — nobody found any explanation, which is
-the most important row in the report — or when it carries a **load-bearing**
-note: `unverified-equivalent`, `repo-ignored-only`, `package-json-unparseable`,
-`repo-path-is-directory`, `twin-exists:`, or the chezmoi Brewfile annotation.
-Each of those says an explanation was *attempted and did not hold*, which is a
-finding, not a dismissal.
+**Split the `nonadopt-both` rows by their notes, and by nothing else.** The
+question a note has to answer is whether somebody already DECIDED this absence.
+Exactly three answer it: `ignored-policy` (the template itself declares the path
+local), `known-false-verified` (the documented replacement was found in this
+repo), and `gitkeep` (a directory stub). A row goes to the explained-absences
+list only when **every** note it carries is one of those three.
 
-Everything else — a row whose notes are all **routine**: `co-owned-prose`,
-`ignored-policy`, `known-false-verified`, `gitkeep` — goes in the explained-
-absences list above, one line per path with its note. A row with several notes
-is routine only if **every** note is; one load-bearing note puts it in the
-table.
+Everything else goes in the table — an empty note `-`, which is the most
+important row in the report because nobody found any explanation at all, and
+every note that describes a *state* rather than a decision:
+`unverified-equivalent`, `repo-ignored-only`, `package-json-unparseable`,
+`repo-path-is-directory`, `twin-exists:`, `co-owned-prose`, and the chezmoi
+Brewfile annotation.
+
+**`co-owned-prose` is on that second list, and it is the interesting one.** It
+used to route a row away from the table, and it is the one note that says
+nothing whatever about intent. Co-ownership is this report's own thesis
+inverted: it explains why a file the repo HAS may differ from the template's
+copy, and a file the repo does not have is not differing from anything. An
+absent `docs/**.md` is a permanent non-adoption in exactly the way an absent
+`AGENTS.md` is. The earlier split tabled the root files and collapsed the prose
+on volume grounds — the issue's language about collapsing noise, applied to the
+wrong population, because that language was about present-divergent files.
+Present-divergent co-owned files never enter this report at all, so tabling the
+absent ones costs nothing and closes the last route by which a permanent
+non-adoption reached a reviewer without a Why or a Disposition beside it.
 
 This is grouping, not filtering, and the difference is the whole point of the
 report's shape. Earlier revisions collapsed these into counts like "4 co-owned",
@@ -3106,19 +3120,34 @@ the body to confirm the rows are actually in it:
 HANDOFF_BRANCH="$(git branch --show-current)"
 test -n "$HANDOFF_BRANCH" ||
   { echo "detached HEAD: refusing to guess which branch's files to retire" >&2; exit 1; }
-for HANDOFF_KEY in guarded-update-nonadoption guarded-update-reconciled; do
-  rm -f -- "$(
-    git rev-parse --path-format=absolute \
-      --git-path "$HANDOFF_KEY/$HANDOFF_BRANCH"
-  )" || { echo "failed to retire $HANDOFF_KEY for this branch" >&2; exit 1; }
-done
+HANDOFF_VERDICT="$(
+  git rev-parse --path-format=absolute \
+    --git-path "guarded-update-reconciled/$HANDOFF_BRANCH"
+)" || { echo "failed to resolve the reconciliation verdict" >&2; exit 1; }
+HANDOFF_REPORT="$(
+  git rev-parse --path-format=absolute \
+    --git-path "guarded-update-nonadoption/$HANDOFF_BRANCH"
+)" || { echo "failed to resolve the non-adoption report" >&2; exit 1; }
+# VERDICT FIRST, and stop dead if it will not go.
+rm -f -- "$HANDOFF_VERDICT" ||
+  { echo "failed to retire the reconciliation verdict; the report is untouched at $HANDOFF_REPORT — resolve this before removing anything by hand" >&2; exit 1; }
+rm -f -- "$HANDOFF_REPORT" ||
+  { echo "the verdict is retired but the report survives at $HANDOFF_REPORT; remove it before the next guarded run (§1 would clear it anyway)" >&2; exit 1; }
 ```
 
-Both, or neither. Deleting the report and leaving the verdict is what the
-earlier revision did, and it left a clean verdict sitting in the git directory
-forever with nothing to describe — the exact stale-verdict shape §1's entry
-clearing and the hash binding exist to prevent, reintroduced at hand-off. The PR
-is the record from then on; the files are the sole durable copy until it is.
+**The order is load-bearing.** The verdict goes first, and a failure there stops
+the run before the report is touched. The invariant it buys: at every point where
+this can fail, either both files still exist or the verdict is already gone —
+never a clean verdict with no report beside it. That is the one combination that
+lies, because a verdict asserts something about a report that would no longer be
+there to check, and it is exactly the stale-verdict shape §1's entry clearing and
+the hash binding exist to prevent. A surviving report with no verdict is the
+harmless direction: §4 refuses on the missing verdict and §1 clears the leftover
+on the next run.
+
+Deleting the report and leaving the verdict is what the earlier revision did, and
+it produced that forbidden state on every run rather than only on a failure. The
+PR is the record from then on; the files are the sole durable copy until it is.
 Removing the directories would take every other branch's with them, which is the
 loss the branch key exists to prevent.
 
