@@ -6578,6 +6578,27 @@ expect_ok "the managed ignored path IS overlaid into the scratch" \
 # `created` row. Its absence from the report is the overlay doing its job.
 expect_fail "the overlaid ignored path is not reported as a non-adoption" \
     grep -q '.vscode/local.json' "$SCOPE_STATE/nonadoption-report.tsv"
+# THE one-universe invariant. The scratch is deliberately a subset of the
+# worktree, so diffing the real repo against it reported every unmanaged ignored
+# file as deleted by the apply — five rows here, thousands on a real repo — and
+# reconciliation then failed against a tree that still had them. Both sides of
+# the diff now come from the scratch.
+expect_fail "unmanaged ignored content is not reported as deleted by the apply" \
+    grep -q node_modules "$SCOPE_STATE/nonadoption-report.tsv"
+expect_ok "both sides of the rehearsal diff are inventoried from the scratch" \
+    sh -c 'test "$(grep -c "nonadoption_inventory \"\$NONADOPT_SCRATCH/repo\"" "$1")" -eq 2 &&
+        ! grep -qF "nonadoption_inventory . >" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
+# A before-inventory taken after the update would make every diff empty, so the
+# ordering is asserted rather than assumed.
+expect_ok "the before-inventory is taken before the rehearsal update" \
+    sh -c 'before="$(grep -nF "apply-before-paths\" ||" "$1" | head -1 | cut -d: -f1)"
+        upd="$(grep -nF "run_guarded_copier update --trust --defaults --skip-tasks" "$1" |
+            head -1 | cut -d: -f1)"
+        after="$(grep -nF "apply-after-paths\" ||" "$1" | head -1 | cut -d: -f1)"
+        test -n "$before" && test -n "$upd" && test -n "$after" &&
+        test "$before" -lt "$upd" && test "$upd" -lt "$after"' sh \
+    "$GU_NONADOPT_SNIPPET"
 
 # --- the frozen verdict is bound to the run that produced it ------------------
 # "clean" on its own is a claim with no subject. Rollback deletes GUARDED_STATE
@@ -6623,11 +6644,67 @@ expect_ok "section 1 clears this branch's stale report and verdict on entry" \
         grep -qF "NONADOPT_STALE_FILE" "$1" &&
         grep -qF "rm -f -- \"\$NONADOPT_STALE_FILE\"" "$1"' sh \
     "$GU_NONADOPT_SNIPPET"
-expect_ok "section 4 verifies the binding, not just the word" \
-    sh -c 'grep -qF "report: \$NONADOPT_REPORT_OID" "$1" &&
-        grep -qF "target-commit: \$HARMON_INIT_COMMIT" "$1" &&
-        grep -qF "left over from an earlier run" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+# EXECUTED, not grepped. §4's verification was inline bash in a fenced block with
+# no extraction handle, so every assertion about it was a `grep` over the prose —
+# which is exactly how it shipped hashing a variable that no longer existed in
+# that scope. It is a function now, for the same reason `nonadoption_reconcile`
+# is one: a recipe a test cannot run is a recipe nothing checks.
+GU_VERIFY="$TMPROOT/nonadoption-verify-verdict.sh"
+{
+    printf '%s\n' 'set -eu'
+    sed -n '/^nonadoption_verify_verdict() {/,/^}$/p' \
+        "$STANDARDIZE_REFS/mode-update.md"
+    printf '%s\n' 'nonadoption_verify_verdict'
+} >"$GU_VERIFY"
+expect_ok "the verdict verification is extractable from the guidance" \
+    sh -c 'grep -qF "nonadoption_verify_verdict() {" "$1" &&
+        grep -qF "VERIFY_REPORT_OID" "$1"' sh "$GU_VERIFY"
+VV_DIR="$TMPROOT/verdict-verification"
+mkdir -p "$VV_DIR"
+git_init "$VV_DIR"
+printf '%s\n' 'seed' >"$VV_DIR/seed.txt"
+git_commit_all "$VV_DIR" "seed"
+VV_COMMIT=cccccccccccccccccccccccccccccccccccccccc
+vv_paths() {
+    VV_BR="$(git -C "$VV_DIR" branch --show-current)"
+    VV_REPORT="$VV_DIR/.git/guarded-update-nonadoption/$VV_BR"
+    VV_VERDICT="$VV_DIR/.git/guarded-update-reconciled/$VV_BR"
+    mkdir -p "$(dirname "$VV_REPORT")" "$(dirname "$VV_VERDICT")"
+}
+vv_paths
+vv_write_clean() {
+    printf 'p\tnonadopt-both\tno\tbaseline+target\t-\n' >"$VV_REPORT"
+    {
+        printf 'reconciled: clean\n'
+        printf 'report: %s\n' "$(git -C "$VV_DIR" hash-object "$VV_REPORT")"
+        printf 'target-commit: %s\n' "$VV_COMMIT"
+        printf 'start-head: %s\n' "$(git -C "$VV_DIR" rev-parse HEAD)"
+    } >"$VV_VERDICT"
+}
+vv_run() {
+    (cd "$VV_DIR" && HARMON_INIT_COMMIT="$VV_COMMIT" bash -eu "$GU_VERIFY")
+}
+# The clean path has to pass, or every refusal below proves nothing. This is the
+# assertion that would have caught the unset variable: under `bash -eu` it aborts
+# before reaching any check.
+vv_write_clean
+expect_ok "verdict verification accepts a bound, clean, current verdict" vv_run
+# ...and each way it must refuse.
+mv "$VV_VERDICT" "$VV_VERDICT.away"
+expect_fail "verdict verification refuses a missing verdict" vv_run
+mv "$VV_VERDICT.away" "$VV_VERDICT"
+printf 'reconciled: clean\n' >"$VV_VERDICT"
+expect_fail "verdict verification refuses a verdict with no binding" vv_run
+vv_write_clean
+printf 'q\tnonadopt-both\tno\tbaseline+target\t-\n' >"$VV_REPORT"
+expect_fail "verdict verification refuses a verdict describing another report" vv_run
+vv_write_clean
+expect_fail "verdict verification refuses a verdict from another target commit" \
+    sh -c 'cd "$1" && HARMON_INIT_COMMIT=dddddddddddddddddddddddddddddddddddddddd \
+        bash -eu "$2"' sh "$VV_DIR" "$GU_VERIFY"
+vv_write_clean
+: >"$VV_REPORT"
+expect_fail "verdict verification refuses an empty persisted report" vv_run
 
 # --- conflict artefacts are not adoptions -------------------------------------
 # A `.rej`/`.orig` copier leaves behind is created by the apply but shipped by

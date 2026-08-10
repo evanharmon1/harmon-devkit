@@ -1173,6 +1173,24 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     exit 1
     ;;
   esac
+  # BEFORE, taken from the SCRATCH and not from the real repo. Both sides of
+  # every `comm` below must describe the same universe of paths, and the scratch
+  # is deliberately a SUBSET of the worktree: the clone carries tracked content
+  # and the overlay adds managed ignored paths, while unmanaged ignored content
+  # (`node_modules`, `.venv`, `.terraform`) is left behind on purpose. Diffing
+  # the real repo against the scratch therefore reported every one of those
+  # thousands of files as deleted by the apply, and reconciliation then failed
+  # against a real tree that still had them. Snapshotting the scratch on both
+  # sides makes the two universes identical by construction rather than by a
+  # filter somebody has to keep in step.
+  #
+  # The real repo's inventory is no longer an input to the rehearsal diff at all.
+  # It never fed the classifier's repo-presence checks either — those go through
+  # `nonadoption_path_present`, a direct `test -f`/`test -L` against the path —
+  # so nothing else needs rescoping.
+  nonadoption_inventory "$NONADOPT_SCRATCH/repo" \
+    >"$GUARDED_STATE/apply-before-paths" ||
+    { echo "failed to inventory the scratch before the rehearsal" >&2; exit 1; }
   # §2's real invocation, verbatim, plus `--skip-tasks` and an explicit
   # destination. Those are the ONLY two differences and both are deliberate:
   # tasks are side effects a rehearsal must not run, and the destination is what
@@ -1184,8 +1202,6 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     --data-file="$REVIEWED_DATA" \
     "$NONADOPT_SCRATCH/repo" ||
     { echo "scratch apply failed; the guarded update would fail the same way" >&2; exit 1; }
-  nonadoption_inventory . >"$GUARDED_STATE/apply-before-paths" ||
-    { echo "failed to inventory the worktree before the scratch apply" >&2; exit 1; }
   nonadoption_inventory "$NONADOPT_SCRATCH/repo" \
     >"$GUARDED_STATE/apply-after-paths" ||
     { echo "failed to inventory the scratch apply result" >&2; exit 1; }
@@ -1204,9 +1220,8 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     >"$GUARDED_STATE/apply-deleted" ||
     { echo "failed to derive paths the apply deleted" >&2; exit 1; }
   else
-    # Degraded: no rehearsal, so no after-state. Only the inventories are known.
-    nonadoption_inventory . >"$GUARDED_STATE/apply-before-paths" ||
-      { echo "failed to inventory the worktree" >&2; exit 1; }
+    # Degraded: no rehearsal, so no before/after pair and nothing for the comms
+    # to compare. The candidate set falls back to the render inventories alone.
     : >"$GUARDED_STATE/apply-created"
     : >"$GUARDED_STATE/apply-deleted"
   fi
@@ -2777,19 +2792,37 @@ hand-off over changes the guidance itself asked for. What §4 verifies is that
 the frozen verdict exists and is clean:
 
 ```bash
-NONADOPT_VERDICT="$(
-  git rev-parse --path-format=absolute \
-    --git-path "guarded-update-reconciled/$(git branch --show-current)"
-)"
-test -s "$NONADOPT_VERDICT" ||
-  { echo "no frozen reconciliation for this branch; §2 did not complete — do not hand off" >&2; exit 1; }
-grep -qx 'reconciled: clean' "$NONADOPT_VERDICT" ||
-  { echo "the frozen reconciliation is not clean:" >&2; cat "$NONADOPT_VERDICT" >&2; exit 1; }
-NONADOPT_REPORT_OID="$(git hash-object "$NONADOPT_REPORT")"
-grep -qx "report: $NONADOPT_REPORT_OID" "$NONADOPT_VERDICT" ||
-  { echo "the frozen verdict does not describe the persisted report; it is left over from an earlier run" >&2; exit 1; }
-grep -qx "target-commit: $HARMON_INIT_COMMIT" "$NONADOPT_VERDICT" ||
-  { echo "the frozen verdict was recorded for a different target commit" >&2; exit 1; }
+nonadoption_verify_verdict() {
+  VERIFY_BRANCH="$(git branch --show-current)"
+  test -n "$VERIFY_BRANCH" ||
+    { echo "detached HEAD: cannot locate this branch's reconciliation" >&2; return 1; }
+  # Both paths resolved here, from the branch, in the one place that reads them.
+  # §2 knows them as GUARDED_NONADOPT_FILE and GUARDED_VERDICT_FILE, and those
+  # names are long out of scope by §4 — reaching for one of them is how this
+  # check came to hash an unset variable.
+  VERIFY_REPORT="$(
+    git rev-parse --path-format=absolute \
+      --git-path "guarded-update-nonadoption/$VERIFY_BRANCH"
+  )" || { echo "failed to resolve the persisted non-adoption report" >&2; return 1; }
+  VERIFY_VERDICT="$(
+    git rev-parse --path-format=absolute \
+      --git-path "guarded-update-reconciled/$VERIFY_BRANCH"
+  )" || { echo "failed to resolve the frozen reconciliation" >&2; return 1; }
+  test -s "$VERIFY_REPORT" ||
+    { echo "no persisted non-adoption report for this branch; §2 did not complete — do not hand off" >&2; return 1; }
+  test -s "$VERIFY_VERDICT" ||
+    { echo "no frozen reconciliation for this branch; §2 did not complete — do not hand off" >&2; return 1; }
+  grep -qx 'reconciled: clean' "$VERIFY_VERDICT" ||
+    { echo "the frozen reconciliation is not clean:" >&2; cat "$VERIFY_VERDICT" >&2; return 1; }
+  VERIFY_REPORT_OID="$(git hash-object "$VERIFY_REPORT")" ||
+    { echo "failed to hash the persisted non-adoption report" >&2; return 1; }
+  grep -qx "report: $VERIFY_REPORT_OID" "$VERIFY_VERDICT" ||
+    { echo "the frozen verdict does not describe the persisted report; it is left over from an earlier run" >&2; return 1; }
+  grep -qx "target-commit: $HARMON_INIT_COMMIT" "$VERIFY_VERDICT" ||
+    { echo "the frozen verdict was recorded for a different target commit" >&2; return 1; }
+}
+nonadoption_verify_verdict ||
+  { echo "the reconciliation for this branch is missing, stale or unclean; do not hand off" >&2; exit 1; }
 ```
 
 The binding matters more than the word. A verdict that says `clean` is making a
