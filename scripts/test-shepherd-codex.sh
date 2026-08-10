@@ -235,6 +235,19 @@ run_check() {
     check_watchdog "$check_rc" run_check "$check_out"
 }
 
+# Same as run_check but omits --timeout-min entirely, for cases that need to
+# exercise the flagless default/adoption path rather than an explicit 15
+# that happens to equal the default (harmon-devkit#223 challenge round 2).
+run_check_no_timeout_flag() {
+    set +e
+    check_out="$("$helper" check \
+        --state "$state" --actor-id "$actor_id" \
+        --actor-login "$actor_login" \
+        --now "$1" 2>&1)"
+    check_rc=$?
+    set -e
+}
+
 assert_status() {
     expected_rc=$1
     expected_status=$2
@@ -1802,5 +1815,350 @@ set +e
 reap_rc=$?
 set -e
 [ "$reap_rc" -eq 2 ] || fail "reap without --root should exit 2, got $reap_rc"
+
+echo "==> a persisted non-default timeout governs attempt 2's window (harmon-devkit#223)"
+# `reserve`'s attempt-1-window check has no --now: it always compares against
+# the real wall clock (see the existing "attempt 2 cannot be reserved before
+# attempt 1 expires" case above), so this test has to use real relative
+# timestamps rather than the fixture's fixed 2026-07-31 dates. jq's
+# to/fromdateiso8601 keep the epoch math portable across BSD and GNU date.
+epoch_now="$(date -u '+%s')"
+iso_from_offset() { jq -nr --argjson e "$((epoch_now + $1))" '$e | todateiso8601'; }
+
+trigger_id=123
+request_time="$(iso_from_offset 0)"
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --timeout-min 10 >/dev/null
+[ "$(jq -r '.timeout_min' "$state")" = "10" ] ||
+    fail "reserve did not persist a non-default --timeout-min"
+
+# 5 minutes into a 10-minute persisted window: still short of either window,
+# so attempt 2 must be refused regardless of which timeout is in force.
+jq --arg reserved "$(iso_from_offset -300)" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+set +e
+early_attempt2_out="$("$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 2>&1)"
+early_attempt2_rc=$?
+set -e
+[ "$early_attempt2_rc" -eq 2 ] ||
+    fail "attempt 2 should still be refused before either window elapses: $early_attempt2_out"
+
+# 11 minutes into a 10-minute persisted window: past the persisted timeout but
+# short of the script's unmodified 15-minute default. Only a reserve that
+# reads the persisted 10 minutes back out of state allows this — a reserve
+# still enforcing the hardcoded default would refuse it for another 4 minutes,
+# reproducing the #223 defect.
+jq --arg reserved "$(iso_from_offset -660)" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+trigger_id=124
+request_time="$(iso_from_offset 1)"
+jq -cn \
+    --argjson id "$trigger_id" \
+    --arg created "$request_time" \
+    '{
+      id:$id,body:"@codex review",created_at:$created,
+      issue_url:"https://api.github.com/repos/example/repo/issues/493"
+    }' >"${fixtures}/trigger.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+[ "$(jq -r '.timeout_min' "$state")" = "10" ] ||
+    fail "attempt-2 reservation did not carry the persisted timeout forward"
+jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
+printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
+# `check` itself must also use the persisted 10-minute window (not the
+# --now flag's proximity to the script's 15-minute default): 11 minutes after
+# this attempt-2 reservation is past the persisted timeout.
+check_now_epoch="$(jq -nr --arg t "$request_time" '$t | fromdateiso8601 + 660')"
+run_check_no_timeout_flag "$(jq -nr --argjson e "$check_now_epoch" '$e | todateiso8601')"
+assert_status 13 escalate
+
+echo "==> check rejects an explicit --timeout-min that conflicts with the persisted value"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --timeout-min 10 >/dev/null
+jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+set +e
+conflicting_out="$("$helper" check \
+    --state "$state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" --timeout-min 15 \
+    --now '2026-07-31T08:01:00Z' 2>&1)"
+conflicting_rc=$?
+set -e
+[ "$conflicting_rc" -eq 2 ] ||
+    fail "a conflicting --timeout-min should fail closed: $conflicting_out"
+printf '%s' "$conflicting_out" | grep -Fq '10' ||
+    fail "conflict message did not name the persisted value: $conflicting_out"
+printf '%s' "$conflicting_out" | grep -Fq '15' ||
+    fail "conflict message did not name the requested value: $conflicting_out"
+
+echo "==> a legacy state without timeout_min keeps the 15-minute default (no --timeout-min flag)"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+# Simulate state written before harmon-devkit#223: no timeout_min field at all.
+jq 'del(.timeout_min)' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+# Deliberately flagless: run_check always passes --timeout-min 15, which
+# would exercise explicit adoption (an explicit 15 that happens to match the
+# default) rather than the true no-flag default-fallback path this test is
+# named for. run_check_no_timeout_flag omits the flag entirely.
+run_check_no_timeout_flag '2026-07-31T08:14:00Z'
+assert_status 11 pending
+run_check_no_timeout_flag '2026-07-31T08:16:00Z'
+assert_status 12 retry
+[ "$(jq -r '.timeout_min' "$state")" = "null" ] ||
+    fail "the flagless default path must not persist a choice: $(jq -c . "$state")"
+
+echo "==> the documented convention — bare reserve, then check --timeout-min N — adopts and persists N (harmon-devkit#223 challenge round 1)"
+# `reserve` with no --timeout-min leaves the cycle's timeout undecided
+# (timeout_min: null): no command has chosen one yet. The FIRST explicit
+# --timeout-min any later command supplies for that undecided cycle adopts —
+# this is the pre-existing documented convention (reserve, then `check
+# --timeout-min N`), and it must keep working, not be read as a conflict
+# against an implicit 15-minute default that was never actually chosen.
+epoch_now="$(date -u '+%s')"
+iso_from_offset() { jq -nr --argjson e "$((epoch_now + $1))" '$e | todateiso8601'; }
+
+trigger_id=123
+request_time="$(iso_from_offset 0)"
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+[ "$(jq -r '.timeout_min' "$state")" = "null" ] ||
+    fail "a bare reserve should leave timeout_min undecided (null), got: $(jq -c . "$state")"
+jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+
+run_check_with_timeout_flag() {
+    set +e
+    check_out="$("$helper" check \
+        --state "$state" --actor-id "$actor_id" \
+        --actor-login "$actor_login" --timeout-min "$1" \
+        --now "$2" 2>&1)"
+    check_rc=$?
+    set -e
+}
+# 9 minutes elapsed — short of the 10-minute window this check adopts, so it
+# must be pending, not retry (which the unmodified 15-minute default would
+# also report as pending, so this alone isn't the differentiator — the
+# persisted-field assertion right after it is).
+run_check_with_timeout_flag 10 "$(iso_from_offset 540)"
+assert_status 11 pending
+[ "$(jq -r '.timeout_min' "$state")" = "10" ] ||
+    fail "check --timeout-min 10 did not adopt and persist the timeout: $(jq -c . "$state")"
+
+# A second check with NO flag must keep using the now-persisted 10 minutes:
+# 11 minutes elapsed is past the adopted window.
+run_check_no_timeout_flag "$(iso_from_offset 660)"
+assert_status 12 retry
+
+# attempt 2's window with no --timeout-min of its own must honor the adopted
+# 10 minutes, not the unmodified 15-minute default. Uses real relative
+# timestamps, like the reserve-window test above, since attempt-2 `reserve`
+# has no --now and always compares to the real wall clock.
+jq --arg reserved "$(iso_from_offset -660)" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+trigger_id=124
+request_time="$(iso_from_offset 1)"
+jq -cn \
+    --argjson id "$trigger_id" \
+    --arg created "$request_time" \
+    '{
+      id:$id,body:"@codex review",created_at:$created,
+      issue_url:"https://api.github.com/repos/example/repo/issues/493"
+    }' >"${fixtures}/trigger.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+[ "$(jq -r '.timeout_min' "$state")" = "10" ] ||
+    fail "attempt-2 reservation dropped the adopted timeout: $(jq -c . "$state")"
+
+echo "==> attach's GitHub calls are budgeted by the persisted timeout, not the default (harmon-devkit#223 challenge round 1)"
+# `run_gh`'s per-call timeout budget is driven by \$timeout_min for every
+# command, including attach — not just the commands that reference the flag
+# by name. Persist a non-default 5-minute timeout, leave only ~2s of that
+# window, and stall attach's trigger-comment fetch for 5s (the fixture's
+# fixed artificial sleep). If attach threads the persisted 5 minutes through,
+# run_gh's timeout wrapper cuts the stalled call off after ~2s. If it fell
+# back to the unmodified 15-minute default (the #223 bug applied to attach),
+# the remaining budget would be minutes wide, so the call would run its full
+# 5s sleep uninterrupted and this assertion would fail.
+trigger_id=123
+request_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --timeout-min 5 >/dev/null
+near_deadline_epoch=$(($(date -u '+%s') - (5 * 60 - 2)))
+near_deadline="$(jq -nr --argjson e "$near_deadline_epoch" '$e | todateiso8601')"
+jq --arg reserved "$near_deadline" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s\n' 'issues/comments' >"${fixtures}/slow-endpoint"
+set +e
+start_seconds=$SECONDS
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null 2>&1
+attach_rc=$?
+elapsed_seconds=$((SECONDS - start_seconds))
+set -e
+rm -f "${fixtures}/slow-endpoint"
+[ "$elapsed_seconds" -lt 4 ] ||
+    fail "attach did not bound its call to the persisted 5-minute window (${elapsed_seconds}s, rc=$attach_rc)"
+
+echo "==> a corrupted persisted timeout_min fails closed rather than blowing up shell arithmetic (harmon-devkit#223 challenge round 1)"
+new_cycle
+jq '.timeout_min = 0' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+zero_out="$("$helper" check \
+    --state "$state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" \
+    --now '2026-07-31T08:01:00Z' 2>&1)"
+zero_rc=$?
+set -e
+[ "$zero_rc" -eq 2 ] ||
+    fail "a zero persisted timeout should fail closed, got rc=$zero_rc: $zero_out"
+printf '%s' "$zero_out" | grep -Fq 'timeout_min' ||
+    fail "corrupt timeout_min error did not name the field: $zero_out"
+
+new_cycle
+jq '.timeout_min = "abc"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+nonnumeric_out="$("$helper" check \
+    --state "$state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" \
+    --now '2026-07-31T08:01:00Z' 2>&1)"
+nonnumeric_rc=$?
+set -e
+[ "$nonnumeric_rc" -eq 2 ] ||
+    fail "a non-numeric persisted timeout should fail closed, got rc=$nonnumeric_rc: $nonnumeric_out"
+
+echo "==> attach rejects a zero --timeout-min instead of adopting and bricking the cycle (harmon-devkit#223 challenge round 2)"
+# Unlike reserve/check, attach had no valid_uint guard on the flag before
+# resolve_timeout_min — an explicit --timeout-min 0 would adopt and persist
+# 0, and every later check would then die on the corrupted-state path
+# instead of the usage failing closed right where the bad input was given.
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+zero_attach_out="$("$helper" attach \
+    --state "$state" --trigger-id "$trigger_id" --timeout-min 0 2>&1)"
+zero_attach_rc=$?
+set -e
+[ "$zero_attach_rc" -eq 2 ] ||
+    fail "attach --timeout-min 0 should fail closed, got rc=$zero_attach_rc: $zero_attach_out"
+[ "$(jq -r '.timeout_min' "$state")" = "null" ] ||
+    fail "a rejected --timeout-min 0 must not be persisted: $(jq -c . "$state")"
+[ "$(jq -r '.phase' "$state")" = "reserved" ] ||
+    fail "a rejected attach must not attach: $(jq -c . "$state")"
+
+echo "==> an early attempt-2 refusal still persists the timeout it adopted (harmon-devkit#223 challenge round 3)"
+# resolve_timeout_min flags an adoption before the attempt-1 window check
+# runs, but the window check can `die` and exit the process. If the
+# reservation persists the adoption only on the SUCCESS path, an early
+# attempt-2 that supplies the cycle's first explicit --timeout-min loses that
+# choice on refusal — a later flagless retry would then fall back to the
+# 15-minute default and get refused again, for a window nobody actually
+# chose. Uses real relative timestamps: attempt-2 reserve compares against
+# the real wall clock, not --now.
+epoch_now="$(date -u '+%s')"
+iso_from_offset() { jq -nr --argjson e "$((epoch_now + $1))" '$e | todateiso8601'; }
+
+trigger_id=123
+request_time="$(iso_from_offset 0)"
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+
+# Attempt 1 was reserved moments ago — an attempt-2 reservation now is well
+# inside any window and must be refused, whether the persisted timeout is 10
+# minutes or the 15-minute default.
+set +e
+early_out="$("$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 --timeout-min 10 2>&1)"
+early_rc=$?
+set -e
+[ "$early_rc" -eq 2 ] ||
+    fail "an early attempt-2 reservation should still fail closed: $early_out"
+[ "$(jq -r '.timeout_min' "$state")" = "10" ] ||
+    fail "a refused attempt-2 reservation must still persist the timeout it adopted: $(jq -c . "$state")"
+[ "$(jq -r '.phase' "$state")" = "attached" ] ||
+    fail "a refused attempt-2 reservation must not otherwise mutate the state: $(jq -c . "$state")"
+
+# 11 minutes after the ORIGINAL attempt-1 reservation, past the persisted
+# 10-minute window (adopted above) but short of the unmodified 15-minute
+# default. A flagless attempt-2 must now succeed — proving the adoption
+# survived the earlier refusal instead of reverting to "undecided".
+jq --arg reserved "$(iso_from_offset -660)" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+[ "$(jq -r '.timeout_min' "$state")" = "10" ] ||
+    fail "the flagless attempt-2 reservation dropped the earlier-adopted timeout: $(jq -c . "$state")"
+
+echo "==> reserve rejects a leading-zero --timeout-min outright (harmon-devkit#223 challenge round 3)"
+# valid_uint's [1-9][0-9]* pattern forbids a leading zero on the explicit
+# flag, so this never reaches the persisted-value comparison at all — the
+# comparison's own base-10 canonicalization (guarding against bash
+# reinterpreting a leading zero as OCTAL, e.g. \`[ 010 -eq 8 ]\`) is defense
+# in depth for a value that cannot arrive this way today, not a fix for a
+# reachable false conflict. This test pins that first gate in place.
+trigger_id=123
+write_defaults
+rm -f "$state"
+set +e
+leading_zero_out="$("$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --timeout-min 010 2>&1)"
+leading_zero_rc=$?
+set -e
+[ "$leading_zero_rc" -eq 2 ] ||
+    fail "a leading-zero --timeout-min should fail closed, got rc=$leading_zero_rc: $leading_zero_out"
+[ ! -f "$state" ] ||
+    fail "a rejected leading-zero --timeout-min must not create state"
 
 echo "shepherd Codex cloud-review classifier: PASS"
