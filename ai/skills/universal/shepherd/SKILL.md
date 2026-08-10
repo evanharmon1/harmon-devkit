@@ -107,8 +107,13 @@ and compare against the local branch and HEAD. Requirements, all hard:
   still carries the contributor's Taskfile and lefthook config, so committing
   or pushing it fires their hooks wherever it happens and whoever does it.
   Handing over a patch hands over the *decision*, never the exposure — so
-  anyone who commits or pushes untrusted-head content, you or the maintainer,
-  does it inside credential-free isolation. If no isolation is available,
+  whoever acts on it, you or the maintainer, splits the two halves: create
+  and verify the commit inside credential-free isolation, then import that
+  object into a checkout whose working tree holds only trusted content
+  (`git fetch <sandbox-path> <sha>`) and push the ref from there. Hooks run
+  from the pushing checkout's working tree, never from the tree the pushed
+  ref names — which is precisely why that push is safe and an authenticated
+  one from the fork checkout is not. If no isolation is available,
   don't work on the fork checkout at all: stop, report what the remote CI
   shows, and hand the fix decision to the maintainer.
 
