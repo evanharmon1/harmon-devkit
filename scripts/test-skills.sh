@@ -2368,8 +2368,20 @@ expect_ok "the hand-off contract carries the note column and the earned classes"
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "copier gotchas own the permanent non-adoption reasoning" \
     sh -c 'grep -qE "^## 9\. " "$1" &&
-        grep -qF "never adopts a file you deleted (or never had)" "$1" &&
+        grep -qF "never adopts a file your baseline already shipped" "$1" &&
         grep -qF "permanent opt-out" "$1"' sh \
+    "$STANDARDIZE_REFS/copier-gotchas.md"
+# §9 used to say permanence covered files you "never had", full stop. It does
+# not: a path the template gained AFTER the recorded baseline is target-only, and
+# the update creates it — this suite's own end-to-end fixture asserts exactly
+# that. The condition is BOTH renders, and the checklist bullet has to agree with
+# the section it summarizes or the summary becomes the version people quote.
+expect_ok "gotcha 9 scopes permanence to paths the baseline already shipped" \
+    sh -c 'grep -qF "\"Both renders\" is the whole condition" "$1" &&
+        grep -qF "is **target-only**" "$1" &&
+        grep -qF "MISSING\` a file its baseline already shipped?" "$1" &&
+        ! grep -qF "or never had" "$1" &&
+        ! grep -qF "is opted out of paths it never saw" "$1"' sh \
     "$STANDARDIZE_REFS/copier-gotchas.md"
 expect_ok "audit drift class K routes MISSING to the non-adoption gotcha" \
     sh -c 'grep -qF "PERMANENT non-adoption candidate" "$1" &&
@@ -2425,7 +2437,21 @@ expect_ok "non-adoption snippet verifies known-false equivalents before filterin
 expect_ok "non-adoption snippet holds each equivalence to its documented evidence" \
     sh -c 'grep -qF "*-record-architecture-decisions.md) return 0 ;;" "$1" &&
         grep -qF "test -f docs/decisions/README.md" "$1" &&
-        grep -qF -- "-name .terraform -prune -o -type f -name" "$1"' sh \
+        grep -qF -- "-name .terraform -prune -o -type f -name" "$1" &&
+        grep -qF "yq -r '\''.prettier // \"\"'\'' package.json" "$1" &&
+        ! grep -qF "grep -q '\''\"prettier\"'\'' package.json" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
+# The Brewfile must never re-enter the filter list. Re-adding it would read as
+# tidy consistency with the other class-K entries and would silently pick a side
+# in a doctrinal disagreement the skill has not resolved — so the guard looks
+# inside `nonadoption_known_false_state` specifically, not at the whole snippet,
+# where the annotation legitimately mentions the same path.
+expect_ok "non-adoption snippet discloses the contested Brewfile instead of filtering it" \
+    sh -c 'grep -qF "chezmoi-managed — verify per mode-audit class K" "$1" &&
+        grep -qF "nonadoption_has_chezmoi_brewfile" "$1" &&
+        window="$(sed -n "/nonadoption_known_false_state() {/,/^  }$/p" "$1")" &&
+        test -n "$window" &&
+        ! printf "%s\n" "$window" | grep -qE "^[[:space:]]*Brewfile\)"' sh \
     "$GU_NONADOPT_SNIPPET"
 # The reviewed-keyset probe runs on the designed first pass, where
 # $REVIEWED_DATA does not exist yet. Folding its `test -e` guard into the
@@ -6068,14 +6094,20 @@ expect_ok "a path only the repo ignores is a row noting whose rule it was" \
     grep -qxF "$(printf 'stray.md\tnonadopt-both\tno\tbaseline+target\trepo-ignored-only')" \
     "$GU_NA_TSV"
 # Finding 1: drift class K is conditional, so each entry is verified. Unverified
-# first — this repo has no ADR log, no nested Terraform, no .prettierrc.cjs and no
-# chezmoi marker, so every one of these seeds is a real absence.
+# first — this repo has no ADR log, no nested Terraform and no prettier config,
+# so every one of these seeds is a real absence.
 for na_seed in docs/decisions/0001-record-architecture-decisions.md \
-    terraform/main.tf prettier.config.cjs Brewfile; do
+    terraform/main.tf prettier.config.cjs; do
     expect_ok "unverified class-K equivalent is a row: $na_seed" \
         grep -qxF "$(printf '%s\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent' \
             "$na_seed")" "$GU_NA_TSV"
 done
+# The root Brewfile is never on that list. With no chezmoi marker it is an
+# ordinary row, note and all — nothing about it is "unverified", because nothing
+# about it was ever going to be filtered.
+expect_ok "the root Brewfile is a plain row in a repo that is not chezmoi-shaped" \
+    grep -qxF "$(printf 'Brewfile\tnonadopt-both\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
 expect_fail "no class-K path is filtered while its equivalent is missing" \
     grep -qF "filtered-known" "$GU_NA_TSV"
 # The seed ADR is a docs/**.md, so a two-valued known-false answer would have let
@@ -6095,11 +6127,21 @@ printf '%s\n' 'chezmoi' >"$GU_NA_REPO/.chezmoiroot"
 printf '%s\n' 'brew bundle' >"$GU_NA_REPO/private_Brewfile"
 expect_ok "non-adoption matrix re-runs clean once equivalents exist" na_classify
 for na_seed in docs/decisions/0001-record-architecture-decisions.md \
-    terraform/main.tf prettier.config.cjs Brewfile; do
+    terraform/main.tf prettier.config.cjs; do
     expect_ok "verified class-K equivalent filters the seed: $na_seed" \
         grep -qxF "$(printf '%s\tfiltered-known\tno\tbaseline+target\t-' \
             "$na_seed")" "$GU_NA_TSV"
 done
+# The chezmoi Brewfile is the one class-K entry that is DISCLOSED rather than
+# decided, and this is the shape that used to collapse it into a count. Class K
+# calls the absence a false MISSING here; mode-adopt-existing §4.7 says the repo
+# needs a root Brewfile for its own toolchain regardless. The skill contradicts
+# itself, so the row survives and the note names the argument.
+expect_ok "a chezmoi-shaped repo still gets a Brewfile row, annotated not filtered" \
+    grep -qxF "$(printf 'Brewfile\tnonadopt-both\tno\tbaseline+target\tchezmoi-managed — verify per mode-audit class K')" \
+    "$GU_NA_TSV"
+expect_fail "the Brewfile is never filtered, chezmoi markers or not" \
+    grep -qE "^Brewfile	(filtered-known|co-owned|ignored-policy)" "$GU_NA_TSV"
 # Every equivalence is held to the DOCUMENTED evidence, and each of these
 # near-misses filtered the seed away before this round. A FLAT terraform/*.tf is
 # the seed layout itself; `private_Brewfile` in a repo that is not a chezmoi
@@ -6122,8 +6164,8 @@ expect_ok "non-adoption matrix re-runs clean on the negative controls" na_classi
 expect_ok "a flat terraform root does not verify the nested-layout equivalent" \
     grep -qxF "$(printf 'terraform/main.tf\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
     "$GU_NA_TSV"
-expect_ok "private_Brewfile without a chezmoi marker does not verify the Brewfile" \
-    grep -qxF "$(printf 'Brewfile\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
+expect_ok "private_Brewfile without a chezmoi marker earns no chezmoi annotation" \
+    grep -qxF "$(printf 'Brewfile\tnonadopt-both\tno\tbaseline+target\t-')" \
     "$GU_NA_TSV"
 expect_ok "an unrelated numbered ADR does not verify the seed ADR" \
     grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
@@ -6145,7 +6187,8 @@ expect_ok "a README with no numbered ADR does not verify the seed ADR" \
 # Prettier reads a dozen config filenames and any of them replaces the seed.
 # Requiring `.prettierrc.cjs` specifically invented a row for every repo that
 # picked another supported form.
-for na_prettier in .prettierrc.json .prettierrc.yaml prettier.config.mjs; do
+for na_prettier in .prettierrc.json .prettierrc.yaml prettier.config.mjs \
+    .prettierrc.ts prettier.config.cts; do
     printf '%s\n' '{}' >"$GU_NA_REPO/$na_prettier"
     expect_ok "non-adoption matrix re-runs clean with $na_prettier" na_classify
     expect_ok "$na_prettier verifies the prettier seed" \
@@ -6160,11 +6203,37 @@ expect_ok "non-adoption matrix re-runs clean with a package.json prettier key" \
 expect_ok "a package.json prettier key verifies the prettier seed" \
     grep -qxF "$(printf 'prettier.config.cjs\tfiltered-known\tno\tbaseline+target\t-')" \
     "$GU_NA_TSV"
+# The key is PARSED, so a devDependency entry no longer counts. This is the
+# literal string the old `grep '"prettier"'` matched, and it certified a config
+# that does not exist — a repo that installed the tool and never configured it.
+printf '%s\n' '{"name":"matrix","devDependencies":{"prettier":"^3.3.0"}}' \
+    >"$GU_NA_REPO/package.json"
+expect_ok "non-adoption matrix re-runs clean with prettier as a devDependency" \
+    na_classify
+expect_ok "a prettier devDependency is not a prettier config" \
+    grep -qxF "$(printf 'prettier.config.cjs\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
+    "$GU_NA_TSV"
+# A `prettier` key whose value is a path to another config file is still a
+# config; yq reports the string and the probe takes it.
+printf '%s\n' '{"name":"matrix","prettier":"./shared-prettier.json"}' \
+    >"$GU_NA_REPO/package.json"
+expect_ok "non-adoption matrix re-runs clean with a prettier path value" na_classify
+expect_ok "a prettier key holding a config path verifies the seed" \
+    grep -qxF "$(printf 'prettier.config.cjs\tfiltered-known\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
 printf '%s\n' '{"name":"matrix"}' >"$GU_NA_REPO/package.json"
 expect_ok "non-adoption matrix re-runs clean with a prettier-free package.json" \
     na_classify
 expect_ok "a package.json without prettier verifies nothing" \
     grep -qxF "$(printf 'prettier.config.cjs\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
+    "$GU_NA_TSV"
+# Unlike the ignore probes, this one is ADVISORY evidence about a single path, so
+# a malformed package.json must not abort a guarded run that is otherwise fine.
+# It fails toward the row and says why.
+printf '%s\n' '{"name":"matrix",,,' >"$GU_NA_REPO/package.json"
+expect_ok "a malformed package.json does not abort the classifier" na_classify
+expect_ok "an unparseable package.json verifies nothing and says so" \
+    grep -qxF "$(printf 'prettier.config.cjs\tnonadopt-both\tno\tbaseline+target\tpackage-json-unparseable')" \
     "$GU_NA_TSV"
 rm -f "$GU_NA_REPO/package.json"
 # The render-side evaluator must answer for the TEMPLATE, never for this machine:

@@ -523,9 +523,12 @@ Audit mode has a single render, at the repo's own `_commit`, so it cannot split
 `MISSING` into "the template just added this" and "the template has shipped this
 all along" — that baseline-versus-target classification exists only in update
 mode ([`mode-update.md`](./mode-update.md) §1). What audit mode *can* say is the
-part that matters: `copier update` will never restore any of them. The
-three-way merge reads the absence as the repo's own deletion and preserves it,
-and each update resets the baseline so the file is never offered again
+part that matters, and it can say it precisely: this render **is** the repo's
+baseline, so every path it reports `MISSING` is by definition one the template
+already shipped at that baseline — which is exactly the condition under which
+`copier update` will never restore a file. The three-way merge reads the absence
+as the repo's own deletion and preserves it, and each update resets the baseline
+so the file is never offered again
 ([`copier-gotchas.md`](./copier-gotchas.md) §9). The absence **is** the opt-out,
 whether or not anyone chose it. That is why a `MISSING` finding must be
 dispositioned — restored, or declined with a reason on the record — and not

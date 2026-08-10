@@ -1160,20 +1160,37 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   nonadoption_has_prettier_config() {
     for NONADOPT_PRETTIER in \
       .prettierrc .prettierrc.json .prettierrc.yml .prettierrc.yaml \
-      .prettierrc.json5 .prettierrc.js .prettierrc.cjs .prettierrc.mjs \
-      .prettierrc.toml prettier.config.js prettier.config.mjs; do
+      .prettierrc.json5 .prettierrc.toml \
+      .prettierrc.js .prettierrc.cjs .prettierrc.mjs \
+      .prettierrc.ts .prettierrc.mts .prettierrc.cts \
+      prettier.config.js prettier.config.mjs \
+      prettier.config.ts prettier.config.mts prettier.config.cts; do
       test -f "$NONADOPT_PRETTIER" || continue
       return 0
     done
     # The `prettier` key in package.json is the remaining supported location, and
-    # this probe is knowingly LOOSE: it also matches a `"prettier"` devDependency
-    # line, so a repo that installed prettier without configuring it counts. The
-    # honest alternative is a JSON parse, which would put `jq` into a recipe that
-    # otherwise needs only git and coreutils. Accepting the over-match costs one
-    # collapsed count on a node repo that has prettier in package.json at all —
-    # tighten this to a real parse if that ever proves too generous.
+    # it is PARSED, not grepped. A bare `grep '"prettier"'` matches the
+    # devDependency entry too, so a repo that installed the tool and never
+    # configured it certified a config that does not exist — weaker evidence than
+    # the claim, which is the exact defect this whole list was tightened to stop.
+    # §1 already requires `yq`, and yq v4 reads JSON natively, so the real parse
+    # costs no new dependency.
     test -f package.json || return 1
-    grep -q '"prettier"' package.json
+    NONADOPT_PRETTIER_RC=0
+    NONADOPT_PRETTIER_KEY="$(yq -r '.prettier // ""' package.json 2>/dev/null)" ||
+      NONADOPT_PRETTIER_RC=$?
+    if test "$NONADOPT_PRETTIER_RC" -ne 0; then
+      # ADVISORY evidence about one path, unlike the ignore probes below — those
+      # guarantee a withheld exemption and so are fatal. A malformed package.json
+      # must not kill a guarded run that is otherwise fine, so it fails toward
+      # the row and says so. The note is a fixed token rather than yq's message:
+      # that text is multi-line and would corrupt the TSV row it lands in, so the
+      # detail goes to stderr where it has room.
+      echo "could not parse package.json for a prettier config (yq exit $NONADOPT_PRETTIER_RC); reporting prettier.config.cjs as a row" >&2
+      NONADOPT_NOTE=package-json-unparseable
+      return 1
+    fi
+    test -n "$NONADOPT_PRETTIER_KEY"
   }
   # The known-false-`MISSING` list from mode-audit.md §3 (drift class K):
   # absences that are deliberate divergences, not gaps. Every entry there is
@@ -1185,14 +1202,28 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # for. Granting the exemption unconditionally made a repo that simply never had
   # `terraform/main.tf` indistinguishable from one that outgrew it.
   #
-  # `.envrc` is deliberately NOT here. Its legitimacy is ignore policy — the
-  # template ships it gitignored — so it is settled by the probe below, on the
-  # template's own declaration rather than on this list's say-so.
-  # A chezmoi source repo renames the template's root Brewfile to the
-  # `private_`-prefixed twin that becomes `~/Brewfile`. Two cheap conditions,
-  # because either alone is wrong: a chezmoi marker without the twin means the
-  # Brewfile really is missing, and the twin without a marker is an ordinary repo
-  # that happens to use the prefix.
+  # Two class-K entries are deliberately NOT here, for opposite reasons.
+  #
+  # `.envrc`'s legitimacy is ignore policy — the template ships it gitignored —
+  # so it is settled by the probe below, on the template's own declaration rather
+  # than on this list's say-so.
+  #
+  # The root `Brewfile` is absent because the doctrine is CONTESTED and this
+  # snippet is the wrong place to settle it. Class K calls a missing root
+  # `Brewfile` a false MISSING in a chezmoi source repo, on the grounds that
+  # chezmoi names its copy `private_Brewfile`. But mode-adopt-existing.md §4.7
+  # says such a repo needs a root `Brewfile` anyway, for its OWN toolchain
+  # (`task install`, `status.sh`) — `private_Brewfile` renders to `~/Brewfile`,
+  # the dev-machine set, which is a different file for a different job. Both
+  # documents are in the skill; they cannot both be right about this path.
+  # Collapsing it into a count would pick a side silently, on exactly the kind of
+  # unexamined absence this report exists to surface. So it gets a row, and the
+  # note carries the reason a reviewer needs in order to settle it themselves.
+  #
+  # The chezmoi detection survives only to FILL that note. Both conditions still
+  # matter: a marker without the twin means the Brewfile is plainly missing, and
+  # the twin without a marker is an ordinary repo that happens to use the prefix.
+  # Neither shape earns the annotation, and neither is filtered either way.
   nonadoption_has_chezmoi_brewfile() {
     test -f .chezmoiroot || test -f .chezmoi.toml ||
       test -f .chezmoi.yaml || test -f .chezmoi.json || return 1
@@ -1210,12 +1241,6 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # than the tree heuristic and wins over it.
   nonadoption_known_false_state() {
     case "$1" in
-    Brewfile)
-      if nonadoption_has_chezmoi_brewfile; then
-        return 0
-      fi
-      return 2
-      ;;
     docs/decisions/0001-record-architecture-decisions.md)
       if nonadoption_has_adr_log; then
         return 0
@@ -1311,6 +1336,15 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # path the note is the whole finding.
   nonadoption_filtered_class() {
     NONADOPT_FILTERED=""
+    # Annotation, not a filter: the root Brewfile is always a row (see above),
+    # and this only tells the reviewer which argument they are adjudicating.
+    case "$1" in
+    Brewfile)
+      if test "$NONADOPT_NOTE" = - && nonadoption_has_chezmoi_brewfile; then
+        NONADOPT_NOTE="chezmoi-managed — verify per mode-audit class K"
+      fi
+      ;;
+    esac
     case "$1" in
     *.gitkeep)
       NONADOPT_FILTERED=gitkeep-benign
@@ -1403,8 +1437,10 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # `note` is `-` unless the row carries something the class alone cannot say:
   # `repo-ignored-only` (this repo ignores the path, the template does not),
   # `unverified-equivalent` (a drift-class-K path whose documented replacement is
-  # not in the repo), or `repo-path-is-directory` (a directory sits where the
-  # render ships a file).
+  # not in the repo), `package-json-unparseable` (the prettier-key probe could
+  # not read package.json, so it verified nothing), `repo-path-is-directory` (a
+  # directory sits where the render ships a file), or the chezmoi Brewfile
+  # annotation, which names the contested doctrine rather than settling it.
   # NONADOPT_NOTE is reset per path rather than inside the classifier, because
   # `nonadoption_repo_has` runs first and may already have set it.
   : >"$GUARDED_STATE/nonadoption-report.tsv"
@@ -1596,12 +1632,24 @@ blind spot:
   are false `MISSING`s *because the repo carries a documented replacement* — a
   renumbered record-decisions ADR or a README-backed numbered log, a real
   Terraform root nested below `terraform/`, any of Prettier's supported config
-  filenames, the chezmoi `private_Brewfile` alongside a chezmoi marker. Each is
-  checked against this repo, and the check is held to the *documented* evidence:
-  an unrelated numbered ADR is not a re-recorded decision, and the `*.tf` files
-  `terraform init` vendors into `.terraform/` are generated cache rather than a
-  layout the repo grew into. A path on the list whose replacement is not there is
-  a `nonadopt-both` row noted `unverified-equivalent`, never a silent exemption.
+  filenames or a parsed `prettier` key in `package.json`. Each is checked against
+  this repo, and the check is held to the *documented* evidence: an unrelated
+  numbered ADR is not a re-recorded decision, the `*.tf` files `terraform init`
+  vendors into `.terraform/` are generated cache rather than a layout the repo
+  grew into, and a `"prettier"` devDependency is not a prettier config. A path on
+  the list whose replacement is not there is a `nonadopt-both` row noted
+  `unverified-equivalent`, never a silent exemption.
+- **A contested entry is disclosed, not decided.** The root `Brewfile` is class
+  K's one genuinely disputed case: class K calls its absence a false `MISSING` in
+  a chezmoi source repo, while
+  [`mode-adopt-existing.md`](./mode-adopt-existing.md) §4.7 says such a repo
+  needs a root `Brewfile` regardless, for its own toolchain — `private_Brewfile`
+  renders to `~/Brewfile`, a different file for a different job. Two documents in
+  one skill disagree, so the classifier refuses to pick: the path always gets a
+  row, annotated `chezmoi-managed — verify per mode-audit class K` when the repo
+  really is a chezmoi source. Collapsing it would settle a doctrinal argument by
+  omission, in a report whose entire purpose is to stop absences being settled
+  that way.
 - **`co-owned` collapses `docs/`/`specs/` prose only.** Co-ownership is a
   *content* exemption, and absence is not content: a missing `AGENTS.md`,
   `LICENSE`, or `.devcontainer/config/zshrc` gets a row like anything else. The
@@ -2462,9 +2510,9 @@ is `true`, so the update should have created it; §4 found it still `MISSING`.
 That is a defect in the apply, not a decision this repo made, so it is called
 out here instead of being written up as a decline.
 
-Files the template ships that this repo does not have. `copier update` reads
-each absence as a deliberate deletion and will never restore it — see
-copier-gotchas.md §9.
+Files the template already shipped at this repo's baseline and this repo does
+not have. `copier update` reads each absence as a deliberate deletion and will
+never restore it — see copier-gotchas.md §9.
 
 | Path | In template since | Renders under | Changed upstream in range | Why not adopted | Disposition |
 | --- | --- | --- | --- | --- | --- |
@@ -2501,8 +2549,12 @@ Column by column:
   collapsed count, and the reviewer cannot reconstruct it. `repo-ignored-only`:
   the repo ignores the path but the template never declared it local.
   `unverified-equivalent`: a drift-class-K path whose documented replacement is
-  not in this repo. `repo-path-is-directory`: a directory sits where the render
-  ships a file.
+  not in this repo. `package-json-unparseable`: the prettier-key probe could not
+  read `package.json`, so it established nothing — check the file itself.
+  `repo-path-is-directory`: a directory sits where the render ships a file.
+  `chezmoi-managed — verify per mode-audit class K`: the root `Brewfile` in a
+  chezmoi source repo, where the skill's own guidance is split (see §1). Say
+  which way you resolved it and why; that is the whole reason the row exists.
 - **Why not adopted** — the one column only you can write, and the reason the
   table is worth the effort. Read the repo and say whether the absence looks
   **deliberate** or **accidental**, citing the evidence: a file that references
