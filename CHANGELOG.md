@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.25.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.25.0...v0.25.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* **shepherd:** let adjudicated inline findings satisfy the Codex cloud-review check ([#361](https://github.com/evanharmon1/harmon-devkit/issues/361)) ([7bce06e](https://github.com/evanharmon1/harmon-devkit/commit/7bce06e10a6f7f9e4d60ff087cfd6506b9526b5e)), closes [#275](https://github.com/evanharmon1/harmon-devkit/issues/275)
+
 ## [0.25.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.24.2...v0.25.0) (2026-08-10)
 
 
