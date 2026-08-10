@@ -645,7 +645,14 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # equivalent to that script's unquote-then-compare for a fixed expected name.
 # One deliberate divergence: `description:` must be NON-EMPTY here, where
 # verify-skills.sh accepts a bare `description:`. A skills source whose shepherd
-# skill has no description is not one this waiver should trust.
+# skill has no description is not one this waiver should trust. "Non-empty"
+# means non-empty to YAML, not merely to `grep`: `description: ""`,
+# `description: ''`, and `description: # TODO` all carry text yet load as null
+# or nothing at all, so they are rejected too (trailing blanks trimmed first, so
+# one stray space cannot slip a value past those three). This is not full YAML
+# comment semantics — an inline `#` after a real value is left alone, since
+# quoting rules decide whether it starts a comment and that needs a parser.
+# These are the shapes that read as a description and are not one.
 #
 # Every probe sits in the `if` condition, where a non-zero exit selects the
 # else-branch instead of tripping errexit — these are questions about the repo,
@@ -663,8 +670,25 @@ SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-
 SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
 # Match a POSIX ERE against the helper's code only: leading whitespace stripped,
 # every comment line dropped. Called only after the `-f` test above passes.
+#
+# It is one awk pass over the file, deliberately NOT a pipeline. The obvious
+# `sed | grep -v | grep -qE` form is broken under `pipefail`: `grep -q` exits at
+# the first match, the upstream stages die of SIGPIPE (141), and the whole
+# pipeline then reports failure — so on a real classifier, where every anchor
+# matches early, every probe "fails" and the waiver is denied to exactly the
+# repo it exists for. The preamble tells you to run these blocks with `pipefail`
+# care; this one is safe under it because there is no pipe. awk owns the input,
+# so the early `exit` costs nothing and still runs END.
+# The pattern arrives through the environment rather than `-v`, which would
+# escape-process it and mangle the `\)` in the case-arm anchors.
 classifier_code_has() {
-  sed 's/^[[:space:]]*//' "$SKILLS_SOURCE_CLASSIFIER" | grep -v '^#' | grep -qE "$1"
+  CLASSIFIER_PROBE="$1" awk '
+    BEGIN { pat = ENVIRON["CLASSIFIER_PROBE"] }
+    { line = $0; sub(/^[[:space:]]*/, "", line) }
+    line ~ /^#/ { next }
+    line ~ pat { found = 1; exit }
+    END { exit found ? 0 : 1 }
+  ' "$SKILLS_SOURCE_CLASSIFIER"
 }
 # Mirror of verify-skills.sh's frontmatter rules, scoped to the opening block.
 # `\047` is a single quote — spelled octally so the awk program can stay inside
@@ -683,7 +707,8 @@ classifier_skill_frontmatter_ok() {
     }
     fence == 1 && /^description:[[:space:]]*/ {
       d = $0; sub(/^description:[[:space:]]*/, "", d); sub(/\r$/, "", d)
-      if (d != "") ok_desc = 1
+      sub(/[[:space:]]+$/, "", d)
+      if (d != "" && d != "\"\"" && d != "\047\047" && d !~ /^#/) ok_desc = 1
     }
     END { exit (fence >= 2 && ok_name && ok_desc) ? 0 : 1 }
   ' "$SKILLS_SOURCE_SHEPHERD_SKILL"

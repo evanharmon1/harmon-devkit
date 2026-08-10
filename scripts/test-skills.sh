@@ -1155,7 +1155,18 @@ expect_ok "classifier detector anchors the pending and escalate exit contract" \
 expect_ok "classifier detector reads helper code with comment lines stripped" \
     sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET" \
-    's/^[[:space:]]*//' "grep -v '^#'"
+    'line ~ /^#/ { next }' 'ENVIRON["CLASSIFIER_PROBE"]'
+# The probe pattern must not travel via `awk -v`, which escape-processes the
+# value and would mangle the `\)` in every case-arm anchor.
+expect_fail "classifier detector does not pass probe patterns through awk -v" \
+    grep -qF -- 'awk -v' "$GU_CLASSIFIER_SNIPPET"
+# Structural guard against reintroducing the pipefail hazard. `grep -q` exits at
+# the first match, killing upstream pipeline stages with SIGPIPE; under
+# `pipefail` that makes a matching probe report failure. Checked on the
+# detector's CODE, since the rationale comment names the broken form on purpose.
+expect_ok "classifier detector code contains no early-exit grep pipeline" \
+    sh -c 'test "$(sed "s/^[[:space:]]*//" "$1" | grep -v "^#" | grep -c "grep -q")" -eq 0' sh \
+    "$GU_CLASSIFIER_SNIPPET"
 
 # Behavioral proof of the detector, one throwaway repo per way a tree can fail
 # to be a skills source. The doc IS the implementation — an operator pastes it
@@ -1167,40 +1178,54 @@ CLASSIFIER_HELPER_REL="ai/skills/universal/shepherd/assets/check-codex-cloud-rev
 CLASSIFIER_SKILL_REL="ai/skills/universal/shepherd/SKILL.md"
 # $1 repo root, $2 `git add --chmod` flag for the helper, $3 SKILL.md shape
 # (`valid` | `untracked` | `nofrontmatter` | `quotedname` | `blockscalar` |
-# `unclosed` | `bodyonly`), $4 helper shape:
+# `unclosed` | `bodyonly` | `emptydq` | `emptysq` | `commentdesc`),
+# $4 helper shape:
 #   dispatch — a real-shaped miniature: a `case` on the command with all five
 #              arms, and the pending/escalate verdicts with their exit codes.
 #   usage    — a no-op whose COMMENTS print the five usage forms. This is the
 #              spoof issue 336 is about, and it is a reject case.
 #   empty    — a bare `exit 0` with nothing at all.
+#   padded   — `dispatch` followed by ~1 MB of filler. The dispatch arms match
+#              near the top while a reader still has the rest to write, which
+#              turns the superseded pipeline's SIGPIPE race into a certainty.
+classifier_dispatch_body() {
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'emit() { printf "%s %s\n" "$1" "$2"; }' \
+        'command_name="${1:-}"' \
+        'case "$command_name" in' \
+        'reserve)' \
+        '    : ;;' \
+        'attach)' \
+        '    : ;;' \
+        'check)' \
+        '    if [ "${2:-}" = wait ]; then' \
+        '        emit pending "window open"' \
+        '        exit 11' \
+        '    fi' \
+        '    emit escalate "both windows elapsed"' \
+        '    exit 13' \
+        '    ;;' \
+        'show)' \
+        '    : ;;' \
+        'reap)' \
+        '    : ;;' \
+        'esac'
+}
 make_classifier_fixture() {
     local root="$1" chmod_flag="$2" skill_shape="$3" helper_shape="$4"
     git_init "$root"
     mkdir -p "$root/ai/skills/universal/shepherd/assets"
     case "$helper_shape" in
     dispatch)
-        printf '%s\n' \
-            '#!/usr/bin/env bash' \
-            'emit() { printf "%s %s\n" "$1" "$2"; }' \
-            'command_name="${1:-}"' \
-            'case "$command_name" in' \
-            'reserve)' \
-            '    : ;;' \
-            'attach)' \
-            '    : ;;' \
-            'check)' \
-            '    if [ "${2:-}" = wait ]; then' \
-            '        emit pending "window open"' \
-            '        exit 11' \
-            '    fi' \
-            '    emit escalate "both windows elapsed"' \
-            '    exit 13' \
-            '    ;;' \
-            'show)' \
-            '    : ;;' \
-            'reap)' \
-            '    : ;;' \
-            'esac' >"$root/$CLASSIFIER_HELPER_REL"
+        classifier_dispatch_body >"$root/$CLASSIFIER_HELPER_REL"
+        ;;
+    padded)
+        {
+            classifier_dispatch_body
+            awk 'BEGIN { for (i = 0; i < 20000; i++)
+                print ": filler keeping the writer blocked long after grep -q exits" }'
+        } >"$root/$CLASSIFIER_HELPER_REL"
         ;;
     usage)
         printf '%s\n' \
@@ -1241,6 +1266,15 @@ make_classifier_fixture() {
         printf '%s\n' '---' '---' 'name: shepherd' \
             'description: These live in the body, not the block.'
         ;;
+    emptydq)
+        printf '%s\n' '---' 'name: shepherd' 'description: ""' '---' 'Body.'
+        ;;
+    emptysq)
+        printf '%s\n' '---' 'name: shepherd' "description: ''" '---' 'Body.'
+        ;;
+    commentdesc)
+        printf '%s\n' '---' 'name: shepherd' 'description: # TODO' '---' 'Body.'
+        ;;
     *)
         printf '%s\n' '---' 'name: shepherd' \
             'description: Shepherd a draft PR to ready for review.' '---' \
@@ -1260,6 +1294,35 @@ classifier_verdict_with() {
     )
 }
 classifier_verdict() { classifier_verdict_with "$GU_CLASSIFIER_SNIPPET" "$1"; }
+# The same, under `bash -euo pipefail`. mode-update.md's preamble tells readers
+# to run its blocks with pipefail care, so the detector has to survive it — and
+# a `-eu`-only harness is exactly how a pipefail-only defect stayed invisible.
+classifier_verdict_pipefail_with() {
+    (
+        cd "$2" || exit 1
+        bash -euo pipefail -c \
+            '. "$1"; printf "RESULT=%s\n" "$SHIPS_CLASSIFIER_NATIVELY"' \
+            bash "$1"
+    )
+}
+classifier_verdict_pipefail() {
+    classifier_verdict_pipefail_with "$GU_CLASSIFIER_SNIPPET" "$1"
+}
+# A frozen copy of the superseded `sed | grep -v | grep -qE` probe. It is the
+# negative control for the pipefail defect: identical input, opposite answers
+# depending only on the shell mode, which is what made it so easy to miss.
+CLASSIFIER_PIPE_SNIPPET="$TMPROOT/classifier-pipeline-superseded.sh"
+cat >"$CLASSIFIER_PIPE_SNIPPET" <<'SUPERSEDEDPIPE'
+SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
+classifier_code_has() {
+    sed 's/^[[:space:]]*//' "$SKILLS_SOURCE_CLASSIFIER" | grep -v '^#' | grep -qE "$1"
+}
+if classifier_code_has '^reserve\)'; then
+    SHIPS_CLASSIFIER_NATIVELY=true
+else
+    SHIPS_CLASSIFIER_NATIVELY=false
+fi
+SUPERSEDEDPIPE
 # A frozen copy of the SUPERSEDED usage-string detector. It exists for exactly
 # one assertion — that the comment-only stub used to pass — because a hardening
 # claim nobody can see failing is not evidence of anything.
@@ -1306,6 +1369,10 @@ CLS_QUOTED="$TMPROOT/classifier-quoted-name"
 CLS_SCALAR="$TMPROOT/classifier-block-scalar"
 CLS_UNCLOSED="$TMPROOT/classifier-unclosed-frontmatter"
 CLS_BODYONLY="$TMPROOT/classifier-body-only-keys"
+CLS_EMPTYDQ="$TMPROOT/classifier-empty-dq-description"
+CLS_EMPTYSQ="$TMPROOT/classifier-empty-sq-description"
+CLS_COMMENTDESC="$TMPROOT/classifier-comment-description"
+CLS_PADDED="$TMPROOT/classifier-padded-dispatch"
 make_classifier_fixture "$CLS_FULL" +x valid dispatch
 make_classifier_fixture "$CLS_MODE" -x valid dispatch
 make_classifier_fixture "$CLS_NOSKILL" +x untracked dispatch
@@ -1316,6 +1383,10 @@ make_classifier_fixture "$CLS_QUOTED" +x quotedname dispatch
 make_classifier_fixture "$CLS_SCALAR" +x blockscalar dispatch
 make_classifier_fixture "$CLS_UNCLOSED" +x unclosed dispatch
 make_classifier_fixture "$CLS_BODYONLY" +x bodyonly dispatch
+make_classifier_fixture "$CLS_EMPTYDQ" +x emptydq dispatch
+make_classifier_fixture "$CLS_EMPTYSQ" +x emptysq dispatch
+make_classifier_fixture "$CLS_COMMENTDESC" +x commentdesc dispatch
+make_classifier_fixture "$CLS_PADDED" +x valid padded
 expect_ok_contains "classifier detector accepts a complete skills-source tree" \
     "RESULT=true" classifier_verdict "$CLS_FULL"
 # The exec bit is read from the index, never the filesystem: this helper is
@@ -1340,6 +1411,15 @@ expect_ok_contains "classifier detector rejects an unclosed frontmatter block" \
     "RESULT=false" classifier_verdict "$CLS_UNCLOSED"
 expect_ok_contains "classifier detector rejects name and description in the body" \
     "RESULT=false" classifier_verdict "$CLS_BODYONLY"
+# "Non-empty" has to mean non-empty to YAML, not to grep: each of these carries
+# text after the colon and still loads as null or nothing. Full YAML comment
+# semantics stay out of scope — an inline `#` after a real value is left alone.
+expect_ok_contains "classifier detector rejects a double-quoted empty description" \
+    "RESULT=false" classifier_verdict "$CLS_EMPTYDQ"
+expect_ok_contains "classifier detector rejects a single-quoted empty description" \
+    "RESULT=false" classifier_verdict "$CLS_EMPTYSQ"
+expect_ok_contains "classifier detector rejects a comment-only description" \
+    "RESULT=false" classifier_verdict "$CLS_COMMENTDESC"
 expect_ok_contains "classifier detector rejects a tracked executable stub" \
     "RESULT=false" classifier_verdict "$CLS_STUB"
 # The negative control, and the reason this round exists. The comment-only stub
@@ -1362,6 +1442,37 @@ expect_ok_contains "superseded frontmatter greps accepted body-only keys" \
 # actual dispatch and exit contract, not just against the doc that greps them.
 expect_ok_contains "classifier detector accepts this repo as a skills source" \
     "RESULT=true" classifier_verdict "$repo"
+# Every verdict above runs under `bash -eu`. Re-run the two ends of the range
+# under `bash -euo pipefail` as well: an accept on the real 40 KB classifier,
+# where every anchor matches early and any early-exit pipeline would blow up,
+# and a reject, which exercises the paths that short-circuit instead.
+expect_ok_contains "classifier detector accepts this repo under pipefail too" \
+    "RESULT=true" classifier_verdict_pipefail "$repo"
+expect_ok_contains "classifier detector rejects a usage stub under pipefail too" \
+    "RESULT=false" classifier_verdict_pipefail "$CLS_USAGE"
+# The negative control for that pair: the superseded pipeline probe answers
+# `true` under `bash -eu` and `false` under `bash -euo pipefail` on the SAME
+# input. The mode, not the input, decided the verdict — which is why a
+# `-eu`-only harness could not see it, and why it denied harmon-devkit its own
+# waiver.
+#
+# It runs against the PADDED fixture, not the real checkout, and that is
+# deliberate. Whether `grep -q` exits before the upstream stages finish writing
+# is a race: on the real 40 KB classifier the superseded probe fails
+# intermittently — observed both ways across repeated runs — so pinning the
+# control there would have bought a flaky test to demonstrate a real defect.
+# ~1 MB of filler after the match makes the writer certain to still be blocked,
+# so the control is deterministic while testing the same failure.
+expect_ok_contains "superseded pipeline probe passed under bash -eu" \
+    "RESULT=true" classifier_verdict_with "$CLASSIFIER_PIPE_SNIPPET" "$CLS_PADDED"
+expect_ok_contains "superseded pipeline probe failed under pipefail" \
+    "RESULT=false" \
+    classifier_verdict_pipefail_with "$CLASSIFIER_PIPE_SNIPPET" "$CLS_PADDED"
+# And the fix, on the input that defeats the old form: same fixture, both modes.
+expect_ok_contains "classifier detector accepts a padded helper under bash -eu" \
+    "RESULT=true" classifier_verdict "$CLS_PADDED"
+expect_ok_contains "classifier detector accepts a padded helper under pipefail" \
+    "RESULT=true" classifier_verdict_pipefail "$CLS_PADDED"
 expect_ok "audit G4 waives sync/universal for the native skills-source classifier" \
     sh -c 'grep -qF "unless the repo is the skills source itself" "$1" &&
         grep -qF "git-tracked, non-symlink executable" "$1" &&
