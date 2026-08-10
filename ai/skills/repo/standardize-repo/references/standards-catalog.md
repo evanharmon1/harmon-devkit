@@ -90,9 +90,16 @@ devcontainer — full list in
 [`assets/template-owned-files.txt`](../assets/template-owned-files.txt)) are
 refreshed by `copier update`'s three-way merge, which preserves a repo's own edits.
 Customize them **normally, in place** — there is no extension-file convention a
-repo's developers need to learn. `assets/diff-template.sh` reports both content
-`DRIFT` in the curated set and `MISSING` template files the repo lacks entirely
-(a whole-render, manifest-independent scan). It compares an unstaged tracked
+repo's developers need to learn. `assets/diff-template.sh` content-compares the
+**entire render** against the repo, not just the curated set: curated entries
+report plain `DRIFT`, every other rendered path the repo also has reports the
+same `DRIFT` tagged `(uncurated — not in template-owned-files.txt)` — the tag
+records that the hand-maintained manifest has not adopted the file, not a lower
+severity — and the equally manifest-independent `MISSING` scan catches template
+files the repo lacks entirely. Two classes are informational: `CO-OWNED` (prose
+the repo owns) and `IGNORED` (untracked, and ignored by the repo *and the
+template*); their content never affects the exit status and their diffs are
+withheld even under `--show`. It compares an unstaged tracked
 deletion from the index and reports mature nested Terraform/ADR replacements as
 benign `EQUIV`, so an audit/update pulls in missed improvements (the recurring
 status.sh / lint-hygiene / bootstrap class) and missed whole files without losing
