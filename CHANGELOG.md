@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.26.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.25.1...v0.26.0) (2026-08-10)
+
+
+### Features
+
+* strengthen the skills-source classifier waiver detector ([#372](https://github.com/evanharmon1/harmon-devkit/issues/372)) ([6dbee68](https://github.com/evanharmon1/harmon-devkit/commit/6dbee68cf0c7f7065f005eceaa2c692dd3814347))
+
+
+### Bug Fixes
+
+* **shepherd:** document unexplained draft promotion — mechanism, recovery procedure, Trigger knob ([#373](https://github.com/evanharmon1/harmon-devkit/issues/373)) ([071ddff](https://github.com/evanharmon1/harmon-devkit/commit/071ddff0a2824ef13a8f1f1e9fb8fe8b6a079937))
+* **shepherd:** persist the review-attempt timeout across commands and sessions ([#380](https://github.com/evanharmon1/harmon-devkit/issues/380)) ([3c31a3f](https://github.com/evanharmon1/harmon-devkit/commit/3c31a3fa0520eab663971be365db1e78915d614d)), closes [#223](https://github.com/evanharmon1/harmon-devkit/issues/223)
+* **test:** shepherd-codex slow-fixture cases assert behavior, not wall-clock budgets ([#378](https://github.com/evanharmon1/harmon-devkit/issues/378)) ([ce0f727](https://github.com/evanharmon1/harmon-devkit/commit/ce0f7279ca63fff363fc4871c32b1a06bb547595)), closes [#308](https://github.com/evanharmon1/harmon-devkit/issues/308)
+
 ## [0.25.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.25.0...v0.25.1) (2026-08-10)
 
 
