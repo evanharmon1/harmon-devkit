@@ -255,6 +255,20 @@ creates it, you remove it before committing, and from the next update on it sits
 in both renders. The mechanism does not care how the absence arose, only that
 both sides of the diff agree the file exists.
 
+**`_skip_if_exists` is the one carve-out, and it runs the other way.** The
+option means "do not overwrite this when it is already there" — so on a path
+that is **absent**, it does not preserve the absence, it renders the file fresh.
+A both-renders path covered by `_skip_if_exists` is therefore *not* permanent:
+the update recreates it, untracked, with the target's content. harmon-init lists
+`CHANGELOG.md`, `*.code-workspace`, `.github/CODEOWNERS`,
+`.release-please-manifest.json`, and `.devcontainer/related-repos.txt` there —
+content owned by another generator or by the consumer. Read the target
+`copier.yml` rather than trusting that list, and treat `.github/CODEOWNERS`
+specially: it encodes who must review, the render writes it from one answer, and
+a repo that widened its owners gets the single-owner version back without a
+word. [`mode-update.md`](./mode-update.md) §1 classifies these
+`recreate-expected` and §4 asserts they exist after the apply.
+
 **Rule:** adopt deliberately or record the decline — never let an absence stand
 unexamined just because the tooling is quiet about it. `MISSING` is a decision
 you owe an answer to, not a warning you can wait out. The guarded update makes
@@ -281,6 +295,8 @@ everything it reports is by definition a path the baseline ships —
 - New conditionally-named file? → cover it with a `test-template.sh` profile.
 - New ignore pattern? → anchor to `/` and negate `template/` copies.
 - A repo is `MISSING` a file its baseline already shipped? → no update will ever
-  restore it; adopt it or record the decline (gotcha 9). A file added upstream
-  *after* that baseline is target-only, and the update does create it.
+  restore it; adopt it or record the decline (gotcha 9). Two exceptions, both
+  created by the update: a file added upstream *after* that baseline is
+  target-only, and a path listed under `_skip_if_exists` is rendered fresh
+  whenever it is absent.
 - After any `copier.yml` / `template/**` change → `task test:template:all` must pass.

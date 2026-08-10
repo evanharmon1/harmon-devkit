@@ -826,7 +826,7 @@ while IFS= read -r f; do
     checked=$((checked + 1))
     rv="$(repo_variant "$f")"
     if [ -z "$rv" ]; then
-        echo "MISSING  $f  (template ships it; repo doesn't; a copier update will NOT restore it — copier-gotchas.md §9)"
+        echo "MISSING  $f  (template ships it; repo doesn't; a copier update will not restore it unless it is _skip_if_exists — copier-gotchas.md §9)"
         drift=1
         missing_count=$((missing_count + 1))
         continue
@@ -1127,7 +1127,7 @@ while IFS= read -r abs; do
     case "$g" in
     *.gitkeep) echo "ABSENT   $g  (template dir-stub — benign if the dir has real content)" ;;
     *)
-        echo "MISSING  $g  (template ships it; repo lacks it — review; a copier update will NOT restore it — copier-gotchas.md §9)"
+        echo "MISSING  $g  (template ships it; repo lacks it — review; a copier update will not restore it unless it is _skip_if_exists — copier-gotchas.md §9)"
         drift=1
         missing_count=$((missing_count + 1))
         ;;

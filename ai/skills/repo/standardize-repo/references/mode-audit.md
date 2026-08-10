@@ -535,6 +535,17 @@ dispositioned — restored, or declined with a reason on the record — and not
 shrugged at as something the next update will pick up. There is no next update
 that will.
 
+**Check the template's `_skip_if_exists` before dispositioning any of them.** A
+path listed there is not preserved-absent: `copier update` renders it fresh
+whenever the repo lacks it, so its `MISSING` is temporary and resolves itself on
+the next update. harmon-init lists `CHANGELOG.md`, `*.code-workspace`,
+`.github/CODEOWNERS`, `.release-please-manifest.json`, and
+`.devcontainer/related-repos.txt`. Audit mode has no second render to classify
+these mechanically the way [`mode-update.md`](./mode-update.md) §1 does, so read
+the list out of the template's `copier.yml` and set those paths aside — with the
+warning attached, because `.github/CODEOWNERS` returning means access-control
+rules returning.
+
 **One `MISSING` line is outside that population**, and it says so in its own
 note: `tracked in HEAD but staged for removal`. That path is still in `HEAD` and
 its worktree copy is still on disk, so nothing is absent for an update to

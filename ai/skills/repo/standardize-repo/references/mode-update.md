@@ -1324,6 +1324,51 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     test -z "$NONADOPT_IGNORE_ERR" || printf '  %s\n' "$NONADOPT_IGNORE_ERR" >&2
     exit 1
   }
+  # `_skip_if_exists` INVERTS the permanence model for the paths it covers, so
+  # this list is read before anything is classified. The option means "do not
+  # overwrite when present" — and when the path is ABSENT, the update renders it
+  # fresh. Verified empirically against copier 9.17: in one update, a
+  # `_skip_if_exists` path deleted from the repo came back (untracked, with the
+  # target render's content) while an ordinary both-renders path deleted in the
+  # same commit stayed gone.
+  #
+  # harmon-init uses it for `CHANGELOG.md`, `*.code-workspace`,
+  # `.github/CODEOWNERS`, `.release-please-manifest.json`, and
+  # `.devcontainer/related-repos.txt` — content owned by another generator or by
+  # the consumer. Calling any of those a permanent non-adoption is not merely
+  # imprecise, it is backwards, and CODEOWNERS is the one that matters: telling
+  # an operator an access-control file stays absent, while the update quietly
+  # reinstates `* @code_owner`, is how review requirements reappear unannounced.
+  #
+  # Read from the TARGET side of the range at the frozen commit — the target
+  # render is what the update is about to apply. Fatal on failure, like the
+  # ignore probes and for the same reason: "I could not tell" would silently
+  # restore the wrong permanence claim for exactly these paths.
+  git -C "$GUARDED_TEMPLATE" show "$HARMON_INIT_COMMIT":copier.yml \
+    >"$GUARDED_STATE/target-copier.yml" ||
+    { echo "failed to read the target copier.yml" >&2; exit 1; }
+  yq -r '._skip_if_exists // [] | .[]' "$GUARDED_STATE/target-copier.yml" \
+    >"$GUARDED_STATE/skip-if-exists-patterns" ||
+    { echo "failed to read _skip_if_exists from the target copier.yml" >&2; exit 1; }
+  # Copier matches these with gitwildmatch, so a pattern containing no `/` also
+  # matches a BASENAME at any depth. Both arms are here because under-matching is
+  # the dangerous direction: it would re-label a recreated path permanent.
+  nonadoption_is_recreated_on_update() {
+    while IFS= read -r NONADOPT_SKIP_PATTERN; do
+      test -n "$NONADOPT_SKIP_PATTERN" || continue
+      # Unquoted on purpose in both arms: the pattern IS a glob.
+      case "$1" in
+      $NONADOPT_SKIP_PATTERN) return 0 ;;
+      esac
+      case "$NONADOPT_SKIP_PATTERN" in
+      */*) continue ;;
+      esac
+      case "${1##*/}" in
+      $NONADOPT_SKIP_PATTERN) return 0 ;;
+      esac
+    done <"$GUARDED_STATE/skip-if-exists-patterns"
+    return 1
+  }
   # Filtered classes win over the three main ones: a path both the repo and the
   # template treat as local, a VERIFIED known-false MISSING, or a docs/specs
   # prose page already has its explanation and must not be reported as
@@ -1451,7 +1496,12 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     if nonadoption_repo_has "$NONADOPT_PATH"; then
       continue
     fi
-    if nonadoption_filtered_class "$NONADOPT_PATH"; then
+    # Asked FIRST, because it is a different question. The filtered classes all
+    # explain why an absence is acceptable; this one says the absence will not
+    # survive the update at all, which makes every such explanation moot.
+    if nonadoption_is_recreated_on_update "$NONADOPT_PATH"; then
+      NONADOPT_CLASS=recreate-expected
+    elif nonadoption_filtered_class "$NONADOPT_PATH"; then
       NONADOPT_CLASS="$NONADOPT_FILTERED"
     else
       NONADOPT_CLASS=nonadopt-both
@@ -1472,7 +1522,12 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     fi
     # The target render adds it and the repo lacks it, so `copier update`
     # SHOULD create it. §4 rechecks: still missing means the update failed.
-    if nonadoption_filtered_class "$NONADOPT_PATH"; then
+    # `recreate-expected` is the more specific label where it applies: same
+    # "will exist afterwards" check, plus the review-the-content warning that
+    # `_skip_if_exists` content earns.
+    if nonadoption_is_recreated_on_update "$NONADOPT_PATH"; then
+      NONADOPT_CLASS=recreate-expected
+    elif nonadoption_filtered_class "$NONADOPT_PATH"; then
       NONADOPT_CLASS="$NONADOPT_FILTERED"
     else
       NONADOPT_CLASS=new-in-target
@@ -1491,6 +1546,8 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     fi
     # The template dropped it and the repo still has it, so expect the update
     # to delete it. §4 routes any survivor to §3's deletion reconciliation.
+    # No `recreate-expected` arm here: the target render does not ship the path,
+    # so there is nothing for `_skip_if_exists` to render fresh.
     if nonadoption_filtered_class "$NONADOPT_PATH"; then
       NONADOPT_CLASS="$NONADOPT_FILTERED"
     else
@@ -1503,7 +1560,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       { echo "failed to record non-adoption row: $NONADOPT_PATH" >&2; exit 1; }
   done <"$GUARDED_STATE/nonadoption-baseline-only"
   for NONADOPT_CLASS in \
-    nonadopt-both new-in-target delete-expected \
+    nonadopt-both new-in-target delete-expected recreate-expected \
     ignored-policy co-owned filtered-known gitkeep-benign; do
     NONADOPT_COUNT="$(
       awk -F '\t' -v cls="$NONADOPT_CLASS" \
@@ -1511,7 +1568,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
         "$GUARDED_STATE/nonadoption-report.tsv"
     )" ||
       { echo "failed to count non-adoption class: $NONADOPT_CLASS" >&2; exit 1; }
-    printf 'non-adoption %-16s %s\n' "$NONADOPT_CLASS" "$NONADOPT_COUNT"
+    printf 'non-adoption %-17s %s\n' "$NONADOPT_CLASS" "$NONADOPT_COUNT"
   done
   # Scratch, and outside the repo: nothing below reads it. A fail-closed exit
   # above leaves it behind on purpose — the guarded run is aborting, and a
@@ -1613,6 +1670,17 @@ re-checks the rows against the applied result and §5 turns the survivors into a
 disposition table in the PR body. Only `nonadopt-both` reaches that table — the
 other classes are carried so that the report can be read as complete rather than
 as whatever survived an undocumented filter.
+
+**One class is the opposite of a non-adoption.** `recreate-expected` marks an
+absent path that the target `copier.yml` lists under `_skip_if_exists`. That
+option means "do not overwrite when present", so on an *absent* path it does not
+preserve the absence at all — the update renders the file fresh. Those paths are
+therefore neither permanent nor filtered: they get their own short list in §5,
+because the operator needs to know a file is about to reappear and to read what
+lands in it. `.github/CODEOWNERS` is the reason this is a hard requirement
+rather than a nicety — it encodes who must review, and a review requirement that
+returns silently is a change nobody approved. §4 asserts these paths **exist**
+after the apply, the mirror image of every other check here.
 
 **Every filtered class is earned, never assumed** — that is what keeps the
 collapsed counts honest, because a filter nobody can audit is just a smaller
@@ -2450,6 +2518,29 @@ file §2 wrote. No new render is needed; the re-run above already produced the
 - **`delete-expected` still present on disk** — the template dropped the file
   and the expected deletion did not happen. Route it to §3's deletion
   reconciliation; do not simply leave it as an unexplained leftover.
+- **`recreate-expected` — assert it EXISTS.** This is the one row whose check
+  runs the other way: `_skip_if_exists` renders an absent path fresh, so after
+  the apply the file must be there. One still `MISSING` is an anomaly to
+  investigate, exactly like a `new-in-target` that never landed. And when it did
+  land, **read it** — it arrives untracked, carrying the target render's
+  content, not whatever the repo had before someone removed it:
+
+  ```bash
+  awk -F '\t' '$2 == "recreate-expected" { print $1 }' \
+    "$(git rev-parse --path-format=absolute --git-path \
+      "guarded-update-nonadoption/$(git branch --show-current)")" |
+    while IFS= read -r RECREATED_PATH; do
+      test -e "$RECREATED_PATH" ||
+        echo "ANOMALY: _skip_if_exists path not recreated: $RECREATED_PATH"
+      git status --porcelain -- "$RECREATED_PATH"
+    done
+  ```
+
+  `.github/CODEOWNERS` is the one to look at first. It encodes who must review
+  and is auto-requested on every PR; the render writes `* @code_owner` from a
+  single answer, which cannot express a second owner or a team. A repo that
+  deliberately widened or narrowed its owners gets the single-owner version back
+  — silently, unless you diff it here.
 
 **Check the git hooks aren't shadowed or stale, too.** Even in an already-templated
 repo two non-lefthook hook managers can lurk: a **pre-commit.com** stub in
@@ -2523,6 +2614,18 @@ never restore it — see copier-gotchas.md §9.
 
 Filtered, not silent: 4 co-owned (docs/specs prose), 2 ignored by both the repo
 and the template, 1 known-false MISSING with its equivalent verified.
+
+### The update will recreate these — review their content after apply
+
+`_skip_if_exists` paths the repo did not have. Copier does not preserve these
+absences: it renders the file fresh, untracked, with the target's content.
+
+- `.github/CODEOWNERS` — **reappeared as `* @evanharmon1`.** This repo had
+  removed it deliberately; the render cannot express the team-based ownership it
+  was replaced with. Decide before merge: keep the render, restore the team
+  rule, or remove it again.
+- `CHANGELOG.md` — reappeared empty; release-please owns it and will refill it
+  on the next release. No action.
 ```
 
 Column by column:
@@ -2530,7 +2633,10 @@ Column by column:
 - **Path** — one row per **confirmed** `nonadopt-both`. Nothing else belongs in
   the table. A `new-in-target` row that §4 flagged as an anomaly is a defect in
   the update, not a disclosure about the repo: call it out separately, above the
-  table, and resolve it before hand-off.
+  table, and resolve it before hand-off. `recreate-expected` rows get the
+  separate list shown above — they are the inverse finding, a file arriving
+  rather than staying away, and folding them into a table headed "files this
+  repo does not have" would state the opposite of what happened.
 - **In template since** — seed it from `baseline_membership`
   (`baseline+target` means at least as old as the repo's own baseline). Sharpen
   it with `git -C "$GUARDED_TEMPLATE" log --oneline --diff-filter=A -- <path>`
@@ -2578,9 +2684,15 @@ prose, `ignored-policy` is ignored by the repo **and** the template, and
 failed one of those checks is not in these counts — it is a row above, with its
 note.
 
-If no row survives, say so outright: **"No silent non-adoptions — every path
-present in both renders exists in the repo."** An omitted section is
-indistinguishable from a forgotten one.
+If no row survives, say so outright: **"No unexplained silent non-adoptions —
+every absence both renders ship is accounted for."** Then keep the filtered
+counts and any recreate list underneath it, because they are what "accounted
+for" refers to. The older phrasing — *every path present in both renders exists
+in the repo* — was simply false whenever a filtered row existed, which is nearly
+always: those paths are absent, and the claim that they exist is the one
+sentence in this section a reviewer would take at face value. An omitted section
+is indistinguishable from a forgotten one; a section that overstates is worse
+than either.
 
 **Sweep for orphans before you delete anything.** List the whole tree —
 `ls -R "$(git rev-parse --git-path guarded-update-nonadoption)"` — and account

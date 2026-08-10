@@ -2277,7 +2277,7 @@ expect_ok "update guidance persists the non-adoption report past guarded teardow
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "the non-adoption report is keyed by branch on every path that touches it" \
     sh -c 'test "$(grep -cF -- "guarded-update-nonadoption/\$(git branch --show-current)" \
-            "$1")" -eq 2 &&
+            "$1")" -eq 3 &&
         ! grep -qE -- "--git-path guarded-update-nonadoption[\"[:space:]]*$" "$1" &&
         grep -qF "detached HEAD" "$1" &&
         grep -qF "mkdir -p \"\$(dirname \"\$GUARDED_NONADOPT_FILE\")\"" "$1"' sh \
@@ -2348,7 +2348,7 @@ expect_ok "update hand-off requires a silent non-adoption disposition table" \
     sh -c 'grep -qF "## Silent non-adoption" "$1" &&
         grep -qF "| Path |" "$1" &&
         grep -qF "| Disposition |" "$1" &&
-        grep -qF "No silent non-adoptions" "$1"' sh \
+        grep -qF "No unexplained silent non-adoptions" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # The worked example is the part an operator actually copies, so a row that
 # contradicts the contract above it is worse than no example. The contract says
@@ -2383,6 +2383,38 @@ expect_ok "gotcha 9 scopes permanence to paths the baseline already shipped" \
         ! grep -qF "or never had" "$1" &&
         ! grep -qF "is opted out of paths it never saw" "$1"' sh \
     "$STANDARDIZE_REFS/copier-gotchas.md"
+# The second carve-out, and the one that runs the other way: `_skip_if_exists`
+# on an absent path RECREATES it. A permanence claim that omits this is not
+# merely imprecise for CODEOWNERS, it is backwards.
+expect_ok "gotcha 9 carves out _skip_if_exists as a recreate, not a permanence" \
+    sh -c 'grep -qF "_skip_if_exists\` is the one carve-out" "$1" &&
+        grep -qF "it renders the file fresh" "$1" &&
+        grep -qF ".github/CODEOWNERS" "$1" &&
+        grep -qF "recreate-expected" "$1"' sh \
+    "$STANDARDIZE_REFS/copier-gotchas.md"
+expect_ok "audit class K sets _skip_if_exists paths aside before dispositioning" \
+    sh -c 'grep -qF "Check the template'\''s \`_skip_if_exists\` before" "$1" &&
+        grep -qF "path listed there is not preserved-absent" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-audit.md"
+# The sweep's own MISSING lines assert permanence inline, so they carry the
+# qualifier too — a flat "will NOT restore it" is false for these paths.
+expect_ok "the MISSING annotations qualify permanence for _skip_if_exists" \
+    sh -c 'test "$(grep -cF \
+        "will not restore it unless it is _skip_if_exists" "$1")" -eq 2 &&
+        ! grep -qF "a copier update will NOT restore it" "$1"' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
+expect_ok "update guidance routes recreate-expected to its own list and check" \
+    sh -c 'grep -qF "The update will recreate these" "$1" &&
+        grep -qF "recreate-expected\` — assert it EXISTS" "$1" &&
+        grep -qF "One class is the opposite of a non-adoption" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# The empty-result sentence claimed every both-renders path EXISTS in the repo,
+# which is false the moment a filtered row exists — and one nearly always does.
+expect_ok "the empty-result sentence claims only what the report established" \
+    sh -c 'grep -qF "No unexplained silent non-adoptions" "$1" &&
+        test "$(grep -cF "every path present in both renders exists" "$1")" \
+            -eq 1' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "audit drift class K routes MISSING to the non-adoption gotcha" \
     sh -c 'grep -qF "PERMANENT non-adoption candidate" "$1" &&
         grep -qF "(./copier-gotchas.md) §9" "$1"' sh \
@@ -2417,6 +2449,12 @@ expect_ok "the non-adoption snippet collapses documentation prose only" \
 # probe (repo habits are not the template's declaration), the three-valued
 # known-false state (2 = on the list, equivalent absent), and the note column
 # that carries the reason a path is a row rather than a count.
+expect_ok "non-adoption snippet reads _skip_if_exists from the frozen target copier.yml" \
+    sh -c 'grep -qF "yq -r '\''._skip_if_exists // [] | .[]'\''" "$1" &&
+        grep -qF "\$HARMON_INIT_COMMIT\":copier.yml" "$1" &&
+        grep -qF "nonadoption_is_recreated_on_update" "$1" &&
+        grep -qF "recreate-expected" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
 expect_ok "non-adoption snippet requires template-side declaration for ignored-policy" \
     sh -c 'grep -qF "nonadoption_is_render_ignored" "$1" &&
         grep -qF "check-ignore -q --no-index" "$1" &&
@@ -5964,10 +6002,18 @@ expect_ok "non-adoption classifier snippet runs clean under bash -eu" \
         GUARDED_STATE=.copier-guarded-update \
             BASELINE_DISCOVERY="$2" \
             TARGET_DISCOVERY="$3" \
+            GUARDED_TEMPLATE="$5" \
+            HARMON_INIT_COMMIT="$6" \
             bash -eu "$4"' bash \
     "$GU_TARGET" "$GU_BASELINE_DISCOVERY" "$GU_DISCOVERY_SECOND" \
-    "$GU_NONADOPT_SNIPPET"
+    "$GU_NONADOPT_SNIPPET" "$GU_SNAPSHOT" "$GU_TARGET_COMMIT"
 GU_NONADOPT_TSV="$GU_TARGET/.copier-guarded-update/nonadoption-report.tsv"
+# This fixture's copier.yml declares no `_skip_if_exists`, so the class must be
+# empty here — the recreate proof and the matched-path case have their own
+# fixtures below. Asserting the empty case stops a pattern read that silently
+# matched everything from passing unnoticed.
+expect_fail "no recreate-expected row when the template declares no _skip_if_exists" \
+    grep -qF "recreate-expected" "$GU_NONADOPT_TSV"
 expect_ok "non-adoption classifier flags a file both renders ship and the repo lacks" \
     grep -qxF "$(printf 'shared-note.md\tnonadopt-both\tno\tbaseline+target\t-')" \
     "$GU_NONADOPT_TSV"
@@ -6032,6 +6078,14 @@ for na_render in "$GU_NA_BASE" "$GU_NA_TGT"; do
     printf '%s\n' '.vscode/*' >"$na_render/.gitignore"
     # A rendered script whose CONTENT never changes across the range.
     na_render_file "$na_render/scripts/hook.sh" '#!/bin/sh'
+    # `_skip_if_exists` paths: one matched by a literal with a slash, one by a
+    # bare glob, one by a slash-free pattern at DEPTH (gitwildmatch matches a
+    # basename anywhere, and under-matching here would re-label a recreated path
+    # permanent). CODEOWNERS.sample is the near-miss the globs must not catch.
+    na_render_file "$na_render/.github/CODEOWNERS" '* @owner'
+    na_render_file "$na_render/proj.code-workspace"
+    na_render_file "$na_render/tools/CHANGELOG.md"
+    na_render_file "$na_render/.github/CODEOWNERS.sample"
 done
 # ...but whose mode does. `cmp -s` calls these identical; the update still ships
 # real work, and a `no` here would tell the reviewer nothing had moved.
@@ -6059,15 +6113,54 @@ while IFS= read -r na_path; do
     test -e "$GU_NA_REPO/$na_path" ||
         printf '%s\n' "$na_path" >>"$GU_NA_STATE/ignored-absent-paths"
 done <"$GU_NA_STATE/target-managed-paths"
+# The classifier reads `_skip_if_exists` out of the TARGET copier.yml at the
+# frozen commit, so the matrix needs a template repo to read it from. Only the
+# one key matters here; the renders above are hand-built.
+GU_NA_TPL="$GU_NA_ROOT/template"
+git init -q "$GU_NA_TPL" >/dev/null
+git -C "$GU_NA_TPL" config user.email test@example.com
+git -C "$GU_NA_TPL" config user.name "Test"
+cat >"$GU_NA_TPL/copier.yml" <<'EOF'
+_skip_if_exists:
+  - .github/CODEOWNERS
+  - "*.code-workspace"
+  - CHANGELOG.md
+EOF
+git -C "$GU_NA_TPL" add -A >/dev/null
+git -C "$GU_NA_TPL" commit -qm "matrix template" >/dev/null
+GU_NA_TPL_COMMIT="$(git -C "$GU_NA_TPL" rev-parse HEAD)"
 na_classify() {
     (cd "$GU_NA_REPO" &&
         GUARDED_STATE=.copier-guarded-update \
             BASELINE_DISCOVERY="$GU_NA_BASE" \
             TARGET_DISCOVERY="$GU_NA_TGT" \
+            GUARDED_TEMPLATE="$GU_NA_TPL" \
+            HARMON_INIT_COMMIT="$GU_NA_TPL_COMMIT" \
             bash -eu "$GU_NONADOPT_SNIPPET" >/dev/null)
 }
 GU_NA_TSV="$GU_NA_STATE/nonadoption-report.tsv"
 expect_ok "non-adoption matrix classifier runs clean under bash -eu" na_classify
+# `_skip_if_exists` inverts the permanence model: absent means RECREATED, not
+# preserved-absent. All three pattern shapes must match, including the slash-free
+# pattern at depth — copier uses gitwildmatch, where a pattern with no `/` also
+# matches a basename anywhere, and under-matching would call a file permanent
+# that the update is about to write back.
+expect_ok "a literal _skip_if_exists path is recreate-expected, not permanent" \
+    grep -qxF "$(printf '.github/CODEOWNERS\trecreate-expected\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+expect_ok "a globbed _skip_if_exists path is recreate-expected" \
+    grep -qxF "$(printf 'proj.code-workspace\trecreate-expected\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+expect_ok "a slash-free _skip_if_exists pattern matches a basename at depth" \
+    grep -qxF "$(printf 'tools/CHANGELOG.md\trecreate-expected\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+# ...and the patterns must not over-match either, or the report would promise a
+# recreate that never comes and the path would drop out of the disposition table.
+expect_ok "a near-miss filename is not swept into recreate-expected" \
+    grep -qxF "$(printf '.github/CODEOWNERS.sample\tnonadopt-both\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+expect_fail "recreate-expected never displaces an ordinary permanent absence" \
+    grep -qE "^(AGENTS\.md|LICENSE|stray\.md)	recreate-expected" "$GU_NA_TSV"
 # Finding 2: co-ownership is a CONTENT exemption, and absence is not content.
 expect_ok "absent root co-owned prose is a disposition row, not a collapsed count" \
     grep -qxF "$(printf 'AGENTS.md\tnonadopt-both\tno\tbaseline+target\t-')" \
@@ -6245,8 +6338,10 @@ expect_ok "non-adoption matrix re-runs clean under a hostile machine excludesFil
     "GIT_CONFIG_VALUE_0=$GU_NA_ROOT/machine-excludes" \
     sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update \
         BASELINE_DISCOVERY="$2" TARGET_DISCOVERY="$3" \
+        GUARDED_TEMPLATE="$5" HARMON_INIT_COMMIT="$6" \
         bash -eu "$4" >/dev/null' sh \
-    "$GU_NA_REPO" "$GU_NA_BASE" "$GU_NA_TGT" "$GU_NONADOPT_SNIPPET"
+    "$GU_NA_REPO" "$GU_NA_BASE" "$GU_NA_TGT" "$GU_NONADOPT_SNIPPET" \
+    "$GU_NA_TPL" "$GU_NA_TPL_COMMIT"
 expect_ok "the operator's own ignore file grants no template declaration" \
     grep -qxF "$(printf 'AGENTS.md\tnonadopt-both\tno\tbaseline+target\t-')" \
     "$GU_NA_TSV"
@@ -6263,6 +6358,76 @@ expect_ok "non-adoption matrix re-runs clean when the render ships no ignore rul
 expect_ok "a render declaring nothing local grants no ignored-policy" \
     grep -qxF "$(printf '.vscode/local.json\tnonadopt-both\tno\tbaseline+target\trepo-ignored-only')" \
     "$GU_NA_TSV"
+
+# --- `_skip_if_exists` recreates an absent path: the load-bearing proof --------
+# Every `recreate-expected` claim above rests on one fact about copier that no
+# amount of reading the classifier can establish: that `_skip_if_exists` on an
+# ABSENT path renders it fresh rather than preserving the absence. If that were
+# false the whole class would be wrong in the most dangerous direction — telling
+# an operator that CODEOWNERS stays gone while the update quietly reinstates it.
+# So it is proved against real copier, as a controlled A/B: two files identical
+# in every respect that matters (shipped by both renders, byte-identical across
+# the range, deleted from the repo in the same commit) differing only in whether
+# `_skip_if_exists` covers them. Its own fixture, because a directory-free
+# minimal template is far cheaper to reason about than perturbing the guarded
+# fixture above — and because a `_skip_if_exists` file added there would ride
+# through its rollback and hash assertions.
+SKIP_ROOT="$TMPROOT/skip-if-exists"
+SKIP_TPL="$SKIP_ROOT/template"
+SKIP_PROJ="$SKIP_ROOT/project"
+mkdir -p "$SKIP_TPL/template/.github"
+cat >"$SKIP_TPL/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+_skip_if_exists:
+  - .github/CODEOWNERS
+  - "*.code-workspace"
+project_name:
+  type: str
+  default: Skip
+EOF
+printf '%s\n' '{{ _copier_answers|to_nice_yaml -}}' \
+    >"$SKIP_TPL/template/.copier-answers.yml.jinja"
+printf '%s\n' '* @owner' >"$SKIP_TPL/template/.github/CODEOWNERS"
+printf '%s\n' 'peacock' >"$SKIP_TPL/template/proj.code-workspace"
+# The control: same shape, NOT covered by _skip_if_exists.
+printf '%s\n' 'shared' >"$SKIP_TPL/template/shared-note.md"
+printf '%s\n' 'baseline' >"$SKIP_TPL/template/version.txt"
+git_init "$SKIP_TPL"
+git_commit_all "$SKIP_TPL" "skip baseline"
+git -C "$SKIP_TPL" tag v1.0.0
+copier copy --trust --defaults --vcs-ref=v1.0.0 \
+    "$SKIP_TPL" "$SKIP_PROJ" >/dev/null
+git_init "$SKIP_PROJ"
+git_commit_all "$SKIP_PROJ" "generated"
+rm "$SKIP_PROJ/.github/CODEOWNERS" "$SKIP_PROJ/proj.code-workspace" \
+    "$SKIP_PROJ/shared-note.md"
+git_commit_all "$SKIP_PROJ" "decline all three"
+expect_fail "skip-if-exists fixture starts with the declined paths absent" \
+    test -e "$SKIP_PROJ/.github/CODEOWNERS"
+# Only version.txt moves across the range; the three declined files are
+# byte-identical in both renders, so nothing about THEM is in the applied diff.
+printf '%s\n' 'target' >"$SKIP_TPL/template/version.txt"
+git_commit_all "$SKIP_TPL" "skip target"
+git -C "$SKIP_TPL" tag v2.0.0
+expect_ok "skip-if-exists fixture updates cleanly to the target" \
+    copier update --trust --defaults --vcs-ref=v2.0.0 "$SKIP_PROJ"
+expect_ok "the update applied the target content" \
+    grep -qxF target "$SKIP_PROJ/version.txt"
+expect_ok "_skip_if_exists RECREATES an absent literal path" \
+    test -e "$SKIP_PROJ/.github/CODEOWNERS"
+expect_ok "_skip_if_exists RECREATES an absent globbed path" \
+    test -e "$SKIP_PROJ/proj.code-workspace"
+# The control, in the same update: this is what "permanent" actually looks like.
+expect_fail "an ordinary both-renders absence stays absent in the same update" \
+    test -e "$SKIP_PROJ/shared-note.md"
+# It comes back with the TARGET render's content, and untracked — which is why §4
+# tells the operator to read it rather than assume their old version returned.
+expect_ok "the recreated file carries the render's content, not the repo's" \
+    grep -qxF '* @owner' "$SKIP_PROJ/.github/CODEOWNERS"
+expect_ok "the recreated file arrives untracked" \
+    sh -c 'git -C "$1" status --porcelain -- .github/CODEOWNERS |
+        grep -q "^??"' sh "$SKIP_PROJ"
 
 # Move the original mutable tag after the guarded snapshot exists. Copier 9.16
 # re-describes the baseline internally, so this proves its nested clone resolves
