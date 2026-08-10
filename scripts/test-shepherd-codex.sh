@@ -26,6 +26,42 @@ fail() {
     exit 1
 }
 
+# Resolve the REAL system timeout/gtimeout absolute paths before bin_dir
+# (below) goes on PATH, so the timeout-args shim has something real to exec
+# into instead of recursing into itself. Whichever of these exists is exactly
+# what the helper's own `timeout_bin` resolution (same command -v probe,
+# same two names) would have found on this machine — macOS ships only
+# `gtimeout` (coreutils), Linux ships `timeout`.
+real_timeout_bin="$(command -v timeout 2>/dev/null || true)"
+real_gtimeout_bin="$(command -v gtimeout 2>/dev/null || true)"
+
+# Watchdog for run_check/run_reap below (not a budget assertion — see those
+# functions). Resolved the same way the helper itself resolves it, since the
+# helper already requires GNU timeout to exist wherever this suite runs.
+watchdog_bin=
+if [ -n "$real_timeout_bin" ]; then
+    watchdog_bin=timeout
+elif [ -n "$real_gtimeout_bin" ]; then
+    watchdog_bin=gtimeout
+else
+    fail "GNU timeout is required for the test suite's own hang watchdog (coreutils; gtimeout on macOS)"
+fi
+watchdog_sec=300
+
+# A watchdog kill (rc 124, or 137 if -k's SIGKILL grace was needed) means the
+# helper invocation itself never returned within a very generous window. That
+# is a distinct failure mode from any budget/behavioral assertion below: it
+# means the process is genuinely hung or the machine is pathologically
+# starved, not that a case's expected values didn't match.
+check_watchdog() {
+    rc=$1
+    label=$2
+    output=$3
+    [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ] ||
+        fail "$label: watchdog fired after ${watchdog_sec}s — genuinely hung or" \
+            "pathologically starved, not a budget assertion: $output"
+}
+
 cat >"${bin_dir}/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -85,9 +121,53 @@ cat "$GH_FIXTURES/$file"
 STUB
 chmod +x "${bin_dir}/gh"
 
+# Timeout-args shim, same idiom as the `gh` stub above: intercept the binary
+# on PATH, record what the caller invoked it with, then behave exactly like
+# the real thing. This gives a couple of cases a deterministic, non-wall-clock
+# way to observe the numeric budget the helper actually computed for a call
+# (see the "recorded budget" assertions below), instead of inferring it from
+# elapsed time.
+#
+# Shimmed by NAME, not by "whichever the helper would pick": the helper
+# resolves `timeout_bin` with the identical command -v probe this harness just
+# ran, so shimming every name that actually resolved to a real binary here
+# reproduces the helper's own resolution exactly, on both platforms, without
+# this harness needing to guess which one the helper will choose — a name
+# that doesn't exist on this machine (e.g. `timeout` on a stock macOS) simply
+# gets no shim and stays absent, matching the real environment. Each shim
+# execs the one real absolute path resolved above (captured before bin_dir
+# went on PATH), never a PATH-based lookup of its own name, so there is no
+# risk of a shim invoking itself.
+if [ -n "$real_timeout_bin" ]; then
+    cat >"${bin_dir}/timeout" <<SHIM
+#!/usr/bin/env bash
+if [ -n "\${TIMEOUT_ARGS_LOG:-}" ]; then
+    printf '%s\n' "\$*" >>"\$TIMEOUT_ARGS_LOG"
+fi
+exec "$real_timeout_bin" "\$@"
+SHIM
+    chmod +x "${bin_dir}/timeout"
+fi
+if [ -n "$real_gtimeout_bin" ]; then
+    cat >"${bin_dir}/gtimeout" <<SHIM
+#!/usr/bin/env bash
+if [ -n "\${TIMEOUT_ARGS_LOG:-}" ]; then
+    printf '%s\n' "\$*" >>"\$TIMEOUT_ARGS_LOG"
+fi
+exec "$real_gtimeout_bin" "\$@"
+SHIM
+    chmod +x "${bin_dir}/gtimeout"
+fi
+
 export PATH="${bin_dir}:$PATH"
 export GH_FIXTURES="$fixtures"
 export GH_LOG="$log"
+# Where a recorded-budget assertion writes/reads if it opts in below by
+# exporting TIMEOUT_ARGS_LOG=$timeout_args_log around its one run_check/
+# run_reap call. Unexported and unset otherwise, so the shims above are a
+# silent passthrough (no logging, no extra file I/O) for every other case in
+# this suite — scoped to the couple of cases that are actually the point.
+timeout_args_log="${test_tmp}/timeout-args.log"
 
 head_sha="$(git rev-parse HEAD)"
 actor_id=199175422
@@ -146,12 +226,13 @@ new_cycle() {
 
 run_check() {
     set +e
-    check_out="$("$helper" check \
+    check_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$helper" check \
         --state "$state" --actor-id "$actor_id" \
         --actor-login "$actor_login" --timeout-min 15 \
         --now "$1" 2>&1)"
     check_rc=$?
     set -e
+    check_watchdog "$check_rc" run_check "$check_out"
 }
 
 assert_status() {
@@ -1280,12 +1361,46 @@ jq -cn \
       }
     ]]' >"${fixtures}/reactions.pages.json"
 printf '%s\n' '/reviews' >"${fixtures}/slow-endpoint"
-start_seconds=$SECONDS
+: >"$timeout_args_log"
+export TIMEOUT_ARGS_LOG="$timeout_args_log"
 run_check '2026-07-31T08:01:00Z'
-elapsed_seconds=$((SECONDS - start_seconds))
+unset TIMEOUT_ARGS_LOG
+# No post-return wall-clock bound here — the status assertion below IS the
+# regression signal, and it is a stronger one than timing ever was.
+#
+# This case's reservation clock ("2026-07-31") is far in the past relative to
+# the machine's real clock, so the deadline math yields a deeply negative
+# remaining budget and call_timeout collapses to ~1s: the /reviews sleep-5
+# fixture is meant to be killed almost immediately. If that budget collapse
+# regressed back to the flat 60s ceiling, the call would instead run to
+# completion and return its (empty) reviews page with exit 0 — and
+# `fetch_evidence` would fall through past the reviews fetch instead of
+# hitting `bounded_wait "cannot fetch paginated PR reviews"`. With the
+# reactions fixture above (`+1` from the actor at $head, created after the
+# request), the walk would then reach the `exact_like` check and emit `clean`
+# (exit 0), not `pending` (exit 11) — a regressed budget changes what this
+# check *decides*, not just how long it takes to decide it. `assert_status 11
+# pending` below already catches that flip, deterministically, at any speed.
+#
+# A wall-clock bound was here previously (widened 4s -> 20s in a prior pass
+# to tolerate contention), but 20s was wide enough to let the very regression
+# it existed to catch — the call completing the full 5s sleep instead of
+# being killed at ~1s — pass silently (5s < 20s). Removing it loses nothing:
+# the run's own hang protection is the watchdog wrapped around run_check
+# itself (see its definition), which fires on a genuine hang regardless of
+# which case triggered it.
 assert_status 11 pending
-[ "$elapsed_seconds" -lt 4 ] ||
-    fail "stalled descendant outlived the call deadline (${elapsed_seconds}s)"
+# Second, independent regression signal for the exact same collapse, with no
+# timing involved at all: the timeout-args shim (see harness setup), opted
+# into above via TIMEOUT_ARGS_LOG, recorded every "-k N DURATION gh ..."
+# invocation the helper actually made to $timeout_args_log before execing the
+# real timeout unchanged. The reviews fetch's own recorded duration is the
+# collapsed clamp itself — 1 — so a regression to the flat 60s ceiling (or any
+# other value) changes a recorded number, deterministically, rather than
+# something inferred from elapsed wall-clock.
+reviews_budget="$(grep 'reviews?per_page=100' "$timeout_args_log" | awk '{print $3}')"
+[ "$reviews_budget" = "1" ] ||
+    fail "reviews fetch did not use the collapsed 1s clamp: '$reviews_budget' ($timeout_args_log: $(cat "$timeout_args_log"))"
 
 echo "==> API budget uses the local reservation clock"
 new_cycle
@@ -1298,10 +1413,52 @@ start_seconds=$SECONDS
 run_check "$local_time"
 elapsed_seconds=$((SECONDS - start_seconds))
 assert_status 11 pending
+# Behavioral signal, not timing: here the reservation clock is "now", so
+# `remaining` stays large and call_timeout is the flat 60s ceiling — this
+# call is meant to run the /reviews sleep-5 fixture to completion rather than
+# being cut short. When it does, `fetch_evidence` falls all the way through
+# empty reactions/comments/reviews/inline to the terminal
+# `bounded_wait "no terminal current-head evidence yet"`. If the local vs.
+# GitHub-clock precedence regressed and the budget was wrongly shortened
+# instead (as in the case above), the reviews fetch would be killed early and
+# emit `bounded_wait "cannot fetch paginated PR reviews"` — same `pending`
+# status (11), but a different, checkable detail. Assert on that directly:
+# it is immune to scheduler noise in a way wall-clock timing is not.
+detail="$(printf '%s' "$check_out" | jq -r '.detail' 2>/dev/null || true)"
+[ "$detail" = "no terminal current-head evidence yet" ] ||
+    fail "reviews fetch did not run to completion under the local budget: $check_out"
+# Lower bound: proves the sleep-5 fixture actually took real time rather than
+# being short-circuited by a clock bug that mistakes GitHub's returned time
+# for the local reservation clock (which would yield a ~1s call_timeout as in
+# the case above and return almost instantly). Load only ever makes this
+# slower, never faster, so contention cannot produce a false failure here —
+# it is load-immune and needs no widening. Kept alongside the detail
+# assertion above as a second, independent confirmation of the same "the
+# call actually ran" fact.
 [ "$elapsed_seconds" -ge 4 ] ||
     fail "GitHub time incorrectly shortened the local API budget (${elapsed_seconds}s)"
-[ "$elapsed_seconds" -lt 15 ] ||
-    fail "slow API fixture exceeded its expected budget (${elapsed_seconds}s)"
+# Deliberately NO post-return upper bound here (or anywhere in this file):
+# in this fixture the /reviews call can never take longer than its hardcoded
+# 5s sleep regardless of whether call_timeout is computed correctly,
+# generously, or even unboundedly large — so no regression in this helper
+# can make elapsed here differ behaviorally; a "runs forever" bug is simply
+# not representable by a fixture that always returns after 5s. A wall-clock
+# ceiling here can only ever measure how long the PARENT shell (this test
+# script) went unscheduled, not the helper's own budget: the child process
+# can complete correctly, on time, under its own 1s/60s limits, while the
+# calling shell itself sits off-CPU past any ceiling we'd pick, and
+# `$SECONDS` counts that time too. That is the literal devkit#308 failure —
+# two `task verify` invocations racing for CPU pushed elapsed to 938s while
+# the call was correctly bounded the entire time — and it recurred at the
+# previous 60s ceiling for the identical reason a wider number can't fix: the
+# parent-scheduling gap has no finite bound in principle. The behavioral
+# detail assertion above (regression signal) plus the `-ge 4` lower bound
+# (load-immune, "the call actually ran") already prove everything a
+# wall-clock check could, without ever being able to false-fail on scheduler
+# noise. Real hang protection is the watchdog wrapped around run_check itself
+# (see its definition): it bounds the whole invocation, including any
+# parent-scheduling delay, and fails loudly with its own message instead of
+# silently blowing a per-case budget.
 
 echo "==> unexpected actor identity is indeterminate"
 new_cycle
@@ -1408,9 +1565,11 @@ run_reap() {
     reap_target=$1
     shift
     set +e
-    reap_out="$("$helper" reap --root "$reap_target" "$@" 2>&1)"
+    reap_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$helper" reap \
+        --root "$reap_target" "$@" 2>&1)"
     reap_rc=$?
     set -e
+    check_watchdog "$reap_rc" run_reap "$reap_out"
 }
 
 assert_reap() {
@@ -1594,22 +1753,34 @@ printf '%s\n' MERGED >"${fixtures}/pr-state-22"
 # the work that matters, so it must give up rather than spend one timeout per
 # entry — and giving up means KEEPING, never deleting on an answer it lacks.
 : >"${fixtures}/slow-pr"
-reap_started="$(date -u '+%s')"
 run_reap "$reap_root" --budget-sec 1
-reap_elapsed=$(($(date -u '+%s') - reap_started))
 [ "$reap_rc" -eq 0 ] || fail "a stalled sweep exited $reap_rc: $reap_out"
 assert_reap '.scanned' 2
+# These are the regression signal, not a wall-clock bound. With
+# --budget-sec 1 the whole-sweep deadline expires almost immediately, so only
+# the first entry's pr-view call is even attempted (at a ~1s call_timeout)
+# before the second is fast-pathed as "kept" without a call at all. If that
+# per-entry budget regressed back to the flat 60s ceiling instead, BOTH
+# stalled pr-view calls (each fixture-capped at 5s, well under 60s) would
+# complete normally and return their real MERGED state — and a completed
+# MERGED lookup gets REAPED, not kept. A regressed budget therefore flips
+# `.reaped`/`.kept` and deletes the state files below; a wall-clock bound
+# adds nothing that these don't already prove deterministically, at any
+# speed. The "budget exhausted" detail is the same signal from a different
+# angle: it can only appear on an entry the budget check actually cut off.
 assert_reap '.reaped' 0
 assert_reap '.kept' 2
 [ -f "${reap_root}/example/alpha/11.json" ] || fail "a stalled sweep deleted state"
 [ -f "${reap_root}/example/beta/22.json" ] || fail "a stalled sweep deleted state"
-# Two entries x the flat 60s per-call timeout is the unbounded behaviour; the
-# budget has to hold this well under even one of them.
-[ "$reap_elapsed" -lt 30 ] ||
-    fail "sweep ran ${reap_elapsed}s — the budget did not bound it"
 printf '%s' "$reap_out" | jq -e \
     '[.entries[] | select(.detail | test("budget exhausted"))] | length >= 1' \
     >/dev/null || fail "no entry reported the exhausted budget: $reap_out"
+# No post-return wall-clock bound: it was never load-sensitive by accident,
+# it was redundant with the assertions above from the start, and — same as
+# the API-budget case — any real "ran forever" regression is not
+# representable by a fixture whose pr-view stall is hardcoded to 5s anyway.
+# The suite's own hang protection is the watchdog wrapped around run_reap
+# itself (see its definition).
 
 echo "==> reap rejects a non-numeric budget"
 set +e
