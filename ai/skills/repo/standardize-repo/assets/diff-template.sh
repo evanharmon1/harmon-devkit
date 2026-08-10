@@ -716,6 +716,18 @@ is_ignore_pattern_match() {
 # real MISSING. `git rm --cached` is a staged delete whose worktree copy happens
 # to survive — the commit removes the file just the same — so it earns that
 # established class rather than a new one.
+#
+# Deliberately WITHOUT the non-adoption pointer the other two MISSING lines
+# carry (copier-gotchas.md §9). That gotcha is about a path the repo LACKS,
+# which the three-way merge reads as your own deletion and never restores. Here
+# the file is in HEAD and its worktree copy is still on disk: there is nothing
+# for an update to restore, and the fix is to reconcile the staged deletion, not
+# to adopt a template file. The guarded update's classifier agrees by
+# construction — its repo-presence test is `test -e`/`test -L`, so the surviving
+# copy produces no non-adoption row at all, and pointing an operator at a report
+# that deliberately omits this path would misdirect. Commit the deletion and the
+# path becomes genuinely absent, at which point the ordinary MISSING lines
+# report it and the §9 pointer is finally the true one.
 is_staged_removal() {
     p="$1"
     [ "$target_owns_worktree" -eq 1 ] || return 1
@@ -814,7 +826,7 @@ while IFS= read -r f; do
     checked=$((checked + 1))
     rv="$(repo_variant "$f")"
     if [ -z "$rv" ]; then
-        echo "MISSING  $f  (template ships it; repo doesn't)"
+        echo "MISSING  $f  (template ships it; repo doesn't; a copier update will not restore it unless _skip_if_exists or the render's own .gitignore covers it — copier-gotchas.md §9)"
         drift=1
         missing_count=$((missing_count + 1))
         continue
@@ -932,6 +944,22 @@ has_repo_equivalent() {
 # never how. That inverse reading is the useful one — a CO-OWNED line that
 # disappears after a `copier update` means the repo's copy went byte-identical
 # to the template's, i.e. the customizations were clobbered.
+#
+# The `docs/`/`specs/` branch below — and ONLY that branch — is duplicated by
+# the guarded update's non-adoption classifier (mode-update.md §1, the
+# `nonadoption-classify` markers), as `nonadoption_is_collapsible_prose`. What
+# must agree is the whole shape, not just the two globs: the Markdown-only filter
+# is load-bearing there too, because a copy that kept the bare `docs/*` would
+# file a missing generated asset as somebody's owned prose and collapse it out of
+# the report. Change one, change the other.
+#
+# The rest of this list is intentionally NOT mirrored there, and the asymmetry is
+# the point. Co-ownership is a CONTENT exemption — this script withholds a diff
+# because the repo's prose is expected to differ — and absence is not content.
+# Over there the question is whether a file the repo does not have was declined
+# on purpose, which no amount of prose ownership answers: a missing AGENTS.md or
+# LICENSE earns a disposition row. Only the two documentation trees collapse
+# there, and only because a repo carries tens of them.
 #
 # Keep these globs TIGHT. Anything the template grows that is not listed here
 # falls through to a visible, gating uncurated DRIFT, which is the safe default:
@@ -1099,7 +1127,7 @@ while IFS= read -r abs; do
     case "$g" in
     *.gitkeep) echo "ABSENT   $g  (template dir-stub — benign if the dir has real content)" ;;
     *)
-        echo "MISSING  $g  (template ships it; repo lacks it — review)"
+        echo "MISSING  $g  (template ships it; repo lacks it — review; a copier update will not restore it unless _skip_if_exists or the render's own .gitignore covers it — copier-gotchas.md §9)"
         drift=1
         missing_count=$((missing_count + 1))
         ;;

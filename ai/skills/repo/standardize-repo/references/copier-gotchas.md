@@ -218,6 +218,95 @@ updatable everywhere.
 
 ---
 
+## 9. `copier update` never adopts a file your baseline already shipped
+
+**Symptom:** a template file the repo does not have stays absent through every
+update, forever. No conflict, no prompt, no line in the output. `diff-template.sh`
+keeps reporting it `MISSING` and each `copier update` keeps not fixing it, so the
+gap looks like a tooling bug and gets shrugged off as one.
+
+**Why:** not because the diff is empty — that explanation is wrong and it
+predicts the wrong things. Copier renders the template at the recorded `_commit`
+(the baseline) and at the target ref and reconciles the two against the repo,
+but before it applies anything it computes which paths the subproject **no
+longer has** and *excludes them from creation*. The absence is honoured as a
+decision, whatever the two renders say about the file's content.
+
+The difference is testable, and this repo's suite tests it: take a file both
+renders ship whose content **changed** across the range, delete it from the
+repo, and update. A diff-driven merge has a real hunk to apply and nothing to
+apply it to, so it would conflict or recreate the file. Copier does neither — the
+file stays absent, the update returns clean, and no `.rej` or `.orig` appears.
+The exclusion is explicit, not emergent.
+
+That is not a failure. Reading an absence as the user's own deletion and
+preserving it is precisely what an update is supposed to do, and it is the same
+behavior that stops an update from re-adding every file a repo has deliberately
+removed. The one documented way back in is `_skip_if_exists`, below — which is
+exactly what you would expect of an explicit exclusion list: it needs an
+explicit exception.
+
+The trap is what happens next. A successful update rewrites `_commit` to the
+target, so the *next* update's baseline already contains the file too — and
+diffs it against a repo that still lacks it, to the same conclusion. Every
+subsequent update reaches the same answer for the same reason. **For any path
+both renders ship, the absence is a permanent opt-out**, and nothing in the repo
+records that anyone chose it. A file removed in a hurry three versions ago is
+indistinguishable from one nobody ever noticed was missing.
+
+**"Both renders" is the whole condition**, and it is worth being exact about
+which absences it covers, because the loose version of this rule is wrong. A
+file the template gained *after* your recorded baseline is **target-only**: the
+baseline→target diff does add it, so the update creates it and there is no trap
+at all. What is permanent is everything the template already shipped **at your
+baseline** — whether you deleted it, or adopted the template mid-life and never
+had it, or declined it once and let an update reset the baseline over the top.
+That last case is how a target-only file turns into a permanent one: the update
+creates it, you remove it before committing, and from the next update on it sits
+in both renders. The mechanism does not care how the absence arose, only that
+both sides of the diff agree the file exists.
+
+**There are TWO carve-outs, and both run the other way.** The exclusion above is
+built by diffing the *old render's* committed tree against the subproject's
+**index**: whatever appears as deleted there is withheld from re-creation. Two
+kinds of path never appear in that diff, so neither is ever withheld.
+
+1. **`_skip_if_exists` paths.** The option means "do not overwrite this when it
+   is already there" — on a path that is **absent** it does not preserve the
+   absence, it renders the file fresh. harmon-init lists `CHANGELOG.md`,
+   `*.code-workspace`, `.github/CODEOWNERS`, `.release-please-manifest.json`,
+   and `.devcontainer/related-repos.txt`.
+2. **Paths the render's own `.gitignore` covers.** Copier builds the old
+   render's tree with `git add -A`, which honours the `.gitignore` that render
+   ships. A path matched by it is therefore never in that tree, can never show
+   up as deleted, and is re-rendered every time — no matter how deliberately the
+   repo removed it. This one is easy to miss because the path *looks* settled:
+   the repo ignores it, the template ignores it, and it is still coming back.
+
+Read the target `copier.yml` rather than trusting the list in point 1, and treat
+`.github/CODEOWNERS` specially: it encodes who must review, the render writes it
+from one answer, and a repo that widened its owners gets the single-owner
+version back without a word. [`mode-update.md`](./mode-update.md) §1 needs none
+of this to classify — it rehearses the apply and records what actually
+reappeared, as `created` (noted `recreated`), and §2's reconciliation confirms
+they landed. Audit mode has no rehearsal, so there the two carve-outs have to be
+applied by hand.
+
+**Rule:** adopt deliberately or record the decline — never let an absence stand
+unexamined just because the tooling is quiet about it. `MISSING` is a decision
+you owe an answer to, not a warning you can wait out. The guarded update makes
+that mechanical: [`mode-update.md`](./mode-update.md) §1 classifies every path
+the two renders disagree on (or agree on and the repo lacks) into
+`nonadoption-report.tsv` by rehearsing the apply against a scratch copy —
+`nonadopt-both` is the permanent class, `created` is one the apply wrote — and §5
+requires the survivors in the PR body with a disposition per row. In audit mode,
+where there is only one render, treat every whole-render `MISSING` as a
+permanent non-adoption candidate: that render is at the repo's own `_commit`, so
+everything it reports is by definition a path the baseline ships —
+[`mode-audit.md`](./mode-audit.md) §3 drift class K.
+
+---
+
 ## Quick checklist when touching the template
 
 - Rendering local WIP to test? → `--vcs-ref=HEAD`.
@@ -228,4 +317,10 @@ updatable everywhere.
 - New side-effect question? → default `no`.
 - New conditionally-named file? → cover it with a `test-template.sh` profile.
 - New ignore pattern? → anchor to `/` and negate `template/` copies.
+- A repo is `MISSING` a file its baseline already shipped? → no update will ever
+  restore it; adopt it or record the decline (gotcha 9). Two carve-outs come
+  back regardless, both because copier's deleted-path scan cannot see them: a
+  path listed under `_skip_if_exists`, and any path the render's own
+  `.gitignore` covers. A file added upstream *after* your baseline is not a
+  carve-out — it is target-only, and the update creates it in the ordinary way.
 - After any `copier.yml` / `template/**` change → `task test:template:all` must pass.

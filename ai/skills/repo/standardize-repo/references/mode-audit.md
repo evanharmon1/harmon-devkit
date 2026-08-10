@@ -518,6 +518,51 @@ standards; re-adding the template's seed is wrong. The recurring ones:
   versions, so nothing is added and no dead second config results. Confirm the repo
   actually has a `.prettierrc*`/`prettier` package.json key, then leave it.
 
+**Everything that survives that list is a PERMANENT non-adoption candidate.**
+Audit mode has a single render, at the repo's own `_commit`, so it cannot split
+`MISSING` into "the template just added this" and "the template has shipped this
+all along" — that baseline-versus-target classification exists only in update
+mode ([`mode-update.md`](./mode-update.md) §1). What audit mode *can* say is the
+part that matters, and it can say it precisely: this render **is** the repo's
+baseline, so every path it reports `MISSING` is by definition one the template
+already shipped at that baseline — which is exactly the condition under which
+`copier update` will never restore a file. The three-way merge reads the absence
+as the repo's own deletion and preserves it, and each update resets the baseline
+so the file is never offered again
+([`copier-gotchas.md`](./copier-gotchas.md) §9). The absence **is** the opt-out,
+whether or not anyone chose it. That is why a `MISSING` finding must be
+dispositioned — restored, or declined with a reason on the record — and not
+shrugged at as something the next update will pick up. There is no next update
+that will.
+
+**Check BOTH re-creation carve-outs before dispositioning any of them**
+([`copier-gotchas.md`](./copier-gotchas.md) §9): a path listed under
+`_skip_if_exists`, and any path the template's own `.gitignore` covers — copier
+builds its comparison tree with `git add -A`, so a render-ignored path is
+invisible to the deleted-path scan and is re-rendered every update however
+deliberately it was removed. A path in either group is not preserved-absent: `copier update` renders it fresh
+whenever the repo lacks it, so its `MISSING` is temporary and resolves itself on
+the next update. harmon-init lists `CHANGELOG.md`, `*.code-workspace`,
+`.github/CODEOWNERS`, `.release-please-manifest.json`, and
+`.devcontainer/related-repos.txt`. Reading that list is a **fallback**, and an
+imperfect one — the pattern semantics are copier's, not git's, and matching them
+by hand is exactly the guesswork that
+[`mode-update.md`](./mode-update.md) §1 stopped doing when it started rehearsing
+the apply against a scratch copy and simply watching which files came back.
+Audit mode has one render and no update to rehearse, so it has no such
+observation available; read the list, set those paths aside, and keep the
+warning attached, because `.github/CODEOWNERS` returning means access-control
+rules returning. Where it matters, run the guarded update and read its report
+instead of deciding from the pattern list.
+
+**One `MISSING` line is outside that population**, and it says so in its own
+note: `tracked in HEAD but staged for removal`. That path is still in `HEAD` and
+its worktree copy is still on disk, so nothing is absent for an update to
+restore and there is no non-adoption to disposition — the finding is a pending
+index state, and the answer is to reconcile the staged deletion. Commit it and
+the path becomes genuinely absent, at which point the paragraph above applies
+to it like any other.
+
 **L. Workflow ↔ Taskfile/runtime contract.** Every `task <target>` referenced in
 `.github/workflows/*.yml` must exist in `Taskfile.yml`. CI's `lint`/`build` jobs
 call targets `task verify` never runs (e.g. `test:tasks`, `test:hooks`,
