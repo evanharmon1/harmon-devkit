@@ -70,6 +70,8 @@ trigger_id=
 actor_id=
 actor_login='chatgpt-codex-connector[bot]'
 timeout_min=15
+timeout_min_set=0
+timeout_min_adopted=0
 now=
 lock_dir=
 reap_entries=
@@ -91,7 +93,10 @@ while [ "$#" -gt 0 ]; do
         --trigger-id) trigger_id=$2 ;;
         --actor-id) actor_id=$2 ;;
         --actor-login) actor_login=$2 ;;
-        --timeout-min) timeout_min=$2 ;;
+        --timeout-min)
+            timeout_min=$2
+            timeout_min_set=1
+            ;;
         --budget-sec) reap_budget_sec=$2 ;;
         --now) now=$2 ;;
         esac
@@ -124,6 +129,95 @@ valid_sha() {
 valid_time() {
     printf '%s' "$1" |
         grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+}
+
+# harmon-devkit#223: the timeout governing an attempt cycle used to live only
+# in whatever `--timeout-min` a caller happened to pass, so `check
+# --timeout-min 10` could return `retry` after ten minutes while the
+# documented attempt-2 `reserve` — which takes no timeout of its own — was
+# still enforcing the 15-minute default window for another five. The fix
+# distinguishes ABSENCE (no command has ever chosen a timeout for this cycle)
+# from a PERSISTED CHOICE (one has), and only the latter is authoritative:
+#
+#   - persisted is a number: that value governs. An explicit --timeout-min
+#     that disagrees is a usage error (a second vote), not a silent switch.
+#   - persisted is absent/null and --timeout-min was NOT passed: fall back to
+#     the unmodified 15-minute default, unpersisted — still no choice made.
+#   - persisted is absent/null and --timeout-min WAS passed: ADOPT it. This
+#     is the documented convention itself — `reserve` (no flag) followed by
+#     `check --timeout-min 10` must keep working, so the first explicit value
+#     any command supplies for an otherwise-undecided cycle becomes that
+#     cycle's timeout from here on. The caller persists the adoption
+#     (`timeout_min_adopted=1` signals it must write `.timeout_min` back)
+#     rather than this function, because writing state requires the caller's
+#     already-held lock and read state file.
+#
+# Adopting is safe to do retroactively (not just before any `check` has run)
+# because nothing about a `check` verdict is durable: every command
+# re-derives `elapsed` from `reserved_at` and `timeout_min` fresh, on its own
+# invocation, against the real clock. There is no cached "attempt 1 timed
+# out" decision anywhere in state for a later adoption to contradict — only
+# `reserved_at` (fixed at reservation) and `timeout_min` (this cycle's
+# budget) are persisted, and adoption keeps those two mutually consistent for
+# every command that reads them afterward. The one case that DOES get a
+# second vote is two conflicting EXPLICIT flags — that is not absence
+# resolving, it is genuine disagreement about the cycle's timeout, so it
+# stays a `die`.
+#
+# `$1` is the raw `.timeout_min` from the state file: empty both for state
+# written before this field existed (no key at all) and for a cycle that has
+# never had an explicit choice adopted into it (the key is present as JSON
+# `null`) — `jq -r '.timeout_min // empty'` collapses both to the empty
+# string, and this function treats them identically, which is the point:
+# neither has made a durable choice yet.
+resolve_timeout_min() {
+    persisted=$1
+    timeout_min_adopted=0
+    if [ -n "$persisted" ]; then
+        valid_uint "$persisted" ||
+            die "state has an invalid timeout_min: $persisted"
+        # harmon-devkit#223: canonicalize both sides to base-10 before
+        # comparing or persisting. `valid_uint`'s `[1-9][0-9]*` pattern
+        # already forbids a leading zero on the EXPLICIT flag, and jq already
+        # normalizes one out of a value it reads back from JSON, so neither
+        # side can carry one into this function today — but a string
+        # equality test comparing "10" against a differently-spelled-but-equal
+        # value would falsely conflict if that ever changed (a looser regex,
+        # a different jq, a hand-edited state file), and forcing `$((10#x))`
+        # is cheap insurance against relying on that staying true. `10#` (not
+        # a bare `-eq`) matters here specifically because bash arithmetic
+        # treats an actual leading zero as OCTAL — `[ 010 -eq 8 ]` is true —
+        # so an unguarded `-eq` would silently compare the wrong canonical
+        # number instead of failing safe.
+        persisted=$((10#$persisted))
+        if [ "$timeout_min_set" = 1 ]; then
+            explicit=$((10#$timeout_min))
+            [ "$explicit" -eq "$persisted" ] ||
+                die "--timeout-min $timeout_min conflicts with the ${persisted}-minute timeout already persisted for this attempt cycle"
+        fi
+        timeout_min=$persisted
+    elif [ "$timeout_min_set" = 1 ]; then
+        # $timeout_min already holds the explicit flag's value from arg
+        # parsing; canonicalize it for the same reason as above before the
+        # caller persists it.
+        timeout_min=$((10#$timeout_min))
+        timeout_min_adopted=1
+    else
+        timeout_min=15
+    fi
+}
+
+# Persists an adoption `resolve_timeout_min` flagged via `timeout_min_adopted`.
+# Must run inside the caller's existing state lock, after `resolve_timeout_min`
+# and before any command relying on `timeout_min` returns — an adoption that
+# is never written back would silently revert to "undecided" on the next
+# invocation, reopening the inconsistent-windows bug this whole change exists
+# to close.
+persist_adopted_timeout() {
+    [ "$timeout_min_adopted" = 1 ] || return 0
+    payload=$(jq --argjson timeout_min "$timeout_min" \
+        '.timeout_min = $timeout_min' "$state_file")
+    write_state "$state_file" "$payload"
 }
 
 provider_head() {
@@ -187,7 +281,8 @@ read_state() {
       (.cycle_requested_at == null or
         (.cycle_requested_at | type == "string")) and
       (.previous_trigger_comment_id == null or
-        (.previous_trigger_comment_id | type == "number"))
+        (.previous_trigger_comment_id | type == "number")) and
+      (.timeout_min == null or (.timeout_min | type == "number"))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
 
@@ -474,10 +569,41 @@ reserve)
         previous_reserved_epoch=$(jq -nr \
             --arg value "$previous_reserved_at" '$value | fromdateiso8601') ||
             die "cannot parse attempt 1 reservation time"
+        # harmon-devkit#223: attempt 2 has no --timeout-min of its own in the
+        # documented flow, and even when one is passed it must not silently
+        # open a second window — a timeout already persisted on the attempt-1
+        # state is authoritative, and an explicit flag may only restate it
+        # (resolve_timeout_min dies on a mismatch). If attempt 1 never had a
+        # timeout chosen for it, this reserve's own flag (or the 15-minute
+        # default, if none) decides the cycle's timeout from here.
+        persisted_timeout_min=$(jq -r '.timeout_min // empty' "$state_file")
+        resolve_timeout_min "$persisted_timeout_min"
+        # harmon-devkit#223: persist an adoption BEFORE the window check can
+        # `die` and exit this process. An early attempt-2 that supplies the
+        # cycle's first explicit --timeout-min still decided that timeout —
+        # refusing the reservation for arriving too soon must not also
+        # discard the choice, or a later flagless retry falls back to the
+        # 15-minute default and gets refused again for the wrong reason.
+        persist_adopted_timeout
         current_epoch=$(date -u '+%s')
         [ "$current_epoch" -ge \
             "$((previous_reserved_epoch + timeout_min * 60))" ] ||
             die "attempt 1 window has not elapsed"
+    fi
+    # harmon-devkit#223: attempt 1 of a fresh cycle persists a CHOICE only
+    # when one was actually made (`--timeout-min` passed) — writing the
+    # runtime default here would make it indistinguishable from a real
+    # choice, and a later `check --timeout-min 10` on an unmodified default
+    # would then read as a conflict instead of the adoption the documented
+    # `reserve` (no flag) -> `check --timeout-min N` convention depends on.
+    # Attempt 2 always has a concrete decided value by this point (either
+    # read back from attempt 1 above, or just adopted/defaulted into
+    # `timeout_min` by resolve_timeout_min) and locks it in explicitly, since
+    # there is no attempt 3 left to adopt anything later.
+    if [ "$attempt" = "1" ] && [ "$timeout_min_set" != 1 ]; then
+        payload_timeout_min=null
+    else
+        payload_timeout_min=$timeout_min
     fi
     payload=$(jq -cn \
         --arg repo "$repo" \
@@ -487,13 +613,15 @@ reserve)
         --arg reserved_at "$reserved_at" \
         --arg cycle_requested_at "$cycle_requested_at" \
         --argjson previous_trigger_id "$previous_trigger_id" \
+        --argjson timeout_min "$payload_timeout_min" \
         '{
           version:1,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
           trigger_comment_id:null,requested_at:null,
           cycle_requested_at:
             (if $cycle_requested_at == "" then null else $cycle_requested_at end),
-          previous_trigger_comment_id:$previous_trigger_id
+          previous_trigger_comment_id:$previous_trigger_id,
+          timeout_min:$timeout_min
         }')
     write_state "$state_file" "$payload"
     release_state_lock
@@ -503,8 +631,18 @@ reserve)
 attach)
     [ -n "$trigger_id" ] || usage
     valid_uint "$trigger_id" || die "invalid trigger comment ID"
+    valid_uint "$timeout_min" || die "timeout must be a positive integer"
     acquire_state_lock
     read_state
+    # harmon-devkit#223: every `run_gh` call below (the head re-check and the
+    # trigger-comment fetch) is budgeted off `$timeout_min` via the
+    # `state_reserved` arithmetic in `run_gh` itself — it is not just the
+    # commands that reference the flag by name. A persisted non-default
+    # timeout has to reach that arithmetic here exactly as it does in
+    # `check`, or attach's own GitHub calls run on the wrong window.
+    persisted_timeout_min=$(jq -r '.timeout_min // empty' "$state_file")
+    resolve_timeout_min "$persisted_timeout_min"
+    persist_adopted_timeout
     phase=$(jq -r '.phase' "$state_file")
     if [ "$phase" = "attached" ]; then
         existing_id=$(jq -r '.trigger_comment_id' "$state_file")
@@ -777,6 +915,15 @@ check)
     valid_time "$cycle_requested" || die "state has an invalid cycle request time"
     [ -z "$previous_trigger" ] || valid_uint "$previous_trigger" ||
         die "state has an invalid previous trigger ID"
+    # harmon-devkit#223: the window `bounded_wait` and `run_gh`'s per-call
+    # budget measure against `state_reserved` must be the one this cycle was
+    # actually reserved under, not whatever `--timeout-min` this particular
+    # invocation happened to pass — otherwise a shorter flag here and the
+    # unmodified 15-minute default in attempt-2 `reserve` disagree about when
+    # the window closes.
+    persisted_timeout_min=$(jq -r '.timeout_min // empty' "$state_file")
+    resolve_timeout_min "$persisted_timeout_min"
+    persist_adopted_timeout
 
     first_head=$(provider_head "$state_pr" "$state_repo") || {
         bounded_wait "cannot fetch the current open PR head"
