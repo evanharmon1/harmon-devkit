@@ -1883,7 +1883,7 @@ notes that record a decision already taken — `ignored-policy`,
 `known-false-verified`, `gitkeep` — in a compact list under the table, one line
 each, instead of collapsing them into counts. Every other absence is tabled.
 
-## 2. Run the update## 2. Run the update## 2. Run the update
+## 2. Run the update
 
 **Preflight — ensure the recorded lineage tuple is resolvable.** `copier update`
 reuses both `_src_path` and `_commit` from `.copier-answers.yml`. A relative or
