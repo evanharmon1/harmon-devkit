@@ -1114,29 +1114,66 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     esac
     return 1
   }
-  # Any ADR log the repo is actually keeping: a renumbered record-decisions ADR,
-  # or numbered ADRs under a log of its own. Either makes the seed redundant —
-  # the same two shapes diff-template.sh's `has_repo_equivalent` accepts, and the
-  # glob subsumes the renumbered case because the seed path itself is absent by
-  # the time this runs.
+  # The two ADR shapes diff-template.sh's `has_repo_equivalent` accepts, and only
+  # those: a RENUMBERED `*-record-architecture-decisions.md`, or a README-backed
+  # log holding at least one numbered ADR. "Any numbered ADR" is broader than the
+  # documented evidence — `0002-use-postgres.md` says the repo writes ADRs, not
+  # that it re-recorded the decision this seed records or keeps an indexed log,
+  # and accepting it filtered the seed away on the strength of an unrelated file.
   nonadoption_has_adr_log() {
+    NONADOPT_ADR_NUMBERED=0
     for NONADOPT_ADR in docs/decisions/[0-9]*.md; do
       test -f "$NONADOPT_ADR" || continue
-      return 0
+      NONADOPT_ADR_NUMBERED=1
+      case "${NONADOPT_ADR##*/}" in
+      *-record-architecture-decisions.md) return 0 ;;
+      esac
     done
-    return 1
+    test "$NONADOPT_ADR_NUMBERED" -eq 1 || return 1
+    test -f docs/decisions/README.md
   }
   # Nested/split Terraform roots — a `*.tf` at least one directory BELOW
   # `terraform/`, which is what makes the flat seed files redundant. A flat
   # `terraform/*.tf` proves nothing: that is the seed layout itself.
+  #
+  # `.terraform` is pruned because `terraform init` fills
+  # `.terraform/modules/**/*.tf` with vendored module sources. Those are
+  # generated cache, gitignored, and nested by construction, so an unrestricted
+  # walk read `terraform init` itself as evidence that the repo had outgrown the
+  # seed — in a repo that still has exactly the flat layout. `-prune` before the
+  # `-o` branch is the portable form (BSD and GNU find alike).
   nonadoption_has_nested_terraform() {
     test -d terraform || return 1
-    find terraform -type f -name '*.tf' 2>/dev/null |
+    find terraform -name .terraform -prune -o -type f -name '*.tf' -print \
+      2>/dev/null |
       awk '{
              rel = substr($0, length("terraform/") + 1)
              if (rel ~ /\//) found = 1
            }
            END { exit(found ? 0 : 1) }'
+  }
+  # Prettier reads its config from any of a dozen filenames, and every one of
+  # them replaces the template's `prettier.config.cjs`. Checking `.prettierrc.cjs`
+  # alone invented an unverified row for every repo that picked a different
+  # supported form. `prettier.config.cjs` is not in the list: it is the path being
+  # classified, absent by construction, which is why we are here at all.
+  nonadoption_has_prettier_config() {
+    for NONADOPT_PRETTIER in \
+      .prettierrc .prettierrc.json .prettierrc.yml .prettierrc.yaml \
+      .prettierrc.json5 .prettierrc.js .prettierrc.cjs .prettierrc.mjs \
+      .prettierrc.toml prettier.config.js prettier.config.mjs; do
+      test -f "$NONADOPT_PRETTIER" || continue
+      return 0
+    done
+    # The `prettier` key in package.json is the remaining supported location, and
+    # this probe is knowingly LOOSE: it also matches a `"prettier"` devDependency
+    # line, so a repo that installed prettier without configuring it counts. The
+    # honest alternative is a JSON parse, which would put `jq` into a recipe that
+    # otherwise needs only git and coreutils. Accepting the over-match costs one
+    # collapsed count on a node repo that has prettier in package.json at all —
+    # tighten this to a real parse if that ever proves too generous.
+    test -f package.json || return 1
+    grep -q '"prettier"' package.json
   }
   # The known-false-`MISSING` list from mode-audit.md §3 (drift class K):
   # absences that are deliberate divergences, not gaps. Every entry there is
@@ -1193,7 +1230,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       return 2
       ;;
     prettier.config.cjs)
-      if test -f .prettierrc.cjs; then
+      if nonadoption_has_prettier_config; then
         return 0
       fi
       return 2
@@ -1557,10 +1594,14 @@ blind spot:
   the note `repo-ignored-only`.
 - **`filtered-known` needs the equivalent to exist.** Drift class K's entries
   are false `MISSING`s *because the repo carries a documented replacement* — a
-  renumbered ADR log, nested Terraform roots, `.prettierrc.cjs`, the chezmoi
-  `private_Brewfile`. Each is checked against this repo. A path on the list whose
-  replacement is not there is a `nonadopt-both` row noted
-  `unverified-equivalent`, never a silent exemption.
+  renumbered record-decisions ADR or a README-backed numbered log, a real
+  Terraform root nested below `terraform/`, any of Prettier's supported config
+  filenames, the chezmoi `private_Brewfile` alongside a chezmoi marker. Each is
+  checked against this repo, and the check is held to the *documented* evidence:
+  an unrelated numbered ADR is not a re-recorded decision, and the `*.tf` files
+  `terraform init` vendors into `.terraform/` are generated cache rather than a
+  layout the repo grew into. A path on the list whose replacement is not there is
+  a `nonadopt-both` row noted `unverified-equivalent`, never a silent exemption.
 - **`co-owned` collapses `docs/`/`specs/` prose only.** Co-ownership is a
   *content* exemption, and absence is not content: a missing `AGENTS.md`,
   `LICENSE`, or `.devcontainer/config/zshrc` gets a row like anything else. The
@@ -1660,20 +1701,39 @@ blindly rerun Copier.
 Promotion below deletes that directory, and §4 and §5 both still need the TSV:
 
 ```bash
-cp "$GUARDED_STATE/nonadoption-report.tsv" \
-  "$(
-    git rev-parse --path-format=absolute \
-      --git-path guarded-update-nonadoption
-  )" ||
+GUARDED_NONADOPT_BRANCH="$(git branch --show-current)"
+test -n "$GUARDED_NONADOPT_BRANCH" ||
+  { echo "detached HEAD: no branch to key the non-adoption report to" >&2; exit 1; }
+GUARDED_NONADOPT_FILE="$(
+  git rev-parse --path-format=absolute \
+    --git-path "guarded-update-nonadoption/$GUARDED_NONADOPT_BRANCH"
+)" || { echo "failed to resolve the non-adoption report path" >&2; exit 1; }
+mkdir -p "$(dirname "$GUARDED_NONADOPT_FILE")" ||
+  { echo "failed to create the non-adoption report directory" >&2; exit 1; }
+cp "$GUARDED_STATE/nonadoption-report.tsv" "$GUARDED_NONADOPT_FILE" ||
   { echo "failed to persist the non-adoption report" >&2; exit 1; }
 ```
 
-This mirrors the deferred-findings git-path idiom: the git directory is
-deterministic for any later session in this checkout, resolves correctly inside
-a linked worktree, and is invisible to `git status`, so the note can never be
-handed to a reviewer as part of the change under review. It needs no cleanup on
-the rollback path — rollback re-runs §1, which regenerates the report from
-scratch.
+This mirrors the deferred-findings git-path idiom, **including the branch key**,
+and for the same reason. The git directory is deterministic for any later
+session in this checkout, resolves correctly inside a linked worktree, and is
+invisible to `git status`, so the report can never be handed to a reviewer as
+part of the change under review. But an ordinary clone switches branches *in
+place*: with one shared file, a guarded update started on branch B would
+overwrite branch A's report before A's PR body was ever written, and A's only
+copy of its own findings is gone — the classification survived §1, survived
+promotion, and was then destroyed by an unrelated run. The branch is the key
+because the branch is what owns the report.
+
+The branch name becomes a **path, verbatim** — no `/`-folding, no extension.
+Folding `/` to `-` would collide `feat/x` with `feat-x` and reintroduce exactly
+the loss the key exists to prevent; an extension would make `foo` (a file) block
+`foo.md/bar` (needing a directory). Used as-is, the mapping is git's own ref
+namespace, and git already forbids one live branch from being a path prefix of
+another. A detached HEAD has no key at all, so it stops rather than guessing.
+
+It needs no cleanup on the rollback path — rollback re-runs §1, which
+regenerates the report from scratch.
 
 Copier can return success while leaving merge conflicts. Reconcile those as
 described in §3 before promotion. Then prove that the canonical answers record
@@ -2327,9 +2387,10 @@ differ — but do check them for *absences*: a `CO-OWNED` path that stopped bein
 listed was clobbered (see the AGENTS.md note in §2 above).
 
 **Cross-check that same re-run against the persisted non-adoption report** —
-`git rev-parse --path-format=absolute --git-path guarded-update-nonadoption`.
-No new render is needed; the re-run above already produced the `MISSING` set.
-Each class answers a different question:
+`git rev-parse --path-format=absolute --git-path
+"guarded-update-nonadoption/$(git branch --show-current)"`, the branch-keyed
+file §2 wrote. No new render is needed; the re-run above already produced the
+`MISSING` set. Each class answers a different question:
 
 - **`nonadopt-both` still `MISSING`** — CONFIRMED silent non-adoption. The
   update was never going to create these, and the freshly reset baseline means
@@ -2388,8 +2449,9 @@ that the merge is not the end of the update.
 point of the classification in §1: the reviewer is the only party who can decide
 whether a file the merge will never offer again should be adopted, and they can
 only decide it if the PR tells them it exists. Read the persisted TSV
-(`git rev-parse --path-format=absolute --git-path guarded-update-nonadoption`)
-and write the section from the rows §4 confirmed:
+(`git rev-parse --path-format=absolute --git-path
+"guarded-update-nonadoption/$(git branch --show-current)"`) and write the
+section from the rows §4 confirmed:
 
 ```markdown
 ## Silent non-adoption
@@ -2466,8 +2528,23 @@ note.
 
 If no row survives, say so outright: **"No silent non-adoptions — every path
 present in both renders exists in the repo."** An omitted section is
-indistinguishable from a forgotten one. Once the section is in the PR body,
-delete the git-path file — the PR is the record from then on.
+indistinguishable from a forgotten one.
+
+**Sweep for orphans before you delete anything.** List the whole tree —
+`ls -R "$(git rev-parse --git-path guarded-update-nonadoption)"` — and account
+for every file it holds, not just this branch's. Renaming a branch
+(`git branch -m`) or deleting one strands its report under the old name, where
+nothing will ever look for it again, and a rename mid-update is exactly when
+that happens. Adopt an orphan into this PR if it belongs to this work; otherwise
+leave it in place and **say in the PR body that it is there**, so the next
+update does not mistake it for its own. Listing costs one command; migration
+logic would cost a mechanism that then needs its own correctness argument.
+
+Then delete **only this branch's file** — the same path §2 wrote, not the
+directory — once the section is in the PR body and you have re-read the body to
+confirm the rows are actually in it. The PR is the record from then on; the file
+is the sole durable copy until it is. Removing the tree would take every other
+branch's report with it, which is the loss the branch key exists to prevent.
 
 ## 6. Reconcile live GitHub metadata (`project_management: github`) — post-merge
 

@@ -2268,11 +2268,73 @@ expect_ok "non-adoption snippet pins collation on every comm invocation" \
     "$GU_NONADOPT_SNIPPET"
 # §2 promotion deletes $GUARDED_STATE outright, and both §4 and §5 still need
 # the report, so it has to be copied somewhere that survives — the git dir,
-# same idiom as the deferred-findings notes.
+# same idiom as the deferred-findings notes, BRANCH KEY included. An ordinary
+# clone switches branches in place, so one shared file means branch B's update
+# overwrites branch A's only copy before A's PR body was ever written.
 expect_ok "update guidance persists the non-adoption report past guarded teardown" \
     sh -c 'grep -qF "cp \"\$GUARDED_STATE/nonadoption-report.tsv\"" "$1" &&
-        grep -qF -- "--git-path guarded-update-nonadoption" "$1"' sh \
+        grep -qF -- "--git-path \"guarded-update-nonadoption/\$GUARDED_NONADOPT_BRANCH\"" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "the non-adoption report is keyed by branch on every path that touches it" \
+    sh -c 'test "$(grep -cF -- "guarded-update-nonadoption/\$(git branch --show-current)" \
+            "$1")" -eq 2 &&
+        ! grep -qE -- "--git-path guarded-update-nonadoption[\"[:space:]]*$" "$1" &&
+        grep -qF "detached HEAD" "$1" &&
+        grep -qF "mkdir -p \"\$(dirname \"\$GUARDED_NONADOPT_FILE\")\"" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# Branch-keying without an orphan sweep just moves the loss: a branch renamed
+# mid-update strands its report under the old name, where nothing looks again.
+expect_ok "hand-off sweeps the non-adoption tree for orphans before deleting" \
+    sh -c 'grep -qF "ls -R \"\$(git rev-parse --git-path guarded-update-nonadoption)\"" "$1" &&
+        grep -qF "Sweep for orphans before you delete anything" "$1" &&
+        grep -qF "only this branch" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# Grepping the recipe proves it says the right words; running it proves the words
+# work. The branch key is a PATH, and this repo's own branch names contain `/` —
+# so `mkdir -p "$(dirname …)"` is load-bearing and no grep can show that it fires.
+GU_NONADOPT_PERSIST="$TMPROOT/nonadoption-persist.sh"
+awk '/^GUARDED_NONADOPT_BRANCH="\$\(git branch --show-current\)"$/ { inblk = 1 }
+     inblk && /^```$/ { exit }
+     inblk { print }' \
+    "$STANDARDIZE_REFS/mode-update.md" >"$GU_NONADOPT_PERSIST"
+# An extraction that silently found nothing would run an empty program and pass.
+expect_ok "the non-adoption persistence recipe is extractable" \
+    sh -c 'test -s "$1" && grep -qF "cp \"\$GUARDED_STATE" "$1"' sh \
+    "$GU_NONADOPT_PERSIST"
+GU_PERSIST_REPO="$TMPROOT/nonadoption-persist-repo"
+git init -q "$GU_PERSIST_REPO" >/dev/null
+git -C "$GU_PERSIST_REPO" config user.email test@example.com
+git -C "$GU_PERSIST_REPO" config user.name "Test"
+git -C "$GU_PERSIST_REPO" commit -q --allow-empty -m seed >/dev/null
+# A slashed name, because that is the case `mkdir -p` exists for and the case a
+# `/`-folding key would silently collide with `feat-343-report`.
+git -C "$GU_PERSIST_REPO" switch -q -c feat/343-report >/dev/null
+mkdir -p "$GU_PERSIST_REPO/.copier-guarded-update"
+printf 'seeded\tnonadopt-both\tno\tbaseline+target\t-\n' \
+    >"$GU_PERSIST_REPO/.copier-guarded-update/nonadoption-report.tsv"
+expect_ok "the non-adoption persistence recipe runs clean under bash -eu" \
+    sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update bash -eu "$2"' sh \
+    "$GU_PERSIST_REPO" "$GU_NONADOPT_PERSIST"
+expect_ok "the persisted report lands under the branch name verbatim" \
+    grep -qxF "$(printf 'seeded\tnonadopt-both\tno\tbaseline+target\t-')" \
+    "$GU_PERSIST_REPO/.git/guarded-update-nonadoption/feat/343-report"
+# The whole point of the key: a second branch's run must not clobber the first.
+git -C "$GU_PERSIST_REPO" switch -q -c feat/other >/dev/null
+printf 'other\tnonadopt-both\tno\tbaseline+target\t-\n' \
+    >"$GU_PERSIST_REPO/.copier-guarded-update/nonadoption-report.tsv"
+expect_ok "a second branch's guarded run persists alongside the first" \
+    sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update bash -eu "$2"' sh \
+    "$GU_PERSIST_REPO" "$GU_NONADOPT_PERSIST"
+expect_ok "the first branch's non-adoption report survives the second run" \
+    grep -qF seeded \
+    "$GU_PERSIST_REPO/.git/guarded-update-nonadoption/feat/343-report"
+expect_ok "the second branch's report is written to its own key" \
+    grep -qF other "$GU_PERSIST_REPO/.git/guarded-update-nonadoption/feat/other"
+# Detached HEAD has no key at all, so the recipe stops rather than guessing one.
+git -C "$GU_PERSIST_REPO" switch -q --detach HEAD >/dev/null
+expect_fail "the persistence recipe refuses a detached HEAD" \
+    sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update bash -eu "$2"' sh \
+    "$GU_PERSIST_REPO" "$GU_NONADOPT_PERSIST"
 expect_ok "update verification re-checks every non-adoption class after the merge" \
     sh -c 'grep -qF "CONFIRMED silent non-adoption" "$1" &&
         grep -qF "an anomaly, not a disclosure" "$1" &&
@@ -2353,8 +2415,17 @@ expect_ok "non-adoption snippet verifies known-false equivalents before filterin
     sh -c 'grep -qF "nonadoption_known_false_state" "$1" &&
         grep -qF "nonadoption_has_adr_log" "$1" &&
         grep -qF "nonadoption_has_nested_terraform" "$1" &&
+        grep -qF "nonadoption_has_prettier_config" "$1" &&
         grep -qF "unverified-equivalent" "$1" &&
         ! grep -qE "^[[:space:]]*\.envrc\) return 0 ;;$" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
+# Each equivalence is held to the documented evidence, and each of these three
+# lines is the whole of that restriction — drop any one and the check silently
+# widens back to "something that looks vaguely like a replacement".
+expect_ok "non-adoption snippet holds each equivalence to its documented evidence" \
+    sh -c 'grep -qF "*-record-architecture-decisions.md) return 0 ;;" "$1" &&
+        grep -qF "test -f docs/decisions/README.md" "$1" &&
+        grep -qF -- "-name .terraform -prune -o -type f -name" "$1"' sh \
     "$GU_NONADOPT_SNIPPET"
 # The reviewed-keyset probe runs on the designed first pass, where
 # $REVIEWED_DATA does not exist yet. Folding its `test -e` guard into the
@@ -6029,12 +6100,24 @@ for na_seed in docs/decisions/0001-record-architecture-decisions.md \
         grep -qxF "$(printf '%s\tfiltered-known\tno\tbaseline+target\t-' \
             "$na_seed")" "$GU_NA_TSV"
 done
-# A FLAT terraform/*.tf is the seed layout itself and proves nothing; only a root
-# below terraform/ makes the seed redundant. Same for a `private_Brewfile` in a
-# repo that is not a chezmoi source.
+# Every equivalence is held to the DOCUMENTED evidence, and each of these
+# near-misses filtered the seed away before this round. A FLAT terraform/*.tf is
+# the seed layout itself; `private_Brewfile` in a repo that is not a chezmoi
+# source is just a filename; an unrelated numbered ADR says the repo writes ADRs,
+# not that it re-recorded this decision or keeps an indexed log; and the `*.tf`
+# files `terraform init` vendors into `.terraform/modules/` are generated cache
+# that is nested by construction — reading those as a grown-into layout let
+# `terraform init` alone certify the replacement.
 rm -rf "$GU_NA_REPO/terraform/environments"
 printf '%s\n' 'flat' >"$GU_NA_REPO/terraform/other.tf"
+mkdir -p "$GU_NA_REPO/terraform/.terraform/modules/vpc"
+printf '%s\n' 'vendored module' \
+    >"$GU_NA_REPO/terraform/.terraform/modules/vpc/main.tf"
 rm -f "$GU_NA_REPO/.chezmoiroot"
+rm -f "$GU_NA_REPO/docs/decisions/0007-record-architecture-decisions.md"
+printf '%s\n' 'unrelated decision' \
+    >"$GU_NA_REPO/docs/decisions/0002-use-postgres.md"
+rm -f "$GU_NA_REPO/.prettierrc.cjs"
 expect_ok "non-adoption matrix re-runs clean on the negative controls" na_classify
 expect_ok "a flat terraform root does not verify the nested-layout equivalent" \
     grep -qxF "$(printf 'terraform/main.tf\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
@@ -6042,6 +6125,48 @@ expect_ok "a flat terraform root does not verify the nested-layout equivalent" \
 expect_ok "private_Brewfile without a chezmoi marker does not verify the Brewfile" \
     grep -qxF "$(printf 'Brewfile\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
     "$GU_NA_TSV"
+expect_ok "an unrelated numbered ADR does not verify the seed ADR" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
+    "$GU_NA_TSV"
+# A README-backed log does verify it — that is the second documented shape, and
+# the numbered ADR above is what the README is an index of.
+printf '%s\n' '# Decisions' >"$GU_NA_REPO/docs/decisions/README.md"
+expect_ok "non-adoption matrix re-runs clean with a README-backed ADR log" na_classify
+expect_ok "a README-backed numbered ADR log verifies the seed ADR" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tfiltered-known\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+# ...and a README with no numbered ADR beside it does not: an empty index is not
+# an active log.
+rm -f "$GU_NA_REPO/docs/decisions/0002-use-postgres.md"
+expect_ok "non-adoption matrix re-runs clean with an empty ADR index" na_classify
+expect_ok "a README with no numbered ADR does not verify the seed ADR" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
+    "$GU_NA_TSV"
+# Prettier reads a dozen config filenames and any of them replaces the seed.
+# Requiring `.prettierrc.cjs` specifically invented a row for every repo that
+# picked another supported form.
+for na_prettier in .prettierrc.json .prettierrc.yaml prettier.config.mjs; do
+    printf '%s\n' '{}' >"$GU_NA_REPO/$na_prettier"
+    expect_ok "non-adoption matrix re-runs clean with $na_prettier" na_classify
+    expect_ok "$na_prettier verifies the prettier seed" \
+        grep -qxF "$(printf 'prettier.config.cjs\tfiltered-known\tno\tbaseline+target\t-')" \
+        "$GU_NA_TSV"
+    rm -f "$GU_NA_REPO/$na_prettier"
+done
+printf '%s\n' '{"name":"matrix","prettier":{"semi":false}}' \
+    >"$GU_NA_REPO/package.json"
+expect_ok "non-adoption matrix re-runs clean with a package.json prettier key" \
+    na_classify
+expect_ok "a package.json prettier key verifies the prettier seed" \
+    grep -qxF "$(printf 'prettier.config.cjs\tfiltered-known\tno\tbaseline+target\t-')" \
+    "$GU_NA_TSV"
+printf '%s\n' '{"name":"matrix"}' >"$GU_NA_REPO/package.json"
+expect_ok "non-adoption matrix re-runs clean with a prettier-free package.json" \
+    na_classify
+expect_ok "a package.json without prettier verifies nothing" \
+    grep -qxF "$(printf 'prettier.config.cjs\tnonadopt-both\tno\tbaseline+target\tunverified-equivalent')" \
+    "$GU_NA_TSV"
+rm -f "$GU_NA_REPO/package.json"
 # The render-side evaluator must answer for the TEMPLATE, never for this machine:
 # a personal core.excludesFile leaking in would hand `ignored-policy` to whatever
 # the operator happens to ignore locally.
