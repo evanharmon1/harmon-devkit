@@ -4019,6 +4019,122 @@ fi
 expect_ok "diff-template recovers once the ignore probes work again" \
     env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
 
+# --- work-tree detection must fail CLOSED ------------------------------------
+# "Not a repository" and "I cannot tell whether this is a repository" are
+# different answers. Reading the second as the first drops the repo half of the
+# withholding probe, so a repo-only-ignored secret prints under --show precisely
+# because git could not read the repo's metadata. A garbage .git file makes
+# rev-parse fail with `invalid gitfile format`, which is emphatically not the
+# "not a git repository" it reports for a genuine plain directory.
+DT_CORRUPT_TARGET="$TMPROOT/diff-template-corrupt-git"
+cp -pR "$DT_TARGET" "$DT_CORRUPT_TARGET"
+rm -rf "$DT_CORRUPT_TARGET/.git"
+# Without a repo of its own the copy's .envrc can no longer be IGNORED, so sync
+# it to the render; a clean baseline first is what makes the exit 2 below
+# attributable to the corrupt .git rather than to anything else in the copy.
+cp "$DT_TEMPLATE/template/.envrc" "$DT_CORRUPT_TARGET/.envrc"
+expect_ok "diff-template audits a genuine plain dir with no .git at all" \
+    env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_CORRUPT_TARGET"
+printf '%s\n' '{ "editor.tabSize": 4, "token": "corrupt-git-leak-sentinel" }' \
+    >"$DT_CORRUPT_TARGET/.vscode/settings.json"
+printf '%s\n' 'this file is not a gitdir pointer' >"$DT_CORRUPT_TARGET/.git"
+corrupt_git_rc=0
+corrupt_git_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_CORRUPT_TARGET" 2>&1)" || corrupt_git_rc=$?
+if [ "$corrupt_git_rc" -eq 2 ]; then
+    ok "diff-template exits 2 when it cannot tell whether the target is a work tree"
+else
+    bad "diff-template exits 2 when it cannot tell whether the target is a work tree (got $corrupt_git_rc)"
+fi
+if printf '%s\n' "$corrupt_git_out" |
+    grep -qF "FAIL: cannot determine whether"; then
+    ok "diff-template says it could not classify the target work tree"
+else
+    bad "diff-template says it could not classify the target work tree"
+fi
+if printf '%s\n' "$corrupt_git_out" | grep -qF 'corrupt-git-leak-sentinel'; then
+    bad "diff-template prints no diff body when work-tree detection fails"
+else
+    ok "diff-template prints no diff body when work-tree detection fails"
+fi
+
+# --- a symlinked parent directory is structural, never something to read -----
+# `-L` tests only a path's final component, so a repo whose `scripts` is a link
+# to somewhere outside let the comparison read — and --show print — a file that
+# is not the repo's at all. The rule is any symlinked parent, escaping or not:
+# the template renders real directories.
+DT_LINKED_OUT="$TMPROOT/diff-template-outside-scripts"
+mkdir -p "$DT_LINKED_OUT"
+printf '%s\n' '#!/usr/bin/env bash' 'echo status' 'EXTERNAL-SCRIPT-SENTINEL' \
+    >"$DT_LINKED_OUT/status.sh"
+chmod +x "$DT_LINKED_OUT/status.sh"
+DT_LINKED_TARGET="$TMPROOT/diff-template-linked-parent"
+cp -pR "$DT_TARGET" "$DT_LINKED_TARGET"
+rm -rf "$DT_LINKED_TARGET/scripts"
+ln -s ../diff-template-outside-scripts "$DT_LINKED_TARGET/scripts"
+if linked_curated_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_LINKED_TARGET" 2>&1)"; then
+    bad "diff-template gates a curated file under a symlinked parent (expected non-zero exit)"
+elif printf '%s\n' "$linked_curated_out" |
+    grep -qF "DRIFT    scripts/status.sh  (parent directory is a symlink leaving the repository"; then
+    ok "diff-template gates a curated file under a symlinked parent"
+else
+    bad "diff-template gates a curated file under a symlinked parent (diagnostic missing)"
+fi
+if printf '%s\n' "$linked_curated_out" | grep -qF 'EXTERNAL-SCRIPT-SENTINEL'; then
+    bad "diff-template reads no content through a symlinked parent (curated)"
+else
+    ok "diff-template reads no content through a symlinked parent (curated)"
+fi
+
+# Same shape one loop over: .vscode holds exactly one rendered path and the
+# manifest does not list it, so this exercises the sweep. The copy drops
+# info/exclude so the file is not repo-ignored either — otherwise withholding
+# would mask an external body that the sweep should never have read.
+DT_LINKED_VSCODE="$TMPROOT/diff-template-outside-vscode"
+mkdir -p "$DT_LINKED_VSCODE"
+printf '%s\n' '{ "editor.tabSize": 8, "note": "EXTERNAL-VSCODE-SENTINEL" }' \
+    >"$DT_LINKED_VSCODE/settings.json"
+DT_LINKED_SWEEP="$TMPROOT/diff-template-linked-parent-sweep"
+cp -pR "$DT_TARGET" "$DT_LINKED_SWEEP"
+rm -f "$DT_LINKED_SWEEP/.git/info/exclude"
+rm -rf "$DT_LINKED_SWEEP/.vscode"
+ln -s ../diff-template-outside-vscode "$DT_LINKED_SWEEP/.vscode"
+if linked_sweep_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_LINKED_SWEEP" 2>&1)"; then
+    bad "diff-template gates a swept file under a symlinked parent (expected non-zero exit)"
+elif printf '%s\n' "$linked_sweep_out" |
+    grep -qF "DRIFT    .vscode/settings.json  (parent directory is a symlink leaving the repository"; then
+    ok "diff-template gates a swept file under a symlinked parent"
+else
+    bad "diff-template gates a swept file under a symlinked parent (diagnostic missing)"
+fi
+if printf '%s\n' "$linked_sweep_out" | grep -qF 'EXTERNAL-VSCODE-SENTINEL'; then
+    bad "diff-template reads no content through a symlinked parent (sweep)"
+else
+    ok "diff-template reads no content through a symlinked parent (sweep)"
+fi
+
+# A symlinked parent that stays INSIDE the target is still structural — the
+# template renders real directories — and the note says so without claiming an
+# escape that did not happen.
+DT_LINKED_INSIDE="$TMPROOT/diff-template-linked-parent-inside"
+cp -pR "$DT_TARGET" "$DT_LINKED_INSIDE"
+mkdir -p "$DT_LINKED_INSIDE/real-vscode"
+cp "$DT_TEMPLATE/template/.vscode/settings.json" "$DT_LINKED_INSIDE/real-vscode/settings.json"
+rm -rf "$DT_LINKED_INSIDE/.vscode"
+ln -s real-vscode "$DT_LINKED_INSIDE/.vscode"
+if linked_inside_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_LINKED_INSIDE" 2>&1)"; then
+    bad "diff-template gates an in-tree symlinked parent (expected non-zero exit)"
+elif printf '%s\n' "$linked_inside_out" |
+    grep -qF "DRIFT    .vscode/settings.json  (parent directory is a symlink; the template renders real directories"; then
+    ok "diff-template gates an in-tree symlinked parent"
+else
+    bad "diff-template gates an in-tree symlinked parent (diagnostic missing)"
+fi
+
 # --- nested-worktree guard ---------------------------------------------------
 # A plain directory that merely SITS INSIDE another repository's work tree is
 # still a plain directory. `rev-parse --is-inside-work-tree` answers true there,

@@ -428,13 +428,40 @@ variant_display() {
 # of its own, and inheriting a stranger's is worse than surfacing the drift. The
 # RENDER-side probe is unaffected and still withholds bodies here: it asks what
 # the template declared, which no property of the target can change.
+#
+# `rev-parse --show-toplevel` has THREE outcomes and the first version of this
+# collapsed the last two: it succeeded, it said "this is not a repository", or
+# it could not tell (dubious ownership, unreadable metadata, a malformed .git).
+# Reading "could not tell" as a plain directory is fail-OPEN — it skips the repo
+# half of the withholding probe, so a repo-only-ignored secret would print under
+# --show precisely because git could not read the repo. LC_ALL=C pins the
+# message being matched; git localizes its output otherwise.
 target_owns_worktree=0
 target_physical="$(cd "$target" && pwd -P)"
-if toplevel="$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" &&
-    [ -d "$toplevel" ]; then
-    if [ "$(cd "$toplevel" && pwd -P)" = "$target_physical" ]; then
+toplevel_rc=0
+toplevel="$(LC_ALL=C git -C "$target" rev-parse --show-toplevel 2>&1)" ||
+    toplevel_rc=$?
+toplevel_says_no_repo=0
+case "$toplevel" in
+*'not a git repository'*) toplevel_says_no_repo=1 ;;
+esac
+if [ "$toplevel_rc" -eq 0 ]; then
+    if [ -d "$toplevel" ] &&
+        [ "$(cd "$toplevel" && pwd -P)" = "$target_physical" ]; then
         target_owns_worktree=1
     fi
+elif [ "$toplevel_says_no_repo" -eq 1 ] &&
+    [ ! -e "$target/.git" ] && [ ! -L "$target/.git" ]; then
+    # Genuinely not a repository: git says so AND there is no .git of any kind
+    # to have gone wrong. Both halves are needed — a .git pointing at a gitdir
+    # that no longer exists reports "not a git repository" too, and that is a
+    # broken repo rather than the plain directory this audit accepts.
+    :
+else
+    echo "FAIL: cannot determine whether $target is a git work tree" >&2
+    [ -z "$toplevel" ] || printf '  %s\n' "$toplevel" >&2
+    echo "  refusing to continue: an unreadable repo would skip the repo-side ignore probe" >&2
+    exit 2
 fi
 
 # The TEMPLATE's own ignore rules, evaluated in a scratch repo built from the
@@ -589,6 +616,57 @@ is_staged_removal() {
     return 0
 }
 
+# `-L` only ever tests a path's FINAL component, so every symlink check in this
+# script was blind to the directories above it. A repo whose `scripts` is a link
+# to `../shared-scripts` let `-f "$target/scripts/status.sh"` succeed, and the
+# comparison then read — and under --show PRINTED — a file outside the
+# repository entirely, reporting clean or DRIFT on content that is not the
+# repo's. Resolve the physical parent and require it to be exactly where the
+# target root says it should be.
+#
+# The rule is ANY symlinked parent component, not just an escaping one. That is
+# both simpler and more honest: the template renders real directories, so a
+# repo that replaced one with a link has diverged structurally whether or not
+# the link stays inside. It also keeps the inside/outside distinction off the
+# security-critical path — one comparison, and nothing is ever followed out of
+# the tree. Comparing the resolved parent against the EXPECTED physical parent
+# catches both at once, because they can only differ when some component
+# between the root and the file is a link.
+repo_parent_note=""
+repo_parent_diverges() {
+    rpd_abs="$1"
+    repo_parent_note=""
+    # Index-snapshot variants are materialized by us from blob content, under
+    # the workdir rather than the repo. They have no repo directories above them
+    # to have been swapped for links.
+    case "$rpd_abs" in
+    "$target"/*) ;;
+    *) return 1 ;;
+    esac
+    rpd_rel="${rpd_abs#"$target"/}"
+    case "$rpd_rel" in
+    */*) rpd_expected="$target_physical/${rpd_rel%/*}" ;;
+    *) rpd_expected="$target_physical" ;;
+    esac
+    rpd_actual=""
+    rpd_actual="$(cd "$(dirname "$rpd_abs")" 2>/dev/null && pwd -P)" ||
+        rpd_actual=""
+    if [ -z "$rpd_actual" ]; then
+        repo_parent_note="parent directory cannot be resolved — structural divergence"
+        return 0
+    fi
+    [ "$rpd_actual" != "$rpd_expected" ] || return 1
+    case "$rpd_actual/" in
+    "$target_physical"/*)
+        repo_parent_note="parent directory is a symlink; the template renders real directories — structural divergence"
+        ;;
+    *)
+        repo_parent_note="parent directory is a symlink leaving the repository — structural divergence"
+        ;;
+    esac
+    return 0
+}
+
 # Compare one rendered path against its resolved repo counterpart. Sets
 # compare_note (a human-readable reason) and compare_structural (1 when the
 # difference is symlink-ness rather than content). Returns 0 when they match.
@@ -683,6 +761,14 @@ while IFS= read -r f; do
         echo "MISSING  $rv_display  (tracked in HEAD but staged for removal — the next commit deletes a template-owned file)"
         drift=1
         missing_count=$((missing_count + 1))
+        continue
+    fi
+    # Before ANY read of the repo-side file: nothing below a symlinked directory
+    # is this repo's content to compare, let alone to print.
+    if repo_parent_diverges "$rv"; then
+        echo "DRIFT    $rv_display  ($repo_parent_note)"
+        drift=1
+        drift_count=$((drift_count + 1))
         continue
     fi
     # Structure, mode, and content are compared exactly as the sweep does it.
@@ -857,6 +943,14 @@ while IFS= read -r abs; do
             echo "MISSING  $rv_display  (tracked in HEAD but staged for removal — the next commit deletes a template-owned file)"
             drift=1
             missing_count=$((missing_count + 1))
+            continue
+        fi
+        # Before ANY read of the repo-side file: nothing below a symlinked
+        # directory is this repo's content to compare, let alone to print.
+        if repo_parent_diverges "$rv"; then
+            echo "DRIFT    $rv_display  ($repo_parent_note)"
+            drift=1
+            uncurated_drift_count=$((uncurated_drift_count + 1))
             continue
         fi
         # The repo HAS this path and the curated manifest does not list it.
