@@ -1112,6 +1112,11 @@ expect_ok "shepherd reconciles partial or raced promotion" \
         grep -qF "non-draft on a changed head" "$1" &&
         grep -qF "report must name that unresolved" "$1" &&
         grep -qF "remote-state risk" "$1"' sh "$SHEPHERD_SKILL"
+expect_ok "shepherd paginates the draft-conversion undo guard" \
+    sh -c 'grep -qF "gh api --paginate repos/\"\$repo\"/issues/<n>/timeline" "$1" &&
+        grep -qF "convert_to_draft" "$1"' sh "$SHEPHERD_SKILL"
+expect_ok "shepherd bounds the undo per PR across sessions" \
+    grep -qF 'the bound is per PR, across sessions' "$SHEPHERD_SKILL"
 expect_ok "shepherd freezes review content across promotion" \
     sh -c 'grep -qF "stable content fingerprint" "$1" &&
         grep -qF "top-level comments, inline comments" "$1" &&
@@ -1133,9 +1138,16 @@ expect_ok "shepherd documents the external Automatic-review prerequisite" \
     sh -c 'grep -qF "Codex Automatic reviews" "$1" &&
         grep -qF "must be disabled in the external integration" "$1"' sh \
     "$SHEPHERD_SKILL"
+expect_ok "shepherd names all three Codex Automatic-review knobs" \
+    sh -c 'grep -qF "personal **Auto review** off" "$1" &&
+        grep -qF "**Auto code review**" "$1" &&
+        grep -qF "review **Trigger**" "$1"' sh "$SHEPHERD_SKILL"
 expect_ok "standardization setup disables Codex Automatic reviews" \
     sh -c 'grep -qF "Disable **Codex Automatic reviews**" "$1/post-generation-checklist.md" &&
         grep -qF "human-confirmed disabled" "$1/mode-audit.md"' sh "$STANDARDIZE_REFS"
+expect_ok "standardization setup names the Codex review Trigger knob" \
+    grep -qF 'review **Trigger** on Follow personal' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
 expect_ok "standardization hands off only a ready-for-review PR" \
     sh -c 'grep -qF "open a draft PR" "$1" &&
         grep -qF "Gate the staged rollout against the target policy" "$1" &&

@@ -46,7 +46,10 @@ primary agent to adjudicate — the protocol and the loop caps live in AGENTS.md
    configured login — fail-closed, with bounded attempts.
 
 6. **Then disable Codex Automatic reviews** — personal Auto review off, and the
-   repository's Auto code review preference set to **Follow personal**. Codex
+   repository's Auto code review preference set to **Follow personal**, its
+   review **Trigger** included: an "On every push" trigger is dormant while
+   Auto review is off, but it arms across every Follow-personal repo the
+   moment the personal toggle changes. Codex
    triggers a cloud review on three events: opening a PR for review, marking a
    draft ready, and an explicit `@codex review`. Only the third is usable here:
    the PR is a draft for the whole automated lifecycle, so the first never

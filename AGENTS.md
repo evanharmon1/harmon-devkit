@@ -155,6 +155,26 @@ Creating the draft is a phase transition, not a terminal state, and every stop
 short of the readiness gate leaves the PR **draft** with a blocker report — a
 non-draft PR must always mean the automated work is done.
 
+**Draft state is not guaranteed stable.** A known external actor promotes
+drafts outside the readiness gate: the ChatGPT Codex Connector holds a
+user-to-server authorization on the maintainer's account, so its writes carry
+the maintainer's own login, and the observed signature is a flip landing
+minutes after Codex review activity on an actively-worked PR
+(harmon-devkit#276). Three consequences. `isDraft == false` is never by itself
+evidence that the automated lifecycle completed or that a human acted — read it
+as a claim to audit, not a state to trust. A shepherd that finds its draft
+promoted follows the vendored shepherd skill's unexplained-promotion
+procedure — reconcile the head if it independently passes the full gate,
+otherwise a single `gh pr ready --undo`, never an undo loop; that "single" is
+per PR *across sessions*, bounded by the PR's own timeline (a prior
+`convert_to_draft` event blocks a second undo) rather than by any one
+session's memory — and when that bound blocks a second undo, the stop leaves
+the PR ready with a blocker report, the one sanctioned exception to stops
+staying draft. And the actor
+field cannot distinguish these events from the maintainer's own clicks, so
+attributing one means comparing its timestamp against the session's own command
+log rather than reading `actor.login`.
+
 This assumes the repository *can* open drafts: GitHub restricts draft PRs on
 private repositories to paid plans (docs/CHECKLIST.md). If `gh pr create
 --draft` is rejected, stop and report it — dropping `--draft` to get past the
@@ -414,7 +434,11 @@ the automated work, so non-draft would stop meaning "ready for a human". The
 lifecycle therefore uses explicit `@codex review` requests while the PR is
 draft, per the current-head cycle above. Turn personal Auto review off and set
 the repository's Auto code review preference to **Follow personal** (see
-docs/CHECKLIST.md). That state is a **human-configured prerequisite**, not
+docs/CHECKLIST.md) — and its review **Trigger** knob to Follow personal too. A
+repo-level "On every push" trigger is dormant while Auto review is off, so it
+reads as harmless; it arms the moment the personal toggle changes, across every
+repo set that way at once (observed drift, corrected 2026-08-10). That state is
+a **human-configured prerequisite**, not
 something any API confirms, so never report it as mechanically verified; if it
 changes, the readiness gate stops being valid until it is restored.
 

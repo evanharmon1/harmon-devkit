@@ -68,7 +68,10 @@ config, toolchain, devcontainer, and dev environment — against the items below
       (`chatgpt-codex-connector[bot]`, type `Bot`).
 - [ ] **[human-only] Disable Codex Automatic reviews** — turn **personal Auto
       review** off and set this repository's **Auto code review** preference to
-      **Follow personal**. The draft-workbench lifecycle drives Codex with
+      **Follow personal** — and its review **Trigger** to Follow personal too,
+      since an "On every push" trigger sits dormant while Auto review is off
+      and arms across every Follow-personal repo at once the moment the
+      personal toggle changes. The draft-workbench lifecycle drives Codex with
       explicit `@codex review` requests while the PR is draft; left on,
       `gh pr ready` starts a *new* asynchronous review after the readiness gate,
       and non-draft stops truthfully meaning "ready for a human". No API exposes
