@@ -300,18 +300,23 @@ repository must set `use_skills_sync=true` with `universal` in
 ships the classifier natively as a git-tracked, non-symlink executable regular
 file at `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`,
 *and* tracks the shepherd skill's entry point
-`ai/skills/universal/shepherd/SKILL.md` alongside it, *and* that helper's source
-carries the whole five-verb interface the shepherd stage drives it through
-(`reserve --state`, `attach --state`, `check --state`, `show --state`,
-`reap --root`) (harmon-devkit, which may keep `use_skills_sync=false`). For such
-a repo the sync/`universal` requirement is waived, matching the update-mode
-guard in `mode-update.md` — which applies exactly that
-tracked/non-symlink/executable test plus those two, so an ignored, untracked, or
-symlinked helper does **not** qualify here, and neither does a `100755` stub
-with no verb interface or a stripped tree whose `SKILL.md` is missing or
-untracked. All three probes are **static**: they establish that the interface is
-shipped, never that it runs correctly — audit is a read-only stage and must not
-execute the repo to find out. Do not report its `use_skills_sync=false` as G4 drift when that native
+`ai/skills/universal/shepherd/SKILL.md` with valid frontmatter (opens `---`,
+carries `name: shepherd` and a non-empty `description:`), *and* that helper's
+**executable body** carries the dispatch `case` arms for all five verbs
+(`reserve)`, `attach)`, `check)`, `show)`, `reap)`) together with the exit-code
+contract the shepherd stage reads — `emit pending` with `exit 11` and
+`emit escalate` with `exit 13` (harmon-devkit, which may keep
+`use_skills_sync=false`). For such a repo the sync/`universal` requirement is
+waived, matching the update-mode guard in `mode-update.md` — which applies
+exactly that tracked/non-symlink/executable test plus those two, so an ignored,
+untracked, or symlinked helper does **not** qualify here, and neither does a
+`100755` stub, a tree whose `SKILL.md` is missing, untracked, or frontmatter-less,
+or a no-op helper whose **comments merely print** the usage forms. That last case
+is why the anchors are structural: the guard strips comment lines before matching,
+so a printed banner cannot stand in for a dispatch table. All of these probes are
+**static**: they establish that the interface is shipped, never that it runs
+correctly — audit is a read-only stage and must not execute the repo to find out,
+and a helper deliberately shaped to match the anchors would still pass. Do not report its `use_skills_sync=false` as G4 drift when that native
 classifier is present. The rendered `AGENTS.md` plus shepherd skill must require a terminal result
 attributable to every current PR head, preserve exact trigger-attempt state,
 and escalate after two unavailable attempts without a CI-only fallback. The

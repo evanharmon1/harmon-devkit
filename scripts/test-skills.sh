@@ -1108,16 +1108,39 @@ expect_ok "classifier detector carries exactly one extraction marker pair" \
 expect_ok "classifier detector extraction is non-empty and parses as bash" \
     sh -c 'test -s "$1" && bash -n "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET"
-expect_ok "classifier detector probes the tracked shepherd entry point" \
+expect_ok "classifier detector validates the shepherd entry point frontmatter" \
     sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
-        grep -qF "git ls-files --error-unmatch" "$1"' sh \
+        grep -qF "git ls-files --error-unmatch" "$1" &&
+        grep -qF "head -n 1" "$1" &&
+        grep -qF "name:[[:space:]]*shepherd" "$1" &&
+        grep -qF "description:[[:space:]]*[^[:space:]]" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET"
-expect_ok "classifier detector greps the helper for all five interface verbs" \
-    sh -c 'for verb in "reserve --state" "attach --state" "check --state" \
-        "show --state" "reap --root"; do
-        grep -F "$verb" "$1" | grep -qF "grep -qF" || exit 1
+# The verb probes must anchor on the helper's dispatch arms, not on the usage
+# strings a comment can print — that difference is the whole finding.
+for cls_verb in reserve attach check show reap; do
+    expect_ok "classifier detector anchors $cls_verb on a dispatch case arm" \
+        sh -c 'grep -F "$2" "$1" | grep -qF classifier_code_has' sh \
+        "$GU_CLASSIFIER_SNIPPET" "^$cls_verb\\)"
+done
+# And it must no longer anchor on anything a banner can print. Checked against
+# the detector's own CODE, since its rationale comment quotes the old strings
+# precisely to explain why they were abandoned.
+expect_fail "classifier detector code no longer anchors on printable usage strings" \
+    sh -c 'sed "s/^[[:space:]]*//" "$1" | grep -v "^#" | grep -qF -- "$2"' sh \
+    "$GU_CLASSIFIER_SNIPPET" 'reserve --state'
+# The exit-code pairs are the bounded-attempt lifecycle shepherd depends on,
+# asserted as verdict+code pairs so neither half can drift away alone.
+expect_ok "classifier detector anchors the pending and escalate exit contract" \
+    sh -c 'for needle in "$2" "$3" "$4" "$5"; do
+        grep -F "$needle" "$1" | grep -qF classifier_code_has || exit 1
     done' sh \
-    "$GU_CLASSIFIER_SNIPPET"
+    "$GU_CLASSIFIER_SNIPPET" \
+    '^emit pending ' '^exit 11$' '^emit escalate ' '^exit 13$'
+# Comment stripping is what makes every probe above unsatisfiable by prose.
+expect_ok "classifier detector reads helper code with comment lines stripped" \
+    sh -c 'grep -qF "$2" "$1" && grep -qF "$3" "$1"' sh \
+    "$GU_CLASSIFIER_SNIPPET" \
+    's/^[[:space:]]*//' "grep -v '^#'"
 
 # Behavioral proof of the detector, one throwaway repo per way a tree can fail
 # to be a skills source. The doc IS the implementation — an operator pastes it
@@ -1127,13 +1150,43 @@ expect_ok "classifier detector greps the helper for all five interface verbs" \
 # fixture needs a commit.
 CLASSIFIER_HELPER_REL="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
 CLASSIFIER_SKILL_REL="ai/skills/universal/shepherd/SKILL.md"
-# $1 repo root, $2 `git add --chmod` flag for the helper, $3 `tracked` to stage
-# SKILL.md, $4 `verbs` to give the helper the five-verb usage block.
+# $1 repo root, $2 `git add --chmod` flag for the helper, $3 SKILL.md shape
+# (`valid` | `untracked` | `nofrontmatter`), $4 helper shape:
+#   dispatch — a real-shaped miniature: a `case` on the command with all five
+#              arms, and the pending/escalate verdicts with their exit codes.
+#   usage    — a no-op whose COMMENTS print the five usage forms. This is the
+#              spoof issue 336 is about, and it is a reject case.
+#   empty    — a bare `exit 0` with nothing at all.
 make_classifier_fixture() {
-    local root="$1" chmod_flag="$2" track_skill="$3" verbs="$4"
+    local root="$1" chmod_flag="$2" skill_shape="$3" helper_shape="$4"
     git_init "$root"
     mkdir -p "$root/ai/skills/universal/shepherd/assets"
-    if [ "$verbs" = verbs ]; then
+    case "$helper_shape" in
+    dispatch)
+        printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'emit() { printf "%s %s\n" "$1" "$2"; }' \
+            'command_name="${1:-}"' \
+            'case "$command_name" in' \
+            'reserve)' \
+            '    : ;;' \
+            'attach)' \
+            '    : ;;' \
+            'check)' \
+            '    if [ "${2:-}" = wait ]; then' \
+            '        emit pending "window open"' \
+            '        exit 11' \
+            '    fi' \
+            '    emit escalate "both windows elapsed"' \
+            '    exit 13' \
+            '    ;;' \
+            'show)' \
+            '    : ;;' \
+            'reap)' \
+            '    : ;;' \
+            'esac' >"$root/$CLASSIFIER_HELPER_REL"
+        ;;
+    usage)
         printf '%s\n' \
             '#!/usr/bin/env bash' \
             '# Usage:' \
@@ -1143,33 +1196,67 @@ make_classifier_fixture() {
             '#   check-codex-cloud-review.sh show --state FILE' \
             '#   check-codex-cloud-review.sh reap --root DIR --budget-sec N' \
             'exit 0' >"$root/$CLASSIFIER_HELPER_REL"
-    else
+        ;;
+    *)
         printf '%s\n' '#!/usr/bin/env bash' 'exit 0' \
             >"$root/$CLASSIFIER_HELPER_REL"
-    fi
+        ;;
+    esac
     chmod +x "$root/$CLASSIFIER_HELPER_REL"
     git -C "$root" add "--chmod=$chmod_flag" -- "$CLASSIFIER_HELPER_REL"
-    printf '%s\n' '# Shepherd' >"$root/$CLASSIFIER_SKILL_REL"
-    if [ "$track_skill" = tracked ]; then
+    if [ "$skill_shape" = nofrontmatter ]; then
+        printf '%s\n' '# Shepherd' 'No frontmatter here.' \
+            >"$root/$CLASSIFIER_SKILL_REL"
+    else
+        printf '%s\n' '---' 'name: shepherd' \
+            'description: Shepherd a draft PR to ready for review.' '---' \
+            'Body.' >"$root/$CLASSIFIER_SKILL_REL"
+    fi
+    if [ "$skill_shape" != untracked ]; then
         git -C "$root" add -- "$CLASSIFIER_SKILL_REL"
     fi
 }
-# Run the extracted detector with the fixture as cwd and report its verdict.
-classifier_verdict() {
+# Run a detector snippet ($1) with a fixture ($2) as cwd; report its verdict.
+classifier_verdict_with() {
     (
-        cd "$1" || exit 1
+        cd "$2" || exit 1
         bash -eu -c '. "$1"; printf "RESULT=%s\n" "$SHIPS_CLASSIFIER_NATIVELY"' \
-            bash "$GU_CLASSIFIER_SNIPPET"
+            bash "$1"
     )
 }
-CLS_FULL="$TMPROOT/classifier-full"
+classifier_verdict() { classifier_verdict_with "$GU_CLASSIFIER_SNIPPET" "$1"; }
+# A frozen copy of the SUPERSEDED usage-string detector. It exists for exactly
+# one assertion — that the comment-only stub used to pass — because a hardening
+# claim nobody can see failing is not evidence of anything.
+CLASSIFIER_OLD_SNIPPET="$TMPROOT/classifier-detector-superseded.sh"
+cat >"$CLASSIFIER_OLD_SNIPPET" <<'SUPERSEDED'
+SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
+SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
+    [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ] &&
+    git ls-files --error-unmatch -- "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1 &&
+    grep -qF 'reserve --state' "$SKILLS_SOURCE_CLASSIFIER" &&
+    grep -qF 'attach --state' "$SKILLS_SOURCE_CLASSIFIER" &&
+    grep -qF 'check --state' "$SKILLS_SOURCE_CLASSIFIER" &&
+    grep -qF 'show --state' "$SKILLS_SOURCE_CLASSIFIER" &&
+    grep -qF 'reap --root' "$SKILLS_SOURCE_CLASSIFIER"; then
+    SHIPS_CLASSIFIER_NATIVELY=true
+else
+    SHIPS_CLASSIFIER_NATIVELY=false
+fi
+SUPERSEDED
+CLS_FULL="$TMPROOT/classifier-dispatch"
 CLS_MODE="$TMPROOT/classifier-nonexec"
 CLS_NOSKILL="$TMPROOT/classifier-untracked-skill"
-CLS_STUB="$TMPROOT/classifier-stub"
-make_classifier_fixture "$CLS_FULL" +x tracked verbs
-make_classifier_fixture "$CLS_MODE" -x tracked verbs
-make_classifier_fixture "$CLS_NOSKILL" +x untracked verbs
-make_classifier_fixture "$CLS_STUB" +x tracked noverbs
+CLS_BADFM="$TMPROOT/classifier-bad-frontmatter"
+CLS_USAGE="$TMPROOT/classifier-usage-stub"
+CLS_STUB="$TMPROOT/classifier-empty-stub"
+make_classifier_fixture "$CLS_FULL" +x valid dispatch
+make_classifier_fixture "$CLS_MODE" -x valid dispatch
+make_classifier_fixture "$CLS_NOSKILL" +x untracked dispatch
+make_classifier_fixture "$CLS_BADFM" +x nofrontmatter dispatch
+make_classifier_fixture "$CLS_USAGE" +x valid usage
+make_classifier_fixture "$CLS_STUB" +x valid empty
 expect_ok_contains "classifier detector accepts a complete skills-source tree" \
     "RESULT=true" classifier_verdict "$CLS_FULL"
 # The exec bit is read from the index, never the filesystem: this helper is
@@ -1178,13 +1265,23 @@ expect_ok_contains "classifier detector rejects a helper staged non-executable" 
     "RESULT=false" classifier_verdict "$CLS_MODE"
 expect_ok_contains "classifier detector rejects an untracked shepherd entry point" \
     "RESULT=false" classifier_verdict "$CLS_NOSKILL"
-# The stub is the finding issue 336 was filed on: tracked, 100755, right path,
-# and useless. Before the verb probes it waived all three guards.
+expect_ok_contains "classifier detector rejects a SKILL.md without frontmatter" \
+    "RESULT=false" classifier_verdict "$CLS_BADFM"
 expect_ok_contains "classifier detector rejects a tracked executable stub" \
     "RESULT=false" classifier_verdict "$CLS_STUB"
-# This checkout ships the real thing, so the detector must say so — and this is
-# what keeps the five verb literals honest: they are asserted against the
-# helper's actual usage block, not just against the doc that greps for them.
+# The negative control, and the reason this round exists. The comment-only stub
+# is tracked, 100755, at the right path, beside a valid SKILL.md, and prints all
+# five usage forms — so the usage-string detector waived all three guards for
+# it, and shepherd's `check` would then read its exit 0 as clean evidence.
+# Structural anchors reject it. Both halves are asserted: a reject case whose
+# predecessor also rejected it would prove nothing was hardened.
+expect_ok_contains "superseded detector accepted a comment-only usage stub" \
+    "RESULT=true" classifier_verdict_with "$CLASSIFIER_OLD_SNIPPET" "$CLS_USAGE"
+expect_ok_contains "classifier detector rejects a comment-only usage stub" \
+    "RESULT=false" classifier_verdict "$CLS_USAGE"
+# This checkout ships the real thing, so the detector must say so. This is also
+# what keeps every anchor above honest: they are asserted against the helper's
+# actual dispatch and exit contract, not just against the doc that greps them.
 expect_ok_contains "classifier detector accepts this repo as a skills source" \
     "RESULT=true" classifier_verdict "$repo"
 expect_ok "audit G4 waives sync/universal for the native skills-source classifier" \
@@ -1194,10 +1291,14 @@ expect_ok "audit G4 waives sync/universal for the native skills-source classifie
     "$STANDARDIZE_REFS/mode-audit.md"
 # The audit prose has to describe the same three probes the update guard runs,
 # or a repo passes one mode and is reported as drift by the other.
-expect_ok "audit G4 names the entry-point and verb-interface requirements" \
+expect_ok "audit G4 names the entry-point and dispatch-structure requirements" \
     sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
-        grep -qF "five-verb interface" "$1" &&
-        grep -qF "reap --root" "$1"' sh \
+        grep -qF "name: shepherd" "$1" &&
+        grep -qF "dispatch \`case\` arms" "$1" &&
+        grep -qF "emit escalate" "$1" &&
+        grep -qF "exit 13" "$1" &&
+        grep -qF "comments merely print" "$1" &&
+        grep -qF "never that it runs" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "standards catalog waives cloud-review sync/universal for the skills source" \
     sh -c 'grep -qF "except on a skills-source" "$1" &&
@@ -1206,10 +1307,14 @@ expect_ok "standards catalog waives cloud-review sync/universal for the skills s
         grep -qF "git-tracked, non-symlink executable" "$1" &&
         grep -qF "check-codex-cloud-review.sh" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog names the entry-point and verb-interface requirements" \
+expect_ok "standards catalog names the entry-point and dispatch-structure requirements" \
     sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
-        grep -qF "five-verb interface" "$1" &&
-        grep -qF "reap --root" "$1"' sh \
+        grep -qF "name: shepherd" "$1" &&
+        grep -qF "dispatch \`case\` arms" "$1" &&
+        grep -qF "emit escalate" "$1" &&
+        grep -qF "exit 13" "$1" &&
+        grep -qF "prints the usage forms in comments" "$1" &&
+        grep -qF "rather than that it works" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "new-repo and adopt guidance note the skills-source waiver" \
     sh -c 'grep -qF "waived only for a skills-source repo already shipping the shepherd classifier" "$1" &&

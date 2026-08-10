@@ -607,30 +607,64 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 #
 # That tracked mode is necessary but nowhere near sufficient on its own: a
 # one-line stub committed `100755` at the right path would pass it and prove
-# nothing about the skill being usable. So "ships the classifier natively" means
-# three things together — the tracked executable, the shepherd skill's entry
-# point (`SKILL.md`) also tracked, since a helper with no skill around it is a
-# stripped tree rather than a shipped skill, and the helper's own source
-# carrying all five verbs of the interface the shepherd stage drives it through
-# (`reserve`, `attach`, `check`, `show`, `reap`). Each added probe sits in the
-# `if` condition, where a non-zero exit selects the else-branch instead of
-# tripping errexit — these are questions about the repo, not failures.
-# All three stay deliberately STATIC. A read-only stage must not render or
-# execute the repo under update, so this proves the interface is PRESENT, never
-# that it behaves correctly at runtime; a tree that passes could still hold a
-# helper that is broken when run. That is the accepted trade — it raises the
-# floor from "some file exists here" to "the skill and its whole verb surface
-# are shipped", and stops there.
+# nothing about the skill being usable. So "ships the classifier natively"
+# additionally requires the shepherd skill's entry point and the helper's own
+# structure, and it requires them from CODE rather than from prose.
+#
+# Anchoring on the usage strings (`reserve --state`, …) was the obvious version
+# of that and is not enough: a no-op helper whose comments merely PRINT those
+# five forms satisfies every one of them, and a waived config with such a stub
+# is worse than no waiver — shepherd's `check` would read its exit 0 as clean
+# evidence and the composition fails OPEN. So the verb probes anchor on the
+# dispatch `case` arms in the helper's executable body, and are joined by two
+# pairs from the exit-code contract shepherd actually depends on: `emit pending`
+# with `exit 11`, and `emit escalate` with `exit 13`. Those two verdicts are the
+# bounded-attempt lifecycle — a helper that cannot say "still waiting" or "both
+# windows elapsed" cannot drive the stage no matter what its banner claims —
+# and 11/13 are unusual enough that nothing satisfies them incidentally.
+# `classifier_code_has` strips leading whitespace and drops every `#` line
+# first, so no comment can answer a probe.
+#
+# The `SKILL.md` probe likewise checks the frontmatter rather than the path:
+# tracked, opening with `---`, carrying `name: shepherd` and a non-empty
+# `description:` — the cheap grep-only mirror of `verify-skills.sh`'s rules, no
+# YAML parsing. A helper with no valid skill around it is a stripped tree, not
+# a shipped skill.
+#
+# Every probe sits in the `if` condition, where a non-zero exit selects the
+# else-branch instead of tripping errexit — these are questions about the repo,
+# not failures.
+#
+# What this still CANNOT prove, plainly: runtime behavior. A read-only stage
+# must not render or execute the repo under update, so every probe above is
+# static, and a tree that passes could still hold a helper that is broken when
+# run — or one deliberately forged to match these anchors, since any static
+# shape can be reproduced by something that does nothing. Issue 336 accepts
+# that residual explicitly. What the probes buy is the accidental case they
+# were written for: a stub, a stripped tree, or a half-vendored copy no longer
+# waives three guards by looking right from a distance.
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
 SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+# Match a POSIX ERE against the helper's code only: leading whitespace stripped,
+# every comment line dropped. Called only after the `-f` test above passes.
+classifier_code_has() {
+  sed 's/^[[:space:]]*//' "$SKILLS_SOURCE_CLASSIFIER" | grep -v '^#' | grep -qE "$1"
+}
 if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
   [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ] &&
   git ls-files --error-unmatch -- "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1 &&
-  grep -qF 'reserve --state' "$SKILLS_SOURCE_CLASSIFIER" &&
-  grep -qF 'attach --state' "$SKILLS_SOURCE_CLASSIFIER" &&
-  grep -qF 'check --state' "$SKILLS_SOURCE_CLASSIFIER" &&
-  grep -qF 'show --state' "$SKILLS_SOURCE_CLASSIFIER" &&
-  grep -qF 'reap --root' "$SKILLS_SOURCE_CLASSIFIER"; then
+  head -n 1 "$SKILLS_SOURCE_SHEPHERD_SKILL" | grep -qxF -- '---' &&
+  grep -qE '^name:[[:space:]]*shepherd[[:space:]]*$' "$SKILLS_SOURCE_SHEPHERD_SKILL" &&
+  grep -qE '^description:[[:space:]]*[^[:space:]]' "$SKILLS_SOURCE_SHEPHERD_SKILL" &&
+  classifier_code_has '^reserve\)' &&
+  classifier_code_has '^attach\)' &&
+  classifier_code_has '^check\)' &&
+  classifier_code_has '^show\)' &&
+  classifier_code_has '^reap\)' &&
+  classifier_code_has '^emit pending ' &&
+  classifier_code_has '^exit 11$' &&
+  classifier_code_has '^emit escalate ' &&
+  classifier_code_has '^exit 13$'; then
   SHIPS_CLASSIFIER_NATIVELY=true
 else
   SHIPS_CLASSIFIER_NATIVELY=false
