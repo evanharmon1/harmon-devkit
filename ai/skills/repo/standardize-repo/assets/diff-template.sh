@@ -330,12 +330,129 @@ copier copy "$template" "$render" --vcs-ref="$src_ref" --trust --defaults \
     exit 2
 }
 
+# --- What the target actually is ---------------------------------------------
+# Settled once, before anything resolves a path inside it, because three
+# separate guarantees below hang off the answer: the index fallback, the IGNORED
+# class, and the repo-side half of the withholding probe.
+#
+# The question is whether the target IS a repository root of its own, not
+# whether it sits inside one. `rev-parse --is-inside-work-tree` answers the
+# second and reads true for a plain directory nested in somebody else's work
+# tree — the audit accepts a plain directory, and the hermetic tests point it at
+# exactly that shape — so every consumer of the looser test was quietly
+# answering about whatever repository happens to contain the temp dir. Compare
+# the detected toplevel against the target's own path instead, normalizing both
+# with `cd` + `pwd -P`: `$target` above is a LOGICAL pwd while git always
+# reports a resolved one, so on macOS's symlinked /var a real repo root would
+# never match otherwise (`realpath` is not portable to those hosts).
+#
+# When they differ the target is treated as the plain directory it is: no index
+# fallback, no IGNORED class, no repo-side pattern probes — disk-only presence
+# semantics, and everything falls through to gating DRIFT. A plain directory has
+# neither ignore rules nor an index of its own, and borrowing a stranger's is
+# worse than surfacing the drift. The RENDER-side probe is unaffected and still
+# withholds bodies here: it asks what the template declared, which no property
+# of the target can change.
+#
+# `rev-parse --show-toplevel` has THREE outcomes and the first version of this
+# collapsed the last two: it succeeded, it said "this is not a repository", or
+# it could not tell (dubious ownership, unreadable metadata, a malformed .git).
+# Reading "could not tell" as a plain directory is fail-OPEN — it skips the repo
+# half of the withholding probe, so a repo-only-ignored secret would print under
+# --show precisely because git could not read the repo. LC_ALL=C pins the
+# message being matched; git localizes its output otherwise.
+target_owns_worktree=0
+target_physical="$(cd "$target" && pwd -P)"
+toplevel_rc=0
+toplevel="$(LC_ALL=C git -C "$target" rev-parse --show-toplevel 2>&1)" ||
+    toplevel_rc=$?
+toplevel_says_no_repo=0
+case "$toplevel" in
+*'not a git repository'*) toplevel_says_no_repo=1 ;;
+esac
+if [ "$toplevel_rc" -eq 0 ]; then
+    if [ -d "$toplevel" ] &&
+        [ "$(cd "$toplevel" && pwd -P)" = "$target_physical" ]; then
+        target_owns_worktree=1
+    fi
+elif [ "$toplevel_says_no_repo" -eq 1 ] &&
+    [ ! -e "$target/.git" ] && [ ! -L "$target/.git" ]; then
+    # Genuinely not a repository: git says so AND there is no .git of any kind
+    # to have gone wrong. Both halves are needed — a .git pointing at a gitdir
+    # that no longer exists reports "not a git repository" too, and that is a
+    # broken repo rather than the plain directory this audit accepts.
+    :
+else
+    echo "FAIL: cannot determine whether $target is a git work tree" >&2
+    [ -z "$toplevel" ] || printf '  %s\n' "$toplevel" >&2
+    echo "  refusing to continue: an unreadable repo would skip the repo-side ignore probe" >&2
+    exit 2
+fi
+
+# `-L` only ever tests a path's FINAL component, so every symlink check in this
+# script was blind to the directories above it. A repo whose `scripts` is a link
+# to `../shared-scripts` let `-f "$target/scripts/status.sh"` succeed, and the
+# comparison then read — and under --show PRINTED — a file outside the
+# repository entirely, reporting clean or DRIFT on content that is not the
+# repo's. Resolve the physical parent and require it to be exactly where the
+# target root says it should be.
+#
+# The rule is ANY symlinked parent component, not just an escaping one. That is
+# both simpler and more honest: the template renders real directories, so a
+# repo that replaced one with a link has diverged structurally whether or not
+# the link stays inside. It also keeps the inside/outside distinction off the
+# security-critical path — one comparison, and nothing is ever followed out of
+# the tree. Comparing the resolved parent against the EXPECTED physical parent
+# catches both at once, because they can only differ when some component
+# between the root and the file is a link.
+repo_parent_note=""
+repo_parent_diverges() {
+    rpd_abs="$1"
+    repo_parent_note=""
+    # Index-snapshot variants are materialized by us from blob content, under
+    # the workdir rather than the repo. They have no repo directories above them
+    # to have been swapped for links.
+    case "$rpd_abs" in
+    "$target"/*) ;;
+    *) return 1 ;;
+    esac
+    rpd_rel="${rpd_abs#"$target"/}"
+    case "$rpd_rel" in
+    */*) rpd_expected="$target_physical/${rpd_rel%/*}" ;;
+    *) rpd_expected="$target_physical" ;;
+    esac
+    rpd_actual=""
+    rpd_actual="$(cd "$(dirname "$rpd_abs")" 2>/dev/null && pwd -P)" ||
+        rpd_actual=""
+    if [ -z "$rpd_actual" ]; then
+        repo_parent_note="parent directory cannot be resolved — structural divergence"
+        return 0
+    fi
+    [ "$rpd_actual" != "$rpd_expected" ] || return 1
+    case "$rpd_actual/" in
+    "$target_physical"/*)
+        repo_parent_note="parent directory is a symlink; the template renders real directories — structural divergence"
+        ;;
+    *)
+        repo_parent_note="parent directory is a symlink leaving the repository — structural divergence"
+        ;;
+    esac
+    return 0
+}
+
 # Materialize an index copy when a tracked file is absent only from the working
 # tree. This makes audit output stable while an editor/tool has a transient
 # unstaged deletion. A staged deletion has no index entry and remains MISSING.
 index_variant() {
     p="$1"
-    git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+    # The target's OWN index, never an ambient one. `--is-inside-work-tree`
+    # stood here, and it is true for a plain directory nested inside another
+    # repository — so a path the OUTER repo happened to track at the same
+    # relative name resolved to the outer repo's blob, suppressing a real
+    # MISSING or comparing (and under --show printing) content belonging to a
+    # different project. A plain-directory target gets disk-only presence
+    # semantics; there is no index of its own to fall back to.
+    [ "$target_owns_worktree" -eq 1 ] || return 1
     git -C "$target" cat-file -e ":$p" 2>/dev/null || return 1
     out="$index_root/$p"
     mkdir -p "$(dirname "$out")"
@@ -365,6 +482,17 @@ resolve_variant() {
     # sweep's link-target comparison works fine on a dangling link, and falling
     # through to the index instead would compare the link TEXT as file content.
     if [ -f "$target/$p" ] || [ -L "$target/$p" ]; then
+        echo "$target/$p"
+        return 0
+    fi
+    # Absent from the work tree — but WHY decides what may happen next. If the
+    # path's own directory there is a symlink, the absence is a structural
+    # divergence rather than a transient deletion, and falling back to the index
+    # would hide it perfectly: the snapshot lives under the workdir, so the
+    # caller's physical-parent check trivially passes and a directory swapped
+    # for a link to somewhere else audits clean. Hand back the WORK-TREE path so
+    # that check fires on the real location instead.
+    if repo_parent_diverges "$target/$p"; then
         echo "$target/$p"
         return 0
     fi
@@ -411,58 +539,6 @@ variant_display() {
 # curated set ended up with weaker guarantees than the uncurated one: the sweep
 # gated symlink swaps and withheld ignore-matched diffs, and the manifest — the
 # more curated, more load-bearing set — did neither.
-
-# Ask git about ignore rules only when the target is a repository root of its
-# OWN. `rev-parse --is-inside-work-tree` is not that test: it answers true for a
-# plain directory that merely SITS INSIDE somebody else's work tree — the audit
-# accepts a plain directory and the hermetic tests point it at exactly that
-# shape — and git would then answer about whatever repository happens to contain
-# the temp dir, silently downgrading real divergence to a non-gating IGNORED.
-# Compare the detected toplevel against the target's own path instead,
-# normalizing both with `cd` + `pwd -P`: `$target` above is a LOGICAL pwd while
-# git always reports a resolved one, so on macOS's symlinked /var a real repo
-# root would never match otherwise (`realpath` is not portable to those hosts).
-# When they differ, treat the target as the plain directory it is: no IGNORED
-# class and no REPO-side pattern probes, so everything falls through to gating
-# DRIFT. That is the deliberate choice — a plain directory has no ignore rules
-# of its own, and inheriting a stranger's is worse than surfacing the drift. The
-# RENDER-side probe is unaffected and still withholds bodies here: it asks what
-# the template declared, which no property of the target can change.
-#
-# `rev-parse --show-toplevel` has THREE outcomes and the first version of this
-# collapsed the last two: it succeeded, it said "this is not a repository", or
-# it could not tell (dubious ownership, unreadable metadata, a malformed .git).
-# Reading "could not tell" as a plain directory is fail-OPEN — it skips the repo
-# half of the withholding probe, so a repo-only-ignored secret would print under
-# --show precisely because git could not read the repo. LC_ALL=C pins the
-# message being matched; git localizes its output otherwise.
-target_owns_worktree=0
-target_physical="$(cd "$target" && pwd -P)"
-toplevel_rc=0
-toplevel="$(LC_ALL=C git -C "$target" rev-parse --show-toplevel 2>&1)" ||
-    toplevel_rc=$?
-toplevel_says_no_repo=0
-case "$toplevel" in
-*'not a git repository'*) toplevel_says_no_repo=1 ;;
-esac
-if [ "$toplevel_rc" -eq 0 ]; then
-    if [ -d "$toplevel" ] &&
-        [ "$(cd "$toplevel" && pwd -P)" = "$target_physical" ]; then
-        target_owns_worktree=1
-    fi
-elif [ "$toplevel_says_no_repo" -eq 1 ] &&
-    [ ! -e "$target/.git" ] && [ ! -L "$target/.git" ]; then
-    # Genuinely not a repository: git says so AND there is no .git of any kind
-    # to have gone wrong. Both halves are needed — a .git pointing at a gitdir
-    # that no longer exists reports "not a git repository" too, and that is a
-    # broken repo rather than the plain directory this audit accepts.
-    :
-else
-    echo "FAIL: cannot determine whether $target is a git work tree" >&2
-    [ -z "$toplevel" ] || printf '  %s\n' "$toplevel" >&2
-    echo "  refusing to continue: an unreadable repo would skip the repo-side ignore probe" >&2
-    exit 2
-fi
 
 # The TEMPLATE's own ignore rules, evaluated in a scratch repo built from the
 # .gitignore files the RENDER ships. This is the authority on whether a rendered
@@ -613,57 +689,6 @@ is_staged_removal() {
     if git -C "$target" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
         return 1 # still in the index — nothing is staged for removal
     fi
-    return 0
-}
-
-# `-L` only ever tests a path's FINAL component, so every symlink check in this
-# script was blind to the directories above it. A repo whose `scripts` is a link
-# to `../shared-scripts` let `-f "$target/scripts/status.sh"` succeed, and the
-# comparison then read — and under --show PRINTED — a file outside the
-# repository entirely, reporting clean or DRIFT on content that is not the
-# repo's. Resolve the physical parent and require it to be exactly where the
-# target root says it should be.
-#
-# The rule is ANY symlinked parent component, not just an escaping one. That is
-# both simpler and more honest: the template renders real directories, so a
-# repo that replaced one with a link has diverged structurally whether or not
-# the link stays inside. It also keeps the inside/outside distinction off the
-# security-critical path — one comparison, and nothing is ever followed out of
-# the tree. Comparing the resolved parent against the EXPECTED physical parent
-# catches both at once, because they can only differ when some component
-# between the root and the file is a link.
-repo_parent_note=""
-repo_parent_diverges() {
-    rpd_abs="$1"
-    repo_parent_note=""
-    # Index-snapshot variants are materialized by us from blob content, under
-    # the workdir rather than the repo. They have no repo directories above them
-    # to have been swapped for links.
-    case "$rpd_abs" in
-    "$target"/*) ;;
-    *) return 1 ;;
-    esac
-    rpd_rel="${rpd_abs#"$target"/}"
-    case "$rpd_rel" in
-    */*) rpd_expected="$target_physical/${rpd_rel%/*}" ;;
-    *) rpd_expected="$target_physical" ;;
-    esac
-    rpd_actual=""
-    rpd_actual="$(cd "$(dirname "$rpd_abs")" 2>/dev/null && pwd -P)" ||
-        rpd_actual=""
-    if [ -z "$rpd_actual" ]; then
-        repo_parent_note="parent directory cannot be resolved — structural divergence"
-        return 0
-    fi
-    [ "$rpd_actual" != "$rpd_expected" ] || return 1
-    case "$rpd_actual/" in
-    "$target_physical"/*)
-        repo_parent_note="parent directory is a symlink; the template renders real directories — structural divergence"
-        ;;
-    *)
-        repo_parent_note="parent directory is a symlink leaving the repository — structural divergence"
-        ;;
-    esac
     return 0
 }
 

@@ -138,15 +138,22 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
   Presence-only for the same reason as `CO-OWNED` plus a harder one: a resolved
   local config can hold real secrets, so its diff is never printed. Its content
   never affects the exit status. **The template's declaration is what grants
-  this exemption, never the repo's habits** — see below.
+  this exemption, never the repo's habits** — see below. It is also a
+  **sweep-only** class: a path on
+  [`template-owned-files.txt`](../assets/template-owned-files.txt) always gates,
+  ignore rules or not, because the manifest is itself an assertion of template
+  ownership and ignore-based leniency cannot override it. Withholding still
+  applies to those paths — the manifest says the template owns the path, not
+  that the repo's copy is safe to print.
 
 Ignore rules drive two **independent** axes, because "does this gate?" and "is
 this safe to print?" are different questions:
 
 - **Classification** follows repo *state*, then the *template's* declaration.
-  Only an untracked file that **both** sides ignore is the informational
-  `IGNORED` class. A **tracked** one gates as ordinary `DRIFT`, ignore rules or
-  not, because tracked content is template-relevant. And a path the repo ignores
+  Only an **uncurated** untracked file that **both** sides ignore is the
+  informational `IGNORED` class; a curated path is never a candidate, per the
+  sweep-only note above. A **tracked** one gates as ordinary `DRIFT`, ignore
+  rules or not, because tracked content is template-relevant. And a path the repo ignores
   while the template **tracks** it gates too, tagged `(repo-ignored, but the
   template tracks this file — other clones will not have it)`: adding
   `.vscode/` to your own `.gitignore` says nothing about the artifact, and every

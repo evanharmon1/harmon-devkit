@@ -1483,6 +1483,20 @@ expect_ok "audit glossary gates a repo-only ignore rule" \
 expect_ok "audit glossary records that a MODE finding still gates" \
     grep -qF 'a `MODE` finding on the same file still gates' \
     "$STANDARDIZE_REFS/mode-audit.md"
+# IGNORED is a sweep-only class: the curated loop never grants it, because the
+# manifest is itself an assertion of template ownership. The glossary claimed
+# the exemption applied to any untracked path both sides ignore.
+expect_ok "update glossary marks IGNORED as a sweep-only class" \
+    grep -qF '**sweep-only** class' \
+    "$STANDARDIZE_REFS/mode-update.md"
+# Patterns must sit on ONE source line — markdown wraps prose, and grep -F is
+# line-oriented, so a phrase that reads as a sentence can still never match.
+expect_ok "update glossary states a curated path always gates" \
+    grep -qF 'because the manifest is itself an assertion of template' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update glossary excludes curated paths from the IGNORED class" \
+    grep -qF 'a curated path is never a candidate' \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_fail "audit glossary no longer calls every gitignored copy IGNORED" \
     grep -qF "the repo's copy is gitignored" \
     "$STANDARDIZE_REFS/mode-audit.md"
@@ -4133,6 +4147,76 @@ elif printf '%s\n' "$linked_inside_out" |
     ok "diff-template gates an in-tree symlinked parent"
 else
     bad "diff-template gates an in-tree symlinked parent (diagnostic missing)"
+fi
+
+# --- the index fallback belongs to the target, not to an ambient repo --------
+# `:path` in the index is resolved relative to the REPOSITORY ROOT, whatever the
+# cwd, so for a plain-directory target nested inside another repo the whole
+# outer root namespace shadows it: any rendered path the outer repo happens to
+# track at the same relative name resolved to the outer repo's blob. The target
+# then looked like it HAD a file it does not have — MISSING suppressed, and the
+# outer project's content compared and printed in its place.
+DT_OUTER_PARENT="$TMPROOT/diff-template-outer-index-parent"
+mkdir -p "$DT_OUTER_PARENT"
+git_init "$DT_OUTER_PARENT"
+printf '%s\n' '{ "extends": ["outer-repo-blob-sentinel"] }' \
+    >"$DT_OUTER_PARENT/renovate.json"
+git_commit_all "$DT_OUTER_PARENT" "outer repo tracks a same-named path"
+DT_OUTER_TARGET="$DT_OUTER_PARENT/plain-target"
+cp -pR "$DT_TARGET" "$DT_OUTER_TARGET"
+rm -rf "$DT_OUTER_TARGET/.git"
+cp "$DT_TEMPLATE/template/.envrc" "$DT_OUTER_TARGET/.envrc"
+rm "$DT_OUTER_TARGET/renovate.json"
+if outer_index_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_OUTER_TARGET" 2>&1)"; then
+    bad "diff-template reports a nested plain target's absent file as MISSING (expected non-zero exit)"
+elif printf '%s\n' "$outer_index_out" | grep -qF "MISSING  renovate.json"; then
+    ok "diff-template reports a nested plain target's absent file as MISSING"
+else
+    bad "diff-template reports a nested plain target's absent file as MISSING (diagnostic missing)"
+fi
+if printf '%s\n' "$outer_index_out" | grep -qF 'outer-repo-blob-sentinel'; then
+    bad "diff-template never resolves a nested plain target through the outer index"
+else
+    ok "diff-template never resolves a nested plain target through the outer index"
+fi
+
+# --- an index fallback may not paper over a swapped-out directory ------------
+# A tracked directory replaced by a symlink that does not lead to the rendered
+# file leaves the index entry intact, so the fallback materialized the blob
+# under the workdir — where the physical-parent check trivially passes, because
+# the snapshot's parent really is where the snapshot says it is. The audit went
+# clean on a repo whose directory now points somewhere else entirely. The parent
+# check therefore runs on the WORK-TREE location before the fallback is allowed.
+DT_SWAPPED_DIR="$TMPROOT/diff-template-swapped-dir"
+cp -pR "$DT_TARGET" "$DT_SWAPPED_DIR"
+rm -rf "$DT_SWAPPED_DIR/scripts"
+ln -s ../nowhere-at-all "$DT_SWAPPED_DIR/scripts"
+if swapped_dir_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_SWAPPED_DIR" 2>&1)"; then
+    bad "diff-template gates a tracked dir swapped for a dangling symlink (expected non-zero exit)"
+elif printf '%s\n' "$swapped_dir_out" |
+    grep -qF "DRIFT    scripts/status.sh  (parent directory cannot be resolved"; then
+    ok "diff-template gates a tracked dir swapped for a dangling symlink"
+else
+    bad "diff-template gates a tracked dir swapped for a dangling symlink (diagnostic missing)"
+fi
+
+# Same shape, but the link leads somewhere real that simply lacks the file — the
+# index entry is just as intact and the fallback was just as wrong.
+DT_SWAPPED_OUT="$TMPROOT/diff-template-swapped-dir-outside"
+mkdir -p "$TMPROOT/diff-template-empty-outside"
+cp -pR "$DT_TARGET" "$DT_SWAPPED_OUT"
+rm -rf "$DT_SWAPPED_OUT/scripts"
+ln -s ../diff-template-empty-outside "$DT_SWAPPED_OUT/scripts"
+if swapped_out_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_SWAPPED_OUT" 2>&1)"; then
+    bad "diff-template gates a tracked dir swapped for an outside symlink (expected non-zero exit)"
+elif printf '%s\n' "$swapped_out_out" |
+    grep -qF "DRIFT    scripts/status.sh  (parent directory is a symlink leaving the repository"; then
+    ok "diff-template gates a tracked dir swapped for an outside symlink"
+else
+    bad "diff-template gates a tracked dir swapped for an outside symlink (diagnostic missing)"
 fi
 
 # --- nested-worktree guard ---------------------------------------------------
