@@ -35,6 +35,22 @@ is guarded on `run_task_install` alone — unlike every other entry, it carries 
 `_copier_operation == 'copy'` guard — so an update on a repo that answered yes
 re-runs brew deps and `lefthook install`. See §2.)
 
+**How to run the snippets below.** They are written to survive `bash -eu`: the
+load-bearing steps carry an explicit `|| { …; exit 1; }` handler so the failure
+names itself, and a command without one still stops the run under errexit, just
+anonymously — so keep the handlers when you copy a block into a fresh shell.
+They are not proven under `pipefail`, though: without it a mid-pipeline failure
+can be masked by a succeeding final stage, so run a lifted block with
+`bash -euo pipefail` care and treat the recipes' own gates and frozen-OID
+cross-checks as the real backstop. Every sorted-list
+comparison pins `LC_ALL=C` on both the producer and the consumer, because `sort`
+and `comm` must agree on collation — an ambient UTF-8 locale orders `_` against
+letters differently than byte order does (`github_org` sorts before `git_init`
+under `en_US.UTF-8`, after it under `C`), so a `comm` left unpinned rejects the
+`LC_ALL=C sort`ed file it was handed with `file 1 is not in sorted order`. The
+pin is per command, never a one-time export at the top of a section, because
+these blocks get lifted piecemeal.
+
 ---
 
 ## 0. Branch from a clean tree
@@ -299,7 +315,7 @@ git -C "$GUARDED_TEMPLATE" show "$RECORDED_COMMIT":copier.yml |
   git -C "$GUARDED_TEMPLATE" show "$HARMON_INIT_COMMIT":copier.yml |
     yq -r 'keys | .[] | select(test("^_") | not)' |
     LC_ALL=C sort -u >"$GUARDED_STATE/target-questions" &&
-  comm -13 \
+  LC_ALL=C comm -13 \
     "$GUARDED_STATE/baseline-questions" \
     "$GUARDED_STATE/target-questions" \
     >"$GUARDED_STATE/new-question-candidates" ||
@@ -620,7 +636,7 @@ for DISCOVERY_ROUND in 1 2 3 4 5 6 7 8 9 10; do
 done
 test "$DISCOVERY_STABLE" = true ||
   { echo "active question discovery did not converge in 10 rounds" >&2; exit 1; }
-comm -12 \
+LC_ALL=C comm -12 \
   "$GUARDED_STATE/new-question-candidates" \
   "$GUARDED_STATE/active-target-questions" \
   >"$GUARDED_STATE/active-new-questions" ||
@@ -635,7 +651,7 @@ comm -12 \
   fi
 } |
   LC_ALL=C sort -u |
-  comm -12 - "$GUARDED_STATE/active-target-questions" \
+  LC_ALL=C comm -12 - "$GUARDED_STATE/active-target-questions" \
     >"$GUARDED_STATE/reviewed-keys" ||
   { echo "failed to derive the complete active review set" >&2; exit 1; }
 for CAPABILITY_KEY in \
@@ -661,12 +677,16 @@ find "$TARGET_DISCOVERY" \( -type f -o -type l \) -print |
   sed "s#^$TARGET_DISCOVERY/##" |
   LC_ALL=C sort -u >"$GUARDED_STATE/target-managed-paths" ||
   { echo "failed to inventory target render paths" >&2; exit 1; }
-REVIEWED_KEYSET_OID="$(
-  test -e "$REVIEWED_DATA" &&
+if test -e "$REVIEWED_DATA"; then
+  REVIEWED_KEYSET_OID="$(
     yq -r 'keys | .[]' "$REVIEWED_DATA" |
       LC_ALL=C sort -u |
       git hash-object --stdin
-)"
+  )" ||
+    { echo "failed to hash the reviewed keyset" >&2; exit 1; }
+else
+  REVIEWED_KEYSET_OID=""
+fi
 REQUIRED_KEYSET_OID="$(
   git hash-object "$GUARDED_STATE/reviewed-keys"
 )"
@@ -1277,7 +1297,7 @@ yq 'with_entries(select(.key | test("^_") | not))' .copier-answers.yml \
     --data-file="$RENDERED_ANSWERS" \
     "$HARMON_INIT_SOURCE" "$RENDERED_TREE" ||
   { echo "failed to render the target inventory" >&2; exit 1; }
-comm -23 \
+LC_ALL=C comm -23 \
     <(git ls-files 'scripts/*' |
         while IFS= read -r SCRIPT_PATH; do
           if test -e "$SCRIPT_PATH" || test -L "$SCRIPT_PATH"; then

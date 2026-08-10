@@ -1290,6 +1290,72 @@ expect_ok "update guidance persists and verifies the complete reviewed answer ma
 expect_ok "update guidance validates every reviewed key after apply" \
     grep -qF 'done <"$GUARDED_STATE/reviewed-keys"' \
     "$STANDARDIZE_REFS/mode-update.md"
+# Every `comm` in the guarded-update recipe reads files a `LC_ALL=C sort -u`
+# produced. Left unpinned it re-derives the ordering under whatever locale the
+# copying shell happens to carry — a UTF-8 collation orders `_` against letters
+# differently than byte order does — then rejects its own input with `file 1 is
+# not in sorted order` and exits 1 straight into the snippet's `|| { …; exit 1;
+# }` handler. Counting instead of asserting a literal keeps the invariant true
+# as sites are added: an unpinned newcomer moves one total and not the other.
+expect_ok "update guidance pins collation on every comm invocation" \
+    sh -c 'total="$(grep -cE "comm -[0-9]" "$1")"
+        pinned="$(grep -cE "LC_ALL=C comm -[0-9]" "$1")"
+        test "$total" -gt 0 && test "$total" -eq "$pinned"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# The reviewed-keyset probe runs on the designed first pass, where
+# $REVIEWED_DATA does not exist yet. Folding its `test -e` guard into the
+# command substitution made the assignment inherit exit 1, so a `bash -eu` shell
+# died before the gate below it could reach the seeding block that gate exists
+# to trigger — after the expensive discovery loop, and for no reason.
+expect_ok "update guidance keeps the reviewed-keyset probe errexit-safe" \
+    sh -c 'grep -qF "REVIEWED_KEYSET_OID=\"\"" "$1" &&
+        ! grep -A1 -F "REVIEWED_KEYSET_OID=\"\$(" "$1" |
+            grep -qE "^[[:space:]]*test -e"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance states its snippet execution assumptions up front" \
+    sh -c 'grep -qF "on both the producer and the consumer" "$1" &&
+        grep -qF "file 1 is not in sorted order" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# Behavioral proof of the same property, on inputs chosen to trip it: under an
+# ambient UTF-8 locale the unpinned form exits 1 on exactly these two files,
+# because `codeql_languages` pairs off first and `github_org` then looks out of
+# order against `git_init`. Pinned on both sides, the answer is the byte-order
+# one in every locale.
+utf8_locale=""
+utf8_fallback=""
+while IFS= read -r cand; do
+    case "$cand" in
+    en_US.UTF-8 | en_US.utf8)
+        utf8_locale="$cand"
+        break
+        ;;
+    *.UTF-8 | *.utf8)
+        [ -n "$utf8_fallback" ] || utf8_fallback="$cand"
+        ;;
+    esac
+done < <(locale -a 2>/dev/null || true)
+[ -n "$utf8_locale" ] || utf8_locale="$utf8_fallback"
+if [ -n "$utf8_locale" ]; then
+    COLLATE_DIR="$TMPROOT/collation-pin"
+    mkdir -p "$COLLATE_DIR"
+    expect_ok "pinned sort|comm pair survives an ambient UTF-8 locale ($utf8_locale)" \
+        env "LC_ALL=$utf8_locale" "LANG=$utf8_locale" bash -c '
+            set -eu
+            cd "$1"
+            printf "%s\n" git_init github_org use_codeql |
+                LC_ALL=C sort -u >baseline-questions
+            printf "%s\n" codeql_languages git_init github_org use_codeql \
+                use_codex_review | LC_ALL=C sort -u >target-questions
+            got="$(LC_ALL=C comm -13 baseline-questions target-questions |
+                paste -sd, -)"
+            test "$got" = "codeql_languages,use_codex_review" || {
+                echo "unexpected comm output under $LC_ALL: $got" >&2
+                exit 1
+            }
+        ' bash "$COLLATE_DIR"
+else
+    ok "pinned sort|comm pair locale proof skipped (no UTF-8 locale available)"
+fi
 expect_ok "update check, preview, and apply use the guarded Copier wrapper" \
     test "$(grep -Ec '^(if )?run_guarded_copier (check-update|update)' \
         "$STANDARDIZE_REFS/mode-update.md")" -eq 3
@@ -3551,7 +3617,7 @@ git -C "$GU_SNAPSHOT" show "$GU_TARGET_COMMIT":copier.yml |
     yq -r 'keys | .[] | select(test("^_") | not)' |
     LC_ALL=C sort -u \
         >"$GU_TARGET/.copier-guarded-update/target-questions"
-comm -13 \
+LC_ALL=C comm -13 \
     "$GU_TARGET/.copier-guarded-update/baseline-questions" \
     "$GU_TARGET/.copier-guarded-update/target-questions" \
     >"$GU_TARGET/.copier-guarded-update/new-question-candidates"
@@ -3567,7 +3633,7 @@ yq -r 'keys | .[] | select(test("^_") | not)' \
     "$GU_DISCOVERY/.copier-answers.yml" |
     LC_ALL=C sort -u \
         >"$GU_TARGET/.copier-guarded-update/active-target-questions"
-comm -12 \
+LC_ALL=C comm -12 \
     "$GU_TARGET/.copier-guarded-update/new-question-candidates" \
     "$GU_TARGET/.copier-guarded-update/active-target-questions" \
     >"$GU_TARGET/.copier-guarded-update/active-new-questions"
@@ -3577,7 +3643,7 @@ comm -12 \
         use_codex_review use_skills_sync skill_categories
 } |
     LC_ALL=C sort -u |
-    comm -12 - \
+    LC_ALL=C comm -12 - \
         "$GU_TARGET/.copier-guarded-update/active-target-questions" \
         >"$GU_TARGET/.copier-guarded-update/reviewed-keys"
 USE_FOREMAN=true USE_CODERABBIT=false USE_CODEQL=true \
@@ -3612,7 +3678,7 @@ yq -r 'keys | .[] | select(test("^_") | not)' \
     "$GU_DISCOVERY_SECOND/.copier-answers.yml" |
     LC_ALL=C sort -u \
         >"$GU_TARGET/.copier-guarded-update/active-target-questions"
-comm -12 \
+LC_ALL=C comm -12 \
     "$GU_TARGET/.copier-guarded-update/new-question-candidates" \
     "$GU_TARGET/.copier-guarded-update/active-target-questions" \
     >"$GU_TARGET/.copier-guarded-update/active-new-questions"
@@ -3622,7 +3688,7 @@ comm -12 \
         use_codex_review use_skills_sync skill_categories
 } |
     LC_ALL=C sort -u |
-    comm -12 - \
+    LC_ALL=C comm -12 - \
         "$GU_TARGET/.copier-guarded-update/active-target-questions" \
         >"$GU_TARGET/.copier-guarded-update/reviewed-keys"
 PREVIEW_REGION=ord yq -i \

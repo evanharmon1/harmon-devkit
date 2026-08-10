@@ -2402,13 +2402,17 @@ codeowners_compared=0
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
     git cat-file -e "main:$co" 2>/dev/null; then
     codeowners_compared=1
-    before="$(git show "main:$co" 2>/dev/null | grep -oE '@[A-Za-z0-9_/-]+' | sort -u)"
+    # LC_ALL=C on the producers AND the consumer: `comm` re-derives the ordering
+    # its inputs must already be in, so both sides have to agree on collation,
+    # and owner tokens carry `_`/`-`/`/`, which UTF-8 locales order differently
+    # than byte value does.
+    before="$(git show "main:$co" 2>/dev/null | grep -oE '@[A-Za-z0-9_/-]+' | LC_ALL=C sort -u)"
     if [ -f "$co" ]; then
-        after="$(grep -oE '@[A-Za-z0-9_/-]+' "$co" 2>/dev/null | sort -u)"
+        after="$(grep -oE '@[A-Za-z0-9_/-]+' "$co" 2>/dev/null | LC_ALL=C sort -u)"
     else
         after=""
     fi
-    dropped="$(comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -v '^$' || true)"
+    dropped="$(LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -v '^$' || true)"
     acknowledged_old=""
     if [ "$codeowner_ack_count" -gt 0 ]; then
         for ack in "${codeowner_acks[@]}"; do
