@@ -71,6 +71,10 @@ repos/*/issues/comments/*) file=trigger.json ;;
 repos/*/issues/*/comments?per_page=100) file=comments.pages.json ;;
 repos/*/pulls/*/reviews?per_page=100) file=reviews.pages.json ;;
 repos/*/pulls/*/comments?per_page=100) file=inline.pages.json ;;
+# The PR object, fetched only for its author identity when the head carries
+# inline findings. It must sort AFTER the sub-resource patterns above, which it
+# would otherwise shadow.
+repos/*/pulls/*) file=pr.json ;;
 repos/*/commits/*)
     jq -cn --arg sha "$(cat "$GH_FIXTURES/resolved-head")" '{sha:$sha}'
     exit 0
@@ -90,6 +94,15 @@ actor_id=199175422
 actor_login='chatgpt-codex-connector[bot]'
 request_time='2026-07-31T08:00:00Z'
 trigger_id=123
+# The PR author, and a bystander who is neither the author nor an
+# OWNER/MEMBER/COLLABORATOR — the two identities the adjudication partition
+# has to tell apart.
+pr_author_id=4242
+# A repository OWNER who is NOT the PR author, so the association branch of the
+# trust rule is pinned on its own rather than passing via the authorship
+# fallback as well.
+owner_id=6060
+outsider_id=5150
 
 write_defaults() {
     printf '%s\n' "$head_sha" >"${fixtures}/head"
@@ -109,6 +122,9 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
+    jq -cn --argjson author "$pr_author_id" --arg head "$head_sha" \
+        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head}}' \
+        >"${fixtures}/pr.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
@@ -553,6 +569,504 @@ jq -cn \
     ]]' >"${fixtures}/inline.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 11 pending
+
+# ── adjudicated current-head findings (evanharmon1/harmon-devkit#275) ───────
+#
+# Counting current-head inline comments made the two-attempt contract
+# unfinishable for a head carrying a declined P2: the settled finding
+# re-blocked every later check until a new commit moved the head. The
+# partition below is a strict relaxation — a finding is settled by a trusted
+# in-thread reply, and by nothing else.
+
+# The findings review that accompanies real inline findings. Codex posts both:
+# a review body and the findings themselves as inline comments.
+#
+# The body is the REAL observed payload from evanharmon1/harmon-devkit#355 and
+# #273, LEADING BLANK LINE INCLUDED: "\n### 💡 Codex Review\n\n…". That blank
+# is load-bearing — a heading test anchored on the literal first line matches
+# no genuine findings review at all, which makes the whole settlement path
+# inert. A heading-first body is pinned separately below.
+#
+# Suppressing this review once its inline comments are adjudicated is the other
+# half of the fix — without it the same settled findings block from the other
+# side. So the body is CARRIER-ONLY: the heading, the boilerplate sentence
+# observed on #355, and the Reviewed-commit metadata. It carries no severity
+# badge, because the badges live on the inline comments it points at. A badged
+# body, and an unbadged concern in the body, are each a finding attribution
+# cannot reach; both are pinned separately below.
+codex_findings_review() {
+    jq -cn \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" \
+        --arg head "$head_sha" \
+        '[[
+          {
+            id:120,user:{id:$id,login:$login},
+            submitted_at:"2026-07-31T08:00:04Z",
+            commit_id:$head,
+            body:("\n### \ud83d\udca1 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+          }
+        ]]' >"${fixtures}/reviews.pages.json"
+}
+
+echo "==> a trusted in-thread reply adjudicates a current-head inline finding"
+# The replier is an OWNER who is NOT the PR author, so this pins the
+# association branch of the trust rule by itself. The authorship branch is
+# pinned separately by the CONTRIBUTOR case below.
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$owner,login:"repo-owner"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: the retry path is bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+# The detail must distinguish this from a verdict Codex itself posted: only
+# here did a human write the rationale that now stands on the PR.
+printf '%s' "$check_out" | jq -e '.detail | test("adjudicated")' >/dev/null ||
+    fail "adjudicated-clean did not report a distinct detail: $check_out"
+
+echo "==> a reply trusted only by PR authorship adjudicates the finding"
+# A shepherd driving a fork PR replies as the PR author with association
+# CONTRIBUTOR. Refusing that would leave the contract unfinishable for exactly
+# the sessions this helper exists to serve.
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"CONTRIBUTOR",in_reply_to_id:88,
+        body:"Fixed in a follow-up commit on this branch."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+printf '%s' "$check_out" | jq -e '.detail | test("adjudicated")' >/dev/null ||
+    fail "PR-author reply did not report adjudicated-clean: $check_out"
+
+echo "==> an untrusted bystander reply does not adjudicate a finding"
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson outsider "$outsider_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P1: confirmed issue"
+      },
+      {
+        id:90,user:{id:$outsider,login:"passer-by"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"NONE",in_reply_to_id:88,
+        body:"Looks fine to me."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> the bot cannot adjudicate its own finding"
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P1: confirmed issue"
+      },
+      {
+        id:91,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"COLLABORATOR",in_reply_to_id:88,
+        body:"Following up on my own comment."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> a finding edited after its reply is unresolved again"
+# Codex revises a finding in place, so a reply that predates the edit answered
+# different text.
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:45Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P1: revised — the retry path is unguarded on the second attempt"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: answered the pre-edit text."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> a reply in the SAME second as the edit does not adjudicate"
+# GitHub timestamps are second-precision, so a tie cannot prove the reply came
+# after the edit — and resolving it in the reply's favour would adjudicate text
+# the replier may never have seen.
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:30Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P1: revised in the same second the reply landed"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: may have answered the pre-edit text."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> one adjudicated finding does not settle its unanswered sibling"
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: bounded by the attempt deadline."
+      },
+      {
+        id:92,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:05Z",updated_at:"2026-07-31T08:00:05Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P1: data loss on rollback"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> a findings review with no current-head inline comments still gates"
+# Suppression is per review and requires at least one attributed current-head
+# inline finding. A findings review standing alone has nothing attributed to
+# it, so it keeps its old behaviour.
+new_cycle
+codex_findings_review
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> a second findings review is not settled by the first review's findings"
+# The two-attempt contract makes two findings reviews on one head routine. When
+# the second states its finding in the review BODY and has no inline comments
+# of its own, a global "something was adjudicated" flag would suppress it too
+# and report adjudicated-clean over an unanswered finding. Attribution by
+# `pull_request_review_id` is what keeps them apart.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:120,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("\n### \ud83d\udca1 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+      },
+      {
+        id:121,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:40Z",
+        commit_id:$head,
+        body:"### Codex Review\n\nP1: the second attempt still loses data on rollback."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> a badged review body is not settled by its adjudicated inline findings"
+# Codex states some findings in the review body itself, where attribution
+# cannot reach them — there is no inline comment to reply to. Settling the
+# review on the strength of its attributed comments would discard the badged
+# one in silence. The test is the ABSENCE of a stable badge, not a reading of
+# the prose.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:120,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"\n### \ud83d\udca1 Codex Review\n\nP1: the rollback path also loses data.\n\nMore in the inline comments."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> an unbadged concern in a settled review's body survives adjudication"
+# The badge test cannot see this one — an unbadged concern carries no marker —
+# so the settled path also requires a CARRIER-ONLY body. Without that, the
+# concern rides through on the strength of the adjudicated inline comment.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:120,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("\n### \ud83d\udca1 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\nHowever, consider the race in the retry path.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> a heading-first body with no leading blank still settles"
+# Every other adjudication fixture runs the REAL shape through the shared
+# helper: a leading blank line then "### 💡 Codex Review". This pins the other
+# shape, so neither the leading-blank normalisation nor the loose heading match
+# can be tightened into rejecting the plain heading Codex also emits.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:120,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("### Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> an adjudicated finding naming an unfetched review is indeterminate"
+# The inline comment attributes itself to review 120, but no such current-head
+# bot review came back from the reviews endpoint. The two endpoints disagree,
+# which is neither "the finding is open" nor "the finding is settled".
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> an inline finding attributed to no review settles nothing"
+# Without a numeric `pull_request_review_id` the finding cannot be attributed,
+# so it must not be counted toward any review's settlement.
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> a head that moved under the author fetch invalidates the snapshot"
+# The author fetch lands after the evidence snapshot and after the head check
+# that closes it, so its payload's own head.sha is the last chance to notice a
+# push that arrived in between.
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson author "$pr_author_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$author,login:"pr-author"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+# `head` still reports the state head, so only the PR payload disagrees.
+jq -cn --argjson author "$pr_author_id" --arg moved "$(git rev-parse HEAD^)" \
+    '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$moved}}' \
+    >"${fixtures}/pr.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 head-changed
 
 echo "==> current-head review with findings remains non-clean"
 new_cycle
