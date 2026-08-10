@@ -1065,14 +1065,139 @@ expect_ok "update guidance waives classifier prerequisites for a skills-source r
         grep -qF "git ls-files --stage -- \"\$SKILLS_SOURCE_CLASSIFIER\"" "$1" &&
         grep -qF "= \"100755\"" "$1" &&
         grep -qF "SHIPS_CLASSIFIER_NATIVELY\" != \"true\"" "$1" &&
-        test "$(grep -Fc "SHIPS_CLASSIFIER_NATIVELY" "$1")" -eq 6 &&
-        test "$(grep -Fc "waived when this repo ships the classifier natively" "$1")" -eq 3 &&
         grep -qF "waives both the skills-sync and universal-category" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+# Each waiver site is pinned through its own distinctive neighbour instead of a
+# file-wide occurrence count. The counts these replace (`-eq 6` on
+# SHIPS_CLASSIFIER_NATIVELY, `-eq 3` on the diagnostic) broke the moment the
+# detector grew a line, and never said anything about WHERE the waiver applies:
+# all three sites could collapse into one and the totals would still match.
+expect_ok "update guidance waives skills-sync at the pre-review guard site" \
+    sh -c 'grep -A5 -F "$2" "$1" | grep -qF "$3"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" \
+    'USE_SKILLS_SYNC must be true or false' \
+    'requires use_skills_sync (waived when this repo ships the classifier natively'
+expect_ok "update guidance waives skills-sync at the post-review guard site" \
+    sh -c 'grep -A5 -F "$2" "$1" | grep -qF "$3"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" \
+    'reviewed use_skills_sync must be boolean' \
+    'requires use_skills_sync (waived when this repo ships the classifier natively'
+expect_ok "update guidance waives the universal category at its own guard site" \
+    sh -c 'grep -A1 -F "$2" "$1" | grep -qF "$3"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" \
+    'yq -e '"'"'contains(["universal"])'"'"' -' \
+    'requires the universal skill category (waived when this repo ships the classifier natively'
+expect_ok "update guidance keeps the skill_categories carve-out for a native classifier" \
+    sh -c 'grep -B3 -F "$2" "$1" | grep -qF "$3"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" \
+    'required skill_categories question is not active' \
+    '[ "$SHIPS_CLASSIFIER_NATIVELY" != "true" ]'
+# The detector is lifted out of the doc and RUN against throwaway repos below,
+# so its marker pair has to stay unique file-wide: a second copy of either
+# marker would widen the sed range and hand `bash -eu` a truncated program.
+GU_CLASSIFIER_SNIPPET="$TMPROOT/classifier-detector.sh"
+sed -n '/# >>> classifier-detector >>>/,/# <<< classifier-detector <<</p' \
+    "$STANDARDIZE_REFS/mode-update.md" >"$GU_CLASSIFIER_SNIPPET"
+expect_ok "classifier detector carries exactly one extraction marker pair" \
+    sh -c 'test "$(grep -cF "# >>> classifier-detector >>>" "$1")" -eq 1 &&
+        test "$(grep -cF "# <<< classifier-detector <<<" "$1")" -eq 1' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+# Marker drift extracts garbage silently — an empty range, or a range running to
+# the end of the file — and every behavioral case below would then be testing
+# whatever came out. Prove the extraction is a program before trusting it.
+expect_ok "classifier detector extraction is non-empty and parses as bash" \
+    sh -c 'test -s "$1" && bash -n "$1"' sh \
+    "$GU_CLASSIFIER_SNIPPET"
+expect_ok "classifier detector probes the tracked shepherd entry point" \
+    sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
+        grep -qF "git ls-files --error-unmatch" "$1"' sh \
+    "$GU_CLASSIFIER_SNIPPET"
+expect_ok "classifier detector greps the helper for all five interface verbs" \
+    sh -c 'for verb in "reserve --state" "attach --state" "check --state" \
+        "show --state" "reap --root"; do
+        grep -F "$verb" "$1" | grep -qF "grep -qF" || exit 1
+    done' sh \
+    "$GU_CLASSIFIER_SNIPPET"
+
+# Behavioral proof of the detector, one throwaway repo per way a tree can fail
+# to be a skills source. The doc IS the implementation — an operator pastes it
+# into a shell — so only executing it shows the waiver opening and closing where
+# it should. The greps above prove the probes are written; these prove they
+# decide. Staging is enough: every probe reads the index or the worktree, so no
+# fixture needs a commit.
+CLASSIFIER_HELPER_REL="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
+CLASSIFIER_SKILL_REL="ai/skills/universal/shepherd/SKILL.md"
+# $1 repo root, $2 `git add --chmod` flag for the helper, $3 `tracked` to stage
+# SKILL.md, $4 `verbs` to give the helper the five-verb usage block.
+make_classifier_fixture() {
+    local root="$1" chmod_flag="$2" track_skill="$3" verbs="$4"
+    git_init "$root"
+    mkdir -p "$root/ai/skills/universal/shepherd/assets"
+    if [ "$verbs" = verbs ]; then
+        printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            '# Usage:' \
+            '#   check-codex-cloud-review.sh reserve --state FILE --repo O/R --pr N' \
+            '#   check-codex-cloud-review.sh attach --state FILE --trigger-id N' \
+            '#   check-codex-cloud-review.sh check --state FILE --actor-id N' \
+            '#   check-codex-cloud-review.sh show --state FILE' \
+            '#   check-codex-cloud-review.sh reap --root DIR --budget-sec N' \
+            'exit 0' >"$root/$CLASSIFIER_HELPER_REL"
+    else
+        printf '%s\n' '#!/usr/bin/env bash' 'exit 0' \
+            >"$root/$CLASSIFIER_HELPER_REL"
+    fi
+    chmod +x "$root/$CLASSIFIER_HELPER_REL"
+    git -C "$root" add "--chmod=$chmod_flag" -- "$CLASSIFIER_HELPER_REL"
+    printf '%s\n' '# Shepherd' >"$root/$CLASSIFIER_SKILL_REL"
+    if [ "$track_skill" = tracked ]; then
+        git -C "$root" add -- "$CLASSIFIER_SKILL_REL"
+    fi
+}
+# Run the extracted detector with the fixture as cwd and report its verdict.
+classifier_verdict() {
+    (
+        cd "$1" || exit 1
+        bash -eu -c '. "$1"; printf "RESULT=%s\n" "$SHIPS_CLASSIFIER_NATIVELY"' \
+            bash "$GU_CLASSIFIER_SNIPPET"
+    )
+}
+CLS_FULL="$TMPROOT/classifier-full"
+CLS_MODE="$TMPROOT/classifier-nonexec"
+CLS_NOSKILL="$TMPROOT/classifier-untracked-skill"
+CLS_STUB="$TMPROOT/classifier-stub"
+make_classifier_fixture "$CLS_FULL" +x tracked verbs
+make_classifier_fixture "$CLS_MODE" -x tracked verbs
+make_classifier_fixture "$CLS_NOSKILL" +x untracked verbs
+make_classifier_fixture "$CLS_STUB" +x tracked noverbs
+expect_ok_contains "classifier detector accepts a complete skills-source tree" \
+    "RESULT=true" classifier_verdict "$CLS_FULL"
+# The exec bit is read from the index, never the filesystem: this helper is
+# chmod +x on disk and still fails, which is the whole point of the index test.
+expect_ok_contains "classifier detector rejects a helper staged non-executable" \
+    "RESULT=false" classifier_verdict "$CLS_MODE"
+expect_ok_contains "classifier detector rejects an untracked shepherd entry point" \
+    "RESULT=false" classifier_verdict "$CLS_NOSKILL"
+# The stub is the finding issue 336 was filed on: tracked, 100755, right path,
+# and useless. Before the verb probes it waived all three guards.
+expect_ok_contains "classifier detector rejects a tracked executable stub" \
+    "RESULT=false" classifier_verdict "$CLS_STUB"
+# This checkout ships the real thing, so the detector must say so — and this is
+# what keeps the five verb literals honest: they are asserted against the
+# helper's actual usage block, not just against the doc that greps for them.
+expect_ok_contains "classifier detector accepts this repo as a skills source" \
+    "RESULT=true" classifier_verdict "$repo"
 expect_ok "audit G4 waives sync/universal for the native skills-source classifier" \
     sh -c 'grep -qF "unless the repo is the skills source itself" "$1" &&
         grep -qF "git-tracked, non-symlink executable" "$1" &&
         grep -qF "check-codex-cloud-review.sh" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-audit.md"
+# The audit prose has to describe the same three probes the update guard runs,
+# or a repo passes one mode and is reported as drift by the other.
+expect_ok "audit G4 names the entry-point and verb-interface requirements" \
+    sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
+        grep -qF "five-verb interface" "$1" &&
+        grep -qF "reap --root" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "standards catalog waives cloud-review sync/universal for the skills source" \
     sh -c 'grep -qF "except on a skills-source" "$1" &&
@@ -1080,6 +1205,11 @@ expect_ok "standards catalog waives cloud-review sync/universal for the skills s
         grep -qF "as above and in G4" "$1" &&
         grep -qF "git-tracked, non-symlink executable" "$1" &&
         grep -qF "check-codex-cloud-review.sh" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog names the entry-point and verb-interface requirements" \
+    sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
+        grep -qF "five-verb interface" "$1" &&
+        grep -qF "reap --root" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "new-repo and adopt guidance note the skills-source waiver" \
     sh -c 'grep -qF "waived only for a skills-source repo already shipping the shepherd classifier" "$1" &&

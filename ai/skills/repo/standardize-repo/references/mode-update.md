@@ -587,6 +587,7 @@ ORIGINAL_DATA="$GUARDED_STATE/original-data.yml"
 yq 'with_entries(select(.key | test("^_") | not))' \
   "$GUARDED_STATE/original-answers.yml" >"$ORIGINAL_DATA" ||
   { echo "failed to prepare recorded answers for discovery" >&2; exit 1; }
+# >>> classifier-detector >>>
 # use_codex_cloud_review's use_skills_sync / universal-category requirements are
 # a proxy for "the cloud-review classifier is installed": in a consumer repo the
 # shepherd skill and its check-codex-cloud-review.sh reach the repo only via
@@ -603,13 +604,38 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # for a `100644` blob a Linux clone checks out non-runnable. Require the working
 # tree to also hold that regular file (`-f`), so a staged-but-deleted path does
 # not qualify. The requirements stay in force for every other repo.
+#
+# That tracked mode is necessary but nowhere near sufficient on its own: a
+# one-line stub committed `100755` at the right path would pass it and prove
+# nothing about the skill being usable. So "ships the classifier natively" means
+# three things together — the tracked executable, the shepherd skill's entry
+# point (`SKILL.md`) also tracked, since a helper with no skill around it is a
+# stripped tree rather than a shipped skill, and the helper's own source
+# carrying all five verbs of the interface the shepherd stage drives it through
+# (`reserve`, `attach`, `check`, `show`, `reap`). Each added probe sits in the
+# `if` condition, where a non-zero exit selects the else-branch instead of
+# tripping errexit — these are questions about the repo, not failures.
+# All three stay deliberately STATIC. A read-only stage must not render or
+# execute the repo under update, so this proves the interface is PRESENT, never
+# that it behaves correctly at runtime; a tree that passes could still hold a
+# helper that is broken when run. That is the accepted trade — it raises the
+# floor from "some file exists here" to "the skill and its whole verb surface
+# are shipped", and stops there.
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
+SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
 if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
-  [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ]; then
+  [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ] &&
+  git ls-files --error-unmatch -- "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1 &&
+  grep -qF 'reserve --state' "$SKILLS_SOURCE_CLASSIFIER" &&
+  grep -qF 'attach --state' "$SKILLS_SOURCE_CLASSIFIER" &&
+  grep -qF 'check --state' "$SKILLS_SOURCE_CLASSIFIER" &&
+  grep -qF 'show --state' "$SKILLS_SOURCE_CLASSIFIER" &&
+  grep -qF 'reap --root' "$SKILLS_SOURCE_CLASSIFIER"; then
   SHIPS_CLASSIFIER_NATIVELY=true
 else
   SHIPS_CLASSIFIER_NATIVELY=false
 fi
+# <<< classifier-detector <<<
 if test -e "$REVIEWED_DATA"; then
   yq -e \
     'tag == "!!map" and

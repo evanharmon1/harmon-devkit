@@ -694,10 +694,16 @@ install the Renovate GitHub App on the repo. Conventions:
   the mandatory current-head shepherd classifier — except on a skills-source
   repo (harmon-devkit) that already ships that classifier natively as a
   git-tracked, non-symlink executable regular file at
-  `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, which
-  satisfies the requirement directly and so may keep `use_skills_sync=false`
-  (the update guard and G4 audit both waive sync/`universal` for it on exactly
-  that tracked-executable test). Its human setup also disables
+  `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, alongside a
+  tracked `ai/skills/universal/shepherd/SKILL.md` entry point, with that
+  helper's source carrying the full five-verb interface (`reserve --state`,
+  `attach --state`, `check --state`, `show --state`, `reap --root`) — which
+  together satisfy the requirement directly and so may keep
+  `use_skills_sync=false` (the update guard and G4 audit both waive
+  sync/`universal` for it on exactly those three tests, so a `100755` stub, an
+  untracked `SKILL.md`, or a helper missing a verb fails the waiver). All three
+  are static presence checks — they never execute the helper, so they prove the
+  interface is shipped rather than that it works. Its human setup also disables
   Codex Automatic reviews so the explicit draft-time cycle remains authoritative
   when the PR is promoted to ready for review.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
