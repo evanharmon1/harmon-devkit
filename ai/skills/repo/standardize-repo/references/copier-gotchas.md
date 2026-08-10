@@ -278,15 +278,15 @@ content owned by another generator or by the consumer. Read the target
 specially: it encodes who must review, the render writes it from one answer, and
 a repo that widened its owners gets the single-owner version back without a
 word. [`mode-update.md`](./mode-update.md) §1 classifies these
-`recreate-expected` and §4 asserts they exist after the apply.
+`created` (noted `recreated`) and §4 confirms they landed.
 
 **Rule:** adopt deliberately or record the decline — never let an absence stand
 unexamined just because the tooling is quiet about it. `MISSING` is a decision
 you owe an answer to, not a warning you can wait out. The guarded update makes
 that mechanical: [`mode-update.md`](./mode-update.md) §1 classifies every path
 the two renders disagree on (or agree on and the repo lacks) into
-`nonadoption-report.tsv` — `nonadopt-both` is the permanent class, while
-`new-in-target` is one the update *should* create and §4 re-checks — and §5
+`nonadoption-report.tsv` by rehearsing the apply against a scratch copy —
+`nonadopt-both` is the permanent class, `created` is one the apply wrote — and §5
 requires the survivors in the PR body with a disposition per row. In audit mode,
 where there is only one render, treat every whole-render `MISSING` as a
 permanent non-adoption candidate: that render is at the repo's own `_commit`, so

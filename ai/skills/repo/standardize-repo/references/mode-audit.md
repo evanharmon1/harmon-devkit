@@ -540,11 +540,16 @@ path listed there is not preserved-absent: `copier update` renders it fresh
 whenever the repo lacks it, so its `MISSING` is temporary and resolves itself on
 the next update. harmon-init lists `CHANGELOG.md`, `*.code-workspace`,
 `.github/CODEOWNERS`, `.release-please-manifest.json`, and
-`.devcontainer/related-repos.txt`. Audit mode has no second render to classify
-these mechanically the way [`mode-update.md`](./mode-update.md) §1 does, so read
-the list out of the template's `copier.yml` and set those paths aside — with the
+`.devcontainer/related-repos.txt`. Reading that list is a **fallback**, and an
+imperfect one — the pattern semantics are copier's, not git's, and matching them
+by hand is exactly the guesswork that
+[`mode-update.md`](./mode-update.md) §1 stopped doing when it started rehearsing
+the apply against a scratch copy and simply watching which files came back.
+Audit mode has one render and no update to rehearse, so it has no such
+observation available; read the list, set those paths aside, and keep the
 warning attached, because `.github/CODEOWNERS` returning means access-control
-rules returning.
+rules returning. Where it matters, run the guarded update and read its report
+instead of deciding from the pattern list.
 
 **One `MISSING` line is outside that population**, and it says so in its own
 note: `tracked in HEAD but staged for removal`. That path is still in `HEAD` and
