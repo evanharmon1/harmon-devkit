@@ -78,10 +78,11 @@ guarded source and answers file below exist. The ordinary drift command trusts
 the repo's recorded `_commit`; when that value is a tag, running it first would
 reintroduce the mutable-baseline gap this preflight closes.
 
-This renders harmon-init from the repo's own `.copier-answers.yml` and reports
-the following result classes (mapping `.yml`↔`.yaml`):
+This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
+**whole render** against the repo, and reports the following result classes
+(mapping `.yml`↔`.yaml`):
 
-- **`DRIFT`** — a curated file differs from a render at the repo's **own recorded
+- **`DRIFT`** — a file differs from a render at the repo's **own recorded
   `_commit`** (diff-template.sh renders at `_commit`, not the template's HEAD). So
   DRIFT is the repo's **local customization** relative to its own baseline — or,
   less often, a **regression** where a past hand-reconciled update dropped a
@@ -89,12 +90,27 @@ the following result classes (mapping `.yml`↔`.yaml`):
   bootstrap class). It is **not** "an improvement from a newer template version":
   those arrive through the `copier update` three-way merge (§2), never via
   diff-template. Read the diff to tell a deliberate customization from a regression
-  to restore.
+  to restore. Files **outside** the curated
+  [`template-owned-files.txt`](../assets/template-owned-files.txt) set are compared
+  too and tagged `(uncurated — not in template-owned-files.txt)`. They carry
+  exactly the same review-aid meaning; the tag only records that the
+  hand-maintained manifest has not adopted the file, which is a fact about the
+  manifest, not about the finding.
+- **`MODE`** — the executable bit differs. Copier can preserve content while a
+  hand copy silently drops `+x`, leaving a generated script present but
+  unusable, so this is reported independently of content — and independently of
+  the class the file lands in: a `CO-OWNED` or `IGNORED` file that lost `+x` is
+  a broken script rather than expected drift, so it **gates** like any other
+  `MODE` finding. Symlinks are exempt: the bit belongs to the link target.
 - **`MISSING`** — a template file the repo lacks entirely. This scan walks the
   whole render (it does **not** depend on the curated list), so a file the
   template added later, or one a previous hand-reconciled update dropped, can't
   slip through silently. A tracked path deleted only from the working tree is
-  compared from the index; staging that deletion makes it real `MISSING`.
+  compared from the index; staging that deletion makes it real `MISSING` — and
+  that includes a `git rm --cached` whose working-tree copy **survives**
+  (present in `HEAD`, gone from the index). The surviving copy makes the audit
+  look clean while the next commit deletes a template-owned file, so the staged
+  removal is reported instead of the comparison.
   (`.gitkeep` dir-stubs show as benign `ABSENT`.) Some
   `MISSING` findings are **intentional divergences, not gaps** — see the
   known-false-`MISSING` list in [`mode-audit.md`](./mode-audit.md) §3 (drift
@@ -103,6 +119,77 @@ the following result classes (mapping `.yml`↔`.yaml`):
 - **`EQUIV`** — a mature nested Terraform layout or established/renumbered ADR
   log intentionally replaces a generated seed path. This is informational and
   does not fail the comparison.
+- **`CO-OWNED`** — the template *seeds* the file but the repo owns its prose:
+  `AGENTS.md` and its `CLAUDE.md` / `GEMINI.md` /
+  `.github/copilot-instructions.md` symlink aliases, `README.md`, `DESIGN.md`,
+  `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`, `SECURITY.md`, the
+  **`*.md` under** `docs/` and `specs/`, `todo.md`, the `*.code-workspace`,
+  `.meta/`, and the devcontainer `config/zshrc`. Those two tree globs are
+  filtered to Markdown on purpose: a build script or generated config under a
+  docs tree is not prose anybody rewrote, and letting it inherit the exemption
+  for its directory alone is the opposite of safe-by-default — non-prose there
+  gates as ordinary uncurated `DRIFT`.
+  Divergence in the prose is the expected steady state, so the line is
+  **presence-only**: no diff is printed, not even under `--show`, and its
+  *content* never affects the exit status (a `MODE` finding on the same file
+  still does). The useful reading is the inverse one — see §4.
+- **`IGNORED`** — the copy is **untracked, and both the repo *and the template*
+  ignore the path** (a resolved `.envrc`, local editor settings, and friends).
+  Presence-only for the same reason as `CO-OWNED` plus a harder one: a resolved
+  local config can hold real secrets, so its diff is never printed. Its content
+  never affects the exit status. **The template's declaration is what grants
+  this exemption, never the repo's habits** — see below. It is also a
+  **sweep-only** class: a path on
+  [`template-owned-files.txt`](../assets/template-owned-files.txt) always gates,
+  ignore rules or not, because the manifest is itself an assertion of template
+  ownership and ignore-based leniency cannot override it. Withholding still
+  applies to those paths — the manifest says the template owns the path, not
+  that the repo's copy is safe to print.
+
+Ignore rules drive two **independent** axes, because "does this gate?" and "is
+this safe to print?" are different questions:
+
+- **Classification** follows repo *state*, then the *template's* declaration.
+  Only an **uncurated** untracked file that **both** sides ignore is the
+  informational `IGNORED` class; a curated path is never a candidate, per the
+  sweep-only note above. A **tracked** one gates as ordinary `DRIFT`, ignore
+  rules or not, because tracked content is template-relevant. And a path the repo ignores
+  while the template **tracks** it gates too, tagged `(repo-ignored, but the
+  template tracks this file — other clones will not have it)`: adding
+  `.vscode/` to your own `.gitignore` says nothing about the artifact, and every
+  other clone still renders it, so silencing it there hid real drift behind a
+  local habit.
+- **Withholding** follows the *path* alone, under the **union** of both rule
+  sets, and applies to **every** diff the script prints — curated and swept
+  alike, and not even a finding that gates is exempt. Being on the
+  hand-maintained manifest says the template owns the path, not that the repo's
+  copy is safe to echo: the manifest lists `.claude/settings.json`, exactly the
+  shape whose local copy holds credentials. A repo can also `git add -f` a
+  resolved config (tracking it makes that file reviewable, not publishable), or
+  simply *fail* to ignore what the template declares local — the same secret in
+  a less careful repo. You get `(diff withheld — path matches an ignore pattern;
+  review manually)` under the `DRIFT` line and review it locally.
+
+**Classification** needs the audited directory to be a repository root of its
+**own**. A plain directory nested inside another repo's work tree gets no
+`IGNORED` class: inheriting a stranger's ignore rules would silently downgrade
+real drift, so everything there falls through to gating `DRIFT`. The render half
+of **withholding** still applies there — it needs no work tree, and a
+template-declared-local body is no safer to print for having landed in a
+directory that is not a repo.
+
+Symlinks are compared by **link target**, not content. The template ships
+`CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md` as links to
+`AGENTS.md`, so content-diffing them would report one `AGENTS.md` divergence
+four times over. A path that is a symlink on one side and a regular file on the
+other — or a link pointing somewhere else — is a **structural** divergence and
+always gates, `CO-OWNED` or not: a flattened alias means the repo now carries
+two independent copies of the agent instructions that will silently
+desynchronize, and the finding is one line of metadata rather than a diff worth
+withholding. This holds for **curated** entries too. A plain `diff -q` follows a
+symlink, so a manifest-listed regular file swapped for a link to a
+byte-identical referent used to read as clean while the sweep gated the same
+shape; both paths now share one comparison routine.
 
 ### Preview the release and review new answers
 
@@ -1392,18 +1479,33 @@ name and confirm your customization survived. Cross-check the §1 `diff-template
 worklist — any file that was `DRIFT` *before* the update but is now byte-identical to
 the template was silently reverted; restore the customization.
 
-**AGENTS.md is co-owned — always 3-way-merge it by hand; the safety net above does
-NOT cover it.** `AGENTS.md` is deliberately **not** in
-[`template-owned-files.txt`](../assets/template-owned-files.txt), so `diff-template.sh`
-never checks it and the silent-revert cross-check cannot catch an AGENTS.md clobber —
-yet it is usually the most heavily customized file in the repo (project overview,
-architecture, real commands, project-specific conventions). Treat every update as a
+**AGENTS.md is co-owned — always 3-way-merge it by hand; the safety net above covers
+only its PRESENCE.** `AGENTS.md` is deliberately **not** in
+[`template-owned-files.txt`](../assets/template-owned-files.txt), yet it is usually the
+most heavily customized file in the repo (project overview, architecture, real
+commands, project-specific conventions). `diff-template.sh` does compare it — as a
+`CO-OWNED` line, deliberately **presence-only**: it tells you the repo's copy still
+differs from the template's, never *how*, and it never fails the run. That is enough
+for the clobber check and nothing like enough for the merge. Treat every update as a
 genuine three-way merge on AGENTS.md, section by section: **keep the repo's
 substantive customizations**, but **do adopt the template's real improvements** —
 some template sections legitimately supersede the repo's (e.g. a corrected
 Conventional-Commits type enum, a reworded workflow rule). It is a judgment call, not
 a wholesale `--ours`/`--theirs`. Diff the merged result against the pre-update file
 (`git show HEAD:AGENTS.md`) and confirm both sides survived where each should.
+
+**A `CO-OWNED` line that DISAPPEARS is the clobber signal.** Read this class
+inversely to `DRIFT`: for a co-owned file, *differing from the template is the
+healthy state*, so the alarming transition is the line vanishing between the §1
+run and the post-update re-run. Gone means the repo's copy is now byte-identical
+to the template's — the customizations were overwritten wholesale. Note the §1
+`CO-OWNED` paths before you update and confirm every one of them is still listed
+afterwards; a missing entry gets the same treatment as the silent-revert
+cross-check above, restored from `git show HEAD:<path>`. The same reading applies
+to the aliases: `CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md`
+are symlinks compared by link target, so they stay silent while they remain
+links — a `DRIFT … (symlink mismatch …)` on one of them means an update flattened
+it into a second, independently drifting copy of the instructions.
 
 **Heavily-forked files: take `--ours` and re-apply the new bits.** When a file is
 *heavily* customized (a forked `Taskfile.yml`, a bespoke `status.sh`), copier's
@@ -1622,6 +1724,13 @@ Re-run `diff-template.sh`: every remaining `DRIFT` should be an intentional loca
 customization you can explain, not a missed update. In particular, a `DRIFT` on a
 file the repo *renamed* (e.g. `.yaml`) may be an update copier skipped, not a
 customization — confirm against the §2 renamed-files note before dismissing it.
+**`(uncurated …)` findings get the identical treatment**: the tag is a statement
+about the hand-maintained manifest, not a lower severity, so each one is still
+either an explainable customization or a missed update, and the ones nobody has
+ever looked at are exactly where a silently dropped template improvement hides.
+`CO-OWNED` and `IGNORED` lines need no such adjudication — they are expected to
+differ — but do check them for *absences*: a `CO-OWNED` path that stopped being
+listed was clobbered (see the AGENTS.md note in §2 above).
 
 **Check the git hooks aren't shadowed or stale, too.** Even in an already-templated
 repo two non-lefthook hook managers can lurk: a **pre-commit.com** stub in
