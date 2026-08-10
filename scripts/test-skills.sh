@@ -1103,6 +1103,9 @@ expect_ok "shepherd promotes only the unchanged ready head" \
     sh -c 'grep -qF "gh pr ready <n>" "$1" &&
         grep -qF "changed head invalidates the gate" "$1" &&
         grep -qF "must not be called again" "$1"' sh "$SHEPHERD_SKILL"
+expect_ok "shepherd fails closed on a pre-promotion head mismatch" \
+    sh -c 'grep -qF "the first mismatch. Step 5" "$1" &&
+        grep -qF "Never wait out a pre-promotion" "$1"' sh "$SHEPHERD_SKILL"
 expect_ok "shepherd reconciles partial or raced promotion" \
     sh -c 'grep -qF "response can be lost" "$1" &&
         grep -qF "gh pr ready --undo <n> --repo" "$1" &&

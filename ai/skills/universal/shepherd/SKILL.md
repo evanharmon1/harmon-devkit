@@ -96,15 +96,20 @@ and compare against the local branch and HEAD. Requirements, all hard:
   the only vector: `git commit` and `git push` fire repo-configured hooks
   (here, lefthook delegates them to the checked-out Taskfile), so *any*
   local mutation of the checkout can execute contributor code — and
-  bypassing hooks is forbidden anyway. On an untrusted fork, do inspection
-  and gating only inside a sandbox/container **with no credentials in it**,
-  and never perform an authenticated push from the fork checkout at all —
-  even sandboxed, the contributor's pre-push hook runs during the push and
-  can reuse whatever SSH agent, credential helper, or token the push
-  needed. Deliver the fix as a patch/branch from a trusted checkout for
-  the maintainer to apply instead. If no isolation is available, don't
-  work on the fork checkout at all: stop, report what the remote CI shows,
-  and hand the fix decision to the maintainer.
+  bypassing hooks is forbidden anyway. "Trusted checkout" is about
+  credentials, not content: a branch based on the untrusted head carries the
+  contributor's Taskfile and lefthook config, so committing or pushing it
+  runs their code wherever it happens. Everything you do locally with that
+  content — inspection, gating, committing a candidate fix — therefore
+  happens inside a sandbox/container **with no credentials in it**, and you
+  never perform an authenticated push of it at all: even sandboxed, the
+  contributor's pre-push hook runs during the push and can reuse whatever
+  SSH agent, credential helper, or token the push needed. Deliver the fix as
+  a plain patch with your verification evidence and hand the decision to the
+  maintainer — how they land it in their own environment is theirs, not this
+  skill's to prescribe. If no isolation is available, don't work on the fork
+  checkout at all: stop, report what the remote CI shows, and hand the fix
+  decision to the maintainer.
 
 Once the PR is confirmed `OPEN` and the checkout matches, move the claimed
 issue's card to `Verifying` while checks run — see
@@ -344,7 +349,15 @@ issue may be moved at all.
   to the **exact current head**. Use
   `assets/check-codex-cloud-review.sh`; it is deliberately read-only toward
   GitHub and classifies all paginated evidence from the immutable Codex bot
-  actor ID `199175422`. A clean result is exactly one of:
+  actor ID `199175422`. **Run it; never hand-roll the evidence collection or
+  its classification** — `check` reads all four surfaces (trigger reactions,
+  top-level comments, reviews, inline comments), and a substitute that drops
+  one false-negatives: a poller watching only reviews and reactions missed a
+  clean terminal verdict that arrived as a top-level `Reviewed commit:`
+  comment, and reported an already-green attempt "incomplete"
+  (`harmon-devkit#334`). `check` is one-shot and implements no loop of its own;
+  while it reports pending, re-run it within the bounded window below rather
+  than standing up a poller of your own. A clean result is exactly one of:
 
   - an authenticated review for the full current commit;
   - an authenticated top-level result whose `Reviewed commit` value is an
@@ -703,6 +716,16 @@ is optional in addition, never a substitute for per-thread replies.
     A push that "succeeded" against some other destination leaves the head
     unmoved, and replying first would claim a fix the PR never received.
 
+    A stale read is a different failure from a misdelivered push, and one
+    sample cannot tell them apart. When git itself reported the update
+    (`1bc2844..77f79b3`), a `headRefOid` still showing the old SHA is
+    eventual-consistency lag on GitHub's read path — observed exactly that way,
+    with a re-read seconds later returning the new SHA. So re-poll on a bounded
+    settle window, roughly 30–60s, before concluding the head is unmoved. Only
+    a head still unmoved when that window expires is the wrong-destination case
+    above and feeds reconciliation; treating the first racing read as
+    authoritative opens a reconciliation for a push that landed.
+
     **Re-read each thread as you post its reply**, because the gate and push
     put minutes between composing the reply and sending it: an edit or
     follow-up that landed in that window is real activity your reply does not
@@ -781,13 +804,28 @@ loops indefinitely:
    decline reasoning belongs in the ticked entry itself (and, when it
    deserves more than one line, a PR comment it points to). `UNKNOWN` means
    GitHub is still computing mergeability — re-poll briefly rather than
-   classifying it.
+   classifying it. `BLOCKED` is not a blocker: on a repo whose ruleset
+   requires review, it is the *expected* pre-promotion state, because the
+   review it waits on is exactly what `gh pr ready` requests — and
+   `reviewDecision: REVIEW_REQUIRED` is expected for the same reason. Both are
+   promotable; only `CHANGES_REQUESTED` gates. **Never encode this as "must be
+   `CLEAN`"**: that reading deadlocks precisely on the repos that comply, as on
+   `evanharmon1/harmon-init#714`, where a fully green, fully adjudicated draft
+   read `BLOCKED` by construction and a must-be-`CLEAN` gate refused to promote
+   it.
 
    Before promotion, fetch `state,isDraft,headRefOid,reviewDecision,
    mergeStateStatus,statusCheckRollup` again and repeat every readiness check
    against that one snapshot. The `headRefOid` must equal the head whose CI,
    Codex result, comments, and deferred findings were just adjudicated. A
-   changed head invalidates the gate and returns to step 2.
+   changed head invalidates the gate and returns to step 2 — immediately, on
+   the first mismatch. Step 5's settle window does **not** generalize here:
+   there you had just pushed and the remote confirmed it, so a stale read
+   contradicted a known local fact. Here nothing of yours moved, and a
+   mismatch is as easily a *fresh* replica showing someone else's newer push —
+   re-polling until it returns the SHA you adjudicated would discard that
+   evidence and promote an unverified head. Never wait out a pre-promotion
+   mismatch hoping it converges back.
 
    Freeze a stable content fingerprint from fresh, paginated reads of the PR
    body, reviews, top-level comments, inline comments (including replies), and
