@@ -50,6 +50,13 @@ node_modules/
 
 # Git worktrees
 .worktrees/
+# Agent-tool worktree isolation dir. A registered worktree is recorded as a
+# gitlink with no `.gitmodules` entry, so leaving it untracked-but-unignored
+# dirties `git status` and lets any tool that stages with `git add -A` commit a
+# submodule-shaped entry that later clones cannot resolve. Anchored by its
+# embedded slash (git anchors any pattern containing a non-trailing `/`), so it
+# matches only the repository-root `.claude/`.
+.claude/worktrees/
 
 # Design handoff bundles (Claude Design exports) live as specs/ subdirectories
 # while being implemented and are deleted at sign-off — never committed.

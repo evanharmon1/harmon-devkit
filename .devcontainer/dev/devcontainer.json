@@ -30,11 +30,17 @@
   // Alternative-model provider keys (KIMI/DEEPSEEK/ZAI) are opt-in via
   // use_alternative_claude_providers; when on they land in this env-file so the
   // claude-kimi/deepseek/glm wrappers (and the op fallback) work here.
-  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/dev/devcontainer.env TS_AUTHKEY CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY",
+  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/dev/devcontainer.env TS_AUTHKEY CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY QWEN_API_KEY",
   "runArgs": [
     "--init",
     "--shm-size=2g",
     "--device=/dev/net/tun",
+    // Linux hosts don't resolve host.docker.internal by default (unlike Docker
+    // Desktop on mac/win/WSL2); this mapping makes it resolve everywhere,
+    // which claude-qwen-local() (.devcontainer/config/claude-providers.sh)
+    // relies on to reach an Ollama/LM Studio endpoint on the host. Supported
+    // since Docker 20.10, harmless where the platform already resolves it.
+    "--add-host=host.docker.internal:host-gateway",
     "--env-file",
     ".devcontainer/dev/devcontainer.env"
   ],
@@ -58,12 +64,6 @@
     "source=shell-history-evanharmon1-harmon-devkit-dev,target=/home/vscode/.shell-history,type=volume",
     "source=zoxide-data-evanharmon1-harmon-devkit-dev,target=/home/vscode/.local/share/zoxide,type=volume"
   ],
-  // CLAUDE_CODE_EFFORT_LEVEL: default Claude Code thinking effort. Set here
-  // (not in settings.json) because Claude Code's settings schema only accepts
-  // low|medium|high for the persisted effortLevel field, while the env var
-  // accepts low|medium|high|max. Resolution order at runtime: env var >
-  // settings.json effortLevel > model default.
-  //
   // GITHUB_TOKEN and the enterprise aliases are blanked because dropping
   // GH_TOKEN alone does not finish the job: gh's precedence is GH_TOKEN >
   // GITHUB_TOKEN > GH_ENTERPRISE_TOKEN > GITHUB_ENTERPRISE_TOKEN > the stored
@@ -91,7 +91,6 @@
   "containerEnv": {
     "CODER": "${localEnv:CODER}",
     "DEVCONTAINER_TAILSCALE": "true",
-    "CLAUDE_CODE_EFFORT_LEVEL": "max",
     "GITHUB_TOKEN": "",
     "GH_ENTERPRISE_TOKEN": "",
     "GITHUB_ENTERPRISE_TOKEN": ""

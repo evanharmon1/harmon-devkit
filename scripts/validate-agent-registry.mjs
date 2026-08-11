@@ -354,16 +354,39 @@ if (errors.length === 0) {
       } else if (!familySlugs.has(constraint.family)) {
         semanticError(`harness ${harness.slug} references unknown family ${constraint.family}`)
       }
-    } else if (Object.hasOwn(constraint, 'family')) {
-      semanticError(
-        `harness ${harness.slug} has family ${constraint.family} with a none constraint`
-      )
+      if (Object.hasOwn(constraint, 'default_family')) {
+        semanticError(
+          `harness ${harness.slug} has a default_family on a fixed constraint — fixed constraints use family, not default_family`
+        )
+      }
+    } else if (constraint.kind === 'broker') {
+      if (Object.hasOwn(constraint, 'family')) {
+        semanticError(
+          `harness ${harness.slug} has family ${constraint.family} on a broker constraint — did you mean default_family?`
+        )
+      }
+      if (
+        Object.hasOwn(constraint, 'default_family') &&
+        !familySlugs.has(constraint.default_family)
+      ) {
+        semanticError(
+          `harness ${harness.slug} broker default_family references unknown family ${constraint.default_family}`
+        )
+      }
     }
 
+    // Provider-rewired harnesses are named claude-code-<fixed-family>, optionally
+    // with a -local suffix for a local-endpoint variant of the same family (ADR
+    // 0005 D9 amendment) — claude-code-qwen-local stays fixed to family "qwen",
+    // not a separate "qwen-local" family.
     if (harness.provider_rewired) {
-      if (constraint.kind !== 'fixed' || harness.slug !== `claude-code-${constraint.family}`) {
+      const expected = constraint.kind === 'fixed' ? `claude-code-${constraint.family}` : null
+      if (
+        constraint.kind !== 'fixed' ||
+        (harness.slug !== expected && harness.slug !== `${expected}-local`)
+      ) {
         semanticError(
-          `provider-rewired harness ${harness.slug} must be named claude-code-<fixed-family>`
+          `provider-rewired harness ${harness.slug} must be named claude-code-<fixed-family> or claude-code-<fixed-family>-local`
         )
       }
       if (harness.model_resolution.owner !== 'provider-wrapper') {

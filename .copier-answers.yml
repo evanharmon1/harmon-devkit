@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier
-_commit: 420698b0122393c5579f700b8c7b1bd2d2a86c67
+_commit: d03c76f5cbf63982b5941b68a73561e2a84fbc92
 _src_path: https://github.com/evanharmon1/harmon-init
 bunch_add: false
 ci_runner: ubuntu-latest

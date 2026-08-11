@@ -22,6 +22,24 @@ default so a human stays in the loop. The shared managed settings
 at create time via `scripts/enable-claude-bypass.sh`. `bypassPermissions` is only
 safe because it is container-scoped — it is never set on the host.
 
+**Codex follows the same split.** Both profiles default to `gpt-5.6-sol` with
+medium reasoning and a 64 KiB project-instruction budget. The **dev** profile
+uses `workspace-write`, `on-request`, and Auto-review: the sandbox defines the
+writable boundary, while eligible exits from it are reviewed automatically.
+The **bot** changes the managed config to `danger-full-access` plus `never`, so
+there is no nested sandbox or interactive prompt inside Docker. Repository
+instructions, hooks, GitHub token scope, mounted volumes, and Docker itself
+remain the bot's boundaries.
+
+**Codex follows the same split.** Both profiles default to `gpt-5.6-sol` with
+medium reasoning and a 64 KiB project-instruction budget. The **dev** profile
+uses `workspace-write`, `on-request`, and Auto-review: the sandbox defines the
+writable boundary, while eligible exits from it are reviewed automatically.
+The **bot** changes the managed config to `danger-full-access` plus `never`, so
+there is no nested sandbox or interactive prompt inside Docker. Repository
+instructions, hooks, GitHub token scope, mounted volumes, and Docker itself
+remain the bot's boundaries.
+
 **Antigravity autonomy is enabled for the bot profile.** It applies
 `always-proceed`, always accepts artifact reviews, allows non-workspace access,
 disables Antigravity's inner terminal sandbox, and trusts the current container
@@ -157,6 +175,17 @@ not once per rebuild. It is deliberately **not** automated: the key is a
 billing authorization, and a hook baked into a shared image would grant it for
 whichever account happened to sign in — including in repos templated from here.
 Running the command yourself is the consent.
+## Codex CLI settings in the container
+
+Codex policy is baked at `/etc/codex/managed_config.toml` from
+`config/codex-managed-config.toml`; its shared hook adapters are installed under
+`/etc/codex/hooks/`. The config pins Sol/medium, loads the standard project
+skills from `.agents/skills`, and renders a compact built-in footer with project,
+branch, model/effort, context, quota, token, and run-state fields. Unlike
+Claude's renderer, Codex's supported status line is a single ordered list rather
+than an external multi-line command. System-managed Codex hooks are limited to
+image-owned policy scripts; checkout-controlled status and formatter tasks stay
+behind Claude/project trust instead of executing automatically at Codex startup.
 
 ## Terminal type and Ghostty terminfo
 
@@ -322,6 +351,7 @@ Variables per profile:
 | `CLAUDE_CODE_OAUTH_TOKEN` | ✅ | ✅ | Claude Code |
 | `AGENT_DECK_TELEGRAM_KEY` | ✅ | ✅ | agent-deck bridge (optional) |
 | `TS_AUTHKEY` | — | ✅ | Tailscale (dev only) |
+| `KIMI_API_KEY` / `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `ZAI_API_KEY`, `QWEN_API_KEY` | ✅ | ✅ | alt-model wrappers (opt-in: `use_alternative_claude_providers`) |
 
 `ANTHROPIC_API_KEY` is deliberately **forbidden** — it silently overrides
 `CLAUDE_CODE_OAUTH_TOKEN`, so `init-env.sh` strips it from the env-file.
@@ -388,6 +418,59 @@ the app is the fix. Where an org genuinely cannot, the fallback is
 fine-grained one. A fine-grained PAT has exactly one resource owner, so using one
 here would reintroduce the single-org ceiling this arrangement exists to remove.
 
+### Alternative model providers (`claude-kimi` / `claude-deepseek` / `claude-glm` / `claude-qwen` / `claude-qwen-local`)
+
+Opt in with the `use_alternative_claude_providers` Copier answer (default off;
+asked only when `devcontainer=true`) to ship the `claude-kimi`, `claude-deepseek`,
+`claude-glm`, `claude-qwen`, and `claude-qwen-local` shell functions. The hosted
+four mirror the equivalent host wrappers: each launches `claude` in a subshell
+with `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` pointed at a provider's
+native Anthropic-compatible endpoint under a vendor-documented path prefix
+(Moonshot Kimi K3, DeepSeek V4, Z.AI GLM-5.2, Alibaba DashScope Qwen3.7-Max /
+Qwen3-Coder-Plus — no proxy), plus the per-tier `ANTHROPIC_*_MODEL` vars
+(`claude-qwen` uses Qwen3.7-Max for the main/reasoning roles and
+Qwen3-Coder-Plus for coding/subagent roles). The functions live in
+`.devcontainer/config/claude-providers.sh` and are sourced from `shell-aliases.sh`.
+
+`claude-qwen-local` is different: it targets your **own** Ollama/LM Studio
+endpoint serving `qwen3-coder:30b`, so it needs no API key and no
+1Password entry — `ANTHROPIC_AUTH_TOKEN` is a meaningless placeholder value.
+Its default `ANTHROPIC_BASE_URL` has **no** path suffix (`http://<host>:11434`,
+not `.../anthropic`) — unlike the hosted providers, Ollama and LM Studio serve
+their Anthropic-compatible API from the server root, and the client already
+appends the API path itself. The default host is chosen at launch: it probes
+`host.docker.internal` (which both shipped devcontainer profiles map to the
+host gateway via `runArgs`, so it resolves even on native Linux) and falls
+back to `localhost` when that name doesn't resolve — set `QWEN_LOCAL_BASE_URL`
+to override either guess. **On native Linux, the DNS mapping alone is not
+enough**: stock Ollama binds `127.0.0.1:11434` (loopback-only), so it refuses
+the container's connection regardless. Do **not** bind `0.0.0.0` — Ollama has
+no auth, so that exposes it to the whole LAN. Instead set
+`OLLAMA_HOST=<docker0-bridge-IP>` (`ip addr show docker0`, typically
+`172.17.0.1`) to scope it to the Docker bridge, firewall port `11434` to that
+bridge if it must stay on `0.0.0.0` for other reasons, or point
+`QWEN_LOCAL_BASE_URL` at an endpoint that's already reachable.
+
+The provider API keys flow through the same env-file pipeline as everything else
+(`init-env.sh` allow-list → `devcontainer.env` → `--env-file`), so add them to your
+1Password Environments mount. **Both profiles** receive the keys when opted in. The
+bot runs `bypassPermissions`, so be aware a headless agent in the bot can read them —
+this is a deliberate extension of the bot's posture, not an oversight. The wrappers
+themselves are interactive (you type `claude-glm`); a default `agent-deck`/foreman
+launch still invokes plain `claude`.
+
+Two container-specific details differ from the host wrappers:
+
+- Each wrapper `unset`s `CLAUDE_CODE_OAUTH_TOKEN` in its launch subshell (in addition
+  to `ANTHROPIC_API_KEY`). The container sets the OAuth token via its env-file; left
+  set, it would compete with the provider's `ANTHROPIC_AUTH_TOKEN`. Unsetting it
+  guarantees the provider auth wins for that launch only.
+- The `op run` key fallback (used when the env var is absent) re-sources the
+  image-baked `/usr/local/share/devcontainer-config/claude-providers.sh`, not
+  whatever host file defines the equivalent functions. It works only in the dev
+  profile (the bot has no
+  1Password CLI); in the bot the env-file is the only key source.
+
 ### What `init-env.sh` does
 
 On container init the devcontainer runs `.devcontainer/scripts/init-env.sh` on
@@ -445,7 +528,9 @@ repo** (one template serves every repo). To stand this repo up in Coder:
    - secrets → `CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_DECK_TELEGRAM_KEY`, and
      `GH_TOKEN` **for a bot workspace only** — a dev workspace runs
      `gh auth login` instead
-     (+ `TS_AUTHKEY` if you want Tailscale). Coder passes these
+     (+ `TS_AUTHKEY` if you want Tailscale); `KIMI_API_KEY`/`MOONSHOT_API_KEY`,
+     `DEEPSEEK_API_KEY`, `ZAI_API_KEY`, `QWEN_API_KEY` for the alt-model wrappers
+     (`claude-qwen-local` needs no key — see below). Coder passes these
      into the workspace's host environment, where `init-env.sh` picks them up.
 
    Coder is the case where this matters most: there is no 1Password app in the

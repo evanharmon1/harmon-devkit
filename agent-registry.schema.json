@@ -7,7 +7,7 @@
   "required": ["$schema", "schema_version", "labels", "families", "harnesses", "foreman_adapters"],
   "properties": {
     "$schema": { "const": "./agent-registry.schema.json" },
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "labels": {
       "type": "object",
       "additionalProperties": false,
@@ -82,8 +82,9 @@
       "additionalProperties": false,
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["fixed", "none"] },
-        "family": { "$ref": "#/$defs/slug" }
+        "kind": { "enum": ["fixed", "broker"] },
+        "family": { "$ref": "#/$defs/slug" },
+        "default_family": { "$ref": "#/$defs/slug" }
       }
     },
     "modelResolution": {

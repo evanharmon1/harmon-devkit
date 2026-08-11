@@ -23,10 +23,16 @@
   // Alternative-model provider keys (KIMI/DEEPSEEK/ZAI) are opt-in via
   // use_alternative_claude_providers; when on they land in this env-file too,
   // so a headless/bypass bot can read them — a deliberate posture extension.
-  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/devcontainer.env GH_TOKEN FOREMAN_AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY",
+  "initializeCommand": "bash .devcontainer/scripts/init-env.sh .devcontainer/devcontainer.env GH_TOKEN FOREMAN_AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY QWEN_API_KEY",
   "runArgs": [
     "--init",
     "--shm-size=2g",
+    // Linux hosts don't resolve host.docker.internal by default (unlike Docker
+    // Desktop on mac/win/WSL2); this mapping makes it resolve everywhere,
+    // which claude-qwen-local() (.devcontainer/config/claude-providers.sh)
+    // relies on to reach an Ollama/LM Studio endpoint on the host. Supported
+    // since Docker 20.10, harmless where the platform already resolves it.
+    "--add-host=host.docker.internal:host-gateway",
     "--env-file",
     ".devcontainer/devcontainer.env"
   ],
@@ -57,17 +63,10 @@
   // when the host shell doesn't export them, which overrides the env-file
   // values (Docker --env takes precedence over --env-file).
   //
-  // CLAUDE_CODE_EFFORT_LEVEL: default Claude Code thinking effort. Set here
-  // (not in settings.json) because Claude Code's settings schema only accepts
-  // low|medium|high for the persisted effortLevel field, while the env var
-  // accepts low|medium|high|max. Resolution order at runtime: env var >
-  // settings.json effortLevel > model default.
-  //
   // FOREMAN_DEVCONTAINER: foreman's D2 startup tripwire — it refuses to run
   // anywhere this marker is not "bot" (only the bot profile sets it).
   "containerEnv": {
     "CODER": "${localEnv:CODER}",
-    "CLAUDE_CODE_EFFORT_LEVEL": "max",
     "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
     "FOREMAN_DEVCONTAINER": "bot"
   },

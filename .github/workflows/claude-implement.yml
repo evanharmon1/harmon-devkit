@@ -3,6 +3,10 @@ run-name: ${{ github.actor }} is running Claude Implement
 # Requires: CLAUDE_CODE_OAUTH_TOKEN secret, plus the CI GitHub App
 # (CI_APP_CLIENT_ID variable + CI_APP_PRIVATE_KEY secret). See docs/CHECKLIST.md
 # and docs/architecture/security.md.
+# Mention-only: an explicit `@claude implement` comment or review from an
+# authorized sender is the ONLY way this workflow starts work. There is no
+# label trigger and no `issues: [opened, assigned]` trigger — a label or an
+# assignment carries no actor the sender allowlist can check on every path.
 on:
   issue_comment:
     types: [created]
@@ -10,8 +14,6 @@ on:
     types: [created]
   pull_request_review:
     types: [submitted]
-  issues:
-    types: [opened, assigned, labeled]
 jobs:
   implement:
     # Authorized senders — an explicit allowlist (claude_authorized_members),
@@ -20,14 +22,28 @@ jobs:
     if: >-
       (github.event.sender.login == 'evanharmon1') &&
       (contains(github.event.comment.body, '@claude implement') ||
-       contains(github.event.review.body, '@claude implement') ||
-       contains(github.event.issue.body, '@claude implement') ||
-       (github.event.action == 'labeled' &&
-        github.event.label.name == 'claude-implement'))
+       contains(github.event.review.body, '@claude implement'))
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    timeout-minutes: 180
+    timeout-minutes: 200
+    # Serialize every claim-bearing run on one target. Acquiring a claim is a
+    # read-then-add, so two runs that read "unclaimed" in the same instant
+    # would both proceed; this group makes the second wait for the first.
+    # JOB-level, not workflow-level: these workflows fire on EVERY
+    # issue_comment/review event and filter in the job `if:`, so at workflow
+    # level each skipped run of an ordinary comment would enter the group and
+    # displace a legitimately queued one. A job-level group is only claimed
+    # once the mention gate has passed. The name is deliberately IDENTICAL in
+    # all three claude-* workflows — concurrency groups are repo-scoped, so a
+    # plan run and an implement run on the same target serialize too, which is
+    # correct: they share one claim:claude label. cancel-in-progress: false
+    # never kills a running job. Known residual: GitHub keeps only the newest
+    # PENDING run per group, so a third rapid mention visibly cancels the
+    # second's queued run.
+    concurrency:
+      group: claude-claim-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
     permissions:
       contents: write
       issues: write
@@ -48,6 +64,96 @@ jobs:
           esac
           echo "::error::$SENDER is not an authorized sender"
           exit 1
+      # Claim lifecycle: the run owns the issue or PR while it works, so a
+      # human or another agent can see the work is taken. Written with
+      # GITHUB_TOKEN under the job permissions above — it stays valid for the
+      # whole job (an App token expires in an hour, well inside this timeout)
+      # and its writes never trigger another workflow run.
+      #
+      # The label is CREATED when the repo lacks it: the add-label endpoint
+      # does not create one, and a default rendered repo has no
+      # `setup:github-labels` task (that task is gated on project_management /
+      # foreman), so claim:claude is a tool-owned, auto-created label in the
+      # D10 taxonomy sense. Color and description are the registry's verbatim
+      # (`agent-registry.json` → `claim:claude`), so a later provisioning run
+      # reconciles the label instead of fighting this one.
+      #
+      # Four branches, and Claude runs on a target it marked or not at all:
+      #   free, and the label lands → run;
+      #   no target                 → run unclaimed;
+      #   held / unreadable / the label would not land
+      #                             → refuse loudly (::error:: + exit 1).
+      # The refusals happen HERE, before the App token is minted and long
+      # before the model step, so a refused run costs nothing and writes
+      # nothing.
+      #
+      # A held target is a blocker, not a note. The claim contract stops on
+      # another agent's live claim, and D3 says each run acquires the claim —
+      # so logging a notice and proceeding would put a second worker on the
+      # issue with no marker saying so, which is the failure both rules exist
+      # to prevent. The test is a `claim:`/`agent:` PREFIX, not the exact
+      # `claim:claude` string: an exact match would miss the model-pinned
+      # `claim:claude:opus` form, another family's `claim:gpt`, and the
+      # `agent:*` labels generated repos still carry through the rolling
+      # transition. `suggest:*` is deliberately NOT matched — it is advice
+      # about who should do the work, never ownership of it. The read asks for
+      # 100-label pages and paginates, so a marker on any page cannot read as
+      # "unclaimed" however many labels the target carries.
+      #
+      # An unreadable label list refuses for the same reason: we cannot prove
+      # the target is free, and claiming blind or running unmarked are both
+      # worse than making the operator re-post the mention. A label that will
+      # not apply refuses on the far side of the same rule — the target is
+      # free, but the run would be working it with nothing saying so. An event
+      # with no issue or PR number is the one benign case: there is nothing to
+      # claim on it and nothing to collide with.
+      #
+      # The job-level concurrency group above closes the read-then-add window
+      # between two mention runs on the same target — they serialize, so the
+      # second reads the first's claim rather than racing it. Claims are still
+      # signals rather than locks: an interactive session claiming mid-run is
+      # serialized by nothing here, and that residual is accepted. Releasing
+      # is fail-loud too; see the cleanup step.
+      - name: Claim the target with claim:claude
+        id: claim
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TARGET: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          acquired=false
+          if [ -z "$TARGET" ]; then
+            echo "acquired=$acquired" >>"$GITHUB_OUTPUT"
+            echo "No issue or pull request number; nothing to claim, running unclaimed"
+            exit 0
+          fi
+          if ! existing=$(gh api --paginate "repos/$GH_REPO/issues/$TARGET/labels?per_page=100" --jq '.[].name'); then
+            echo "acquired=$acquired" >>"$GITHUB_OUTPUT"
+            echo "::error::could not read the labels on #$TARGET, so this run cannot prove" \
+              "the target is unclaimed. Refusing to start; re-post the mention once the API" \
+              "is reachable."
+            exit 1
+          fi
+          held=$(printf '%s\n' "$existing" | grep -E '^(claim|agent):' | tr '\n' ' ' || true)
+          held="${held% }"
+          if [ -n "$held" ]; then
+            echo "acquired=$acquired" >>"$GITHUB_OUTPUT"
+            echo "::error::#$TARGET is already claimed (${held})." \
+              "Refusing to start a second run on it. If that claim is stale, or you intend" \
+              "parallel work, remove the claim label and re-post the @claude mention."
+            exit 1
+          fi
+          gh api "repos/$GH_REPO/labels" -f name='claim:claude' -f color='006B75' \
+            -f description='Claimed by Claude' >/dev/null 2>&1 ||
+            echo "claim:claude already exists in this repository"
+          if ! gh api "repos/$GH_REPO/issues/$TARGET/labels" -f 'labels[]=claim:claude' >/dev/null; then
+            echo "acquired=$acquired" >>"$GITHUB_OUTPUT"
+            echo "::error::could not apply claim:claude to #$TARGET, so this run would work it" \
+              "unmarked. Refusing to start; re-post the mention once the label can be written."
+            exit 1
+          fi
+          acquired=true
+          echo "acquired=$acquired" >>"$GITHUB_OUTPUT"
       # The narrow token Claude reaches via git/gh: push commits (contents), open
       # PRs (pull-requests), comment (issues) — nothing more, and minted only
       # AFTER the sender is authorized. It lacks workflows:write, so a push that
@@ -87,6 +193,16 @@ jobs:
           lint-tools: "true"
           gitleaks: "true"
       - uses: anthropics/claude-code-action@6b082c41935b4c8a3b8b0ef85ba4ba4d9eeb8975 # v1.0.189
+        # Step-level cap. A JOB timeout kills the runner outright and the
+        # always() release below never runs; a STEP timeout fails only this
+        # step and lets the cleanup run, so the claim is still released. The
+        # arithmetic keeps it that way: job cap 200 = this step's 170 + 30
+        # minutes of headroom for the sender gate, claim, token mint, checkout
+        # and setup, so the step timeout always fires first however slow the
+        # preamble is. Losing the runner itself (or a force-cancel) can still
+        # strand the advisory label — accepted, rather than a reconciliation
+        # workflow of its own.
+        timeout-minutes: 170
         # GH_TOKEN lets Claude's own `gh` calls (e.g. `gh pr create`)
         # authenticate as the CI app bot with the narrow token, matching the git
         # identity above.
@@ -96,14 +212,13 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.app-token.outputs.token }}
           trigger_phrase: "@claude implement"
-          label_trigger: "claude-implement"
           track_progress: true
           base_branch: main
           branch_prefix: claude/
           branch_name_template: "{{prefix}}issue-{{entityNumber}}-{{description}}-{{sha}}"
           # --max-budget-usd caps API-key spend; likely a no-op under
           # CLAUDE_CODE_OAUTH_TOKEN (subscription) billing. Real runaway guards
-          # are timeout-minutes (job-level) and --max-turns.
+          # are timeout-minutes (job- and step-level) and --max-turns.
           # --allowedTools grants the file-editing tools plus a SCOPED Bash
           # allowlist (space-separated `Bash(cmd *)` form per the Claude Code
           # settings reference): the project runners, git, gh, and read-only
@@ -180,3 +295,42 @@ jobs:
 
             Follow the conventions documented in AGENTS.md, including the
             commit-message style and the draft-PR lifecycle.
+      # Release the claim on EVERY terminal path — success, failure, step
+      # timeout, and cancellation alike — so a spent run never leaves a stale
+      # claim behind. Gated on this run having ACQUIRED the claim: a claim that
+      # was already on the target belongs to whoever made it, and an
+      # unauthorized event never reaches the claim step at all, so neither is
+      # released here.
+      #
+      # Unlike acquiring, this step FAILS LOUDLY. A release that reports
+      # success over a surviving marker is permanent: the next run reads the
+      # claim, records acquired=false, and never cleans it either. The
+      # lifecycle contract keeps a partial release red and retriable, so only a
+      # confirmed 404 (the label is already gone — the state we wanted) passes
+      # quietly; anything else is retried once and then turns the job red with
+      # the marker still searchable.
+      - name: Release the claim
+        if: always() && steps.claim.outputs.acquired == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TARGET: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          for attempt in 1 2; do
+            if result=$(gh api -X DELETE "repos/$GH_REPO/issues/$TARGET/labels/claim:claude" 2>&1); then
+              echo "released claim:claude from #$TARGET"
+              exit 0
+            fi
+            case "$result" in
+            *404* | *"Not Found"* | *"does not exist"*)
+              echo "::notice::claim:claude was already gone from #$TARGET"
+              exit 0
+              ;;
+            esac
+            if [ "$attempt" = 1 ]; then
+              echo "release attempt $attempt failed, retrying: $result"
+              sleep 10
+            fi
+          done
+          echo "::error::could not release claim:claude from #$TARGET — the marker is still on it: $result"
+          exit 1

@@ -1,0 +1,44 @@
+# Shared baseline for the human and bot devcontainer profiles. The bot's
+# post-create step changes only sandbox_mode and approval_policy; Docker remains
+# the outer boundary in that profile.
+model = "gpt-5.6-sol"
+model_reasoning_effort = "medium"
+project_doc_max_bytes = 65536
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+
+[features]
+hooks = true
+
+[tui]
+status_line = [
+  "project-name",
+  "git-branch",
+  "model-with-reasoning",
+  "context-remaining",
+  "five-hour-limit",
+  "weekly-limit",
+  "used-tokens",
+  "run-state",
+]
+
+# Managed hooks are deliberately limited to policies implemented entirely by
+# image-owned scripts. Startup/context and formatter hooks delegate into the
+# checkout's Taskfile, so they remain Claude/project-trusted behavior instead
+# of becoming system-trusted Codex startup code.
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/etc/codex/hooks/claude-compat.sh /etc/claude-code/hooks/block-no-verify.sh"
+timeout = 20
+
+[[hooks.PreToolUse]]
+matcher = "Edit|Write"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/etc/codex/hooks/file-payload.sh /etc/claude-code/hooks/protect-files.sh"
+timeout = 20

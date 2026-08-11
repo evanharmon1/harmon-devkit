@@ -14,7 +14,9 @@ current — it is the reference for "where do secrets live and who can do what".
   `op run`/`op inject`; CI reads from GitHub Actions secrets.
   Devcontainer secrets are `CLAUDE_CODE_OAUTH_TOKEN` and
   `AGENT_DECK_TELEGRAM_KEY` in both profiles, `GH_TOKEN` in the bot profile only,
-  `TS_AUTHKEY` in the dev profile only — see
+  `TS_AUTHKEY` in the dev profile only, plus the
+  alt-model provider keys (`KIMI_API_KEY`/`MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`,
+  `ZAI_API_KEY`, `QWEN_API_KEY`) when opted in — see
   [../guides/devcontainers.md](../guides/devcontainers.md).
   TODO: list the 1Password vault/items this project uses.
 - **Auditable changes.** `main` is protected; changes land via reviewed PRs
@@ -257,6 +259,13 @@ CI workflows that act on the repo as a bot — release-please, the
 GitHub org (and personal account) gets its own App**, named **`<owner>-ci`** —
 for this repo, **`evanharmon1-ci`**. One App per org keeps a leaked key
 contained to a single org (no cross-org reach).
+
+One deliberate exception inside the `claude-*` workflows: the claim-lifecycle
+label writes (`claim:claude` on and off the target) use the built-in
+`GITHUB_TOKEN` under the job's own `issues: write` permission, not the App
+token — it stays valid for the whole job (an App token expires in an hour, and
+the release runs at the very end) and its writes never trigger another workflow
+run. Everything the model does, and every PR it opens, still uses the App token.
 
 Each job mints a short-lived (1h) installation token at runtime via
 `actions/create-github-app-token`, reading:

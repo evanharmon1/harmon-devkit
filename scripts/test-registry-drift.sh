@@ -153,15 +153,21 @@ else
 fi
 
 # ── 4. provider-wrapper inventory ──────────────────────────────────────────
-# Every claude-<family> wrapper that ships MUST correspond to a provider-rewired
-# harness claude-code-<family> in the registry (no orphan wrappers). The reverse
-# is allowed: the registry may declare a provider-rewired harness ahead of its
-# wrapper (e.g. claude-code-minimax before a claude-minimax launcher exists).
+# Every claude-<family>[-local] wrapper that ships MUST correspond to a
+# provider-rewired harness claude-code-<family>[-local] in the registry (no
+# orphan wrappers). The -local suffix is a sanctioned endpoint-variant marker
+# (ADR 0005 D9 amendment) for a wrapper of the SAME family, not a distinct
+# "<family>-local" family — claude-qwen-local() maps to family "qwen", not
+# "qwen-local" — so it is stripped before the family lookup but kept in the
+# harness slug. The reverse mapping is allowed: the registry may declare a
+# provider-rewired harness ahead of its wrapper (e.g. claude-code-minimax
+# before a claude-minimax launcher exists).
 if [ -f "$wrappers_glob" ]; then
     wrappers="$(sed -n -E 's/^(claude-[a-z0-9-]+)\(\)[[:space:]]*\{.*/\1/p' "$wrappers_glob")"
     for fn in $wrappers; do
-        family="${fn#claude-}"
-        harness="claude-code-${family}"
+        stem="${fn#claude-}"
+        family="${stem%-local}"
+        harness="claude-code-${stem}"
         ok="$(jq -r --arg h "$harness" --arg f "$family" '
             [.harnesses[]
              | select(.slug == $h

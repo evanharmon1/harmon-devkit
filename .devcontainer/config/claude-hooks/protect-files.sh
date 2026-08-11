@@ -22,7 +22,9 @@ protected=(
     ".terraform/"
     ".tfstate"
     ".claude/settings.json"
+    ".codex/config.toml"
     "/etc/claude-code/"
+    "/etc/codex/"
 )
 
 for pattern in "${protected[@]}"; do

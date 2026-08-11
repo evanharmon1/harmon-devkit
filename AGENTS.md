@@ -187,16 +187,32 @@ error silently reverts the lifecycle rather than fixing anything.
   green; verify is the definition-of-done gate.
 - **`task challenge`** — adversarial second-model review. Adjudicate per
   "Second-Model Review" below, fix confirmed findings, re-run `task verify`,
-  then **re-run `task challenge`**. The stage passes only when a re-run comes
-  back with **no confirmed P0 or P1 findings** — fixing the findings is not
-  the exit condition, a clean pass is. **P2s do not gate this stage**: carry
+  then **re-run `task challenge`**. The stage ends when **two consecutive
+  rounds adjudicate to zero P0 and zero P1 findings** — whether those rounds
+  came back empty, all-P2 as labeled, or P1-labeled and adjudicated down to
+  P2. Severity is read off the **adjudicated** column of your adjudication
+  table, not off the reviewer's label, and nothing further is owed after the
+  second such round: the second round *is* the confirmation, so there is no
+  extra clean run to buy. A round that returns **no findings at all** ends
+  the stage on its own, whenever it comes — an empty round is the old rule's
+  clean re-run, so neither a trivial change nor a clean post-fix re-run pays
+  for a confirmation pass. Fixing the findings is still not the exit
+  condition; adjudicated-clean rounds are. The exit carries one
+  precondition: every P2 you deferred during the stage must already be in the
+  deferred-findings sidecar (see "Deferring P2s" below) — an exit that drops
+  a P2 is not an exit, because nothing downstream will ever see it again.
+  **P2s do not gate this stage**: carry
   them to the PR (see "Deferring P2s" below). This loop is
   **self-referential** — the fixes you make in response to a round become the
   next round's input, so it can generate its own work indefinitely — and that
   is what the cap defends against: max **4** challenge → fix → re-challenge
-  rounds; if P0/P1 findings persist, stop and escalate to the maintainer.
+  rounds; if P0/P1 findings persist, stop and escalate to the maintainer. A
+  capped final round that adjudicates to zero P0/P1 ends the stage by itself — its
+  confirmation would be a run the cap forbids, and a clean last round is
+  convergence, not the persisting disagreement escalation exists for.
   "Between rounds, check what the findings are about" below is how you catch
-  the loop feeding on itself before the cap does.
+  the loop feeding on itself before the cap does, and round 2 is where that
+  check is owed rather than optional.
   A `task challenge` round is long — 5–15 minutes is ordinary, past most
   agents' tool-call timeouts — so **run it in the background and poll**
   instead of blocking one call on it. Growing output means running, not hung;
@@ -207,10 +223,12 @@ error silently reverts the lifecycle rather than fixing anything.
   fixes first is still tidier, not load-bearing. Details:
   [docs/guides/codex-review.md](docs/guides/codex-review.md) ("Duration and
   backgrounding").
-- **`task review`** — verification-checkpoint review; same adjudication, same
-  P0/P1 clean-pass exit condition, the same self-referential shape and so the
+- **`task review`** — verification-checkpoint review; same adjudication, the
+  same two-consecutive-adjudicated-clean exit condition counted over its own
+  rounds, the same self-referential shape and so the
   same reason for a cap, and the same background-and-poll handling, with its
-  own max **4** rounds.
+  own max **4** rounds. The two stages are counted separately: a converged
+  challenge says nothing about review.
 - **`task ci`** — the full CI mirror; fix anything it catches.
 - **Open the draft PR** — conventional commit, push the branch,
   **`gh pr create --draft`** with a clear what/why/verification summary. Then
@@ -254,10 +272,29 @@ error silently reverts the lifecycle rather than fixing anything.
   is the second-model check at this stage.
   **Require a current-head Codex result.** On initial shepherd entry and
   immediately after every fix push, capture the PR's current `headRefOid` and
-  the head's push time, then post `@codex review`. Record the request time and
-  the comment ID returned for that trigger. Poll PR reactions, top-level
-  comments, reviews, and inline review comments; fetch trigger reactions by
-  that exact comment ID. A Codex result is terminal for that captured head only
+  the head's push time.
+  **Do not hand-roll the polling where a checker is available.** If
+  `.claude/skills/shepherd/assets/check-codex-cloud-review.sh` is present —
+  the skills sync vendors it with the shepherd skill — run it, in its order:
+  `reserve` a cycle against the captured head **before** posting the
+  trigger — the durable state must exist before the GitHub write, or an
+  interruption between the two leaves an untracked trigger a resumed session
+  can double-spend — then post `@codex review`, `attach` the comment ID
+  returned for that trigger, and `check`, acting on the exit code it returns
+  (0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
+  2 indeterminate). It never
+  writes to GitHub, so posting the trigger comment stays yours. Where the
+  checker is absent, post `@codex review` and record the request time and the
+  comment ID returned for that trigger yourself. Only where that file
+  does not exist do you poll the four surfaces yourself — PR reactions,
+  top-level comments, reviews, and inline review comments, fetching trigger
+  reactions by that exact comment ID — and then watch the surface hand-rolled
+  pollers reliably forget: a clean verdict often lands as a **top-level
+  comment**, not a review, and missing it reports a finished cycle as
+  incomplete.
+  The contract below is normative whatever runs it — it is what "terminal"
+  means, and the checker is an implementation of it, not a substitute
+  definition. A Codex result is terminal for that captured head only
   when it is either: a clean review or top-level comment authored by GitHub
   actor ID `199175422` (`chatgpt-codex-connector[bot]`, type `Bot`) whose
   `Reviewed commit:` identifies that head; a fresh 👍 from that bot on that
@@ -268,14 +305,33 @@ error silently reverts the lifecycle rather than fixing anything.
   inline findings, and reactions never count for a newer head. A 👀 is pending,
   not success; if it disappears without a terminal result, the attempt is
   incomplete.
-  Give each attempt a full 10–15 minute window. If the first attempt is
-  incomplete, post `@codex review` once more for the same head and run one more
-  full window, recording and using the new trigger comment ID. If both attempts
-  are incomplete, stop and escalate without reporting green. Waiting and the
+  Give each attempt a full 10–15 minute window. An attempt is **incomplete**
+  when its window elapses with no terminal result for the captured head —
+  with the checker, that is exit 12; without it, elapsed time plus the
+  absence of terminal evidence is itself the signal. After an incomplete
+  first attempt, run attempt 2 the same way as attempt 1: with the checker,
+  repeat the reserve-first sequence — `reserve --attempt 2` against the same
+  head, then post `@codex review` once more, then `attach` the comment ID
+  returned for that trigger — and without it, post the trigger and record the
+  request time and the comment ID returned for that trigger yourself; either
+  way run one more full window. If both attempts
+  are incomplete, stop and escalate without reporting green (with the
+  checker, exit 13). Waiting and the
   one allowed re-trigger do not consume a shepherd fix round. Immediately
-  before accepting the result or reporting green, fetch `headRefOid` and all
-  four review surfaces again; a changed head invalidates the result and starts
+  before accepting the result or reporting green, re-check the cycle and
+  re-read `headRefOid`; a changed head invalidates the result and starts
   a new current-head cycle.
+  One disposition the checker cannot express is settled in prose: a badged
+  finding stated **outside an inline thread** — in a top-level comment or in
+  a review's own body — has no reply linkage, so once it lands, no
+  adjudication can make that head's `check` come back clean: findings outrank
+  a later clean result on the same head, and the checker's settled set
+  reaches only inline comments. When every
+  such finding is adjudicated without a code change (declined with evidence,
+  or filed as follow-up work), record each disposition as a PR comment and
+  treat the cycle as **terminal with findings settled** for that head; the
+  readiness gate reads those recorded adjudications where a checker exit 0 is
+  unreachable. Any push starts a fresh cycle as usual.
   Shepherd is **externally driven** — CI results and other people's comments
   are its input, so it cannot manufacture a round on its own. A round is one
   fix push, or one no-change cycle where everything is answered and nothing
@@ -327,7 +383,8 @@ its current `headRefOid`:
   *indeterminate*, not a pass — GitHub populates it asynchronously, so a read
   taken moments after the push reports nothing having run rather than nothing
   to run.
-- The current-head Codex cycle above is terminal and clean.
+- The current-head Codex cycle above is terminal and clean, or terminal with
+  every finding settled under the no-thread disposition rule above.
 - Every review finding is fixed, declined with evidence, or filed as follow-up
   work.
 - Every inline review comment has its required per-thread reply.
@@ -465,21 +522,35 @@ findings are all about the previous round's fix is the tell**, and it is
 visible in round 2 — the first round that can show it. Do not wait for the
 pattern to be unmistakable in round 3, by which point only one round is left.
 
-**Deleting the added code is a legitimate way to reach a clean pass.** When a
+**Round 2 is the checkpoint, not a suggestion.** Under the two-consecutive
+exit the cap is no longer the only thing standing between you and a loop that
+feeds on itself, so the check has to happen where it first can. At round 2,
+for every finding, say on the adjudication table whether its subject exists
+only because an **earlier round of this same stage** added it. A finding that
+does gets adjudicated with one of two dispositions written out: **delete** the
+scaffolding (which moots the finding — see below), or state that it is in
+scope and why the change genuinely needs it. What is not allowed is hardening
+round-1's scaffolding by reflex and letting round 3 attack the result.
+
+**Deleting the added code is a legitimate way to converge.** When a
 round's findings are about scaffolding rather than the change, weigh removing
 that scaffolding against hardening it once more — a remediation can be correct
 in the abstract and wrong for the artifact. A documentation guide that has
 grown a hand-rolled process supervisor earns real, defensible P1s about per-run
 state, process-group supervision, and PID reuse; every one of them becomes moot
 when the recipe is deleted instead of hardened. That is not giving up on the
-findings: the stage exits on a **clean re-run**, and a re-run does not care
-whether a finding was answered or made inapplicable. Name the mooted findings
+findings — and it is not a way to re-score the round that raised them. A
+confirmed P0/P1 keeps its adjudicated priority for its own round whether the
+remedy is a fix or a deletion; the remedy either way is input to the **next**
+round, and only that later round's review of the changed tree counts toward
+convergence. What deletion buys is that the next round finds nothing left to
+re-raise. Name the mooted findings
 in the adjudication table *and* in the message of the commit that removes the
 code — the table is scrollback, but the commit is why the code is gone, and it
 is the record a later round or a different session can still find.
 
 One endpoint is worth knowing: if the deletion empties the change *entirely*,
-there is no clean pass to reach — `codex-review.sh` refuses an empty scope
+there is no round to converge on — `codex-review.sh` refuses an empty scope
 non-zero by design, so the stage cannot pass and re-running will not change
 that. Treat it as the answer rather than a failure to work around: a change
 that has become empty is abandoned, not reviewed clean.
@@ -509,9 +580,9 @@ before `gh pr create`, so there is usually no PR body to write to yet: append
 it to the file
 `git rev-parse --git-path "deferred-findings/$(git branch --show-current)"`
 names (`mkdir -p` its directory first) — but only if that finding is not
-already listed. A stage exits on a *clean re-run*,
-so an unchanged P2 is reported again by design, in every remaining round and
-again by the next stage; appending blindly would hand the shepherd four copies
+already listed. A P2 you leave open is reported again by design — it is
+unchanged code, so every remaining round of the stage and the next stage after
+it will raise it; appending blindly would hand the shepherd four copies
 of one finding to settle. Match on location plus substance, not exact
 wording — the same finding rarely comes back phrased identically. Then
 move the list into the description when you open the PR (then delete the
@@ -551,16 +622,39 @@ what it still owes without re-adjudicating what is done. That obligation is
 stated here and in the Dev Loop above, and holds whether or not the optional
 `/shepherd` skill is installed to automate it.
 
-**Loop cap and exit:** a stage exits only on a **clean re-run** — no
-confirmed P0 or P1 findings — never on "findings fixed" alone, with at most
-**4** challenge iterations and **4** review iterations (challenge → fix →
-re-challenge, and likewise for review). If P0/P1 disagreement persists at the
-cap, stop and surface it to the maintainer instead of iterating further.
+**Loop cap and exit:** a stage — challenge and review counted separately —
+ends when **two consecutive rounds adjudicate to zero P0 and zero P1
+findings**, and never on "findings fixed" alone. Those rounds may be empty,
+all-P2 as labeled, or P1-labeled and adjudicated down to P2; what counts is
+the **adjudicated** column of the table, not the reviewer's label, and the
+second such round is itself the confirmation, so no further run is owed. Two
+exits are faster still. A round with **no findings at all** ends the stage by
+itself, whenever it comes — an empty round is exactly the old rule's clean
+re-run, so neither a trivial change nor a clean post-fix re-run pays for a
+confirmation pass. And a **capped final round** that adjudicates to zero
+P0/P1 also ends the stage by itself: the confirmation it would otherwise owe
+is a run the cap forbids, and a rule that strands a stage holding a clean
+last round and no valid exit would be wrong — the cap bounds work, it does
+not manufacture escalation. What the rule spends is bounded the other way
+too: a stage pays at most one round confirming convergence, where the old
+practice could spend every remaining round re-proving a change nobody still
+disputed. Two things ride along with the exit: every P2
+deferred during the stage must already be recorded in the sidecar (an exit
+that drops a P2 is not an exit), and round 2 owes the scaffolding checkpoint
+above. The caps are unchanged at **4** challenge iterations and **4** review
+iterations (challenge → fix → re-challenge, and likewise for review); if
+P0/P1 disagreement persists at the cap, stop and surface it to the maintainer
+instead of iterating further — escalation at the cap is for P0/P1 that
+**persist**, nothing else. The maintainer may always ask for more rounds —
+convergence is a floor on when you may stop, not a ceiling on what they can
+order.
 
 One caveat on the automatic stop-gate: the codex plugin's Stop hook applies
 its **own** notion of a material finding and may BLOCK on something you have
 classified P2. Adjudicate it (fix it, or state the reasoning) — **never**
-disable the gate to get past a BLOCK.
+disable the gate to get past a BLOCK. A BLOCK is settled on its own terms and
+against the hook, not against this rule: it neither reopens a stage that has
+already converged nor counts as one of that stage's rounds.
 
 ## Conventions
 
