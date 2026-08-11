@@ -398,8 +398,12 @@ codex_verdict_defs=$(
           def clean_sentence:
             "codex review: didn't find any major issues.";
           def body_text: (.body // "");
+          # `first // ""`, never `[0]`: jq's `"" | split("\n")` is `[]`, so an
+          # empty body would pipe null into gsub and crash the whole program
+          # with jq's own exit 5 — outside the documented code set
+          # (harmon-devkit#392, hit live on harmon-init#766).
           def first_line:
-            (body_text | split("\n")[0] |
+            (body_text | split("\n") | first // "" |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
           def has_severity_marker:
             (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
@@ -1339,6 +1343,19 @@ check)
     # pinning the tail deadlocked real PRs — there the strict reading was
     # fail-closed toward *blocking clean work*, here it is fail-closed toward
     # blocking work that still has an open finding.
+    # `body_text != ""` drops EMPTY-BODY reviews from classification, and only
+    # from classification. GitHub auto-creates a body-less COMMENTED review
+    # shell to carry inline comments (reply shells, and Codex's own shell
+    # posted before its inline findings land), and an empty body is no
+    # evidence in either direction: it has no verdict to be clean and no
+    # free-text surface where an unanswered concern could hide — anything it
+    # carries is inline comments, which the inline gate above already
+    # classifies on their own. Classifying the shell instead would read it as
+    # `findings` (no clean opening sentence) and hard-block a cycle whose
+    # real review has not arrived yet. `fetched_reviews` below deliberately
+    # still includes shells: inline comments attribute to them by review ID,
+    # and dropping the ID would make those comments read as naming a review
+    # nobody fetched.
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
@@ -1346,7 +1363,8 @@ check)
         "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
-            (.commit_id? == $head)
+            (.commit_id? == $head) and
+            (body_text != "")
           ) |
           . as $review | verdict_class as $class |
           if $class == "findings" then

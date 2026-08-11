@@ -397,6 +397,52 @@ run_check '2026-07-31T08:01:00Z'
 # with the maintainer, because the assumption behind the design has broken.
 assert_status 0 clean
 
+# GitHub auto-creates a body-less COMMENTED review shell to carry inline
+# comments, and Codex posts one before its inline findings land. An empty body
+# is no evidence: jq's `"" | split("\n")` is `[]`, so before the guard this
+# crashed the classifier with jq's own exit 5 (harmon-devkit#392, hit live on
+# harmon-init#766) — and classifying it instead would read the shell as
+# `findings` and hard-block a cycle whose real review has not arrived.
+echo "==> an empty-body review shell is no evidence, not a crash"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> an empty-body shell does not mask a clean review on the same head"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:""
+      },
+      {
+        id:105,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:05Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
 # A concern on its OWN line is still caught, by the boilerplate rule — the tail
 # exemption is confined to the verdict line and does not extend down the body.
 echo "==> a concern on its own line is still indeterminate"
