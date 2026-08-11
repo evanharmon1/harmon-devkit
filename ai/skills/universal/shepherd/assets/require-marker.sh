@@ -8,8 +8,10 @@
 # git push` pushes on a FAILED marker, because tail succeeds by PRINTING the
 # marker, whatever it says. This helper is the mechanical parse: exit 0 only
 # when the file's marker line equals the expected token, so
-# `require-marker.sh file CI-GREEN && git push ...` chains off the gate's
-# verdict and nothing else.
+# `require-marker.sh file "$token" && git push ...` chains off the gate's
+# verdict and nothing else. It proves what the file SAYS, not which run said
+# it — binding the verdict to the run that just finished is the caller's
+# token choice; see the usage text.
 
 set -u
 
@@ -27,7 +29,14 @@ gate that has not finished has not written its marker yet, so the
 comparison fails closed.
 
 TOKEN must be one non-empty line with no leading or trailing whitespace —
-anything else could never equal a marker line and is a usage error.
+anything else could never equal a marker line and is a usage error. Make
+it unique to the gate run it gates: this parser proves what the file says,
+not which run said it, so a static token (CI-GREEN) can match a stale file
+an earlier run left behind. Mint the token before the gate starts — e.g.
+token="CI-GREEN-$$-$(date +%s)" — write the gate's output to a fresh
+per-run file, and have the wrapper append the token only on success; a
+stale file can never contain this run's token, and a failed or unfinished
+gate never writes it.
 
 Exit status:
   0  FILE's marker line equals TOKEN
@@ -38,7 +47,7 @@ Exit status:
 
 Chain external writes off THIS exit status, never off a reader's exit —
 tail, head, cat, and grep succeed by printing whatever the marker says:
-  require-marker.sh gate.out CI-GREEN && git push ...
+  require-marker.sh "$out" "$token" && git push ...
 EOF
     exit 2
 }

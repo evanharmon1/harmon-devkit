@@ -113,6 +113,16 @@ run_marker "${test_tmp}/substring" CI-GREEN
 assert_rc 1
 assert_reason
 
+echo "==> a run-unique token defeats a stale green file from an earlier run"
+# The parser proves what the file SAYS, not which run said it: a static
+# CI-GREEN would match a leftover file from yesterday's gate while today's
+# is still running. The documented binding is a token minted per run — the
+# stale file cannot contain a token that did not exist when it was written.
+printf 'old run output\nCI-GREEN-1111-1754868000\n' >"${test_tmp}/stale-run"
+run_marker "${test_tmp}/stale-run" "CI-GREEN-2222-1754954400"
+assert_rc 1
+assert_reason
+
 echo "==> usage errors exit 2: arity, blank token, whitespace-wrapped token"
 run_marker "${test_tmp}/green"
 assert_rc 2

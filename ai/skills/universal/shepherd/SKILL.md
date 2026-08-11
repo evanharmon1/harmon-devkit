@@ -545,20 +545,26 @@ you rather than the bot):
   state="$(git rev-parse --git-path "shepherd-codex/$repo/<n>.json")"
   # the SHA from §2's round-start fetch
   round_head="<this round's headRefOid>"
-  # Checks-settled is a VERIFIED step, not an assumed prior: prove every
-  # required check has concluded before the reviewer window can open. With
-  # --json, `gh pr checks` exits 0 whenever the fetch succeeded — pending
-  # and failing checks alike (the 8/1 exits belong to the non-JSON form) —
-  # so this exit distinguishes only read from unread, and the payload is
-  # the verdict: non-empty, and nothing still pending. An empty list is
-  # indeterminate, not settled (GitHub registers checks asynchronously).
+  # Checks-settled is a VERIFIED step, not an assumed prior: re-verify, on
+  # a fresh snapshot, what this round's watch already observed — every
+  # check concluded, and none failed. With --json, `gh pr checks` exits 0
+  # whenever the fetch succeeded (the 8/1 exits belong to the non-JSON
+  # form), so this exit distinguishes only read from unread, and the
+  # payload is the verdict: non-empty, every bucket `pass` or `skipping`
+  # (skipping is neutral, per §2). `fail` and `cancel` block too — a red
+  # head gets a fix round, not a reviewer window its fix push would
+  # immediately reset. An empty list is indeterminate, not settled, and no
+  # snapshot can see checks GitHub has not registered yet — §2's bounded
+  # no-checks-yet poll during the watch is what closes that window; this
+  # step re-verifies its outcome, never replaces it.
   checks="$(gh pr checks <n> --repo "$repo" --json bucket)" || {
     echo 'cannot read check status — do not reserve or trigger'
     exit 1
   }
-  [ "$(jq -r 'length > 0 and all(.[]; .bucket != "pending")' \
+  [ "$(jq -r 'length > 0 and
+        all(.[]; .bucket == "pass" or .bucket == "skipping")' \
     <<<"$checks" 2>/dev/null)" = true ] || {
-    echo 'checks absent or unconcluded — do not reserve or trigger'
+    echo 'checks absent, unconcluded, or not green — do not reserve or trigger'
     exit 1
   }
   # §2's pre-write read: the trigger below is a PR write.
@@ -786,8 +792,14 @@ is optional in addition, never a substitute for per-thread replies.
   in the same foreground chain (`task ci && git push …`) or, when the gate
   ran in the background and wrote its verdict as a marker line, off
   `"$skill_dir"/assets/require-marker.sh <file> <token>` (exit 0 only when
-  the file's marker line equals the token):
-  `…/require-marker.sh ci.out CI-GREEN && git push …`. Never chain a push
+  the file's marker line equals the token). The parser proves what the
+  file *says*, not which run said it, so bind the verdict to this run:
+  fresh per-run output file, run-unique token minted before the gate
+  starts — `t="CI-GREEN-$$-$(date +%s)"; out="$(mktemp)"`, gate as
+  `task ci >"$out" 2>&1 && printf '%s\n' "$t" >>"$out"`, push as
+  `…/require-marker.sh "$out" "$t" && git push …` — a stale file from an
+  earlier gate can never contain this run's token, and a failed gate
+  writes no token at all. Never chain a push
   off a reader's exit — `tail`, `head`, `cat`, and `grep` succeed by
   *printing* whatever they found, so `tail -1 ci.out && git push` pushes
   on a marker that says FAILED (observed: the marker was written
