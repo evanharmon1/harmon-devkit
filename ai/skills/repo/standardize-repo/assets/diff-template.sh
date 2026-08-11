@@ -1068,12 +1068,15 @@ while IFS= read -r f; do
             drift=1
             mode_count=$((mode_count + 1))
         fi
-        if [ "$index_content_divergent" -eq 1 ] && [ "$content_divergent" -eq 0 ]; then
-            if [ "$index_structural" -eq 1 ]; then
-                echo "DRIFT    $rv_display  (staged symlink mismatch — $index_note; the worktree matches, the next commit carries it)"
-            else
-                echo "DRIFT    $rv_display  (staged content differs from the template though the worktree matches — the next commit carries it)"
-            fi
+        # Structural first and unconditionally, exactly as in the sweep: whether
+        # the working tree ALSO drifted is a separate question, and a staged
+        # alias is a finding either way.
+        if [ "$index_structural" -eq 1 ]; then
+            echo "DRIFT    $rv_display  (staged symlink mismatch — $index_note; the next commit carries it)"
+            drift=1
+            drift_count=$((drift_count + 1))
+        elif [ "$index_content_divergent" -eq 1 ] && [ "$content_divergent" -eq 0 ]; then
+            echo "DRIFT    $rv_display  (staged content differs from the template though the worktree matches — the next commit carries it)"
             drift=1
             drift_count=$((drift_count + 1))
         fi
@@ -1314,17 +1317,22 @@ while IFS= read -r abs; do
             drift=1
             uncurated_mode_count=$((uncurated_mode_count + 1))
         fi
+        # A staged symlink-for-file swap is STRUCTURAL, so it is settled here
+        # with the exec bit rather than inside any content branch: whether the
+        # WORKING TREE also drifted is a different question, and making this
+        # conditional on a clean one let a co-owned file with ordinary prose
+        # drift stage an alias, print CO-OWNED alone, and exit 0.
+        if [ "$index_structural" -eq 1 ]; then
+            echo "DRIFT    $rv_display  (staged symlink mismatch — $index_note; the next commit carries it)"
+            drift=1
+            uncurated_drift_count=$((uncurated_drift_count + 1))
+        fi
         if [ "$content_divergent" -eq 0 ]; then
             # Content is reported unless the repo owns the prose: the CO-OWNED
-            # contract is about content, staged or not. The exec bit above is
-            # structural and gates for every class, exactly as on disk — and so
-            # is a staged symlink-for-file swap, which is why the structural
-            # case is checked BEFORE the exemption rather than inside it.
-            if [ "$index_structural" -eq 1 ]; then
-                echo "DRIFT    $rv_display  (staged symlink mismatch — $index_note; the worktree matches, the next commit carries it)"
-                drift=1
-                uncurated_drift_count=$((uncurated_drift_count + 1))
-            elif [ "$index_content_divergent" -eq 1 ] && ! is_co_owned "$g"; then
+            # contract is about content, staged or not. A structural staged
+            # change was already reported above and is not content.
+            if [ "$index_structural" -eq 0 ] &&
+                [ "$index_content_divergent" -eq 1 ] && ! is_co_owned "$g"; then
                 echo "DRIFT    $rv_display  (uncurated — staged content differs from the template though the worktree matches; the next commit carries it)"
                 drift=1
                 uncurated_drift_count=$((uncurated_drift_count + 1))

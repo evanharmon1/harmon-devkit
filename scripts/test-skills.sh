@@ -6009,6 +6009,31 @@ else
 fi
 git -C "$DT_TARGET" reset -q HEAD -- AGENTS.md
 git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
+
+# MIXED co-owned state: ordinary prose drift on disk AND the staged alias. The
+# worktree finding is the non-gating CO-OWNED one, so making the structural
+# check conditional on a clean worktree hid the staged swap completely and the
+# run exited 0 — the structural verdict has to be independent of whether the
+# prose also moved.
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'mixed-co-owned-sentinel' \
+    >"$DT_TARGET/AGENTS.md"
+git -C "$DT_TARGET" update-index --add --cacheinfo \
+    "120000,$staged_link_blob,AGENTS.md"
+if mixed_co_owned_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a staged alias under co-owned prose drift (expected non-zero exit)"
+elif printf '%s\n' "$mixed_co_owned_out" |
+    grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch"; then
+    ok "diff-template gates a staged alias under co-owned prose drift"
+else
+    bad "diff-template gates a staged alias under co-owned prose drift (diagnostic missing)"
+fi
+if printf '%s\n' "$mixed_co_owned_out" | grep -qF "CO-OWNED AGENTS.md"; then
+    ok "diff-template keeps the co-owned prose class alongside a staged alias"
+else
+    bad "diff-template keeps the co-owned prose class alongside a staged alias"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- AGENTS.md
+git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
 expect_ok "diff-template returns to a clean baseline after the staged-state cases" \
     env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
 
