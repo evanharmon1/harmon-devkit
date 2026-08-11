@@ -1017,6 +1017,14 @@ expect_ok "standards catalog records the claim:claude lifecycle" \
 # miss a phrase hiding inside a URL or a link title; checking only the raw form
 # would miss the backticked and bolded spellings that render away. Feed the
 # matcher both and match either.
+#
+# The rendered branch applies every normalization CUMULATIVELY, in one pass.
+# Running them as parallel alternatives — each starting from the original text —
+# misses a phrase that needs two of them at once, e.g. a reference-style link
+# label followed by an HTML-wrapped subcommand, where the link branch leaves the
+# tag behind and the tag branch leaves the label behind. Composing is also
+# monotone: each transform only deletes characters, so the fully normalized form
+# subsumes every partially normalized one and no separate branch is needed.
 trigger_phrase_present() {
     _tp_mention=$(printf '@%s' claude)
     _tp_pat="${_tp_mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"
@@ -1029,8 +1037,8 @@ trigger_phrase_present() {
     # costs nothing at this size.
     {
         printf '%s\n' "$_tp_norm"
-        printf '%s\n' "$_tp_norm" | sed -E 's/\]\([^)]*\)//g; s/\]\[[^]]*\]//g'
-        printf '%s\n' "$_tp_norm" | sed -E 's/<[^>]*>//g'
+        printf '%s\n' "$_tp_norm" |
+            sed -E 's/\]\([^)]*\)//g; s/\]\[[^]]*\]//g; s/<[^>]*>//g'
     } | grep -iE "$_tp_pat" >/dev/null
 }
 # Every reference doc, not just the catalog: these are all Markdown an agent
@@ -1066,7 +1074,8 @@ for _trigger_case in \
     "phrase inside a link destination|see [the docs](https://x.example/${_m}-plan)" \
     "phrase inside a link title|see [the docs](https://x.example \"${_m} plan\")" \
     "inline HTML between the tokens|post an ${_m} <em>plan</em> comment" \
-    "reference-style link label|post an [${_m}][bot] plan comment"; do
+    "reference-style link label|post an [${_m}][bot] plan comment" \
+    "combined reference link and inline HTML|post an [${_m}][bot] <em>plan</em> comment"; do
     _label=${_trigger_case%%|*}
     _trigger_fixture=${_trigger_case#*|}
     _tf=$(mktemp)
