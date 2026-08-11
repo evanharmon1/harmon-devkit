@@ -958,7 +958,12 @@ expect_ok "standards catalog scopes session claim cleanup to lifecycle completio
     grep -qF 'Interactive session claims are released at wrap or shepherd completion' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog guarantees failure cleanup only for Claude Actions" \
-    grep -qF 'Claude Action claims are always released, including on failure' \
+    grep -qF 'Claude Action claims are released by an unconditional `if: always()` cleanup' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+# …and states the residual as an exception rather than softening "always": a run
+# killed at the job cap never reaches the cleanup step at all.
+expect_ok "standards catalog names the stranded-claim exception" \
+    sh -c 'grep -qF "never reaches that step at all" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog requires registry-derived human routing tables" \
     grep -qF 'includes family and harness tables derived from the' \
@@ -984,12 +989,108 @@ expect_fail "standards catalog does not source the vocabulary ADR from mutable m
 expect_ok "standards catalog classifies missing registries as version lag" \
     grep -qF 'If that revision lacks the registry, report template-version lag' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog marks Claude workflow inventory pre-rollout" \
-    grep -qF 'The three `claude-*` rows describe current pre-rollout template behavior.' \
+expect_ok "standards catalog describes mention-only Claude workflow triggers" \
+    sh -c 'test "$(grep -cF "Mention-only, no label trigger" "$1")" = 3' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog records the Claude workflow target" \
-    grep -qF 'target is mention-only and `claim:claude`-aware' \
+expect_ok "standards catalog records the claim:claude lifecycle" \
+    sh -c 'grep -qF "Claim the target with claim:claude" "$1" &&
+        grep -qF "claude-claim-" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
+# The catalog must not reconstruct a live trigger phrase: quoted into an issue
+# or PR comment, the workflows' contains() gate matches it and starts a real
+# run (observed on harmon-init#718). What matters is the RENDERED copy, not the
+# source bytes, so the pipeline approximates it — collapse whitespace (rendered
+# markdown rejoins a phrase split across a line break), drop link targets
+# (`[plan](docs/x.md)` renders as `plan`), then match the mention and the
+# subcommand separated only by whitespace/punctuation such as backticks or bold
+# markers, which render away. Case-insensitive because GitHub's `contains()` is.
+# Prose words between the tokens break the run and pass, which is the fix this
+# guard exists to protect. Deliberately the same detector harmon-init's
+# lint-hygiene.sh applies on its side (init#725) — the file reaches init through
+# a pin bump, so a weaker guard here would just move the failure downstream. The
+# needle is assembled from two pieces so this guard is not itself a phrase.
+#
+# BOTH forms are checked, raw and rendered. Stripping link targets models what
+# a reader copies out of the rendered page, but `contains()` reads whatever is
+# actually in the comment body — and someone quoting the raw Markdown ships the
+# link destination and title text too. Checking only the stripped form would
+# miss a phrase hiding inside a URL or a link title; checking only the raw form
+# would miss the backticked and bolded spellings that render away. Feed the
+# matcher both and match either.
+#
+# The rendered branch applies every normalization CUMULATIVELY, in one pass.
+# Running them as parallel alternatives — each starting from the original text —
+# misses a phrase that needs two of them at once, e.g. a reference-style link
+# label followed by an HTML-wrapped subcommand, where the link branch leaves the
+# tag behind and the tag branch leaves the label behind. Composing is also
+# monotone: each transform only deletes characters, so the fully normalized form
+# subsumes every partially normalized one and no separate branch is needed.
+trigger_phrase_present() {
+    _tp_mention=$(printf '@%s' claude)
+    _tp_pat="${_tp_mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"
+    _tp_norm=$(tr -s '[:space:]' ' ' <"$1")
+    # `grep -iE …>/dev/null`, deliberately NOT `grep -qiE`: this file runs under
+    # `set -o pipefail`, and -q exits at the first match, so the upstream
+    # printf/sed die of SIGPIPE and the pipeline reports 141 instead of 0. The
+    # guard would then report "no trigger phrase" for a file that has one —
+    # failing open, in the one place that must fail closed. Draining the input
+    # costs nothing at this size.
+    {
+        printf '%s\n' "$_tp_norm"
+        printf '%s\n' "$_tp_norm" |
+            sed -E 's/\]\([^)]*\)//g; s/\]\[[^]]*\]//g; s/<[^>]*>//g'
+    } | grep -iE "$_tp_pat" >/dev/null
+}
+# Every reference doc, not just the catalog: these are all Markdown an agent
+# quotes into an issue or PR comment, so a phrase moved into a sibling file is
+# just as live. Scanning the directory also means a reference added later is
+# covered without anyone remembering to add it here.
+for _ref in "$STANDARDIZE_REFS"/*.md; do
+    expect_fail "$(basename "$_ref") reconstructs no literal Claude trigger phrase" \
+        trigger_phrase_present "$_ref"
+done
+# Positive controls: the guard above is an expect_fail, so a pipeline that
+# silently matched nothing at all would pass just as loudly as a clean catalog.
+# These prove it still fires on the forms rendered copy reconstructs.
+#
+# Each fixture is ASSEMBLED at run time from a mention token and a subcommand
+# token held apart in the source. Writing them out would put five live trigger
+# phrases in a file that is itself quotable — the exact hazard this guard
+# exists to catch — while testing nothing extra: the pipeline only ever sees
+# the joined string.
+#
+# For the same reason each fixture is reported by a LABEL, never by its
+# content: test output is routinely pasted into an issue or a PR comment, so
+# echoing the assembled phrase would put a live trigger in the one place that
+# acts on it. Entries are `label|content`; only the label is ever printed.
+_m=$(printf '@%s' claude)
+_M=$(printf '@%s' Claude)
+for _trigger_case in \
+    "same-line adjacency|post an ${_m} plan comment" \
+    "backtick-separated tokens|post an \`${_m}\` \`plan\` comment" \
+    "case variant|post an ${_M} Review comment" \
+    "bold subcommand|post an ${_m} **implement** comment" \
+    "linked subcommand|post an ${_m} [plan](docs/x.md) comment" \
+    "phrase inside a link destination|see [the docs](https://x.example/${_m}-plan)" \
+    "phrase inside a link title|see [the docs](https://x.example \"${_m} plan\")" \
+    "inline HTML between the tokens|post an ${_m} <em>plan</em> comment" \
+    "reference-style link label|post an [${_m}][bot] plan comment" \
+    "combined reference link and inline HTML|post an [${_m}][bot] <em>plan</em> comment"; do
+    _label=${_trigger_case%%|*}
+    _trigger_fixture=${_trigger_case#*|}
+    _tf=$(mktemp)
+    printf '%s\n' "$_trigger_fixture" >"$_tf"
+    expect_ok "trigger-phrase guard fires on the $_label fixture" \
+        trigger_phrase_present "$_tf"
+    rm -f "$_tf"
+done
+# Negative control: prose words between the tokens must NOT fire, or the guard
+# would forbid the very phrasing the catalog now uses.
+_tf=$(mktemp)
+printf '%s\n' "an ${_m} mention naming plan, implement, or review" >"$_tf"
+expect_fail "trigger-phrase guard ignores prose-separated tokens" \
+    trigger_phrase_present "$_tf"
+rm -f "$_tf"
 expect_ok "standards catalog keeps migration procedures out of the catalog" \
     grep -qF 'not a second procedure in this catalog' \
     "$STANDARDIZE_REFS/standards-catalog.md"
