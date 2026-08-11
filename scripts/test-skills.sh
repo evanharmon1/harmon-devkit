@@ -6200,6 +6200,81 @@ git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
 expect_ok "diff-template returns to a clean baseline after the staged-state cases" \
     env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
 
+# --- an INHERITED index entry is committed state, not staged state -----------
+# "The index differs from the template" and "this is staged" are different
+# claims. A committed customization whose worktree copy is edited BACK to the
+# template stages nothing, yet its index entry still differs from the render —
+# and an ordinary `git commit` writes no such entry. Reporting it as "the next
+# commit carries it" turns an unstaged reconciliation into a gating lie.
+DT_INHERITED_INDEX="$TMPROOT/diff-template-inherited-index"
+cp -pR "$DT_TARGET" "$DT_INHERITED_INDEX"
+printf '%s\n' '{ "extends": ["committed-divergence"] }' \
+    >"$DT_INHERITED_INDEX/renovate.json"
+git_commit_all "$DT_INHERITED_INDEX" "repo commits a renovate divergence"
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_INHERITED_INDEX/renovate.json"
+if inherited_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_INHERITED_INDEX" 2>&1)"; then
+    ok "diff-template does not gate an unstaged reconciliation to the template"
+else
+    bad "diff-template does not gate an unstaged reconciliation to the template: $inherited_out"
+fi
+if printf '%s\n' "$inherited_out" | grep -qF "staged content differs"; then
+    bad "diff-template claims no staged content for an index entry inherited from HEAD"
+else
+    ok "diff-template claims no staged content for an index entry inherited from HEAD"
+fi
+# Same distinction on the mode dimension: an unstaged `chmod` leaves the index
+# mode exactly as HEAD recorded it, so there is no staged mode to report.
+DT_INHERITED_MODE="$TMPROOT/diff-template-inherited-mode"
+cp -pR "$DT_TARGET" "$DT_INHERITED_MODE"
+chmod -x "$DT_INHERITED_MODE/scripts/status.sh"
+git_commit_all "$DT_INHERITED_MODE" "repo commits a mode divergence"
+chmod +x "$DT_INHERITED_MODE/scripts/status.sh"
+if inherited_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_INHERITED_MODE" 2>&1)"; then
+    ok "diff-template does not gate an unstaged mode reconciliation"
+else
+    bad "diff-template does not gate an unstaged mode reconciliation: $inherited_mode_out"
+fi
+if printf '%s\n' "$inherited_mode_out" | grep -qF "staged mode differs"; then
+    bad "diff-template claims no staged mode for an index mode inherited from HEAD"
+else
+    ok "diff-template claims no staged mode for an index mode inherited from HEAD"
+fi
+
+# --- a staged chmod is not a staged prose clobber ----------------------------
+# Mode and content stage independently: `git update-index --chmod` records a
+# mode with the bytes untouched. For a co-owned file whose COMMITTED bytes
+# already match the template, staging only a mode correction satisfies every
+# other clobber condition — index bytes equal to the render, something staged —
+# while no prose was ever staged and the customization is not at risk.
+DT_MODE_ONLY_STAGE="$TMPROOT/diff-template-mode-only-stage"
+cp -pR "$DT_TARGET" "$DT_MODE_ONLY_STAGE"
+chmod +x "$DT_MODE_ONLY_STAGE/AGENTS.md"
+git_commit_all "$DT_MODE_ONLY_STAGE" "repo commits agent prose with the exec bit"
+git -C "$DT_MODE_ONLY_STAGE" update-index --chmod=-x -- AGENTS.md
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'unstaged-prose-edit' \
+    >"$DT_MODE_ONLY_STAGE/AGENTS.md"
+chmod +x "$DT_MODE_ONLY_STAGE/AGENTS.md"
+if mode_only_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_MODE_ONLY_STAGE" 2>&1)"; then
+    bad "diff-template gates the real mode divergence beside a staged chmod (expected non-zero exit)"
+elif printf '%s\n' "$mode_only_out" | grep -qF "MODE     AGENTS.md"; then
+    ok "diff-template gates the real mode divergence beside a staged chmod"
+else
+    bad "diff-template gates the real mode divergence beside a staged chmod (MODE diagnostic missing)"
+fi
+if printf '%s\n' "$mode_only_out" | grep -qF "staged copy is byte-identical"; then
+    bad "diff-template claims no prose clobber when only a mode was staged"
+else
+    ok "diff-template claims no prose clobber when only a mode was staged"
+fi
+if printf '%s\n' "$mode_only_out" | grep -qF "CO-OWNED AGENTS.md"; then
+    ok "diff-template keeps the co-owned class when only a mode was staged"
+else
+    bad "diff-template keeps the co-owned class when only a mode was staged"
+fi
+
 # --- the staged-removal probes must fail CLOSED ------------------------------
 # `cat-file -e "HEAD:$p"` exits 128 for a path merely ABSENT from HEAD, so
 # "absent" and "the probe itself failed" were indistinguishable by exit code and
