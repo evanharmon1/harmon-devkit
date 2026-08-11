@@ -712,7 +712,16 @@ you rather than the bot):
   `--surface review` takes a review ID instead. `settle` refuses (exit 2) a
   target that does not exist, was not written by the pinned actor, carries no
   severity badge, or does not identify this state's head — a disposition
-  against another head answers nothing. It fingerprints the body it settled,
+  against another head answers nothing.
+
+  **A disposition settles the whole target, so say so when it holds more than
+  one finding.** Entries are keyed by object ID and re-settling replaces
+  rather than accumulates, so settling one finding in a body that states
+  three would mark all three answered. Where the target carries several
+  badges, `settle` requires `--covers <n>` matching that count. It cannot
+  check that your reasoning is any good — nothing can — but it cannot be
+  satisfied by accident, which is the difference between settling a body and
+  settling the one finding you happened to notice. It fingerprints the body it settled,
   so a finding Codex **edits afterwards** goes back to exit 10 and must be
   settled again against the new text; the superseded entry is kept as the
   record of what was decided about the old one. Settling a review body says

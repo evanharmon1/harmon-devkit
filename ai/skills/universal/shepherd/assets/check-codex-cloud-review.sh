@@ -36,7 +36,7 @@ Usage:
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh check --state FILE --actor-id N [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
-  check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--now ISO8601]
+  check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--covers N] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
 
@@ -93,6 +93,7 @@ surface=
 target_id=
 disposition=
 note=
+covers=
 lock_dir=
 reap_entries=
 reap_lock=
@@ -101,7 +102,7 @@ reap_deadline_epoch=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -122,6 +123,7 @@ while [ "$#" -gt 0 ]; do
         --surface) surface=$2 ;;
         --id) target_id=$2 ;;
         --disposition) disposition=$2 ;;
+        --covers) covers=$2 ;;
         --note) note=$2 ;;
         esac
         shift 2
@@ -1975,6 +1977,32 @@ settle)
     printf '%s' "$target" |
         jq -e "$codex_verdict_defs"' has_severity_marker' >/dev/null ||
         die "target $target_id carries no P0/P1/P2 badge, so it is not a finding to settle"
+
+    # A disposition settles the TARGET, and a target can hold more than one
+    # finding: Codex sometimes states several in one body. Since the entry is
+    # keyed by object ID, settling any one of them would otherwise mark the
+    # whole body answered and let the rest reach a clean verdict unaddressed —
+    # and re-settling the same ID replaces the entry rather than adding to it,
+    # so there is no way to represent the others.
+    #
+    # The fingerprint already binds the disposition to the exact body text, so
+    # what is missing is not integrity but INTENT: nothing made the operator
+    # say they had read all of it. `--covers N` is that statement, required
+    # only where it is ambiguous. It is not a claim this command can verify —
+    # no mechanism can judge whether an adjudication is any good — but it
+    # cannot be satisfied by accident, which is the whole difference between
+    # settling a body and settling the one finding you happened to notice.
+    badge_count=$(printf '%s' "$target" |
+        jq -r '[(.body // "") | ascii_downcase |
+                 scan("\\bp[0-2]\\b")] | length') ||
+        die "cannot count the findings in target $target_id"
+    if [ "$badge_count" -gt 1 ]; then
+        [ -n "$covers" ] ||
+            die "target $target_id carries $badge_count findings; pass --covers $badge_count to state that this disposition answers all of them"
+        valid_uint "$covers" || die "--covers must be a positive integer"
+        [ "$covers" -eq "$badge_count" ] ||
+            die "--covers $covers does not match the $badge_count findings in target $target_id"
+    fi
 
     settle_body=$(printf '%s' "$target" | jq -r '(.body // "") | @json')
     settle_edited=$(printf '%s' "$target" |

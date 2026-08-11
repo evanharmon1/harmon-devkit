@@ -2781,5 +2781,50 @@ run_check '2026-07-31T08:01:00Z'
 [ "$check_rc" -eq 2 ] ||
     fail "a scalar settled entry must exit 2, got rc=$check_rc: $check_out"
 
+# A target can hold more than one finding, and the entry is keyed by object ID:
+# settling one would otherwise mark the whole body answered. `--covers` makes
+# the whole-body claim explicit (devkit settle challenge round 1).
+echo "==> settling a multi-finding target requires an explicit coverage count"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[
+      {
+        id:78,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:("**Reviewed commit:** `" + $prefix + "`\n\nP1: the first finding\n\nP2: the second finding")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '{
+      id:78,user:{id:$id,login:$login},
+      created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
+      issue_url:"https://api.github.com/repos/example/repo/issues/493",
+      body:("**Reviewed commit:** `" + $prefix + "`\n\nP1: the first finding\n\nP2: the second finding")
+    }' >"${fixtures}/comment-78.json"
+run_settle --surface comment --id 78 --disposition declined --note "answered"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a multi-finding target must demand --covers, got rc=$settle_rc: $settle_out"
+printf '%s' "$settle_out" | grep -Fq -- "--covers" ||
+    fail "the refusal must name the flag and the count: $settle_out"
+
+echo "==> a wrong coverage count is refused"
+run_settle --surface comment --id 78 --disposition declined --note "answered" \
+    --covers 1
+[ "$settle_rc" -eq 2 ] ||
+    fail "a mismatched --covers must refuse, got rc=$settle_rc: $settle_out"
+
+echo "==> the matching coverage count settles the whole body"
+run_settle --surface comment --id 78 --disposition declined --note "both answered" \
+    --covers 2
+[ "$settle_rc" -eq 0 ] || fail "a matching --covers should settle: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
 # Last line on purpose: every case above must have run for this to print.
 echo "shepherd Codex cloud-review classifier: PASS"
