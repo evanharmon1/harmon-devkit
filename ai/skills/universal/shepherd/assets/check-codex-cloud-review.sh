@@ -10,6 +10,8 @@
 #   11 pending
 #   12 retry (attempt 1 timed out)
 #   13 escalate (attempt 2 timed out)
+#   14 PR no longer open — GitHub answered and the PR is MERGED or CLOSED;
+#      terminal for the whole shepherd stage, never a wait-and-retry
 #   2  indeterminate — malformed, changed head, usage error, or a
 #      current-head verdict whose shape cannot be classified
 #
@@ -31,6 +33,14 @@ Usage:
   check-codex-cloud-review.sh check --state FILE --actor-id N [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
+
+`check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
+14 PR no longer open, 2 indeterminate. Exit 14 means GitHub answered and
+the PR is MERGED or CLOSED: terminal for the whole shepherd stage — stop,
+never wait, re-run, or re-trigger. A PR fetch that FAILS is still the
+transient bounded-wait path (pending/retry/escalate); only a non-open
+answer is 14. `reserve` and `attach` refuse a non-open PR outright,
+exit 2 with a reason naming the reported state.
 EOF
     exit 2
 }
@@ -220,9 +230,32 @@ persist_adopted_timeout() {
     write_state "$state_file" "$payload"
 }
 
+# Fetch the PR and print its head SHA, distinguishing three outcomes the
+# callers must never conflate (harmon-devkit#389: piping the fetch into
+# `jq 'select(.state == "OPEN")'` made "the PR merged mid-cycle" exit
+# identically to "the fetch failed", so `check` routed an externally
+# merged PR to `bounded_wait` and polled out the rest of its window on a
+# dead PR):
+#   0 — the PR is OPEN; its headRefOid is on stdout.
+#   3 — GitHub answered and the PR is NOT open; the reported state
+#       (MERGED/CLOSED) is on stdout. Terminal, never a wait-and-retry.
+#   1 — the fetch failed or returned an unusable payload. Transient;
+#       callers route this to their bounded wait exactly as before.
+# Always called via command substitution, so stdout carries the head (rc 0)
+# or the non-open state (rc 3) and nothing leaks into the caller's scope.
 provider_head() {
-    run_gh pr view "$1" --repo "$2" --json headRefOid,state |
-        jq -er 'select(.state == "OPEN") | .headRefOid'
+    provider_payload=$(run_gh pr view "$1" --repo "$2" \
+        --json headRefOid,state) || return 1
+    provider_state=$(printf '%s' "$provider_payload" |
+        jq -er 'select(type == "object") | .state |
+            select(type == "string" and . != "")') || return 1
+    if [ "$provider_state" != "OPEN" ]; then
+        printf '%s' "$provider_state"
+        return 3
+    fi
+    printf '%s' "$provider_payload" |
+        jq -er '.headRefOid | select(type == "string" and . != "")' ||
+        return 1
 }
 
 run_gh() {
@@ -526,8 +559,13 @@ reserve)
     case "$attempt" in 1 | 2) ;; *) die "attempt must be 1 or 2" ;; esac
     acquire_state_lock
 
-    live_head=$(provider_head "$pr" "$repo") ||
+    provider_status=0
+    live_head=$(provider_head "$pr" "$repo") || provider_status=$?
+    if [ "$provider_status" -eq 3 ]; then
+        die "PR is ${live_head:-not open} — a closed or merged PR has no review cycle to reserve"
+    elif [ "$provider_status" -ne 0 ]; then
         die "cannot confirm the open PR head"
+    fi
     [ "$live_head" = "$head" ] || die "PR head changed before reservation"
 
     if [ -f "$state_file" ]; then
@@ -643,6 +681,23 @@ attach)
     persisted_timeout_min=$(jq -r '.timeout_min // empty' "$state_file")
     resolve_timeout_min "$persisted_timeout_min"
     persist_adopted_timeout
+    state_repo=$(jq -r '.repo' "$state_file")
+    state_pr=$(jq -r '.pr' "$state_file")
+    state_head=$(jq -r '.head' "$state_file")
+    state_reserved=$(jq -r '.reserved_at' "$state_file")
+    valid_time "$state_reserved" || die "state has an invalid reservation time"
+    # The liveness re-check runs before the attached fast path below: a
+    # resumed attach must refuse a since-closed/merged PR (or a moved head)
+    # rather than answer success from local state alone.
+    provider_status=0
+    live_head=$(provider_head "$state_pr" "$state_repo") || provider_status=$?
+    if [ "$provider_status" -eq 3 ]; then
+        die "PR is ${live_head:-not open} — a closed or merged PR has no trigger to attach"
+    elif [ "$provider_status" -ne 0 ]; then
+        die "cannot re-confirm the open PR head"
+    fi
+    [ "$live_head" = "$state_head" ] ||
+        die "PR head changed before trigger attachment"
     phase=$(jq -r '.phase' "$state_file")
     if [ "$phase" = "attached" ]; then
         existing_id=$(jq -r '.trigger_comment_id' "$state_file")
@@ -651,16 +706,6 @@ attach)
         cat "$state_file"
         exit 0
     fi
-
-    state_repo=$(jq -r '.repo' "$state_file")
-    state_pr=$(jq -r '.pr' "$state_file")
-    state_head=$(jq -r '.head' "$state_file")
-    state_reserved=$(jq -r '.reserved_at' "$state_file")
-    valid_time "$state_reserved" || die "state has an invalid reservation time"
-    live_head=$(provider_head "$state_pr" "$state_repo") ||
-        die "cannot re-confirm the open PR head"
-    [ "$live_head" = "$state_head" ] ||
-        die "PR head changed before trigger attachment"
 
     comment=$(run_gh api "repos/$state_repo/issues/comments/$trigger_id") ||
         die "cannot fetch exact trigger comment $trigger_id"
@@ -925,9 +970,18 @@ check)
     resolve_timeout_min "$persisted_timeout_min"
     persist_adopted_timeout
 
-    first_head=$(provider_head "$state_pr" "$state_repo") || {
+    provider_status=0
+    first_head=$(provider_head "$state_pr" "$state_repo") || provider_status=$?
+    if [ "$provider_status" -eq 3 ]; then
+        # Not a transient failure: GitHub answered and the PR is dead. The
+        # whole stage is over, so this must not consume the bounded window —
+        # routing it to bounded_wait is exactly the harmon-devkit#389 bug.
+        emit pr-not-open \
+            "PR is ${first_head:-no longer open} — the stage is over; stop, do not re-trigger or keep polling"
+        exit 14
+    elif [ "$provider_status" -ne 0 ]; then
         bounded_wait "cannot fetch the current open PR head"
-    }
+    fi
     [ "$first_head" = "$state_head" ] || {
         emit head-changed "recorded evidence belongs to an older PR head"
         exit 2
@@ -987,9 +1041,15 @@ check)
         "repos/$state_repo/pulls/$state_pr/comments?per_page=100" \
         "$workdir/inline.json" "inline comments"
 
-    second_head=$(provider_head "$state_pr" "$state_repo") || {
+    provider_status=0
+    second_head=$(provider_head "$state_pr" "$state_repo") || provider_status=$?
+    if [ "$provider_status" -eq 3 ]; then
+        emit pr-not-open \
+            "PR was closed or merged (${second_head:-state unknown}) while evidence was being fetched — the stage is over"
+        exit 14
+    elif [ "$provider_status" -ne 0 ]; then
         bounded_wait "cannot re-fetch the PR head before verdict"
-    }
+    fi
     [ "$second_head" = "$state_head" ] || {
         emit head-changed "PR head changed while evidence was being fetched"
         exit 2

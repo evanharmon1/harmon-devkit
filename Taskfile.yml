@@ -75,6 +75,7 @@ tasks:
       - task: test:meta-install
       - task: test:codex-review
       - task: test:shepherd-codex
+      - task: test:shepherd-marker
       - task: test:release-title
       - task: test:notify-release
       - task: test:setup-github-project
@@ -319,6 +320,11 @@ tasks:
     desc: Unit-test current-head Codex cloud-review evidence (offline, stubbed gh)
     cmds:
       - ./scripts/test-shepherd-codex.sh
+
+  test:shepherd-marker:
+    desc: Unit-test the shepherd gate-then-push marker parser (require-marker.sh)
+    cmds:
+      - ./scripts/test-shepherd-marker.sh
 
   test:release-title:
     desc: Unit-test the release-content title guard (require-release-title.sh)
