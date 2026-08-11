@@ -5399,6 +5399,24 @@ if printf '%s\n' "$twin_out" | grep -qF "OWNED    config.yaml"; then
 else
     ok "diff-template grants no OWNED through a .yml/.yaml extension alias"
 fi
+# The index-snapshot fallback is the same hole by another route: a declared path
+# deleted from the WORKING TREE only is compared from the index, and the
+# snapshot's display path equals the rendered one — so the path-identity check
+# passes while the destination file is absent. copier tests the destination, so
+# an update renders the seed straight over it, which is exactly what OWNED
+# promises cannot happen.
+DT_OWNED_WT_TARGET="$TMPROOT/diff-template-owned-worktree-gone"
+cp -pR "$DT_TARGET" "$DT_OWNED_WT_TARGET"
+rm "$DT_OWNED_WT_TARGET/CHANGELOG.md"
+owned_wt_rc=0
+owned_wt_out="$(HARMON_INIT="$DT_TEMPLATE" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_OWNED_WT_TARGET" 2>&1)" || owned_wt_rc=$?
+if printf '%s\n' "$owned_wt_out" | grep -qF "OWNED    CHANGELOG.md"; then
+    bad "diff-template grants no OWNED to a declared path missing from the worktree"
+else
+    ok "diff-template grants no OWNED to a declared path missing from the worktree (rc $owned_wt_rc)"
+fi
+
 # The same declaration on the path the repo really has is still OWNED, so the
 # guard above narrows the class rather than disabling it.
 DT_EXACT_TARGET="$TMPROOT/diff-template-twin-exact-target"

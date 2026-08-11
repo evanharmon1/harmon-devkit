@@ -997,6 +997,13 @@ if [ "$skip_decl_available" -eq 1 ]; then
         echo "  refusing to continue: unknown jinja delimiters would let a templated pattern match literally" >&2
         exit 2
     }
+    # Through a FILE, one delimiter per line, so the nested loop below can read
+    # records instead of splitting a variable on whitespace.
+    skip_decl_delim_file="$workdir/skip-if-exists-delims.txt"
+    printf '%s\n' "$skip_decl_delims" >"$skip_decl_delim_file" || {
+        echo "FAIL: cannot stage the template's jinja delimiters" >&2
+        exit 2
+    }
     # Two pattern shapes are REFUSED rather than matched, because for each of
     # them this evaluator and copier's would disagree, and a disagreement here
     # silently reclassifies real drift as somebody's property:
@@ -1060,7 +1067,15 @@ if [ "$skip_decl_available" -eq 1 ]; then
         # template never made special. copier renders each pattern with the
         # environment `_envops` describes, so that block, field by field, is the
         # only correct source for "is this pattern templated".
-        for skip_decl_delim in $skip_decl_delims; do
+        #
+        # Read line by line from a FILE rather than iterated as a bare `for … in
+        # $var`: word splitting would cut an opener containing whitespace (`<% `)
+        # in half, and pathname expansion would turn one containing a glob
+        # character (`*`) into whatever happens to sit in the caller's working
+        # directory — silently letting a genuinely templated pattern through. A
+        # delimiter is one record, and the boundaries have to survive the loop.
+        while IFS= read -r skip_decl_delim; do
+            [ -n "$skip_decl_delim" ] || continue
             case "$skip_decl_pattern" in
             *"$skip_decl_delim"*)
                 echo "FAIL: templated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
@@ -1068,7 +1083,7 @@ if [ "$skip_decl_available" -eq 1 ]; then
                 exit 2
                 ;;
             esac
-        done
+        done <"$skip_decl_delim_file"
     done <"$skip_decl_patterns"
     # Matched with `git check-ignore` against a scratch repo whose .gitignore IS
     # the declaration. With negation refused above this is not an approximation:
@@ -1102,10 +1117,19 @@ fi
 #
 # CO-OWNED deliberately keeps the twin: that class says the repo owns the PROSE,
 # which is just as true under the other extension.
+# The same reasoning covers the INDEX-SNAPSHOT fallback. `repo_variant` hands
+# back a materialized index copy when a tracked file is deleted from the working
+# tree only, and `variant_display` maps that copy back to the same relative
+# path — so the equality above passes while the destination file is not there.
+# copier tests the DESTINATION, so it renders the seed over that absence, which
+# is the one outcome this class promises cannot happen. Require the real
+# worktree path (`-e`, or `-L` for a dangling alias, which does exist as a path
+# copier would refuse to overwrite).
 is_owned_here() {
     ioh_rendered="$1"
     ioh_repo_relpath="$2"
     [ "$ioh_rendered" = "$ioh_repo_relpath" ] || return 1
+    [ -e "$target/$ioh_rendered" ] || [ -L "$target/$ioh_rendered" ] || return 1
     is_template_declared_owned "$ioh_rendered"
 }
 
