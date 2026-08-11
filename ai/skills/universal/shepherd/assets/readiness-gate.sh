@@ -471,7 +471,7 @@ esac
 deferred_summary="$(jq -c '
       def outcome_present:
         test("fixed in [0-9a-f]{7,40}"; "i") or
-        test("declined:"; "i") or
+        test("declined:[[:space:]]*[^[:space:]]"; "i") or
         test("filed as [^ ]*#[0-9]+"; "i");
       (.body // "") | gsub("\r"; "") | split("\n")
       | . as $lines | (length) as $count | (to_entries) as $entries
@@ -481,10 +481,16 @@ deferred_summary="$(jq -c '
          | map(select(.value
              | test("^#{1,6}[[:space:]]*deferred findings[[:space:]]*$"; "i"))
            | .key)) as $starts
+      # A section ends only at a heading of the SAME or HIGHER level: a
+      # child heading (### under ##) is structure inside the section, and
+      # ending there would orphan every item listed beneath it.
       | ($starts | map(. as $start
+          | ($lines[$start] | match("^#+").string | length) as $level
           | (($entries
               | map(select(.key > $start and
-                    (.value | test("^#{1,6}[[:space:]]"))) | .key)
+                    (.value | test("^#{1,6}[[:space:]]")) and
+                    ((.value | match("^#+").string | length) <= $level))
+                | .key)
               | first) // $count) as $end
           | $lines[($start + 1):$end])
          | add // [])
@@ -610,13 +616,7 @@ if [ "$codex_disabled" != 1 ]; then
     esac
 fi
 
-# 10. Checks, one more time: a rerun or a late-triggered workflow can appear
-# on this immutable commit while the fetches above ran, checks are outside
-# the content fingerprint by design, and a pass printed over red CI is
-# exactly the failure this script exists to make impossible.
-evaluate_checks
-
-# 11. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
+# 10. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
 # and require equality before any pass. The evaluated fingerprint hashes the
 # exact bytes the conditions above judged (the gated body, the classified
 # threads); the fresh read is the recipe's "re-fetch and compare as the last
@@ -647,8 +647,15 @@ if [ "$fingerprint" != "$evaluated_fingerprint" ]; then
     fail_condition content-moved "review content changed while the gate was evaluating (${changed_surfaces# }) — re-adjudicate against the current content"
 fi
 
+# 11. Checks, one more time — AFTER the fresh content compare, so no content
+# fetch runs behind them: a rerun or a late-triggered workflow can appear on
+# this immutable commit while everything above ran, checks sit outside the
+# content fingerprint by design, and a pass printed over red CI is exactly
+# the failure this script exists to make impossible.
+evaluate_checks
+
 # 12. Re-read every scalar condition as the LAST network read before the
-# verdict — after the fresh content compare, so no fetch runs behind it
+# verdict — after the second checks evaluation, so no fetch runs behind it
 # (everything after this is local). A changed head
 # invalidates every result this gate relied on, and never wait out a
 # mismatch: a fresh replica showing someone else's newer push is evidence,

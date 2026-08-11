@@ -623,6 +623,24 @@ jq -cn --arg head "$head_sha" --arg body "$cont_body" \
 run_gate --codex-disabled
 assert_gate 0 pass ready
 
+echo "==> a bare 'declined:' with no rationale settles nothing"
+write_defaults
+bare_body="$(printf '## Deferred findings\n\n- [x] scripts/a.sh:10 — waved away — declined:\n')"
+jq -cn --arg head "$head_sha" --arg body "$bare_body" \
+    '{number:493,title:"t",body:$body,head:{sha:$head},
+      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
+run_gate --codex-disabled
+assert_gate 1 fail deferred-no-outcome
+
+echo "==> a child heading does not end the deferred section"
+write_defaults
+child_body="$(printf '## Deferred findings\n\n### Challenge findings\n\n- [ ] scripts/x.sh:2 — listed under a child heading\n\n## Verification\n\n- ok\n')"
+jq -cn --arg head "$head_sha" --arg body "$child_body" \
+    '{number:493,title:"t",body:$body,head:{sha:$head},
+      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
+run_gate --codex-disabled
+assert_gate 1 fail deferred-unchecked
+
 echo "==> without GNU timeout the gate still runs, loudly unbounded"
 write_defaults
 restricted_bin="${test_tmp}/restricted-bin"
