@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.26.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.26.0...v0.26.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* **standardize-repo:** describe mention-only claude workflow triggers without literal trigger phrases ([#394](https://github.com/evanharmon1/harmon-devkit/issues/394)) ([e774cfd](https://github.com/evanharmon1/harmon-devkit/commit/e774cfd4c376722890f858178adf7572fc8b8c36))
+
 ## [0.26.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.25.1...v0.26.0) (2026-08-10)
 
 

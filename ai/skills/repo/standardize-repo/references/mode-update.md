@@ -1555,6 +1555,19 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # Did the template itself change the file across the update range? A `no` says
   # the repo is declining a file that has sat unchanged since its own baseline;
   # a `yes` says it is also missing upstream work.
+  # The permission string a file STORES, read out of `ls -l` (POSIX-specified
+  # first field: one type character then nine permission characters). Anything
+  # else — a short field, an unreadable path — returns nonzero so the caller
+  # reports `unknown` rather than inventing an answer, the same fail-closed
+  # stance the rest of this recipe takes.
+  nonadoption_stored_mode() {
+    NONADOPT_MODE_FIELD="$(ls -ld -- "$1" 2>/dev/null |
+      awk 'NR == 1 { print substr($1, 2, 9) }')" || return 1
+    case "$NONADOPT_MODE_FIELD" in
+    ?????????) printf '%s\n' "$NONADOPT_MODE_FIELD" ;;
+    *) return 1 ;;
+    esac
+  }
   nonadoption_changed_in_range() {
     NONADOPT_BASE="$BASELINE_DISCOVERY/$1"
     NONADOPT_TGT="$TARGET_DISCOVERY/$1"
@@ -1589,11 +1602,23 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     # reviewer the repo is declining something that has not moved. Symlinks never
     # reach here — the branch above returns — so the bit always belongs to the
     # file itself rather than to a link target.
-    NONADOPT_BASE_EXEC=0
-    NONADOPT_TGT_EXEC=0
-    test ! -x "$NONADOPT_BASE" || NONADOPT_BASE_EXEC=1
-    test ! -x "$NONADOPT_TGT" || NONADOPT_TGT_EXEC=1
-    if test "$NONADOPT_BASE_EXEC" != "$NONADOPT_TGT_EXEC"; then
+    #
+    # STORED bits, via `ls -l`, not `test -x`. `test -x` answers "may THIS
+    # process execute this file HERE", which is a fact about the mount and the
+    # caller, not about the render: under a `noexec` mount it is false for a
+    # 100755 file, and on a filesystem with no permission bits of its own (FAT,
+    # some network shares) it is true for everything. Either way a real
+    # mode-only change across the range reads `no` and the disposition table
+    # tells the reviewer nothing moved. The renders only ever carry git's own
+    # 100644/100755, so comparing the whole permission string is the exec bit in
+    # practice while staying honest about what it read.
+    NONADOPT_BASE_MODE="$(nonadoption_stored_mode "$NONADOPT_BASE")" &&
+      NONADOPT_TGT_MODE="$(nonadoption_stored_mode "$NONADOPT_TGT")" ||
+      {
+        printf '%s\n' unknown
+        return 0
+      }
+    if test "$NONADOPT_BASE_MODE" != "$NONADOPT_TGT_MODE"; then
       printf '%s\n' yes
       return 0
     fi

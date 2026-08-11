@@ -253,7 +253,15 @@ issue may be moved at all.
   `--watch` only under an external timeout) so the wait has a real
   deadline — an unbounded `--watch` on a hung runner stalls the loop
   forever. After ~30 minutes of a check neither passing nor failing, treat
-  it as a failure to diagnose. Treat `skipping` jobs as neutral, not
+  it as a failure to diagnose. **Re-read the PR `state` in every poll
+  iteration**, not only at the round start: the round-start fetch cannot
+  see a merge or close that lands mid-window, and without the per-iteration
+  re-read the loop keeps polling checks on a dead PR until its deadline
+  (observed on harmon-init#758 — the maintainer merged mid-cycle and the
+  loop noticed only at the next explicit state read). A `MERGED` or
+  `CLOSED` answer stops the **whole stage** immediately — step 1's
+  never-shepherd rule holds mid-round — not just this loop.
+  Treat `skipping` jobs as neutral, not
   failures. Right after a push there is a window where
   GitHub reports **no checks yet** — poll (bounded, a few minutes) until
   check suites register on the new head before concluding anything; and
@@ -561,8 +569,48 @@ you rather than the bot):
   # run unconditionally — it removes nothing whose PR is still open.
   "$helper" reap --root "$(git rev-parse --git-path shepherd-codex)"
   state="$(git rev-parse --git-path "shepherd-codex/$repo/<n>.json")"
-  # the SHA from §2's round-start fetch, whose checks you just watched settle
+  # the SHA from §2's round-start fetch
   round_head="<this round's headRefOid>"
+  # Checks-settled is a VERIFIED step, not an assumed prior: re-verify, on
+  # a fresh snapshot, what this round's watch already observed — every
+  # check concluded, and none failed. With --json, `gh pr checks` exits 0
+  # whenever the fetch succeeded (the 8/1 exits belong to the non-JSON
+  # form), so this exit distinguishes only read from unread, and the
+  # payload is the verdict: every bucket `pass` or `skipping` (skipping is
+  # neutral, per §2). `fail` and `cancel` block too — a red head gets a
+  # fix round, not a reviewer window its fix push would immediately reset.
+  # No snapshot can see checks GitHub has not registered yet — §2's
+  # bounded no-checks-yet poll during the watch is what closes that
+  # window; this step re-verifies its outcome, never replaces it.
+  #
+  # §2's no-CI carve-out stays available and stays EXPLICIT: set no_ci=1
+  # only after the watch concluded this repo genuinely has no applicable
+  # CI (its bounded poll found nothing to register — absence confirmed,
+  # not merely nothing yet). It is never inferred here from an empty or
+  # failed read, and it waives only absence — checks that do exist must
+  # still be green. gh answers a checkless head with a SPECIFIC error
+  # ("no checks reported"), not an empty list, and only that answer under
+  # the carve-out reads as absence: auth, rate-limit, and network
+  # failures are indeterminate and fail closed whatever no_ci says. If gh
+  # rewords that literal, this breaks toward a false block in a no-CI
+  # repo, never a false pass.
+  no_ci="${no_ci:-0}"
+  checks="$(gh pr checks <n> --repo "$repo" --json bucket 2>&1)" || {
+    case "$no_ci:$checks" in
+    1:*'no checks reported'*) checks='[]' ;;
+    *)
+      echo 'cannot read check status — do not reserve or trigger'
+      exit 1
+      ;;
+    esac
+  }
+  [ "$(jq -r --argjson no_ci "$no_ci" '
+        (length > 0 or $no_ci == 1) and
+        all(.[]; .bucket == "pass" or .bucket == "skipping")' \
+    <<<"$checks" 2>/dev/null)" = true ] || {
+    echo 'checks absent, unconcluded, or not green — do not reserve or trigger'
+    exit 1
+  }
   # §2's pre-write read: the trigger below is a PR write.
   pre="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)"
   [ "$(jq -r '.state == "OPEN" and .isDraft' <<<"$pre")" = true ] || {
@@ -575,12 +623,12 @@ you rather than the bot):
   }
   head="$round_head"
   "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
-    --head "$head" --attempt 1
+    --head "$head" --attempt 1 || exit
   trigger_id="$(
     gh api "repos/$repo/issues/<n>/comments" \
       -f body='@codex review' --jq .id
-  )"
-  "$helper" attach --state "$state" --trigger-id "$trigger_id"
+  )" || exit
+  "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
   "$helper" check --state "$state" --actor-id 199175422
   ```
 
@@ -591,6 +639,23 @@ you rather than the bot):
   comment before any new write. This separation keeps classification
   write-incapable while making the one external write explicit.
 
+  **The cycle's steps are non-chainable.** Each step — the checks-settled
+  assertion, `reserve`, the trigger comment, `attach`, `check` — runs as
+  its own command, and its exit status is read before the next external
+  write occurs; the snippet's `|| exit` guards are that rule mechanized for
+  a pasted block, so keep them when adapting it. Never collapse the cycle
+  into one compound `checks-watch && reserve && trigger && attach && poll`:
+  a `&&` chain stops without saying which link broke, and both observed
+  failures were silent exactly that way — `reserve` refused while a
+  `;`-separated tail printed a misleading "window elapsed" with no trigger
+  ever posted, and a checks-watch exited early so the trigger posted while
+  CI was still running, consuming the reviewer window concurrently with
+  the checks it was promised to follow. Two corollaries: the trigger
+  comment is never posted in the same shell chain as a checks-watch, and
+  no `;`-separated tail may follow a step that can fail — after a broken
+  link the tail still runs, and reports the state of a cycle that never
+  happened.
+
   Exactly one active shepherd must own a PR at a time. The git-directory state
   and its lock protect interrupted or concurrent work in this checkout; they
   are not a distributed lock across separate clones, worktrees with separate
@@ -599,14 +664,22 @@ you rather than the bot):
   trigger comments before reserving or writing anything.
 
   `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
-  and 2 indeterminate. Transient read failures consume the same bounded window:
+  14 PR no longer open, and 2 indeterminate. Transient read failures consume
+  the same bounded window:
   they return pending, then retry after attempt 1 or escalate after attempt 2.
+  Exit 14 is the opposite of transient: GitHub answered and the PR is
+  `MERGED` or `CLOSED`, which is terminal for the **whole stage**, not the
+  loop — stop immediately; there is no window left to poll out, nothing to
+  re-trigger, and no attempt to spend. (`reserve` and `attach` refuse a
+  non-open PR the same way: exit 2 with a reason naming the state.)
   Exit 2 is reserved for invalid state, identity, metadata, or a changed head;
   stop and reconcile that condition rather than spending another trigger.
   Poll pending within a bounded 10–15-minute window after checks settle. Each
   re-run of `check` is an ordinary watch round and starts with §2's round-start
   fetch — the helper never reads `isDraft`, so a promotion landing mid-window
-  is invisible without it. On
+  is invisible without it — and that same fetch's `state` is the in-window
+  bail: `MERGED`/`CLOSED` there, or `check` exiting 14, ends the stage on
+  the spot rather than finishing the window. On
   retry, repeat reserve/write/attach once with `--attempt 2`; on escalate or
   indeterminate, stop for the maintainer. Every push creates a new head and
   resets this procedure to attempt 1. There is no CI-only fallback when this
@@ -758,7 +831,40 @@ is optional in addition, never a substitute for per-thread replies.
 
 - Every shepherd-round fix must **pass the full local CI mirror**
   (`task ci`) before each push — actually run it and confirm exit 0, not
-  just intend to; a fix that can't pass locally doesn't get pushed. The
+  just intend to; a fix that can't pass locally doesn't get pushed.
+  Confirming exit 0 is mechanical: the push — like any external write
+  gated on a local check — chains only off the **gate's verdict**, and
+  what it pushes is the **gated commit itself**, never the mutable
+  `HEAD`. Capture the SHA before the gate and push that refspec — in the
+  same foreground chain,
+  `sha="$(git rev-parse HEAD)"; task ci && git push <remote> "$sha:<branch>" …`
+  — or, when the gate
+  ran in the background and wrote its verdict as a marker line, off
+  `"$skill_dir"/assets/require-marker.sh <file> <token>` (exit 0 only when
+  the file's marker line equals the token). The parser proves what the
+  file *says*, not which run said it, so bind the verdict to this run
+  *and* to the commit it gated: fresh per-run output file, token minted
+  before the gate starts and carrying the SHA under test —
+  `sha="$(git rev-parse HEAD)"; t="CI-GREEN-$sha-$$"; out="$(mktemp)"`,
+  gate as `task ci >"$out" 2>&1 && printf '\n%s\n' "$t" >>"$out"` — the
+  leading newline is load-bearing: without it, gate output that ends
+  without a newline glues itself to the token and a green gate is
+  refused forever — push as
+  `…/require-marker.sh "$out" "$t" && git push <remote> "$sha:<branch>" …`
+  — a stale file from an
+  earlier gate can never contain this run's token, a failed gate writes
+  no token at all, and the ungated commit cannot travel because `$sha`
+  is what travels. Comparing HEAD to `$sha` and then pushing `HEAD` is
+  **not** an alternative: `git push` re-reads the ref at push time, so a
+  commit landing between the comparison and the push ships ungated —
+  the SHA refspec is what closes that window (a HEAD that moved simply
+  is not pushed; re-gate the newer commit from its own HEAD, and the
+  clean-tree rule below still governs what the gate ran on). Never
+  chain a push
+  off a reader's exit — `tail`, `head`, `cat`, and `grep` succeed by
+  *printing* whatever they found, so `tail -1 ci.out && git push` pushes
+  on a marker that says FAILED (observed: the marker was written
+  correctly, displayed, and never parsed). The
   mirror is the right gate because it runs the same stages the remote
   pipeline will judge (including security), so a round is never burned on
   a failure that three local minutes would have caught. In the rare repo
