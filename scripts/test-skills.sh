@@ -3096,12 +3096,32 @@ expect_ok "audit glossary marks IGNORED as a sweep-only class" \
 expect_ok "audit glossary names the curated path that still gates" \
     grep -qF 'is on that list and reports `DRIFT` however thoroughly a repo ignores it' \
     "$STANDARDIZE_REFS/mode-audit.md"
-expect_ok "standards catalog marks IGNORED as a sweep-only class" \
-    grep -qF '`IGNORED` is **sweep-only**' \
+expect_ok "standards catalog marks OWNED and IGNORED as sweep-only classes" \
+    grep -qF '`OWNED` and `IGNORED` are **sweep-only** classes' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+# The OWNED class is derived from the template's own declaration rather than
+# mirrored here, and the catalog has to say so: a reader who thinks it is a
+# hand-maintained list would keep it in step by hand and be wrong about where
+# the truth lives.
+expect_ok "standards catalog says OWNED is derived from the template's declaration" \
+    grep -qF 'template'"'"'s own `copier.yml` `_skip_if_exists` declares the path repo-owned' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog names the curated path that still gates" \
     grep -qF 'is on that list and reports `DRIFT` however thoroughly a repo ignores it' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+# Both operating modes print the sweep's classes at an operator, so both
+# glossaries have to carry OWNED — an unexplained tag in a report is a tag
+# somebody adjudicates by guessing.
+for owned_glossary in mode-audit.md mode-update.md; do
+    expect_ok "$owned_glossary glossary documents the OWNED class" \
+        grep -qF '**`OWNED`** — the **template itself** declares the path repo-owned' \
+        "$STANDARDIZE_REFS/$owned_glossary"
+done
+# The non-adoption classifier deliberately does NOT learn about the class, and
+# the reason is recorded where the next person to mirror something will look.
+expect_ok "the non-adoption classifier records why OWNED is not mirrored into it" \
+    grep -qF "diff-template.sh's OWNED class is likewise absent" \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_fail "audit glossary no longer calls every gitignored copy IGNORED" \
     grep -qF "the repo's copy is gitignored" \
     "$STANDARDIZE_REFS/mode-audit.md"
@@ -5016,10 +5036,18 @@ mkdir -p \
 # .github/copilot-instructions.md as symlinks to AGENTS.md. Without it copier
 # dereferences the link into a duplicate file and the sweep's symlink handling
 # is never exercised.
+# _skip_if_exists mirrors the real template's machine-readable declaration that
+# the REPO owns a path: one literal entry and one glob, because the OWNED class
+# is derived from this list at run time and copier matches it with git's own
+# gitignore dialect. `*.code-workspace` is deliberately a path is_co_owned()
+# ALSO matches, which is what pins the precedence between the two classes.
 cat >"$DT_TEMPLATE/copier.yml" <<'EOF'
 _min_copier_version: "9.4.0"
 _subdirectory: template
 _preserve_symlinks: true
+_skip_if_exists:
+  - CHANGELOG.md
+  - "*.code-workspace"
 project_name:
   type: str
   default: Test Project
@@ -5079,6 +5107,14 @@ done
 printf '%s\n' '# Example values' >"$DT_TEMPLATE/template/terraform/tfvars.env.example"
 printf '%s\n' '# Record architecture decisions' \
     >"$DT_TEMPLATE/template/docs/decisions/0001-record-architecture-decisions.md"
+# The two _skip_if_exists seeds. CHANGELOG.md is the literal entry (release-please
+# owns it in the real template); project.code-workspace is what the glob reaches
+# AND what is_co_owned() also lists, so the pair covers both the derivation and
+# the precedence.
+printf '%s\n' '# Changelog' 'seeded changelog' \
+    >"$DT_TEMPLATE/template/CHANGELOG.md"
+printf '%s\n' '{ "folders": [] }' \
+    >"$DT_TEMPLATE/template/project.code-workspace"
 git_init "$DT_TEMPLATE"
 # The .gitignore the template SHIPS also applies to the template repo itself, so
 # `git add -A` would skip the very seeds it ignores and they would never reach
@@ -5123,6 +5159,15 @@ cp "$DT_TEMPLATE/template/.vscode/settings.json" "$DT_TARGET/.vscode/settings.js
 # repo-local habit actually belongs and cannot be confused with a declaration
 # the template made.
 cp "$DT_TEMPLATE/template/.gitignore" "$DT_TARGET/.gitignore"
+# Both declared paths diverge from the render PERMANENTLY, which is the steady
+# state every mature repo is in: release-please rewrites the changelog and the
+# workspace file carries per-repo settings. They must stay informational, so the
+# clean-baseline assertions below still expect exit 0. The sentinels prove the
+# bodies are never printed, --show included.
+printf '%s\n' '# Changelog' '## 1.4.0 changelog-sentinel-withheld' \
+    >"$DT_TARGET/CHANGELOG.md"
+printf '%s\n' '{ "folders": ["workspace-sentinel-withheld"] }' \
+    >"$DT_TARGET/project.code-workspace"
 printf '%s\n' 'export EXAMPLE_SETTING=envrc-sentinel-withheld' >"$DT_TARGET/.envrc"
 cat >"$DT_TARGET/.copier-answers.yml" <<EOF
 _commit: v1.0.0
@@ -5254,8 +5299,157 @@ if printf '%s\n' "$show_out" | grep -qF 'envrc-sentinel-withheld'; then
 else
     ok "diff-template --show withholds a gitignored diff body"
 fi
+# OWNED is presence-only for the same reason, on a different rationale: copier
+# will never rewrite a _skip_if_exists path, so its content is not the
+# template's business and printing it is pure noise (a release-please changelog
+# would bury the report).
+if printf '%s\n' "$show_out" | grep -qF 'changelog-sentinel-withheld'; then
+    bad "diff-template --show withholds a template-declared repo-owned diff body"
+else
+    ok "diff-template --show withholds a template-declared repo-owned diff body"
+fi
+if printf '%s\n' "$show_out" | grep -qF 'workspace-sentinel-withheld'; then
+    bad "diff-template --show withholds a glob-matched repo-owned diff body"
+else
+    ok "diff-template --show withholds a glob-matched repo-owned diff body"
+fi
 cp "$DT_TEMPLATE/template/renovate.json" "$DT_TARGET/renovate.json"
 cp "$DT_TEMPLATE/template/AGENTS.md" "$DT_TARGET/AGENTS.md"
+
+# --- OWNED: the template's own _skip_if_exists declaration (issue 359) --------
+# Both declared paths diverge permanently in the clean target, so this run also
+# re-asserts the baseline: the class is informational and must not gate. The
+# glob entry is the one that matters twice over — it proves the derivation
+# matches with git's own gitignore dialect (a `*.code-workspace` pattern reaching
+# a root-level file), and it proves the precedence, because is_co_owned() lists
+# that same glob and the template's machine-readable declaration has to win.
+if owned_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template does not gate on a template-declared repo-owned file"
+else
+    bad "diff-template does not gate on a template-declared repo-owned file: $owned_out"
+fi
+if printf '%s\n' "$owned_out" |
+    grep -qF "OWNED    CHANGELOG.md  (template's _skip_if_exists declares the repo owns it"; then
+    ok "diff-template reports a divergent _skip_if_exists path as OWNED"
+else
+    bad "diff-template reports a divergent _skip_if_exists path as OWNED (OWNED line missing)"
+fi
+if printf '%s\n' "$owned_out" | grep -qF "OWNED    project.code-workspace"; then
+    ok "diff-template matches _skip_if_exists globs the way copier does"
+else
+    bad "diff-template matches _skip_if_exists globs the way copier does"
+fi
+if printf '%s\n' "$owned_out" | grep -qF "CO-OWNED project.code-workspace"; then
+    bad "diff-template prefers OWNED over CO-OWNED where the two overlap"
+else
+    ok "diff-template prefers OWNED over CO-OWNED where the two overlap"
+fi
+if printf '%s\n' "$owned_out" | grep -qE '^(DRIFT|MISSING) +(CHANGELOG\.md|project\.code-workspace)'; then
+    bad "diff-template stops reporting declared repo-owned paths as drift"
+else
+    ok "diff-template stops reporting declared repo-owned paths as drift"
+fi
+if printf '%s\n' "$owned_out" | grep -qF "2 OWNED"; then
+    ok "diff-template counts OWNED in its summary"
+else
+    bad "diff-template counts OWNED in its summary"
+fi
+
+# The exemption is about CONTENT, exactly like CO-OWNED. A declared path that
+# lost or gained the exec bit is a structural divergence and still gates: nobody
+# "owns" a file that stopped being what the template rendered.
+chmod +x "$DT_TARGET/CHANGELOG.md"
+if owned_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates mode drift on a template-declared repo-owned file (expected non-zero exit)"
+elif printf '%s\n' "$owned_mode_out" | grep -qF "MODE     CHANGELOG.md"; then
+    ok "diff-template gates mode drift on a template-declared repo-owned file"
+else
+    bad "diff-template gates mode drift on a template-declared repo-owned file (MODE diagnostic missing)"
+fi
+chmod -x "$DT_TARGET/CHANGELOG.md"
+
+# ABSENCE is not content either, and `_skip_if_exists` says nothing about it:
+# copier freezes a declared path only when it EXISTS, so a repo that lacks one
+# gets it rendered fresh on the next update. That is the MISSING an operator
+# must see, and it is why the class is not mirrored into the guarded update's
+# non-adoption classifier.
+DT_OWNED_ABSENT="$TMPROOT/diff-template-owned-absent"
+cp -pR "$DT_TARGET" "$DT_OWNED_ABSENT"
+git -C "$DT_OWNED_ABSENT" rm -q -- CHANGELOG.md
+git_commit_all "$DT_OWNED_ABSENT" "drop the declared CHANGELOG"
+if owned_absent_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_OWNED_ABSENT" 2>&1)"; then
+    bad "diff-template still reports a declared repo-owned path the repo lacks (expected non-zero exit)"
+elif printf '%s\n' "$owned_absent_out" | grep -qF "MISSING  CHANGELOG.md"; then
+    ok "diff-template still reports a declared repo-owned path the repo lacks"
+else
+    bad "diff-template still reports a declared repo-owned path the repo lacks (MISSING diagnostic missing)"
+fi
+
+# Fail-closed derivation. "The template declares nothing repo-owned" and "I
+# could not read the declaration" are different facts, and degrading either one
+# to the old behavior would silently return every declared path to gating DRIFT
+# with nothing in the output to say the derivation had stopped working. Three
+# negative controls, each a copy of the working template with only its
+# declaration changed: absent, empty, and templated (which copier would render
+# through jinja before matching, and this script deliberately will not).
+dt_skip_decl_variant() {
+    # $1 = destination, $2… = the _skip_if_exists lines to write (none = drop it)
+    dsv_dest="$1"
+    shift
+    cp -pR "$DT_TEMPLATE" "$dsv_dest"
+    {
+        printf '%s\n' '_min_copier_version: "9.4.0"' '_subdirectory: template' \
+            '_preserve_symlinks: true'
+        [ "$#" -eq 0 ] || printf '%s\n' "$@"
+        printf '%s\n' 'project_name:' '  type: str' '  default: Test Project'
+    } >"$dsv_dest/copier.yml"
+    git_commit_all "$dsv_dest" "rewrite the _skip_if_exists declaration"
+    git -C "$dsv_dest" tag -f v1.0.0 >/dev/null
+}
+dt_skip_decl_variant "$TMPROOT/diff-template-noskip-source"
+noskip_rc=0
+noskip_out="$(HARMON_INIT="$TMPROOT/diff-template-noskip-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || noskip_rc=$?
+if [ "$noskip_rc" -eq 2 ]; then
+    ok "diff-template exits 2 when the template declares no _skip_if_exists"
+else
+    bad "diff-template exits 2 when the template declares no _skip_if_exists (got $noskip_rc)"
+fi
+if printf '%s\n' "$noskip_out" | grep -qF "FAIL: copier.yml has no _skip_if_exists list"; then
+    ok "diff-template names the missing _skip_if_exists declaration"
+else
+    bad "diff-template names the missing _skip_if_exists declaration"
+fi
+dt_skip_decl_variant "$TMPROOT/diff-template-emptyskip-source" '_skip_if_exists: []'
+emptyskip_rc=0
+emptyskip_out="$(HARMON_INIT="$TMPROOT/diff-template-emptyskip-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || emptyskip_rc=$?
+if [ "$emptyskip_rc" -eq 2 ]; then
+    ok "diff-template exits 2 on an empty _skip_if_exists declaration"
+else
+    bad "diff-template exits 2 on an empty _skip_if_exists declaration (got $emptyskip_rc)"
+fi
+if printf '%s\n' "$emptyskip_out" | grep -qF "declares an empty _skip_if_exists list"; then
+    ok "diff-template names an empty _skip_if_exists declaration"
+else
+    bad "diff-template names an empty _skip_if_exists declaration"
+fi
+dt_skip_decl_variant "$TMPROOT/diff-template-jinjaskip-source" \
+    '_skip_if_exists:' '  - "[[ project_name ]].code-workspace"'
+jinjaskip_rc=0
+jinjaskip_out="$(HARMON_INIT="$TMPROOT/diff-template-jinjaskip-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || jinjaskip_rc=$?
+if [ "$jinjaskip_rc" -eq 2 ]; then
+    ok "diff-template exits 2 on a templated _skip_if_exists pattern"
+else
+    bad "diff-template exits 2 on a templated _skip_if_exists pattern (got $jinjaskip_rc)"
+fi
+if printf '%s\n' "$jinjaskip_out" |
+    grep -qF "FAIL: templated _skip_if_exists pattern is not supported"; then
+    ok "diff-template names the templated _skip_if_exists pattern it refuses"
+else
+    bad "diff-template names the templated _skip_if_exists pattern it refuses"
+fi
 
 # Classification and withholding are INDEPENDENT axes. secrets.env is tracked
 # AND matches an ignore rule: `git check-ignore` consults the index, so tracking
@@ -5863,6 +6057,11 @@ mkdir -p "$DT_NEWDIR_TEMPLATE/template/newdir/nested"
 cat >"$DT_NEWDIR_TEMPLATE/copier.yml" <<'EOF'
 _min_copier_version: "9.4.0"
 _subdirectory: template
+# diff-template derives its OWNED class from _skip_if_exists and refuses to run
+# without one; this fixture needs no repo-owned path of its own, only a
+# declaration for the derivation to read.
+_skip_if_exists:
+  - CHANGELOG.md
 project_name:
   type: str
   default: New Dir
@@ -5958,6 +6157,11 @@ mkdir -p "$DT_NOIGNORE_TEMPLATE/template"
 cat >"$DT_NOIGNORE_TEMPLATE/copier.yml" <<'EOF'
 _min_copier_version: "9.4.0"
 _subdirectory: template
+# diff-template derives its OWNED class from _skip_if_exists and refuses to run
+# without one; this fixture needs no repo-owned path of its own, only a
+# declaration for the derivation to read.
+_skip_if_exists:
+  - CHANGELOG.md
 project_name:
   type: str
   default: No Ignore
@@ -6278,6 +6482,11 @@ cat >"$DT_LINKIGNORE_TEMPLATE/copier.yml" <<'EOF'
 _min_copier_version: "9.4.0"
 _subdirectory: template
 _preserve_symlinks: true
+# diff-template derives its OWNED class from _skip_if_exists and refuses to run
+# without one; this fixture needs no repo-owned path of its own, only a
+# declaration for the derivation to read.
+_skip_if_exists:
+  - CHANGELOG.md
 project_name:
   type: str
   default: Link Ignore
@@ -6360,6 +6569,11 @@ cat >"$DT_DANGLE_TEMPLATE/copier.yml" <<'EOF'
 _min_copier_version: "9.4.0"
 _subdirectory: template
 _preserve_symlinks: true
+# diff-template derives its OWNED class from _skip_if_exists and refuses to run
+# without one; this fixture needs no repo-owned path of its own, only a
+# declaration for the derivation to read.
+_skip_if_exists:
+  - CHANGELOG.md
 project_name:
   type: str
   default: Dangling
@@ -6462,9 +6676,15 @@ GA_TEMPLATE="$TMPROOT/guarded-audit-template"
 GA_REMOTE="$TMPROOT/guarded-audit-remote.git"
 GA_TARGET="$TMPROOT/guarded-audit-target"
 mkdir -p "$GA_TEMPLATE/template"
+# The guarded path snapshots the canonical remote with `git clone --no-checkout`,
+# so there is no copier.yml on disk there at all — carrying a _skip_if_exists
+# declaration here is what proves the OWNED derivation reads it out of the
+# rendered COMMIT rather than off a working copy.
 cat >"$GA_TEMPLATE/copier.yml" <<'EOF'
 _min_copier_version: "9.4.0"
 _subdirectory: template
+_skip_if_exists:
+  - CHANGELOG.md
 project_name:
   type: str
   default: Guarded Audit

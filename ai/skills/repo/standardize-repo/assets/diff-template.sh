@@ -19,7 +19,7 @@
 #                drops `+x`, leaving a generated script present but unusable.
 #                Symlinks are exempt: the bit belongs to the link target.
 #                Reported INDEPENDENTLY of the content class and always gating,
-#                CO-OWNED and IGNORED included — the exec bit is structural, and
+#                OWNED, CO-OWNED and IGNORED included — the exec bit is structural, and
 #                nobody "owns" a generated script that stopped being runnable.
 #   • MISSING  — template files the repo lacks ENTIRELY. This scan is
 #                manifest-INDEPENDENT (it walks the whole render), because the
@@ -38,6 +38,20 @@
 #                ignored — and the deletion went unreported.
 #   • EQUIV    — a mature nested Terraform layout, or a renumbered/established ADR
 #                log, intentionally replacing a generated seed path. Benign.
+#   • OWNED    — the TEMPLATE ITSELF declares the path repo-owned, by listing it
+#                in copier.yml's `_skip_if_exists`: once the file exists, copier
+#                never writes it again, on adopt or on update. Divergence is
+#                therefore not drift in any sense the template can act on, so
+#                these are informational and PRESENCE-ONLY (no diff, not even
+#                under --show), exactly like CO-OWNED — but on a different
+#                rationale, which is why the tag is separate. CO-OWNED is a
+#                hand-maintained judgement about PROSE the repo rewrites; OWNED
+#                is derived at run time from the rendered commit's own
+#                declaration, so it cannot go stale, and it covers files nobody
+#                would call prose (.release-please-manifest.json, CODEOWNERS).
+#                Where they overlap, OWNED wins. Derived, never mirrored: an
+#                unreadable or empty declaration exits 2 rather than silently
+#                returning every declared path to gating DRIFT.
 #   • CO-OWNED — the template SEEDS the file but the repo owns its PROSE
 #                (AGENTS.md and its symlink aliases, README, the *.md under
 #                docs/ and specs/, the devcontainer zshrc, …). The docs/ and
@@ -106,7 +120,7 @@
 # AGENTS.md (_preserve_symlinks), so content-diffing them would report a single
 # AGENTS.md divergence four times over. A path that is a symlink on one side and
 # a regular file on the other, or a link pointing somewhere else, is a
-# STRUCTURAL divergence and always gates — the CO-OWNED/IGNORED exemptions cover
+# STRUCTURAL divergence and always gates — the OWNED/CO-OWNED/IGNORED exemptions cover
 # content, because prose is what a repo owns; nobody "owns" an alias that stopped
 # being an alias, and the finding is one line of metadata, not a diff to withhold.
 # The CURATED loop enforces this too. It used a bare `diff -q`, which FOLLOWS a
@@ -772,6 +786,148 @@ is_ignore_pattern_match() {
     is_render_withheld "$2"
 }
 
+# --- OWNED — paths the TEMPLATE declares the repo owns ------------------------
+# `_skip_if_exists` in the template's copier.yml is copier's own machine-readable
+# statement that the CONSUMER owns a file: when the path already exists, copier
+# never writes it again — not on adopt, not on `copier update`. harmon-init
+# freezes CHANGELOG.md (release-please writes it), .github/CODEOWNERS (real
+# access control the single `code_owner` answer cannot represent),
+# .devcontainer/related-repos.txt (a curated per-repo list), and
+# .release-please-manifest.json (release state, not template content). Every one
+# of them therefore diverges permanently in every mature repo, and the sweep
+# reported them as gating uncurated DRIFT forever (issue 359).
+#
+# Read from the template's copier.yml AT THE RENDERED REF — `git show
+# "$src_ref:copier.yml"`, the same commit `copier copy --vcs-ref` rendered — so
+# the declaration and the render can never come from different versions of the
+# template. It is read through git rather than off disk for a second reason: the
+# guarded audit path snapshots the canonical remote with `--no-checkout`, so
+# there is no working copy of copier.yml to read there at all.
+#
+# DERIVED, never mirrored. A hand-copied list in this script would be a second
+# source of truth that goes stale silently — exactly the failure the curated
+# manifest already has and that the sweep exists to compensate for.
+#
+# Fail-closed like the rest of this script: a copier.yml that cannot be read, a
+# `_skip_if_exists` that is missing, is not a list, is empty, or holds anything
+# but plain strings stops the run with the setup-error status. "The declaration
+# says nothing" and "I could not read the declaration" are different facts, and
+# collapsing them would silently restore the old behavior — every declared path
+# back to gating DRIFT — with nothing in the output to say the derivation had
+# stopped working.
+#
+# SWEEP-ONLY, like IGNORED. The curated manifest lists none of harmon-init's
+# declared paths today, and if it ever did, the hand-curation would be the more
+# deliberate statement of the two: somebody put that path on a list whose whole
+# purpose is "the template owns this", and silently exempting it because copier
+# also freezes it would resolve the contradiction by hiding it.
+#
+# NOT mirrored into the guarded update's non-adoption classifier (mode-update.md
+# §1), and unlike the CO-OWNED docs/specs branch that asymmetry needs no
+# apology. That classifier asks whether a file the repo does NOT have was
+# declined on purpose, and `_skip_if_exists` says nothing about absence — copier
+# skips a declared path only when it EXISTS, so a repo missing one gets it
+# rendered fresh on the next update. A declared-but-absent path is exactly the
+# MISSING the operator should see, which is what the sweep still reports.
+skip_decl_root="$workdir/skip-decl"
+skip_decl_yml="$workdir/template-copier.yml"
+skip_decl_patterns="$workdir/skip-if-exists.txt"
+skip_decl_source=""
+for skip_decl_candidate in copier.yml copier.yaml; do
+    if git -C "$template" show "$src_ref:$skip_decl_candidate" \
+        >"$skip_decl_yml" 2>/dev/null; then
+        skip_decl_source="$skip_decl_candidate"
+        break
+    fi
+done
+[ -n "$skip_decl_source" ] || {
+    echo "FAIL: cannot read the template's copier.yml at $src_ref" >&2
+    echo "  refusing to continue: without _skip_if_exists every repo-owned file reports as drift" >&2
+    exit 2
+}
+skip_decl_tag="$(yq -r '._skip_if_exists | tag' "$skip_decl_yml" 2>/dev/null || echo "")"
+[ "$skip_decl_tag" = "!!seq" ] || {
+    echo "FAIL: $skip_decl_source has no _skip_if_exists list (tag: ${skip_decl_tag:-unreadable})" >&2
+    echo "  refusing to continue: the template's repo-owned declaration is what the OWNED class is derived from" >&2
+    exit 2
+}
+# Entry-level validation, and a COUNT check alongside it. The patterns are moved
+# through a line-oriented file, so a non-string entry (a nested list, a mapping)
+# or a string carrying an embedded newline would silently become the wrong
+# number of patterns — matching paths nobody declared, or missing ones somebody
+# did.
+skip_decl_bad_tags="$(yq -r '[._skip_if_exists[] | select(tag != "!!str") | tag] | join(",")' "$skip_decl_yml" 2>/dev/null || echo "unreadable")"
+[ -z "$skip_decl_bad_tags" ] || {
+    echo "FAIL: $skip_decl_source has non-string _skip_if_exists entries ($skip_decl_bad_tags)" >&2
+    exit 2
+}
+skip_decl_declared="$(yq -r '._skip_if_exists | length' "$skip_decl_yml" 2>/dev/null || echo "")"
+yq -r '._skip_if_exists[]' "$skip_decl_yml" >"$skip_decl_patterns" 2>/dev/null || {
+    echo "FAIL: cannot read _skip_if_exists from $skip_decl_source" >&2
+    exit 2
+}
+skip_decl_lines="$(awk 'END { print NR }' "$skip_decl_patterns")"
+case "$skip_decl_declared" in
+'' | *[!0-9]*)
+    echo "FAIL: cannot count _skip_if_exists entries in $skip_decl_source" >&2
+    exit 2
+    ;;
+esac
+[ "$skip_decl_declared" -ge 1 ] || {
+    echo "FAIL: $skip_decl_source declares an empty _skip_if_exists list" >&2
+    echo "  refusing to continue: the template's repo-owned declaration is what the OWNED class is derived from" >&2
+    exit 2
+}
+[ "$skip_decl_lines" -eq "$skip_decl_declared" ] || {
+    echo "FAIL: $skip_decl_source has $skip_decl_declared _skip_if_exists entries but they read as $skip_decl_lines patterns" >&2
+    echo "  refusing to continue: an entry holding a newline would match paths nobody declared" >&2
+    exit 2
+}
+# copier renders each pattern as a jinja string before matching, with the
+# template's own delimiters. Nothing in harmon-init's list is templated, and
+# evaluating one here would mean reimplementing the render — so a templated
+# pattern stops the run rather than being matched literally, which would either
+# over- or under-match with no way to tell which.
+while IFS= read -r skip_decl_pattern; do
+    [ -n "$skip_decl_pattern" ] || {
+        echo "FAIL: $skip_decl_source has an empty _skip_if_exists entry" >&2
+        exit 2
+    }
+    case "$skip_decl_pattern" in
+    *'[['* | *'[%'* | *'[#'* | *'{{'* | *'{%'*)
+        echo "FAIL: templated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
+        echo "  refusing to continue: matching it unrendered would classify the wrong paths" >&2
+        exit 2
+        ;;
+    esac
+done <"$skip_decl_patterns"
+# Matched with `git check-ignore` against a scratch repo whose .gitignore IS the
+# declaration. That is not an approximation: copier matches `_skip_if_exists`
+# with pathspec's gitignore dialect (`PathSpec.from_lines`), which is git's own,
+# so `*.code-workspace` reaches any depth and `.github/CODEOWNERS` anchors — the
+# same semantics, evaluated by the same implementation the render-ignore probes
+# above already use, rather than a hand-rolled glob that would drift from it.
+git init -q --template="$workdir/empty-git-template" "$skip_decl_root" \
+    >/dev/null 2>&1 || {
+    echo "FAIL: cannot initialize the _skip_if_exists evaluator" >&2
+    exit 2
+}
+cp "$skip_decl_patterns" "$skip_decl_root/.gitignore" || {
+    echo "FAIL: cannot stage the _skip_if_exists declaration for evaluation" >&2
+    exit 2
+}
+
+# Does the template's own declaration say the REPO owns this rendered path?
+is_template_declared_owned() {
+    ignore_probe_rc=0
+    ignore_probe_err="$(
+        git -C "$skip_decl_root" -c core.excludesFile=/dev/null \
+            check-ignore -q --no-index -- "$1" 2>&1
+    )" || ignore_probe_rc=$?
+    ignore_probe_verdict "$ignore_probe_rc" \
+        "the template's _skip_if_exists declaration" "$1" "$ignore_probe_err"
+}
+
 # A path can be STAGED FOR REMOVAL while its working-tree copy survives, which
 # is what `git rm --cached` does. resolve_variant then hands back that surviving
 # copy and the comparison passes clean — or, if the path also matches an ignore
@@ -1276,6 +1432,7 @@ is_co_owned() {
 uncurated_drift_count=0
 uncurated_mode_count=0
 co_owned_count=0
+owned_count=0
 ignored_count=0
 swept_compared=0
 rendered_total=0
@@ -1286,8 +1443,15 @@ rendered_total=0
 # regardless of the caller's locale.
 while IFS= read -r abs; do
     g="${abs#"$render"/}"
+    # CHANGELOG.md used to be hard-skipped here, alongside git's own metadata and
+    # the answers file. It no longer is: the template DECLARES it repo-owned in
+    # `_skip_if_exists`, so it lands in the OWNED class below like every other
+    # declared path — informational when the repo has it, and finally VISIBLE.
+    # The hard skip reported nothing at all: a repo that never had a CHANGELOG,
+    # or lost one, looked identical to a repo whose release-please log is
+    # healthy.
     case "$g" in
-    .git/* | .copier-answers.yml | CHANGELOG.md) continue ;;
+    .git/* | .copier-answers.yml) continue ;;
     esac
     rendered_total=$((rendered_total + 1))
     grep -qxF "$g" "$manifest" 2>/dev/null && continue # manifest loop owns it
@@ -1379,7 +1543,8 @@ while IFS= read -r abs; do
             # contract is about content, staged or not. A structural staged
             # change was already reported above and is not content.
             if [ "$index_structural" -eq 0 ] &&
-                [ "$index_content_divergent" -eq 1 ] && ! is_co_owned "$g"; then
+                [ "$index_content_divergent" -eq 1 ] &&
+                ! is_template_declared_owned "$g" && ! is_co_owned "$g"; then
                 echo "DRIFT    $rv_display  (uncurated — staged content differs from the template though the worktree matches; the next commit carries it)"
                 drift=1
                 uncurated_drift_count=$((uncurated_drift_count + 1))
@@ -1387,9 +1552,30 @@ while IFS= read -r abs; do
             continue
         fi
         # Content classification: a structural (symlink) mismatch always gates,
-        # then the two presence-only classes, then ordinary uncurated drift.
-        if [ "$compare_structural" -eq 0 ] && is_co_owned "$g"; then
-            # The CO-OWNED contract's value is the INVERSE signal: a line that
+        # then the presence-only classes, then ordinary uncurated drift.
+        #
+        # OWNED is tested BEFORE CO-OWNED and the two overlap by one glob
+        # (`*.code-workspace` is both hand-listed prose-ish scratch and a
+        # template declaration). The template's machine-readable statement wins,
+        # because it is the one that cannot go stale: it is read out of the very
+        # commit that was rendered, while `is_co_owned` is a hand-maintained
+        # list. The classes are kept DISTINCT rather than merged because the
+        # rationales differ and an operator acts on them differently — CO-OWNED
+        # says "the repo rewrote this prose, so a line that DISAPPEARS means the
+        # customization was clobbered", while OWNED says "copier will never
+        # write this path again, so its content is not the template's business
+        # at all". Merging them would attach the wrong reason to whichever set
+        # kept the tag.
+        presence_class=""
+        if [ "$compare_structural" -eq 0 ]; then
+            if is_template_declared_owned "$g"; then
+                presence_class=owned
+            elif is_co_owned "$g"; then
+                presence_class=co-owned
+            fi
+        fi
+        if [ -n "$presence_class" ]; then
+            # The presence-only contract's value is the INVERSE signal: a line that
             # DISAPPEARS means the repo's copy went byte-identical to the
             # template's, i.e. the customizations were clobbered. A clobber
             # STAGED but not yet committed reads as the healthy state — the
@@ -1406,8 +1592,13 @@ while IFS= read -r abs; do
                 uncurated_drift_count=$((uncurated_drift_count + 1))
                 continue
             fi
-            echo "CO-OWNED $rv_display  (template seeds it; repo owns the prose — diff withheld)"
-            co_owned_count=$((co_owned_count + 1))
+            if [ "$presence_class" = owned ]; then
+                echo "OWNED    $rv_display  (template's _skip_if_exists declares the repo owns it; copier will not rewrite it — diff withheld)"
+                owned_count=$((owned_count + 1))
+            else
+                echo "CO-OWNED $rv_display  (template seeds it; repo owns the prose — diff withheld)"
+                co_owned_count=$((co_owned_count + 1))
+            fi
             continue
         fi
         drift_note="uncurated — not in template-owned-files.txt"
@@ -1459,18 +1650,22 @@ if [ "$drift" -ne 0 ]; then
     # The counts make truncated output self-evident: if you can't see every
     # DRIFT / MODE / MISSING line above, you cut them off.
     echo "diff-template: ${drift_count} DRIFT + ${mode_count} MODE across $checked curated files;"
-    echo "  ${uncurated_drift_count} uncurated DRIFT + ${uncurated_mode_count} uncurated MODE, ${co_owned_count} CO-OWNED and ${ignored_count} IGNORED from the"
-    echo "  whole-render sweep; ${missing_count} MISSING overall. ${compared} of ${rendered_total} rendered files compared."
+    echo "  ${uncurated_drift_count} uncurated DRIFT + ${uncurated_mode_count} uncurated MODE, ${owned_count} OWNED, ${co_owned_count} CO-OWNED and"
+    echo "  ${ignored_count} IGNORED from the whole-render sweep; ${missing_count} MISSING overall."
+    echo "  ${compared} of ${rendered_total} rendered files compared."
     echo "  Findings above. For each, review the diff (\`diff-template.sh --show\`):"
     echo "  pull missed template improvements in with \`copier update\`, keep legit"
-    echo "  local customizations. CO-OWNED and IGNORED are informational — their content"
-    echo "  never fails this check and their diffs are withheld even under --show, though"
-    echo "  a MODE finding on one still gates. A withheld-diff note under a gating DRIFT"
-    echo "  means the path matches an ignore pattern; review that one locally."
+    echo "  local customizations. OWNED, CO-OWNED and IGNORED are informational — their"
+    echo "  content never fails this check and their diffs are withheld even under --show,"
+    echo "  though a MODE finding on one still gates. OWNED means the template's own"
+    echo "  \`_skip_if_exists\` declares the path repo-owned, so copier will never rewrite"
+    echo "  it. A withheld-diff note under a gating DRIFT means the path matches an"
+    echo "  ignore pattern; review that one locally."
     exit 1
 fi
 echo "diff-template: OK — $checked curated files match, no template files missing, and"
 echo "  ${compared} of ${rendered_total} rendered files compared clean."
-if [ "$co_owned_count" -ne 0 ] || [ "$ignored_count" -ne 0 ]; then
-    echo "  (${co_owned_count} CO-OWNED and ${ignored_count} IGNORED diverge as expected — informational, not drift.)"
+if [ "$owned_count" -ne 0 ] || [ "$co_owned_count" -ne 0 ] ||
+    [ "$ignored_count" -ne 0 ]; then
+    echo "  (${owned_count} OWNED, ${co_owned_count} CO-OWNED and ${ignored_count} IGNORED diverge as expected — informational, not drift.)"
 fi
