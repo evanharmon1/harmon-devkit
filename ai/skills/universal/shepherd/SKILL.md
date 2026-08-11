@@ -674,6 +674,11 @@ you rather than the bot):
   non-open PR the same way: exit 2 with a reason naming the state.)
   Exit 2 is reserved for invalid state, identity, metadata, or a changed head;
   stop and reconcile that condition rather than spending another trigger.
+  Exit 10 names the surface it came from: an inline finding is answered in its
+  own thread, while one in a top-level comment or a review body is answered on
+  the PR and then recorded with `settle` below — re-running `check` without
+  that record returns 10 again forever, because nothing on GitHub can carry
+  the answer.
   Poll pending within a bounded 10–15-minute window after checks settle. Each
   re-run of `check` is an ordinary watch round and starts with §2's round-start
   fetch — the helper never reads `isDraft`, so a promotion landing mid-window
@@ -687,6 +692,36 @@ you rather than the bot):
 
   `show --state "$state"` prints the state file back unchanged. It decides
   nothing; it is the read for reconciling an interrupted cycle by hand.
+
+  **A badged finding outside an inline thread is settled with `settle`.** The
+  reply rule above reaches inline comments only, because they are the only
+  surface GitHub gives a reply linkage. A P0/P1/P2 finding stated in a
+  **top-level conversation comment** or in a **review body** has nothing to
+  reply to, so no act on GitHub can ever record that you answered it and
+  `check` returns exit 10 for that head forever — the deadlock the inline
+  adjudication path was built to end, reappearing on the two surfaces it
+  cannot see. Answer the finding on the PR as usual (fix it, decline it with
+  reasoning, or file it), then record the disposition:
+
+  ```bash
+  "$helper" settle --state "$state" --actor-id 199175422 \
+    --surface comment --id <comment-or-review-id> \
+    --disposition declined --note "why, or the issue it was filed as"
+  ```
+
+  `--surface review` takes a review ID instead. `settle` refuses (exit 2) a
+  target that does not exist, was not written by the pinned actor, carries no
+  severity badge, or does not identify this state's head — a disposition
+  against another head answers nothing. It fingerprints the body it settled,
+  so a finding Codex **edits afterwards** goes back to exit 10 and must be
+  settled again against the new text; the superseded entry is kept as the
+  record of what was decided about the old one. Settling a review body says
+  nothing about the inline comments hanging off that same review: those keep
+  the reply path, and a review with both needs both.
+
+  This is a **local** record of a decision you already published on the PR, not
+  a substitute for publishing it. The disposition lives in this checkout's
+  state file; the reasoning a human reads still belongs in the PR.
 
   **That state has a second half to its lifecycle, and `reap` is it.**
   `reserve` creates one file per PR and nothing in the cycle above removes it —
