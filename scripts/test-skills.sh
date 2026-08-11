@@ -993,13 +993,58 @@ expect_ok "standards catalog records the claim:claude lifecycle" \
     "$STANDARDIZE_REFS/standards-catalog.md"
 # The catalog must not reconstruct a live trigger phrase: quoted into an issue
 # or PR comment, the workflows' contains() gate matches it and starts a real
-# run (observed on harmon-init#718). Normalize whitespace first — rendered
-# markdown rejoins a phrase split across a line break. The needle is assembled
-# from two pieces so this guard is not itself a literal trigger phrase.
+# run (observed on harmon-init#718). What matters is the RENDERED copy, not the
+# source bytes, so the pipeline approximates it — collapse whitespace (rendered
+# markdown rejoins a phrase split across a line break), drop link targets
+# (`[plan](docs/x.md)` renders as `plan`), then match the mention and the
+# subcommand separated only by whitespace/punctuation such as backticks or bold
+# markers, which render away. Case-insensitive because GitHub's `contains()` is.
+# Prose words between the tokens break the run and pass, which is the fix this
+# guard exists to protect. Deliberately the same detector harmon-init's
+# lint-hygiene.sh applies on its side (init#725) — the file reaches init through
+# a pin bump, so a weaker guard here would just move the failure downstream. The
+# needle is assembled from two pieces so this guard is not itself a phrase.
 expect_fail "standards catalog reconstructs no literal Claude trigger phrase" \
     sh -c 'mention="@claude"
-        tr -s "[:space:]" " " <"$1" | grep -qE "${mention} (plan|implement|review)"' sh \
+        tr -s "[:space:]" " " <"$1" | sed -E "s/\]\([^)]*\)//g" |
+            grep -qiE "${mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
+# Positive controls: the guard above is an expect_fail, so a pipeline that
+# silently matched nothing at all would pass just as loudly as a clean catalog.
+# These prove it still fires on the forms rendered copy reconstructs.
+#
+# Each fixture is ASSEMBLED at run time from a mention token and a subcommand
+# token held apart in the source. Writing them out would put five live trigger
+# phrases in a file that is itself quotable — the exact hazard this guard
+# exists to catch — while testing nothing extra: the pipeline only ever sees
+# the joined string.
+_m=$(printf '@%s' claude)
+_M=$(printf '@%s' Claude)
+for _trigger_fixture in \
+    "post an ${_m} plan comment" \
+    "post an \`${_m}\` \`plan\` comment" \
+    "post an ${_M} Review comment" \
+    "post an ${_m} **implement** comment" \
+    "post an ${_m} [plan](docs/x.md) comment"; do
+    _tf=$(mktemp)
+    printf '%s\n' "$_trigger_fixture" >"$_tf"
+    expect_ok "trigger-phrase guard fires on: $_trigger_fixture" \
+        sh -c 'mention="@claude"
+            tr -s "[:space:]" " " <"$1" | sed -E "s/\]\([^)]*\)//g" |
+                grep -qiE "${mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"' sh \
+        "$_tf"
+    rm -f "$_tf"
+done
+# Negative control: prose words between the tokens must NOT fire, or the guard
+# would forbid the very phrasing the catalog now uses.
+_tf=$(mktemp)
+printf '%s\n' "an ${_m} mention naming plan, implement, or review" >"$_tf"
+expect_fail "trigger-phrase guard ignores prose-separated tokens" \
+    sh -c 'mention="@claude"
+        tr -s "[:space:]" " " <"$1" | sed -E "s/\]\([^)]*\)//g" |
+            grep -qiE "${mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"' sh \
+    "$_tf"
+rm -f "$_tf"
 expect_ok "standards catalog keeps migration procedures out of the catalog" \
     grep -qF 'not a second procedure in this catalog' \
     "$STANDARDIZE_REFS/standards-catalog.md"

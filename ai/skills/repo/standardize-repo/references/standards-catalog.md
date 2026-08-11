@@ -12,8 +12,11 @@ project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
 was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
 **§1.13 (project management) alone was re-verified against harmon-init v4.7.2 on
 2026-07-28; its agent-vocabulary target was re-verified against the registry and
-ADR on 2026-08-08** — the rest still carries the v3.26.1 baseline, so treat a
-§1.13 statement as current and anything else as possibly lagging. (The v4.7.0
+ADR on 2026-08-08; and the `claude-*` workflow rows plus their trigger-gate and
+claim-lifecycle notes in the Part 1 workflow inventory were re-verified against
+the harmon-init v4.26.0 `template/.github/workflows/` tree on 2026-08-10** — the
+rest still carries the v3.26.1 baseline, so treat a statement in those
+re-verified scopes as current and anything else as possibly lagging. (The v4.7.0
 pass recorded the setup scripts as create-if-missing; `e235d43`, released in
 v4.7.2, made them append missing starter options to existing single-selects.)
 The platform and client repos are kept current via mode-update passes, so their
@@ -512,20 +515,33 @@ so a plan and an implement run on one target serialize over their shared
 `claim:claude` label — with `cancel-in-progress: false`. It is job-level, not
 workflow-level, because these workflows fire on every comment event and filter
 in the job, so a workflow-level group would let skipped runs displace queued
-ones. Then a `Claim the target with claim:claude` step paginates the target's
+ones. Serialization is not queueing, though: GitHub keeps only **one pending
+run per group**, so while one run is active a third mention on the same target
+cancels the second one's queued run. Report a vanished command as that limit
+rather than as a completed claim lifecycle. Then a
+`Claim the target with claim:claude` step paginates the target's
 labels and refuses loudly (`::error::` + exit 1) when any `claim:`/`agent:`-
 prefixed label is present, when the label list is unreadable, or when
 `claim:claude` will not apply — all before the App token is minted, so a
-refused run costs and writes nothing. It creates the label (colour `006B75`,
-description `Claimed by Claude`, verbatim from `agent-registry.json`) when the
-repo lacks it. The prefix test is deliberate: it also catches `claim:claude:opus`,
+refused run costs nothing and leaves no claim on the target. It creates the
+label (colour `006B75`, description `Claimed by Claude`, verbatim from
+`agent-registry.json`) when the repo lacks it — repo-level label provisioning
+is the one write that can survive a refusal, since creation precedes the apply
+that may then fail. The prefix test is deliberate: it also catches `claim:claude:opus`,
 `claim:gpt`, and legacy `agent:*`, while `suggest:*` is never matched — that is
 advice, not ownership. An event with no issue or PR number runs unclaimed.
 Release is an `if: always()` step gated on this run having acquired the claim;
 it deletes the label, treats a 404 as success, retries once, and otherwise
 turns the job red rather than reporting a release over a surviving marker. The
-model step also carries its own `timeout-minutes` 30 minutes below the job cap,
-so the step timeout always fires first and the release step still runs.
+model step also carries its own `timeout-minutes`, set 30 minutes below the job
+cap so that an ordinary run hits the **step** timeout — which fails one step and
+lets the release run — rather than the **job** cap, which kills the runner with
+the `always()` step never reached. That headroom is a margin, not a guarantee:
+a preamble (sender gate, claim, token mint, checkout, setup) that eats more than
+30 minutes, a lost runner, or a force-cancel all reach the job cap first and
+strand `claim:claude` on the target, where it makes later runs refuse. Treat a
+target stuck under a claim with no live run as that residual — the marker is
+searchable, and removing it by hand is the recovery.
 
 **GitHub App auth** (the claude-* workflows, `release.yml`, and
 `project-automation.yml`): authenticate as a **`<owner>-ci` GitHub App** (one App
@@ -1004,7 +1020,9 @@ artifacts; the prose rules are guidance, not lint):
   `claim:<family>[:<model>]` for agent-authored live ownership. Both accept a
   family-level label; add the optional model segment only when it is known and
   useful. Interactive session claims are released at wrap or shepherd completion;
-  Claude Action claims are always released, including on failure.
+  Claude Action claims are always released, including on failure — on every path
+  the release step is reached, with the job-cap/lost-runner residual noted in the
+  claim lifecycle under Part 1's workflow inventory.
   Transition-compatible consumers also recognize documented legacy `agent:*`
   claims. Neither family arms execution or records historical doneness. Harness
   slugs never belong on either model-centric axis, and the `Agent` field is not a
