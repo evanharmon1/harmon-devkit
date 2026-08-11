@@ -397,6 +397,108 @@ run_check '2026-07-31T08:01:00Z'
 # with the maintainer, because the assumption behind the design has broken.
 assert_status 0 clean
 
+# GitHub auto-creates a body-less COMMENTED review shell to carry inline
+# comments, and Codex posts one before its inline findings land. An empty body
+# is no evidence: jq's `"" | split("\n")` is `[]`, so before the guard this
+# crashed the classifier with jq's own exit 5 (harmon-devkit#392, hit live on
+# harmon-init#766) — and classifying it instead would read the shell as
+# `findings` and hard-block a cycle whose real review has not arrived.
+echo "==> an empty-body review shell is no evidence, not a crash"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> an empty-body shell does not mask a clean review on the same head"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:""
+      },
+      {
+        id:105,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:05Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+# The inverse ordering is the race (devkit#392 challenge round 1): Codex posts
+# the shell BEFORE its verdict or findings, so a shell NEWER than the clean
+# evidence means the next review is already in flight and the older clean
+# result cannot vouch for it. Time-ordered deliberately — a dangling shell
+# older than the clean evidence (the previous case) ages out rather than
+# deadlocking the cycle.
+echo "==> a dangling shell newer than the clean evidence keeps the cycle pending"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues."
+      },
+      {
+        id:105,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:06Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> a dangling shell newer than the trigger thumbs-up keeps the cycle pending"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:105,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:06Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        user:{id:$id,login:$login},
+        content:"+1",
+        created_at:"2026-07-31T08:00:05Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
 # A concern on its OWN line is still caught, by the boilerplate rule — the tail
 # exemption is confined to the verdict line and does not extend down the body.
 echo "==> a concern on its own line is still indeterminate"
@@ -734,6 +836,138 @@ assert_status 0 clean
 # here did a human write the rationale that now stands on the PR.
 printf '%s' "$check_out" | jq -e '.detail | test("adjudicated")' >/dev/null ||
     fail "adjudicated-clean did not report a distinct detail: $check_out"
+
+# The dangling-shell barrier at the adjudicated-clean exit reads ONLY the
+# adjudication evidence — the bot's current-head findings and the in-thread
+# replies to them (devkit#392 challenge round 2). An unrelated inline comment
+# newer than the shell must not clear the barrier, or an in-flight review is
+# vouched for by activity that adjudicated nothing.
+echo "==> an unrelated inline comment does not clear the dangling-shell barrier"
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:120,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("\n### 💡 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+      },
+      {
+        id:121,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:40Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$owner,login:"repo-owner"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: the retry path is bounded by the attempt deadline."
+      },
+      {
+        id:90,user:{id:$owner,login:"repo-owner"},
+        created_at:"2026-07-31T08:00:50Z",updated_at:"2026-07-31T08:00:50Z",
+        author_association:"OWNER",
+        body:"Unrelated note on another thread."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+# At the adjudicated-clean exit the shell barrier is UNCONDITIONAL — no
+# timestamp comparison (devkit#392 challenge round 3). A shell still dangling
+# once the clean-verdict paths above have all declined is a review in flight
+# or an abandoned one, and both are pending; time-ordering it against inline
+# activity was fail-open twice, because a shell is opaque and other threads'
+# timestamps cannot be correlated against it. Bounded: the attempt machinery
+# re-triggers and Codex posts strictly newer evidence that resolves the cycle.
+echo "==> a dangling shell holds the adjudicated-clean exit at pending regardless of age"
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:120,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("\n### 💡 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+      },
+      {
+        id:121,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:10Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$owner,login:"repo-owner"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: the retry path is bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+# GitHub timestamps to whole seconds, so a shell and the clean verdict can
+# tie. A tie is undecidable — the verdict may belong to the shell's review or
+# predate one now in flight — and the strict `>` reads it as pending: fail
+# closed, self-healing via the attempt machinery's strictly newer evidence
+# (devkit#392 challenge round 3).
+echo "==> a clean verdict tying the shell's second stays pending, not clean"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:06Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues."
+      },
+      {
+        id:105,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:06Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
 
 echo "==> a reply trusted only by PR authorship adjudicates the finding"
 # A shepherd driving a fork PR replies as the PR author with association

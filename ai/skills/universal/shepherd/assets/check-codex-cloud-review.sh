@@ -431,8 +431,12 @@ codex_verdict_defs=$(
           def clean_sentence:
             "codex review: didn't find any major issues.";
           def body_text: (.body // "");
+          # `first // ""`, never `[0]`: jq's `"" | split("\n")` is `[]`, so an
+          # empty body would pipe null into gsub and crash the whole program
+          # with jq's own exit 5 — outside the documented code set
+          # (harmon-devkit#392, hit live on harmon-init#766).
           def first_line:
-            (body_text | split("\n")[0] |
+            (body_text | split("\n") | first // "" |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
           def has_severity_marker:
             (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
@@ -1399,6 +1403,42 @@ check)
     # pinning the tail deadlocked real PRs — there the strict reading was
     # fail-closed toward *blocking clean work*, here it is fail-closed toward
     # blocking work that still has an open finding.
+    # `body_text != ""` drops EMPTY-BODY reviews from classification, and only
+    # from classification. GitHub auto-creates a body-less COMMENTED review
+    # shell to carry inline comments (reply shells, and Codex's own shell
+    # posted before its inline findings land), and an empty body is no
+    # evidence in either direction: it has no verdict to be clean and no
+    # free-text surface where an unanswered concern could hide — anything it
+    # carries is inline comments, which the inline gate above already
+    # classifies on their own. Classifying the shell instead would read it as
+    # `findings` (no clean opening sentence) and hard-block a cycle whose
+    # real review has not arrived yet. `fetched_reviews` below deliberately
+    # still includes shells: inline comments attribute to them by review ID,
+    # and dropping the ID would make those comments read as naming a review
+    # nobody fetched.
+    # A DANGLING shell — an empty-body current-head review by the actor with
+    # no inline comment attributed to it — is a review still in flight:
+    # Codex posts the shell first and its verdict or findings only after, so
+    # clean evidence OLDER than the newest dangling shell may be about to be
+    # contradicted and is not accepted, while evidence NEWER than the shell
+    # stands (that is the normal shell -> verdict order, so an abandoned
+    # shell ages out instead of deadlocking the cycle). Every clean exit
+    # below compares its own evidence timestamp against this barrier;
+    # GitHub's ISO-8601 UTC strings compare correctly as strings.
+    shell_barrier=$(jq -r \
+        --argjson id "$actor_id" \
+        --arg head "$state_head" \
+        --argjson attributed "$attributed_reviews" '
+          [.[] | select(
+            .user.id? == $id and
+            (.commit_id? == $head) and
+            ((.body // "") == "") and
+            ((.id? | type) == "number")
+          ) |
+          select(.id as $rid | ($attributed | index($rid)) | not) |
+          .submitted_at? | select(type == "string")] | max // ""
+        ' "$workdir/reviews.json")
+
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
@@ -1406,7 +1446,8 @@ check)
         "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
-            (.commit_id? == $head)
+            (.commit_id? == $head) and
+            (body_text != "")
           ) |
           . as $review | verdict_class as $class |
           if $class == "findings" then
@@ -1458,12 +1499,14 @@ check)
           [
             $prefix,
             verdict_class,
-            (.id | tostring)
+            (.id | tostring),
+            (.created_at // "")
           ] | @tsv
         ' "$workdir/comments.json" >"$comment_candidates"
 
     comment_result=none
-    while IFS='	' read -r prefix classification comment_id; do
+    clean_comment_time=""
+    while IFS='	' read -r prefix classification comment_id comment_created; do
         [ -n "$prefix" ] || continue
         printf '%s' "$prefix" | grep -Eq '^[0-9a-fA-F]{7,40}$' || {
             emit indeterminate "bot review comment contains a malformed commit prefix"
@@ -1495,6 +1538,10 @@ check)
         elif [ "$comment_result" = "none" ]; then
             comment_result=clean
         fi
+        if [ "$classification" = "clean" ] &&
+            [ "$comment_created" \> "$clean_comment_time" ]; then
+            clean_comment_time=$comment_created
+        fi
         : "$comment_id"
     done <"$comment_candidates"
 
@@ -1507,10 +1554,66 @@ check)
         exit 2
     fi
     if [ "$review_result" = "clean" ] || [ "$comment_result" = "clean" ]; then
+        # The newest clean evidence must be NEWER than the dangling-shell
+        # barrier above: an older clean result cannot vouch for a head whose
+        # next review is already in flight.
+        #
+        # Strictly newer, deliberately. GitHub timestamps these resources to
+        # whole seconds, so a shell and the verdict can tie, and a tie is
+        # undecidable — the verdict may belong to the shell's review or
+        # predate a review that is now in flight. `>` reads a tie as pending:
+        # fail closed, and not permanent, because the attempt machinery
+        # re-triggers and Codex then posts strictly newer evidence for this
+        # head that resolves the cycle either way. `>=` would trade that
+        # bounded delay for a promote-during-the-gap race inside the
+        # coincidence second.
+        #
+        # Accepted residual, stated so nobody rediscovers it: attempt 2 can
+        # post a clean verdict while attempt 1's review — same head, same
+        # diff, declared dead a full window ago — is somehow still running,
+        # and that newer verdict clears attempt 1's shell. Timestamps cannot
+        # correlate a verdict with a shell, so no comparison closes this
+        # without reopening the abandoned-shell deadlock on the other side.
+        # The exposure requires Codex to contradict itself on identical
+        # input, is caught by the caller's mandatory pre-promotion re-check
+        # when the late findings land before promotion, and beyond that a
+        # reviewer that may post arbitrarily late defeats any polling design
+        # — which is why the gate promotes to ready-for-review, not merge.
+        clean_review_time=""
+        if [ "$review_result" = "clean" ]; then
+            clean_review_time=$(jq -r \
+                --argjson id "$actor_id" \
+                --arg head "$state_head" \
+                "$codex_verdict_defs"'
+                  [.[] | select(
+                    .user.id? == $id and
+                    (.commit_id? == $head) and
+                    (body_text != "")
+                  ) | select(verdict_class == "clean") |
+                  .submitted_at? | select(type == "string")] | max // ""
+                ' "$workdir/reviews.json")
+        fi
+        newest_clean=$clean_review_time
+        if [ "$clean_comment_time" \> "$newest_clean" ]; then
+            newest_clean=$clean_comment_time
+        fi
+        if [ -n "$shell_barrier" ] && ! [ "$newest_clean" \> "$shell_barrier" ]; then
+            emit pending "a newer empty review shell is still in flight for this head"
+            exit 11
+        fi
         emit clean "authenticated bot posted a current-head clean result"
         exit 0
     fi
 
+    like_time=$(jq -r \
+        --argjson id "$actor_id" \
+        --arg requested "$cycle_requested" '
+          [.[] | select(
+            .user.id? == $id and
+            .content? == "+1" and
+            (.created_at? >= $requested)
+          ) | .created_at? | select(type == "string")] | max // ""
+        ' "$workdir/reactions.json")
     exact_like=$(jq \
         --argjson id "$actor_id" \
         --arg requested "$cycle_requested" '
@@ -1521,6 +1624,10 @@ check)
           )] | length
         ' "$workdir/reactions.json")
     if [ "$exact_like" -gt 0 ]; then
+        if [ -n "$shell_barrier" ] && ! [ "$like_time" \> "$shell_barrier" ]; then
+            emit pending "a newer empty review shell is still in flight for this head"
+            exit 11
+        fi
         emit clean "authenticated bot reacted +1 on the exact current-head trigger"
         exit 0
     fi
@@ -1561,6 +1668,34 @@ check)
             emit indeterminate "current-head findings are adjudicated but their review attribution is incomplete across the comment and review endpoints"
             exit 2
         }
+        # Here the barrier is UNCONDITIONAL: any dangling shell holds this
+        # exit at pending, with no timestamp comparison at all. Two earlier
+        # revisions tried to time-order the shell against inline activity —
+        # first the whole endpoint (an unrelated comment cleared it), then
+        # the adjudication evidence (a reply to an EARLIER finding cleared a
+        # NEWER shell, and a reply's author needs no trust to move the max) —
+        # and both were fail-open, because a shell is opaque: nothing in it
+        # says which future content it carries, so no other thread's
+        # timestamps can be correlated against it. What CAN be said is where
+        # a dangling shell at this exit can still be headed. The legitimate
+        # shell-then-verdict flow never arrives here — a clean verdict is a
+        # review body, a top-level comment, or a reaction, and each exits
+        # above through its own time-ordered gate — so a shell that is still
+        # dangling at this point is a review in flight or an abandoned one,
+        # and both are pending: fail closed, bounded by the attempt window.
+        # Attempt 2's newer evidence resolves the cycle when it is a clean
+        # verdict or reaction (the time-ordered exits above accept it). When
+        # attempt 2 instead returns findings and an ABANDONED attempt-1
+        # shell still dangles, this exit stays pending after those findings
+        # are adjudicated, and the cycle ends in the attempt machinery's
+        # escalation. Deliberate, not a gap: an actor shell nobody can
+        # explain plus adjudicated findings is incomplete evidence, and the
+        # checker's discipline for incomplete evidence is a human hand-off,
+        # never a green it cannot support.
+        if [ -n "$shell_barrier" ]; then
+            emit pending "an empty review shell is still unresolved for this head"
+            exit 11
+        fi
         emit clean "current-head findings are all adjudicated by trusted in-thread replies"
         exit 0
     fi
