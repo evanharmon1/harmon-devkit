@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.29.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.28.0...v0.29.0) (2026-08-11)
+
+
+### Features
+
+* **shepherd:** settle findings the reply rule cannot reach ([#424](https://github.com/evanharmon1/harmon-devkit/issues/424)) ([7b645fe](https://github.com/evanharmon1/harmon-devkit/commit/7b645feff73e11a76f22b8e003312ec40664fd40))
+
 ## [0.28.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.27.0...v0.28.0) (2026-08-11)
 
 
