@@ -2675,6 +2675,17 @@ expect_ok "the named helper is the one the snippet actually defines" \
 # walk is ever reached, so no repro survives today — which is exactly why the
 # guard is worth pinning: the invariant should hold because it is checked, not
 # because two unrelated behaviours happen to cover for it.
+# Every path this script hands git comes from the RENDER's own file names, so a
+# `*`, `?`, or `[` in one is a filename and never pathspec magic. Without
+# `--literal-pathspecs` a rendered `docs/[a].md` silently answers about
+# `docs/a.md` — wrong index mode, wrong staged verdict, and for the clobber gate
+# a claim about a file nobody touched.
+expect_ok "every pathspec-taking git probe is pinned literal" \
+    sh -c 'test "$(grep -cE "(ls-files|ls-tree|diff --cached)[^|]*-- \"" "$1")" -gt 0 &&
+        ! grep -nE "git -C \"\\\$target\" (ls-files|ls-tree|diff)" "$1" |
+            grep -qv -- "--literal-pathspecs" &&
+        test "$(grep -c -- "--literal-pathspecs" "$1")" -ge 3' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
 expect_ok "the equivalence walk honors the physical-parent guard" \
     sh -c 'test "$(sed -n "/^has_repo_equivalent() {/,/^has_nested_terraform_root() {/p" "$1" |
         grep -c "repo_parent_diverges")" -ge 3 &&

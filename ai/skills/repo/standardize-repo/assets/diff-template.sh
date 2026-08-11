@@ -513,7 +513,11 @@ index_variant() {
     out="$index_root/$p"
     mkdir -p "$(dirname "$out")"
     rm -f "$out"
-    mode="$(git -C "$target" ls-files -s -- "$p" | awk 'NR == 1 { print $1 }')"
+    # `--literal-pathspecs`: a rendered name containing `*`, `?`, or `[` is a
+    # filename, and reading the MODE of whatever sibling it globbed onto would
+    # mis-materialize the snapshot this function hands back.
+    mode="$(git -C "$target" --literal-pathspecs ls-files -s -- "$p" |
+        awk 'NR == 1 { print $1 }')"
     if [ "$mode" = "120000" ]; then
         # A tracked symlink's blob content IS its link target. Re-materialize it
         # as a symlink rather than a regular file holding that text: the sweep
@@ -814,7 +818,13 @@ staged_probe() {
     # Never called from inside a command substitution: `exit` there would leave
     # only the subshell and the run would continue on a failed probe, which is
     # the very thing this exists to prevent.
-    staged_probe_out="$(git -C "$target" "$@" 2>"$staged_probe_err")" || sp_rc=$?
+    # `--literal-pathspecs`: every path here comes from the RENDER's own file
+    # names, and git would otherwise read `*`, `?`, and `[` in one as wildcard
+    # pathspec magic — so a rendered `docs/[a].md` would silently answer about
+    # `docs/a.md` instead. Nothing in this script ever wants a glob.
+    staged_probe_out="$(
+        git -C "$target" --literal-pathspecs "$@" 2>"$staged_probe_err"
+    )" || sp_rc=$?
     [ "$sp_rc" -ne 0 ] || return 0
     echo "FAIL: cannot evaluate $sp_what for '$sp_path' (git exit $sp_rc)" >&2
     [ ! -s "$staged_probe_err" ] || sed 's/^/  /' "$staged_probe_err" >&2
@@ -953,8 +963,11 @@ has_staged_change() {
     [ "$target_owns_worktree" -eq 1 ] || return 1
     git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1 || return 1
     staged_change_rc=0
+    # `--literal-pathspecs` for the same reason as the staged probes: a rendered
+    # name holding `*`, `?`, or `[` is a filename, never a glob, and matching an
+    # unrelated sibling here would claim a clobber that is not happening.
     staged_change_err="$(
-        git -C "$target" diff --cached --quiet HEAD -- "$1" 2>&1
+        git -C "$target" --literal-pathspecs diff --cached --quiet HEAD -- "$1" 2>&1
     )" || staged_change_rc=$?
     case "$staged_change_rc" in
     0) return 1 ;; # index matches HEAD — nothing staged
