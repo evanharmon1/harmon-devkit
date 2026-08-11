@@ -1497,6 +1497,16 @@ check)
         # The newest clean evidence must be NEWER than the dangling-shell
         # barrier above: an older clean result cannot vouch for a head whose
         # next review is already in flight.
+        #
+        # Strictly newer, deliberately. GitHub timestamps these resources to
+        # whole seconds, so a shell and the verdict can tie, and a tie is
+        # undecidable — the verdict may belong to the shell's review or
+        # predate a review that is now in flight. `>` reads a tie as pending:
+        # fail closed, and not permanent, because the attempt machinery
+        # re-triggers and Codex then posts strictly newer evidence for this
+        # head that resolves the cycle either way. `>=` would trade that
+        # bounded delay for a promote-during-the-gap race inside the
+        # coincidence second.
         clean_review_time=""
         if [ "$review_result" = "clean" ]; then
             clean_review_time=$(jq -r \
@@ -1586,29 +1596,25 @@ check)
             emit indeterminate "current-head findings are adjudicated but their review attribution is incomplete across the comment and review endpoints"
             exit 2
         }
-        # Same barrier as the other clean exits: the newest ADJUDICATION
-        # evidence must postdate any dangling shell, or a round still in
-        # flight is being vouched for by the previous round's adjudication.
-        # The maximum is confined to the evidence that establishes
-        # adjudication — the bot's current-head inline findings and the
-        # in-thread replies to them — never the whole endpoint: an unrelated
-        # inline comment posted after the shell must not clear the barrier.
-        inline_latest_time=$(jq -r \
-            --argjson id "$actor_id" \
-            --arg head "$state_head" '
-              ([.[] | select(
-                 .user.id? == $id and (.original_commit_id? == $head)
-               ) | .id? | select(type == "number")]) as $findings |
-              [.[] | select(
-                (.user.id? == $id and (.original_commit_id? == $head)) or
-                (.in_reply_to_id? as $rid |
-                  (($rid | type) == "number") and
-                  (($findings | index($rid)) != null))
-              ) | .created_at? | select(type == "string")] | max // ""
-            ' "$workdir/inline.json")
-        if [ -n "$shell_barrier" ] &&
-            ! [ "$inline_latest_time" \> "$shell_barrier" ]; then
-            emit pending "a newer empty review shell is still in flight for this head"
+        # Here the barrier is UNCONDITIONAL: any dangling shell holds this
+        # exit at pending, with no timestamp comparison at all. Two earlier
+        # revisions tried to time-order the shell against inline activity —
+        # first the whole endpoint (an unrelated comment cleared it), then
+        # the adjudication evidence (a reply to an EARLIER finding cleared a
+        # NEWER shell, and a reply's author needs no trust to move the max) —
+        # and both were fail-open, because a shell is opaque: nothing in it
+        # says which future content it carries, so no other thread's
+        # timestamps can be correlated against it. What CAN be said is where
+        # a dangling shell at this exit can still be headed. The legitimate
+        # shell-then-verdict flow never arrives here — a clean verdict is a
+        # review body, a top-level comment, or a reaction, and each exits
+        # above through its own time-ordered gate — so a shell that is still
+        # dangling at this point is a review in flight or an abandoned one,
+        # and both are pending: fail closed, bounded by the attempt window,
+        # and self-healing, since attempt 2 makes Codex post strictly newer
+        # evidence for this head that resolves the cycle either way.
+        if [ -n "$shell_barrier" ]; then
+            emit pending "an empty review shell is still unresolved for this head"
             exit 11
         fi
         emit clean "current-head findings are all adjudicated by trusted in-thread replies"

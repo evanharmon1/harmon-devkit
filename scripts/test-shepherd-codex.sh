@@ -891,10 +891,14 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 11 pending
 
-# The aging-out control: a dangling shell OLDER than the adjudication
-# evidence does not block — the normal Codex order is shell then content, so
-# a stale abandoned shell cannot deadlock an adjudicated cycle.
-echo "==> a dangling shell older than the adjudication evidence still ages out"
+# At the adjudicated-clean exit the shell barrier is UNCONDITIONAL — no
+# timestamp comparison (devkit#392 challenge round 3). A shell still dangling
+# once the clean-verdict paths above have all declined is a review in flight
+# or an abandoned one, and both are pending; time-ordering it against inline
+# activity was fail-open twice, because a shell is opaque and other threads'
+# timestamps cannot be correlated against it. Bounded: the attempt machinery
+# re-triggers and Codex posts strictly newer evidence that resolves the cycle.
+echo "==> a dangling shell holds the adjudicated-clean exit at pending regardless of age"
 new_cycle
 codex_findings_review
 jq -cn \
@@ -935,7 +939,35 @@ jq -cn \
       }
     ]]' >"${fixtures}/inline.pages.json"
 run_check '2026-07-31T08:01:00Z'
-assert_status 0 clean
+assert_status 11 pending
+
+# GitHub timestamps to whole seconds, so a shell and the clean verdict can
+# tie. A tie is undecidable — the verdict may belong to the shell's review or
+# predate one now in flight — and the strict `>` reads it as pending: fail
+# closed, self-healing via the attempt machinery's strictly newer evidence
+# (devkit#392 challenge round 3).
+echo "==> a clean verdict tying the shell's second stays pending, not clean"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:06Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues."
+      },
+      {
+        id:105,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:06Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
 
 echo "==> a reply trusted only by PR authorship adjudicates the finding"
 # A shepherd driving a fork PR replies as the PR author with association
