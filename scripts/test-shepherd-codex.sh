@@ -2668,7 +2668,7 @@ set -e
 
 run_carry() {
     set +e
-    carry_out="$("$helper" carry --state "$state" "$@" 2>&1)"
+    carry_out="$("$helper" carry --state "$state" --actor-id "$actor_id" "$@" 2>&1)"
     carry_rc=$?
     set -e
 }
@@ -2900,3 +2900,61 @@ run_carry --new-head "$carry_new_head" --base-ref carry-base
     fail "a findings verdict must refuse the carry, got rc=$carry_rc: $carry_out"
 
 echo "shepherd Codex cloud-review classifier: PASS"
+
+# The recorded clean result is a cache; Codex can post after it. A delayed
+# old-head finding would become unreachable the moment the head moves, so any
+# bot activity newer than the recorded result refuses the carry
+# (devkit challenge round 2).
+echo "==> bot activity newer than the recorded clean result refuses the carry"
+carry_setup
+carry_clean_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$carry_old_head" \
+    '[[
+      {
+        id:140,user:{id:$id,login:$login},
+        created_at:"2026-07-31T09:30:00Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:150,
+        body:"P1: a delayed finding on the old head"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "newer bot activity must refuse the carry, got rc=$carry_rc: $carry_out"
+[ "$(jq -r .head "$state")" = "$carry_old_head" ] ||
+    fail "a refused stale carry must not touch the state: $(jq -c . "$state")"
+printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
+
+# cksum hashes empty input to a perfectly good value, so two empty diffs would
+# have compared equal and carried a verdict onto a PR that proposes nothing
+# (devkit challenge round 2).
+echo "==> an empty diff refuses the carry instead of hashing to a match"
+carry_setup
+carry_clean_cycle
+git checkout -q carry-base
+git merge -q --no-edit carry-pr
+git checkout -q carry-pr
+git merge -q --no-edit carry-base
+carry_empty_head="$(git rev-parse HEAD)"
+run_carry --new-head "$carry_empty_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "an empty diff must refuse the carry, got rc=$carry_rc: $carry_out"
+printf '%s' "$carry_out" | grep -Fq "empty diff" ||
+    fail "an empty-diff refusal must say so: $carry_out"
+
+# A carried head is a new cycle and gets a new clock: inheriting a spent
+# reservation would leave the mandatory post-merge check seconds of budget
+# (devkit challenge round 2).
+echo "==> a carry resets the reservation clock for the new head"
+carry_setup
+carry_clean_cycle
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 0 ] || fail "carry should have succeeded: $carry_out"
+[ "$(jq -r .attempt "$state")" = "1" ] ||
+    fail "a carry must reset the attempt: $(jq -c . "$state")"
+[ "$(jq -r '.timeout_min // "null"' "$state")" = "null" ] ||
+    fail "a carry must clear an adopted timeout: $(jq -c . "$state")"
+[ "$(jq -r .reserved_at "$state")" != "$request_time" ] ||
+    fail "a carry must restart the reservation clock: $(jq -c . "$state")"

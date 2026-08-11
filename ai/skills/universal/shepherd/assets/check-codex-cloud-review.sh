@@ -37,7 +37,7 @@ Usage:
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh check --state FILE --actor-id N [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
   check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--now ISO8601]
-  check-codex-cloud-review.sh carry --state FILE --new-head SHA [--base-ref REF] [--now ISO8601]
+  check-codex-cloud-review.sh carry --state FILE --actor-id N --new-head SHA [--base-ref REF] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
 EOF
@@ -295,12 +295,19 @@ record_check_result() {
 # the emission is pinned — hence every flag and -c override below, which
 # force the algorithm, prefixes, context, color, and index width regardless
 # of local configuration. cksum keeps the no-new-dependency constraint.
+# An EMPTY diff prints nothing rather than a checksum: `cksum` hashes empty
+# input to a perfectly good value, so a caller testing the fingerprint for
+# emptiness would never see it, and two empty diffs would compare equal —
+# carrying a clean verdict onto a PR whose base independently acquired its
+# changes and which now proposes nothing at all.
 diff_fingerprint() {
     fp_base=$(git merge-base "$1" "$2") || return 1
-    git -c diff.algorithm=myers -c diff.mnemonicPrefix=false \
+    fp_bytes=$(git -c diff.algorithm=myers -c diff.mnemonicPrefix=false \
         -c diff.noprefix=false -c diff.external= \
         diff --no-color --no-ext-diff --no-textconv --full-index \
-        --unified=3 "$fp_base" "$2" | cksum | tr ' ' '-'
+        --unified=3 "$fp_base" "$2") || return 1
+    [ -n "$fp_bytes" ] || return 0
+    printf '%s' "$fp_bytes" | cksum | tr ' ' '-'
 }
 
 provider_head() {
@@ -2021,7 +2028,21 @@ carry)
     # concern: the caller's readiness gate re-runs the checks on the new head
     # unconditionally, because a merge changes what the tests run against even
     # when it changes nothing about the diff.
-    [ -n "$new_head" ] || usage
+    #
+    # The accepted limit of this design, stated so nobody mistakes it for an
+    # oversight: an unchanged diff is not proof of unchanged BEHAVIOUR. A
+    # catch-up can move a function, a config default, or an authorization rule
+    # the patch depends on without touching a diff byte, and no re-reviewer of
+    # the diff alone would see it either. Splitting the gate is the deliberate
+    # trade harmon-init#752 made on evidence: the diff is what Codex attests,
+    # everything outside it is what CI attests, and CI always re-runs. The
+    # live case that motivated the issue behaved exactly that way — a base
+    # file's violation arrived through a catch-up and was caught by CI while
+    # the Codex re-review came back clean. Removing the carve-out means
+    # spending a full reviewer window per catch-up to re-attest identical
+    # bytes, which is the cost the issue exists to eliminate.
+    [ -n "$new_head" ] && [ -n "$actor_id" ] || usage
+    valid_uint "$actor_id" || die "invalid actor ID"
     need git
     valid_sha "$new_head" || die "--new-head must be a full 40-hex commit"
     carried_at=$(now_utc)
@@ -2029,9 +2050,16 @@ carry)
     read_state
 
     state_head=$(jq -r '.head' "$state_file")
+    state_repo=$(jq -r '.repo' "$state_file")
+    state_pr=$(jq -r '.pr' "$state_file")
     valid_sha "$state_head" || die "state has an invalid head"
+    valid_repo "$state_repo" || die "state has an invalid repository"
+    valid_uint "$state_pr" || die "state has an invalid PR number"
     [ "$(jq -r '.last_result // empty' "$state_file")" = "clean" ] ||
         die "the state head has no terminal-clean check result to carry"
+    last_result_at=$(jq -r '.last_result_at // empty' "$state_file")
+    valid_time "$last_result_at" ||
+        die "the recorded clean result has no usable timestamp to check for staleness"
     [ "$new_head" != "$state_head" ] ||
         die "--new-head is already this state's head"
     # A dirty tree means the commits being compared are not the whole story of
@@ -2050,12 +2078,44 @@ carry)
     git merge-base --is-ancestor "$state_head" "$new_head" ||
         die "--new-head does not descend from the state head, so this is not a catch-up merge"
 
+    # The recorded clean result is a CACHE, and Codex can post after it. A
+    # delayed old-head finding landing between that check and this carry would
+    # be lost the moment the head moves: every later `check` filters evidence
+    # to the new head, so the finding becomes unreachable rather than
+    # outranking anything. Re-read the three evidence endpoints and refuse if
+    # ANY bot activity on this PR postdates the recorded result — deliberately
+    # not "is it a finding": classification lives in `check`, a refusal only
+    # costs the fresh cycle that was the status quo before carrying existed,
+    # and being wrong in that direction is the whole point.
+    carry_workdir=$(mktemp -d -t codex-cloud-review-carry-XXXXXX) ||
+        die "cannot create a working directory"
+    trap 'rm -rf "$carry_workdir"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
+    for carry_source in \
+        "issues/$state_pr/comments:comments" \
+        "pulls/$state_pr/reviews:reviews" \
+        "pulls/$state_pr/comments:inline"; do
+        carry_endpoint="repos/$state_repo/${carry_source%%:*}?per_page=100"
+        carry_dest="$carry_workdir/${carry_source##*:}.json"
+        fetch_pages "$carry_endpoint" "$carry_dest" ||
+            die "cannot re-read ${carry_source##*:} to prove the clean result is still current"
+        carry_newer=$(jq -r \
+            --argjson id "$actor_id" \
+            --arg since "$last_result_at" '
+              [.[] | select(.user.id? == $id) |
+                ((.submitted_at // .created_at // "") | select(. > $since))
+              ] | length
+            ' "$carry_dest") ||
+            die "cannot interpret ${carry_source##*:} while checking for newer activity"
+        [ "$carry_newer" -eq 0 ] ||
+            die "Codex posted ${carry_source##*:} activity after the recorded clean result; re-check the old head before carrying"
+    done
+
     old_fingerprint=$(diff_fingerprint "$base_ref" "$state_head") ||
         die "cannot compute the state head's diff against $base_ref"
     new_fingerprint=$(diff_fingerprint "$base_ref" "$new_head") ||
         die "cannot compute --new-head's diff against $base_ref"
     [ -n "$old_fingerprint" ] && [ -n "$new_fingerprint" ] ||
-        die "an empty diff has no patch identity to compare"
+        die "an empty diff has no identity to compare; the PR proposes no change against $base_ref"
     [ "$old_fingerprint" = "$new_fingerprint" ] ||
         die "the proposed diff changed across the catch-up (fingerprint $old_fingerprint became $new_fingerprint); run a fresh review cycle"
 
@@ -2071,6 +2131,17 @@ carry)
         --arg carried_at "$carried_at" '
           .version = 2 |
           .head = $new |
+          # The carried head is a NEW cycle and gets a new clock. Inheriting
+          # `reserved_at` (and an adopted `timeout_min`, and attempt 2) from a
+          # cycle that may have spent its whole window leaves the mandatory
+          # post-merge `check` with seconds of budget, so `run_gh` times out
+          # and the carry path reports retry — defeating the feature it was
+          # supposed to deliver. The trigger fields are left alone as old-cycle
+          # provenance: the direct reaction path already declines on a carried
+          # head, so they cannot be mistaken for current-head evidence.
+          .reserved_at = $carried_at |
+          .attempt = 1 |
+          .timeout_min = null |
           .carries = ((.carries // []) + [{
             carried_from:$old,carried_to:$new,base_ref:$base,
             diff_fingerprint:$diff_fingerprint,carried_at:$carried_at
