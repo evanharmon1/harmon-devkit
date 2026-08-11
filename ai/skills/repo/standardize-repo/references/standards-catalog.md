@@ -1033,9 +1033,12 @@ artifacts; the prose rules are guidance, not lint):
   `claim:<family>[:<model>]` for agent-authored live ownership. Both accept a
   family-level label; add the optional model segment only when it is known and
   useful. Interactive session claims are released at wrap or shepherd completion;
-  Claude Action claims are always released, including on failure — on every path
-  the release step is reached, with the job-cap/lost-runner residual noted in the
-  claim lifecycle under Part 1's workflow inventory.
+  Claude Action claims are released by an unconditional `if: always()` cleanup
+  step, so an ordinary failure or step timeout still releases. The exception is a
+  run that never reaches that step at all — a job-cap kill, a lost runner, or a
+  force-cancel — which strands the marker; see the claim lifecycle under Part 1's
+  workflow inventory. Treat a claim with no live run as that case, not as
+  ownership.
   Transition-compatible consumers also recognize documented legacy `agent:*`
   claims. Neither family arms execution or records historical doneness. Harness
   slugs never belong on either model-centric axis, and the `Agent` field is not a

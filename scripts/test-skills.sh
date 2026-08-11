@@ -958,7 +958,12 @@ expect_ok "standards catalog scopes session claim cleanup to lifecycle completio
     grep -qF 'Interactive session claims are released at wrap or shepherd completion' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog guarantees failure cleanup only for Claude Actions" \
-    grep -qF 'Claude Action claims are always released, including on failure' \
+    grep -qF 'Claude Action claims are released by an unconditional `if: always()` cleanup' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+# …and states the residual as an exception rather than softening "always": a run
+# killed at the job cap never reaches the cleanup step at all.
+expect_ok "standards catalog names the stranded-claim exception" \
+    sh -c 'grep -qF "never reaches that step at all" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog requires registry-derived human routing tables" \
     grep -qF 'includes family and harness tables derived from the' \
@@ -1025,10 +1030,17 @@ trigger_phrase_present() {
     {
         printf '%s\n' "$_tp_norm"
         printf '%s\n' "$_tp_norm" | sed -E 's/\]\([^)]*\)//g'
+        printf '%s\n' "$_tp_norm" | sed -E 's/<[^>]*>//g'
     } | grep -iE "$_tp_pat" >/dev/null
 }
-expect_fail "standards catalog reconstructs no literal Claude trigger phrase" \
-    trigger_phrase_present "$STANDARDIZE_REFS/standards-catalog.md"
+# Every reference doc, not just the catalog: these are all Markdown an agent
+# quotes into an issue or PR comment, so a phrase moved into a sibling file is
+# just as live. Scanning the directory also means a reference added later is
+# covered without anyone remembering to add it here.
+for _ref in "$STANDARDIZE_REFS"/*.md; do
+    expect_fail "$(basename "$_ref") reconstructs no literal Claude trigger phrase" \
+        trigger_phrase_present "$_ref"
+done
 # Positive controls: the guard above is an expect_fail, so a pipeline that
 # silently matched nothing at all would pass just as loudly as a clean catalog.
 # These prove it still fires on the forms rendered copy reconstructs.
@@ -1052,7 +1064,8 @@ for _trigger_case in \
     "bold subcommand|post an ${_m} **implement** comment" \
     "linked subcommand|post an ${_m} [plan](docs/x.md) comment" \
     "phrase inside a link destination|see [the docs](https://x.example/${_m}-plan)" \
-    "phrase inside a link title|see [the docs](https://x.example \"${_m} plan\")"; do
+    "phrase inside a link title|see [the docs](https://x.example \"${_m} plan\")" \
+    "inline HTML between the tokens|post an ${_m} <em>plan</em> comment"; do
     _label=${_trigger_case%%|*}
     _trigger_fixture=${_trigger_case#*|}
     _tf=$(mktemp)
