@@ -2044,15 +2044,16 @@ expect_ok "shepherd reconciles partial or raced promotion" \
         grep -qF "report must name that unresolved" "$1" &&
         grep -qF "remote-state risk" "$1"' sh "$SHEPHERD_SKILL"
 expect_ok "shepherd paginates the draft-conversion undo guard" \
-    sh -c 'grep -qF "gh api --paginate repos/\"\$repo\"/issues/<n>/timeline" "$1" &&
+    sh -c 'grep -qF "/assets/gh-ro.sh --paginate repos/\"\$repo\"/issues/<n>/timeline" "$1" &&
         grep -qF "convert_to_draft" "$1"' sh "$SHEPHERD_SKILL"
 expect_ok "shepherd bounds the undo per PR across sessions" \
     grep -qF 'the bound is per PR, across sessions' "$SHEPHERD_SKILL"
 expect_ok "shepherd freezes review content across promotion" \
-    sh -c 'grep -qF "stable content fingerprint" "$1" &&
-        grep -qF "top-level comments, inline comments" "$1" &&
+    sh -c 'grep -qF "top-level comments, inline comments" "$1" &&
         grep -qF "GraphQL review-thread resolution" "$1" &&
-        grep -qF "identical to the last pre-promotion read" "$1"' sh \
+        grep -qF "readiness-gate.sh fingerprint --repo" "$1" &&
+        grep -qF "re-read the content fingerprint" "$1" &&
+        grep -qF "identical to the passing gate" "$1"' sh \
     "$SHEPHERD_SKILL"
 expect_ok "shepherd settles automation before final ready promotion" \
     sh -c 'grep -qF "cannot be used as an automation" "$1" &&

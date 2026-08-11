@@ -6,7 +6,7 @@ description: >-
   rejections in per-thread replies), push, and re-watch, for at most 4
   rounds. Invoke as /shepherd [PR # or URL].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/check-codex-cloud-review.sh:*)
 ---
 
 # Shepherd
@@ -71,9 +71,20 @@ bounded, and every path ends in one of the stop conditions in step 6, so
 the loop cannot run forever.
 
 Only write-incapable reads are pre-approved (`git log`/`diff`/`show` accept
-`--output=<file>`, `git fetch` accepts `--upload-pack=<cmd>`, and
-`gh api` can mutate — all of those prompt). Pushes, PR comments, and gate
-runs always go through the normal permission prompt.
+`--output=<file>`, `git fetch` accepts `--upload-pack=<cmd>` — those prompt),
+plus this skill's own asset scripts by skill-directory path: they are
+read-only toward GitHub by construction, and `assets/gh-ro.sh` is the
+GET-only front door for the raw `gh api` reads below — raw `gh api` is never
+granted, because the same prefix that lists comments posts them.
+`${CLAUDE_SKILL_DIR}` in those grants and snippets is Claude Code's
+skill-directory substitution; where nothing substitutes it, set
+`CLAUDE_SKILL_DIR` to this skill's directory first (the same value later
+snippets resolve as `$skill_dir`). The grant matches the literal resolved
+path, so a call spelled through an unexpanded variable, or from a harness
+without the substitution, still prompts — friction, never silent, and the
+command being approved is one that structurally cannot write. Pushes, PR
+comments, body edits, review triggers, raw `gh api` (its write forms and
+GraphQL alike), and gate runs always go through the normal permission prompt.
 
 ## 1. Target
 
@@ -185,8 +196,10 @@ issue may be moved at all.
     and can override a genuine human click.
   - **Otherwise** — the promotion sits on an unverified head or open findings.
     **The undo is its own record, so read the PR's timeline before making
-    another one**: `gh api --paginate repos/"$repo"/issues/<n>/timeline`
-    filtered to `convert_to_draft` — unpaginated, an older conversion falls
+    another one**:
+    `"${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate repos/"$repo"/issues/<n>/timeline`
+    (the pre-approved GET-only wrapper) filtered to `convert_to_draft` —
+    unpaginated, an older conversion falls
     off page one of a busy PR and the guard fail-opens. Any such event — a
     prior session's undo or a human's own conversion, and there is no need to
     tell which — means this PR was
@@ -302,19 +315,24 @@ issue may be moved at all.
   sections.
 - Reviews and inline comments:
   `gh pr view <n> --repo "$repo" --json reviews,reviewDecision,mergeStateStatus`
-  plus `gh api --paginate repos/"$repo"/pulls/<n>/comments`
-  (read-only; will prompt). `gh api` has **no** `--repo` flag — a
-  `{owner}/{repo}` placeholder resolves from the checkout/`GH_REPO`, not
-  from your binding — so `$repo` must appear literally in every endpoint
-  path, as here. `--paginate` matters too, or findings past the first page
-  are silently never adjudicated. Thread resolution is not in
-  the REST payload; check it with the paginated GraphQL `reviewThreads`
-  query (`pageInfo{hasNextPage endCursor}`, `nodes{isResolved}`). Also
+  plus
+  `"${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate repos/"$repo"/pulls/<n>/comments`
+  (the pre-approved GET-only wrapper; the raw `gh api` spelling of the same
+  read still works but prompts). `gh api` — and therefore the wrapper — has
+  **no** `--repo` flag: a `{owner}/{repo}` placeholder resolves from the
+  checkout/`GH_REPO`, not from your binding, so `$repo` must appear
+  literally in every endpoint path, as here. `--paginate` matters too, or
+  findings past the first page are silently never adjudicated. Thread
+  resolution is not in the REST payload; check it with the paginated
+  GraphQL `reviewThreads` query (`pageInfo{hasNextPage endCursor}`,
+  `nodes{isResolved}`) — GraphQL rides POST and so sits outside the
+  wrapper by design; that raw `gh api graphql` read prompts, and §6's gate
+  script runs the same query itself where the answer gates promotion. Also
   fetch the top-level PR conversation
-  (`gh api --paginate repos/"$repo"/issues/<n>/comments`) — material
-  findings get posted there too, not only as reviews or inline threads.
-  Distinguish bot reviewers (Codex, CodeRabbit, …) from humans, but
-  adjudicate both the same way.
+  (`"${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate repos/"$repo"/issues/<n>/comments`)
+  — material findings get posted there too, not only as reviews or inline
+  threads. Distinguish bot reviewers (Codex, CodeRabbit, …) from humans,
+  but adjudicate both the same way.
 - **Which comments are still unanswered — settle it by reply linkage, never
   by timestamp.** "Nothing new since my last push" does not establish that
   every comment is answered: a comment landing *between* a poll and the next
@@ -324,9 +342,10 @@ issue may be moved at all.
   the comment arrived:
 
   ```sh
-  me="$(gh api user --jq .login)"
+  me="$("${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh user --jq .login)"
   [ -n "$me" ] || { echo 'identity lookup failed — unknown'; exit 1; }
-  comments="$(gh api --paginate --slurp repos/"$repo"/pulls/<n>/comments)" \
+  comments="$("${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate --slurp \
+    repos/"$repo"/pulls/<n>/comments)" \
     || { echo 'comment fetch failed — unknown, NOT answered'; exit 1; }
   jq -c --arg me "$me" 'add
       | group_by(.in_reply_to_id // .id)
@@ -720,7 +739,8 @@ gh api repos/"$repo"/pulls/<n>/comments/<comment-id>/replies \
 REPLY_BODY_9f3k
 ```
 
-(comment IDs come from `gh api …/pulls/<n>/comments`). Findings that
+(comment IDs come from step 2's wrapper-fetched `pulls/<n>/comments`
+payload; the reply itself is a write and prompts). Findings that
 arrive **outside** inline threads — in a review body or a top-level PR
 comment — have no reply endpoint, so answer them with a PR conversation
 comment carrying the same fixed/rejected evidence; no adjudicated finding
@@ -923,124 +943,94 @@ loops indefinitely:
    (conflicts and an out-of-date head are yours to resolve — a merge/update
    with the base plus re-verification is a round), and no findings remain
    unresolved — including the low-priority ones deferred into this stage,
-   which count as resolved once their box is ticked with the outcome.
-   **Re-run step 2's unanswered-thread enumeration as the last act before
-   reporting green**. No `unanswered` and no `new-follow-up` line may
-   remain — both are hard gates, whatever the round count says. A remaining
-   `edited-since-reply` line is allowed only when this round's report names
-   its root ID and says why the edit needs no reply; unnamed, it counts as a
-   finding remaining. And no
-   output because the command errored is *unknown*, not *answered* — a failed
-   fetch or identity lookup is never a pass. Run the check rather than
-   recalling that you
-   replied: the whole point of the linkage check is that it does not depend on
-   when a comment arrived relative to your pushes, and memory does. A
+   which count as resolved once their box is ticked with the outcome. A
    finding carried in the PR body has no inline thread to answer, so its
    decline reasoning belongs in the ticked entry itself (and, when it
-   deserves more than one line, a PR comment it points to). `UNKNOWN` means
-   GitHub is still computing mergeability — re-poll briefly rather than
-   classifying it. `BLOCKED` is not a blocker: on a repo whose ruleset
-   requires review, it is the *expected* pre-promotion state, because the
-   review it waits on is exactly what `gh pr ready` requests — and
-   `reviewDecision: REVIEW_REQUIRED` is expected for the same reason. Both are
-   promotable; only `CHANGES_REQUESTED` gates. **Never encode this as "must be
-   `CLEAN`"**: that reading deadlocks precisely on the repos that comply, as on
-   `evanharmon1/harmon-init#714`, where a fully green, fully adjudicated draft
-   read `BLOCKED` by construction and a must-be-`CLEAN` gate refused to promote
-   it.
+   deserves more than one line, a PR comment it points to).
 
-   Before promotion, fetch `state,isDraft,headRefOid,reviewDecision,
-   mergeStateStatus,statusCheckRollup` again and repeat every readiness check
-   against that one snapshot. The `headRefOid` must equal the head whose CI,
-   Codex result, comments, and deferred findings were just adjudicated. A
-   changed head invalidates the gate and returns to step 2 — immediately, on
-   the first mismatch. Step 5's settle window does **not** generalize here:
-   there you had just pushed and the remote confirmed it, so a stale read
-   contradicted a known local fact. Here nothing of yours moved, and a
-   mismatch is as easily a *fresh* replica showing someone else's newer push —
-   re-polling until it returns the SHA you adjudicated would discard that
-   evidence and promote an unverified head. Never wait out a pre-promotion
-   mismatch hoping it converges back.
-
-   Freeze a stable content fingerprint from fresh, paginated reads of the PR
-   body, reviews, top-level comments, inline comments (including replies), and
-   GraphQL review-thread resolution. **This recipe is the fingerprint — run
-   it, do not approximate it:**
+   **The gate is executable — run it; never hand-roll the evidence
+   collection or re-derive the conditions** (the same rule §2 applies to
+   the Codex helper, for the same reason: a hand-assembled gate enforces
+   exactly the conditions its author remembered that day, and one printed
+   its failing checks in a snapshot and promoted anyway —
+   harmon-devkit#384):
 
    ```sh
-   promo_fp() {   # promotion fingerprint — fail-closed by construction
-     local n=$1 owner="${repo%/*}" name="${repo#*/}"
-     local pr rev top inl thr c1 c2 c3 c4 c5
-     pr="$(gh api repos/"$repo"/pulls/"$n")"                             || return 1
-     rev="$(gh api --paginate --slurp repos/"$repo"/pulls/"$n"/reviews)" || return 1
-     top="$(gh api --paginate --slurp repos/"$repo"/issues/"$n"/comments)" \
-       || return 1
-     inl="$(gh api --paginate --slurp repos/"$repo"/pulls/"$n"/comments)" \
-       || return 1
-     thr="$(gh api graphql --paginate --slurp \
-             -F owner="$owner" -F name="$name" -F pr="$n" -f query='
-       query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
-         repository(owner:$owner,name:$name){ pullRequest(number:$pr){
-           reviewThreads(first:100,after:$endCursor){
-             pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}')" \
-       || return 1
-     c1="$(jq -cS '{title,body}' <<<"$pr")"                              || return 1
-     c2="$(jq -c 'add // [] | map({id, u:.user.login, s:.state, b:.body,
-                                   t:.submitted_at}) | sort_by(.id)' \
-             <<<"$rev")"                                                 || return 1
-     c3="$(jq -c 'add // [] | map({id, u:.user.login, b:.body, t:.updated_at})
-                  | sort_by(.id)' <<<"$top")"                            || return 1
-     c4="$(jq -c 'add // [] | map({id, u:.user.login, b:.body, t:.updated_at})
-                  | sort_by(.id)' <<<"$inl")"                            || return 1
-     c5="$(jq -c '[.[].data.repository.pullRequest.reviewThreads.nodes[]]
-                  | map({id, r:.isResolved}) | sort_by(.id)' <<<"$thr")" \
-       || return 1
-     printf '%s\n' "$c1" "$c2" "$c3" "$c4" "$c5" |
-       if command -v sha256sum >/dev/null 2>&1; then sha256sum
-       else shasum -a 256; fi   # stock macOS ships shasum, not sha256sum
-   }
-   fp_before="$(promo_fp <n>)" \
-     || { echo 'fingerprint UNKNOWN — a component failed; cannot promote'
-          exit 1; }
+   "${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check \
+     --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
+     --codex-state "$state"   # §2's attempt-state file; pass
+                              # --codex-disabled instead where Codex cloud
+                              # review is not enabled — one of the two is
+                              # required, so the Codex condition cannot be
+                              # skipped by silence
    ```
 
-   Why the shape is load-bearing:
+   `--head` is the head whose CI, Codex result, comments, and deferred
+   findings you just adjudicated — from your own round record, never
+   re-read at the gate, or a mid-adjudication push would be laundered into
+   "current". The script evaluates every mechanical condition of this stop,
+   in order, fail-closed: PR `OPEN` and still draft; the live head equal to
+   `--head` (checked again after all evidence is read); every check on that
+   commit concluded non-failing, page-safe from the commit's own check runs
+   and statuses — an **empty** check list is indeterminate, never a pass,
+   because GitHub populates check suites asynchronously, and `skipping` is
+   neutral; `reviewDecision` not `CHANGES_REQUESTED`; `mergeStateStatus`
+   none of `DIRTY`/`BEHIND`/`UNKNOWN`; every deferred-findings entry in the
+   PR body ticked **and** carrying its outcome (a bare `- [x]` settles
+   nothing); §2's reply-linkage predicate over the inline threads, run
+   fresh rather than recalled — `unanswered` and `new-follow-up` are hard
+   fails whatever the round count says, and an `edited-since-reply` line
+   clears only through an explicit `--allow-edited-root <root>`, the named
+   exception, whose report must still say why that edit needs no reply;
+   and, where Codex cloud review is enabled, the sibling
+   `check-codex-cloud-review.sh check` reporting this exact head
+   terminal-clean. Exit 0 is the only pass. Exit 1 names the first failed
+   condition (a stable machine token plus a sentence, e.g.
+   `checks-pending`); exit 2 is indeterminate — a failed fetch, malformed
+   data, an empty check list, `UNKNOWN` mergeability. **Both leave the PR
+   draft**: "the check never ran" and "the fetch errored" are not passes,
+   and unknown never promotes.
 
-   - **Every component is captured and exit-checked before anything is
-     hashed.** The tempting one-liner — a brace group of five `gh` calls
-     piped straight into `sha256sum` — converts "I could not read this" into
-     "this did not change": a failing `gh api` writes its diagnostic to
-     stderr and nothing to stdout, the pipeline's status is `sha256sum`'s, and
-     the result is a well-formed, *stable* hash missing a whole surface.
-     Because such a failure is typically deterministic, the pre/post
-     comparison then passes with maximum confidence — on exactly the surfaces
-     (reviews, comments, thread resolution) the fingerprint exists to watch.
-     A flaky failure would be safer; a stable one certifies content never
-     fetched. So a component failure must abort: the fingerprint is
-     **unknown**, and unknown cannot promote — the PR stays draft.
-   - **`--slurp` output goes to a standalone `jq`, never `--jq`.** `gh api`
-     refuses `--slurp` alongside `--jq` outright, and `--slurp` is what makes
-     a `--paginate` read page-safe (step 2) — so the combination the obvious
-     implementation reaches for is precisely the one that errors, with empty
-     stdout for the unguarded pipeline to hash. The guarded captures above
-     are what make that failure loud instead.
-   - **Content-bearing fields only.** IDs, authors, bodies, content update
-     times (`updated_at` on comments; `submitted_at` plus the hashed body on
-     reviews, which carry no `updated_at`), review states, and thread
-     resolution are in. The PR object's own `updated_at`, the draft flag,
-     mergeability, and API ordering are out — `sort_by(.id)` everywhere, `-S`
-     for key order — because `gh pr ready` mutates those, and including any
-     of them would make every normal promotion invalidate its own
-     fingerprint (#227).
-   - **An empty component that fetched successfully is real state, not a
-     failure.** A PR with no reviews normalizes to `[]` and hashes fine
-     (`add // []` covers the empty slurp). Only a non-zero exit is unknown.
+   Three pieces of reasoning the script encodes but that must outlive any
+   one implementation of it:
 
-   Re-fetch and compare that fingerprint (`promo_fp` again, equally guarded)
-   as the last read before `gh pr ready`. Any difference means a body edit,
-   finding, reply, review, or resolution change arrived after adjudication,
-   so return to step 2 without promoting. A fetch error is unknown and also
-   cannot promote — on either read, a failed `promo_fp` leaves the PR draft.
+   - `BLOCKED` is **promotable**. On a repo whose ruleset requires review
+     it is the *expected* pre-promotion state, because the review it waits
+     on is exactly what `gh pr ready` requests — `reviewDecision:
+     REVIEW_REQUIRED` is expected for the same reason; only
+     `CHANGES_REQUESTED` gates. **Never re-encode the gate as "must be
+     `CLEAN`"**: that reading deadlocks precisely the repos that comply, as
+     on `evanharmon1/harmon-init#714`, where a fully green, fully
+     adjudicated draft read `BLOCKED` by construction and a must-be-`CLEAN`
+     gate refused to promote it. `UNKNOWN` means GitHub is still computing
+     mergeability — re-poll briefly rather than classifying it.
+   - A changed head invalidates the gate: `head-mismatch` and `head-moved`
+     return to step 2 — immediately, on the first mismatch. Step 5's settle
+     window does
+     **not** generalize here: there you had just pushed and the remote
+     confirmed it, so a stale read contradicted a known local fact. Here
+     nothing of yours moved, and a mismatch is as easily a *fresh* replica
+     showing someone else's newer push — re-running the gate until it
+     returns the SHA you adjudicated would discard that evidence and
+     promote an unverified head. Never wait out a pre-promotion mismatch
+     hoping it converges back.
+   - On a full pass — only then — the script prints a content
+     **fingerprint**: the hash of the five content-bearing surfaces it just
+     evaluated (PR title/body, reviews, top-level comments, inline comments
+     including replies, GraphQL review-thread resolution), each captured and
+     exit-checked before hashing, so a failed fetch is a loud *unknown*
+     rather than a stable hash missing a surface. Content-bearing fields
+     only: the PR object's own `updated_at`, draft flag, and mergeability
+     stay out, because `gh pr ready` mutates those and would invalidate
+     every normal promotion (#227). Keep the value — it is the "before" of
+     the promotion compare below. Thread `isResolved` is hashed but never
+     gated: resolution is the maintainer's act, and rejection-answered
+     threads legitimately stay unresolved until a human resolves them.
+
+   The pass fingerprint certifies the exact content the gate evaluated, so
+   run `gh pr ready` directly out of a pass — anything landing in between
+   shows up in the post-promotion compare — and if meaningful time has
+   passed since the pass, re-run `check` rather than trusting an old one.
 
    Before promotion, identify required workflows and review apps that react only
    to `pull_request.ready_for_review`. Promotion can notify CODEOWNERS and other
@@ -1051,12 +1041,16 @@ loops indefinitely:
    that cannot be established, stop blocked and leave the PR draft; reconfigure
    the automation rather than promoting speculatively.
 
-   If the snapshot is draft, run `gh pr ready <n> --repo "$repo"`, then bounded-
-   fetch `state,isDraft,headRefOid` and the same stable content fingerprint once
-   more. Reconcile the state even when the promotion command failed: its
+   Out of a passing gate, run `gh pr ready <n> --repo "$repo"`, then bounded-
+   fetch `state,isDraft,headRefOid` and re-read the content fingerprint with
+   `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh fingerprint --repo "$repo" --pr <n>`
+   — the same five guarded surfaces with no gate attached, which is the
+   point: `check` itself would rightly refuse the now-non-draft PR, and a
+   fetch error here is still *unknown*, not *unchanged*. Reconcile the
+   state even when the promotion command failed: its
    response can be lost after GitHub accepted the mutation. Success requires
-   the verified head, an open PR, `isDraft == false`, and a content fingerprint
-   identical to the last pre-promotion read.
+   the verified head, an open PR, `isDraft == false`, and a fingerprint
+   identical to the passing gate's.
    If the open PR is non-draft on a changed head or content snapshot, or any
    other confirmation result cannot
    prove that exact successful transition, run
@@ -1076,7 +1070,8 @@ loops indefinitely:
    `claim:*` label release, and the final report); do not restart code changes,
    gates, or automated review on the ready PR.
 
-   If the snapshot was already non-draft, promotion is idempotently complete
+   If the PR was already non-draft (the gate's `pr-not-draft` failure),
+   promotion is idempotently complete
    and `gh pr ready` must not be called again. Audit the existing handoff on the
    current head, but do not manufacture another ready event. This audit is also
    what step 2's unexplained-promotion procedure points at: where that
@@ -1095,7 +1090,8 @@ loops indefinitely:
    expose a reliable
    repository API for this setting, so treat it honestly as a human-configured
    prerequisite: use the repository setup record or maintainer confirmation,
-   never claim it was mechanically verified. If its state is unknown, stop
+   never claim it was mechanically verified — a passing `readiness-gate.sh`
+   deliberately does not check it, and says so. If its state is unknown, stop
    blocked and ask rather than promote.
 
    Report the ready state honestly rather than over-claiming:
