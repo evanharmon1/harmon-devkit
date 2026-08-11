@@ -134,8 +134,11 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
   (`*.code-workspace` is on both lists) `OWNED` wins. The list is **derived**
   from the rendered commit's own `copier.yml` at run time and matched with git's
   gitignore dialect — the same semantics copier uses — so it cannot go stale;
-  the script exits `2` if the declaration is unreadable, absent, empty, or
-  templated. **Absence is not covered**: copier freezes a declared path only
+  the script exits `2` if the declaration is unreadable, malformed, negated, or
+  templated. A baseline that predates the declaration (added in harmon-init
+  v3.4.0) is not an error: the run continues without the class and prints a
+  note saying so, which is also when `CHANGELOG.md`'s historical hard skip
+  applies. **Absence is not covered**: copier freezes a declared path only
   when it *exists*, so a declared path the repo lacks is rendered fresh by the
   next update and is still reported `MISSING`. Like `IGNORED`, it is
   **sweep-only** — a path on the curated manifest gates regardless.

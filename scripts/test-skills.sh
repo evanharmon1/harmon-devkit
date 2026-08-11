@@ -5385,13 +5385,14 @@ else
     bad "diff-template still reports a declared repo-owned path the repo lacks (MISSING diagnostic missing)"
 fi
 
-# Fail-closed derivation. "The template declares nothing repo-owned" and "I
-# could not read the declaration" are different facts, and degrading either one
-# to the old behavior would silently return every declared path to gating DRIFT
-# with nothing in the output to say the derivation had stopped working. Three
-# negative controls, each a copy of the working template with only its
-# declaration changed: absent, empty, and templated (which copier would render
-# through jinja before matching, and this script deliberately will not).
+# Fail-closed derivation, with one deliberate exception. "I could not read the
+# declaration" is a setup error and exits 2. "This baseline predates the
+# declaration" is NOT — harmon-init added `_skip_if_exists` in v3.4.0 while a
+# guarded audit accepts any v3.0.0 descendant, so refusing those would take the
+# audit away from the repos most likely to need it. Those runs continue without
+# the class and must SAY so, which is what keeps a degraded run from reading
+# like a normal one. Each control is a copy of the working template with only
+# its declaration changed.
 dt_skip_decl_variant() {
     # $1 = destination, $2… = the _skip_if_exists lines to write (none = drop it)
     dsv_dest="$1"
@@ -5406,33 +5407,92 @@ dt_skip_decl_variant() {
     git_commit_all "$dsv_dest" "rewrite the _skip_if_exists declaration"
     git -C "$dsv_dest" tag -f v1.0.0 >/dev/null
 }
+# A baseline older than the declaration: the run proceeds, says so twice (stderr
+# and the summary), grants no OWNED exemption, and — because there is no class
+# for it to land in — restores CHANGELOG.md's historical hard skip rather than
+# turning every mature repo's changelog into a new false positive.
 dt_skip_decl_variant "$TMPROOT/diff-template-noskip-source"
 noskip_rc=0
 noskip_out="$(HARMON_INIT="$TMPROOT/diff-template-noskip-source" \
     bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || noskip_rc=$?
-if [ "$noskip_rc" -eq 2 ]; then
-    ok "diff-template exits 2 when the template declares no _skip_if_exists"
+if [ "$noskip_rc" -eq 0 ]; then
+    ok "diff-template still audits a baseline that predates _skip_if_exists"
 else
-    bad "diff-template exits 2 when the template declares no _skip_if_exists (got $noskip_rc)"
+    bad "diff-template still audits a baseline that predates _skip_if_exists (got $noskip_rc): $noskip_out"
 fi
-if printf '%s\n' "$noskip_out" | grep -qF "FAIL: copier.yml has no _skip_if_exists list"; then
-    ok "diff-template names the missing _skip_if_exists declaration"
+if printf '%s\n' "$noskip_out" | grep -qF "declares no _skip_if_exists"; then
+    ok "diff-template says an OWNED-less run was degraded, not normal"
 else
-    bad "diff-template names the missing _skip_if_exists declaration"
+    bad "diff-template says an OWNED-less run was degraded, not normal"
 fi
+if printf '%s\n' "$noskip_out" | grep -qF "diff-template: NOTE —"; then
+    ok "diff-template repeats the degraded-derivation note in its summary"
+else
+    bad "diff-template repeats the degraded-derivation note in its summary"
+fi
+if printf '%s\n' "$noskip_out" | grep -qF "OWNED    "; then
+    bad "diff-template grants no OWNED exemption without a declaration"
+else
+    ok "diff-template grants no OWNED exemption without a declaration"
+fi
+if printf '%s\n' "$noskip_out" | grep -qF "CHANGELOG.md"; then
+    bad "diff-template keeps CHANGELOG.md's hard skip when no declaration exists"
+else
+    ok "diff-template keeps CHANGELOG.md's hard skip when no declaration exists"
+fi
+# An explicitly empty list is the same fact stated deliberately, and gets the
+# same treatment.
 dt_skip_decl_variant "$TMPROOT/diff-template-emptyskip-source" '_skip_if_exists: []'
 emptyskip_rc=0
 emptyskip_out="$(HARMON_INIT="$TMPROOT/diff-template-emptyskip-source" \
     bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || emptyskip_rc=$?
-if [ "$emptyskip_rc" -eq 2 ]; then
-    ok "diff-template exits 2 on an empty _skip_if_exists declaration"
+if [ "$emptyskip_rc" -eq 0 ]; then
+    ok "diff-template audits a template that declares an empty _skip_if_exists"
 else
-    bad "diff-template exits 2 on an empty _skip_if_exists declaration (got $emptyskip_rc)"
+    bad "diff-template audits a template that declares an empty _skip_if_exists (got $emptyskip_rc)"
 fi
-if printf '%s\n' "$emptyskip_out" | grep -qF "declares an empty _skip_if_exists list"; then
+if printf '%s\n' "$emptyskip_out" | grep -qF "declares an empty _skip_if_exists"; then
     ok "diff-template names an empty _skip_if_exists declaration"
 else
     bad "diff-template names an empty _skip_if_exists declaration"
+fi
+# A declaration that IS there and is not a list is nobody's baseline — something
+# is wrong with the file or with our read of it, and guessing fails closed.
+dt_skip_decl_variant "$TMPROOT/diff-template-scalarskip-source" \
+    '_skip_if_exists: CHANGELOG.md'
+scalarskip_rc=0
+scalarskip_out="$(HARMON_INIT="$TMPROOT/diff-template-scalarskip-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || scalarskip_rc=$?
+if [ "$scalarskip_rc" -eq 2 ]; then
+    ok "diff-template exits 2 on a malformed _skip_if_exists declaration"
+else
+    bad "diff-template exits 2 on a malformed _skip_if_exists declaration (got $scalarskip_rc)"
+fi
+if printf '%s\n' "$scalarskip_out" | grep -qF "has a malformed _skip_if_exists"; then
+    ok "diff-template names the malformed _skip_if_exists declaration"
+else
+    bad "diff-template names the malformed _skip_if_exists declaration"
+fi
+# Negation is refused rather than matched. pathspec applies `!foo/bar` after
+# `foo/`, but git never descends into an excluded directory and so cannot
+# re-include beneath one — `check-ignore` would call the path declared and hand
+# divergent template content the OWNED exemption. Refusing keeps this evaluator
+# and copier's from ever disagreeing.
+dt_skip_decl_variant "$TMPROOT/diff-template-negskip-source" \
+    '_skip_if_exists:' '  - "docs/"' '  - "!docs/guide.md"'
+negskip_rc=0
+negskip_out="$(HARMON_INIT="$TMPROOT/diff-template-negskip-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || negskip_rc=$?
+if [ "$negskip_rc" -eq 2 ]; then
+    ok "diff-template exits 2 on a negated _skip_if_exists pattern"
+else
+    bad "diff-template exits 2 on a negated _skip_if_exists pattern (got $negskip_rc)"
+fi
+if printf '%s\n' "$negskip_out" |
+    grep -qF "FAIL: negated _skip_if_exists pattern is not supported"; then
+    ok "diff-template names the negated _skip_if_exists pattern it refuses"
+else
+    bad "diff-template names the negated _skip_if_exists pattern it refuses"
 fi
 dt_skip_decl_variant "$TMPROOT/diff-template-jinjaskip-source" \
     '_skip_if_exists:' '  - "[[ project_name ]].code-workspace"'

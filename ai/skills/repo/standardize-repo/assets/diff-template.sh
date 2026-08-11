@@ -49,9 +49,14 @@
 #                is derived at run time from the rendered commit's own
 #                declaration, so it cannot go stale, and it covers files nobody
 #                would call prose (.release-please-manifest.json, CODEOWNERS).
-#                Where they overlap, OWNED wins. Derived, never mirrored: an
-#                unreadable or empty declaration exits 2 rather than silently
-#                returning every declared path to gating DRIFT.
+#                Where they overlap, OWNED wins. Derived, never mirrored: a
+#                declaration that is unreadable, malformed, negated, or
+#                templated exits 2 rather than being guessed at. A baseline that
+#                simply PREDATES the declaration (harmon-init added it in
+#                v3.4.0, while a guarded audit accepts any v3.0.0 descendant) is
+#                a different fact and not an error — the run continues without
+#                the class and SAYS so, on stderr and in the summary, so a
+#                degraded run can never be mistaken for a normal one.
 #   • CO-OWNED — the template SEEDS the file but the repo owns its PROSE
 #                (AGENTS.md and its symlink aliases, README, the *.md under
 #                docs/ and specs/, the devcontainer zshrc, …). The docs/ and
@@ -343,6 +348,21 @@ elif [ "$template_is_explicit" -eq 0 ]; then
     template="$guarded_template"
     src_ref="$recorded_commit"
 fi
+
+# Freeze the ref ONCE, before anything reads the template at it. The render and
+# the `_skip_if_exists` declaration below are two separate reads of the same
+# baseline, and a MUTABLE ref between them (an explicit HARMON_INIT whose
+# recorded `_commit` is a tag, or the HEAD fallback) can move: the sweep would
+# then classify the render's paths against a different commit's ownership
+# policy. Resolving to the commit OID here is also what makes the failure
+# legible — "that ref does not name a commit" is a setup error, not something to
+# discover halfway through a comparison. The guarded path already resolved its
+# baseline to an immutable commit above; re-resolving one is a no-op.
+src_commit="$(git -C "$template" rev-parse --verify -q "$src_ref^{commit}")" || {
+    echo "FAIL: cannot resolve template ref '$src_ref' to a commit" >&2
+    exit 2
+}
+src_ref="$src_commit"
 
 copier copy "$template" "$render" --vcs-ref="$src_ref" --trust --defaults \
     --data-file "$datafile" "${data_args[@]}" >/dev/null 2>&1 || {
@@ -846,79 +866,124 @@ done
     exit 2
 }
 skip_decl_tag="$(yq -r '._skip_if_exists | tag' "$skip_decl_yml" 2>/dev/null || echo "")"
-[ "$skip_decl_tag" = "!!seq" ] || {
-    echo "FAIL: $skip_decl_source has no _skip_if_exists list (tag: ${skip_decl_tag:-unreadable})" >&2
+# THREE outcomes, not two, and the difference is the whole fail-closed argument:
+#   • `!!seq` — a declaration to derive the class from. The normal path.
+#   • `!!null` — the key is ABSENT. That is not a broken derivation, it is a
+#     baseline that predates the declaration: harmon-init grew `_skip_if_exists`
+#     in v3.4.0, while this script's own guarded contract accepts any baseline
+#     descending from v3.0.0. Refusing those would take the audit away from the
+#     repos most likely to need it, to fix a report that is merely noisy. So the
+#     run continues WITHOUT the class — but never silently: it says so on stderr
+#     and again in the summary, because the failure this whole block exists to
+#     prevent is a degraded run that reads like a normal one.
+#   • anything else — the key is there and is not a list (a bare string, a
+#     mapping). Nobody's baseline looks like that; something is wrong with the
+#     file or with our read of it, and guessing is exactly what fails closed.
+skip_decl_available=1
+skip_decl_absent_note=""
+if [ "$skip_decl_tag" = "!!null" ]; then
+    skip_decl_available=0
+    skip_decl_absent_note="$skip_decl_source at $src_ref declares no _skip_if_exists (a baseline older than harmon-init v3.4.0); no OWNED class derived"
+    echo "NOTE: $skip_decl_absent_note" >&2
+elif [ "$skip_decl_tag" != "!!seq" ]; then
+    echo "FAIL: $skip_decl_source has a malformed _skip_if_exists (tag: ${skip_decl_tag:-unreadable})" >&2
     echo "  refusing to continue: the template's repo-owned declaration is what the OWNED class is derived from" >&2
     exit 2
-}
-# Entry-level validation, and a COUNT check alongside it. The patterns are moved
-# through a line-oriented file, so a non-string entry (a nested list, a mapping)
-# or a string carrying an embedded newline would silently become the wrong
-# number of patterns — matching paths nobody declared, or missing ones somebody
-# did.
-skip_decl_bad_tags="$(yq -r '[._skip_if_exists[] | select(tag != "!!str") | tag] | join(",")' "$skip_decl_yml" 2>/dev/null || echo "unreadable")"
-[ -z "$skip_decl_bad_tags" ] || {
-    echo "FAIL: $skip_decl_source has non-string _skip_if_exists entries ($skip_decl_bad_tags)" >&2
-    exit 2
-}
-skip_decl_declared="$(yq -r '._skip_if_exists | length' "$skip_decl_yml" 2>/dev/null || echo "")"
-yq -r '._skip_if_exists[]' "$skip_decl_yml" >"$skip_decl_patterns" 2>/dev/null || {
-    echo "FAIL: cannot read _skip_if_exists from $skip_decl_source" >&2
-    exit 2
-}
-skip_decl_lines="$(awk 'END { print NR }' "$skip_decl_patterns")"
-case "$skip_decl_declared" in
-'' | *[!0-9]*)
-    echo "FAIL: cannot count _skip_if_exists entries in $skip_decl_source" >&2
-    exit 2
-    ;;
-esac
-[ "$skip_decl_declared" -ge 1 ] || {
-    echo "FAIL: $skip_decl_source declares an empty _skip_if_exists list" >&2
-    echo "  refusing to continue: the template's repo-owned declaration is what the OWNED class is derived from" >&2
-    exit 2
-}
-[ "$skip_decl_lines" -eq "$skip_decl_declared" ] || {
-    echo "FAIL: $skip_decl_source has $skip_decl_declared _skip_if_exists entries but they read as $skip_decl_lines patterns" >&2
-    echo "  refusing to continue: an entry holding a newline would match paths nobody declared" >&2
-    exit 2
-}
-# copier renders each pattern as a jinja string before matching, with the
-# template's own delimiters. Nothing in harmon-init's list is templated, and
-# evaluating one here would mean reimplementing the render — so a templated
-# pattern stops the run rather than being matched literally, which would either
-# over- or under-match with no way to tell which.
-while IFS= read -r skip_decl_pattern; do
-    [ -n "$skip_decl_pattern" ] || {
-        echo "FAIL: $skip_decl_source has an empty _skip_if_exists entry" >&2
+fi
+if [ "$skip_decl_available" -eq 1 ]; then
+    # Entry-level validation, and a COUNT check alongside it. The patterns are
+    # moved through a line-oriented file, so a non-string entry (a nested list, a
+    # mapping) or a string carrying an embedded newline would silently become the
+    # wrong number of patterns — matching paths nobody declared, or missing ones
+    # somebody did.
+    skip_decl_bad_tags="$(yq -r '[._skip_if_exists[] | select(tag != "!!str") | tag] | join(",")' "$skip_decl_yml" 2>/dev/null || echo "unreadable")"
+    [ -z "$skip_decl_bad_tags" ] || {
+        echo "FAIL: $skip_decl_source has non-string _skip_if_exists entries ($skip_decl_bad_tags)" >&2
         exit 2
     }
-    case "$skip_decl_pattern" in
-    *'[['* | *'[%'* | *'[#'* | *'{{'* | *'{%'*)
-        echo "FAIL: templated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
-        echo "  refusing to continue: matching it unrendered would classify the wrong paths" >&2
+    skip_decl_declared="$(yq -r '._skip_if_exists | length' "$skip_decl_yml" 2>/dev/null || echo "")"
+    yq -r '._skip_if_exists[]' "$skip_decl_yml" >"$skip_decl_patterns" 2>/dev/null || {
+        echo "FAIL: cannot read _skip_if_exists from $skip_decl_source" >&2
+        exit 2
+    }
+    skip_decl_lines="$(awk 'END { print NR }' "$skip_decl_patterns")"
+    case "$skip_decl_declared" in
+    '' | *[!0-9]*)
+        echo "FAIL: cannot count _skip_if_exists entries in $skip_decl_source" >&2
         exit 2
         ;;
     esac
-done <"$skip_decl_patterns"
-# Matched with `git check-ignore` against a scratch repo whose .gitignore IS the
-# declaration. That is not an approximation: copier matches `_skip_if_exists`
-# with pathspec's gitignore dialect (`PathSpec.from_lines`), which is git's own,
-# so `*.code-workspace` reaches any depth and `.github/CODEOWNERS` anchors — the
-# same semantics, evaluated by the same implementation the render-ignore probes
-# above already use, rather than a hand-rolled glob that would drift from it.
-git init -q --template="$workdir/empty-git-template" "$skip_decl_root" \
-    >/dev/null 2>&1 || {
-    echo "FAIL: cannot initialize the _skip_if_exists evaluator" >&2
-    exit 2
-}
-cp "$skip_decl_patterns" "$skip_decl_root/.gitignore" || {
-    echo "FAIL: cannot stage the _skip_if_exists declaration for evaluation" >&2
-    exit 2
-}
+    [ "$skip_decl_lines" -eq "$skip_decl_declared" ] || {
+        echo "FAIL: $skip_decl_source has $skip_decl_declared _skip_if_exists entries but they read as $skip_decl_lines patterns" >&2
+        echo "  refusing to continue: an entry holding a newline would match paths nobody declared" >&2
+        exit 2
+    }
+    if [ "$skip_decl_declared" -eq 0 ]; then
+        # An explicitly empty list is a real statement — "this template freezes
+        # nothing" — and freezing nothing is exactly what a pre-v3.4 baseline
+        # does too. Same outcome, same visible note: no class, and the report
+        # says why rather than looking like an ordinary run.
+        skip_decl_available=0
+        skip_decl_absent_note="$skip_decl_source at $src_ref declares an empty _skip_if_exists; no OWNED class derived"
+        echo "NOTE: $skip_decl_absent_note" >&2
+    fi
+fi
+if [ "$skip_decl_available" -eq 1 ]; then
+    # Two pattern shapes are REFUSED rather than matched, because for each of
+    # them this evaluator and copier's would disagree, and a disagreement here
+    # silently reclassifies real drift as somebody's property:
+    #   • TEMPLATED — copier renders each pattern as a jinja string first, with
+    #     the template's own delimiters. Evaluating one here would mean
+    #     reimplementing the render; matching it unrendered would over- or
+    #     under-match with no way to tell which.
+    #   • NEGATED — `!foo/bar` after `foo/`. pathspec matches each path against
+    #     the pattern list directly, so the re-inclusion applies; git cannot
+    #     re-include a path beneath an excluded DIRECTORY, because it never
+    #     descends into one. `check-ignore` would call `foo/bar` declared and
+    #     hand a divergent template file the OWNED exemption. harmon-init uses
+    #     no negation, so this costs nothing today and cannot rot into a wrong
+    #     answer tomorrow.
+    while IFS= read -r skip_decl_pattern; do
+        [ -n "$skip_decl_pattern" ] || {
+            echo "FAIL: $skip_decl_source has an empty _skip_if_exists entry" >&2
+            exit 2
+        }
+        case "$skip_decl_pattern" in
+        '!'*)
+            echo "FAIL: negated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
+            echo "  refusing to continue: git cannot re-include beneath an excluded directory, so this evaluator would disagree with copier" >&2
+            exit 2
+            ;;
+        *'[['* | *'[%'* | *'[#'* | *'{{'* | *'{%'*)
+            echo "FAIL: templated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
+            echo "  refusing to continue: matching it unrendered would classify the wrong paths" >&2
+            exit 2
+            ;;
+        esac
+    done <"$skip_decl_patterns"
+    # Matched with `git check-ignore` against a scratch repo whose .gitignore IS
+    # the declaration. With negation refused above this is not an approximation:
+    # copier matches `_skip_if_exists` with pathspec's gitignore dialect
+    # (`PathSpec.from_lines`), which is git's own, so `*.code-workspace` reaches
+    # any depth and `.github/CODEOWNERS` anchors — the same semantics, evaluated
+    # by the same implementation the render-ignore probes above already use,
+    # rather than a hand-rolled glob that would drift from it.
+    git init -q --template="$workdir/empty-git-template" "$skip_decl_root" \
+        >/dev/null 2>&1 || {
+        echo "FAIL: cannot initialize the _skip_if_exists evaluator" >&2
+        exit 2
+    }
+    cp "$skip_decl_patterns" "$skip_decl_root/.gitignore" || {
+        echo "FAIL: cannot stage the _skip_if_exists declaration for evaluation" >&2
+        exit 2
+    }
+fi
 
-# Does the template's own declaration say the REPO owns this rendered path?
+# Does the template's own declaration say the REPO owns this rendered path? A
+# baseline that declares nothing answers "no" to every path, which is precisely
+# the pre-issue-359 behavior — reported once by the note above, not per path.
 is_template_declared_owned() {
+    [ "$skip_decl_available" -eq 1 ] || return 1
     ignore_probe_rc=0
     ignore_probe_err="$(
         git -C "$skip_decl_root" -c core.excludesFile=/dev/null \
@@ -1443,15 +1508,22 @@ rendered_total=0
 # regardless of the caller's locale.
 while IFS= read -r abs; do
     g="${abs#"$render"/}"
-    # CHANGELOG.md used to be hard-skipped here, alongside git's own metadata and
-    # the answers file. It no longer is: the template DECLARES it repo-owned in
-    # `_skip_if_exists`, so it lands in the OWNED class below like every other
-    # declared path — informational when the repo has it, and finally VISIBLE.
-    # The hard skip reported nothing at all: a repo that never had a CHANGELOG,
-    # or lost one, looked identical to a repo whose release-please log is
-    # healthy.
+    # CHANGELOG.md used to be hard-skipped here unconditionally, alongside git's
+    # own metadata and the answers file. It no longer is: the template DECLARES
+    # it repo-owned in `_skip_if_exists`, so it lands in the OWNED class below
+    # like every other declared path — informational when the repo has it, and
+    # finally VISIBLE. The hard skip reported nothing at all: a repo that never
+    # had a CHANGELOG, or lost one, looked identical to a repo whose
+    # release-please log is healthy.
+    #
+    # The skip survives for a baseline that carries NO declaration, where there
+    # is no OWNED class to land in and dropping it would turn every mature
+    # repo's changelog into gating DRIFT. That keeps the degraded path exactly
+    # what it claims to be — the pre-issue-359 behavior — rather than the old
+    # behavior plus a new false positive.
     case "$g" in
     .git/* | .copier-answers.yml) continue ;;
+    CHANGELOG.md) [ "$skip_decl_available" -eq 1 ] || continue ;;
     esac
     rendered_total=$((rendered_total + 1))
     grep -qxF "$g" "$manifest" 2>/dev/null && continue # manifest loop owns it
@@ -1646,6 +1718,11 @@ done < <(find "$render" \( -type f -o -type l \) | LC_ALL=C sort)
 
 compared=$((checked + swept_compared))
 echo ""
+# A degraded run must never read like a normal one. This line is printed on BOTH
+# the drift and the clean path, before the summary either way, because the fact
+# it records changes how every OWNED-eligible path in the report was classified.
+[ -z "$skip_decl_absent_note" ] ||
+    echo "diff-template: NOTE — $skip_decl_absent_note"
 if [ "$drift" -ne 0 ]; then
     # The counts make truncated output self-evident: if you can't see every
     # DRIFT / MODE / MISSING line above, you cut them off.

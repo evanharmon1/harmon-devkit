@@ -459,8 +459,12 @@ withheld even under `--show`:
   `DRIFT` in every mature repo. The list is **derived at run time** from the very
   commit that was rendered, matched with git's own gitignore dialect (the same
   one copier uses), so it cannot go stale; a declaration that cannot be read, is
-  empty, or holds a templated pattern exits `2` rather than quietly returning
-  every declared path to `DRIFT`. Distinct from `CO-OWNED` on purpose: that one
+  malformed, negated, or templated exits `2` rather than quietly returning every
+  declared path to `DRIFT`. A baseline that simply **predates** the declaration
+  is a different fact — harmon-init added `_skip_if_exists` in v3.4.0 while a
+  guarded audit accepts any v3.0.0 descendant — so those runs continue without
+  the class and **say so**, on stderr and again in the summary, rather than
+  being refused or quietly degraded. Distinct from `CO-OWNED` on purpose: that one
   is a hand-maintained judgement about *prose the repo rewrote*, this one is the
   template's machine-readable statement about *who owns the file*, and it covers
   paths nobody would call prose. Where the two overlap, `OWNED` wins. It says
