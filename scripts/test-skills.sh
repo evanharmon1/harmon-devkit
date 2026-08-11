@@ -5440,21 +5440,50 @@ if printf '%s\n' "$noskip_out" | grep -qF "CHANGELOG.md"; then
 else
     ok "diff-template keeps CHANGELOG.md's hard skip when no declaration exists"
 fi
-# An explicitly empty list is the same fact stated deliberately, and gets the
-# same treatment.
+# An explicitly empty list also yields no OWNED class — but it is NOT the same
+# fact as a missing key, and the difference is load-bearing for exactly one
+# path. `_skip_if_exists: []` is a template saying it freezes NOTHING, so copier
+# owns and may rewrite the changelog like any other rendered file: CHANGELOG.md
+# must be audited here, where a pre-declaration baseline keeps its legacy skip.
 dt_skip_decl_variant "$TMPROOT/diff-template-emptyskip-source" '_skip_if_exists: []'
 emptyskip_rc=0
 emptyskip_out="$(HARMON_INIT="$TMPROOT/diff-template-emptyskip-source" \
     bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || emptyskip_rc=$?
-if [ "$emptyskip_rc" -eq 0 ]; then
-    ok "diff-template audits a template that declares an empty _skip_if_exists"
-else
-    bad "diff-template audits a template that declares an empty _skip_if_exists (got $emptyskip_rc)"
-fi
 if printf '%s\n' "$emptyskip_out" | grep -qF "declares an empty _skip_if_exists"; then
     ok "diff-template names an empty _skip_if_exists declaration"
 else
     bad "diff-template names an empty _skip_if_exists declaration"
+fi
+if printf '%s\n' "$emptyskip_out" | grep -qF "DRIFT    CHANGELOG.md"; then
+    ok "diff-template audits CHANGELOG.md when the template freezes nothing"
+else
+    bad "diff-template audits CHANGELOG.md when the template freezes nothing (got rc $emptyskip_rc)"
+fi
+if printf '%s\n' "$emptyskip_out" | grep -qF "OWNED    "; then
+    bad "diff-template grants no OWNED exemption from an empty declaration"
+else
+    ok "diff-template grants no OWNED exemption from an empty declaration"
+fi
+# copier discovers its config by globbing `copier.*` and matching `\.ya?ml`
+# case-INSENSITIVELY, so a template named copier.YAML renders fine and this
+# derivation must read it rather than exiting 2 on a template that works.
+DT_UPPER_TEMPLATE="$TMPROOT/diff-template-upper-source"
+cp -pR "$DT_TEMPLATE" "$DT_UPPER_TEMPLATE"
+git -C "$DT_UPPER_TEMPLATE" mv copier.yml copier.YAML
+git_commit_all "$DT_UPPER_TEMPLATE" "rename the copier config to an upper-case suffix"
+git -C "$DT_UPPER_TEMPLATE" tag -f v1.0.0 >/dev/null
+upper_rc=0
+upper_out="$(HARMON_INIT="$DT_UPPER_TEMPLATE" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || upper_rc=$?
+if [ "$upper_rc" -eq 0 ]; then
+    ok "diff-template reads a case-varied copier config the way copier discovers it"
+else
+    bad "diff-template reads a case-varied copier config the way copier discovers it (got $upper_rc): $upper_out"
+fi
+if printf '%s\n' "$upper_out" | grep -qF "OWNED    CHANGELOG.md"; then
+    ok "diff-template derives OWNED from a case-varied copier config"
+else
+    bad "diff-template derives OWNED from a case-varied copier config"
 fi
 # A declaration that IS there and is not a list is nobody's baseline — something
 # is wrong with the file or with our read of it, and guessing fails closed.

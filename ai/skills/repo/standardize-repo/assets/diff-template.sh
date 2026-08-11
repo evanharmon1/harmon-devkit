@@ -852,17 +852,41 @@ is_ignore_pattern_match() {
 skip_decl_root="$workdir/skip-decl"
 skip_decl_yml="$workdir/template-copier.yml"
 skip_decl_patterns="$workdir/skip-if-exists.txt"
+# Discovered the way COPIER discovers it, not by the two names one expects:
+# `_raw_config` globs `copier.*` at the template root and accepts any suffix
+# matching `\.ya?ml` CASE-INSENSITIVELY, so `copier.YML` and `copier.Yaml` are
+# real templates it renders happily. Reading only the lowercase spellings would
+# exit 2 on a template that works — the same fail-broken shape as refusing a
+# pre-v3.4 baseline. Listed from the TREE at the rendered ref rather than from
+# disk: the guarded path has no working copy, and a case-insensitive filesystem
+# would answer for a name the repository does not actually contain.
 skip_decl_source=""
-for skip_decl_candidate in copier.yml copier.yaml; do
-    if git -C "$template" show "$src_ref:$skip_decl_candidate" \
-        >"$skip_decl_yml" 2>/dev/null; then
-        skip_decl_source="$skip_decl_candidate"
-        break
-    fi
-done
-[ -n "$skip_decl_source" ] || {
-    echo "FAIL: cannot read the template's copier.yml at $src_ref" >&2
+skip_decl_found="$(
+    git -C "$template" ls-tree --name-only "$src_ref" |
+        awk 'tolower($0) ~ /^copier\.ya?ml$/' | LC_ALL=C sort
+)" || {
+    echo "FAIL: cannot list the template tree at $src_ref" >&2
+    exit 2
+}
+skip_decl_found_count="$(printf '%s' "$skip_decl_found" | grep -c . || true)"
+case "$skip_decl_found_count" in
+0)
+    echo "FAIL: the template has no copier.yml at $src_ref" >&2
     echo "  refusing to continue: without _skip_if_exists every repo-owned file reports as drift" >&2
+    exit 2
+    ;;
+1) skip_decl_source="$skip_decl_found" ;;
+*)
+    # copier itself raises MultipleConfigFilesError here, so the render above
+    # could not have succeeded — but say which files rather than leaving the
+    # operator to infer it from a copier traceback.
+    echo "FAIL: the template has more than one copier config at $src_ref:" >&2
+    printf '%s\n' "$skip_decl_found" | sed 's/^/  /' >&2
+    exit 2
+    ;;
+esac
+git -C "$template" show "$src_ref:$skip_decl_source" >"$skip_decl_yml" 2>/dev/null || {
+    echo "FAIL: cannot read the template's $skip_decl_source at $src_ref" >&2
     exit 2
 }
 skip_decl_tag="$(yq -r '._skip_if_exists | tag' "$skip_decl_yml" 2>/dev/null || echo "")"
@@ -881,8 +905,17 @@ skip_decl_tag="$(yq -r '._skip_if_exists | tag' "$skip_decl_yml" 2>/dev/null || 
 #     file or with our read of it, and guessing is exactly what fails closed.
 skip_decl_available=1
 skip_decl_absent_note=""
+# Tracked SEPARATELY from "no patterns to match", because the two states differ
+# on exactly one question: does this baseline predate the declaration? Only the
+# ABSENT key says yes, and only that answer may restore CHANGELOG.md's legacy
+# hard skip. An explicit `_skip_if_exists: []` is a template saying it freezes
+# NOTHING — copier owns and may rewrite every rendered path, changelog
+# included — so suppressing that path there would hide drift the template
+# expects to be audited.
+skip_decl_legacy_baseline=0
 if [ "$skip_decl_tag" = "!!null" ]; then
     skip_decl_available=0
+    skip_decl_legacy_baseline=1
     skip_decl_absent_note="$skip_decl_source at $src_ref declares no _skip_if_exists (a baseline older than harmon-init v3.4.0); no OWNED class derived"
     echo "NOTE: $skip_decl_absent_note" >&2
 elif [ "$skip_decl_tag" != "!!seq" ]; then
@@ -1564,14 +1597,19 @@ while IFS= read -r abs; do
     # had a CHANGELOG, or lost one, looked identical to a repo whose
     # release-please log is healthy.
     #
-    # The skip survives for a baseline that carries NO declaration, where there
-    # is no OWNED class to land in and dropping it would turn every mature
+    # The skip survives for a baseline that PREDATES the declaration, where
+    # there is no OWNED class to land in and dropping it would turn every mature
     # repo's changelog into gating DRIFT. That keeps the degraded path exactly
     # what it claims to be — the pre-issue-359 behavior — rather than the old
     # behavior plus a new false positive.
+    #
+    # Deliberately NOT keyed on "no patterns to match": a template that
+    # explicitly declares `_skip_if_exists: []` freezes nothing, so copier owns
+    # and may rewrite the changelog like any other rendered path, and skipping
+    # it there would hide drift the template expects to be audited.
     case "$g" in
     .git/* | .copier-answers.yml) continue ;;
-    CHANGELOG.md) [ "$skip_decl_available" -eq 1 ] || continue ;;
+    CHANGELOG.md) [ "$skip_decl_legacy_baseline" -eq 0 ] || continue ;;
     esac
     rendered_total=$((rendered_total + 1))
     grep -qxF "$g" "$manifest" 2>/dev/null && continue # manifest loop owns it

@@ -2873,7 +2873,10 @@ either an explainable customization or a missed update, and the ones nobody has
 ever looked at are exactly where a silently dropped template improvement hides.
 `OWNED`, `CO-OWNED`, and `IGNORED` lines need no such adjudication — they are
 expected to differ — but do check them for *absences*: a `CO-OWNED` or `OWNED`
-path that stopped being listed was clobbered (see the AGENTS.md note in §2 above).
+path that stopped being listed is a prompt to diff that file against its
+pre-update content, which is what distinguishes a real clobber from a template
+seed that merely caught up with the repo's copy (see the AGENTS.md note in §2
+above).
 
 **Cross-check that same re-run against the persisted non-adoption report** —
 `git rev-parse --path-format=absolute --git-path
