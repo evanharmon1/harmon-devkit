@@ -12,8 +12,11 @@ project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
 was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
 **§1.13 (project management) alone was re-verified against harmon-init v4.7.2 on
 2026-07-28; its agent-vocabulary target was re-verified against the registry and
-ADR on 2026-08-08** — the rest still carries the v3.26.1 baseline, so treat a
-§1.13 statement as current and anything else as possibly lagging. (The v4.7.0
+ADR on 2026-08-08; and the `claude-*` workflow rows plus their trigger-gate and
+claim-lifecycle notes in the Part 1 workflow inventory were re-verified against
+the harmon-init v4.26.0 `template/.github/workflows/` tree on 2026-08-10** — the
+rest still carries the v3.26.1 baseline, so treat a statement in those
+re-verified scopes as current and anything else as possibly lagging. (The v4.7.0
 pass recorded the setup scripts as create-if-missing; `e235d43`, released in
 v4.7.2, made them append missing starter options to existing single-selects.)
 The platform and client repos are kept current via mode-update passes, so their
@@ -475,20 +478,89 @@ Workflow inventory:
 | Workflow | Triggers / role | Source |
 |---|---|---|
 | `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; jobs `lint`, `security` (+ `build-test` node, `lighthouse` web-astro); Semgrep runs for free private repos or profiles without CodeQL; aggregate `verify` | [copier] |
-| `claude-plan.yml` | Pre-rollout: `@claude plan` / `claude-plan` label → posts a plan, no writes (`--disallowedTools Edit Write Bash`, `--model opus`) | [copier] |
-| `claude-implement.yml` | Pre-rollout: `@claude implement` / `claude-implement` label → opens a PR on a `claude/` branch (`--model sonnet`) | [copier] |
-| `claude-review.yml` | Pre-rollout: `@claude review` / `claude-review` label → review comment, no writes (sticky comment) | [copier] |
+| `claude-plan.yml` | Mention-only, no label trigger: an authorized sender's comment or review body carrying the bot mention and then the `plan` subcommand → claims the target, posts a plan, no writes (`--disallowedTools Edit Write Bash`, `--model opus`) | [copier] |
+| `claude-implement.yml` | Mention-only, no label trigger: same gate with the `implement` subcommand → claims the target, opens a **draft** PR on a `claude/` branch (`--model opus`, `gh pr ready` denied) | [copier] |
+| `claude-review.yml` | Mention-only, no label trigger: same gate with the `review` subcommand, PR targets only, senders extended with the review bots (renovate/dependabot, coderabbit when enabled) → claims the target, posts a sticky review comment, no writes | [copier] |
 | `release.yml` | release-please; only when `use_release_please` | [copier] |
 | `codeql.yml` | only when `use_codeql=true`; triggers on PR and `merge_group` so required `codeql-verify` reports; matrix is exactly `codeql_languages`; automatic/free for public repos; private/internal requires GitHub Code Security + `FULL_SECURITY_SCAN=true` | [copier] |
 | `snyk-scheduled.yml` | only when `snyk_scan_schedule` is `weekly` or `daily`; schedule/manual advisory SAST + SCA, no PR/push trigger or required check | [copier] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
 
-The three `claude-*` rows describe current pre-rollout template behavior. The
-registry/ADR target is mention-only and `claim:claude`-aware with unconditional
-claim cleanup; harmon-init#664 owns that workflow migration. Until a selected
-release contains it, report the difference as template-version lag rather than
-claiming the target behavior is already present.
+**Mention-only trigger gate** (all three `claude-*` workflows, since
+harmon-init#664 / v4.25). They subscribe to `issue_comment` (created),
+`pull_request_review_comment` (created), and `pull_request_review` (submitted)
+— every issue comment, PR review comment, and PR review in the repo, and
+nothing else: `commit_comment` and `discussion_comment` are **not** subscribed,
+so a mention on a commit or in a Discussion starts no run at all — and filter in
+the job `if:`: the sender
+must be on that workflow's authorized-sender set, and the body
+must contain that workflow's trigger phrase, which is the `@claude` mention
+followed by the workflow's own subcommand word. The sender set is the explicit
+`claude_authorized_members` allowlist for plan and implement; review extends it
+with the bots whose PRs it runs on (Renovate, Dependabot, and CodeRabbit when
+`use_coderabbit`), which is also what it passes as `allowed_bots`. A token-free
+`Verify sender is authorized` step re-asserts that same set before any
+App token is minted, so a spoof-shaped gap in the `if:` expression cannot reach
+credential creation. The old per-workflow label triggers (one label
+named after each workflow) and the `issues: [opened, assigned]` trigger were
+**removed**. Not because those events lack an actor — `github.event.sender` is
+populated on them, and the pre-v4.25 workflows did gate on it — but because the
+authorization they can carry is weaker: the sender is whoever labelled or
+assigned, not whoever asked for the work; the event carries no comment body, so
+the phrase gate collapses to the marker itself; and a label is reachable by any
+automation or triager with write access, which makes it a standing trigger
+rather than a deliberate request. A repo still
+carrying them is template-version lag; report it as such.
+
+**Never write a trigger phrase out in full** — not in this catalog, a repo's
+docs, an issue, or a PR comment. The gate is a bare `contains()` on the comment
+body, so quoting the phrase anywhere a workflow can read it starts a real run
+(observed live on harmon-init#718). Describe it as a mention plus a separate
+subcommand token, and keep the two apart even across a line break — rendered
+markdown joins wrapped lines back into one string.
+
+**Claim lifecycle** (all three, identical). A **job-level** `concurrency` group
+`claude-claim-<issue-or-PR-number>` — deliberately the same name in all three,
+so a plan and an implement run on one target serialize over their shared
+`claim:claude` label — with `cancel-in-progress: false`. It is job-level, not
+workflow-level, because these workflows fire on every comment event and filter
+in the job, so a workflow-level group would let skipped runs displace queued
+ones. Serialization is not queueing, though: GitHub keeps only **one pending
+run per group**, so while one run is active a third mention on the same target
+cancels the second one's queued run. Report a vanished command as that limit
+rather than as a completed claim lifecycle. The group serializes **Actions runs
+only**: an interactive `/claim` session never joins it, and a same-family
+session reuses the existing `claim:claude` marker rather than adding its own, so
+an Action finishing mid-session deletes the marker the session is still working
+under and the target reads as unclaimed. That cross-harness residual is accepted
+upstream, not solved here — a claim is a signal, not a lock. Then a
+`Claim the target with claim:claude` step paginates the target's
+labels and refuses loudly (`::error::` + exit 1) when any `claim:`/`agent:`-
+prefixed label is present, when the label list is unreadable, or when
+`claim:claude` will not apply — all before the App token is minted, so a
+refused run mints no privileged token, spends nothing on the model, and leaves
+no claim on the target. It is not free: the runner was already provisioned and
+the gate and claim steps ran, so repeated collisions or a stranded claim still
+burn Actions minutes or self-hosted capacity. It creates the
+label (colour `006B75`, description `Claimed by Claude`, verbatim from
+`agent-registry.json`) when the repo lacks it — repo-level label provisioning
+is the one write that can survive a refusal, since creation precedes the apply
+that may then fail. The prefix test is deliberate: it also catches `claim:claude:opus`,
+`claim:gpt`, and legacy `agent:*`, while `suggest:*` is never matched — that is
+advice, not ownership. An event with no issue or PR number runs unclaimed.
+Release is an `if: always()` step gated on this run having acquired the claim;
+it deletes the label, treats a 404 as success, retries once, and otherwise
+turns the job red rather than reporting a release over a surviving marker. The
+model step also carries its own `timeout-minutes`, set 30 minutes below the job
+cap so that an ordinary run hits the **step** timeout — which fails one step and
+lets the release run — rather than the **job** cap, which kills the runner with
+the `always()` step never reached. That headroom is a margin, not a guarantee:
+a preamble (sender gate, claim, token mint, checkout, setup) that eats more than
+30 minutes, a lost runner, or a force-cancel all reach the job cap first and
+strand `claim:claude` on the target, where it makes later runs refuse. Treat a
+target stuck under a claim with no live run as that residual — the marker is
+searchable, and removing it by hand is the recovery.
 
 **GitHub App auth** (the claude-* workflows, `release.yml`, and
 `project-automation.yml`): authenticate as a **`<owner>-ci` GitHub App** (one App
@@ -967,7 +1039,12 @@ artifacts; the prose rules are guidance, not lint):
   `claim:<family>[:<model>]` for agent-authored live ownership. Both accept a
   family-level label; add the optional model segment only when it is known and
   useful. Interactive session claims are released at wrap or shepherd completion;
-  Claude Action claims are always released, including on failure.
+  Claude Action claims are released by an unconditional `if: always()` cleanup
+  step, so an ordinary failure or step timeout still releases. The exception is a
+  run that never reaches that step at all — a job-cap kill, a lost runner, or a
+  force-cancel — which strands the marker; see the claim lifecycle under Part 1's
+  workflow inventory. Treat a claim with no live run as that case, not as
+  ownership.
   Transition-compatible consumers also recognize documented legacy `agent:*`
   claims. Neither family arms execution or records historical doneness. Harness
   slugs never belong on either model-centric axis, and the `Agent` field is not a

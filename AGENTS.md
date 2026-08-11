@@ -357,8 +357,9 @@ Then run `gh pr ready`, confirm the PR is no longer draft and the head did not
 change, and hand it to the human reviewer. Treat promotion as a reconciled
 transition: fingerprint the PR body, reviews, top-level and inline comments,
 and thread resolution immediately before and after promotion (the vendored
-shepherd skill's `promo_fp` recipe is the one implementation of that
-snapshot); any content change invalidates the gate. Even when the command or
+shepherd skill's `readiness-gate.sh` is the one implementation of that
+snapshot — `check` prints the fingerprint and `fingerprint` recomputes it
+for the post-promotion compare); any content change invalidates the gate. Even when the command or
 the confirmation fails, bounded-fetch the remote state and reconcile it: if
 the open PR is ready on any unverified head or content snapshot, return it to
 draft with `gh pr ready --undo` and confirm draft state before resuming or

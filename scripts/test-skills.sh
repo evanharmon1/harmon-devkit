@@ -958,7 +958,12 @@ expect_ok "standards catalog scopes session claim cleanup to lifecycle completio
     grep -qF 'Interactive session claims are released at wrap or shepherd completion' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog guarantees failure cleanup only for Claude Actions" \
-    grep -qF 'Claude Action claims are always released, including on failure' \
+    grep -qF 'Claude Action claims are released by an unconditional `if: always()` cleanup' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+# …and states the residual as an exception rather than softening "always": a run
+# killed at the job cap never reaches the cleanup step at all.
+expect_ok "standards catalog names the stranded-claim exception" \
+    sh -c 'grep -qF "never reaches that step at all" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog requires registry-derived human routing tables" \
     grep -qF 'includes family and harness tables derived from the' \
@@ -984,12 +989,108 @@ expect_fail "standards catalog does not source the vocabulary ADR from mutable m
 expect_ok "standards catalog classifies missing registries as version lag" \
     grep -qF 'If that revision lacks the registry, report template-version lag' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog marks Claude workflow inventory pre-rollout" \
-    grep -qF 'The three `claude-*` rows describe current pre-rollout template behavior.' \
+expect_ok "standards catalog describes mention-only Claude workflow triggers" \
+    sh -c 'test "$(grep -cF "Mention-only, no label trigger" "$1")" = 3' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog records the Claude workflow target" \
-    grep -qF 'target is mention-only and `claim:claude`-aware' \
+expect_ok "standards catalog records the claim:claude lifecycle" \
+    sh -c 'grep -qF "Claim the target with claim:claude" "$1" &&
+        grep -qF "claude-claim-" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
+# The catalog must not reconstruct a live trigger phrase: quoted into an issue
+# or PR comment, the workflows' contains() gate matches it and starts a real
+# run (observed on harmon-init#718). What matters is the RENDERED copy, not the
+# source bytes, so the pipeline approximates it — collapse whitespace (rendered
+# markdown rejoins a phrase split across a line break), drop link targets
+# (`[plan](docs/x.md)` renders as `plan`), then match the mention and the
+# subcommand separated only by whitespace/punctuation such as backticks or bold
+# markers, which render away. Case-insensitive because GitHub's `contains()` is.
+# Prose words between the tokens break the run and pass, which is the fix this
+# guard exists to protect. Deliberately the same detector harmon-init's
+# lint-hygiene.sh applies on its side (init#725) — the file reaches init through
+# a pin bump, so a weaker guard here would just move the failure downstream. The
+# needle is assembled from two pieces so this guard is not itself a phrase.
+#
+# BOTH forms are checked, raw and rendered. Stripping link targets models what
+# a reader copies out of the rendered page, but `contains()` reads whatever is
+# actually in the comment body — and someone quoting the raw Markdown ships the
+# link destination and title text too. Checking only the stripped form would
+# miss a phrase hiding inside a URL or a link title; checking only the raw form
+# would miss the backticked and bolded spellings that render away. Feed the
+# matcher both and match either.
+#
+# The rendered branch applies every normalization CUMULATIVELY, in one pass.
+# Running them as parallel alternatives — each starting from the original text —
+# misses a phrase that needs two of them at once, e.g. a reference-style link
+# label followed by an HTML-wrapped subcommand, where the link branch leaves the
+# tag behind and the tag branch leaves the label behind. Composing is also
+# monotone: each transform only deletes characters, so the fully normalized form
+# subsumes every partially normalized one and no separate branch is needed.
+trigger_phrase_present() {
+    _tp_mention=$(printf '@%s' claude)
+    _tp_pat="${_tp_mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"
+    _tp_norm=$(tr -s '[:space:]' ' ' <"$1")
+    # `grep -iE …>/dev/null`, deliberately NOT `grep -qiE`: this file runs under
+    # `set -o pipefail`, and -q exits at the first match, so the upstream
+    # printf/sed die of SIGPIPE and the pipeline reports 141 instead of 0. The
+    # guard would then report "no trigger phrase" for a file that has one —
+    # failing open, in the one place that must fail closed. Draining the input
+    # costs nothing at this size.
+    {
+        printf '%s\n' "$_tp_norm"
+        printf '%s\n' "$_tp_norm" |
+            sed -E 's/\]\([^)]*\)//g; s/\]\[[^]]*\]//g; s/<[^>]*>//g'
+    } | grep -iE "$_tp_pat" >/dev/null
+}
+# Every reference doc, not just the catalog: these are all Markdown an agent
+# quotes into an issue or PR comment, so a phrase moved into a sibling file is
+# just as live. Scanning the directory also means a reference added later is
+# covered without anyone remembering to add it here.
+for _ref in "$STANDARDIZE_REFS"/*.md; do
+    expect_fail "$(basename "$_ref") reconstructs no literal Claude trigger phrase" \
+        trigger_phrase_present "$_ref"
+done
+# Positive controls: the guard above is an expect_fail, so a pipeline that
+# silently matched nothing at all would pass just as loudly as a clean catalog.
+# These prove it still fires on the forms rendered copy reconstructs.
+#
+# Each fixture is ASSEMBLED at run time from a mention token and a subcommand
+# token held apart in the source. Writing them out would put five live trigger
+# phrases in a file that is itself quotable — the exact hazard this guard
+# exists to catch — while testing nothing extra: the pipeline only ever sees
+# the joined string.
+#
+# For the same reason each fixture is reported by a LABEL, never by its
+# content: test output is routinely pasted into an issue or a PR comment, so
+# echoing the assembled phrase would put a live trigger in the one place that
+# acts on it. Entries are `label|content`; only the label is ever printed.
+_m=$(printf '@%s' claude)
+_M=$(printf '@%s' Claude)
+for _trigger_case in \
+    "same-line adjacency|post an ${_m} plan comment" \
+    "backtick-separated tokens|post an \`${_m}\` \`plan\` comment" \
+    "case variant|post an ${_M} Review comment" \
+    "bold subcommand|post an ${_m} **implement** comment" \
+    "linked subcommand|post an ${_m} [plan](docs/x.md) comment" \
+    "phrase inside a link destination|see [the docs](https://x.example/${_m}-plan)" \
+    "phrase inside a link title|see [the docs](https://x.example \"${_m} plan\")" \
+    "inline HTML between the tokens|post an ${_m} <em>plan</em> comment" \
+    "reference-style link label|post an [${_m}][bot] plan comment" \
+    "combined reference link and inline HTML|post an [${_m}][bot] <em>plan</em> comment"; do
+    _label=${_trigger_case%%|*}
+    _trigger_fixture=${_trigger_case#*|}
+    _tf=$(mktemp)
+    printf '%s\n' "$_trigger_fixture" >"$_tf"
+    expect_ok "trigger-phrase guard fires on the $_label fixture" \
+        trigger_phrase_present "$_tf"
+    rm -f "$_tf"
+done
+# Negative control: prose words between the tokens must NOT fire, or the guard
+# would forbid the very phrasing the catalog now uses.
+_tf=$(mktemp)
+printf '%s\n' "an ${_m} mention naming plan, implement, or review" >"$_tf"
+expect_fail "trigger-phrase guard ignores prose-separated tokens" \
+    trigger_phrase_present "$_tf"
+rm -f "$_tf"
 expect_ok "standards catalog keeps migration procedures out of the catalog" \
     grep -qF 'not a second procedure in this catalog' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -2044,15 +2145,16 @@ expect_ok "shepherd reconciles partial or raced promotion" \
         grep -qF "report must name that unresolved" "$1" &&
         grep -qF "remote-state risk" "$1"' sh "$SHEPHERD_SKILL"
 expect_ok "shepherd paginates the draft-conversion undo guard" \
-    sh -c 'grep -qF "gh api --paginate repos/\"\$repo\"/issues/<n>/timeline" "$1" &&
+    sh -c 'grep -qF "/assets/gh-ro.sh --paginate repos/\"\$repo\"/issues/<n>/timeline" "$1" &&
         grep -qF "convert_to_draft" "$1"' sh "$SHEPHERD_SKILL"
 expect_ok "shepherd bounds the undo per PR across sessions" \
     grep -qF 'the bound is per PR, across sessions' "$SHEPHERD_SKILL"
 expect_ok "shepherd freezes review content across promotion" \
-    sh -c 'grep -qF "stable content fingerprint" "$1" &&
-        grep -qF "top-level comments, inline comments" "$1" &&
+    sh -c 'grep -qF "top-level comments, inline comments" "$1" &&
         grep -qF "GraphQL review-thread resolution" "$1" &&
-        grep -qF "identical to the last pre-promotion read" "$1"' sh \
+        grep -qF "readiness-gate.sh fingerprint --repo" "$1" &&
+        grep -qF "re-read the content fingerprint" "$1" &&
+        grep -qF "identical to the passing gate" "$1"' sh \
     "$SHEPHERD_SKILL"
 expect_ok "shepherd settles automation before final ready promotion" \
     sh -c 'grep -qF "cannot be used as an automation" "$1" &&
@@ -2268,6 +2370,88 @@ expect_ok "non-adoption snippet pins collation on every comm invocation" \
         pinned="$(grep -cE "LC_ALL=C comm -[0-9]" "$1")"
         test "$total" -gt 0 && test "$total" -eq "$pinned"' sh \
     "$GU_NONADOPT_SNIPPET"
+# `changed_in_range` on its own, against modes this suite can actually create.
+# The probe used `test -x`, which answers "may THIS process execute this file
+# HERE" — a fact about the mount and the caller, not about the render. A noexec
+# mount cannot be arranged in a test, but the same discrimination shows in a
+# mode whose exec bits are set for somebody other than the owner: `test -x` is
+# false on both sides while the STORED bits differ, which is precisely the shape
+# that used to report `no` for a real mode-only change.
+GU_CIR="$TMPROOT/nonadoption-changed-in-range.sh"
+{
+    printf '%s\n' 'set -eu'
+    sed -n '/^  nonadoption_stored_mode() {/,/^  }$/p' "$GU_NONADOPT_SNIPPET"
+    sed -n '/^  nonadoption_changed_in_range() {/,/^  }$/p' "$GU_NONADOPT_SNIPPET"
+    printf '%s\n' 'nonadoption_changed_in_range "$1"'
+} >"$GU_CIR"
+expect_ok "the changed_in_range probe is extractable from the snippet" \
+    sh -c 'grep -qF "nonadoption_stored_mode() {" "$1" &&
+        grep -qF "nonadoption_changed_in_range() {" "$1"' sh "$GU_CIR"
+# The stance itself, so a later edit cannot quietly reintroduce the effective
+# test: the probe must read stored bits and never ask about executability here.
+expect_ok "the changed_in_range probe reads stored bits, not effective access" \
+    sh -c 'grep -qF "ls -ld --" "$1" &&
+        ! grep -qE "test !? ?-x \"\\\$NONADOPT_(BASE|TGT)\"" "$1"' sh \
+    "$GU_NONADOPT_SNIPPET"
+GU_CIR_BASE="$TMPROOT/changed-in-range/baseline"
+GU_CIR_TGT="$TMPROOT/changed-in-range/target"
+mkdir -p "$GU_CIR_BASE" "$GU_CIR_TGT"
+gu_cir() {
+    BASELINE_DISCOVERY="$GU_CIR_BASE" TARGET_DISCOVERY="$GU_CIR_TGT" \
+        bash -eu "$GU_CIR" "$1"
+}
+printf 'same\n' >"$GU_CIR_BASE/same.md"
+printf 'same\n' >"$GU_CIR_TGT/same.md"
+if [ "$(gu_cir same.md)" = no ]; then
+    ok "changed_in_range reports no for an unchanged file"
+else
+    bad "changed_in_range reports no for an unchanged file"
+fi
+printf 'baseline\n' >"$GU_CIR_BASE/content.md"
+printf 'target\n' >"$GU_CIR_TGT/content.md"
+if [ "$(gu_cir content.md)" = yes ]; then
+    ok "changed_in_range reports yes for a content change"
+else
+    bad "changed_in_range reports yes for a content change"
+fi
+printf 'script\n' >"$GU_CIR_BASE/hook.sh"
+printf 'script\n' >"$GU_CIR_TGT/hook.sh"
+chmod 644 "$GU_CIR_BASE/hook.sh"
+chmod 755 "$GU_CIR_TGT/hook.sh"
+if [ "$(gu_cir hook.sh)" = yes ]; then
+    ok "changed_in_range reports yes for an ordinary exec-bit change"
+else
+    bad "changed_in_range reports yes for an ordinary exec-bit change"
+fi
+# The discrimination case: identical bytes, different STORED bits, and `test -x`
+# false on both sides because the owner holds no exec bit either way.
+printf 'shared\n' >"$GU_CIR_BASE/other-exec.md"
+printf 'shared\n' >"$GU_CIR_TGT/other-exec.md"
+chmod 644 "$GU_CIR_BASE/other-exec.md"
+chmod 645 "$GU_CIR_TGT/other-exec.md"
+# Root is the exception and has to be named rather than tripped over: UID 0
+# passes an execute check whenever ANY execute bit is set, so `test -x` reads
+# true for the 0645 side and the premise below cannot hold. The stored-mode
+# comparison is unaffected — that is the whole point of it — so the fixture
+# records why the discrimination is unobservable instead of failing the suite
+# for a container that happens to run as root.
+if [ "$(id -u)" -eq 0 ]; then
+    ok "the changed_in_range mode fixture skips its effective-access premise as root"
+elif [ -x "$GU_CIR_BASE/other-exec.md" ] || [ -x "$GU_CIR_TGT/other-exec.md" ]; then
+    bad "the changed_in_range mode fixture keeps effective executability equal"
+else
+    ok "the changed_in_range mode fixture keeps effective executability equal"
+fi
+if [ "$(gu_cir other-exec.md)" = yes ]; then
+    ok "changed_in_range sees a mode change effective executability hides"
+else
+    bad "changed_in_range sees a mode change effective executability hides"
+fi
+if [ "$(gu_cir absent.md)" = unknown ]; then
+    ok "changed_in_range reports unknown for a path it cannot read"
+else
+    bad "changed_in_range reports unknown for a path it cannot read"
+fi
 # §2 promotion deletes $GUARDED_STATE outright, and both §4 and §5 still need
 # the report, so it has to be copied somewhere that survives — the git dir,
 # same idiom as the deferred-findings notes, BRANCH KEY included. An ordinary
@@ -2575,6 +2759,43 @@ expect_ok "co-owned prose globs agree between diff-template.sh and the non-adopt
             grep -qE "^[[:space:]]*\*\.md\) return 0 ;;$" || exit 1
     done' sh \
     "$STANDARDIZE_ASSETS/diff-template.sh" "$GU_NONADOPT_SNIPPET"
+# The pointer to that duplicate has to name the symbol that exists and the
+# behaviour it actually has. It named `nonadoption_is_collapsible_prose` and said
+# prose absences are collapsed OUT of the report, while the real helper is
+# `nonadoption_is_doc_prose` and §5 tables those absences with a note — a comment
+# that sends the next edit to a missing function and describes the opposite
+# outcome is worse than no comment.
+expect_ok "the co-ownership sync comment names the helper that exists" \
+    sh -c '! grep -qF "nonadoption_is_collapsible_prose" "$1" &&
+        grep -qF "nonadoption_is_doc_prose" "$1"' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
+expect_ok "the named helper is the one the snippet actually defines" \
+    grep -qF "nonadoption_is_doc_prose() {" "$GU_NONADOPT_SNIPPET"
+# Every repo-path resolution in diff-template.sh runs through the
+# physical-parent guard, equivalence included. `find` does not descend a
+# symlinked directory and `resolve_variant` refuses one before the equivalence
+# walk is ever reached, so no repro survives today — which is exactly why the
+# guard is worth pinning: the invariant should hold because it is checked, not
+# because two unrelated behaviours happen to cover for it.
+# Every path this script hands git comes from the RENDER's own file names, so a
+# `*`, `?`, or `[` in one is a filename and never pathspec magic. Without
+# `--literal-pathspecs` a rendered `docs/[a].md` silently answers about
+# `docs/a.md` — wrong index mode, wrong staged verdict, and for the clobber gate
+# a claim about a file nobody touched.
+expect_ok "every pathspec-taking git probe is pinned literal" \
+    sh -c 'test "$(grep -cE "(ls-files|ls-tree|diff --cached)[^|]*-- \"" "$1")" -gt 0 &&
+        ! grep -nE "git -C \"\\\$target\" (ls-files|ls-tree|diff)" "$1" |
+            grep -qv -- "--literal-pathspecs" &&
+        test "$(grep -c -- "--literal-pathspecs" "$1")" -ge 3' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
+expect_ok "the equivalence walk honors the physical-parent guard" \
+    sh -c 'test "$(sed -n "/^has_repo_equivalent() {/,/^has_nested_terraform_root() {/p" "$1" |
+        grep -c "repo_parent_diverges")" -ge 3 &&
+        sed -n "/^has_nested_terraform_root() {/,/^}$/p" "$1" |
+            grep -qF "repo_parent_diverges" &&
+        sed -n "/^has_nested_terraform_root() {/,/^}$/p" "$1" |
+            grep -qF -- "-name .terraform -prune"' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
 # The REST of the co-owned list must NOT be mirrored. Co-ownership is a content
 # exemption and absence is not content, so a missing AGENTS.md or LICENSE is a
 # row like any other — now carrying a note instead of vanishing into a count.
@@ -5776,6 +5997,627 @@ if printf '%s\n' "$noignore_out" | grep -qF 'noignore-sentinel'; then
     bad "diff-template --show still withholds a repo-ignored body with no render rules"
 else
     ok "diff-template --show still withholds a repo-ignored body with no render rules"
+fi
+
+# --- the INDEX is part of what the repo has ----------------------------------
+# Staging a divergence and then restoring only the WORKING TREE left the audit
+# comparing a clean disk copy while the next commit carried the divergence —
+# the same blind spot as `git rm --cached`, one class over. The comparison
+# therefore inspects the staged copy too whenever the disk copy came out clean.
+printf '%s\n' '{ "extends": ["staged-only-sentinel"] }' >"$DT_TARGET/renovate.json"
+git -C "$DT_TARGET" add -- renovate.json
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_TARGET/renovate.json"
+if staged_content_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports a staged uncurated divergence the worktree hides (expected non-zero exit)"
+elif printf '%s\n' "$staged_content_out" |
+    grep -qF "DRIFT    renovate.json  (uncurated — staged content differs"; then
+    ok "diff-template reports a staged uncurated divergence the worktree hides"
+else
+    bad "diff-template reports a staged uncurated divergence the worktree hides (DRIFT diagnostic missing)"
+fi
+# No body: the staged bytes are not the disk copy `diff -u` would be reading,
+# and the line already says everything actionable.
+if printf '%s\n' "$staged_content_out" | grep -qF 'staged-only-sentinel'; then
+    bad "diff-template prints no body for a staged-only divergence"
+else
+    ok "diff-template prints no body for a staged-only divergence"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- renovate.json
+git -C "$DT_TARGET" checkout HEAD -- renovate.json
+
+# The exec bit is staged state too: `update-index --chmod=+x` records 100755
+# while the disk copy stays 644, so the mode the next commit carries is not the
+# mode on disk. MODE is structural and gates for every class, staged included.
+git -C "$DT_TARGET" update-index --chmod=+x -- renovate.json
+if staged_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports a staged mode change the worktree hides (expected non-zero exit)"
+elif printf '%s\n' "$staged_mode_out" |
+    grep -qF "MODE     renovate.json  (staged mode differs"; then
+    ok "diff-template reports a staged mode change the worktree hides"
+else
+    bad "diff-template reports a staged mode change the worktree hides (MODE diagnostic missing)"
+fi
+git -C "$DT_TARGET" update-index --chmod=-x -- renovate.json
+git -C "$DT_TARGET" reset -q HEAD -- renovate.json
+git -C "$DT_TARGET" checkout HEAD -- renovate.json
+
+# MIXED state: the worktree diverges on content while the index independently
+# carries a staged mode change. The dimensions are probed separately, so gating
+# on the disk finding is no reason to hide the staged one — a clean-on-both
+# precondition would have skipped the index entirely.
+printf '%s\n' '{ "extends": ["mixed-state-sentinel"] }' >"$DT_TARGET/renovate.json"
+git -C "$DT_TARGET" update-index --chmod=+x -- renovate.json
+if mixed_state_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports both a worktree and a staged dimension (expected non-zero exit)"
+elif printf '%s\n' "$mixed_state_out" | grep -qF "DRIFT    renovate.json  (uncurated"; then
+    ok "diff-template reports both a worktree and a staged dimension"
+else
+    bad "diff-template reports both a worktree and a staged dimension (DRIFT diagnostic missing)"
+fi
+if printf '%s\n' "$mixed_state_out" |
+    grep -qF "MODE     renovate.json  (staged mode differs"; then
+    ok "diff-template reports a staged mode change alongside worktree content drift"
+else
+    bad "diff-template reports a staged mode change alongside worktree content drift"
+fi
+git -C "$DT_TARGET" update-index --chmod=-x -- renovate.json
+git -C "$DT_TARGET" reset -q HEAD -- renovate.json
+git -C "$DT_TARGET" checkout HEAD -- renovate.json
+
+# The curated loop owes the same guarantee — the manifest is the more
+# load-bearing set, not the weaker one.
+printf '%s\n' '#!/usr/bin/env bash' 'echo staged curated' \
+    >"$DT_TARGET/scripts/status.sh"
+git -C "$DT_TARGET" add -- scripts/status.sh
+cp "$DT_TEMPLATE/template/scripts/status.sh" "$DT_TARGET/scripts/status.sh"
+chmod +x "$DT_TARGET/scripts/status.sh"
+if staged_curated_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports a staged curated divergence the worktree hides (expected non-zero exit)"
+elif printf '%s\n' "$staged_curated_out" |
+    grep -qF "DRIFT    scripts/status.sh  (staged content differs"; then
+    ok "diff-template reports a staged curated divergence the worktree hides"
+else
+    bad "diff-template reports a staged curated divergence the worktree hides (DRIFT diagnostic missing)"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- scripts/status.sh
+git -C "$DT_TARGET" checkout HEAD -- scripts/status.sh
+
+# …and the CO-OWNED contract survives the new probe: content is what the repo
+# owns there, staged or not, so a staged prose divergence must not start gating
+# a class whose whole point is that its content never does.
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'staged-prose-sentinel' \
+    >"$DT_TARGET/AGENTS.md"
+git -C "$DT_TARGET" add -- AGENTS.md
+cp "$DT_TEMPLATE/template/AGENTS.md" "$DT_TARGET/AGENTS.md"
+if staged_prose_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template does not gate a staged co-owned prose divergence"
+else
+    bad "diff-template does not gate a staged co-owned prose divergence: $staged_prose_out"
+fi
+if printf '%s\n' "$staged_prose_out" | grep -qF "DRIFT    AGENTS.md"; then
+    bad "diff-template reports no staged DRIFT for co-owned prose"
+else
+    ok "diff-template reports no staged DRIFT for co-owned prose"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- AGENTS.md
+git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
+
+# …but a STRUCTURAL staged change is not prose. Staging AGENTS.md as a symlink
+# while the worktree keeps the real file means the next commit turns the agent
+# instructions into an alias, and "structural divergence always gates" holds for
+# staged state exactly as it does on disk — the CO-OWNED exemption covers
+# content, and nobody owns a file that stopped being a file.
+staged_link_blob="$(printf 'docs/guide.md' |
+    git -C "$DT_TARGET" hash-object -w --stdin)"
+git -C "$DT_TARGET" update-index --add --cacheinfo \
+    "120000,$staged_link_blob,AGENTS.md"
+if staged_structural_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a staged structural change on a co-owned path (expected non-zero exit)"
+elif printf '%s\n' "$staged_structural_out" |
+    grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch"; then
+    ok "diff-template gates a staged structural change on a co-owned path"
+else
+    bad "diff-template gates a staged structural change on a co-owned path (diagnostic missing)"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- AGENTS.md
+git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
+
+# MIXED co-owned state: ordinary prose drift on disk AND the staged alias. The
+# worktree finding is the non-gating CO-OWNED one, so making the structural
+# check conditional on a clean worktree hid the staged swap completely and the
+# run exited 0 — the structural verdict has to be independent of whether the
+# prose also moved.
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'mixed-co-owned-sentinel' \
+    >"$DT_TARGET/AGENTS.md"
+git -C "$DT_TARGET" update-index --add --cacheinfo \
+    "120000,$staged_link_blob,AGENTS.md"
+if mixed_co_owned_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a staged alias under co-owned prose drift (expected non-zero exit)"
+elif printf '%s\n' "$mixed_co_owned_out" |
+    grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch"; then
+    ok "diff-template gates a staged alias under co-owned prose drift"
+else
+    bad "diff-template gates a staged alias under co-owned prose drift (diagnostic missing)"
+fi
+if printf '%s\n' "$mixed_co_owned_out" | grep -qF "CO-OWNED AGENTS.md"; then
+    ok "diff-template keeps the co-owned prose class alongside a staged alias"
+else
+    bad "diff-template keeps the co-owned prose class alongside a staged alias"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- AGENTS.md
+git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
+
+# The CO-OWNED class's value is the INVERSE signal — a line that DISAPPEARS
+# means the repo's prose went byte-identical to the template's. A clobber that
+# is STAGED but not yet committed reads as the healthy state: the worktree still
+# diverges, so the line still prints, while the next commit removes the prose.
+# The repo's committed AGENTS.md carries customization here, the index is reset
+# to the template's bytes, and the worktree keeps the customization.
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'committed-customization' \
+    >"$DT_TARGET/AGENTS.md"
+git -C "$DT_TARGET" add -- AGENTS.md
+git_commit_all "$DT_TARGET" "repo customizes its agent prose"
+cp "$DT_TEMPLATE/template/AGENTS.md" "$DT_TARGET/AGENTS.md"
+git -C "$DT_TARGET" add -- AGENTS.md
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'committed-customization' \
+    >"$DT_TARGET/AGENTS.md"
+if staged_clobber_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a staged clobber of co-owned prose (expected non-zero exit)"
+elif printf '%s\n' "$staged_clobber_out" |
+    grep -qF "DRIFT    AGENTS.md  (staged copy is byte-identical to the template"; then
+    ok "diff-template gates a staged clobber of co-owned prose"
+else
+    bad "diff-template gates a staged clobber of co-owned prose (diagnostic missing)"
+fi
+if printf '%s\n' "$staged_clobber_out" | grep -qF "CO-OWNED AGENTS.md"; then
+    bad "diff-template replaces the co-owned line when the clobber is staged"
+else
+    ok "diff-template replaces the co-owned line when the clobber is staged"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- AGENTS.md
+git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
+
+# The control that keeps that gate honest: with NOTHING staged, an index equal
+# to the render just means the repo's committed copy is the template's while
+# somebody edits locally. No customization is at risk, so this stays the
+# informational CO-OWNED line rather than a clobber warning.
+git -C "$DT_TARGET" checkout -q HEAD~1 -- AGENTS.md
+git -C "$DT_TARGET" add -- AGENTS.md
+git_commit_all "$DT_TARGET" "repo returns to the template's agent prose"
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'unstaged-local-edit' \
+    >"$DT_TARGET/AGENTS.md"
+if unstaged_edit_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template reports no clobber when nothing is staged"
+else
+    bad "diff-template reports no clobber when nothing is staged: $unstaged_edit_out"
+fi
+if printf '%s\n' "$unstaged_edit_out" | grep -qF "staged copy is byte-identical"; then
+    bad "diff-template calls an unstaged local edit no clobber"
+else
+    ok "diff-template calls an unstaged local edit no clobber"
+fi
+git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
+expect_ok "diff-template returns to a clean baseline after the staged-state cases" \
+    env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
+
+# --- an INHERITED index entry is committed state, not staged state -----------
+# "The index differs from the template" and "this is staged" are different
+# claims. A committed customization whose worktree copy is edited BACK to the
+# template stages nothing, yet its index entry still differs from the render —
+# and an ordinary `git commit` writes no such entry. Reporting it as "the next
+# commit carries it" turns an unstaged reconciliation into a gating lie.
+DT_INHERITED_INDEX="$TMPROOT/diff-template-inherited-index"
+cp -pR "$DT_TARGET" "$DT_INHERITED_INDEX"
+printf '%s\n' '{ "extends": ["committed-divergence"] }' \
+    >"$DT_INHERITED_INDEX/renovate.json"
+git_commit_all "$DT_INHERITED_INDEX" "repo commits a renovate divergence"
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_INHERITED_INDEX/renovate.json"
+if inherited_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_INHERITED_INDEX" 2>&1)"; then
+    ok "diff-template does not gate an unstaged reconciliation to the template"
+else
+    bad "diff-template does not gate an unstaged reconciliation to the template: $inherited_out"
+fi
+if printf '%s\n' "$inherited_out" | grep -qF "staged content differs"; then
+    bad "diff-template claims no staged content for an index entry inherited from HEAD"
+else
+    ok "diff-template claims no staged content for an index entry inherited from HEAD"
+fi
+# Same distinction on the mode dimension: an unstaged `chmod` leaves the index
+# mode exactly as HEAD recorded it, so there is no staged mode to report.
+DT_INHERITED_MODE="$TMPROOT/diff-template-inherited-mode"
+cp -pR "$DT_TARGET" "$DT_INHERITED_MODE"
+chmod -x "$DT_INHERITED_MODE/scripts/status.sh"
+git_commit_all "$DT_INHERITED_MODE" "repo commits a mode divergence"
+chmod +x "$DT_INHERITED_MODE/scripts/status.sh"
+if inherited_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_INHERITED_MODE" 2>&1)"; then
+    ok "diff-template does not gate an unstaged mode reconciliation"
+else
+    bad "diff-template does not gate an unstaged mode reconciliation: $inherited_mode_out"
+fi
+if printf '%s\n' "$inherited_mode_out" | grep -qF "staged mode differs"; then
+    bad "diff-template claims no staged mode for an index mode inherited from HEAD"
+else
+    ok "diff-template claims no staged mode for an index mode inherited from HEAD"
+fi
+
+# --- a staged chmod is not a staged prose clobber ----------------------------
+# Mode and content stage independently: `git update-index --chmod` records a
+# mode with the bytes untouched. For a co-owned file whose COMMITTED bytes
+# already match the template, staging only a mode correction satisfies every
+# other clobber condition — index bytes equal to the render, something staged —
+# while no prose was ever staged and the customization is not at risk.
+DT_MODE_ONLY_STAGE="$TMPROOT/diff-template-mode-only-stage"
+cp -pR "$DT_TARGET" "$DT_MODE_ONLY_STAGE"
+chmod +x "$DT_MODE_ONLY_STAGE/AGENTS.md"
+git_commit_all "$DT_MODE_ONLY_STAGE" "repo commits agent prose with the exec bit"
+git -C "$DT_MODE_ONLY_STAGE" update-index --chmod=-x -- AGENTS.md
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'unstaged-prose-edit' \
+    >"$DT_MODE_ONLY_STAGE/AGENTS.md"
+chmod +x "$DT_MODE_ONLY_STAGE/AGENTS.md"
+if mode_only_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_MODE_ONLY_STAGE" 2>&1)"; then
+    bad "diff-template gates the real mode divergence beside a staged chmod (expected non-zero exit)"
+elif printf '%s\n' "$mode_only_out" | grep -qF "MODE     AGENTS.md"; then
+    ok "diff-template gates the real mode divergence beside a staged chmod"
+else
+    bad "diff-template gates the real mode divergence beside a staged chmod (MODE diagnostic missing)"
+fi
+if printf '%s\n' "$mode_only_out" | grep -qF "staged copy is byte-identical"; then
+    bad "diff-template claims no prose clobber when only a mode was staged"
+else
+    ok "diff-template claims no prose clobber when only a mode was staged"
+fi
+if printf '%s\n' "$mode_only_out" | grep -qF "CO-OWNED AGENTS.md"; then
+    ok "diff-template keeps the co-owned class when only a mode was staged"
+else
+    bad "diff-template keeps the co-owned class when only a mode was staged"
+fi
+
+# --- a staged TYPE change hides in the mode, not in the bytes ----------------
+# git records a regular file as 100644 and a symlink as 120000, and a file whose
+# contents are exactly the link's target text has the SAME blob under both. So
+# an index-only file→symlink conversion moves the mode while the blob stands
+# still: keying the structural verdict on staged bytes misses it, and the
+# exec-bit branch cannot catch it either because it exempts symlinks by design.
+DT_STAGED_TYPE="$TMPROOT/diff-template-staged-type"
+cp -pR "$DT_TARGET" "$DT_STAGED_TYPE"
+# AGENTS.md's committed bytes become the link text, so the blob is shared by the
+# regular file and the symlink that points at it — the whole point of the case.
+printf 'docs/guide.md' >"$DT_STAGED_TYPE/AGENTS.md"
+git_commit_all "$DT_STAGED_TYPE" "agent prose is exactly a path string"
+staged_type_blob="$(printf 'docs/guide.md' |
+    git -C "$DT_STAGED_TYPE" hash-object -w --stdin)"
+git -C "$DT_STAGED_TYPE" update-index --add --cacheinfo \
+    "120000,$staged_type_blob,AGENTS.md"
+if staged_type_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_STAGED_TYPE" 2>&1)"; then
+    bad "diff-template gates an index-only file-to-symlink conversion (expected non-zero exit)"
+elif printf '%s\n' "$staged_type_out" |
+    grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch"; then
+    ok "diff-template gates an index-only file-to-symlink conversion"
+else
+    bad "diff-template gates an index-only file-to-symlink conversion (diagnostic missing)"
+fi
+
+# The SAME conversion the other way round, which is the case a byte comparison
+# can never see: HEAD is a symlink, the index stages its unchanged blob as a
+# REGULAR FILE, and the worktree holds the template's bytes. Nothing about the
+# blob moved, and index and render are both regular files so there is no type
+# mismatch to call structural — yet committing produces a file whose CONTENT is
+# the old link target rather than the template's.
+#
+# renovate.json rather than AGENTS.md deliberately: this is a CONTENT verdict,
+# and a co-owned path's staged content stays exempt by the documented contract,
+# which would mask the mechanism under test rather than exercise it.
+DT_STAGED_UNLINK="$TMPROOT/diff-template-staged-unlink"
+cp -pR "$DT_TARGET" "$DT_STAGED_UNLINK"
+rm "$DT_STAGED_UNLINK/renovate.json"
+ln -s docs/guide.md "$DT_STAGED_UNLINK/renovate.json"
+git_commit_all "$DT_STAGED_UNLINK" "renovate config is committed as a symlink"
+staged_unlink_blob="$(git -C "$DT_STAGED_UNLINK" rev-parse HEAD:renovate.json)"
+git -C "$DT_STAGED_UNLINK" update-index --add --cacheinfo \
+    "100644,$staged_unlink_blob,renovate.json"
+rm "$DT_STAGED_UNLINK/renovate.json"
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_STAGED_UNLINK/renovate.json"
+if staged_unlink_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_STAGED_UNLINK" 2>&1)"; then
+    bad "diff-template gates a staged symlink-to-file conversion (expected non-zero exit)"
+elif printf '%s\n' "$staged_unlink_out" |
+    grep -qF "DRIFT    renovate.json  (uncurated — staged content differs"; then
+    ok "diff-template gates a staged symlink-to-file conversion"
+else
+    bad "diff-template gates a staged symlink-to-file conversion (DRIFT diagnostic missing)"
+fi
+
+# --- an unborn repository stages everything ----------------------------------
+# Before the first commit there is no committed state, so every index entry is
+# staged by definition and the initial commit carries all of it. Ending the
+# inspection at the absent HEAD made this the one place staged divergence went
+# unreported entirely.
+DT_UNBORN="$TMPROOT/diff-template-unborn"
+cp -pR "$DT_TARGET" "$DT_UNBORN"
+rm -rf "$DT_UNBORN/.git"
+git_init "$DT_UNBORN"
+printf '%s\n' '{ "extends": ["unborn-staged-divergence"] }' \
+    >"$DT_UNBORN/renovate.json"
+git -C "$DT_UNBORN" add -- renovate.json
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_UNBORN/renovate.json"
+if unborn_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_UNBORN" 2>&1)"; then
+    bad "diff-template reports staged divergence before the first commit (expected non-zero exit)"
+elif printf '%s\n' "$unborn_out" |
+    grep -qF "DRIFT    renovate.json  (uncurated — staged content differs"; then
+    ok "diff-template reports staged divergence before the first commit"
+else
+    bad "diff-template reports staged divergence before the first commit (DRIFT diagnostic missing)"
+fi
+# …and the clobber gate stays silent there: with nothing committed, no
+# customization can be lost, so a co-owned worktree edit is an ordinary local
+# edit rather than a clobber.
+git -C "$DT_UNBORN" reset -q -- renovate.json
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_UNBORN/renovate.json"
+git -C "$DT_UNBORN" add -- AGENTS.md
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'unborn-local-edit' \
+    >"$DT_UNBORN/AGENTS.md"
+if unborn_clobber_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_UNBORN" 2>&1)"; then
+    ok "diff-template claims no clobber in a repo with no commits"
+else
+    bad "diff-template claims no clobber in a repo with no commits: $unborn_clobber_out"
+fi
+if printf '%s\n' "$unborn_clobber_out" | grep -qF "staged copy is byte-identical"; then
+    bad "diff-template makes no clobber claim without a committed customization"
+else
+    ok "diff-template makes no clobber claim without a committed customization"
+fi
+
+# --- the staged-removal probes must fail CLOSED ------------------------------
+# `cat-file -e "HEAD:$p"` exits 128 for a path merely ABSENT from HEAD, so
+# "absent" and "the probe itself failed" were indistinguishable by exit code and
+# both read as "nothing is staged for removal". A corrupt index makes `ls-files`
+# fail while `ls-tree` and `rev-parse` are fine, which isolates the probe: the
+# run must stop with the setup-error status instead of auditing on regardless.
+DT_BAD_INDEX="$TMPROOT/diff-template-bad-index"
+cp -pR "$DT_TARGET" "$DT_BAD_INDEX"
+printf 'not an index at all' >"$DT_BAD_INDEX/.git/index"
+bad_index_rc=0
+bad_index_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_BAD_INDEX" 2>&1)" || bad_index_rc=$?
+if [ "$bad_index_rc" -eq 2 ]; then
+    ok "diff-template exits 2 when a staged-removal probe errors"
+else
+    bad "diff-template exits 2 when a staged-removal probe errors (got $bad_index_rc)"
+fi
+if printf '%s\n' "$bad_index_out" |
+    grep -qF "FAIL: cannot evaluate the index entry"; then
+    ok "diff-template names the staged-removal probe that could not be evaluated"
+else
+    bad "diff-template names the staged-removal probe that could not be evaluated"
+fi
+
+# --- a target that IS a repo but reports somebody else's work tree -----------
+# `rev-parse --show-toplevel` succeeding with a DIFFERENT toplevel is the nested
+# plain-directory shape only when the target has no .git of its own. With one —
+# a misconfigured `core.worktree`, a gitfile pointing elsewhere — the target is a
+# repository whose work tree git believes is somewhere else, and taking the
+# plain-directory path there silently drops the repo half of the withholding
+# probe for a repository. Same fail-open direction as unreadable metadata, same
+# refusal.
+DT_FOREIGN_WT="$TMPROOT/diff-template-foreign-worktree"
+DT_FOREIGN_ELSEWHERE="$TMPROOT/diff-template-foreign-elsewhere"
+mkdir -p "$DT_FOREIGN_ELSEWHERE"
+cp -pR "$DT_TARGET" "$DT_FOREIGN_WT"
+printf '%s\n' '{ "editor.tabSize": 4, "token": "foreign-worktree-leak-sentinel" }' \
+    >"$DT_FOREIGN_WT/.vscode/settings.json"
+git -C "$DT_FOREIGN_WT" config core.worktree "$DT_FOREIGN_ELSEWHERE"
+foreign_wt_rc=0
+foreign_wt_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    --show "$DT_FOREIGN_WT" 2>&1)" || foreign_wt_rc=$?
+if [ "$foreign_wt_rc" -eq 2 ]; then
+    ok "diff-template exits 2 when the target's own .git reports a foreign work tree"
+else
+    bad "diff-template exits 2 when the target's own .git reports a foreign work tree (got $foreign_wt_rc)"
+fi
+if printf '%s\n' "$foreign_wt_out" |
+    grep -qF "FAIL: $DT_FOREIGN_WT has its own .git but git reports a different work tree"; then
+    ok "diff-template says the target's work tree is not where its .git says"
+else
+    bad "diff-template says the target's work tree is not where its .git says"
+fi
+if printf '%s\n' "$foreign_wt_out" | grep -qF 'foreign-worktree-leak-sentinel'; then
+    bad "diff-template prints no diff body for a foreign-work-tree target"
+else
+    ok "diff-template prints no diff body for a foreign-work-tree target"
+fi
+
+# --- a template-shipped SYMLINK .gitignore marks paths without enforcing -----
+# _preserve_symlinks lets a template ship its ignore rules as a symlink, and the
+# two axes answer that shape DIFFERENTLY:
+#   • git refuses to follow a symlinked .gitignore (`unable to access`), so a
+#     freshly generated repo enforces nothing from it. CLASSIFICATION must agree
+#     — granting the informational IGNORED class there would downgrade drift on
+#     rules no clone ever applies.
+#   • WITHHOLDING must not agree: the template still WROTE those paths into its
+#     ignore rules, so printing their bodies leaks exactly what somebody marked
+#     local-only. The `-type f` walk fed both answers from regular files alone,
+#     so this template's declared-local bodies were printed outright.
+# Two files carry the two halves: .envrc, which the repo does NOT ignore, is the
+# leak control; secrets.env, which the repo DOES ignore, is the git-parity one.
+DT_LINKIGNORE_TEMPLATE="$TMPROOT/diff-template-linkignore-source"
+mkdir -p "$DT_LINKIGNORE_TEMPLATE/template"
+cat >"$DT_LINKIGNORE_TEMPLATE/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+_preserve_symlinks: true
+project_name:
+  type: str
+  default: Link Ignore
+EOF
+printf '%s\n' '.envrc' 'secrets.env' \
+    >"$DT_LINKIGNORE_TEMPLATE/template/gitignore-rules"
+ln -s gitignore-rules "$DT_LINKIGNORE_TEMPLATE/template/.gitignore"
+printf '%s\n' 'export EXAMPLE_SETTING=template-default' \
+    >"$DT_LINKIGNORE_TEMPLATE/template/.envrc"
+printf '%s\n' 'EXAMPLE_TOKEN=template-default' \
+    >"$DT_LINKIGNORE_TEMPLATE/template/secrets.env"
+git_init "$DT_LINKIGNORE_TEMPLATE"
+git -C "$DT_LINKIGNORE_TEMPLATE" add -f -- template/.envrc template/secrets.env
+git_commit_all "$DT_LINKIGNORE_TEMPLATE" "template ships a symlink .gitignore"
+git -C "$DT_LINKIGNORE_TEMPLATE" tag v1.0.0
+DT_LINKIGNORE_TARGET="$TMPROOT/diff-template-linkignore-target"
+mkdir -p "$DT_LINKIGNORE_TARGET"
+printf '%s\n' '.envrc' 'secrets.env' >"$DT_LINKIGNORE_TARGET/gitignore-rules"
+ln -s gitignore-rules "$DT_LINKIGNORE_TARGET/.gitignore"
+printf '%s\n' 'export EXAMPLE_SETTING=linkignore-envrc-sentinel' \
+    >"$DT_LINKIGNORE_TARGET/.envrc"
+printf '%s\n' 'EXAMPLE_TOKEN=linkignore-secrets-sentinel' \
+    >"$DT_LINKIGNORE_TARGET/secrets.env"
+cat >"$DT_LINKIGNORE_TARGET/.copier-answers.yml" <<EOF
+_commit: v1.0.0
+_src_path: file://$DT_LINKIGNORE_TEMPLATE
+project_name: Link Ignore
+EOF
+git_init "$DT_LINKIGNORE_TARGET"
+# Only secrets.env is ignored repo-side, and through info/exclude because git
+# would not read the symlinked .gitignore anyway. .envrc is left plainly visible
+# to the repo, which is what makes it the leak control: nothing but the
+# template's own (symlinked) declaration can withhold its body.
+mkdir -p "$DT_LINKIGNORE_TARGET/.git/info"
+printf '%s\n' 'secrets.env' >"$DT_LINKIGNORE_TARGET/.git/info/exclude"
+git_commit_all "$DT_LINKIGNORE_TARGET" "target mirrors the symlink .gitignore"
+if linkignore_out="$(HARMON_INIT="$DT_LINKIGNORE_TEMPLATE" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" --show "$DT_LINKIGNORE_TARGET" 2>&1)"; then
+    bad "diff-template gates paths a symlink .gitignore cannot enforce (expected non-zero exit)"
+elif printf '%s\n' "$linkignore_out" | grep -qF "DRIFT    .envrc"; then
+    ok "diff-template gates paths a symlink .gitignore cannot enforce"
+else
+    bad "diff-template gates paths a symlink .gitignore cannot enforce (DRIFT diagnostic missing)"
+fi
+# The leak control: the repo has no rule of its own for .envrc, so the body is
+# withheld only because the template marked the path local — through a link git
+# itself will not follow.
+if printf '%s\n' "$linkignore_out" | grep -qF 'linkignore-envrc-sentinel'; then
+    bad "diff-template withholds a body a symlink .gitignore marks local"
+else
+    ok "diff-template withholds a body a symlink .gitignore marks local"
+fi
+# The git-parity control: a real clone enforces nothing from that link, so the
+# repo's own ignore rule cannot be upgraded into the template's declaration.
+if printf '%s\n' "$linkignore_out" |
+    grep -qF "DRIFT    secrets.env  (repo-ignored, but the template tracks this file"; then
+    ok "a symlink .gitignore grants no IGNORED class git would not grant"
+else
+    bad "a symlink .gitignore grants no IGNORED class git would not grant"
+fi
+if printf '%s\n' "$linkignore_out" | grep -qF "IGNORED  "; then
+    bad "diff-template emits no IGNORED line for unenforceable template rules"
+else
+    ok "diff-template emits no IGNORED line for unenforceable template rules"
+fi
+if printf '%s\n' "$linkignore_out" | grep -qF 'linkignore-secrets-sentinel'; then
+    bad "diff-template withholds a repo-ignored body under a symlink .gitignore"
+else
+    ok "diff-template withholds a repo-ignored body under a symlink .gitignore"
+fi
+
+# --- a curated path the template renders as a DANGLING symlink ---------------
+# `-f` follows links, so such a path read as "not in this profile" and the
+# curated loop skipped it — while the sweep skipped it too, deferring to the
+# manifest that owns it. The run exited 0 having said nothing at all about a
+# template-owned path.
+DT_DANGLE_TEMPLATE="$TMPROOT/diff-template-dangling-source"
+mkdir -p "$DT_DANGLE_TEMPLATE/template/scripts"
+cat >"$DT_DANGLE_TEMPLATE/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+_preserve_symlinks: true
+project_name:
+  type: str
+  default: Dangling
+EOF
+ln -s status-impl.sh "$DT_DANGLE_TEMPLATE/template/scripts/status.sh"
+printf '%s\n' 'kept' >"$DT_DANGLE_TEMPLATE/template/keep.txt"
+git_init "$DT_DANGLE_TEMPLATE"
+git_commit_all "$DT_DANGLE_TEMPLATE" "template renders a dangling alias"
+git -C "$DT_DANGLE_TEMPLATE" tag v1.0.0
+DT_DANGLE_TARGET="$TMPROOT/diff-template-dangling-target"
+mkdir -p "$DT_DANGLE_TARGET/scripts"
+ln -s status-impl.sh "$DT_DANGLE_TARGET/scripts/status.sh"
+printf '%s\n' 'kept' >"$DT_DANGLE_TARGET/keep.txt"
+cat >"$DT_DANGLE_TARGET/.copier-answers.yml" <<EOF
+_commit: v1.0.0
+_src_path: file://$DT_DANGLE_TEMPLATE
+project_name: Dangling
+EOF
+git_init "$DT_DANGLE_TARGET"
+git_commit_all "$DT_DANGLE_TARGET" "target mirrors the dangling alias"
+if dangle_out="$(HARMON_INIT="$DT_DANGLE_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_DANGLE_TARGET" 2>&1)"; then
+    bad "diff-template reports a curated path rendered as a dangling symlink (expected non-zero exit)"
+elif printf '%s\n' "$dangle_out" |
+    grep -qF "DRIFT    scripts/status.sh  (template renders a dangling symlink"; then
+    ok "diff-template reports a curated path rendered as a dangling symlink"
+else
+    bad "diff-template reports a curated path rendered as a dangling symlink (DRIFT diagnostic missing)"
+fi
+
+# --- `terraform init` is not a nested Terraform layout -----------------------
+# An unrestricted walk counted `.terraform/modules/**/*.tf` — module sources
+# copier never rendered and the repo never wrote — as the nested root that makes
+# the flat seeds redundant, so running `terraform init` once was enough to award
+# a benign EQUIV to a repo that still has no replacement for them.
+DT_TF_CACHE="$TMPROOT/diff-template-terraform-cache"
+cp -pR "$DT_TARGET" "$DT_TF_CACHE"
+rm -rf "$DT_TF_CACHE/terraform"
+mkdir -p "$DT_TF_CACHE/terraform/.terraform/modules/vpc"
+printf '%s\n' '# vendored module source' \
+    >"$DT_TF_CACHE/terraform/.terraform/modules/vpc/main.tf"
+if tf_cache_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_TF_CACHE" 2>&1)"; then
+    bad "diff-template counts no .terraform cache as a nested root (expected non-zero exit)"
+elif printf '%s\n' "$tf_cache_out" | grep -qF "MISSING  terraform/main.tf"; then
+    ok "diff-template counts no .terraform cache as a nested root"
+else
+    bad "diff-template counts no .terraform cache as a nested root (MISSING diagnostic absent)"
+fi
+if printf '%s\n' "$tf_cache_out" | grep -qF "EQUIV    terraform/main.tf"; then
+    bad "diff-template awards no EQUIV on a terraform init cache alone"
+else
+    ok "diff-template awards no EQUIV on a terraform init cache alone"
+fi
+
+# The equivalence walk honors the same physical-parent guard as every other
+# repo-path resolution here: a "nested root" that lives under a symlinked
+# directory is somebody else's tree, not evidence this repo outgrew the seeds.
+DT_TF_OUTSIDE="$TMPROOT/diff-template-terraform-outside"
+mkdir -p "$DT_TF_OUTSIDE/production"
+printf '%s\n' '# outside root' >"$DT_TF_OUTSIDE/production/main.tf"
+DT_TF_LINKED="$TMPROOT/diff-template-terraform-linked"
+cp -pR "$DT_TARGET" "$DT_TF_LINKED"
+rm -rf "$DT_TF_LINKED/terraform/environments"
+# Two levels deep, so the relative target needs two hops: `../` alone would
+# resolve inside the copy and leave a dangling link that models nothing.
+ln -s ../../diff-template-terraform-outside "$DT_TF_LINKED/terraform/environments"
+if [ -f "$DT_TF_LINKED/terraform/environments/production/main.tf" ]; then
+    ok "the symlinked-parent Terraform fixture points at a real outside root"
+else
+    bad "the symlinked-parent Terraform fixture points at a real outside root"
+fi
+if tf_linked_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_TF_LINKED" 2>&1)"; then
+    bad "diff-template resolves no Terraform equivalence through a symlinked parent (expected non-zero exit)"
+elif printf '%s\n' "$tf_linked_out" | grep -qF "MISSING  terraform/main.tf"; then
+    ok "diff-template resolves no Terraform equivalence through a symlinked parent"
+else
+    bad "diff-template resolves no Terraform equivalence through a symlinked parent (MISSING diagnostic absent)"
+fi
+if printf '%s\n' "$tf_linked_out" | grep -qF "EQUIV    terraform/main.tf"; then
+    bad "diff-template awards no EQUIV for a root outside the repository"
+else
+    ok "diff-template awards no EQUIV for a root outside the repository"
 fi
 
 rm "$DT_TARGET/scripts/status.sh"

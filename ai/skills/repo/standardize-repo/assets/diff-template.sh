@@ -77,6 +77,9 @@
 #     artifact. `git check-ignore` answers the tracked half exactly — it
 #     consults the index, so it never calls a tracked file ignored — and a
 #     scratch repo built from the RENDER's .gitignore files answers the other.
+#     That scratch repo carries only the ignore files GIT ITSELF would honor: a
+#     symlinked .gitignore is one git refuses to follow, so the paths it lists
+#     are not ignored in any real clone and must not collect this class.
 #   – WITHHOLDING follows the PATH alone, under the UNION of both rule sets
 #     (`check-ignore --no-index` on the repo side so the index cannot mask the
 #     pattern). NO diff this script prints for a pattern-matching path is ever
@@ -87,7 +90,10 @@
 #     credentials. A repo can also `git add -f` a resolved config, and tracking
 #     it makes that file reviewable, not publishable — or simply FAIL to ignore
 #     what the template declares local, which is the same secret in a less
-#     careful repo. A one-line note replaces the body.
+#     careful repo. A one-line note replaces the body. Its render-side evaluator
+#     is the WIDER of the two: a symlinked .gitignore enforces nothing in a real
+#     clone, but the template still MARKED those paths local-only, and being
+#     unenforceable is no reason to print them.
 # CLASSIFICATION requires the target to be a repository root of its OWN. A plain
 # directory nested inside somebody else's work tree gets no IGNORED class,
 # because inheriting a stranger's ignore rules would silently downgrade real
@@ -374,6 +380,18 @@ if [ "$toplevel_rc" -eq 0 ]; then
     if [ -d "$toplevel" ] &&
         [ "$(cd "$toplevel" && pwd -P)" = "$target_physical" ]; then
         target_owns_worktree=1
+    elif [ -e "$target/.git" ] || [ -L "$target/.git" ]; then
+        # A DIFFERENT toplevel while the target carries a .git of its own is not
+        # the nested-plain-directory shape this audit accepts: a misconfigured
+        # `core.worktree` (or a gitfile pointing at somebody else's work tree)
+        # reports exactly this, and taking the plain-directory path there would
+        # silently disable the repo half of the withholding probe for a
+        # directory that IS a repository. That is the same fail-OPEN direction
+        # the unreadable-metadata case below refuses, so it refuses too.
+        echo "FAIL: $target has its own .git but git reports a different work tree" >&2
+        printf '  reported toplevel: %s\n' "$toplevel" >&2
+        echo "  refusing to continue: a misconfigured work tree would skip the repo-side ignore probe" >&2
+        exit 2
     fi
 elif [ "$toplevel_says_no_repo" -eq 1 ] &&
     [ ! -e "$target/.git" ] && [ ! -L "$target/.git" ]; then
@@ -495,7 +513,11 @@ index_variant() {
     out="$index_root/$p"
     mkdir -p "$(dirname "$out")"
     rm -f "$out"
-    mode="$(git -C "$target" ls-files -s -- "$p" | awk 'NR == 1 { print $1 }')"
+    # `--literal-pathspecs`: a rendered name containing `*`, `?`, or `[` is a
+    # filename, and reading the MODE of whatever sibling it globbed onto would
+    # mis-materialize the snapshot this function hands back.
+    mode="$(git -C "$target" --literal-pathspecs ls-files -s -- "$p" |
+        awk 'NR == 1 { print $1 }')"
     if [ "$mode" = "120000" ]; then
         # A tracked symlink's blob content IS its link target. Re-materialize it
         # as a symlink rather than a regular file holding that text: the sweep
@@ -598,31 +620,63 @@ variant_display() {
 # collapsing them means a broken setup silently downgrades every IGNORED path to
 # a printable one — the exact direction this whole class of guarantee must not
 # fail in.
+#
+# TWO evaluators, because the render's ignore files answer two different
+# questions and a SYMLINKED .gitignore splits them apart. Git refuses to follow
+# one — it reports `unable to access '.gitignore'` and the listed paths come out
+# untracked-and-not-ignored — so in a freshly generated repo such a file
+# enforces nothing:
+#   • CLASSIFICATION must match git, or the informational IGNORED class is
+#     granted to a path every real clone treats as tracked, quietly downgrading
+#     drift on the strength of rules that never applied. Regular files only.
+#   • WITHHOLDING must not, because it asks whether somebody MARKED this path
+#     local-only, and a template that wrote `.envrc` into its ignore rules said
+#     so whether or not git enforces the link. Dropping those rules is the one
+#     direction this guarantee may never fail in: it prints the body. Symlinked
+#     ones included, resolved through `cp`.
+# A `-type f` walk fed BOTH answers from the regular files alone, so a template
+# shipping its rules through a symlink printed the very bodies it declared
+# local.
 render_ignore_root="$workdir/render-ignore"
+render_withhold_root="$workdir/render-withhold"
 render_has_ignore_rules=0
+render_has_withhold_rules=0
 mkdir -p "$workdir/empty-git-template" || {
     echo "FAIL: cannot prepare the template ignore evaluator" >&2
     exit 2
 }
-git init -q --template="$workdir/empty-git-template" \
-    "$render_ignore_root" >/dev/null 2>&1 || {
-    echo "FAIL: cannot initialize the template ignore evaluator" >&2
-    exit 2
-}
+for ignore_eval_root in "$render_ignore_root" "$render_withhold_root"; do
+    git init -q --template="$workdir/empty-git-template" \
+        "$ignore_eval_root" >/dev/null 2>&1 || {
+        echo "FAIL: cannot initialize the template ignore evaluator" >&2
+        exit 2
+    }
+done
 # Every .gitignore in the render, at its own relative path: a nested one only
 # governs its own subtree, so flattening them would change what they mean. Today
 # the template ships just the root file; copying all of them costs one `find`
 # and stops that from being an assumption.
+#
+# A dangling symlink has no rules to read, and `cp` failing on it aborts the run
+# rather than quietly dropping a file's rules.
 while IFS= read -r render_gitignore; do
     render_gitignore_rel="${render_gitignore#"$render"/}"
-    render_gitignore_dest="$render_ignore_root/$render_gitignore_rel"
-    if ! mkdir -p "$(dirname "$render_gitignore_dest")" ||
-        ! cp "$render_gitignore" "$render_gitignore_dest"; then
-        echo "FAIL: cannot stage the render's $render_gitignore_rel for ignore evaluation" >&2
-        exit 2
-    fi
-    render_has_ignore_rules=1
-done < <(find "$render" -type f -name .gitignore | LC_ALL=C sort)
+    for ignore_eval_root in "$render_ignore_root" "$render_withhold_root"; do
+        # A symlinked .gitignore reaches the withholding evaluator only.
+        if [ -L "$render_gitignore" ] &&
+            [ "$ignore_eval_root" = "$render_ignore_root" ]; then
+            continue
+        fi
+        render_gitignore_dest="$ignore_eval_root/$render_gitignore_rel"
+        if ! mkdir -p "$(dirname "$render_gitignore_dest")" ||
+            ! cp "$render_gitignore" "$render_gitignore_dest"; then
+            echo "FAIL: cannot stage the render's $render_gitignore_rel for ignore evaluation" >&2
+            exit 2
+        fi
+    done
+    render_has_withhold_rules=1
+    [ -L "$render_gitignore" ] || render_has_ignore_rules=1
+done < <(find "$render" \( -type f -o -type l \) -name .gitignore | LC_ALL=C sort)
 
 # `git check-ignore` is THREE-valued: 0 = the path matches an ignore rule, 1 =
 # it does not, anything else = the probe itself failed. Every caller below folds
@@ -651,6 +705,21 @@ is_render_ignored() {
             check-ignore -q --no-index -- "$1" 2>&1
     )" || ignore_probe_rc=$?
     ignore_probe_verdict "$ignore_probe_rc" "the template's ignore rules" \
+        "$1" "$ignore_probe_err"
+}
+
+# The withholding half of the render's declaration: the same probe against the
+# evaluator that also carries symlinked .gitignore files. Never a substitute for
+# is_render_ignored — that one answers what a real clone would ignore, and the
+# IGNORED class may only ever be granted on THAT answer.
+is_render_withheld() {
+    [ "$render_has_withhold_rules" -eq 1 ] || return 1
+    ignore_probe_rc=0
+    ignore_probe_err="$(
+        git -C "$render_withhold_root" -c core.excludesFile=/dev/null \
+            check-ignore -q --no-index -- "$1" 2>&1
+    )" || ignore_probe_rc=$?
+    ignore_probe_verdict "$ignore_probe_rc" "the template's local-only markings" \
         "$1" "$ignore_probe_err"
 }
 
@@ -700,7 +769,7 @@ is_ignore_pattern_match() {
             return 0
         fi
     fi
-    is_render_ignored "$2"
+    is_render_withheld "$2"
 }
 
 # A path can be STAGED FOR REMOVAL while its working-tree copy survives, which
@@ -728,17 +797,55 @@ is_ignore_pattern_match() {
 # that deliberately omits this path would misdirect. Commit the deletion and the
 # path becomes genuinely absent, at which point the ordinary MISSING lines
 # report it and the §9 pointer is finally the true one.
+#
+# Both probes are THREE-valued and were read as two, exactly like the ignore
+# probes before them: `cat-file -e "HEAD:$p"` exits 128 — not 1 — for a path
+# that is simply absent from HEAD, so "absent" and "the probe failed" were
+# already indistinguishable by exit code, and `ls-files --error-unmatch`
+# collapses "untracked" into the same nonzero. An unreadable object store or a
+# corrupt index therefore answered "nothing is staged for removal" and the
+# staged deletion of a template-owned file went unreported. `ls-tree` and a bare
+# `ls-files` separate the two cleanly instead: rc 0 with EMPTY output is the
+# real "not there", and any nonzero rc is a probe error that stops the run with
+# the script's setup-error status rather than being guessed at.
+staged_probe_out=""
+staged_probe_err="$workdir/staged-probe.err"
+staged_probe() {
+    sp_what="$1"
+    sp_path="$2"
+    shift 2
+    sp_rc=0
+    # Never called from inside a command substitution: `exit` there would leave
+    # only the subshell and the run would continue on a failed probe, which is
+    # the very thing this exists to prevent.
+    # `--literal-pathspecs`: every path here comes from the RENDER's own file
+    # names, and git would otherwise read `*`, `?`, and `[` in one as wildcard
+    # pathspec magic — so a rendered `docs/[a].md` would silently answer about
+    # `docs/a.md` instead. Nothing in this script ever wants a glob.
+    staged_probe_out="$(
+        git -C "$target" --literal-pathspecs "$@" 2>"$staged_probe_err"
+    )" || sp_rc=$?
+    [ "$sp_rc" -ne 0 ] || return 0
+    echo "FAIL: cannot evaluate $sp_what for '$sp_path' (git exit $sp_rc)" >&2
+    [ ! -s "$staged_probe_err" ] || sed 's/^/  /' "$staged_probe_err" >&2
+    echo "  refusing to continue: an unevaluated probe would miss a staged deletion" >&2
+    exit 2
+}
 is_staged_removal() {
     p="$1"
     [ "$target_owns_worktree" -eq 1 ] || return 1
     # An unborn HEAD (`git init` with no commit yet) has no committed state to
     # have removed anything from. Checking it explicitly keeps the intent legible
-    # and the failure quiet, rather than leaning on `cat-file` to error out.
+    # and the failure quiet, rather than leaning on the probes to error out.
     git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1 || return 1
-    git -C "$target" cat-file -e "HEAD:$p" 2>/dev/null || return 1
-    if git -C "$target" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
-        return 1 # still in the index — nothing is staged for removal
-    fi
+    # Deliberately NOT `-z`. Only EMPTINESS is read here, never the fields, and
+    # bash 4.4+ warns "command substitution: ignored null byte in input" for
+    # every NUL a `$( )` swallows — two lines of noise per rendered path, on
+    # stderr, burying the report this script exists to print.
+    staged_probe "HEAD membership" "$p" ls-tree HEAD -- "$p"
+    [ -n "$staged_probe_out" ] || return 1 # not in HEAD — nothing to remove
+    staged_probe "the index entry" "$p" ls-files -s -- "$p"
+    [ -z "$staged_probe_out" ] || return 1 # still in the index
     return 0
 }
 
@@ -776,6 +883,179 @@ same_as_render() {
         return 0
     fi
     return 1
+}
+
+# A tracked file's WORK-TREE copy can match the render while its STAGED copy
+# does not: edit, `git add`, then restore the worktree from HEAD and the audit
+# saw a clean file while the next commit carries the divergence. That is the
+# same class of finding as a staged removal — what the repo is about to commit,
+# not what is on disk this second — so the comparison inspects the index too
+# whenever the disk copy came out clean.
+#
+# Only when the resolved variant IS the work-tree copy. resolve_variant already
+# falls back to the index snapshot for a transiently deleted file, and that
+# comparison was against the index to begin with; re-reading it here would just
+# report the same bytes twice.
+index_content_divergent=0
+index_mode_divergent=0
+index_structural=0
+index_present=0
+index_bytes_staged=0
+index_mode_staged=0
+index_type_staged=0
+index_note=""
+index_diverges() {
+    idx_render="$1"  # path inside the render
+    idx_rel="$2"     # repo-relative path of the resolved variant
+    idx_variant="$3" # the resolved variant itself
+    index_content_divergent=0
+    index_mode_divergent=0
+    index_structural=0
+    index_present=0
+    index_bytes_staged=0
+    index_mode_staged=0
+    index_type_staged=0
+    index_note=""
+    [ "$target_owns_worktree" -eq 1 ] || return 1
+    case "$idx_variant" in
+    "$target"/*) ;;
+    *) return 1 ;;
+    esac
+    idx_staged="$(index_variant "$idx_rel")" || return 1
+    # The staged copy EXISTS and was compared. Callers need that separately from
+    # the verdict: "no index entry" and "the staged copy matches the template"
+    # are the same return value here and mean opposite things one class over.
+    index_present=1
+    if [ ! -L "$idx_render" ] && [ ! -L "$idx_staged" ]; then
+        idx_render_exec=0
+        idx_staged_exec=0
+        [ -x "$idx_render" ] && idx_render_exec=1
+        [ -x "$idx_staged" ] && idx_staged_exec=1
+        [ "$idx_render_exec" -eq "$idx_staged_exec" ] || index_mode_divergent=1
+    fi
+    # same_as_render sets the shared compare_* globals, and the caller reached
+    # this point precisely because ITS comparison came back clean. Restore them
+    # so a staged divergence cannot rewrite the verdict on the disk copy.
+    idx_saved_note="$compare_note"
+    idx_saved_structural="$compare_structural"
+    if ! same_as_render "$idx_render" "$idx_staged"; then
+        index_content_divergent=1
+        # STRUCTURAL is recorded separately from content, because the two are
+        # exempted separately: the CO-OWNED class covers prose a repo rewrites,
+        # and nobody "owns" an alias that stopped being an alias. A staged
+        # symlink-for-file swap is the same defect as the on-disk one and gates
+        # the same way — collapsing it into "content" let a co-owned path stage
+        # a structural change and still exit 0.
+        index_structural="$compare_structural"
+        index_note="$compare_note"
+    fi
+    compare_note="$idx_saved_note"
+    compare_structural="$idx_saved_structural"
+    # Everything above compared the index against the RENDER. What makes a
+    # divergence this function's business is that it is STAGED — that the index
+    # differs from HEAD on that same dimension. A divergence the index merely
+    # INHERITED from HEAD is committed state, which the worktree comparison
+    # already speaks for, and calling it "the next commit carries it" would be
+    # false: no such entry is written by an ordinary commit.
+    index_bytes_staged=0
+    index_mode_staged=0
+    index_type_staged=0
+    if load_staged_entries "$idx_rel"; then
+        [ "$staged_index_blob" = "$staged_head_blob" ] || index_bytes_staged=1
+        [ "$staged_index_mode" = "$staged_head_mode" ] || index_mode_staged=1
+        # A blob has no meaning without its mode: the SAME bytes are a path
+        # string under 120000 and file content under 100644. So a staged TYPE
+        # change reinterprets an inherited blob into a genuinely new artifact,
+        # and "the bytes did not move" stops being a reason to call the
+        # divergence committed. An ordinary 100644→100755 chmod is NOT that —
+        # the bytes still mean what they meant — which is why this is a
+        # separate question from index_mode_staged.
+        staged_head_is_link=0
+        staged_index_is_link=0
+        [ "$staged_head_mode" != 120000 ] || staged_head_is_link=1
+        [ "$staged_index_mode" != 120000 ] || staged_index_is_link=1
+        if [ -n "$staged_head_mode" ] &&
+            [ "$staged_head_is_link" -ne "$staged_index_is_link" ]; then
+            index_type_staged=1
+        fi
+    fi
+    # Nothing staged at all: every verdict above is inherited committed state,
+    # which the worktree comparison already speaks for.
+    if [ "$index_bytes_staged" -eq 0 ] && [ "$index_mode_staged" -eq 0 ]; then
+        index_content_divergent=0
+        index_structural=0
+        index_note=""
+    elif [ "$index_bytes_staged" -eq 0 ] && [ "$index_type_staged" -eq 0 ] &&
+        [ "$index_structural" -eq 0 ]; then
+        # Only a mode within one type moved — a chmod. The bytes are inherited
+        # AND still mean what they meant, so a byte divergence here is committed
+        # state, not something this staging introduces.
+        #
+        # A staged TYPE change is deliberately excluded from that reasoning, in
+        # BOTH directions: staging an unchanged blob as a symlink makes the
+        # commit a link (structural), and staging an unchanged link's blob as a
+        # regular file makes the commit a file whose CONTENT is the old link
+        # target — drift against the render that no byte comparison with HEAD
+        # can see, because the bytes never moved.
+        index_content_divergent=0
+        index_note=""
+    fi
+    [ "$index_mode_staged" -eq 1 ] || index_mode_divergent=0
+    [ "$index_content_divergent" -eq 1 ] || [ "$index_mode_divergent" -eq 1 ]
+}
+
+# What the index holds for a path, and what HEAD holds, as (mode, blob) pairs —
+# the two facts that decide whether a divergence is STAGED or merely COMMITTED.
+#
+# "The index differs from the template" is not the same claim as "this is staged",
+# and reading the first as the second is a misattribution with teeth: a committed
+# customization whose worktree copy is edited BACK to the template stages nothing,
+# yet its index entry still differs from the render. Reporting that as "the next
+# commit carries it" is false — an ordinary `git commit` carries no such entry —
+# and it turns an unstaged reconciliation into a gating finding.
+#
+# Per DIMENSION, because they stage independently: `git update-index --chmod`
+# stages a mode with the bytes untouched, so a mode-only staging must not make
+# the CONTENT look staged. That asymmetry is exactly what made the co-owned
+# clobber gate claim a prose clobber for a staged `chmod`.
+staged_head_mode=""
+staged_head_blob=""
+staged_index_mode=""
+staged_index_blob=""
+load_staged_entries() {
+    lse_path="$1"
+    staged_head_mode=""
+    staged_head_blob=""
+    staged_index_mode=""
+    staged_index_blob=""
+    [ "$target_owns_worktree" -eq 1 ] || return 1
+    # An UNBORN HEAD leaves both HEAD fields empty rather than ending the
+    # inspection. There is no committed state, so every index entry is staged by
+    # definition — the first commit carries all of it — and returning early here
+    # made a pre-first-commit repo the one place staged divergence went
+    # unreported. The empty HEAD blob is also what keeps the co-owned clobber
+    # gate honest there: see its `staged_head_blob` condition, which asks
+    # whether there was ever a committed customization to lose.
+    if git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+        # Both probes are the fail-closed ones: a probe ERROR aborts rather than
+        # reading as "no entry", which would silently downgrade every staged
+        # question below to "nothing staged".
+        staged_probe "HEAD membership" "$lse_path" ls-tree HEAD -- "$lse_path"
+        if [ -n "$staged_probe_out" ]; then
+            # `<mode> <type> <blob>\t<path>`
+            staged_head_mode="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $1 }')"
+            staged_head_blob="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $3 }')"
+        fi
+    fi
+    staged_probe "the index entry" "$lse_path" ls-files -s -- "$lse_path"
+    if [ -n "$staged_probe_out" ]; then
+        # `<mode> <blob> <stage>\t<path>`
+        staged_index_mode="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $1 }')"
+        staged_index_blob="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $2 }')"
+    fi
+    # No index entry at all: nothing staged to compare. (A path staged for
+    # REMOVAL is settled earlier, by is_staged_removal.)
+    [ -n "$staged_index_mode" ]
 }
 
 # Print a drifting file's body under --show, or a one-line note when the path is
@@ -822,8 +1102,25 @@ while IFS= read -r f; do
         fi
         continue
     fi
-    [ -f "$render/$f" ] || continue # conditional file not in this profile
+    # `-L` alongside `-f`, and for the same reason the sweep walks links: `-f`
+    # FOLLOWS a symlink, so a manifest-listed path the template renders as a
+    # DANGLING link read as "not in this profile" and was skipped here — while
+    # the sweep skipped it too, deferring to the manifest that owns it. The run
+    # could then exit clean having reported nothing at all about a curated path.
+    if [ ! -f "$render/$f" ] && [ ! -L "$render/$f" ]; then
+        continue # conditional file not in this profile
+    fi
     checked=$((checked + 1))
+    if [ -L "$render/$f" ] && [ ! -e "$render/$f" ]; then
+        # The render's own copy leads nowhere, so there is no template content
+        # to compare the repo's against. Gating rather than informational: a
+        # curated path nobody can render correctly is a template defect, and
+        # exiting 0 on it is how it stayed invisible.
+        echo "DRIFT    $f  (template renders a dangling symlink → $(readlink "$render/$f"); nothing to compare — review the template)"
+        drift=1
+        drift_count=$((drift_count + 1))
+        continue
+    fi
     rv="$(repo_variant "$f")"
     if [ -z "$rv" ]; then
         echo "MISSING  $f  (template ships it; repo doesn't; a copier update will not restore it unless _skip_if_exists or the render's own .gitignore covers it — copier-gotchas.md §9)"
@@ -853,12 +1150,14 @@ while IFS= read -r f; do
     # divergence always gates" rule held for uncurated files only. `-x` follows
     # links too, hence the same exec-bit exemption the sweep uses: the bit
     # belongs to the link target, not to the alias.
+    mode_divergent=0
     if [ ! -L "$render/$f" ] && [ ! -L "$rv" ]; then
         render_exec=0
         repo_exec=0
         [ -x "$render/$f" ] && render_exec=1
         [ -x "$rv" ] && repo_exec=1
         if [ "$render_exec" -ne "$repo_exec" ]; then
+            mode_divergent=1
             if [ "$render_exec" -eq 1 ]; then
                 mode_note="template is executable; repo is not"
             else
@@ -869,7 +1168,9 @@ while IFS= read -r f; do
             mode_count=$((mode_count + 1))
         fi
     fi
+    content_divergent=0
     if ! same_as_render "$render/$f" "$rv"; then
+        content_divergent=1
         if [ "$compare_structural" -eq 1 ]; then
             echo "DRIFT    $rv_display  (symlink mismatch — $compare_note)"
         else
@@ -881,6 +1182,29 @@ while IFS= read -r f; do
         # dangling link just errors); the note above already says it all.
         if [ "$show" -eq 1 ] && [ "$compare_structural" -eq 0 ]; then
             show_diff_body "$rv_display" "$rv" "$render/$f"
+        fi
+    fi
+    # Only what the disk copy did NOT already report: the index is a second
+    # place the same divergence can live, not a second finding about the same
+    # one. No body is printed either way — the staged bytes are not on disk to
+    # diff against, and the line says everything actionable.
+    if index_diverges "$render/$f" "$rv_display" "$rv"; then
+        if [ "$index_mode_divergent" -eq 1 ] && [ "$mode_divergent" -eq 0 ]; then
+            echo "MODE     $rv_display  (staged mode differs from the template though the worktree matches — the next commit carries it)"
+            drift=1
+            mode_count=$((mode_count + 1))
+        fi
+        # Structural first and unconditionally, exactly as in the sweep: whether
+        # the working tree ALSO drifted is a separate question, and a staged
+        # alias is a finding either way.
+        if [ "$index_structural" -eq 1 ]; then
+            echo "DRIFT    $rv_display  (staged symlink mismatch — $index_note; the next commit carries it)"
+            drift=1
+            drift_count=$((drift_count + 1))
+        elif [ "$index_content_divergent" -eq 1 ] && [ "$content_divergent" -eq 0 ]; then
+            echo "DRIFT    $rv_display  (staged content differs from the template though the worktree matches — the next commit carries it)"
+            drift=1
+            drift_count=$((drift_count + 1))
         fi
     fi
 done <"$manifest"
@@ -902,15 +1226,7 @@ has_repo_equivalent() {
     equivalent_note=""
     case "$g" in
     terraform/main.tf | terraform/variables.tf | terraform/outputs.tf | terraform/tfvars.env.example)
-        if [ -d "$target/terraform" ] &&
-            find "$target/terraform" -type f -name '*.tf' 2>/dev/null |
-            awk -v root="$target/terraform/" '
-                    index($0, root) == 1 {
-                        rel = substr($0, length(root) + 1)
-                        if (rel ~ /\//) found = 1
-                    }
-                    END { exit(found ? 0 : 1) }
-                '; then
+        if [ -d "$target/terraform" ] && has_nested_terraform_root; then
             equivalent_note="repo uses nested/split Terraform roots"
             return 0
         fi
@@ -918,6 +1234,7 @@ has_repo_equivalent() {
     docs/decisions/0001-record-architecture-decisions.md)
         for adr in "$target"/docs/decisions/[0-9]*.md; do
             [ -f "$adr" ] || continue
+            repo_parent_diverges "$adr" && continue
             case "${adr##*/}" in
             *-record-architecture-decisions.md)
                 equivalent_note="repo carries a renumbered equivalent ADR"
@@ -925,15 +1242,44 @@ has_repo_equivalent() {
                 ;;
             esac
         done
-        if [ -f "$target/docs/decisions/README.md" ]; then
+        if [ -f "$target/docs/decisions/README.md" ] &&
+            ! repo_parent_diverges "$target/docs/decisions/README.md"; then
             for adr in "$target"/docs/decisions/[0-9]*.md; do
                 [ -f "$adr" ] || continue
+                repo_parent_diverges "$adr" && continue
                 equivalent_note="repo already has an active ADR log; the seed ADR is redundant"
                 return 0
             done
         fi
         ;;
     esac
+    return 1
+}
+
+# Is there a REAL nested Terraform root under $target/terraform? Two things this
+# walk must not count, both of which would award a benign EQUIV to a repo that
+# still has no replacement for the flat seeds:
+#   • `.terraform/` — `terraform init` fills `.terraform/modules/**` with
+#     vendored module sources, so an unpruned walk reads running `init` once as
+#     evidence that the repo outgrew the seed layout. The non-adoption
+#     classifier in mode-update.md §1 (`nonadoption_has_nested_terraform`)
+#     prunes it for exactly this reason; the two are kept in step by hand.
+#   • anything under a symlinked parent — the rest of this script refuses to
+#     resolve repo paths through a swapped-out directory, and a presence test is
+#     no exception: files in somebody else's tree are not this repo's roots.
+has_nested_terraform_root() {
+    while IFS= read -r hnt_tf; do
+        [ -n "$hnt_tf" ] || continue
+        hnt_rel="${hnt_tf#"$target"/terraform/}"
+        # Nested is the whole point: a flat `terraform/*.tf` IS the seed layout.
+        case "$hnt_rel" in
+        */*) ;;
+        *) continue ;;
+        esac
+        repo_parent_diverges "$hnt_tf" && continue
+        return 0
+    done < <(find "$target/terraform" -name .terraform -prune -o \
+        -type f -name '*.tf' -print 2>/dev/null | LC_ALL=C sort)
     return 1
 }
 
@@ -947,11 +1293,14 @@ has_repo_equivalent() {
 #
 # The `docs/`/`specs/` branch below — and ONLY that branch — is duplicated by
 # the guarded update's non-adoption classifier (mode-update.md §1, the
-# `nonadoption-classify` markers), as `nonadoption_is_collapsible_prose`. What
+# `nonadoption-classify` markers), as `nonadoption_is_doc_prose`. What
 # must agree is the whole shape, not just the two globs: the Markdown-only filter
 # is load-bearing there too, because a copy that kept the bare `docs/*` would
-# file a missing generated asset as somebody's owned prose and collapse it out of
-# the report. Change one, change the other.
+# file a missing generated asset as somebody's owned prose and annotate it as
+# prose the repo owns. Over there the absence is still TABLED — §5 rows it with
+# a `co-owned-prose` note rather than collapsing it out of the report — so what
+# the duplicate decides is the NOTE, not whether the operator sees the path.
+# Change one, change the other.
 #
 # The rest of this list is intentionally NOT mirrored there, and the asymmetry is
 # the point. Co-ownership is a CONTENT exemption — this script withholds a diff
@@ -1061,9 +1410,16 @@ while IFS= read -r abs; do
         fi
         content_divergent=0
         same_as_render "$render/$g" "$rv" || content_divergent=1
-        if [ "$mode_divergent" -eq 0 ] && [ "$content_divergent" -eq 0 ]; then
-            continue
-        fi
+        # The disk copy is not the whole repo state: a TRACKED file's staged
+        # copy can diverge on either dimension independently, and that is what
+        # the next commit carries. Probed PER DIMENSION rather than only when
+        # the disk came out clean on both — a path whose content drifts on disk
+        # while its exec bit drifts in the index has two findings, and gating on
+        # one of them is not a reason to hide the other. Each staged line is
+        # suppressed when the disk already reported that same dimension: the
+        # index is a second PLACE the divergence can live, not a second finding
+        # about it.
+        index_diverges "$render/$g" "$rv_display" "$rv" || true
         # The exec bit is settled FIRST, independent of — and before — any
         # content classification. Mode is STRUCTURAL, the same reason a symlink
         # mismatch gates straight through the CO-OWNED exemption: nobody "owns"
@@ -1082,11 +1438,61 @@ while IFS= read -r abs; do
             echo "MODE     $rv_display  ($mode_note)"
             drift=1
             uncurated_mode_count=$((uncurated_mode_count + 1))
+        elif [ "$index_mode_divergent" -eq 1 ]; then
+            echo "MODE     $rv_display  (staged mode differs from the template though the worktree matches — the next commit carries it)"
+            drift=1
+            uncurated_mode_count=$((uncurated_mode_count + 1))
         fi
-        [ "$content_divergent" -eq 1 ] || continue
+        # A staged symlink-for-file swap is STRUCTURAL, so it is settled here
+        # with the exec bit rather than inside any content branch: whether the
+        # WORKING TREE also drifted is a different question, and making this
+        # conditional on a clean one let a co-owned file with ordinary prose
+        # drift stage an alias, print CO-OWNED alone, and exit 0.
+        if [ "$index_structural" -eq 1 ]; then
+            echo "DRIFT    $rv_display  (staged symlink mismatch — $index_note; the next commit carries it)"
+            drift=1
+            uncurated_drift_count=$((uncurated_drift_count + 1))
+        fi
+        if [ "$content_divergent" -eq 0 ]; then
+            # Content is reported unless the repo owns the prose: the CO-OWNED
+            # contract is about content, staged or not. A structural staged
+            # change was already reported above and is not content.
+            if [ "$index_structural" -eq 0 ] &&
+                [ "$index_content_divergent" -eq 1 ] && ! is_co_owned "$g"; then
+                echo "DRIFT    $rv_display  (uncurated — staged content differs from the template though the worktree matches; the next commit carries it)"
+                drift=1
+                uncurated_drift_count=$((uncurated_drift_count + 1))
+            fi
+            continue
+        fi
         # Content classification: a structural (symlink) mismatch always gates,
         # then the two presence-only classes, then ordinary uncurated drift.
         if [ "$compare_structural" -eq 0 ] && is_co_owned "$g"; then
+            # The CO-OWNED contract's value is the INVERSE signal: a line that
+            # DISAPPEARS means the repo's copy went byte-identical to the
+            # template's, i.e. the customizations were clobbered. A clobber
+            # STAGED but not yet committed reads as the healthy state — the
+            # worktree still diverges, so the line still prints — while the next
+            # commit removes the prose. The index says which it is: the staged
+            # copy matches the template AND the BYTES are what got staged.
+            # Without the first half this would fire for a repo whose committed
+            # copy simply is the template's while somebody edits locally, where
+            # nothing is at risk. Without "bytes", a staged `chmod` on a file
+            # whose committed bytes already match the template would satisfy
+            # every other condition and claim a prose clobber that no commit
+            # performs — mode and content stage independently.
+            # `staged_head_blob` non-empty is the "there was something to lose"
+            # half: a clobber replaces a COMMITTED customization. An unborn HEAD
+            # (or a path not in HEAD) has none — the prose lives only in the
+            # worktree and survives the commit on disk, exactly as any unstaged
+            # edit does — so the claim would be false there.
+            if [ "$index_present" -eq 1 ] && [ "$index_bytes_staged" -eq 1 ] &&
+                [ -n "$staged_head_blob" ] && [ "$index_content_divergent" -eq 0 ]; then
+                echo "DRIFT    $rv_display  (staged copy is byte-identical to the template — the next commit clobbers the repo's customization)"
+                drift=1
+                uncurated_drift_count=$((uncurated_drift_count + 1))
+                continue
+            fi
             echo "CO-OWNED $rv_display  (template seeds it; repo owns the prose — diff withheld)"
             co_owned_count=$((co_owned_count + 1))
             continue
