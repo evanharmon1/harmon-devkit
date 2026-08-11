@@ -1498,6 +1498,80 @@ printf '%040d\n' 0 >"${fixtures}/head"
 run_check '2026-07-31T08:01:00Z'
 assert_status 2 head-changed
 
+# ── externally closed/merged PRs are terminal, not transient ───────────────
+# (harmon-devkit#389)
+#
+# provider_head used to pipe the fetch into `jq 'select(.state == "OPEN")'`,
+# so "the PR merged mid-cycle" exited identically to "the fetch failed" and
+# `check` routed a dead PR to bounded_wait — polling out the remaining window
+# on a PR that no longer needed shepherding.
+
+echo "==> an externally merged PR is terminal for check, not a bounded wait"
+new_cycle
+printf '%s\n' MERGED >"${fixtures}/pr-state-493"
+run_check '2026-07-31T08:01:00Z'
+assert_status 14 pr-not-open
+detail="$(printf '%s' "$check_out" | jq -r '.detail' 2>/dev/null || true)"
+case "$detail" in
+*MERGED*) ;;
+*) fail "pr-not-open detail should name the reported PR state: $check_out" ;;
+esac
+
+echo "==> an externally closed PR is terminal for check"
+new_cycle
+printf '%s\n' CLOSED >"${fixtures}/pr-state-493"
+run_check '2026-07-31T08:01:00Z'
+assert_status 14 pr-not-open
+
+echo "==> a PR-view fetch failure still routes to the bounded wait"
+# The regression guard for the other half of the split: a fetch that FAILS
+# (rather than answering with a non-open state) is still transient and must
+# keep consuming the attempt window as pending, never surface as exit 14.
+new_cycle
+: >"${fixtures}/fail-pr-493"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> reserve refuses a PR that is no longer open, naming the state"
+write_defaults
+rm -f "$state"
+printf '%s\n' MERGED >"${fixtures}/pr-state-493"
+set +e
+closed_reserve_out="$("$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)"
+closed_reserve_rc=$?
+set -e
+[ "$closed_reserve_rc" -eq 2 ] ||
+    fail "reserve on a merged PR should fail closed: $closed_reserve_out"
+case "$closed_reserve_out" in
+*MERGED*) ;;
+*) fail "reserve's refusal should name the PR state, not a generic fetch failure: $closed_reserve_out" ;;
+esac
+[ ! -f "$state" ] ||
+    fail "reserve on a merged PR must not create state"
+
+echo "==> attach refuses a PR that closed after reservation, naming the state"
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+printf '%s\n' CLOSED >"${fixtures}/pr-state-493"
+set +e
+closed_attach_out="$("$helper" attach \
+    --state "$state" --trigger-id "$trigger_id" 2>&1)"
+closed_attach_rc=$?
+set -e
+[ "$closed_attach_rc" -eq 2 ] ||
+    fail "attach on a closed PR should fail closed: $closed_attach_out"
+case "$closed_attach_out" in
+*CLOSED*) ;;
+*) fail "attach's refusal should name the PR state, not a generic fetch failure: $closed_attach_out" ;;
+esac
+[ "$(jq -r '.phase' "$state")" = "reserved" ] ||
+    fail "a refused attach must not mutate the reservation: $(jq -c . "$state")"
+
 echo "==> a delayed previous-head Reviewed commit is ignored"
 new_cycle
 old_head="$(git rev-parse HEAD^)"
