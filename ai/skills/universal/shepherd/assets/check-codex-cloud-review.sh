@@ -1586,13 +1586,26 @@ check)
             emit indeterminate "current-head findings are adjudicated but their review attribution is incomplete across the comment and review endpoints"
             exit 2
         }
-        # Same barrier as the other clean exits: the newest inline activity
-        # (the findings and the replies that settled them) must postdate any
-        # dangling shell, or a round still in flight is being vouched for by
-        # the previous round's adjudication.
-        inline_latest_time=$(jq -r '
-            [.[] | .created_at? | select(type == "string")] | max // ""
-        ' "$workdir/inline.json")
+        # Same barrier as the other clean exits: the newest ADJUDICATION
+        # evidence must postdate any dangling shell, or a round still in
+        # flight is being vouched for by the previous round's adjudication.
+        # The maximum is confined to the evidence that establishes
+        # adjudication — the bot's current-head inline findings and the
+        # in-thread replies to them — never the whole endpoint: an unrelated
+        # inline comment posted after the shell must not clear the barrier.
+        inline_latest_time=$(jq -r \
+            --argjson id "$actor_id" \
+            --arg head "$state_head" '
+              ([.[] | select(
+                 .user.id? == $id and (.original_commit_id? == $head)
+               ) | .id? | select(type == "number")]) as $findings |
+              [.[] | select(
+                (.user.id? == $id and (.original_commit_id? == $head)) or
+                (.in_reply_to_id? as $rid |
+                  (($rid | type) == "number") and
+                  (($findings | index($rid)) != null))
+              ) | .created_at? | select(type == "string")] | max // ""
+            ' "$workdir/inline.json")
         if [ -n "$shell_barrier" ] &&
             ! [ "$inline_latest_time" \> "$shell_barrier" ]; then
             emit pending "a newer empty review shell is still in flight for this head"

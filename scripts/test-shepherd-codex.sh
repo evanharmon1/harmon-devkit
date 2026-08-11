@@ -837,6 +837,106 @@ assert_status 0 clean
 printf '%s' "$check_out" | jq -e '.detail | test("adjudicated")' >/dev/null ||
     fail "adjudicated-clean did not report a distinct detail: $check_out"
 
+# The dangling-shell barrier at the adjudicated-clean exit reads ONLY the
+# adjudication evidence — the bot's current-head findings and the in-thread
+# replies to them (devkit#392 challenge round 2). An unrelated inline comment
+# newer than the shell must not clear the barrier, or an in-flight review is
+# vouched for by activity that adjudicated nothing.
+echo "==> an unrelated inline comment does not clear the dangling-shell barrier"
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:120,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("\n### 💡 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+      },
+      {
+        id:121,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:40Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$owner,login:"repo-owner"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: the retry path is bounded by the attempt deadline."
+      },
+      {
+        id:90,user:{id:$owner,login:"repo-owner"},
+        created_at:"2026-07-31T08:00:50Z",updated_at:"2026-07-31T08:00:50Z",
+        author_association:"OWNER",
+        body:"Unrelated note on another thread."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+# The aging-out control: a dangling shell OLDER than the adjudication
+# evidence does not block — the normal Codex order is shell then content, so
+# a stale abandoned shell cannot deadlock an adjudicated cycle.
+echo "==> a dangling shell older than the adjudication evidence still ages out"
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:120,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:("\n### 💡 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+      },
+      {
+        id:121,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:10Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$owner,login:"repo-owner"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: the retry path is bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
 echo "==> a reply trusted only by PR authorship adjudicates the finding"
 # A shepherd driving a fork PR replies as the PR author with association
 # CONTRIBUTOR. Refusing that would leave the contract unfinishable for exactly
