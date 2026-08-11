@@ -900,6 +900,9 @@ index_content_divergent=0
 index_mode_divergent=0
 index_structural=0
 index_present=0
+index_bytes_staged=0
+index_mode_staged=0
+index_type_staged=0
 index_note=""
 index_diverges() {
     idx_render="$1"  # path inside the render
@@ -909,6 +912,9 @@ index_diverges() {
     index_mode_divergent=0
     index_structural=0
     index_present=0
+    index_bytes_staged=0
+    index_mode_staged=0
+    index_type_staged=0
     index_note=""
     [ "$target_owns_worktree" -eq 1 ] || return 1
     case "$idx_variant" in
@@ -945,38 +951,111 @@ index_diverges() {
     fi
     compare_note="$idx_saved_note"
     compare_structural="$idx_saved_structural"
+    # Everything above compared the index against the RENDER. What makes a
+    # divergence this function's business is that it is STAGED — that the index
+    # differs from HEAD on that same dimension. A divergence the index merely
+    # INHERITED from HEAD is committed state, which the worktree comparison
+    # already speaks for, and calling it "the next commit carries it" would be
+    # false: no such entry is written by an ordinary commit.
+    index_bytes_staged=0
+    index_mode_staged=0
+    index_type_staged=0
+    if load_staged_entries "$idx_rel"; then
+        [ "$staged_index_blob" = "$staged_head_blob" ] || index_bytes_staged=1
+        [ "$staged_index_mode" = "$staged_head_mode" ] || index_mode_staged=1
+        # A blob has no meaning without its mode: the SAME bytes are a path
+        # string under 120000 and file content under 100644. So a staged TYPE
+        # change reinterprets an inherited blob into a genuinely new artifact,
+        # and "the bytes did not move" stops being a reason to call the
+        # divergence committed. An ordinary 100644→100755 chmod is NOT that —
+        # the bytes still mean what they meant — which is why this is a
+        # separate question from index_mode_staged.
+        staged_head_is_link=0
+        staged_index_is_link=0
+        [ "$staged_head_mode" != 120000 ] || staged_head_is_link=1
+        [ "$staged_index_mode" != 120000 ] || staged_index_is_link=1
+        if [ -n "$staged_head_mode" ] &&
+            [ "$staged_head_is_link" -ne "$staged_index_is_link" ]; then
+            index_type_staged=1
+        fi
+    fi
+    # Nothing staged at all: every verdict above is inherited committed state,
+    # which the worktree comparison already speaks for.
+    if [ "$index_bytes_staged" -eq 0 ] && [ "$index_mode_staged" -eq 0 ]; then
+        index_content_divergent=0
+        index_structural=0
+        index_note=""
+    elif [ "$index_bytes_staged" -eq 0 ] && [ "$index_type_staged" -eq 0 ] &&
+        [ "$index_structural" -eq 0 ]; then
+        # Only a mode within one type moved — a chmod. The bytes are inherited
+        # AND still mean what they meant, so a byte divergence here is committed
+        # state, not something this staging introduces.
+        #
+        # A staged TYPE change is deliberately excluded from that reasoning, in
+        # BOTH directions: staging an unchanged blob as a symlink makes the
+        # commit a link (structural), and staging an unchanged link's blob as a
+        # regular file makes the commit a file whose CONTENT is the old link
+        # target — drift against the render that no byte comparison with HEAD
+        # can see, because the bytes never moved.
+        index_content_divergent=0
+        index_note=""
+    fi
+    [ "$index_mode_staged" -eq 1 ] || index_mode_divergent=0
     [ "$index_content_divergent" -eq 1 ] || [ "$index_mode_divergent" -eq 1 ]
 }
 
-# Is anything staged for this path — that is, does the index differ from HEAD?
-# `diff --cached --quiet` is three-valued like check-ignore: 0 = nothing staged,
-# 1 = something staged, anything else = the probe failed, which aborts rather
-# than being guessed at.
+# What the index holds for a path, and what HEAD holds, as (mode, blob) pairs —
+# the two facts that decide whether a divergence is STAGED or merely COMMITTED.
 #
-# This is what separates a staged CLOBBER from ordinary unstaged editing. Both
-# states show "index matches the template, worktree does not", and they mean
-# opposite things: if nothing is staged, the repo's committed copy simply IS the
-# template's and somebody is editing locally — no customization is at risk. If
-# something IS staged, the index is about to replace whatever the repo had with
-# the template's bytes.
-has_staged_change() {
+# "The index differs from the template" is not the same claim as "this is staged",
+# and reading the first as the second is a misattribution with teeth: a committed
+# customization whose worktree copy is edited BACK to the template stages nothing,
+# yet its index entry still differs from the render. Reporting that as "the next
+# commit carries it" is false — an ordinary `git commit` carries no such entry —
+# and it turns an unstaged reconciliation into a gating finding.
+#
+# Per DIMENSION, because they stage independently: `git update-index --chmod`
+# stages a mode with the bytes untouched, so a mode-only staging must not make
+# the CONTENT look staged. That asymmetry is exactly what made the co-owned
+# clobber gate claim a prose clobber for a staged `chmod`.
+staged_head_mode=""
+staged_head_blob=""
+staged_index_mode=""
+staged_index_blob=""
+load_staged_entries() {
+    lse_path="$1"
+    staged_head_mode=""
+    staged_head_blob=""
+    staged_index_mode=""
+    staged_index_blob=""
     [ "$target_owns_worktree" -eq 1 ] || return 1
-    git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1 || return 1
-    staged_change_rc=0
-    # `--literal-pathspecs` for the same reason as the staged probes: a rendered
-    # name holding `*`, `?`, or `[` is a filename, never a glob, and matching an
-    # unrelated sibling here would claim a clobber that is not happening.
-    staged_change_err="$(
-        git -C "$target" --literal-pathspecs diff --cached --quiet HEAD -- "$1" 2>&1
-    )" || staged_change_rc=$?
-    case "$staged_change_rc" in
-    0) return 1 ;; # index matches HEAD — nothing staged
-    1) return 0 ;; # something is staged for this path
-    esac
-    echo "FAIL: cannot evaluate the staged change for '$1' (git exit $staged_change_rc)" >&2
-    [ -z "$staged_change_err" ] || printf '  %s\n' "$staged_change_err" >&2
-    echo "  refusing to continue: an unevaluated index would hide a staged clobber" >&2
-    exit 2
+    # An UNBORN HEAD leaves both HEAD fields empty rather than ending the
+    # inspection. There is no committed state, so every index entry is staged by
+    # definition — the first commit carries all of it — and returning early here
+    # made a pre-first-commit repo the one place staged divergence went
+    # unreported. The empty HEAD blob is also what keeps the co-owned clobber
+    # gate honest there: see its `staged_head_blob` condition, which asks
+    # whether there was ever a committed customization to lose.
+    if git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+        # Both probes are the fail-closed ones: a probe ERROR aborts rather than
+        # reading as "no entry", which would silently downgrade every staged
+        # question below to "nothing staged".
+        staged_probe "HEAD membership" "$lse_path" ls-tree HEAD -- "$lse_path"
+        if [ -n "$staged_probe_out" ]; then
+            # `<mode> <type> <blob>\t<path>`
+            staged_head_mode="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $1 }')"
+            staged_head_blob="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $3 }')"
+        fi
+    fi
+    staged_probe "the index entry" "$lse_path" ls-files -s -- "$lse_path"
+    if [ -n "$staged_probe_out" ]; then
+        # `<mode> <blob> <stage>\t<path>`
+        staged_index_mode="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $1 }')"
+        staged_index_blob="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $2 }')"
+    fi
+    # No index entry at all: nothing staged to compare. (A path staged for
+    # REMOVAL is settled earlier, by is_staged_removal.)
+    [ -n "$staged_index_mode" ]
 }
 
 # Print a drifting file's body under --show, or a one-line note when the path is
@@ -1395,12 +1474,20 @@ while IFS= read -r abs; do
             # STAGED but not yet committed reads as the healthy state — the
             # worktree still diverges, so the line still prints — while the next
             # commit removes the prose. The index says which it is: the staged
-            # copy matches the template AND something is actually staged for the
-            # path. Without that second half this would fire for a repo whose
-            # committed copy simply is the template's while somebody edits
-            # locally, where nothing is at risk at all.
-            if [ "$index_present" -eq 1 ] && [ "$index_content_divergent" -eq 0 ] &&
-                [ "$index_mode_divergent" -eq 0 ] && has_staged_change "$rv_display"; then
+            # copy matches the template AND the BYTES are what got staged.
+            # Without the first half this would fire for a repo whose committed
+            # copy simply is the template's while somebody edits locally, where
+            # nothing is at risk. Without "bytes", a staged `chmod` on a file
+            # whose committed bytes already match the template would satisfy
+            # every other condition and claim a prose clobber that no commit
+            # performs — mode and content stage independently.
+            # `staged_head_blob` non-empty is the "there was something to lose"
+            # half: a clobber replaces a COMMITTED customization. An unborn HEAD
+            # (or a path not in HEAD) has none — the prose lives only in the
+            # worktree and survives the commit on disk, exactly as any unstaged
+            # edit does — so the claim would be false there.
+            if [ "$index_present" -eq 1 ] && [ "$index_bytes_staged" -eq 1 ] &&
+                [ -n "$staged_head_blob" ] && [ "$index_content_divergent" -eq 0 ]; then
                 echo "DRIFT    $rv_display  (staged copy is byte-identical to the template — the next commit clobbers the repo's customization)"
                 drift=1
                 uncurated_drift_count=$((uncurated_drift_count + 1))

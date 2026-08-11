@@ -6201,6 +6201,179 @@ git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
 expect_ok "diff-template returns to a clean baseline after the staged-state cases" \
     env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
 
+# --- an INHERITED index entry is committed state, not staged state -----------
+# "The index differs from the template" and "this is staged" are different
+# claims. A committed customization whose worktree copy is edited BACK to the
+# template stages nothing, yet its index entry still differs from the render —
+# and an ordinary `git commit` writes no such entry. Reporting it as "the next
+# commit carries it" turns an unstaged reconciliation into a gating lie.
+DT_INHERITED_INDEX="$TMPROOT/diff-template-inherited-index"
+cp -pR "$DT_TARGET" "$DT_INHERITED_INDEX"
+printf '%s\n' '{ "extends": ["committed-divergence"] }' \
+    >"$DT_INHERITED_INDEX/renovate.json"
+git_commit_all "$DT_INHERITED_INDEX" "repo commits a renovate divergence"
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_INHERITED_INDEX/renovate.json"
+if inherited_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_INHERITED_INDEX" 2>&1)"; then
+    ok "diff-template does not gate an unstaged reconciliation to the template"
+else
+    bad "diff-template does not gate an unstaged reconciliation to the template: $inherited_out"
+fi
+if printf '%s\n' "$inherited_out" | grep -qF "staged content differs"; then
+    bad "diff-template claims no staged content for an index entry inherited from HEAD"
+else
+    ok "diff-template claims no staged content for an index entry inherited from HEAD"
+fi
+# Same distinction on the mode dimension: an unstaged `chmod` leaves the index
+# mode exactly as HEAD recorded it, so there is no staged mode to report.
+DT_INHERITED_MODE="$TMPROOT/diff-template-inherited-mode"
+cp -pR "$DT_TARGET" "$DT_INHERITED_MODE"
+chmod -x "$DT_INHERITED_MODE/scripts/status.sh"
+git_commit_all "$DT_INHERITED_MODE" "repo commits a mode divergence"
+chmod +x "$DT_INHERITED_MODE/scripts/status.sh"
+if inherited_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_INHERITED_MODE" 2>&1)"; then
+    ok "diff-template does not gate an unstaged mode reconciliation"
+else
+    bad "diff-template does not gate an unstaged mode reconciliation: $inherited_mode_out"
+fi
+if printf '%s\n' "$inherited_mode_out" | grep -qF "staged mode differs"; then
+    bad "diff-template claims no staged mode for an index mode inherited from HEAD"
+else
+    ok "diff-template claims no staged mode for an index mode inherited from HEAD"
+fi
+
+# --- a staged chmod is not a staged prose clobber ----------------------------
+# Mode and content stage independently: `git update-index --chmod` records a
+# mode with the bytes untouched. For a co-owned file whose COMMITTED bytes
+# already match the template, staging only a mode correction satisfies every
+# other clobber condition — index bytes equal to the render, something staged —
+# while no prose was ever staged and the customization is not at risk.
+DT_MODE_ONLY_STAGE="$TMPROOT/diff-template-mode-only-stage"
+cp -pR "$DT_TARGET" "$DT_MODE_ONLY_STAGE"
+chmod +x "$DT_MODE_ONLY_STAGE/AGENTS.md"
+git_commit_all "$DT_MODE_ONLY_STAGE" "repo commits agent prose with the exec bit"
+git -C "$DT_MODE_ONLY_STAGE" update-index --chmod=-x -- AGENTS.md
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'unstaged-prose-edit' \
+    >"$DT_MODE_ONLY_STAGE/AGENTS.md"
+chmod +x "$DT_MODE_ONLY_STAGE/AGENTS.md"
+if mode_only_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_MODE_ONLY_STAGE" 2>&1)"; then
+    bad "diff-template gates the real mode divergence beside a staged chmod (expected non-zero exit)"
+elif printf '%s\n' "$mode_only_out" | grep -qF "MODE     AGENTS.md"; then
+    ok "diff-template gates the real mode divergence beside a staged chmod"
+else
+    bad "diff-template gates the real mode divergence beside a staged chmod (MODE diagnostic missing)"
+fi
+if printf '%s\n' "$mode_only_out" | grep -qF "staged copy is byte-identical"; then
+    bad "diff-template claims no prose clobber when only a mode was staged"
+else
+    ok "diff-template claims no prose clobber when only a mode was staged"
+fi
+if printf '%s\n' "$mode_only_out" | grep -qF "CO-OWNED AGENTS.md"; then
+    ok "diff-template keeps the co-owned class when only a mode was staged"
+else
+    bad "diff-template keeps the co-owned class when only a mode was staged"
+fi
+
+# --- a staged TYPE change hides in the mode, not in the bytes ----------------
+# git records a regular file as 100644 and a symlink as 120000, and a file whose
+# contents are exactly the link's target text has the SAME blob under both. So
+# an index-only file→symlink conversion moves the mode while the blob stands
+# still: keying the structural verdict on staged bytes misses it, and the
+# exec-bit branch cannot catch it either because it exempts symlinks by design.
+DT_STAGED_TYPE="$TMPROOT/diff-template-staged-type"
+cp -pR "$DT_TARGET" "$DT_STAGED_TYPE"
+# AGENTS.md's committed bytes become the link text, so the blob is shared by the
+# regular file and the symlink that points at it — the whole point of the case.
+printf 'docs/guide.md' >"$DT_STAGED_TYPE/AGENTS.md"
+git_commit_all "$DT_STAGED_TYPE" "agent prose is exactly a path string"
+staged_type_blob="$(printf 'docs/guide.md' |
+    git -C "$DT_STAGED_TYPE" hash-object -w --stdin)"
+git -C "$DT_STAGED_TYPE" update-index --add --cacheinfo \
+    "120000,$staged_type_blob,AGENTS.md"
+if staged_type_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_STAGED_TYPE" 2>&1)"; then
+    bad "diff-template gates an index-only file-to-symlink conversion (expected non-zero exit)"
+elif printf '%s\n' "$staged_type_out" |
+    grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch"; then
+    ok "diff-template gates an index-only file-to-symlink conversion"
+else
+    bad "diff-template gates an index-only file-to-symlink conversion (diagnostic missing)"
+fi
+
+# The SAME conversion the other way round, which is the case a byte comparison
+# can never see: HEAD is a symlink, the index stages its unchanged blob as a
+# REGULAR FILE, and the worktree holds the template's bytes. Nothing about the
+# blob moved, and index and render are both regular files so there is no type
+# mismatch to call structural — yet committing produces a file whose CONTENT is
+# the old link target rather than the template's.
+#
+# renovate.json rather than AGENTS.md deliberately: this is a CONTENT verdict,
+# and a co-owned path's staged content stays exempt by the documented contract,
+# which would mask the mechanism under test rather than exercise it.
+DT_STAGED_UNLINK="$TMPROOT/diff-template-staged-unlink"
+cp -pR "$DT_TARGET" "$DT_STAGED_UNLINK"
+rm "$DT_STAGED_UNLINK/renovate.json"
+ln -s docs/guide.md "$DT_STAGED_UNLINK/renovate.json"
+git_commit_all "$DT_STAGED_UNLINK" "renovate config is committed as a symlink"
+staged_unlink_blob="$(git -C "$DT_STAGED_UNLINK" rev-parse HEAD:renovate.json)"
+git -C "$DT_STAGED_UNLINK" update-index --add --cacheinfo \
+    "100644,$staged_unlink_blob,renovate.json"
+rm "$DT_STAGED_UNLINK/renovate.json"
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_STAGED_UNLINK/renovate.json"
+if staged_unlink_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_STAGED_UNLINK" 2>&1)"; then
+    bad "diff-template gates a staged symlink-to-file conversion (expected non-zero exit)"
+elif printf '%s\n' "$staged_unlink_out" |
+    grep -qF "DRIFT    renovate.json  (uncurated — staged content differs"; then
+    ok "diff-template gates a staged symlink-to-file conversion"
+else
+    bad "diff-template gates a staged symlink-to-file conversion (DRIFT diagnostic missing)"
+fi
+
+# --- an unborn repository stages everything ----------------------------------
+# Before the first commit there is no committed state, so every index entry is
+# staged by definition and the initial commit carries all of it. Ending the
+# inspection at the absent HEAD made this the one place staged divergence went
+# unreported entirely.
+DT_UNBORN="$TMPROOT/diff-template-unborn"
+cp -pR "$DT_TARGET" "$DT_UNBORN"
+rm -rf "$DT_UNBORN/.git"
+git_init "$DT_UNBORN"
+printf '%s\n' '{ "extends": ["unborn-staged-divergence"] }' \
+    >"$DT_UNBORN/renovate.json"
+git -C "$DT_UNBORN" add -- renovate.json
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_UNBORN/renovate.json"
+if unborn_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_UNBORN" 2>&1)"; then
+    bad "diff-template reports staged divergence before the first commit (expected non-zero exit)"
+elif printf '%s\n' "$unborn_out" |
+    grep -qF "DRIFT    renovate.json  (uncurated — staged content differs"; then
+    ok "diff-template reports staged divergence before the first commit"
+else
+    bad "diff-template reports staged divergence before the first commit (DRIFT diagnostic missing)"
+fi
+# …and the clobber gate stays silent there: with nothing committed, no
+# customization can be lost, so a co-owned worktree edit is an ordinary local
+# edit rather than a clobber.
+git -C "$DT_UNBORN" reset -q -- renovate.json
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_UNBORN/renovate.json"
+git -C "$DT_UNBORN" add -- AGENTS.md
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'unborn-local-edit' \
+    >"$DT_UNBORN/AGENTS.md"
+if unborn_clobber_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_UNBORN" 2>&1)"; then
+    ok "diff-template claims no clobber in a repo with no commits"
+else
+    bad "diff-template claims no clobber in a repo with no commits: $unborn_clobber_out"
+fi
+if printf '%s\n' "$unborn_clobber_out" | grep -qF "staged copy is byte-identical"; then
+    bad "diff-template makes no clobber claim without a committed customization"
+else
+    ok "diff-template makes no clobber claim without a committed customization"
+fi
+
 # --- the staged-removal probes must fail CLOSED ------------------------------
 # `cat-file -e "HEAD:$p"` exits 128 for a path merely ABSENT from HEAD, so
 # "absent" and "the probe itself failed" were indistinguishable by exit code and
