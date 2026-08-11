@@ -94,6 +94,21 @@ printf 'output\nCI-GREEN' >"${test_tmp}/nonewline"
 run_marker "${test_tmp}/nonewline" CI-GREEN
 assert_rc 0
 
+echo "==> the documented append survives gate output with no final newline"
+# The recipe appends the verdict as printf '\n%s\n' — the LEADING newline is
+# load-bearing: without it, a gate whose last output line lacks a newline
+# glues itself to the token (last-outputCI-GREEN-...) and a green gate is
+# permanently refused.
+printf 'gate output without newline' >"${test_tmp}/glue-safe"
+printf '\n%s\n' CI-GREEN >>"${test_tmp}/glue-safe"
+run_marker "${test_tmp}/glue-safe" CI-GREEN
+assert_rc 0
+printf 'gate output without newline' >"${test_tmp}/glued"
+printf '%s\n' CI-GREEN >>"${test_tmp}/glued"
+run_marker "${test_tmp}/glued" CI-GREEN
+assert_rc 1
+assert_reason
+
 echo "==> only the LAST non-blank line is the marker"
 # A gate that echoed the token mid-log and then kept running (or failed)
 # must not read as green: the marker is the file's final verdict, not any

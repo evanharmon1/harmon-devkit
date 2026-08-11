@@ -819,7 +819,10 @@ is optional in addition, never a substitute for per-thread replies.
   *and* to the commit it gated: fresh per-run output file, token minted
   before the gate starts and carrying the SHA under test —
   `sha="$(git rev-parse HEAD)"; t="CI-GREEN-$sha-$$"; out="$(mktemp)"`,
-  gate as `task ci >"$out" 2>&1 && printf '%s\n' "$t" >>"$out"`, push as
+  gate as `task ci >"$out" 2>&1 && printf '\n%s\n' "$t" >>"$out"` — the
+  leading newline is load-bearing: without it, gate output that ends
+  without a newline glues itself to the token and a green gate is
+  refused forever — push as
   `…/require-marker.sh "$out" "$t" && git push <remote> "$sha:<branch>" …`
   — a stale file from an
   earlier gate can never contain this run's token, a failed gate writes

@@ -35,12 +35,16 @@ the file says, not which run said it, so a static token (CI-GREEN) can
 match a stale file an earlier run left behind, and a run-only token can
 authorize a commit the gate never saw. Mint the token before the gate
 starts, carrying the SHA under test — e.g.
-token="CI-GREEN-$(git rev-parse HEAD)-$$" — write the gate's output to a
-fresh per-run file, have the wrapper append the token only on success,
-and re-check HEAD against that SHA in the same chain as the push. A stale
-file can never contain this run's token, a failed or unfinished gate
-never writes it, and a HEAD that moved since the gate ran refuses the
-push.
+sha="$(git rev-parse HEAD)"; token="CI-GREEN-$sha-$$" — write the gate's
+output to a fresh per-run file, and have the wrapper append the token
+only on success, with a LEADING newline so gate output that ends without
+one cannot glue itself to the token:
+  task ci >"$out" 2>&1 && printf '\n%s\n' "$token" >>"$out"
+Then push the captured SHA itself, never the mutable HEAD. A stale file
+can never contain this run's token, a failed or unfinished gate never
+writes it, and a HEAD that moved after the gate is simply not what the
+refspec pushes — comparing HEAD to the SHA first and then pushing HEAD
+re-reads the ref at push time, so the comparison alone races.
 
 Exit status:
   0  FILE's marker line equals TOKEN
@@ -51,7 +55,7 @@ Exit status:
 
 Chain external writes off THIS exit status, never off a reader's exit —
 tail, head, cat, and grep succeed by printing whatever the marker says:
-  require-marker.sh "$out" "$token" && git push ...
+  require-marker.sh "$out" "$token" && git push <remote> "$sha:<branch>"
 EOF
     exit 2
 }
