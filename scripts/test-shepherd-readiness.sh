@@ -174,6 +174,11 @@ write_defaults() {
               {context:"ci/legacy",state:"success",id:3}]]' \
         >"${fixtures}/statuses.pages.json"
     jq -cn '{login:"pr-author"}' >"${fixtures}/user.json"
+    # A Codex attempt state naming THIS repo, PR, and head — the gate refuses
+    # to hand the helper a state file describing anything else.
+    jq -cn --arg head "$head_sha" \
+        '{version:1,repo:"example/repo",pr:493,head:$head,
+          attempt:1,phase:"attached"}' >"${fixtures}/codex-state.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/top.pages.json"
@@ -218,7 +223,7 @@ assert_gate() {
 echo "==> full pass prints a fingerprint, stable across two runs on identical data"
 write_defaults
 printf '0\n' >"${fixtures}/codex-exit"
-run_gate --codex-state "${test_tmp}/codex-state.json"
+run_gate --codex-state "${fixtures}/codex-state.json"
 assert_gate 0 pass ready
 first_fingerprint="$(gate_field fingerprint)"
 [ -n "$first_fingerprint" ] && [ "$first_fingerprint" != "null" ] ||
@@ -226,7 +231,7 @@ first_fingerprint="$(gate_field fingerprint)"
 grep -q 'codex-helper check' "$log" ||
     fail "the enabled-Codex pass did not invoke the sibling helper"
 rm -f "${fixtures}/pr-view-count"
-run_gate --codex-state "${test_tmp}/codex-state.json"
+run_gate --codex-state "${fixtures}/codex-state.json"
 assert_gate 0 pass ready
 second_fingerprint="$(gate_field fingerprint)"
 [ "$first_fingerprint" = "$second_fingerprint" ] ||
@@ -478,15 +483,82 @@ echo "==> Codex helper findings/pending/retry/escalate all fail as codex-not-cle
 for helper_rc in 10 11 12 13; do
     write_defaults
     printf '%s\n' "$helper_rc" >"${fixtures}/codex-exit"
-    run_gate --codex-state "${test_tmp}/codex-state.json"
+    run_gate --codex-state "${fixtures}/codex-state.json"
     assert_gate 1 fail codex-not-clean
 done
 
 echo "==> Codex helper exit 2 is codex-indeterminate"
 write_defaults
 printf '2\n' >"${fixtures}/codex-exit"
-run_gate --codex-state "${test_tmp}/codex-state.json"
+run_gate --codex-state "${fixtures}/codex-state.json"
 assert_gate 2 indeterminate codex-indeterminate
+
+echo "==> a missing Codex attempt state is codex-indeterminate, never a pass"
+write_defaults
+run_gate --codex-state "${fixtures}/no-such-state.json"
+assert_gate 2 indeterminate codex-indeterminate
+
+echo "==> a Codex state for another PR is refused before the helper ever runs"
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{version:1,repo:"example/repo",pr:777,head:$head,
+      attempt:1,phase:"attached"}' >"${fixtures}/codex-state.json"
+run_gate --codex-state "${fixtures}/codex-state.json"
+assert_gate 2 indeterminate codex-indeterminate
+if grep -q 'codex-helper check' "$log"; then
+    fail "a mismatched state file must not reach the Codex helper"
+fi
+
+echo "==> a CHANGES_REQUESTED review landing mid-gate fails on the final re-read"
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED"}' \
+    >"${fixtures}/pr-view-second.json"
+run_gate --codex-disabled
+assert_gate 1 fail changes-requested
+
+echo "==> a DIRTY merge state arising mid-gate fails on the final re-read"
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"DIRTY"}' \
+    >"${fixtures}/pr-view-second.json"
+run_gate --codex-disabled
+assert_gate 1 fail merge-state-dirty
+
+echo "==> the fingerprint hashes the exact PR object the gate evaluated (one fetch)"
+write_defaults
+run_gate --codex-disabled
+assert_gate 0 pass ready
+pr_object_fetches="$(grep -cxF 'api repos/example/repo/pulls/493' "$log")"
+[ "$pr_object_fetches" -eq 1 ] ||
+    fail "expected exactly one PR-object fetch (the gated body is what gets hashed), saw $pr_object_fetches"
+
+echo "==> without GNU timeout the gate still runs, loudly unbounded"
+write_defaults
+restricted_bin="${test_tmp}/restricted-bin"
+mkdir -p "$restricted_bin"
+for tool in bash jq grep tr dirname cat; do
+    tool_path="$(command -v "$tool")" ||
+        fail "missing $tool for the no-timeout fixture"
+    ln -s "$tool_path" "${restricted_bin}/$tool"
+done
+for hasher in sha256sum shasum; do
+    hasher_path="$(command -v "$hasher" 2>/dev/null || true)"
+    [ -z "$hasher_path" ] || ln -s "$hasher_path" "${restricted_bin}/$hasher"
+done
+ln -s "${bin_dir}/gh" "${restricted_bin}/gh"
+set +e
+gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" env PATH="$restricted_bin" \
+    "$gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --codex-disabled 2>&1)"
+gate_rc=$?
+set -e
+check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
+assert_gate 0 pass ready
+printf '%s\n' "$gate_out" | grep -Fq 'no GNU timeout' ||
+    fail "the timeout fallback must warn that calls are unbounded: $gate_out"
 
 echo "==> the Codex mode is never skippable by silence"
 write_defaults
@@ -500,7 +572,7 @@ printf '%s\n' "$usage_out" | grep -Fq 'codex' ||
     fail "the missing-Codex-mode error does not say what is missing: $usage_out"
 set +e
 both_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --codex-disabled --codex-state "${test_tmp}/codex-state.json" 2>&1)"
+    --codex-disabled --codex-state "${fixtures}/codex-state.json" 2>&1)"
 both_rc=$?
 set -e
 [ "$both_rc" -eq 2 ] ||

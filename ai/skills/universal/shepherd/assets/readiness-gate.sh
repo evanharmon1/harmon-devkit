@@ -88,13 +88,17 @@ need() {
 need gh
 need jq
 
+# Bounded network calls where GNU timeout exists; a loud, unbounded fallback
+# where it does not (stock macOS ships neither `timeout` nor `gtimeout`).
+# This gate is mandatory for every promotion, so unlike the optional Codex
+# helper it must still run there — the same trade scripts/status.sh makes.
 timeout_bin=
 if command -v timeout >/dev/null 2>&1; then
     timeout_bin=timeout
 elif command -v gtimeout >/dev/null 2>&1; then
     timeout_bin=gtimeout
 else
-    die "GNU timeout is required (coreutils; gtimeout on macOS)"
+    printf 'readiness-gate: no GNU timeout (coreutils; gtimeout on macOS) — network calls are unbounded\n' >&2
 fi
 
 command_name="${1:-}"
@@ -193,7 +197,11 @@ indeterminate() {
 }
 
 run_gh() {
-    "$timeout_bin" -k 1 60 gh "$@"
+    if [ -n "$timeout_bin" ]; then
+        "$timeout_bin" -k 1 60 gh "$@"
+    else
+        gh "$@"
+    fi
 }
 
 # ---- Fingerprint components (ported from SKILL.md §6's promo_fp recipe) ----
@@ -222,11 +230,17 @@ fp_inline=
 fp_threads=
 
 fetch_fingerprint_surfaces() {
-    # $fp_inline may be pre-seeded by `check` (the thread-predicate fetch).
+    # $fp_pr and $fp_inline may be pre-seeded by `check` — deliberately: the
+    # fingerprint must hash the exact body the deferred-findings condition
+    # evaluated and the exact comments the thread predicate classified. A
+    # fresh fetch here would launder a mid-gate edit into both the pass and
+    # post-promotion fingerprints without either ever being validated.
     owner="${repo%/*}"
     name="${repo#*/}"
-    fp_pr="$(run_gh api repos/"$repo"/pulls/"$pr")" ||
-        indeterminate fetch-failed "cannot fetch the PR object"
+    if [ -z "$fp_pr" ]; then
+        fp_pr="$(run_gh api repos/"$repo"/pulls/"$pr")" ||
+            indeterminate fetch-failed "cannot fetch the PR object"
+    fi
     fp_reviews="$(run_gh api --paginate --slurp repos/"$repo"/pulls/"$pr"/reviews)" ||
         indeterminate fetch-failed "cannot fetch PR reviews"
     fp_top="$(run_gh api --paginate --slurp repos/"$repo"/issues/"$pr"/comments)" ||
@@ -479,11 +493,26 @@ edited_roots="$(jq -r --argjson allowed "$allowed_edited_roots" \
     fail_condition threads-edited-since-reply "reviewer edits after your reply — re-read and answer, or clear each root explicitly with --allow-edited-root: $edited_roots"
 
 # 8. The current-head Codex cloud-review cycle, where enabled. Classification
-# belongs to the sibling helper — run it, never re-derive its evidence.
+# belongs to the sibling helper — run it, never re-derive its evidence. But
+# first bind the attempt state to THIS gate's target: the helper validates
+# its state against the live head of whatever PR the state itself names, so a
+# state file for a different PR that shares this commit (one branch, two
+# bases) would check out clean and certify the wrong PR. The identity triplet
+# is read here, before the helper can act on — or lock, or adopt a timeout
+# into — a file that was never this PR's.
 if [ "$codex_disabled" != 1 ]; then
     codex_helper="$(dirname "$0")/check-codex-cloud-review.sh"
     [ -x "$codex_helper" ] ||
         die "check-codex-cloud-review.sh is not beside this script"
+    [ -f "$codex_state" ] ||
+        indeterminate codex-indeterminate "no Codex attempt state at $codex_state — reserve/attach the cycle before gating"
+    jq -e \
+        --arg repo "$repo" \
+        --argjson pr "$pr" \
+        --arg head "$head" '
+          type == "object" and .repo == $repo and .pr == $pr and .head == $head
+        ' "$codex_state" >/dev/null 2>&1 ||
+        indeterminate codex-indeterminate "the Codex attempt state does not describe this repo, PR, and head — pass this PR's own state file"
     codex_rc=0
     codex_out="$("$codex_helper" check --state "$codex_state" \
         --actor-id "$codex_actor_id")" || codex_rc=$?
@@ -506,11 +535,18 @@ fi
 # unresolved until a human resolves them.
 fetch_fingerprint_surfaces
 
-# 10. The head must not have moved while any of the above was read — a changed
-# head invalidates every result this gate relied on. Never wait out a
-# mismatch here: a fresh replica showing someone else's newer push is
-# evidence, and re-polling until it converges would discard it.
-recheck="$(run_gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)" ||
+# 10. Re-read every scalar condition as the last act before the verdict — not
+# only the head. A changed head invalidates every result this gate relied on,
+# and never wait out a mismatch: a fresh replica showing someone else's newer
+# push is evidence, and re-polling until it converges would discard it. The
+# review decision and merge state are re-evaluated here because they moved on
+# from step 1's read without moving the head: a CHANGES_REQUESTED review
+# landing mid-gate is absorbed into the reviews fingerprint (so the
+# post-promotion compare would stay identical), and mergeability is excluded
+# from the fingerprint by design — this re-read is the only thing that can
+# catch either.
+recheck="$(run_gh pr view "$pr" --repo "$repo" \
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus)" ||
     indeterminate fetch-failed "cannot re-read the PR immediately before the verdict"
 jq -e '.state == "OPEN"' <<<"$recheck" >/dev/null ||
     fail_condition pr-not-open "the PR left the OPEN state while the gate was reading it"
@@ -518,6 +554,15 @@ jq -e '.isDraft == true' <<<"$recheck" >/dev/null ||
     fail_condition pr-not-draft "the PR was promoted while the gate was reading it"
 jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
     fail_condition head-moved "PR head changed while the gate was reading it"
+[ "$(jq -r '.reviewDecision // ""' <<<"$recheck")" != "CHANGES_REQUESTED" ] ||
+    fail_condition changes-requested "a reviewer requested changes while the gate was reading"
+case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
+DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
+BEHIND) fail_condition merge-state-behind "the base branch advanced while the gate was reading" ;;
+UNKNOWN | "")
+    indeterminate merge-state-unknown "GitHub is recomputing mergeability — re-poll briefly"
+    ;;
+esac
 
 compute_fingerprint
 jq -cn \

@@ -6,7 +6,7 @@ description: >-
   rejections in per-thread replies), push, and re-watch, for at most 4
   rounds. Invoke as /shepherd [PR # or URL].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/check-codex-cloud-review.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*)
 ---
 
 # Shepherd
@@ -72,10 +72,15 @@ the loop cannot run forever.
 
 Only write-incapable reads are pre-approved (`git log`/`diff`/`show` accept
 `--output=<file>`, `git fetch` accepts `--upload-pack=<cmd>` — those prompt),
-plus this skill's own asset scripts by skill-directory path: they are
-read-only toward GitHub by construction, and `assets/gh-ro.sh` is the
-GET-only front door for the raw `gh api` reads below — raw `gh api` is never
-granted, because the same prefix that lists comments posts them.
+plus exactly two of this skill's asset scripts by skill-directory path:
+`assets/gh-ro.sh`, the GET-only front door for the raw `gh api` reads below,
+and `assets/readiness-gate.sh`, which reads GitHub and writes nothing at all.
+Raw `gh api` is never granted — the same prefix that lists comments posts
+them — and neither is `assets/check-codex-cloud-review.sh`: its `reserve`,
+`attach`, and `reap` subcommands write and delete local state at
+caller-chosen paths, so §2's cycle invocations keep prompting (the gate
+script still runs its `check` internally, against a state file it first
+proves belongs to this exact repo, PR, and head).
 `${CLAUDE_SKILL_DIR}` in those grants and snippets is Claude Code's
 skill-directory substitution; where nothing substitutes it, set
 `CLAUDE_SKILL_DIR` to this skill's directory first (the same value later
