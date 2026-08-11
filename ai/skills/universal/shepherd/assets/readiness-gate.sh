@@ -42,16 +42,32 @@
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, usage              (indeterminate)
 #
-# Two readiness conditions are deliberately NOT verified here, because no API
-# answers them — the caller must hold them as prose prerequisites:
+# Three readiness conditions are deliberately NOT verified here, because no
+# API answers them — the caller must hold them as prose prerequisites:
 #   - required automation that reacts only to `pull_request.ready_for_review`
 #     (a configuration blocker: promotion would notify humans before its
 #     result exists);
 #   - the Codex Automatic-review knobs being off/Follow-personal (a
-#     human-configured prerequisite; GitHub exposes no reliable API for it).
-# Nor does a pass certify adjudication QUALITY: the gate proves every inline
-# thread carries your reply and every deferred finding a disposition, not that
-# either is any good — a human still reads the PR.
+#     human-configured prerequisite; GitHub exposes no reliable API for it);
+#   - a required context that NEVER REGISTERED on this head. The checks
+#     condition judges every check GitHub reports for the commit; a required
+#     workflow that failed to trigger appears in no list, and the only state
+#     that encodes it — merge-blockedness — must stay promotable (BLOCKED is
+#     the expected pre-review state). "Every required workflow actually ran"
+#     is §6's automation-coverage condition, held by the caller.
+# Nor does a pass certify adjudication QUALITY: the gate re-checks the
+# mechanical surfaces (reply linkage, deferred ticks, review decision) and
+# freezes the rest into the fingerprint, but a top-level finding posted after
+# the caller's last watch round is frozen, not adjudicated — the caller's §2
+# watch owes it, exactly as it did under the hand-run recipe this replaces. A
+# human still reads the PR.
+#
+# Toward the local filesystem the gate itself writes nothing. With
+# --codex-state there is one delegated write path: the sibling classifier's
+# `check` takes and releases its advisory lock directory beside that state
+# file. It is reachable only through a state file this script has already
+# proven to name this exact repo, PR, and head, and no timeout flag is
+# passed, so the helper never rewrites the state itself.
 
 set -euo pipefail
 
@@ -323,58 +339,73 @@ rest_head="$(jq -er '.head.sha | select(type == "string")' <<<"$fp_pr")" ||
 [ "$rest_head" = "$head" ] ||
     fail_condition head-moved "PR head changed while the gate was reading it"
 
-# 3. Required checks, page-safe from the commit itself: check runs plus legacy
-# commit statuses are what the PR's checks tab aggregates. `gh pr view`'s
-# statusCheckRollup caps at one page, so it cannot be the evidence here.
-check_runs_pages="$(run_gh api --paginate --slurp \
-    "repos/$repo/commits/$head/check-runs?per_page=100&filter=latest")" ||
-    indeterminate fetch-failed "cannot fetch check runs for the head"
-check_runs="$(jq -ce \
-    '[.[] | if (.check_runs | type) == "array" then .check_runs[]
-            else error("page carries no check_runs") end]' \
-    <<<"$check_runs_pages" 2>/dev/null)" ||
-    indeterminate malformed-data "check-runs payload is malformed"
-statuses_pages="$(run_gh api --paginate --slurp \
-    "repos/$repo/commits/$head/statuses?per_page=100")" ||
-    indeterminate fetch-failed "cannot fetch commit statuses for the head"
-# The raw statuses list keeps superseded posts for a context; only the newest
-# per context is live, and GitHub comment/status IDs increase monotonically.
-statuses="$(jq -ce \
-    'add // [] | group_by(.context) | map(max_by(.id))' \
-    <<<"$statuses_pages" 2>/dev/null)" ||
-    indeterminate malformed-data "commit-statuses payload is malformed"
+# 3. Checks, page-safe from the commit itself: check runs plus legacy commit
+# statuses are what the PR's checks tab aggregates. `gh pr view`'s
+# statusCheckRollup caps at one page, so it cannot be the evidence here. The
+# evaluation is a function because it runs twice: here, and again immediately
+# before the verdict — the fetches between the two take real time, a rerun or
+# late-triggered workflow can turn the commit red inside that window, and
+# checks are deliberately not part of the content fingerprint, so nothing
+# after promotion would catch it either.
+#
+# What this judges is every check GitHub REPORTS for the commit. A required
+# context that never registered at all is invisible to any list read (only
+# merge-blocked-ness encodes it, and BLOCKED must stay promotable), so
+# "every required workflow actually ran" remains the §6 automation-coverage
+# condition the caller holds — see the header.
+evaluate_checks() {
+    check_runs_pages="$(run_gh api --paginate --slurp \
+        "repos/$repo/commits/$head/check-runs?per_page=100&filter=latest")" ||
+        indeterminate fetch-failed "cannot fetch check runs for the head"
+    check_runs="$(jq -ce \
+        '[.[] | if (.check_runs | type) == "array" then .check_runs[]
+                else error("page carries no check_runs") end]' \
+        <<<"$check_runs_pages" 2>/dev/null)" ||
+        indeterminate malformed-data "check-runs payload is malformed"
+    statuses_pages="$(run_gh api --paginate --slurp \
+        "repos/$repo/commits/$head/statuses?per_page=100")" ||
+        indeterminate fetch-failed "cannot fetch commit statuses for the head"
+    # The raw statuses list keeps superseded posts for a context; only the
+    # newest per context is live, and GitHub status IDs increase
+    # monotonically.
+    statuses="$(jq -ce \
+        'add // [] | group_by(.context) | map(max_by(.id))' \
+        <<<"$statuses_pages" 2>/dev/null)" ||
+        indeterminate malformed-data "commit-statuses payload is malformed"
 
-# An EMPTY list is indeterminate, never a pass: GitHub populates check suites
-# asynchronously, so a read moments after a push reports nothing having run
-# rather than nothing to run. A repo with genuinely no CI needs a human to say
-# so — this gate cannot tell the two apart.
-checks_summary="$(jq -cn \
-    --argjson runs "$check_runs" \
-    --argjson statuses "$statuses" '
-      def run_state:
-        if .status != "completed" then "pending"
-        elif (.conclusion == "success" or .conclusion == "neutral"
-              or .conclusion == "skipped") then "ok"
-        else "failing" end;
-      def status_state:
-        if .state == "success" then "ok"
-        elif .state == "pending" then "pending"
-        else "failing" end;
-      ($runs | map({name:(.name // "unnamed check"), state:run_state})) +
-      ($statuses | map({name:(.context // "unnamed status"),
-                        state:status_state}))
-      | {total:length,
-         failing:[.[] | select(.state == "failing") | .name],
-         pending:[.[] | select(.state == "pending") | .name]}')" ||
-    indeterminate malformed-data "check states could not be classified"
-[ "$(jq -r '.total' <<<"$checks_summary")" -gt 0 ] ||
-    indeterminate checks-indeterminate "GitHub reports no checks for this head — populated asynchronously, so re-poll; if the repo truly has no CI, that is a human call, not a pass"
-failing_checks="$(jq -r '.failing | join(", ")' <<<"$checks_summary")"
-[ -z "$failing_checks" ] ||
-    fail_condition checks-failing "checks failing: $failing_checks"
-pending_checks="$(jq -r '.pending | join(", ")' <<<"$checks_summary")"
-[ -z "$pending_checks" ] ||
-    fail_condition checks-pending "checks not yet concluded: $pending_checks"
+    # An EMPTY list is indeterminate, never a pass: GitHub populates check
+    # suites asynchronously, so a read moments after a push reports nothing
+    # having run rather than nothing to run. A repo with genuinely no CI
+    # needs a human to say so — this gate cannot tell the two apart.
+    checks_summary="$(jq -cn \
+        --argjson runs "$check_runs" \
+        --argjson statuses "$statuses" '
+          def run_state:
+            if .status != "completed" then "pending"
+            elif (.conclusion == "success" or .conclusion == "neutral"
+                  or .conclusion == "skipped") then "ok"
+            else "failing" end;
+          def status_state:
+            if .state == "success" then "ok"
+            elif .state == "pending" then "pending"
+            else "failing" end;
+          ($runs | map({name:(.name // "unnamed check"), state:run_state})) +
+          ($statuses | map({name:(.context // "unnamed status"),
+                            state:status_state}))
+          | {total:length,
+             failing:[.[] | select(.state == "failing") | .name],
+             pending:[.[] | select(.state == "pending") | .name]}')" ||
+        indeterminate malformed-data "check states could not be classified"
+    [ "$(jq -r '.total' <<<"$checks_summary")" -gt 0 ] ||
+        indeterminate checks-indeterminate "GitHub reports no checks for this head — populated asynchronously, so re-poll; if the repo truly has no CI, that is a human call, not a pass"
+    failing_checks="$(jq -r '.failing | join(", ")' <<<"$checks_summary")"
+    [ -z "$failing_checks" ] ||
+        fail_condition checks-failing "checks failing: $failing_checks"
+    pending_checks="$(jq -r '.pending | join(", ")' <<<"$checks_summary")"
+    [ -z "$pending_checks" ] ||
+        fail_condition checks-pending "checks not yet concluded: $pending_checks"
+}
+evaluate_checks
 
 # 4. Review decision. REVIEW_REQUIRED (and empty) are expected pre-promotion
 # states — the review they wait on is what `gh pr ready` requests. Only
@@ -409,29 +440,34 @@ deferred_summary="$(jq -c '
         test("declined:"; "i") or
         test("filed as [^ ]*#[0-9]+"; "i");
       (.body // "") | gsub("\r"; "") | split("\n")
-      | (length) as $count
-      | ([to_entries[]
-          | select(.value | test("^#{1,6}[[:space:]]*deferred findings[[:space:]]*$"; "i"))
-          | .key] | first) as $start
-      | if $start == null then {unchecked:[], no_outcome:[]}
-        else
-          ([to_entries[]
-            | select(.key > $start and (.value | test("^#{1,6}[[:space:]]")))
-            | .key] | first // $count) as $end
-          | .[($start + 1):$end]
-          | reduce .[] as $line ([];
-              if ($line | test("^[[:space:]]*[-*+][[:space:]]+\\[[ xX]\\]"))
-              then . + [$line]
-              elif (length > 0 and ($line | test("^[[:space:]]*$") | not)
-                    and ($line | test("^[[:space:]]*[-*+][[:space:]]") | not))
-              then .[:-1] + [.[-1] + " " + $line]
-              else . end)
-          | {unchecked:
-               [.[] | select(test("^[[:space:]]*[-*+][[:space:]]+\\[ \\]"))],
-             no_outcome:
-               [.[] | select(test("^[[:space:]]*[-*+][[:space:]]+\\[[xX]\\]"))
-                    | select(outcome_present | not)]}
-        end' <<<"$fp_pr")" ||
+      | . as $lines | (length) as $count | (to_entries) as $entries
+      # EVERY matching section counts — an empty template section left above
+      # an appended real one must not hide the open findings below it.
+      | ($entries
+         | map(select(.value
+             | test("^#{1,6}[[:space:]]*deferred findings[[:space:]]*$"; "i"))
+           | .key)) as $starts
+      | ($starts | map(. as $start
+          | (($entries
+              | map(select(.key > $start and
+                    (.value | test("^#{1,6}[[:space:]]"))) | .key)
+              | first) // $count) as $end
+          | $lines[($start + 1):$end])
+         | add // [])
+      | reduce .[] as $line ([];
+          if ($line | test("^[[:space:]]*[-*+][[:space:]]+\\[[ xX]\\]"))
+          then . + [$line]
+          # A continuation must be INDENTED, the way list continuations are:
+          # bare body prose after an item must not lend it an outcome.
+          elif (length > 0 and ($line | test("^[[:space:]]+[^[:space:]]"))
+                and ($line | test("^[[:space:]]*[-*+][[:space:]]") | not))
+          then .[:-1] + [.[-1] + " " + $line]
+          else . end)
+      | {unchecked:
+           [.[] | select(test("^[[:space:]]*[-*+][[:space:]]+\\[ \\]"))],
+         no_outcome:
+           [.[] | select(test("^[[:space:]]*[-*+][[:space:]]+\\[[xX]\\]"))
+                | select(outcome_present | not)]}' <<<"$fp_pr")" ||
     indeterminate malformed-data "the PR body could not be parsed for deferred findings"
 unchecked_count="$(jq -r '.unchecked | length' <<<"$deferred_summary")"
 if [ "$unchecked_count" -gt 0 ]; then
@@ -563,6 +599,13 @@ UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is recomputing mergeability — re-poll briefly"
     ;;
 esac
+
+# 11. Checks, one more time, as the very last evidence read: a rerun or a
+# late-triggered workflow can appear on this immutable commit while the
+# fetches above ran, checks are outside the content fingerprint by design,
+# and a pass printed over red CI is exactly the failure this script exists
+# to make impossible.
+evaluate_checks
 
 compute_fingerprint
 jq -cn \

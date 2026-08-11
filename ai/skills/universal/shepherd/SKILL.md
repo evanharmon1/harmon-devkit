@@ -74,7 +74,9 @@ Only write-incapable reads are pre-approved (`git log`/`diff`/`show` accept
 `--output=<file>`, `git fetch` accepts `--upload-pack=<cmd>` — those prompt),
 plus exactly two of this skill's asset scripts by skill-directory path:
 `assets/gh-ro.sh`, the GET-only front door for the raw `gh api` reads below,
-and `assets/readiness-gate.sh`, which reads GitHub and writes nothing at all.
+and `assets/readiness-gate.sh`, which reads GitHub and — beyond the
+classifier's transient advisory lock beside a `--codex-state` file it first
+proves is this PR's own — writes nothing.
 Raw `gh api` is never granted — the same prefix that lists comments posts
 them — and neither is `assets/check-codex-cloud-review.sh`: its `reserve`,
 `attach`, and `reap` subcommands write and delete local state at
@@ -975,11 +977,15 @@ loops indefinitely:
    re-read at the gate, or a mid-adjudication push would be laundered into
    "current". The script evaluates every mechanical condition of this stop,
    in order, fail-closed: PR `OPEN` and still draft; the live head equal to
-   `--head` (checked again after all evidence is read); every check on that
-   commit concluded non-failing, page-safe from the commit's own check runs
-   and statuses — an **empty** check list is indeterminate, never a pass,
-   because GitHub populates check suites asynchronously, and `skipping` is
-   neutral; `reviewDecision` not `CHANGES_REQUESTED`; `mergeStateStatus`
+   `--head` (checked again after all evidence is read); every check GitHub
+   reports for that commit concluded non-failing — evaluated twice, on entry
+   and again immediately before the verdict — page-safe from the commit's
+   own check runs and statuses, where an **empty** check list is
+   indeterminate, never a pass, because GitHub populates check suites
+   asynchronously, `skipping` is neutral, and a required context that never
+   registered appears in no list at all, which is exactly what the
+   automation-coverage paragraph below exists to hold;
+   `reviewDecision` not `CHANGES_REQUESTED`; `mergeStateStatus`
    none of `DIRTY`/`BEHIND`/`UNKNOWN`; every deferred-findings entry in the
    PR body ticked **and** carrying its outcome (a bare `- [x]` settles
    nothing); §2's reply-linkage predicate over the inline threads, run
@@ -1051,11 +1057,16 @@ loops indefinitely:
    `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh fingerprint --repo "$repo" --pr <n>`
    — the same five guarded surfaces with no gate attached, which is the
    point: `check` itself would rightly refuse the now-non-draft PR, and a
-   fetch error here is still *unknown*, not *unchanged*. Reconcile the
+   fetch error here is still *unknown*, not *unchanged*. Then re-read
+   `headRefOid` once more, **after** the fingerprint: the fingerprint
+   deliberately excludes the head, so a push landing between the scalar
+   fetch and the fingerprint read leaves the hash identical, and only a head
+   re-read on the far side proves the content you compared belongs to the
+   promoted head. Reconcile the
    state even when the promotion command failed: its
    response can be lost after GitHub accepted the mutation. Success requires
-   the verified head, an open PR, `isDraft == false`, and a fingerprint
-   identical to the passing gate's.
+   the verified head on both scalar reads, an open PR, `isDraft == false`,
+   and a fingerprint identical to the passing gate's.
    If the open PR is non-draft on a changed head or content snapshot, or any
    other confirmation result cannot
    prove that exact successful transition, run

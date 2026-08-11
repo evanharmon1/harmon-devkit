@@ -127,6 +127,18 @@ repos/*/commits/*/statuses*) file=statuses.pages.json ;;
 repos/*/pulls/*) file=pr.json ;;
 *) exit 93 ;;
 esac
+# The gate evaluates checks twice (entry + immediately before the verdict);
+# check-runs-second.pages.json, when present, is what the LATER fetches see.
+if [ "$file" = check-runs.pages.json ]; then
+    count_file="$GH_FIXTURES/check-runs-count"
+    count=0
+    [ ! -f "$count_file" ] || count="$(cat "$count_file")"
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$count_file"
+    if [ "$count" -ge 2 ] && [ -f "$GH_FIXTURES/check-runs-second.pages.json" ]; then
+        file=check-runs-second.pages.json
+    fi
+fi
 cat "$GH_FIXTURES/$file"
 STUB
 chmod +x "${bin_dir}/gh"
@@ -187,6 +199,7 @@ write_defaults() {
         >"${fixtures}/threads.pages.json"
     rm -f "${fixtures}/fail-endpoint" "${fixtures}/codex-exit"
     rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json"
+    rm -f "${fixtures}/check-runs-count" "${fixtures}/check-runs-second.pages.json"
     rm -f "${fixtures}/ro-exit"
     : >"$log"
 }
@@ -534,6 +547,43 @@ assert_gate 0 pass ready
 pr_object_fetches="$(grep -cxF 'api repos/example/repo/pulls/493' "$log")"
 [ "$pr_object_fetches" -eq 1 ] ||
     fail "expected exactly one PR-object fetch (the gated body is what gets hashed), saw $pr_object_fetches"
+
+echo "==> a check turning red mid-gate fails on the final re-evaluation"
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {name:"late-red",status:"completed",conclusion:"failure"}]}]' \
+    >"${fixtures}/check-runs-second.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'late-red' ||
+    fail "the final re-evaluation did not name the late-failing check: $gate_out"
+
+echo "==> a second deferred-findings section cannot hide open findings"
+write_defaults
+dup_body="$(printf '## Deferred findings\n\nnone recorded here\n\n## Notes\n\nprose\n\n## Deferred findings\n\n- [ ] scripts/late.sh:1 — appended in a later section\n')"
+jq -cn --arg head "$head_sha" --arg body "$dup_body" \
+    '{number:493,title:"t",body:$body,head:{sha:$head},
+      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
+run_gate --codex-disabled
+assert_gate 1 fail deferred-unchecked
+
+echo "==> unindented body prose cannot lend a ticked entry an outcome"
+write_defaults
+prose_body="$(printf '## Deferred findings\n\n- [x] scripts/a.sh:10 — outcome missing\nUnrelated paragraph mentioning declined: something else entirely.\n')"
+jq -cn --arg head "$head_sha" --arg body "$prose_body" \
+    '{number:493,title:"t",body:$body,head:{sha:$head},
+      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
+run_gate --codex-disabled
+assert_gate 1 fail deferred-no-outcome
+
+echo "==> an indented continuation line can carry the outcome"
+write_defaults
+cont_body="$(printf '## Deferred findings\n\n- [x] scripts/a.sh:10 — long entry wraps\n  declined: reviewer agreed in the thread\n')"
+jq -cn --arg head "$head_sha" --arg body "$cont_body" \
+    '{number:493,title:"t",body:$body,head:{sha:$head},
+      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
+run_gate --codex-disabled
+assert_gate 0 pass ready
 
 echo "==> without GNU timeout the gate still runs, loudly unbounded"
 write_defaults
