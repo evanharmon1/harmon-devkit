@@ -857,13 +857,22 @@ skip_decl_patterns="$workdir/skip-if-exists.txt"
 # matching `\.ya?ml` CASE-INSENSITIVELY, so `copier.YML` and `copier.Yaml` are
 # real templates it renders happily. Reading only the lowercase spellings would
 # exit 2 on a template that works — the same fail-broken shape as refusing a
-# pre-v3.4 baseline. Listed from the TREE at the rendered ref rather than from
-# disk: the guarded path has no working copy, and a case-insensitive filesystem
-# would answer for a name the repository does not actually contain.
+# pre-v3.4 baseline.
+#
+# The case-insensitivity is the SUFFIX's alone. copier's glob is `copier.*`,
+# which on a case-sensitive host does not match `COPIER.yml` — that file is
+# ordinary payload, and folding the whole basename would let this derive OWNED
+# exemptions from a file copier never read as configuration, hiding real drift.
+# Hence a case-sensitive `copier.` prefix and a folded extension.
+#
+# Listed from the TREE at the rendered ref rather than from disk: the guarded
+# path has no working copy, and a case-insensitive filesystem would answer for a
+# name the repository does not actually contain.
 skip_decl_source=""
 skip_decl_found="$(
     git -C "$template" ls-tree --name-only "$src_ref" |
-        awk 'tolower($0) ~ /^copier\.ya?ml$/' | LC_ALL=C sort
+        awk 'index($0, "copier.") == 1 && tolower(substr($0, 8)) ~ /^ya?ml$/' |
+        LC_ALL=C sort
 )" || {
     echo "FAIL: cannot list the template tree at $src_ref" >&2
     exit 2
@@ -962,19 +971,26 @@ if [ "$skip_decl_available" -eq 1 ]; then
     fi
 fi
 if [ "$skip_decl_available" -eq 1 ]; then
-    # The template's own jinja OPENING delimiters, read from the same config the
-    # declaration came from. Only the openers are needed: a pattern cannot use a
-    # closing delimiter without an opening one, and matching on the opener alone
-    # keeps this from tripping over a literal `>>` in a filename. A template that
-    # sets no `_envops` yields nothing here and is covered by the hardcoded
-    # jinja defaults in the loop below.
+    # The EFFECTIVE jinja opening delimiters — per field, the template's
+    # `_envops` value where it sets one and jinja's default where it does not.
+    # That is what copier's environment actually uses, and the distinction is
+    # not academic: a template that overrides `variable_start_string` to `<%`
+    # makes `{{` an ordinary pair of characters, so a filename containing it is
+    # a literal to match rather than a template to refuse. Enumerating the
+    # defaults unconditionally alongside the derived ones got that backwards for
+    # every overridden field.
     #
-    # `|| exit 2` rather than a default: an `_envops` this cannot read is a
+    # Only the OPENERS are needed: a pattern cannot use a closing delimiter
+    # without an opening one, and matching openers alone keeps this from
+    # tripping over a literal `>>` in a filename.
+    #
+    # `|| exit 2` rather than falling back: an `_envops` this cannot read is a
     # config whose delimiters are unknown, and matching patterns against unknown
     # delimiters is exactly the guess this block exists to refuse.
     skip_decl_delims="$(
-        yq -r '[._envops.variable_start_string, ._envops.block_start_string,
-               ._envops.comment_start_string] | map(select(. != null)) | .[]' \
+        yq -r '[(._envops.variable_start_string // "{{"),
+               (._envops.block_start_string // "{%"),
+               (._envops.comment_start_string // "{#")] | .[]' \
             "$skip_decl_yml" 2>/dev/null
     )" || {
         echo "FAIL: cannot read _envops from $skip_decl_source" >&2
@@ -1036,23 +1052,14 @@ if [ "$skip_decl_available" -eq 1 ]; then
             echo "  refusing to continue: git cannot re-include beneath an excluded directory, so this evaluator would disagree with copier" >&2
             exit 2
             ;;
-        *'{{'* | *'{%'* | *'{#'*)
-            # Jinja's DEFAULT delimiters, which apply when the template
-            # configures no `_envops` of its own. A pattern using them renders to
-            # something else entirely — a comment delimiter renders away to
-            # nothing — so matching the raw text would classify the wrong path.
-            echo "FAIL: templated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
-            echo "  refusing to continue: matching it unrendered would classify the wrong paths" >&2
-            exit 2
-            ;;
         esac
-        # The template's OWN delimiters, DERIVED rather than enumerated. This
-        # started as a hardcoded list of harmon-init's `[[`/`[%`/`[#` beside the
-        # defaults above, which is wrong in both directions: it refuses those
-        # three sequences for templates that never configured them, and it misses
-        # a template that configures anything else (`<%`, `<<`). copier renders
-        # each pattern with the environment `_envops` describes, so the only
-        # correct source for "is this pattern templated" is that same block.
+        # The template's EFFECTIVE delimiters, derived above rather than
+        # enumerated here. This started as a hardcoded list of harmon-init's
+        # `[[`/`[%`/`[#`, then grew jinja's defaults beside the derived values —
+        # both versions were wrong in the same way, refusing sequences the
+        # template never made special. copier renders each pattern with the
+        # environment `_envops` describes, so that block, field by field, is the
+        # only correct source for "is this pattern templated".
         for skip_decl_delim in $skip_decl_delims; do
             case "$skip_decl_pattern" in
             *"$skip_decl_delim"*)

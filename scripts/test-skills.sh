@@ -5636,6 +5636,52 @@ if printf '%s\n' "$envops_out" | grep -qF "it uses the template's own _envops de
 else
     bad "diff-template names the derived _envops delimiter it refused on"
 fi
+# Per FIELD, not per template: overriding `variable_start_string` makes `{{` an
+# ordinary pair of characters, so a filename containing it is a literal to match
+# rather than a template to refuse — while the fields that template did NOT
+# override keep their jinja defaults. Enumerating the defaults unconditionally
+# beside the derived values got the first half backwards.
+dt_skip_decl_variant "$TMPROOT/diff-template-envops-mixed-source" \
+    '_envops:' '  variable_start_string: "<%"' '  variable_end_string: "%>"' \
+    '_skip_if_exists:' '  - "{{literal}}.txt"' '  - CHANGELOG.md'
+envops_mixed_rc=0
+envops_mixed_out="$(HARMON_INIT="$TMPROOT/diff-template-envops-mixed-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || envops_mixed_rc=$?
+if [ "$envops_mixed_rc" -ne 2 ]; then
+    ok "diff-template treats an overridden delimiter's default as a literal"
+else
+    bad "diff-template treats an overridden delimiter's default as a literal: $envops_mixed_out"
+fi
+# The fields that template left alone still carry their defaults, so a block
+# delimiter it never overrode is still templated.
+dt_skip_decl_variant "$TMPROOT/diff-template-envops-block-source" \
+    '_envops:' '  variable_start_string: "<%"' '  variable_end_string: "%>"' \
+    '_skip_if_exists:' '  - "{% if x %}.txt"'
+envops_block_rc=0
+envops_block_out="$(HARMON_INIT="$TMPROOT/diff-template-envops-block-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || envops_block_rc=$?
+if [ "$envops_block_rc" -eq 2 ]; then
+    ok "diff-template keeps jinja defaults for the _envops fields a template leaves unset"
+else
+    bad "diff-template keeps jinja defaults for the _envops fields a template leaves unset (got $envops_block_rc)"
+fi
+# copier globs `copier.*` — a case-SENSITIVE basename — and folds only the
+# suffix. `COPIER.yml` is ordinary payload, so deriving a declaration from it
+# would grant OWNED exemptions off a file copier never read as configuration.
+DT_UPPERBASE_TEMPLATE="$TMPROOT/diff-template-upperbase-source"
+cp -pR "$DT_TEMPLATE" "$DT_UPPERBASE_TEMPLATE"
+git -C "$DT_UPPERBASE_TEMPLATE" mv copier.yml COPIER.yml
+git_commit_all "$DT_UPPERBASE_TEMPLATE" "upper-case the copier config basename"
+git -C "$DT_UPPERBASE_TEMPLATE" tag -f v1.0.0 >/dev/null
+upperbase_rc=0
+upperbase_out="$(HARMON_INIT="$DT_UPPERBASE_TEMPLATE" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || upperbase_rc=$?
+if [ "$upperbase_rc" -eq 2 ] &&
+    printf '%s\n' "$upperbase_out" | grep -qF "has no copier.yml at"; then
+    ok "diff-template reads no declaration from a case-varied copier BASENAME"
+else
+    bad "diff-template reads no declaration from a case-varied copier BASENAME (got $upperbase_rc)"
+fi
 # The converse: a delimiter sequence is only special when the template actually
 # configures it. `[[` was hardcoded before and would have refused this pattern
 # for a template whose jinja environment is the default one.
