@@ -1088,11 +1088,16 @@ loops indefinitely:
 
    If the PR was already non-draft (the gate's `pr-not-draft` failure),
    promotion is idempotently complete
-   and `gh pr ready` must not be called again. Audit the existing handoff on the
-   current head, but do not manufacture another ready event. This audit is also
+   and `gh pr ready` must not be called again. Audit the existing handoff on
+   the current head with the same script's `audit` mode —
+   `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh audit …`, the identical
+   fail-closed evaluation minus the draft requirement, run instead of
+   hand-rolling the evidence — but do not manufacture another ready event:
+   an `audit` pass never authorizes `gh pr ready`. This audit is also
    what step 2's unexplained-promotion procedure points at: where that
    procedure's first branch applies — a promotion this session did not make, on
-   a head that independently passes the gate — reconciling *is* this paragraph,
+   a head that independently passes the gate — reconciling *is* this paragraph
+   and its `audit` run,
    and the choice between reconciling and a single undo is made there, not here.
 
    When current-head Codex cloud review is enabled, **Codex Automatic reviews

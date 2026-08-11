@@ -213,6 +213,15 @@ run_gate() {
     check_watchdog "$gate_rc" run_gate "$gate_out"
 }
 
+run_audit() {
+    set +e
+    gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" audit \
+        --repo example/repo --pr 493 --head "$head_sha" "$@" 2>&1)"
+    gate_rc=$?
+    set -e
+    check_watchdog "$gate_rc" run_audit "$gate_out"
+}
+
 # The gate emits its verdict as the final line; earlier lines are incidental
 # stderr from the tools it drives.
 gate_field() {
@@ -609,6 +618,32 @@ check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
 assert_gate 0 pass ready
 printf '%s\n' "$gate_out" | grep -Fq 'no GNU timeout' ||
     fail "the timeout fallback must warn that calls are unbounded: $gate_out"
+
+nondraft_pr_view() {
+    jq -cn --arg head "$head_sha" \
+        '{state:"OPEN",isDraft:false,headRefOid:$head,
+          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+        >"${fixtures}/pr-view.json"
+}
+
+echo "==> audit passes a green already-promoted PR (check refuses the same PR)"
+write_defaults
+nondraft_pr_view
+run_audit --codex-disabled
+assert_gate 0 pass audit
+write_defaults
+nondraft_pr_view
+run_gate --codex-disabled
+assert_gate 1 fail pr-not-draft
+
+echo "==> audit still fails red checks on an already-promoted PR"
+write_defaults
+nondraft_pr_view
+jq -cn '[{total_count:1,check_runs:[
+    {name:"lint",status:"completed",conclusion:"failure"}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+run_audit --codex-disabled
+assert_gate 1 fail checks-failing
 
 echo "==> the Codex mode is never skippable by silence"
 write_defaults

@@ -17,10 +17,18 @@
 #   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
 #       (--codex-state FILE [--codex-actor-id N] | --codex-disabled)
 #       [--allow-edited-root ID]...
+#   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
+#       (--codex-state FILE [--codex-actor-id N] | --codex-disabled)
+#       [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 #
 # `check` evaluates the gate for the adjudicated 40-hex head SHA and, on full
-# pass only, prints `{"status":"pass",...,"fingerprint":...}`. `fingerprint`
+# pass only, prints `{"status":"pass",...,"fingerprint":...}`. `audit` is the
+# same evaluation minus the draft requirement: it answers "does this head
+# independently pass everything else" for a PR somebody already promoted —
+# §2's unexplained-promotion reconcile branch and §6's already-non-draft
+# audit run it instead of hand-rolling the evidence — and its pass never
+# authorizes `gh pr ready`; only a passing `check` does. `fingerprint`
 # recomputes the same five-surface content fingerprint with no gate attached —
 # it is the post-promotion read the caller compares against `check`'s value.
 #
@@ -77,9 +85,14 @@ Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
       (--codex-state FILE [--codex-actor-id N] | --codex-disabled)
       [--allow-edited-root ID]...
+  readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
+      (--codex-state FILE [--codex-actor-id N] | --codex-disabled)
+      [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
+audit is the same evaluation minus the draft requirement, for judging a PR
+somebody already promoted — its pass never authorizes gh pr ready.
 fingerprint recomputes the five-surface content fingerprint for the
 post-promotion compare. --codex-state FILE runs the sibling
 check-codex-cloud-review.sh against that attempt state (Codex cloud review
@@ -174,8 +187,13 @@ valid_sha() {
 valid_repo "$repo" || die "invalid repository: $repo"
 valid_uint "$pr" || die "invalid PR number: $pr"
 
+# check gates promotion, so the PR must still be draft; audit answers the
+# reconcile question for a PR somebody already promoted, so it drops exactly
+# that one requirement and nothing else.
+require_draft=1
 case "$command_name" in
-check)
+check | audit)
+    [ "$command_name" = check ] || require_draft=0
     [ -n "$head" ] || usage
     valid_sha "$head" || die "--head must be a full 40-hex commit"
     # Exactly one Codex mode, explicitly: the Codex condition must not be
@@ -309,7 +327,7 @@ if [ "$command_name" = fingerprint ]; then
     exit 0
 fi
 
-# ---------------------------------- check ----------------------------------
+# ------------------------------ check / audit ------------------------------
 
 # 1. PR scalars. `gh pr view` is a single-object read (pagination does not
 # apply); the list surfaces below all go through --paginate --slurp.
@@ -320,10 +338,12 @@ scalars="$(run_gh pr view "$pr" --repo "$repo" \
 pr_state="$(jq -er '.state | select(type == "string")' <<<"$scalars")" ||
     indeterminate malformed-data "PR payload carries no state"
 [ "$pr_state" = "OPEN" ] ||
-    fail_condition pr-not-open "PR state is $pr_state — only an open draft can be promoted"
+    fail_condition pr-not-open "PR state is $pr_state — only an open PR can be gated or audited"
 
-jq -e '.isDraft == true' <<<"$scalars" >/dev/null ||
-    fail_condition pr-not-draft "PR is not a draft — promotion is idempotently complete or someone else promoted; audit, do not re-promote"
+if [ "$require_draft" = 1 ]; then
+    jq -e '.isDraft == true' <<<"$scalars" >/dev/null ||
+        fail_condition pr-not-draft "PR is not a draft — promotion is idempotently complete or someone else promoted; run audit, do not re-promote"
+fi
 
 live_head="$(jq -er '.headRefOid | select(type == "string")' <<<"$scalars")" ||
     indeterminate malformed-data "PR payload carries no head commit"
@@ -571,23 +591,32 @@ fi
 # unresolved until a human resolves them.
 fetch_fingerprint_surfaces
 
-# 10. Re-read every scalar condition as the last act before the verdict — not
-# only the head. A changed head invalidates every result this gate relied on,
-# and never wait out a mismatch: a fresh replica showing someone else's newer
-# push is evidence, and re-polling until it converges would discard it. The
-# review decision and merge state are re-evaluated here because they moved on
-# from step 1's read without moving the head: a CHANGES_REQUESTED review
-# landing mid-gate is absorbed into the reviews fingerprint (so the
-# post-promotion compare would stay identical), and mergeability is excluded
-# from the fingerprint by design — this re-read is the only thing that can
-# catch either.
+# 10. Checks, one more time: a rerun or a late-triggered workflow can appear
+# on this immutable commit while the fetches above ran, checks are outside
+# the content fingerprint by design, and a pass printed over red CI is
+# exactly the failure this script exists to make impossible.
+evaluate_checks
+
+# 11. Re-read every scalar condition as the LAST network read before the
+# verdict — after the second checks evaluation, so no fetch runs behind it
+# (the fingerprint below is pure local computation). A changed head
+# invalidates every result this gate relied on, and never wait out a
+# mismatch: a fresh replica showing someone else's newer push is evidence,
+# and re-polling until it converges would discard it. The review decision
+# and merge state are re-evaluated here because they can move without moving
+# the head: a CHANGES_REQUESTED review landing mid-gate is absorbed into the
+# reviews fingerprint (so the post-promotion compare would stay identical),
+# and mergeability is excluded from the fingerprint by design — this re-read
+# is the only thing that can catch either.
 recheck="$(run_gh pr view "$pr" --repo "$repo" \
     --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus)" ||
     indeterminate fetch-failed "cannot re-read the PR immediately before the verdict"
 jq -e '.state == "OPEN"' <<<"$recheck" >/dev/null ||
     fail_condition pr-not-open "the PR left the OPEN state while the gate was reading it"
-jq -e '.isDraft == true' <<<"$recheck" >/dev/null ||
-    fail_condition pr-not-draft "the PR was promoted while the gate was reading it"
+if [ "$require_draft" = 1 ]; then
+    jq -e '.isDraft == true' <<<"$recheck" >/dev/null ||
+        fail_condition pr-not-draft "the PR was promoted while the gate was reading it"
+fi
 jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
     fail_condition head-moved "PR head changed while the gate was reading it"
 [ "$(jq -r '.reviewDecision // ""' <<<"$recheck")" != "CHANGES_REQUESTED" ] ||
@@ -600,16 +629,18 @@ UNKNOWN | "")
     ;;
 esac
 
-# 11. Checks, one more time, as the very last evidence read: a rerun or a
-# late-triggered workflow can appear on this immutable commit while the
-# fetches above ran, checks are outside the content fingerprint by design,
-# and a pass printed over red CI is exactly the failure this script exists
-# to make impossible.
-evaluate_checks
-
 compute_fingerprint
+if [ "$require_draft" = 1 ]; then
+    verdict_condition=ready
+    verdict_detail="every mechanically checkable readiness condition holds; ready_for_review-only automation and the Codex Auto-review knobs remain human-verified prerequisites"
+else
+    verdict_condition=audit
+    verdict_detail="every mechanically checkable condition except the draft requirement holds; this audits an existing promotion and never authorizes gh pr ready"
+fi
 jq -cn \
     --arg head "$head" \
     --arg fingerprint "$fingerprint" \
-    '{status:"pass",condition:"ready",head:$head,fingerprint:$fingerprint,
-      detail:"every mechanically checkable readiness condition holds; ready_for_review-only automation and the Codex Auto-review knobs remain human-verified prerequisites"}'
+    --arg condition "$verdict_condition" \
+    --arg detail "$verdict_detail" \
+    '{status:"pass",condition:$condition,head:$head,fingerprint:$fingerprint,
+      detail:$detail}'
