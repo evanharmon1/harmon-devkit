@@ -2196,11 +2196,22 @@ carry)
     esac
     [ "$base_name" = "$pr_base" ] ||
         die "--base-ref names $base_name but the PR's base is $pr_base; carry must be proved against the PR's own base"
+    # And the fingerprints are computed against the commit GITHUB reports for
+    # that base, not whatever the local ref happens to point at. A stale
+    # same-named ref — the base advanced after the documented fetch, or was
+    # never fetched — makes both fingerprints agree about a diff GitHub no
+    # longer has. The name check above proves intent; this proves the bytes.
+    pr_base_sha=$(printf '%s' "$pr_payload" | jq -r '.base.sha // empty') ||
+        die "cannot interpret the PR base commit"
+    valid_sha "$pr_base_sha" ||
+        die "the PR reports no usable base commit to fingerprint against"
+    git rev-parse --verify --quiet "$pr_base_sha^{commit}" >/dev/null ||
+        die "the PR's base commit $pr_base_sha is not in this checkout; fetch $pr_base and retry"
 
-    old_fingerprint=$(diff_fingerprint "$base_ref" "$state_head") ||
-        die "cannot compute the state head's diff against $base_ref (a SHA-256 tool is required)"
-    new_fingerprint=$(diff_fingerprint "$base_ref" "$new_head") ||
-        die "cannot compute --new-head's diff against $base_ref"
+    old_fingerprint=$(diff_fingerprint "$pr_base_sha" "$state_head") ||
+        die "cannot compute the state head's diff against $pr_base (a SHA-256 tool is required)"
+    new_fingerprint=$(diff_fingerprint "$pr_base_sha" "$new_head") ||
+        die "cannot compute --new-head's diff against $pr_base"
     [ -n "$old_fingerprint" ] && [ -n "$new_fingerprint" ] ||
         die "an empty diff has no identity to compare; the PR proposes no change against $base_ref"
     [ "$old_fingerprint" = "$new_fingerprint" ] ||
@@ -2214,6 +2225,7 @@ carry)
         --arg old "$state_head" \
         --arg new "$new_head" \
         --arg base "$base_ref" \
+        --arg base_sha "$pr_base_sha" \
         --arg diff_fingerprint "$old_fingerprint" \
         --arg carried_at "$carried_at" '
           .version = 2 |
@@ -2231,6 +2243,7 @@ carry)
           .timeout_min = null |
           .carries = ((.carries // []) + [{
             carried_from:$old,carried_to:$new,base_ref:$base,
+            base_sha:$base_sha,
             diff_fingerprint:$diff_fingerprint,carried_at:$carried_at
           }])
         ' "$state_file")

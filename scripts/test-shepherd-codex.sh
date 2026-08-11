@@ -2751,9 +2751,13 @@ carry_clean_cycle() {
     printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
     printf '%s\n' "$carry_new_head" >"${fixtures}/head"
     printf '%s\n' "$carry_new_head" >"${fixtures}/resolved-head"
+    # carry fingerprints against the commit GitHub reports for the base, so
+    # the fixture must report the real one — stamped last, after every other
+    # write to this file in this helper.
     jq -cn --argjson author "$pr_author_id" --arg head "$carry_new_head" \
+        --arg base_sha "$(git rev-parse carry-base)" \
         '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
-          base:{ref:"carry-base"}}' \
+          base:{ref:"carry-base",sha:$base_sha}}' \
         >"${fixtures}/pr.json"
 }
 
@@ -2954,6 +2958,11 @@ git merge -q --no-edit carry-pr
 git checkout -q carry-pr
 git merge -q --no-edit carry-base
 carry_empty_head="$(git rev-parse HEAD)"
+# GitHub would report the advanced base, so the fixture must too: the base
+# absorbed the PR's change, which is what leaves nothing proposed.
+jq --arg sha "$(git rev-parse carry-base)" '.base.sha = $sha' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
 run_carry --new-head "$carry_empty_head" --base-ref carry-base
 [ "$carry_rc" -eq 2 ] ||
     fail "an empty diff must refuse the carry, got rc=$carry_rc: $carry_out"
@@ -3038,6 +3047,21 @@ run_carry --new-head "$carry_new_head" --base-ref decoy-base
     fail "a non-PR base must refuse the carry, got rc=$carry_rc: $carry_out"
 printf '%s' "$carry_out" | grep -Fq "the PR's base" ||
     fail "a wrong-base refusal must name the PR's base: $carry_out"
+
+# The name check proves intent; only the SHA proves the bytes. A stale
+# same-named base ref makes both fingerprints agree about a diff GitHub no
+# longer has (devkit review round 4).
+echo "==> a base commit missing from the checkout refuses the carry"
+carry_setup
+carry_clean_cycle
+jq --arg sha "0123456789abcdef0123456789abcdef01234567" '.base.sha = $sha' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "an unfetched base commit must refuse the carry, got rc=$carry_rc: $carry_out"
+printf '%s' "$carry_out" | grep -Fq "not in this checkout" ||
+    fail "an unfetched-base refusal must say so: $carry_out"
 
 echo "==> a state without a recorded snapshot refuses the carry"
 carry_setup
