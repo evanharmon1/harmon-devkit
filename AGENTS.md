@@ -321,17 +321,20 @@ error silently reverts the lifecycle rather than fixing anything.
   before accepting the result or reporting green, re-check the cycle and
   re-read `headRefOid`; a changed head invalidates the result and starts
   a new current-head cycle.
-  One disposition the checker cannot express is settled in prose: a badged
-  finding stated **outside an inline thread** — in a top-level comment or in
-  a review's own body — has no reply linkage, so once it lands, no
-  adjudication can make that head's `check` come back clean: findings outrank
-  a later clean result on the same head, and the checker's settled set
-  reaches only inline comments. When every
-  such finding is adjudicated without a code change (declined with evidence,
-  or filed as follow-up work), record each disposition as a PR comment and
-  treat the cycle as **terminal with findings settled** for that head; the
-  readiness gate reads those recorded adjudications where a checker exit 0 is
-  unreachable. Any push starts a fresh cycle as usual.
+  A badged finding stated **outside an inline thread** — in a top-level
+  comment or in a review's own body — has no reply linkage, so the
+  reply-based adjudication path cannot reach it and findings outrank a later
+  clean result on the same head. Record its disposition with the checker's
+  `settle` subcommand: answer the finding on the PR as usual (fix it, decline
+  it with evidence, or file it), then `settle --surface comment|review --id N
+  --disposition declined|filed --note …`, adding `--covers <n>` where the
+  target states more than one finding. `check` then treats that finding as
+  answered and the cycle can reach terminal-clean, reported with a detail
+  naming the disposition. The record is durable and head-bound: it is
+  fingerprinted against the body it settled, so a finding Codex edits
+  afterwards blocks again, and any push starts a fresh cycle as usual.
+  Settling is not a substitute for answering — it records an adjudication a
+  human wrote, and the note is required for that reason.
   Shepherd is **externally driven** — CI results and other people's comments
   are its input, so it cannot manufacture a round on its own. A round is one
   fix push, or one no-change cycle where everything is answered and nothing

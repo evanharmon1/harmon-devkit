@@ -103,9 +103,22 @@ fi
 case "$endpoint" in
 users/*) file=actor.json ;;
 */reactions?per_page=100) file=reactions.pages.json ;;
-repos/*/issues/comments/*) file=trigger.json ;;
+# `settle` fetches one comment or one review by ID. A per-ID fixture answers
+# it when the case under test wrote one; otherwise this stays the trigger
+# comment, exactly as before settlement existed. `settle` against an ID with
+# no fixture is the missing-target case and must fail the way GitHub would.
+repos/*/issues/comments/*)
+    # A `missing-<id>` marker makes that one comment 404 the way GitHub would.
+    [ ! -f "$GH_FIXTURES/missing-${endpoint##*/}" ] || exit 95
+    file="comment-${endpoint##*/}.json"
+    [ -f "$GH_FIXTURES/$file" ] || file=trigger.json
+    ;;
 repos/*/issues/*/comments?per_page=100) file=comments.pages.json ;;
 repos/*/pulls/*/reviews?per_page=100) file=reviews.pages.json ;;
+repos/*/pulls/*/reviews/*)
+    file="review-${endpoint##*/}.json"
+    [ -f "$GH_FIXTURES/$file" ] || exit 95
+    ;;
 repos/*/pulls/*/comments?per_page=100) file=inline.pages.json ;;
 # The PR object, fetched only for its author identity when the head carries
 # inline findings. It must sort AFTER the sub-resource patterns above, which it
@@ -209,6 +222,8 @@ write_defaults() {
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
     rm -f "${fixtures}/slow-pr"
+    rm -f "${fixtures}"/comment-*.json "${fixtures}"/review-*.json
+    rm -f "${fixtures}"/missing-*
     : >"$log"
 }
 
@@ -2501,4 +2516,401 @@ set -e
 [ ! -f "$state" ] ||
     fail "a rejected leading-zero --timeout-min must not create state"
 
+# --------------------------------------------------------------------------
+# `settle` — dispositions for badged findings that live outside inline threads
+# (harmon-devkit#391). Fixtures are built ONCE per case and the listing is
+# derived from the single object with `[[.]]`, so the body and edit timestamp
+# `settle` fingerprints are byte-identical to the ones `check` re-reads. A
+# hand-written second copy would make a fingerprint mismatch look like a bug
+# in the code under test.
+# --------------------------------------------------------------------------
+
+# The timeout cases above leave the harness clock wherever they needed it;
+# everything below runs on the fixed 08:00 cycle clock again.
+request_time='2026-07-31T08:00:00Z'
+trigger_id=123
+
+run_settle() {
+    set +e
+    settle_out="$("$helper" settle --state "$state" --actor-id "$actor_id" \
+        "$@" 2>&1)"
+    settle_rc=$?
+    set -e
+}
+
+# A badged top-level conversation comment: a finding with no thread to reply
+# to, which is the whole reason `settle` exists.
+write_badged_comment() {
+    comment_prefix=${2:-${head_sha:0:10}}
+    jq -cn \
+        --argjson id "$1" \
+        --argjson actor "$actor_id" \
+        --arg login "$actor_login" \
+        --arg prefix "$comment_prefix" \
+        --arg updated "${3:-2026-07-31T08:00:02Z}" \
+        '{
+          id:$id,user:{id:$actor,login:$login},
+          created_at:"2026-07-31T08:00:02Z",updated_at:$updated,
+          issue_url:"https://api.github.com/repos/example/repo/issues/493",
+          body:("**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the rollback path loses data**\n\n**Reviewed commit:** `" +
+            $prefix + "`")
+        }' >"${fixtures}/comment-${1}.json"
+    jq -c '[[.]]' "${fixtures}/comment-${1}.json" \
+        >"${fixtures}/comments.pages.json"
+}
+
+# A badged review BODY: the other unreachable surface — its finding is stated
+# in the body itself, where no inline comment exists to carry a reply.
+write_badged_review() {
+    jq -cn \
+        --argjson id "$1" \
+        --argjson actor "$actor_id" \
+        --arg login "$actor_login" \
+        --arg head "${2:-$head_sha}" \
+        '{
+          id:$id,user:{id:$actor,login:$login},
+          submitted_at:"2026-07-31T08:00:04Z",
+          commit_id:$head,
+          body:"### Codex Review\n\n**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the rollback path also loses data**"
+        }' >"${fixtures}/review-${1}.json"
+    jq -c '[[.]]' "${fixtures}/review-${1}.json" \
+        >"${fixtures}/reviews.pages.json"
+}
+
+echo "==> a settled top-level finding stops blocking the cycle"
+new_cycle
+write_badged_comment 77
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface comment --id 77 --disposition declined \
+    --note "bounded by the attempt deadline; reasoning posted on the PR"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+[ "$(jq -r '[.settled[] | select(.surface == "comment" and .id == 77)] | length' \
+    "$state")" = "1" ] ||
+    fail "the disposition was not recorded: $(jq -c .settled "$state")"
+[ "$(jq -r '.settled[0].disposition' "$state")" = "declined" ] ||
+    fail "the disposition was not preserved: $(jq -c .settled "$state")"
+[ -n "$(jq -r '.settled[0].content_fingerprint // empty' "$state")" ] ||
+    fail "the disposition carries no fingerprint: $(jq -c .settled "$state")"
+# Terminal-clean on the strength of the disposition ALONE. Reported with its
+# own detail because a human wrote the reasoning, exactly as with the inline
+# adjudicated path. Before PR #410's shepherd round this fell through to the
+# bounded wait and escalated, which is the deadlock `settle` exists to end.
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+# The detail names the disposition that was APPLIED, not merely that one
+# existed: "declined" and "filed" mean different things to whoever reads this
+# result (PR #424 shepherd round 4).
+printf '%s' "$check_out" | jq -e '.detail | test("settled: declined")' >/dev/null ||
+    fail "a disposition-clean must name the disposition applied: $check_out"
+
+echo "==> a settled review body stops blocking the cycle"
+new_cycle
+write_badged_review 120
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface review --id 120 --disposition filed \
+    --note "filed as follow-up example/repo#900"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+# The 👍 proves the settled body is out of the way of a real clean verdict,
+# not merely that the review stopped reporting findings.
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        user:{id:$id,login:$login},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+# A disposition settles the finding it was recorded against, and nothing more:
+# the review body stops reporting findings, and the cycle is terminal on the
+# disposition alone.
+echo "==> settling a finding edited since the disposition blocks again"
+# Codex edits a finding in place when it revises it. The disposition answered
+# the earlier text, so it stops applying — and the entry is kept, not deleted,
+# because what was decided about that text is still a record worth having.
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+# Both fixtures move together: the single-comment endpoint is what `settle`
+# re-fetches, the list is what `check` classifies, and GitHub would of course
+# report one edit on both.
+jq -c '.updated_at = "2026-07-31T08:00:45Z"' \
+    "${fixtures}/comment-77.json" >"${fixtures}/comment-77.next"
+mv "${fixtures}/comment-77.next" "${fixtures}/comment-77.json"
+jq -c '[[.]]' "${fixtures}/comment-77.json" >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+[ "$(jq -r '.settled | length' "$state")" = "1" ] ||
+    fail "an invalidated disposition must be kept, not deleted: $(jq -c .settled "$state")"
+# Re-settling against the new text keeps the superseded entry too: the record
+# of what was decided about the old text survives, and only the entry whose
+# fingerprint matches the body as it stands now is honoured
+# (PR #424 shepherd round 3).
+run_settle --surface comment --id 77 --disposition declined \
+    --note "declined again, against the revised text"
+[ "$settle_rc" -eq 0 ] || fail "re-settling should have recorded: $settle_out"
+[ "$(jq -r '.settled | length' "$state")" = "2" ] ||
+    fail "re-settling must keep the superseded entry: $(jq -c .settled "$state")"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> a settled review body does not settle its own inline findings"
+# The two sets compose. Settling the body says nothing about the inline
+# comments hanging off the same review, which keep the reply-based path.
+new_cycle
+write_badged_review 120
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_settle --surface review --id 120 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> settle refuses a finding about another head"
+new_cycle
+previous_head="$(git rev-parse HEAD~1)"
+write_badged_comment 77 "${previous_head:0:10}"
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a wrong-head disposition should fail closed, got rc=$settle_rc: $settle_out"
+new_cycle
+write_badged_review 120 "$previous_head"
+run_settle --surface review --id 120 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a wrong-head review disposition should fail closed, got rc=$settle_rc: $settle_out"
+
+echo "==> settle refuses an unbadged target"
+# Without a badge there is no finding to dispose of, and settling whatever
+# else the surface carries would suppress a verdict rather than answer one.
+new_cycle
+jq -cn \
+    --argjson actor "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '{
+      id:77,user:{id:$actor,login:$login},
+      created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
+      issue_url:"https://api.github.com/repos/example/repo/issues/493",
+      body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + $prefix + "`")
+    }' >"${fixtures}/comment-77.json"
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "an unbadged disposition should fail closed, got rc=$settle_rc: $settle_out"
+
+echo "==> settle refuses a target the pinned actor did not write"
+new_cycle
+jq -cn \
+    --argjson outsider "$outsider_id" \
+    --arg prefix "${head_sha:0:10}" \
+    '{
+      id:77,user:{id:$outsider,login:"bystander"},
+      created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
+      issue_url:"https://api.github.com/repos/example/repo/issues/493",
+      body:("**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the rollback path loses data**\n\n**Reviewed commit:** `" + $prefix + "`")
+    }' >"${fixtures}/comment-77.json"
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a foreign-author disposition should fail closed, got rc=$settle_rc: $settle_out"
+
+echo "==> settle refuses a target that does not exist"
+new_cycle
+: >"${fixtures}/missing-77"
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a missing comment should fail closed, got rc=$settle_rc: $settle_out"
+rm -f "${fixtures}/missing-77"
+new_cycle
+run_settle --surface review --id 999 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a missing review should fail closed, got rc=$settle_rc: $settle_out"
+
+echo "==> settle rejects an unknown surface or disposition"
+new_cycle
+write_badged_comment 77
+run_settle --surface issue --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "an unknown surface should fail closed, got rc=$settle_rc: $settle_out"
+run_settle --surface comment --id 77 --disposition ignored --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "an unknown disposition should fail closed, got rc=$settle_rc: $settle_out"
+
+echo "==> a version-1 state is read and rewritten as version 2"
+new_cycle
+[ "$(jq -r .version "$state")" = "2" ] ||
+    fail "reserve must write version 2: $(jq -c . "$state")"
+write_badged_comment 77
+jq 'del(.settled) | .version = 1' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+# Read-compatibility first: a v1 state still drives a full classification.
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+[ "$(jq -r .version "$state")" = "2" ] ||
+    fail "a write must upgrade the state to version 2: $(jq -c . "$state")"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> a state version this helper does not understand fails closed"
+new_cycle
+jq '.version = 3' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+future_out="$("$helper" show --state "$state" 2>&1)"
+future_rc=$?
+set -e
+[ "$future_rc" -eq 2 ] ||
+    fail "a version-3 state should fail closed, got rc=$future_rc: $future_out"
+set +e
+"$helper" check --state "$state" --actor-id "$actor_id" \
+    --now '2026-07-31T08:01:00Z' >/dev/null 2>&1
+future_check_rc=$?
+set -e
+[ "$future_check_rc" -eq 2 ] ||
+    fail "check on a version-3 state should fail closed, got rc=$future_check_rc"
+
+# A scalar where an object belongs must fail closed with the documented exit 2,
+# not kill jq mid-classification with its own exit 5 (PR #410 shepherd round 3).
+echo "==> a malformed settled entry fails closed rather than crashing"
+new_cycle
+jq '.settled = [1]' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check '2026-07-31T08:01:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "a scalar settled entry must exit 2, got rc=$check_rc: $check_out"
+
+# A target can hold more than one finding, and the entry is keyed by object ID:
+# settling one would otherwise mark the whole body answered. `--covers` makes
+# the whole-body claim explicit (devkit settle challenge round 1).
+echo "==> settling a multi-finding target requires an explicit coverage count"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '[[
+      {
+        id:78,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:("**Reviewed commit:** `" + $prefix + "`\n\n**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the first finding**\n\n**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  the second finding**")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '{
+      id:78,user:{id:$id,login:$login},
+      created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
+      issue_url:"https://api.github.com/repos/example/repo/issues/493",
+      body:("**Reviewed commit:** `" + $prefix + "`\n\n**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the first finding**\n\n**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  the second finding**")
+    }' >"${fixtures}/comment-78.json"
+run_settle --surface comment --id 78 --disposition declined --note "answered"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a multi-finding target must demand --covers, got rc=$settle_rc: $settle_out"
+printf '%s' "$settle_out" | grep -Fq -- "--covers" ||
+    fail "the refusal must name the flag and the count: $settle_out"
+
+echo "==> a wrong coverage count is refused"
+run_settle --surface comment --id 78 --disposition declined --note "answered" \
+    --covers 1
+[ "$settle_rc" -eq 2 ] ||
+    fail "a mismatched --covers must refuse, got rc=$settle_rc: $settle_out"
+
+echo "==> the matching coverage count settles the whole body"
+run_settle --surface comment --id 78 --disposition declined --note "both answered" \
+    --covers 2
+[ "$settle_rc" -eq 0 ] || fail "a matching --covers should settle: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+# A settlement is the record that a human adjudicated a finding: an entry
+# missing its disposition or note is no record at all, and honouring one would
+# let `check` report clean with nothing behind it (PR #424 shepherd round 1).
+echo "==> a settled entry missing its disposition fails closed"
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+jq 'del(.settled[0].disposition)' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check '2026-07-31T08:01:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "a dispositionless entry must exit 2, got rc=$check_rc: $check_out"
+
+echo "==> a settled entry with an empty note fails closed"
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+jq '.settled[0].note = ""' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check '2026-07-31T08:01:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "an empty-note entry must exit 2, got rc=$check_rc: $check_out"
+
+echo "==> a settled entry with an unknown surface fails closed"
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+jq '.settled[0].surface = "elsewhere"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check '2026-07-31T08:01:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "an unknown-surface entry must exit 2, got rc=$check_rc: $check_out"
+
+# The rendered badge Codex actually posts carries the severity TWICE — alt text
+# and URL — so a token scan reported two findings for one and demanded
+# `--covers 2` for the ordinary single-finding case (PR #424 shepherd round 2).
+echo "==> one rendered badge counts as one finding, no --covers needed"
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "answered"
+[ "$settle_rc" -eq 0 ] ||
+    fail "a single rendered badge must settle without --covers: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+# A retry against UNCHANGED text — after a first invocation whose result was
+# lost — must replace rather than accumulate: two entries with the same
+# fingerprint would be two contradictory current decisions, and repeated
+# retries would grow the state forever (PR #424 shepherd round 4).
+echo "==> re-settling unchanged text replaces rather than accumulates"
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "first"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+run_settle --surface comment --id 77 --disposition filed --note "filed as example/repo#901"
+[ "$settle_rc" -eq 0 ] || fail "re-settling should have recorded: $settle_out"
+[ "$(jq -r '.settled | length' "$state")" = "1" ] ||
+    fail "unchanged text must not accumulate entries: $(jq -c .settled "$state")"
+[ "$(jq -r '.settled[0].disposition' "$state")" = "filed" ] ||
+    fail "the retry's disposition must win: $(jq -c .settled "$state")"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+printf '%s' "$check_out" | jq -e '.detail | test("settled: filed")' >/dev/null ||
+    fail "the detail must name the surviving disposition: $check_out"
+# Last line on purpose: every case above must have run for this to print.
 echo "shepherd Codex cloud-review classifier: PASS"
