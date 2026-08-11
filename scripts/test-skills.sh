@@ -5509,6 +5509,39 @@ if [ "$jinjacomment_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 on a default-delimiter jinja comment in _skip_if_exists (got $jinjacomment_rc)"
 fi
+# A directory glob whose final component is a bare `*`. git ignores everything
+# beneath a directory it excluded, so `docs/x/y` matches `docs/*`; pathspec
+# stops at `docs/x`, leaving `docs/x/y` under copier's management. Refused
+# narrowly — `docs/`, `docs`, `docs/**`, `docs/*.md` and basename globs all
+# agree between the two matchers and are still accepted.
+dt_skip_decl_variant "$TMPROOT/diff-template-dirglob-source" \
+    '_skip_if_exists:' '  - "docs/*"'
+dirglob_rc=0
+dirglob_out="$(HARMON_INIT="$TMPROOT/diff-template-dirglob-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || dirglob_rc=$?
+if [ "$dirglob_rc" -eq 2 ]; then
+    ok "diff-template exits 2 on a _skip_if_exists pattern ending in /*"
+else
+    bad "diff-template exits 2 on a _skip_if_exists pattern ending in /* (got $dirglob_rc)"
+fi
+if printf '%s\n' "$dirglob_out" |
+    grep -qF "FAIL: _skip_if_exists pattern ending in '/*' is not supported"; then
+    ok "diff-template names the divergent directory glob it refuses"
+else
+    bad "diff-template names the divergent directory glob it refuses"
+fi
+# The neighbouring shapes are NOT refused: `docs/**` matches identically in both
+# matchers, so a declaration using it must still classify rather than abort.
+dt_skip_decl_variant "$TMPROOT/diff-template-globstar-source" \
+    '_skip_if_exists:' '  - "docs/**"'
+globstar_rc=0
+globstar_out="$(HARMON_INIT="$TMPROOT/diff-template-globstar-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || globstar_rc=$?
+if [ "$globstar_rc" -ne 2 ]; then
+    ok "diff-template still accepts _skip_if_exists globs that both matchers agree on"
+else
+    bad "diff-template still accepts _skip_if_exists globs that both matchers agree on: $globstar_out"
+fi
 # Non-ASCII is refused for the Unicode-normalization half of the same problem:
 # copier NFD-normalizes patterns, git normalizes nothing, and the filesystem has
 # opinions of its own.

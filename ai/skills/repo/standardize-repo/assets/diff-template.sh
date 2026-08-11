@@ -962,6 +962,23 @@ if [ "$skip_decl_available" -eq 1 ]; then
             echo "  refusing to continue: copier NFD-normalizes patterns and git does not, so the two matchers would disagree" >&2
             exit 2
             ;;
+        *'/*' | *'/*/')
+            # A pattern whose FINAL component is a bare `*` under a directory —
+            # `foo/*`. git ignores everything beneath a directory it excluded,
+            # so `foo/x/y` matches; pathspec matches `foo/x` and stops, so
+            # copier still manages `foo/x/y`. Handing that file OWNED would hide
+            # drift in content copier really does rewrite.
+            #
+            # Refused NARROWLY, on measured behavior rather than caution: every
+            # other shape checked agrees between the two matchers, including
+            # `foo/`, `foo`, `docs/**`, `foo/*.md`, `*/x`, `foo/bar*`, a bare
+            # `*`, and every anchored path and basename glob harmon-init
+            # actually uses. Widening this would refuse declarations that
+            # classify correctly today.
+            echo "FAIL: _skip_if_exists pattern ending in '/*' is not supported: $skip_decl_pattern" >&2
+            echo "  refusing to continue: git propagates it to deeper descendants and copier's matcher does not" >&2
+            exit 2
+            ;;
         '!'*)
             echo "FAIL: negated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
             echo "  refusing to continue: git cannot re-include beneath an excluded directory, so this evaluator would disagree with copier" >&2
