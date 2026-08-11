@@ -5494,6 +5494,60 @@ if printf '%s\n' "$negskip_out" |
 else
     bad "diff-template names the negated _skip_if_exists pattern it refuses"
 fi
+# Jinja's DEFAULT comment delimiter, not harmon-init's `[#`. The declaration is
+# read from whatever template the answers point at, and a comment renders away
+# to nothing — so matching the raw pattern would report a declared path as
+# gating DRIFT, the opposite direction from the other refusals but the same
+# defect: this evaluator disagreeing with copier's.
+dt_skip_decl_variant "$TMPROOT/diff-template-jinjacomment-source" \
+    '_skip_if_exists:' '  - "{# note #}CHANGELOG.md"'
+jinjacomment_rc=0
+jinjacomment_out="$(HARMON_INIT="$TMPROOT/diff-template-jinjacomment-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || jinjacomment_rc=$?
+if [ "$jinjacomment_rc" -eq 2 ]; then
+    ok "diff-template exits 2 on a default-delimiter jinja comment in _skip_if_exists"
+else
+    bad "diff-template exits 2 on a default-delimiter jinja comment in _skip_if_exists (got $jinjacomment_rc)"
+fi
+# Non-ASCII is refused for the Unicode-normalization half of the same problem:
+# copier NFD-normalizes patterns, git normalizes nothing, and the filesystem has
+# opinions of its own.
+dt_skip_decl_variant "$TMPROOT/diff-template-unicodeskip-source" \
+    '_skip_if_exists:' '  - "CHANGELÖG.md"'
+unicodeskip_rc=0
+unicodeskip_out="$(HARMON_INIT="$TMPROOT/diff-template-unicodeskip-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || unicodeskip_rc=$?
+if [ "$unicodeskip_rc" -eq 2 ]; then
+    ok "diff-template exits 2 on a non-ASCII _skip_if_exists pattern"
+else
+    bad "diff-template exits 2 on a non-ASCII _skip_if_exists pattern (got $unicodeskip_rc)"
+fi
+if printf '%s\n' "$unicodeskip_out" |
+    grep -qF "FAIL: non-ASCII _skip_if_exists pattern is not supported"; then
+    ok "diff-template names the non-ASCII _skip_if_exists pattern it refuses"
+else
+    bad "diff-template names the non-ASCII _skip_if_exists pattern it refuses"
+fi
+# CASE. `git init` records core.ignoreCase=true on a default macOS volume and
+# git's ignore matcher honors it, while copier's PathSpec is case-sensitive — so
+# a lowercase declaration must NOT exempt the rendered CHANGELOG.md, or a file
+# copier really will rewrite would be filed as the repo's property. This case
+# fails on macOS without the evaluator's explicit core.ignoreCase=false.
+dt_skip_decl_variant "$TMPROOT/diff-template-caseskip-source" \
+    '_skip_if_exists:' '  - changelog.md'
+caseskip_rc=0
+caseskip_out="$(HARMON_INIT="$TMPROOT/diff-template-caseskip-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || caseskip_rc=$?
+if [ "$caseskip_rc" -eq 1 ]; then
+    ok "diff-template matches _skip_if_exists case-sensitively, as copier does"
+else
+    bad "diff-template matches _skip_if_exists case-sensitively, as copier does (got $caseskip_rc)"
+fi
+if printf '%s\n' "$caseskip_out" | grep -qF "OWNED    CHANGELOG.md"; then
+    bad "diff-template grants no OWNED exemption on a case-mismatched declaration"
+else
+    ok "diff-template grants no OWNED exemption on a case-mismatched declaration"
+fi
 dt_skip_decl_variant "$TMPROOT/diff-template-jinjaskip-source" \
     '_skip_if_exists:' '  - "[[ project_name ]].code-workspace"'
 jinjaskip_rc=0

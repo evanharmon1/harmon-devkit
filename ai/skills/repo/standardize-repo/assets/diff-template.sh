@@ -949,12 +949,32 @@ if [ "$skip_decl_available" -eq 1 ]; then
             exit 2
         }
         case "$skip_decl_pattern" in
+        *[!\ -~]*)
+            # NON-ASCII. copier NFD-normalizes each pattern before matching
+            # while leaving the rendered path as the filesystem produced it, and
+            # macOS hands back its own normalization; git normalizes neither.
+            # Reproducing that exactly would mean reimplementing pathspec, and
+            # approximating it would silently mis-file an accented path in
+            # either direction. Refused for the same reason as the two shapes
+            # below — harmon-init's list is pure ASCII, so this costs nothing
+            # today and cannot rot into a wrong answer tomorrow.
+            echo "FAIL: non-ASCII _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
+            echo "  refusing to continue: copier NFD-normalizes patterns and git does not, so the two matchers would disagree" >&2
+            exit 2
+            ;;
         '!'*)
             echo "FAIL: negated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
             echo "  refusing to continue: git cannot re-include beneath an excluded directory, so this evaluator would disagree with copier" >&2
             exit 2
             ;;
-        *'[['* | *'[%'* | *'[#'* | *'{{'* | *'{%'*)
+        *'[['* | *'[%'* | *'[#'* | *'{{'* | *'{%'* | *'{#'*)
+            # Both delimiter sets: harmon-init's `_envops` (`[[`/`[%`/`[#`) and
+            # jinja's defaults (`{{`/`{%`/`{#`), because the declaration is read
+            # from whatever template the answers point at, not only from this
+            # one. `{#` was missing and is the reason this list is enumerated
+            # rather than guessed at: a comment delimiter renders away to
+            # nothing, so the raw pattern would have been matched literally and
+            # the path reported as gating DRIFT instead of OWNED.
             echo "FAIL: templated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
             echo "  refusing to continue: matching it unrendered would classify the wrong paths" >&2
             exit 2
@@ -982,11 +1002,22 @@ fi
 # Does the template's own declaration say the REPO owns this rendered path? A
 # baseline that declares nothing answers "no" to every path, which is precisely
 # the pre-issue-359 behavior — reported once by the note above, not per path.
+#
+# `core.ignoreCase=false`, and ONLY here. `git init` records `core.ignoreCase =
+# true` on a default macOS volume, and git's ignore matcher honors it — so a
+# declaration of `CHANGELOG.md` would match a rendered `changelog.md` and hand
+# it the non-gating exemption, while copier's case-SENSITIVE PathSpec would
+# rewrite that file on the next update. The two render-ignore evaluators above
+# deliberately keep the machine's setting, because they answer "what would a
+# real clone on this machine ignore" and a real clone is case-insensitive here
+# too. This one answers "what did copier's matcher declare", so it has to be
+# pinned to copier's semantics rather than to git's host behavior.
 is_template_declared_owned() {
     [ "$skip_decl_available" -eq 1 ] || return 1
     ignore_probe_rc=0
     ignore_probe_err="$(
         git -C "$skip_decl_root" -c core.excludesFile=/dev/null \
+            -c core.ignoreCase=false \
             check-ignore -q --no-index -- "$1" 2>&1
     )" || ignore_probe_rc=$?
     ignore_probe_verdict "$ignore_probe_rc" \

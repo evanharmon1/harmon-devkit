@@ -2640,10 +2640,15 @@ it into a second, independently drifting copy of the instructions.
 **`OWNED` lines read the same way, and a vanished one is worse.** The class is
 presence-only for the same reason, so note the §1 `OWNED` paths too and confirm
 each is still listed afterwards. A `CHANGELOG.md` or `.release-please-manifest.json`
-that stopped diverging means the repo's release state was replaced by the
-template's seed — copier is supposed to make that impossible (`_skip_if_exists`
-freezes the path), so the line disappearing is evidence the freeze did not hold
-and the restore is urgent rather than cosmetic.
+that stopped diverging is a **prompt to check**, not a verdict. Copier is
+supposed to make a clobber impossible here (`_skip_if_exists` freezes the path),
+so if one happened the restore is urgent — but a vanished line has an innocent
+cause too: a newer template seed can simply have caught up with the repo's
+content (a release-manifest seed that now names the version the repo is on), and
+then the render compares equal although the freeze worked perfectly. Diff the
+file against its pre-update content (`git show HEAD:<path>`) before treating it
+as a clobber; the destination changing is what makes it one, not the line
+disappearing.
 
 **Heavily-forked files: take `--ours` and re-apply the new bits.** When a file is
 *heavily* customized (a forked `Taskfile.yml`, a bespoke `status.sh`), copier's
