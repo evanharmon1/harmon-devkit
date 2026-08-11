@@ -2598,8 +2598,11 @@ run_settle --surface comment --id 77 --disposition declined \
 # bounded wait and escalated, which is the deadlock `settle` exists to end.
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
-printf '%s' "$check_out" | jq -e '.detail | test("disposition")' >/dev/null ||
-    fail "a disposition-clean must name its provenance: $check_out"
+# The detail names the disposition that was APPLIED, not merely that one
+# existed: "declined" and "filed" mean different things to whoever reads this
+# result (PR #424 shepherd round 4).
+printf '%s' "$check_out" | jq -e '.detail | test("settled: declined")' >/dev/null ||
+    fail "a disposition-clean must name the disposition applied: $check_out"
 
 echo "==> a settled review body stops blocking the cycle"
 new_cycle
@@ -2889,5 +2892,25 @@ run_settle --surface comment --id 77 --disposition declined --note "answered"
     fail "a single rendered badge must settle without --covers: $settle_out"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
+
+# A retry against UNCHANGED text — after a first invocation whose result was
+# lost — must replace rather than accumulate: two entries with the same
+# fingerprint would be two contradictory current decisions, and repeated
+# retries would grow the state forever (PR #424 shepherd round 4).
+echo "==> re-settling unchanged text replaces rather than accumulates"
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "first"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+run_settle --surface comment --id 77 --disposition filed --note "filed as example/repo#901"
+[ "$settle_rc" -eq 0 ] || fail "re-settling should have recorded: $settle_out"
+[ "$(jq -r '.settled | length' "$state")" = "1" ] ||
+    fail "unchanged text must not accumulate entries: $(jq -c .settled "$state")"
+[ "$(jq -r '.settled[0].disposition' "$state")" = "filed" ] ||
+    fail "the retry's disposition must win: $(jq -c .settled "$state")"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+printf '%s' "$check_out" | jq -e '.detail | test("settled: filed")' >/dev/null ||
+    fail "the detail must name the surviving disposition: $check_out"
 # Last line on purpose: every case above must have run for this to print.
 echo "shepherd Codex cloud-review classifier: PASS"

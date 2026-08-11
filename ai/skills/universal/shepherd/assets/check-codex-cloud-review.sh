@@ -1169,10 +1169,13 @@ check)
     jq -r '
           (.settled // [])[] |
           select((.id | type) == "number") |
-          [(.surface // ""), (.id | tostring), (.content_fingerprint // "")] |
+          [(.surface // ""), (.id | tostring), (.content_fingerprint // ""),
+           (.disposition // "")] |
           @tsv
         ' "$state_file" >"$settled_list"
-    while IFS='	' read -r settled_surface settled_id settled_fingerprint; do
+    applied_dispositions=""
+    while IFS='	' read -r settled_surface settled_id settled_fingerprint \
+        settled_disposition; do
         [ -n "$settled_surface" ] || continue
         case "$settled_surface" in
         comment) settled_evidence="$workdir/comments.json" ;;
@@ -1190,6 +1193,11 @@ check)
             jq -r '.updated_at // .submitted_at // ""')
         [ "$(content_fingerprint "$settled_body" "$settled_edited")" = \
             "$settled_fingerprint" ] || continue
+        case "$applied_dispositions" in
+        *"$settled_disposition"*) ;;
+        "") applied_dispositions=$settled_disposition ;;
+        *) applied_dispositions="$applied_dispositions and $settled_disposition" ;;
+        esac
         case "$settled_surface" in
         comment)
             disposed_comments=$(printf '%s' "$disposed_comments" |
@@ -1882,7 +1890,10 @@ check)
             emit pending "an empty review shell is still unresolved for this head"
             exit 11
         fi
-        emit clean "current-head non-thread findings are all settled by recorded dispositions"
+        # The detail names the DISPOSITIONS actually applied, not just that
+        # some existed: "declined" and "filed" mean different things to
+        # whoever reads this result, and a mixture means both happened.
+        emit clean "current-head non-thread findings are all settled: ${applied_dispositions:-recorded dispositions}"
         exit 0
     fi
 
@@ -2044,14 +2055,18 @@ settle)
         --arg fingerprint "$settle_fingerprint" \
         --arg settled_at "$settled_at" '
           .version = 2 |
-          # APPENDED, never replaced. `check` honours only the entry whose
-          # fingerprint matches the body as it stands now, so a superseded
-          # disposition is inert without being erased — and erasing it would
-          # destroy the record of what was decided about the earlier text,
-          # which is exactly what SKILL.md promises is kept. The list grows
-          # only when Codex edits a finding, which is rare and bounded.
+          # Keyed by (surface, id, FINGERPRINT). Re-settling the same text
+          # replaces its entry — a retry after a lost result must not leave
+          # two contradictory current decisions, nor grow the list on every
+          # attempt. Re-settling text Codex has since EDITED appends, because
+          # the old entry has a different fingerprint: it goes inert (`check`
+          # honours only the entry matching the body as it stands) while
+          # surviving as the record of what was decided about the earlier
+          # text, which is what SKILL.md promises is kept.
           .settled = (
-            (.settled // []) +
+            ((.settled // []) |
+              map(select((.surface != $surface) or (.id != $id) or
+                         (.content_fingerprint != $fingerprint)))) +
             [{
               surface:$surface,id:$id,disposition:$disposition,note:$note,
               content_fingerprint:$fingerprint,settled_at:$settled_at
