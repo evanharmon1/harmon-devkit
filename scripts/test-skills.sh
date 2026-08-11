@@ -6034,6 +6034,57 @@ else
 fi
 git -C "$DT_TARGET" reset -q HEAD -- AGENTS.md
 git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
+
+# The CO-OWNED class's value is the INVERSE signal — a line that DISAPPEARS
+# means the repo's prose went byte-identical to the template's. A clobber that
+# is STAGED but not yet committed reads as the healthy state: the worktree still
+# diverges, so the line still prints, while the next commit removes the prose.
+# The repo's committed AGENTS.md carries customization here, the index is reset
+# to the template's bytes, and the worktree keeps the customization.
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'committed-customization' \
+    >"$DT_TARGET/AGENTS.md"
+git -C "$DT_TARGET" add -- AGENTS.md
+git_commit_all "$DT_TARGET" "repo customizes its agent prose"
+cp "$DT_TEMPLATE/template/AGENTS.md" "$DT_TARGET/AGENTS.md"
+git -C "$DT_TARGET" add -- AGENTS.md
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'committed-customization' \
+    >"$DT_TARGET/AGENTS.md"
+if staged_clobber_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a staged clobber of co-owned prose (expected non-zero exit)"
+elif printf '%s\n' "$staged_clobber_out" |
+    grep -qF "DRIFT    AGENTS.md  (staged copy is byte-identical to the template"; then
+    ok "diff-template gates a staged clobber of co-owned prose"
+else
+    bad "diff-template gates a staged clobber of co-owned prose (diagnostic missing)"
+fi
+if printf '%s\n' "$staged_clobber_out" | grep -qF "CO-OWNED AGENTS.md"; then
+    bad "diff-template replaces the co-owned line when the clobber is staged"
+else
+    ok "diff-template replaces the co-owned line when the clobber is staged"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- AGENTS.md
+git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
+
+# The control that keeps that gate honest: with NOTHING staged, an index equal
+# to the render just means the repo's committed copy is the template's while
+# somebody edits locally. No customization is at risk, so this stays the
+# informational CO-OWNED line rather than a clobber warning.
+git -C "$DT_TARGET" checkout -q HEAD~1 -- AGENTS.md
+git -C "$DT_TARGET" add -- AGENTS.md
+git_commit_all "$DT_TARGET" "repo returns to the template's agent prose"
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'unstaged-local-edit' \
+    >"$DT_TARGET/AGENTS.md"
+if unstaged_edit_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template reports no clobber when nothing is staged"
+else
+    bad "diff-template reports no clobber when nothing is staged: $unstaged_edit_out"
+fi
+if printf '%s\n' "$unstaged_edit_out" | grep -qF "staged copy is byte-identical"; then
+    bad "diff-template calls an unstaged local edit no clobber"
+else
+    ok "diff-template calls an unstaged local edit no clobber"
+fi
+git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
 expect_ok "diff-template returns to a clean baseline after the staged-state cases" \
     env HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET"
 

@@ -889,6 +889,7 @@ same_as_render() {
 index_content_divergent=0
 index_mode_divergent=0
 index_structural=0
+index_present=0
 index_note=""
 index_diverges() {
     idx_render="$1"  # path inside the render
@@ -897,6 +898,7 @@ index_diverges() {
     index_content_divergent=0
     index_mode_divergent=0
     index_structural=0
+    index_present=0
     index_note=""
     [ "$target_owns_worktree" -eq 1 ] || return 1
     case "$idx_variant" in
@@ -904,6 +906,10 @@ index_diverges() {
     *) return 1 ;;
     esac
     idx_staged="$(index_variant "$idx_rel")" || return 1
+    # The staged copy EXISTS and was compared. Callers need that separately from
+    # the verdict: "no index entry" and "the staged copy matches the template"
+    # are the same return value here and mean opposite things one class over.
+    index_present=1
     if [ ! -L "$idx_render" ] && [ ! -L "$idx_staged" ]; then
         idx_render_exec=0
         idx_staged_exec=0
@@ -930,6 +936,34 @@ index_diverges() {
     compare_note="$idx_saved_note"
     compare_structural="$idx_saved_structural"
     [ "$index_content_divergent" -eq 1 ] || [ "$index_mode_divergent" -eq 1 ]
+}
+
+# Is anything staged for this path — that is, does the index differ from HEAD?
+# `diff --cached --quiet` is three-valued like check-ignore: 0 = nothing staged,
+# 1 = something staged, anything else = the probe failed, which aborts rather
+# than being guessed at.
+#
+# This is what separates a staged CLOBBER from ordinary unstaged editing. Both
+# states show "index matches the template, worktree does not", and they mean
+# opposite things: if nothing is staged, the repo's committed copy simply IS the
+# template's and somebody is editing locally — no customization is at risk. If
+# something IS staged, the index is about to replace whatever the repo had with
+# the template's bytes.
+has_staged_change() {
+    [ "$target_owns_worktree" -eq 1 ] || return 1
+    git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1 || return 1
+    staged_change_rc=0
+    staged_change_err="$(
+        git -C "$target" diff --cached --quiet HEAD -- "$1" 2>&1
+    )" || staged_change_rc=$?
+    case "$staged_change_rc" in
+    0) return 1 ;; # index matches HEAD — nothing staged
+    1) return 0 ;; # something is staged for this path
+    esac
+    echo "FAIL: cannot evaluate the staged change for '$1' (git exit $staged_change_rc)" >&2
+    [ -z "$staged_change_err" ] || printf '  %s\n' "$staged_change_err" >&2
+    echo "  refusing to continue: an unevaluated index would hide a staged clobber" >&2
+    exit 2
 }
 
 # Print a drifting file's body under --show, or a one-line note when the path is
@@ -1342,6 +1376,23 @@ while IFS= read -r abs; do
         # Content classification: a structural (symlink) mismatch always gates,
         # then the two presence-only classes, then ordinary uncurated drift.
         if [ "$compare_structural" -eq 0 ] && is_co_owned "$g"; then
+            # The CO-OWNED contract's value is the INVERSE signal: a line that
+            # DISAPPEARS means the repo's copy went byte-identical to the
+            # template's, i.e. the customizations were clobbered. A clobber
+            # STAGED but not yet committed reads as the healthy state — the
+            # worktree still diverges, so the line still prints — while the next
+            # commit removes the prose. The index says which it is: the staged
+            # copy matches the template AND something is actually staged for the
+            # path. Without that second half this would fire for a repo whose
+            # committed copy simply is the template's while somebody edits
+            # locally, where nothing is at risk at all.
+            if [ "$index_present" -eq 1 ] && [ "$index_content_divergent" -eq 0 ] &&
+                [ "$index_mode_divergent" -eq 0 ] && has_staged_change "$rv_display"; then
+                echo "DRIFT    $rv_display  (staged copy is byte-identical to the template — the next commit clobbers the repo's customization)"
+                drift=1
+                uncurated_drift_count=$((uncurated_drift_count + 1))
+                continue
+            fi
             echo "CO-OWNED $rv_display  (template seeds it; repo owns the prose — diff withheld)"
             co_owned_count=$((co_owned_count + 1))
             continue
