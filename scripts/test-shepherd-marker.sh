@@ -158,32 +158,39 @@ if "$helper" "${test_tmp}/chain-red" CI-GREEN 2>/dev/null; then
 fi
 [ ! -f "${test_tmp}/pushed" ] || fail "a FAILED marker must block the write"
 
-echo "==> the documented moved-HEAD guard blocks the write after HEAD advances"
-# The chain form above proves the marker link; this proves the SHA guard —
-# commit A is gated, HEAD moves to commit B, and the documented chain must
-# refuse the write even though the marker file is green.
+echo "==> the documented SHA-refspec push ships the gated commit, not a moved HEAD"
+# The chain form above proves the marker link; this proves the refspec —
+# commit A is gated, HEAD moves to commit B, and the documented push
+# (`git push <remote> "$sha:<branch>"`) must deliver A. Comparing HEAD to
+# the gated SHA and then pushing HEAD would re-read the ref at push time
+# and ship B ungated; the refspec is what closes that window.
+guard_remote="${test_tmp}/guard-remote.git"
 guard_repo="${test_tmp}/guard-repo"
+git init -q --bare "$guard_remote"
 git init -q "$guard_repo"
 git -C "$guard_repo" config user.name "Marker Test"
 git -C "$guard_repo" config user.email "marker-test@example.invalid"
+git -C "$guard_repo" remote add origin "$guard_remote"
 git -C "$guard_repo" commit -q --allow-empty -m "gated commit"
 sha="$(git -C "$guard_repo" rev-parse HEAD)"
 t="CI-GREEN-${sha}-$$"
 printf 'gate output\n%s\n' "$t" >"${test_tmp}/guard-marker"
-rm -f "${test_tmp}/pushed"
-if [ "$(git -C "$guard_repo" rev-parse HEAD)" = "$sha" ] &&
-    "$helper" "${test_tmp}/guard-marker" "$t"; then
-    : >"${test_tmp}/pushed"
-fi
-[ -f "${test_tmp}/pushed" ] ||
-    fail "an unmoved HEAD with a green marker should allow the write"
 git -C "$guard_repo" commit -q --allow-empty -m "ungated commit"
-rm -f "${test_tmp}/pushed"
-if [ "$(git -C "$guard_repo" rev-parse HEAD)" = "$sha" ] &&
-    "$helper" "${test_tmp}/guard-marker" "$t"; then
-    : >"${test_tmp}/pushed"
+"$helper" "${test_tmp}/guard-marker" "$t" &&
+    git -C "$guard_repo" push -q origin "$sha:refs/heads/main" ||
+    fail "a green marker must allow the gated-SHA push"
+delivered="$(git -C "$guard_remote" rev-parse refs/heads/main)"
+[ "$delivered" = "$sha" ] ||
+    fail "the push must deliver the gated commit, got $delivered"
+[ "$(git -C "$guard_repo" rev-parse HEAD)" != "$sha" ] ||
+    fail "test setup error: HEAD was expected to have moved past the gated commit"
+printf 'gate output\nCI5-FAILED\n' >"${test_tmp}/guard-marker"
+git -C "$guard_repo" commit -q --allow-empty -m "second ungated commit"
+sha2="$(git -C "$guard_repo" rev-parse HEAD)"
+if "$helper" "${test_tmp}/guard-marker" "CI-GREEN-${sha2}-$$" 2>/dev/null; then
+    git -C "$guard_repo" push -q origin "$sha2:refs/heads/main"
 fi
-[ ! -f "${test_tmp}/pushed" ] ||
-    fail "a moved HEAD must block the write even with a green marker"
+[ "$(git -C "$guard_remote" rev-parse refs/heads/main)" = "$sha" ] ||
+    fail "a FAILED marker must keep the remote on the gated commit"
 
 echo "shepherd gate-then-push marker parser: PASS"

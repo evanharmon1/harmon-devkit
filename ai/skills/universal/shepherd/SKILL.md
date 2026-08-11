@@ -806,12 +806,12 @@ is optional in addition, never a substitute for per-thread replies.
   (`task ci`) before each push — actually run it and confirm exit 0, not
   just intend to; a fix that can't pass locally doesn't get pushed.
   Confirming exit 0 is mechanical: the push — like any external write
-  gated on a local check — chains only off the **gate's verdict**, either
-  in the same foreground chain — `sha="$(git rev-parse HEAD)"; task ci &&
-  [ "$(git rev-parse HEAD)" = "$sha" ] && git push …`, carrying the same
-  moved-HEAD guard as the marker form below, because another process
-  advancing HEAD while the gate runs would otherwise hand the push a
-  commit the gate never saw — or, when the gate
+  gated on a local check — chains only off the **gate's verdict**, and
+  what it pushes is the **gated commit itself**, never the mutable
+  `HEAD`. Capture the SHA before the gate and push that refspec — in the
+  same foreground chain,
+  `sha="$(git rev-parse HEAD)"; task ci && git push <remote> "$sha:<branch>" …`
+  — or, when the gate
   ran in the background and wrote its verdict as a marker line, off
   `"$skill_dir"/assets/require-marker.sh <file> <token>` (exit 0 only when
   the file's marker line equals the token). The parser proves what the
@@ -820,12 +820,16 @@ is optional in addition, never a substitute for per-thread replies.
   before the gate starts and carrying the SHA under test —
   `sha="$(git rev-parse HEAD)"; t="CI-GREEN-$sha-$$"; out="$(mktemp)"`,
   gate as `task ci >"$out" 2>&1 && printf '%s\n' "$t" >>"$out"`, push as
-  `[ "$(git rev-parse HEAD)" = "$sha" ] &&
-  …/require-marker.sh "$out" "$t" && git push …` — a stale file from an
+  `…/require-marker.sh "$out" "$t" && git push <remote> "$sha:<branch>" …`
+  — a stale file from an
   earlier gate can never contain this run's token, a failed gate writes
-  no token at all, and a HEAD that moved since the gate ran refuses the
-  push instead of shipping an ungated commit (re-gate from the new HEAD;
-  the clean-tree rule below still governs what the gate ran on). Never
+  no token at all, and the ungated commit cannot travel because `$sha`
+  is what travels. Comparing HEAD to `$sha` and then pushing `HEAD` is
+  **not** an alternative: `git push` re-reads the ref at push time, so a
+  commit landing between the comparison and the push ships ungated —
+  the SHA refspec is what closes that window (a HEAD that moved simply
+  is not pushed; re-gate the newer commit from its own HEAD, and the
+  clean-tree rule below still governs what the gate ran on). Never
   chain a push
   off a reader's exit — `tail`, `head`, `cat`, and `grep` succeed by
   *printing* whatever they found, so `tail -1 ci.out && git push` pushes
