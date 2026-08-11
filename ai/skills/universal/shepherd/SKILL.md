@@ -562,16 +562,21 @@ you rather than the bot):
   # CI (its bounded poll found nothing to register — absence confirmed,
   # not merely nothing yet). It is never inferred here from an empty or
   # failed read, and it waives only absence — checks that do exist must
-  # still be green. gh answers a checkless head with an error ("no checks
-  # reported"), not an empty list, so absence surfaces on the fetch arm.
+  # still be green. gh answers a checkless head with a SPECIFIC error
+  # ("no checks reported"), not an empty list, and only that answer under
+  # the carve-out reads as absence: auth, rate-limit, and network
+  # failures are indeterminate and fail closed whatever no_ci says. If gh
+  # rewords that literal, this breaks toward a false block in a no-CI
+  # repo, never a false pass.
   no_ci="${no_ci:-0}"
-  checks="$(gh pr checks <n> --repo "$repo" --json bucket)" || {
-    if [ "$no_ci" = 1 ]; then
-      checks='[]'
-    else
+  checks="$(gh pr checks <n> --repo "$repo" --json bucket 2>&1)" || {
+    case "$no_ci:$checks" in
+    1:*'no checks reported'*) checks='[]' ;;
+    *)
       echo 'cannot read check status — do not reserve or trigger'
       exit 1
-    fi
+      ;;
+    esac
   }
   [ "$(jq -r --argjson no_ci "$no_ci" '
         (length > 0 or $no_ci == 1) and
@@ -806,13 +811,18 @@ is optional in addition, never a substitute for per-thread replies.
   ran in the background and wrote its verdict as a marker line, off
   `"$skill_dir"/assets/require-marker.sh <file> <token>` (exit 0 only when
   the file's marker line equals the token). The parser proves what the
-  file *says*, not which run said it, so bind the verdict to this run:
-  fresh per-run output file, run-unique token minted before the gate
-  starts — `t="CI-GREEN-$$-$(date +%s)"; out="$(mktemp)"`, gate as
-  `task ci >"$out" 2>&1 && printf '%s\n' "$t" >>"$out"`, push as
-  `…/require-marker.sh "$out" "$t" && git push …` — a stale file from an
-  earlier gate can never contain this run's token, and a failed gate
-  writes no token at all. Never chain a push
+  file *says*, not which run said it, so bind the verdict to this run
+  *and* to the commit it gated: fresh per-run output file, token minted
+  before the gate starts and carrying the SHA under test —
+  `sha="$(git rev-parse HEAD)"; t="CI-GREEN-$sha-$$"; out="$(mktemp)"`,
+  gate as `task ci >"$out" 2>&1 && printf '%s\n' "$t" >>"$out"`, push as
+  `[ "$(git rev-parse HEAD)" = "$sha" ] &&
+  …/require-marker.sh "$out" "$t" && git push …` — a stale file from an
+  earlier gate can never contain this run's token, a failed gate writes
+  no token at all, and a HEAD that moved since the gate ran refuses the
+  push instead of shipping an ungated commit (re-gate from the new HEAD;
+  the clean-tree rule below still governs what the gate ran on). Never
+  chain a push
   off a reader's exit — `tail`, `head`, `cat`, and `grep` succeed by
   *printing* whatever they found, so `tail -1 ci.out && git push` pushes
   on a marker that says FAILED (observed: the marker was written

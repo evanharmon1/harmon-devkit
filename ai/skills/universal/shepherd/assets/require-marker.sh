@@ -30,13 +30,17 @@ comparison fails closed.
 
 TOKEN must be one non-empty line with no leading or trailing whitespace —
 anything else could never equal a marker line and is a usage error. Make
-it unique to the gate run it gates: this parser proves what the file says,
-not which run said it, so a static token (CI-GREEN) can match a stale file
-an earlier run left behind. Mint the token before the gate starts — e.g.
-token="CI-GREEN-$$-$(date +%s)" — write the gate's output to a fresh
-per-run file, and have the wrapper append the token only on success; a
-stale file can never contain this run's token, and a failed or unfinished
-gate never writes it.
+it unique to the gate run AND the commit it gated: this parser proves what
+the file says, not which run said it, so a static token (CI-GREEN) can
+match a stale file an earlier run left behind, and a run-only token can
+authorize a commit the gate never saw. Mint the token before the gate
+starts, carrying the SHA under test — e.g.
+token="CI-GREEN-$(git rev-parse HEAD)-$$" — write the gate's output to a
+fresh per-run file, have the wrapper append the token only on success,
+and re-check HEAD against that SHA in the same chain as the push. A stale
+file can never contain this run's token, a failed or unfinished gate
+never writes it, and a HEAD that moved since the gate ran refuses the
+push.
 
 Exit status:
   0  FILE's marker line equals TOKEN
