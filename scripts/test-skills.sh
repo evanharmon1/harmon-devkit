@@ -2327,7 +2327,15 @@ printf 'shared\n' >"$GU_CIR_BASE/other-exec.md"
 printf 'shared\n' >"$GU_CIR_TGT/other-exec.md"
 chmod 644 "$GU_CIR_BASE/other-exec.md"
 chmod 645 "$GU_CIR_TGT/other-exec.md"
-if [ -x "$GU_CIR_BASE/other-exec.md" ] || [ -x "$GU_CIR_TGT/other-exec.md" ]; then
+# Root is the exception and has to be named rather than tripped over: UID 0
+# passes an execute check whenever ANY execute bit is set, so `test -x` reads
+# true for the 0645 side and the premise below cannot hold. The stored-mode
+# comparison is unaffected — that is the whole point of it — so the fixture
+# records why the discrimination is unobservable instead of failing the suite
+# for a container that happens to run as root.
+if [ "$(id -u)" -eq 0 ]; then
+    ok "the changed_in_range mode fixture skips its effective-access premise as root"
+elif [ -x "$GU_CIR_BASE/other-exec.md" ] || [ -x "$GU_CIR_TGT/other-exec.md" ]; then
     bad "the changed_in_range mode fixture keeps effective executability equal"
 else
     ok "the changed_in_range mode fixture keeps effective executability equal"
@@ -5978,6 +5986,26 @@ if printf '%s\n' "$staged_prose_out" | grep -qF "DRIFT    AGENTS.md"; then
     bad "diff-template reports no staged DRIFT for co-owned prose"
 else
     ok "diff-template reports no staged DRIFT for co-owned prose"
+fi
+git -C "$DT_TARGET" reset -q HEAD -- AGENTS.md
+git -C "$DT_TARGET" checkout HEAD -- AGENTS.md
+
+# …but a STRUCTURAL staged change is not prose. Staging AGENTS.md as a symlink
+# while the worktree keeps the real file means the next commit turns the agent
+# instructions into an alias, and "structural divergence always gates" holds for
+# staged state exactly as it does on disk — the CO-OWNED exemption covers
+# content, and nobody owns a file that stopped being a file.
+staged_link_blob="$(printf 'docs/guide.md' |
+    git -C "$DT_TARGET" hash-object -w --stdin)"
+git -C "$DT_TARGET" update-index --add --cacheinfo \
+    "120000,$staged_link_blob,AGENTS.md"
+if staged_structural_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates a staged structural change on a co-owned path (expected non-zero exit)"
+elif printf '%s\n' "$staged_structural_out" |
+    grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch"; then
+    ok "diff-template gates a staged structural change on a co-owned path"
+else
+    bad "diff-template gates a staged structural change on a co-owned path (diagnostic missing)"
 fi
 git -C "$DT_TARGET" reset -q HEAD -- AGENTS.md
 git -C "$DT_TARGET" checkout HEAD -- AGENTS.md

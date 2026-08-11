@@ -828,9 +828,13 @@ is_staged_removal() {
     # have removed anything from. Checking it explicitly keeps the intent legible
     # and the failure quiet, rather than leaning on the probes to error out.
     git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1 || return 1
-    staged_probe "HEAD membership" "$p" ls-tree -z HEAD -- "$p"
+    # Deliberately NOT `-z`. Only EMPTINESS is read here, never the fields, and
+    # bash 4.4+ warns "command substitution: ignored null byte in input" for
+    # every NUL a `$( )` swallows — two lines of noise per rendered path, on
+    # stderr, burying the report this script exists to print.
+    staged_probe "HEAD membership" "$p" ls-tree HEAD -- "$p"
     [ -n "$staged_probe_out" ] || return 1 # not in HEAD — nothing to remove
-    staged_probe "the index entry" "$p" ls-files -s -z -- "$p"
+    staged_probe "the index entry" "$p" ls-files -s -- "$p"
     [ -z "$staged_probe_out" ] || return 1 # still in the index
     return 0
 }
@@ -884,12 +888,16 @@ same_as_render() {
 # report the same bytes twice.
 index_content_divergent=0
 index_mode_divergent=0
+index_structural=0
+index_note=""
 index_diverges() {
     idx_render="$1"  # path inside the render
     idx_rel="$2"     # repo-relative path of the resolved variant
     idx_variant="$3" # the resolved variant itself
     index_content_divergent=0
     index_mode_divergent=0
+    index_structural=0
+    index_note=""
     [ "$target_owns_worktree" -eq 1 ] || return 1
     case "$idx_variant" in
     "$target"/*) ;;
@@ -908,7 +916,17 @@ index_diverges() {
     # so a staged divergence cannot rewrite the verdict on the disk copy.
     idx_saved_note="$compare_note"
     idx_saved_structural="$compare_structural"
-    same_as_render "$idx_render" "$idx_staged" || index_content_divergent=1
+    if ! same_as_render "$idx_render" "$idx_staged"; then
+        index_content_divergent=1
+        # STRUCTURAL is recorded separately from content, because the two are
+        # exempted separately: the CO-OWNED class covers prose a repo rewrites,
+        # and nobody "owns" an alias that stopped being an alias. A staged
+        # symlink-for-file swap is the same defect as the on-disk one and gates
+        # the same way — collapsing it into "content" let a co-owned path stage
+        # a structural change and still exit 0.
+        index_structural="$compare_structural"
+        index_note="$compare_note"
+    fi
     compare_note="$idx_saved_note"
     compare_structural="$idx_saved_structural"
     [ "$index_content_divergent" -eq 1 ] || [ "$index_mode_divergent" -eq 1 ]
@@ -1051,7 +1069,11 @@ while IFS= read -r f; do
             mode_count=$((mode_count + 1))
         fi
         if [ "$index_content_divergent" -eq 1 ] && [ "$content_divergent" -eq 0 ]; then
-            echo "DRIFT    $rv_display  (staged content differs from the template though the worktree matches — the next commit carries it)"
+            if [ "$index_structural" -eq 1 ]; then
+                echo "DRIFT    $rv_display  (staged symlink mismatch — $index_note; the worktree matches, the next commit carries it)"
+            else
+                echo "DRIFT    $rv_display  (staged content differs from the template though the worktree matches — the next commit carries it)"
+            fi
             drift=1
             drift_count=$((drift_count + 1))
         fi
@@ -1295,8 +1317,14 @@ while IFS= read -r abs; do
         if [ "$content_divergent" -eq 0 ]; then
             # Content is reported unless the repo owns the prose: the CO-OWNED
             # contract is about content, staged or not. The exec bit above is
-            # structural and gates for every class, exactly as on disk.
-            if [ "$index_content_divergent" -eq 1 ] && ! is_co_owned "$g"; then
+            # structural and gates for every class, exactly as on disk — and so
+            # is a staged symlink-for-file swap, which is why the structural
+            # case is checked BEFORE the exemption rather than inside it.
+            if [ "$index_structural" -eq 1 ]; then
+                echo "DRIFT    $rv_display  (staged symlink mismatch — $index_note; the worktree matches, the next commit carries it)"
+                drift=1
+                uncurated_drift_count=$((uncurated_drift_count + 1))
+            elif [ "$index_content_divergent" -eq 1 ] && ! is_co_owned "$g"; then
                 echo "DRIFT    $rv_display  (uncurated — staged content differs from the template though the worktree matches; the next commit carries it)"
                 drift=1
                 uncurated_drift_count=$((uncurated_drift_count + 1))
