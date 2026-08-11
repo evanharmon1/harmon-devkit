@@ -501,8 +501,13 @@ with the bots whose PRs it runs on (Renovate, Dependabot, and CodeRabbit when
 App token is minted, so a spoof-shaped gap in the `if:` expression cannot reach
 credential creation. The old per-workflow label triggers (one label
 named after each workflow) and the `issues: [opened, assigned]` trigger were
-**removed**:
-a label or an assignment carries no actor the allowlist can check. A repo still
+**removed**. Not because those events lack an actor — `github.event.sender` is
+populated on them, and the pre-v4.25 workflows did gate on it — but because the
+authorization they can carry is weaker: the sender is whoever labelled or
+assigned, not whoever asked for the work; the event carries no comment body, so
+the phrase gate collapses to the marker itself; and a label is reachable by any
+automation or triager with write access, which makes it a standing trigger
+rather than a deliberate request. A repo still
 carrying them is template-version lag; report it as such.
 
 **Never write a trigger phrase out in full** — not in this catalog, a repo's
@@ -521,7 +526,12 @@ in the job, so a workflow-level group would let skipped runs displace queued
 ones. Serialization is not queueing, though: GitHub keeps only **one pending
 run per group**, so while one run is active a third mention on the same target
 cancels the second one's queued run. Report a vanished command as that limit
-rather than as a completed claim lifecycle. Then a
+rather than as a completed claim lifecycle. The group serializes **Actions runs
+only**: an interactive `/claim` session never joins it, and a same-family
+session reuses the existing `claim:claude` marker rather than adding its own, so
+an Action finishing mid-session deletes the marker the session is still working
+under and the target reads as unclaimed. That cross-harness residual is accepted
+upstream, not solved here — a claim is a signal, not a lock. Then a
 `Claim the target with claim:claude` step paginates the target's
 labels and refuses loudly (`::error::` + exit 1) when any `claim:`/`agent:`-
 prefixed label is present, when the label list is unreadable, or when

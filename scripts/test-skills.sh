@@ -1004,11 +1004,31 @@ expect_ok "standards catalog records the claim:claude lifecycle" \
 # lint-hygiene.sh applies on its side (init#725) — the file reaches init through
 # a pin bump, so a weaker guard here would just move the failure downstream. The
 # needle is assembled from two pieces so this guard is not itself a phrase.
+#
+# BOTH forms are checked, raw and rendered. Stripping link targets models what
+# a reader copies out of the rendered page, but `contains()` reads whatever is
+# actually in the comment body — and someone quoting the raw Markdown ships the
+# link destination and title text too. Checking only the stripped form would
+# miss a phrase hiding inside a URL or a link title; checking only the raw form
+# would miss the backticked and bolded spellings that render away. Feed the
+# matcher both and match either.
+trigger_phrase_present() {
+    _tp_mention=$(printf '@%s' claude)
+    _tp_pat="${_tp_mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"
+    _tp_norm=$(tr -s '[:space:]' ' ' <"$1")
+    # `grep -iE …>/dev/null`, deliberately NOT `grep -qiE`: this file runs under
+    # `set -o pipefail`, and -q exits at the first match, so the upstream
+    # printf/sed die of SIGPIPE and the pipeline reports 141 instead of 0. The
+    # guard would then report "no trigger phrase" for a file that has one —
+    # failing open, in the one place that must fail closed. Draining the input
+    # costs nothing at this size.
+    {
+        printf '%s\n' "$_tp_norm"
+        printf '%s\n' "$_tp_norm" | sed -E 's/\]\([^)]*\)//g'
+    } | grep -iE "$_tp_pat" >/dev/null
+}
 expect_fail "standards catalog reconstructs no literal Claude trigger phrase" \
-    sh -c 'mention="@claude"
-        tr -s "[:space:]" " " <"$1" | sed -E "s/\]\([^)]*\)//g" |
-            grep -qiE "${mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"' sh \
-    "$STANDARDIZE_REFS/standards-catalog.md"
+    trigger_phrase_present "$STANDARDIZE_REFS/standards-catalog.md"
 # Positive controls: the guard above is an expect_fail, so a pipeline that
 # silently matched nothing at all would pass just as loudly as a clean catalog.
 # These prove it still fires on the forms rendered copy reconstructs.
@@ -1030,16 +1050,15 @@ for _trigger_case in \
     "backtick-separated tokens|post an \`${_m}\` \`plan\` comment" \
     "case variant|post an ${_M} Review comment" \
     "bold subcommand|post an ${_m} **implement** comment" \
-    "linked subcommand|post an ${_m} [plan](docs/x.md) comment"; do
+    "linked subcommand|post an ${_m} [plan](docs/x.md) comment" \
+    "phrase inside a link destination|see [the docs](https://x.example/${_m}-plan)" \
+    "phrase inside a link title|see [the docs](https://x.example \"${_m} plan\")"; do
     _label=${_trigger_case%%|*}
     _trigger_fixture=${_trigger_case#*|}
     _tf=$(mktemp)
     printf '%s\n' "$_trigger_fixture" >"$_tf"
     expect_ok "trigger-phrase guard fires on the $_label fixture" \
-        sh -c 'mention="@claude"
-            tr -s "[:space:]" " " <"$1" | sed -E "s/\]\([^)]*\)//g" |
-                grep -qiE "${mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"' sh \
-        "$_tf"
+        trigger_phrase_present "$_tf"
     rm -f "$_tf"
 done
 # Negative control: prose words between the tokens must NOT fire, or the guard
@@ -1047,10 +1066,7 @@ done
 _tf=$(mktemp)
 printf '%s\n' "an ${_m} mention naming plan, implement, or review" >"$_tf"
 expect_fail "trigger-phrase guard ignores prose-separated tokens" \
-    sh -c 'mention="@claude"
-        tr -s "[:space:]" " " <"$1" | sed -E "s/\]\([^)]*\)//g" |
-            grep -qiE "${mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"' sh \
-    "$_tf"
+    trigger_phrase_present "$_tf"
 rm -f "$_tf"
 expect_ok "standards catalog keeps migration procedures out of the catalog" \
     grep -qF 'not a second procedure in this catalog' \
