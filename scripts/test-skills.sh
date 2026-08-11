@@ -1029,7 +1029,7 @@ trigger_phrase_present() {
     # costs nothing at this size.
     {
         printf '%s\n' "$_tp_norm"
-        printf '%s\n' "$_tp_norm" | sed -E 's/\]\([^)]*\)//g'
+        printf '%s\n' "$_tp_norm" | sed -E 's/\]\([^)]*\)//g; s/\]\[[^]]*\]//g'
         printf '%s\n' "$_tp_norm" | sed -E 's/<[^>]*>//g'
     } | grep -iE "$_tp_pat" >/dev/null
 }
@@ -1065,7 +1065,8 @@ for _trigger_case in \
     "linked subcommand|post an ${_m} [plan](docs/x.md) comment" \
     "phrase inside a link destination|see [the docs](https://x.example/${_m}-plan)" \
     "phrase inside a link title|see [the docs](https://x.example \"${_m} plan\")" \
-    "inline HTML between the tokens|post an ${_m} <em>plan</em> comment"; do
+    "inline HTML between the tokens|post an ${_m} <em>plan</em> comment" \
+    "reference-style link label|post an [${_m}][bot] plan comment"; do
     _label=${_trigger_case%%|*}
     _trigger_fixture=${_trigger_case#*|}
     _tf=$(mktemp)

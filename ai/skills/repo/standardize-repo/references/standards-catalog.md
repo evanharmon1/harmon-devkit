@@ -490,7 +490,10 @@ Workflow inventory:
 **Mention-only trigger gate** (all three `claude-*` workflows, since
 harmon-init#664 / v4.25). They subscribe to `issue_comment` (created),
 `pull_request_review_comment` (created), and `pull_request_review` (submitted)
-— every comment event in the repo — and filter in the job `if:`: the sender
+— every issue comment, PR review comment, and PR review in the repo, and
+nothing else: `commit_comment` and `discussion_comment` are **not** subscribed,
+so a mention on a commit or in a Discussion starts no run at all — and filter in
+the job `if:`: the sender
 must be on that workflow's authorized-sender set, and the body
 must contain that workflow's trigger phrase, which is the `@claude` mention
 followed by the workflow's own subcommand word. The sender set is the explicit
@@ -536,7 +539,10 @@ upstream, not solved here — a claim is a signal, not a lock. Then a
 labels and refuses loudly (`::error::` + exit 1) when any `claim:`/`agent:`-
 prefixed label is present, when the label list is unreadable, or when
 `claim:claude` will not apply — all before the App token is minted, so a
-refused run costs nothing and leaves no claim on the target. It creates the
+refused run mints no privileged token, spends nothing on the model, and leaves
+no claim on the target. It is not free: the runner was already provisioned and
+the gate and claim steps ran, so repeated collisions or a stranded claim still
+burn Actions minutes or self-hosted capacity. It creates the
 label (colour `006B75`, description `Claimed by Claude`, verbatim from
 `agent-registry.json`) when the repo lacks it — repo-level label provisioning
 is the one write that can survive a refusal, since creation precedes the apply
