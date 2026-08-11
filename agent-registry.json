@@ -1,6 +1,6 @@
 {
   "$schema": "./agent-registry.schema.json",
-  "schema_version": 1,
+  "schema_version": 2,
   "labels": {
     "suggest": {
       "prefix": "suggest",
@@ -20,39 +20,80 @@
       "slug": "claude",
       "display_name": "Claude",
       "models": [
+        { "slug": "fable", "display_name": "Fable" },
         { "slug": "opus", "display_name": "Opus" },
         { "slug": "sonnet", "display_name": "Sonnet" },
         { "slug": "haiku", "display_name": "Haiku" }
       ]
     },
     {
-      "slug": "codex",
-      "display_name": "OpenAI Codex",
+      "slug": "gpt",
+      "display_name": "GPT",
       "models": [
         { "slug": "sol", "display_name": "Sol" },
         { "slug": "terra", "display_name": "Terra" },
         { "slug": "luna", "display_name": "Luna" }
       ]
     },
-    { "slug": "copilot", "display_name": "GitHub Copilot", "models": [] },
+    {
+      "slug": "mai",
+      "display_name": "MAI",
+      "models": [
+        { "slug": "code-1-flash", "display_name": "Code-1-Flash" },
+        { "slug": "thinking-1", "display_name": "Thinking-1" }
+      ]
+    },
     {
       "slug": "qwen",
       "display_name": "Qwen",
-      "models": [{ "slug": "coder", "display_name": "Coder" }]
+      "models": [
+        { "slug": "max", "display_name": "3.7 Max" },
+        { "slug": "coder-plus", "display_name": "3 Coder Plus" },
+        { "slug": "coder", "display_name": "3 Coder" },
+        { "slug": "coder-next", "display_name": "3 Coder Next" },
+        { "slug": "coder-30b", "display_name": "3 Coder 30B" }
+      ]
     },
-    { "slug": "deepseek", "display_name": "DeepSeek", "models": [] },
+    {
+      "slug": "deepseek",
+      "display_name": "DeepSeek",
+      "models": [
+        { "slug": "v4-pro", "display_name": "V4 Pro" },
+        { "slug": "v4-flash", "display_name": "V4 Flash" }
+      ]
+    },
     {
       "slug": "glm",
       "display_name": "GLM",
-      "models": [{ "slug": "5-2", "display_name": "5.2" }]
+      "models": [
+        { "slug": "5-2", "display_name": "5.2" },
+        { "slug": "4-7-flash", "display_name": "4.7 Flash" }
+      ]
     },
     {
       "slug": "kimi",
       "display_name": "Kimi",
       "models": [{ "slug": "k3", "display_name": "K3" }]
     },
-    { "slug": "minimax", "display_name": "MiniMax", "models": [] },
-    { "slug": "gemini", "display_name": "Gemini", "models": [] }
+    {
+      "slug": "minimax",
+      "display_name": "MiniMax",
+      "models": [{ "slug": "m3", "display_name": "M3" }]
+    },
+    {
+      "slug": "gemini",
+      "display_name": "Gemini",
+      "models": [
+        { "slug": "3-1-pro", "display_name": "3.1 Pro" },
+        { "slug": "3-6-flash", "display_name": "3.6 Flash" },
+        { "slug": "3-5-flash-lite", "display_name": "3.5 Flash-Lite" }
+      ]
+    },
+    {
+      "slug": "mistral",
+      "display_name": "Mistral",
+      "models": [{ "slug": "devstral-small-2", "display_name": "Devstral Small 2" }]
+    }
   ],
   "harnesses": [
     {
@@ -122,13 +163,35 @@
       "provider_rewired": true
     },
     {
+      "slug": "claude-code-qwen",
+      "display_name": "Claude Code with Qwen",
+      "product": "Claude Code provider wrapper",
+      "family_constraint": { "kind": "fixed", "family": "qwen" },
+      "model_resolution": {
+        "owner": "provider-wrapper",
+        "details": "The provider-rewired wrapper fixes the family; per-role model env vars select Qwen3.7-Max for the main/reasoning roles and Qwen3-Coder-Plus for the coding/subagent roles."
+      },
+      "provider_rewired": true
+    },
+    {
+      "slug": "claude-code-qwen-local",
+      "display_name": "Claude Code with Qwen (local)",
+      "product": "Claude Code provider wrapper",
+      "family_constraint": { "kind": "fixed", "family": "qwen" },
+      "model_resolution": {
+        "owner": "provider-wrapper",
+        "details": "The provider-rewired wrapper points at a local Anthropic-compatible endpoint (Ollama or LM Studio) serving qwen3-coder:30b."
+      },
+      "provider_rewired": true
+    },
+    {
       "slug": "codex-cli",
       "display_name": "OpenAI Codex CLI",
       "product": "OpenAI Codex CLI",
-      "family_constraint": { "kind": "fixed", "family": "codex" },
+      "family_constraint": { "kind": "fixed", "family": "gpt" },
       "model_resolution": {
         "owner": "runner-config",
-        "details": "The runner or CLI invocation selects the Codex model."
+        "details": "The runner or CLI invocation selects the GPT model."
       },
       "provider_rewired": false
     },
@@ -136,10 +199,10 @@
       "slug": "copilot-cli",
       "display_name": "GitHub Copilot CLI",
       "product": "GitHub Copilot CLI",
-      "family_constraint": { "kind": "fixed", "family": "copilot" },
+      "family_constraint": { "kind": "broker", "default_family": "mai" },
       "model_resolution": {
-        "owner": "runner-config",
-        "details": "The runner or Copilot configuration selects the model."
+        "owner": "harness-runtime",
+        "details": "Copilot's picker selects among MAI and brokered third-party models at runtime."
       },
       "provider_rewired": false
     },
@@ -169,7 +232,7 @@
       "slug": "opencode",
       "display_name": "OpenCode",
       "product": "OpenCode",
-      "family_constraint": { "kind": "none" },
+      "family_constraint": { "kind": "broker" },
       "model_resolution": {
         "owner": "harness-runtime",
         "details": "The multi-provider harness selects both provider family and model at runtime."
@@ -180,7 +243,29 @@
       "slug": "pi",
       "display_name": "Pi",
       "product": "Pi",
-      "family_constraint": { "kind": "none" },
+      "family_constraint": { "kind": "broker" },
+      "model_resolution": {
+        "owner": "harness-runtime",
+        "details": "The multi-provider harness selects both provider family and model at runtime."
+      },
+      "provider_rewired": false
+    },
+    {
+      "slug": "goose",
+      "display_name": "Goose",
+      "product": "Block Goose",
+      "family_constraint": { "kind": "broker" },
+      "model_resolution": {
+        "owner": "harness-runtime",
+        "details": "The multi-provider harness selects both provider family and model at runtime."
+      },
+      "provider_rewired": false
+    },
+    {
+      "slug": "cline",
+      "display_name": "Cline",
+      "product": "Cline",
+      "family_constraint": { "kind": "broker" },
       "model_resolution": {
         "owner": "harness-runtime",
         "details": "The multi-provider harness selects both provider family and model at runtime."

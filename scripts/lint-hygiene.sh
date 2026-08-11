@@ -144,6 +144,41 @@ for f in "${files[@]}"; do
         warn "$f: merge conflict markers detected"
     fi
 
+    # --- Claude trigger-phrase adjacency (issue #725) ---
+    # Doc text gets quoted into issues, PR bodies, and comments, where the
+    # claude-* workflows' contains() gates match the literal mention+subcommand
+    # string (case-insensitively) and start a real run. Rendered copy is what
+    # gets pasted, and rendering strips markup — backticks, bold markers, link
+    # brackets — and joins folded/wrapped lines, so any decoration between the
+    # tokens can reconstruct the trigger. The scan is a BEST-EFFORT
+    # approximation of the common accidental forms, deliberately not a
+    # markdown renderer: squeeze whitespace, drop markdown link targets
+    # ("](url)" — the one markup whose inner text hides the gap), then flag
+    # the mention followed by a subcommand across a short gap of
+    # space/punctuation/ASCII symbols, case-insensitively (the workflows'
+    # contains() is case-insensitive; backtick and friends are Unicode
+    # SYMBOLS, not [[:punct:]], under BSD grep's UTF-8 tables, hence the
+    # explicit chars). Prose words between the tokens — including non-ASCII
+    # prose, which falls outside the gap class — never reconstruct and always
+    # pass. A rare safe-but-flagged phrasing (e.g. a comma right between the
+    # tokens) is rewritten, not exempted; residual exotic markup is accepted
+    # scope, adjudicated against this comment rather than an implied
+    # completeness claim. Excluded
+    # paths carry the phrases FUNCTIONALLY: the workflow trigger definitions,
+    # vendored skills (fixed upstream in harmon-devkit), and this scan plus
+    # its regression fixtures.
+    case "$f" in
+    .github/workflows/claude-*.yml | template/.github/workflows/claude-*.yml.jinja | .claude/skills/* | \
+        scripts/lint-hygiene.sh | template/scripts/lint-hygiene.sh | \
+        scripts/test-lint-hygiene.sh | template/scripts/test-lint-hygiene.sh) ;;
+    *)
+        if tr -s '[:space:]' ' ' <"$f" | sed -E 's/\]\([^)]*\)//g' |
+            grep -qiE '@claude[[:space:][:punct:]`$+<=>^|~]{1,20}(plan|implement|review)'; then
+            warn "$f: Claude trigger phrase reconstructable from rendered copy (mention + subcommand across markup/whitespace, any case) — quoted into a comment this starts a workflow; put prose words between the tokens"
+        fi
+        ;;
+    esac
+
     # --- Private key detection ---
     # Skip self (any copy of this script) to avoid matching the pattern string.
     case "$f" in

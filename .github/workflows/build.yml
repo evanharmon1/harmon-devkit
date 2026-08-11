@@ -51,11 +51,13 @@ jobs:
       - run: task test:tasks
       - run: task test:agent-registry
       - run: task test:registry-drift
+      - run: task test:registry-docs
       - run: task test:codex-review
       - run: task test:meta-install
       - run: task test:shepherd-codex
       - run: task test:ci-results
       - run: task test:status
+      - run: task test:lint-hygiene
       - run: task test:release-title
       - run: task test:track-work
       - run: task test:notify-release

@@ -511,4 +511,7 @@ bound_stderr_lines() {
 # a pipeline, so the tail of the narration cannot be lost to the script exiting
 # first. Under pipefail the filter exits 0, leaving codex's own status as the
 # rightmost non-zero, so a failed review still fails the task.
-{ printf '%s\n' "$instructions" | codex exec review --model gpt-5.6-sol --config model_reasoning_effort=high - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>&1
+{ printf '%s\n' "$instructions" | codex exec review \
+    --model gpt-5.6-sol \
+    --config model_reasoning_effort=high \
+    - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>&1

@@ -53,10 +53,24 @@ switch (mutation) {
   case 'unknown-fixed-family':
     registry.harnesses[0].family_constraint.family = 'unknown'
     break
-  case 'family-on-none':
+  case 'family-on-broker':
     for (const entry of registry.harnesses) {
-      if (entry.family_constraint.kind === 'none') entry.family_constraint.family = 'claude'
+      if (entry.family_constraint.kind === 'broker') entry.family_constraint.family = 'claude'
     }
+    break
+  case 'unknown-default-family':
+    for (const entry of registry.harnesses) {
+      if (entry.family_constraint.kind === 'broker') {
+        entry.family_constraint.default_family = 'unknown'
+        break
+      }
+    }
+    break
+  case 'default-family-on-fixed':
+    registry.harnesses[0].family_constraint.default_family = 'claude'
+    break
+  case 'bad-local-suffix':
+    harness('claude-code-minimax').slug = 'claude-code-minimax-local-extra'
     break
   case 'production-without-harness':
     adapter('claude').harness = null
@@ -190,9 +204,18 @@ rejects "missing model-resolution ownership" \
 rejects "unknown fixed-family constraints" \
     'unknown-fixed-family' \
     'references unknown family unknown'
-rejects "family values on unconstrained harnesses" \
-    'family-on-none' \
-    'with a none constraint'
+rejects "family values on broker harnesses" \
+    'family-on-broker' \
+    'did you mean default_family'
+rejects "a broker default_family referencing an unknown family" \
+    'unknown-default-family' \
+    'default_family references unknown family unknown'
+rejects "a default_family on a fixed constraint" \
+    'default-family-on-fixed' \
+    'default_family on a fixed constraint'
+rejects "a provider-rewired harness slug with an unsanctioned suffix" \
+    'bad-local-suffix' \
+    'must be named claude-code-<fixed-family> or claude-code-<fixed-family>-local'
 rejects "production adapters without a harness mapping" \
     'production-without-harness' \
     'needs a production harness mapping'

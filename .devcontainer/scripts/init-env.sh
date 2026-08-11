@@ -59,7 +59,7 @@ shift || true
 # dispatched agents as their GH_TOKEN (required before any dispatch); only
 # the bot profile allow-lists it, so it is evicted from dev/ like GH_TOKEN.
 BASE_MANAGED_VARS=(TS_AUTHKEY GH_TOKEN FOREMAN_AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY)
-OPT_IN_PROVIDER_KEYS=(KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY)
+OPT_IN_PROVIDER_KEYS=(KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY QWEN_API_KEY)
 # KNOWN_VARS: every var this script recognizes. The filter below restricts the
 # caller's allow-list to this set, so a positional arg can't smuggle an unknown
 # var into the env-file. Includes the opt-in keys so an opted-in profile can

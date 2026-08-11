@@ -66,9 +66,13 @@ tasks:
     desc: Definition-of-done gate (check → validate → guards → devcontainer → test)
     cmds:
       - task: check
+      - task: audit:agent-instructions
+      - task: test:agent-instructions-size
+      - task: test:agent-skill-links
       - task: validate
       - task: test:agent-registry
       - task: test:registry-drift
+      - task: test:registry-docs
       - task: test:tasks
       - task: test:ci-results
       - task: test:status
@@ -77,6 +81,7 @@ tasks:
       - task: test:shepherd-codex
       - task: test:shepherd-marker
       - task: test:shepherd-readiness
+      - task: test:lint-hygiene
       - task: test:release-title
       - task: test:notify-release
       - task: test:setup-github-project
@@ -93,6 +98,11 @@ tasks:
     desc: Fast local gate — all linters (parallel)
     deps:
       - lint
+
+  audit:agent-instructions:
+    desc: Warn when AGENTS.md exceeds Codex's default 32 KiB discovery budget
+    cmds:
+      - ./scripts/check-agent-instructions-size.sh AGENTS.md
 
   lint:
     desc: Run all linters in parallel
@@ -226,19 +236,31 @@ tasks:
     cmds:
       - ./scripts/sync-devkit-release.sh run {{.CLI_ARGS}}
 
+  test:agent-skill-links:
+    desc: Unit-test migration-safe Claude-to-.agents skill compatibility links
+    cmds:
+      - ./scripts/test-agent-skill-links.sh
+
+  # ── Skills sync ────────────────────────────────────────────────
+  # Vendor shared agent skills from harmon-devkit, pinned in .skills-sync.yaml.
+  # The verify:skills* drift checks skip cleanly until the first `task sync:skills`,
+  # so a fresh scaffold stays green. See docs/CHECKLIST.md.
   sync:skills:
     desc: Vendor the pinned skill categories from harmon-devkit into .agents/skills
     cmds:
       - ./scripts/sync-skills.sh sync
+      - ./scripts/link-agent-skills.sh sync
 
   verify:skills:
     desc: "Skill drift check (network): fail if vendored skills differ from the pinned ref"
     cmds:
+      - ./scripts/link-agent-skills.sh verify
       - ./scripts/sync-skills.sh verify
 
   verify:skills:offline:
     desc: "Fast offline check that the vendored ref matches the manifest (no network)"
     cmds:
+      - ./scripts/link-agent-skills.sh verify
       - ./scripts/sync-skills.sh verify-offline
 
   format:
@@ -287,10 +309,32 @@ tasks:
     cmds:
       - ./scripts/test-agent-registry.sh
 
+  test:agent-instructions-size:
+    desc: Unit-test the non-blocking AGENTS.md size advisory
+    cmds:
+      - ./scripts/test-agent-instructions-size.sh
+
   test:registry-drift:
     desc: Bind label provisioning, provider wrappers, and Foreman adapters to the agent registry (offline drift gate)
     cmds:
       - ./scripts/test-registry-drift.sh
+
+  test:registry-docs:
+    # The answers-file name is configurable (`copier copy --answers-file …`),
+    # and the check reads project_management out of it to know whether this
+    # repo renders the GitHub Projects document at all. The script is a
+    # verbatim twin of harmon-init's own, so the name is passed in rather than
+    # templated into it — as an ENV value, not a command argument: a filename
+    # containing an apostrophe would terminate a quoted shell argument early.
+    # `tojson` emits a JSON string, which is also a valid YAML double-quoted
+    # scalar, so quotes and backslashes in the name survive both layers. The
+    # `string` filter first because copier hands this over as a PurePosixPath,
+    # which `tojson` cannot serialize.
+    desc: Bind the published family/harness tables in docs/project-management.md to the agent registry
+    env:
+      COPIER_ANSWERS_FILE: ".copier-answers.yml"
+    cmds:
+      - ./scripts/test-registry-docs.sh
 
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)
@@ -303,7 +347,7 @@ tasks:
       - ./scripts/test-ci-results.sh
 
   test:status:
-    desc: Unit-test the status board-writes scope check (stubbed gh, no network)
+    desc: Unit-test the status board-writes + local-credential checks (stubbed CLIs, no network)
     cmds:
       - ./scripts/test-status.sh
 
@@ -331,6 +375,11 @@ tasks:
     desc: Unit-test the shepherd readiness gate + read-only gh wrapper (offline, stubbed gh)
     cmds:
       - ./scripts/test-shepherd-readiness.sh
+
+  test:lint-hygiene:
+    desc: Behavioral fixtures for lint-hygiene's trigger-phrase adjacency scan
+    cmds:
+      - ./scripts/test-lint-hygiene.sh
 
   test:release-title:
     desc: Unit-test the release-content title guard (require-release-title.sh)
@@ -669,6 +718,11 @@ tasks:
     desc: GitHub status section
     cmds:
       - ./scripts/status.sh gh
+
+  status:creds:
+    desc: Local credential section (gh, Codex, Claude Code logins — local probes, no network)
+    cmds:
+      - ./scripts/status.sh creds
 
   status:code:
     desc: Codebase stats section

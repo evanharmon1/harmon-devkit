@@ -18,9 +18,9 @@ primary agent to adjudicate — the protocol and the loop caps live in AGENTS.md
    `printenv OPENAI_API_KEY | codex login --with-api-key` (billed API usage).
    Confirm with `codex login status`.
 3. **Trust the repo in Codex** when prompted on first run. The committed
-   `.codex/config.toml` raises the project-instruction budget to 64 KiB; project
-   config only loads for trusted repositories. The review scripts explicitly
-   pin review work to `gpt-5.6-sol` with high reasoning.
+   `.codex/config.toml` raises the project-instruction budget to 64 KiB. Review
+   tasks explicitly select `gpt-5.6-sol` with high reasoning, independently of
+   the interactive default.
 4. **For the automatic stop-gate only — the Claude Code codex plugin.** This
    repo's `.claude/settings.json` declares the `openai-codex` marketplace and
    enables `codex@openai-codex`, so Claude Code installs/offers the plugin
@@ -158,7 +158,8 @@ Two things not to change when backgrounding:
   `/codex:adversarial-review --background`: the slash command calls Codex
   directly, so it never receives the P0/P1/P2 scale that
   `scripts/codex-review.sh` writes into the prompt. Fine for an interactive
-  spot-check; it cannot establish the clean pass this loop gates on.
+  spot-check; it cannot establish the adjudicated-clean rounds this loop gates
+  on.
 
 **Then leave the tree alone until it finishes.** `codex-review.sh` captures the
 file manifest at launch, but Codex collects the diffs itself as it runs — so
@@ -232,8 +233,9 @@ release plumbing), disable it for routine development.
 task check      # fast inner loop while editing
 task verify     # definition-of-done gate
 task challenge  # adversarial second model — adjudicate, fix, re-challenge
-                # until a CLEAN pass (no P0/P1 findings), ≤4 rounds
-task review     # verification checkpoint — same clean-pass exit, ≤4 rounds
+                # until TWO CONSECUTIVE rounds adjudicate to zero P0/P1
+                # (any round with no findings at all ends it), ≤4 rounds
+task review     # verification checkpoint — same convergence rule, ≤4 rounds
 task ci         # full CI mirror
 # → open a DRAFT PR, then shepherd it: watch CI + reviews, settle the deferred
 #   P2s, adjudicate → fix → push, ≤4 rounds (independent of the loops above)
@@ -255,10 +257,58 @@ Those requests are explicit and made while the PR is draft — which is why
 Automatic reviews must be off (setup step 6): an automatic review triggered by
 `gh pr ready` would land after the gate that promoted the PR.
 
+## Convergence: when a stage ends
+
+A stage — `challenge` and `review`, counted separately — ends when
+**two consecutive rounds adjudicate to zero P0 and zero P1 findings**. Those
+rounds may come back empty, all-P2 as labeled, or P1-labeled and adjudicated
+down to
+P2; what counts is the **adjudicated** column of your adjudication table, not
+the label Codex attached. The second such round *is* the confirmation, so no
+extra run is owed after it. Two cases exit faster still. A round with **no
+findings at all** ends the stage on the spot, whenever it comes — an empty
+round is exactly the older "clean re-run" exit, so neither a trivial change
+nor a clean post-fix re-run pays for a confirmation pass. And a **capped
+final round** that adjudicates to zero P0/P1 ends the stage by itself: the
+confirmation it would otherwise owe is a run the cap forbids, and escalation
+at the cap is reserved for P0/P1 findings that persist — a clean last round
+is convergence, not disagreement.
+
+The old rule charged for three things it never delivered. A confirmation run
+after an all-P2 round: `harmon-init#725` ran roughly ten gate iterations for a
+six-line documentation fix, most of them re-attesting a change nobody disputed.
+Label inflation: a reviewer-labeled P1 that adjudication settled as a P2 still
+bought a fix-and-re-run cycle, which is how `harmon-init#664`/`#666` spent
+their late rounds — at 30–45 minutes apiece. And scaffolding drift: each round
+of hardening added surface for the next round to attack, and every finding
+along the way was individually defensible.
+
+The **scaffolding damper** is what replaces the cap as the first line of
+defense. At round 2 — the earliest round that can show the pattern — say on
+the table, for each finding, whether its subject exists only because an earlier
+round of the same stage added it. Where it does, adjudicate it with one of two
+dispositions written down: delete the scaffolding, or state that the code is
+in scope and why the change needs it. A deletion does not re-score the round
+that flagged the code — the finding keeps its adjudicated priority there, and
+it is the **next** round, reviewing the tree without it, that finds nothing
+left to re-raise and counts toward convergence. Reflexively hardening the
+previous round's fix is the failure mode; naming it on the table is the
+check.
+
+Two things do not move. The **4-round cap** per stage stands, and persistent
+P0/P1 disagreement at the cap is escalated rather than iterated on. And the
+deferred-P2 chain is a **precondition** of the exit, not a casualty of it:
+every P2 open at convergence must already be in the sidecar below, so
+`gh pr create` can move it into the PR body and the shepherd can settle it. An
+exit that drops a P2 is not an exit.
+
 ## Finding priorities
 
-Both modes ask Codex to label every finding, and the local loops gate on that
-label:
+Both modes ask Codex to label every finding on this scale. The label is the
+reviewer's opening claim; what the local loops gate on is the **adjudicated**
+priority — your verdict after verifying the finding (see "Convergence: when a
+stage ends" above). Adjudication may downgrade a label with evidence, never
+silently drop one:
 
 | Priority | Meaning | Gates `challenge`/`review`? |
 | --- | --- | --- |
@@ -313,9 +363,10 @@ code with backticks or `$(…)`, and inside a double-quoted string the shell
 would run it. Quoting disables expansion, not termination — so pick a
 delimiter the finding text cannot contain.
 
-Check the file before appending: a stage only exits on a *clean re-run*, so an
-unchanged P2 comes back every remaining round and again in the next stage. Add
-it once, matching on location and substance rather than exact wording.
+Check the file before appending: an unchanged P2 is unchanged code, so it comes
+back every remaining round and again in the next stage — deferring it does not
+silence it. Add it once, matching on location and substance rather than exact
+wording.
 
 Move the list into the PR description when you open the PR, then delete the
 file — and sweep the tree for strays while you are there:

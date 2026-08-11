@@ -13,8 +13,9 @@ user clearly and explicitly asks for that specific checklist update.
 Work through this after generating the repo from harmon-init. Delete items
 that don't apply, then keep this file as a record of what was configured.
 
-Run **`task status:setup`** at any point to audit setup completeness — GitHub
-config, toolchain, devcontainer, and dev environment — against the items below
+Run **`task status:setup`** at any point to audit setup completeness — local
+credentials (gh, Codex), GitHub config, toolchain, devcontainer, and dev
+environment — against the items below
 (✓ done · ✗ missing · ? unknown · – n/a).
 
 ## 1. Local setup
@@ -200,11 +201,36 @@ config, toolchain, devcontainer, and dev environment — against the items below
       issue and PR carrying it keeps it, where create-then-delete would silently
       drop those associations. Map by **model family, not harness** —
       `agent:gemini-cli` → `claim:gemini`, `agent:kimi-k2` → `claim:kimi`,
-      `agent:qwen-code` → `claim:qwen`, `agent:github-copilot` →
-      `claim:copilot` — taking the target names from
-      `node scripts/agent-registry-labels.mjs suggest-claim`. A rename whose
-      target already exists is rejected by GitHub — migrate that one by hand,
-      and enumerate **`gh pr list` as well as `gh issue list`**: labels apply to
+      `agent:qwen-code` → `claim:qwen` — these three are fixed-family
+      harnesses, so the mapping is unconditional. `agent:github-copilot` is
+      **not**: Copilot is a broker (registry `family_constraint.kind:
+      "broker"`, default `mai`), so an old claim under that label may
+      actually have run GPT, Claude, or another brokered family — check the
+      claim/session record for which one before renaming, and rename to
+      `claim:<actual-family>` (only `claim:mai` when the record confirms
+      MAI). When the actual family can't be recovered: for a live claim,
+      settle it with its owner first rather than guess; for a
+      released/historical one, just delete the stale `agent:github-copilot`
+      label off that issue/PR instead of renaming it — a guessed family is
+      worse than none, since the claim label's whole meaning is the family.
+      Target names otherwise come from
+      `node scripts/agent-registry-labels.mjs suggest-claim`.
+      **Destination-collision procedure**: a rename whose target already
+      exists is rejected by GitHub (`gh label edit` errors: the destination
+      name is already in use — e.g. `claim:claude` already exists from a prior
+      `setup-github-labels` run). When that happens, migrate ASSOCIATIONS
+      instead of the label object: for every issue and PR carrying the old
+      label, add the destination label and remove the old one
+      (`gh issue edit <number> --add-label claim:claude --remove-label
+      agent:claude-code --repo <owner/repo>`; the same `--add-label
+      X --remove-label Y` pair works on `gh pr edit`), then delete the
+      now-empty old label (`gh label delete agent:claude-code --repo
+      <owner/repo> --yes`) once a re-read of `gh issue list --label
+      agent:claude-code --state all --limit 200` **and** the equivalent
+      `gh pr list` both return nothing — only then is it safe to delete; the
+      other checklist items below that reference this procedure reuse it
+      verbatim. Enumerate **`gh pr list` as well as `gh issue list`**
+      throughout, collision or not: labels apply to
       pull requests too and `gh issue list` never returns them, so deleting the
       legacy label afterwards would drop exactly the associations the re-labelling
       missed — the loss this whole item exists to avoid. Check for in-flight
@@ -213,6 +239,79 @@ config, toolchain, devcontainer, and dev environment — against the items below
       record naming the old label will not release the renamed one, so settle or
       amend those records in the same sitting. Re-read `gh label list --limit 200` afterwards — no `agent:*`
       should remain.
+- [ ] **[human-only] Retire pre-2026-refresh `codex`/`copilot` agent labels** —
+      needed only where an explicit enumeration shows
+      `suggest:codex`/`claim:codex` or `suggest:copilot`/`claim:copilot`
+      still exist: `gh label list --repo <owner/repo> --limit 1000 --json
+      name --jq '.[].name' | grep -E '^(suggest|claim):(codex|copilot)$'`
+      (the default `gh label list --limit 200` paged listing can miss these
+      on a repo with many labels — use this enumeration, not the paged form,
+      everywhere in this item). harmon-init issue #751 renamed those families
+      to `gpt` and `mai` (Codex and Copilot are harnesses, not families — the
+      same harness/family split D9 already made elsewhere; see ADR 0005 D8).
+      A `setup-github-labels` re-run never deletes the old family, so it
+      survives beside the new registry-rendered one.
+
+      **`codex` → `gpt` is a fixed mapping** (Codex only ever ran GPT) —
+      **rename, never re-create**, the same way as the `agent:*` item above:
+      `gh label edit suggest:codex --name suggest:gpt --repo <owner/repo>`
+      (repeat for `claim:codex`), which preserves issue/PR associations
+      instead of dropping them.
+
+      **`copilot` is NOT a fixed mapping — apply the same broker caution as
+      the `agent:github-copilot` entry in the `agent:*` item above, not a
+      blanket rename to `mai`.** Copilot is a broker (registry
+      `family_constraint.kind: "broker"`, default `mai`): a `claim:copilot`
+      may have actually run GPT, Claude, or another brokered family, and
+      `suggest:copilot` only ever named a harness preference, never an MAI
+      one. For `claim:copilot`, follow the `agent:*` item's procedure exactly
+      — check the claim/session record for the actual family and rename to
+      `claim:<actual-family>` (only `claim:mai` when the record confirms
+      MAI); when unrecoverable, settle a live claim with its owner first, or
+      delete the stale label from a released/historical issue/PR instead of
+      guessing. For `suggest:copilot`, there is no rename to make: re-express
+      the intent by re-labelling each issue with whichever family it actually
+      meant, or drop the label, rather than mechanically renaming a harness
+      name into a family slot it never occupied.
+
+      **If the destination already exists** — a `setup-github-labels` re-run
+      already created `suggest:gpt`/`claim:mai` before this cleanup runs —
+      `gh label edit` is rejected the same way; use the **destination-collision
+      procedure from the `agent:*` item above** (add the new label to every
+      issue/PR carrying the old one, remove the old, then delete the old label
+      once empty) instead of trying to rename over it. Check for in-flight
+      claims first — `gh issue list --label claim:codex --state all --limit
+      1000` **and** `gh pr list --label claim:codex --state all --limit
+      1000` (repeat for `claim:copilot`, remembering the broker caution above
+      governs what you rename it to) — and settle or amend any that name the
+      old label before renaming it out from under them. Re-run the
+      enumeration above afterwards — it should return nothing.
+
+      **Also check for model-level labels naming the old family** —
+      `suggest:codex:<model>` / `claim:codex:<model>` /
+      `suggest:copilot:<model>` / `claim:copilot:<model>` (`suggest:codex:sol`,
+      `claim:copilot:code-1-flash`, …). Those are created on demand rather than
+      seeded, so the same paged-listing gap applies — enumerate with the
+      family prefix: `gh label list --repo <owner/repo> --limit 1000 --json
+      name --jq '.[].name' | grep -E '^(suggest|claim):(codex|copilot):'`.
+      Rename each `codex:<model>` label the same fixed-mapping way,
+      **preserving its model suffix** (`suggest:codex:sol` →
+      `suggest:gpt:sol` — the model slug is unchanged, only the family
+      segment moves), and run the same in-flight-claim check per label before
+      renaming it (`gh issue list --label suggest:codex:sol --state all
+      --limit 1000` / `gh pr list --label suggest:codex:sol --state all
+      --limit 1000`, one pair per label found). **`copilot:<model>` labels get
+      the same broker treatment as the family-level ones above** — determine
+      the actual family per label from its claim/session record and rename
+      preserving the suffix (`claim:copilot:code-1-flash` →
+      `claim:<actual-family>:code-1-flash`), or remove/re-express rather than
+      assume `mai`. **Collisions use the same destination-collision procedure
+      too** — a model-level label can already exist for the same reason a
+      family-level one can (an on-demand `suggest:gpt:sol` created before this
+      cleanup ran) — migrate associations from `suggest:codex:sol` to
+      `suggest:gpt:sol` and delete `suggest:codex:sol` once it carries no
+      issues or PRs, rather than renaming over the existing one. Re-run the
+      `grep` above afterwards — it should return nothing.
 - [ ] Project views: create the starter views (Board / Triage / Agent queue /
       Planning / Mine) in the Project UI — Projects V2 has no view API,
       so this is a one-time manual step. Filters/layouts are in

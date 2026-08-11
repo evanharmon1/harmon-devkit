@@ -1,7 +1,16 @@
-# Project-level Codex CLI config (see docs/guides/codex-review.md).
+# Project-level Codex CLI config.
 # Loaded only once the repo is trusted by Codex (`codex` prompts on first run,
 # or set [projects."<path>"] trust_level = "trusted" in ~/.codex/config.toml).
-#
-# Keep this source repo portable across harness defaults while allowing Codex to
-# read the full project policy when it grows beyond the default 32 KiB budget.
+
+# AGENTS.md currently exceeds Codex's default 32 KiB discovery budget. Keep the
+# advisory warning at that cross-client portability threshold while allowing
+# Codex to read the complete repository policy.
 project_doc_max_bytes = 65536
+
+[agents.reviewer]
+description = "Review changes for correctness, security, regressions, and missing tests without editing."
+config_file = "agents/reviewer.toml"
+
+[agents.implementer]
+description = "Implement a self-contained plan or confirmed defect and verify the result."
+config_file = "agents/implementer.toml"
