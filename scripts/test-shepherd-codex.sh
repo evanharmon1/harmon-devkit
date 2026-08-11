@@ -229,7 +229,7 @@ write_defaults() {
     # `new_cycle` rewrites this fixture: carry validates --base-ref against
     # the PR's own base, and the carry cases merge `carry-base`.
     jq -cn --argjson author "$pr_author_id" --arg head "$head_sha" \
-        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
+        '{number:493,state:"open",user:{id:$author,login:"pr-author"},head:{sha:$head},
           base:{ref:"carry-base"}}' \
         >"${fixtures}/pr.json"
     rm -f "${fixtures}/fail-endpoint"
@@ -1420,7 +1420,7 @@ jq -cn \
     ]]' >"${fixtures}/inline.pages.json"
 # `head` still reports the state head, so only the PR payload disagrees.
 jq -cn --argjson author "$pr_author_id" --arg moved "$(git rev-parse HEAD^)" \
-    '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$moved}}' \
+    '{number:493,state:"open",user:{id:$author,login:"pr-author"},head:{sha:$moved}}' \
     >"${fixtures}/pr.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 2 head-changed
@@ -2810,7 +2810,7 @@ new_cycle_at() {
     printf '%s\n' "$1" >"${fixtures}/head"
     printf '%s\n' "$1" >"${fixtures}/resolved-head"
     jq -cn --argjson author "$pr_author_id" --arg head "$1" \
-        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
+        '{number:493,state:"open",user:{id:$author,login:"pr-author"},head:{sha:$head},
           base:{ref:"carry-base"}}' \
         >"${fixtures}/pr.json"
     rm -f "$state"
@@ -2871,7 +2871,7 @@ carry_clean_cycle() {
     # write to this file in this helper.
     jq -cn --argjson author "$pr_author_id" --arg head "$carry_new_head" \
         --arg base_sha "$(git rev-parse carry-base)" \
-        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
+        '{number:493,state:"open",user:{id:$author,login:"pr-author"},head:{sha:$head},
           base:{ref:"carry-base",sha:$base_sha}}' \
         >"${fixtures}/pr.json"
 }
@@ -3232,5 +3232,37 @@ run_carry --new-head "$carry_new_head" --base-ref carry-base
     fail "same-second activity must refuse the carry, got rc=$carry_rc: $carry_out"
 printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
 
+# The payload is already fetched, so this costs nothing — and without it a
+# wrong local descendant overwrites a terminal-clean state with a SHA the PR
+# does not point at (PR #410 shepherd round 3).
+echo "==> a new head that is not the PR's head refuses the carry"
+carry_setup
+carry_clean_cycle
+jq --arg sha "$carry_old_head" '.head.sha = $sha' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "a mismatched PR head must refuse the carry, got rc=$carry_rc: $carry_out"
+[ "$(jq -r .head "$state")" = "$carry_old_head" ] ||
+    fail "a refused head-mismatch carry must not touch the state: $(jq -c . "$state")"
+
+# A scalar where an object belongs must fail closed with the documented exit 2,
+# not kill jq mid-classification with its own exit 5 (PR #410 shepherd round 3).
+echo "==> a malformed settled entry fails closed rather than crashing"
+new_cycle
+jq '.settled = [1]' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check '2026-07-31T08:01:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "a scalar settled entry must exit 2, got rc=$check_rc: $check_out"
+
+echo "==> a malformed carries entry fails closed rather than crashing"
+new_cycle
+jq '.carries = [1]' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check '2026-07-31T08:01:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "a scalar carries entry must exit 2, got rc=$check_rc: $check_out"
 # Last line on purpose: every case above must have run for this to print.
 echo "shepherd Codex cloud-review classifier: PASS"

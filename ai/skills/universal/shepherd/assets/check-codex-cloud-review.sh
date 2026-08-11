@@ -427,8 +427,13 @@ read_state() {
     jq -e '
       type == "object" and
       (.version == 1 or .version == 2) and
-      (.settled == null or (.settled | type == "array")) and
-      (.carries == null or (.carries | type == "array")) and
+      (.settled == null or ((.settled | type == "array") and
+        (.settled | all(type == "object" and
+          (.surface | type == "string") and (.id | type == "number"))))) and
+      (.carries == null or ((.carries | type == "array") and
+        (.carries | all(type == "object" and
+          (.carried_from | type == "string") and
+          (.carried_to | type == "string"))))) and
       (.last_result == null or (.last_result | type == "string")) and
       (.last_result_at == null or (.last_result_at | type == "string")) and
       (.repo | type == "string") and
@@ -2216,8 +2221,12 @@ carry)
         die "the state head does not resolve in this checkout: $state_head"
     git rev-parse --verify --quiet "$new_head^{commit}" >/dev/null ||
         die "--new-head does not resolve in this checkout: $new_head"
-    git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null ||
-        die "--base-ref does not resolve in this checkout: $base_ref"
+    # No local resolution requirement for --base-ref. It is a NAME here,
+    # matched against the PR's base branch below; the bytes are fingerprinted
+    # against the commit GitHub reports for that branch. Requiring the name to
+    # resolve locally too rejected valid catch-ups in exactly the checkouts
+    # that need care — a fork or release-branch clone whose `origin` never
+    # advertised the base — for a check that proves nothing the SHA does not.
     # Merge-only, as issue #752 specifies. A rebase or an amend rewrites the
     # commits the review was attributed to, and identical content there is not
     # the same claim: the reviewed objects no longer exist on the branch.
@@ -2320,6 +2329,21 @@ carry)
         die "the PR reports no usable base commit to fingerprint against"
     git rev-parse --verify --quiet "$pr_base_sha^{commit}" >/dev/null ||
         die "the PR's base commit $pr_base_sha is not in this checkout; fetch $pr_base and retry"
+
+    # And --new-head must be what the PR actually points at. The payload is
+    # already here, so this costs nothing: without it a wrong local descendant
+    # — or another push landing between the documented `git push` and this
+    # command — overwrites a terminal-clean state with a SHA that is not the
+    # PR's head, and the next `check` exits head-changed with the original
+    # verdict no longer carryable. Refusing leaves the state recoverable.
+    pr_state=$(printf '%s' "$pr_payload" | jq -r '.state // empty')
+    [ "$pr_state" = "open" ] || [ "$pr_state" = "OPEN" ] ||
+        die "the PR is $pr_state, not open; there is nothing to carry onto"
+    pr_head_sha=$(printf '%s' "$pr_payload" | jq -r '.head.sha // empty')
+    valid_sha "$pr_head_sha" ||
+        die "the PR reports no usable head commit"
+    [ "$pr_head_sha" = "$new_head" ] ||
+        die "--new-head is $new_head but the PR's head is $pr_head_sha; push first, or carry onto the current head"
 
     old_fingerprint=$(diff_fingerprint "$pr_base_sha" "$state_head") ||
         die "cannot compute the state head's diff against $pr_base (a SHA-256 tool is required)"

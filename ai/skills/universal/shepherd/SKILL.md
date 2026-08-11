@@ -734,17 +734,19 @@ you rather than the bot):
   # The PR's OWN base, never a hard-coded main: a stacked or release-branch
   # PR merged with main is contaminated with commits from the wrong branch,
   # and the carry would then be validated against a base the PR never had.
-  # Fetch from the BASE REPOSITORY by URL, not from `origin`: on a fork
-  # checkout `origin` is the fork, so `origin/$base` is a fork branch that may
-  # be stale or carry fork-only commits — and merging that pushes the
-  # contamination into the PR before `carry` ever validates anything.
+  # Fetch the base from the PR's OWN repository by URL, never from `origin`:
+  # on a fork checkout `origin` is the fork, so `origin/$base` is a fork
+  # branch that may be stale or carry fork-only commits — and merging that
+  # pushes the contamination into the PR before `carry` validates anything.
+  # `$repo` IS the base repository: a PR always lives in the repo its base
+  # branch belongs to (only the HEAD can come from a fork).
   base="$(gh pr view <n> --repo "$repo" --json baseRefName --jq .baseRefName)"
-  base_repo="$(gh pr view <n> --repo "$repo" \
-    --json baseRepository --jq '.baseRepository.owner.login + "/" + .baseRepository.name')"
-  git fetch "https://github.com/$base_repo.git" "$base"
+  git fetch "https://github.com/$repo.git" "$base"
   git merge --no-edit FETCH_HEAD && git push
+  # --base-ref is the branch NAME; it needs no local ref, because the bytes
+  # are fingerprinted against the commit GitHub reports for that branch.
   "$helper" carry --state "$state" --actor-id 199175422 \
-    --new-head "<the merged head>" --base-ref "origin/$base"
+    --new-head "$(git rev-parse HEAD)" --base-ref "$base"
   ```
 
   `--base-ref` is REQUIRED: there is no default, because a stacked or
