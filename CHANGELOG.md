@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.28.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.27.0...v0.28.0) (2026-08-11)
+
+
+### Features
+
+* **standardize-repo:** classify template-declared repo-owned paths as OWNED, non-gating ([#414](https://github.com/evanharmon1/harmon-devkit/issues/414)) ([ba6f7fb](https://github.com/evanharmon1/harmon-devkit/commit/ba6f7fb2982c3bd0cb7d9da18aa554e26eb989a7))
+
+
+### Bug Fixes
+
+* **shepherd:** empty-body review shells crash check and race the clean gates ([#405](https://github.com/evanharmon1/harmon-devkit/issues/405)) ([d3f121d](https://github.com/evanharmon1/harmon-devkit/commit/d3f121de4032cf51b5d7ba7ce7e6ba5d9fed543a))
+* **standardize-repo:** require a staged change before reporting staged state ([#409](https://github.com/evanharmon1/harmon-devkit/issues/409)) ([5c4b798](https://github.com/evanharmon1/harmon-devkit/commit/5c4b798aeb1fc70599d35d5f87731aa5a1d658a8))
+* update to harmon-init v4.27.0 ([#413](https://github.com/evanharmon1/harmon-devkit/issues/413)) ([52a0f20](https://github.com/evanharmon1/harmon-devkit/commit/52a0f20c60457555611373b65de12853adc7de2b))
+
 ## [0.27.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.26.1...v0.27.0) (2026-08-11)
 
 
