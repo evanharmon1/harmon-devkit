@@ -548,7 +548,18 @@ edited_roots="$(jq -r --argjson allowed "$allowed_edited_roots" \
 [ -z "$edited_roots" ] ||
     fail_condition threads-edited-since-reply "reviewer edits after your reply — re-read and answer, or clear each root explicitly with --allow-edited-root: $edited_roots"
 
-# 8. The current-head Codex cloud-review cycle, where enabled. Classification
+# 8. The remaining fingerprint surfaces (reviews, top-level comments, thread
+# resolution). Thread isResolved is hashed but never gated: resolution is the
+# maintainer's act, and rejection-answered threads legitimately stay
+# unresolved until a human resolves them.
+fetch_fingerprint_surfaces
+
+# 9. The current-head Codex cloud-review cycle, where enabled — run AFTER the
+# fingerprint surfaces are captured, deliberately: the helper re-reads its
+# four evidence surfaces fresh, so any Codex activity already inside the
+# baseline fingerprint has been classified by this later read, and activity
+# landing after it sits outside the baseline, where the post-promotion
+# compare flags it. Classification
 # belongs to the sibling helper — run it, never re-derive its evidence. But
 # first bind the attempt state to THIS gate's target: the helper validates
 # its state against the live head of whatever PR the state itself names, so a
@@ -584,12 +595,6 @@ if [ "$codex_disabled" != 1 ]; then
         ;;
     esac
 fi
-
-# 9. The remaining fingerprint surfaces (reviews, top-level comments, thread
-# resolution). Thread isResolved is hashed but never gated: resolution is the
-# maintainer's act, and rejection-answered threads legitimately stay
-# unresolved until a human resolves them.
-fetch_fingerprint_surfaces
 
 # 10. Checks, one more time: a rerun or a late-triggered workflow can appear
 # on this immutable commit while the fetches above ran, checks are outside

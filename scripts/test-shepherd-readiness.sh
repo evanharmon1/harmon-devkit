@@ -252,6 +252,13 @@ first_fingerprint="$(gate_field fingerprint)"
     fail "pass did not print a fingerprint: $gate_out"
 grep -q 'codex-helper check' "$log" ||
     fail "the enabled-Codex pass did not invoke the sibling helper"
+# The classifier must run AFTER the fingerprint surfaces are captured, so
+# Codex activity inside the baseline has been classified by a later read.
+codex_log_line="$(grep -n 'codex-helper check' "$log" | head -n 1 | cut -d: -f1)"
+threads_log_line="$(grep -n '^api graphql' "$log" | head -n 1 | cut -d: -f1)"
+[ -n "$codex_log_line" ] && [ -n "$threads_log_line" ] &&
+    [ "$codex_log_line" -gt "$threads_log_line" ] ||
+    fail "the Codex classifier must run after the fingerprint-surface fetches (codex at line $codex_log_line, threads at $threads_log_line)"
 rm -f "${fixtures}/pr-view-count"
 run_gate --codex-state "${fixtures}/codex-state.json"
 assert_gate 0 pass ready
@@ -708,6 +715,8 @@ refuse_case "graphql" graphql -f query=x
 refuse_case "graphql alone" graphql
 refuse_case "/graphql" /graphql
 refuse_case "GraphQL case" GraphQL
+refuse_case "absolute https URL" https://api.github.com/repos/example/repo/pulls/493
+refuse_case "absolute http URL" http://127.0.0.1/latest/meta-data
 refuse_case "two endpoints" repos/a/b/pulls/1 repos/a/b/pulls/2
 refuse_case "no endpoint" --paginate
 refuse_case "trailing -X without value" repos/a/b/pulls/1 -X

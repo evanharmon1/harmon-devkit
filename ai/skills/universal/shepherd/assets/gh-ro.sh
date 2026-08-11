@@ -126,5 +126,14 @@ graphql | graphql/* | graphql\?*)
     refuse "the graphql endpoint — GraphQL rides POST and can carry mutations; readiness-gate.sh owns the skill's GraphQL reads"
     ;;
 esac
+# gh api honors an absolute http(s) URL verbatim, bypassing the API host —
+# which would let a pre-approved wrapper GET internal or metadata endpoints.
+# GET is only side-effect-free by convention on GitHub's own REST surface,
+# so only relative paths resolved against the authenticated API host pass.
+case "$endpoint" in
+*://*)
+    refuse "an absolute URL — only relative GitHub REST paths, resolved against the authenticated API host, are permitted"
+    ;;
+esac
 
 exec gh api --method GET "$@" "$endpoint"

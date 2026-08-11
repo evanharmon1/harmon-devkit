@@ -1038,10 +1038,14 @@ loops indefinitely:
      gated: resolution is the maintainer's act, and rejection-answered
      threads legitimately stay unresolved until a human resolves them.
 
-   The pass fingerprint certifies the exact content the gate evaluated, so
-   run `gh pr ready` directly out of a pass — anything landing in between
-   shows up in the post-promotion compare — and if meaningful time has
-   passed since the pass, re-run `check` rather than trusting an old one.
+   The pass fingerprint certifies the exact content the gate evaluated, and
+   a pass is evidence about that moment only. Run `gh pr ready` immediately
+   out of it — content landing in between shows up in the post-promotion
+   compare, but checks and mergeability sit deliberately outside the
+   fingerprint, so time is what erodes a pass. When anything has held the
+   promotion beyond moments — the permission prompt on `gh pr ready`
+   included, which can wait minutes for a human — re-run `check` and
+   promote only out of the fresh pass, never out of a remembered one.
 
    Before promotion, identify required workflows and review apps that react only
    to `pull_request.ready_for_review`. Promotion can notify CODEOWNERS and other
