@@ -742,11 +742,18 @@ you rather than the bot):
   # branch belongs to (only the HEAD can come from a fork).
   base="$(gh pr view <n> --repo "$repo" --json baseRefName --jq .baseRefName)"
   git fetch "https://github.com/$repo.git" "$base"
-  git merge --no-edit FETCH_HEAD && git push
+  git merge --no-edit FETCH_HEAD
+  # A base merge is a round push like any other: gate it, and push the SHA you
+  # gated rather than a mutable HEAD. Section 5's rule is not waived because
+  # the merge was mechanical — a catch-up can break tests, and pushing HEAD
+  # can send a commit made after the gate ran.
+  merged="$(git rev-parse HEAD)"
+  task ci
+  git push origin "$merged:$(git branch --show-current)"
   # --base-ref is the branch NAME; it needs no local ref, because the bytes
   # are fingerprinted against the commit GitHub reports for that branch.
   "$helper" carry --state "$state" --actor-id 199175422 \
-    --new-head "$(git rev-parse HEAD)" --base-ref "$base"
+    --new-head "$merged" --base-ref "$base"
   ```
 
   `--base-ref` is REQUIRED: there is no default, because a stacked or

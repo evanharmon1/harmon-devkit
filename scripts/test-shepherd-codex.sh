@@ -3264,5 +3264,20 @@ mv "${state}.next" "$state"
 run_check '2026-07-31T08:01:00Z'
 [ "$check_rc" -eq 2 ] ||
     fail "a scalar carries entry must exit 2, got rc=$check_rc: $check_out"
+
+# Retargeting a stacked PR changes the three-dot diff while the head SHA
+# stands still, so a carry recorded against the old base attests a proposal
+# nobody reviewed (PR #410 shepherd round 4).
+echo "==> a retargeted base invalidates a carried verdict"
+carry_setup
+carry_clean_cycle
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 0 ] || fail "carry should have succeeded: $carry_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+jq '.base.ref = "other-base"' "${fixtures}/pr.json" >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
 # Last line on purpose: every case above must have run for this to print.
 echo "shepherd Codex cloud-review classifier: PASS"

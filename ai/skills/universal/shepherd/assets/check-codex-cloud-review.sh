@@ -317,10 +317,17 @@ record_check_result() {
 # changes and which now proposes nothing at all.
 diff_fingerprint() {
     fp_base=$(git merge-base "$1" "$2") || return 1
+    # `--ignore-submodules=none` is load-bearing, not belt-and-braces: with
+    # `diff.ignoreSubmodules=all` (or a per-submodule `ignore=all`) configured,
+    # git omits changed gitlinks, so a PR that also touches an ordinary file
+    # keeps a nonempty, EQUAL fingerprint while its submodule pointer moved —
+    # an unreviewed dependency bump inheriting a clean verdict.
+    # `scripts/codex-review.sh` neutralizes the same setting for the same
+    # reason.
     fp_bytes=$(git -c diff.algorithm=myers -c diff.mnemonicPrefix=false \
         -c diff.noprefix=false -c diff.external= \
         diff --no-color --no-ext-diff --no-textconv --full-index \
-        --unified=3 "$fp_base" "$2") || return 1
+        --ignore-submodules=none --unified=3 "$fp_base" "$2") || return 1
     [ -n "$fp_bytes" ] || return 0
     # A collision-resistant digest, not `cksum`: cksum is a 32-bit CRC, and
     # equal CRCs do not prove equal bytes. The carry invariant is
@@ -2000,12 +2007,42 @@ check)
     # result must still be clean. Together they mean each successive carry
     # revalidates from where the state actually is rather than from wherever
     # the chain began.
-    carried_from=$(jq -r --arg head "$state_head" '
+    carry_entry=$(jq -c --arg head "$state_head" '
           [(.carries // [])[] | select(.carried_to == $head)] as $chain |
           ($chain | length) as $depth |
-          if $depth == 0 then empty
-          else ($chain[$depth - 1] | .carried_from // empty) end
+          if $depth == 0 then empty else $chain[$depth - 1] end
         ' "$state_file")
+    carried_from=$(printf '%s' "$carry_entry" | jq -r '.carried_from // empty')
+    if [ -n "$carried_from" ]; then
+        # A carry attests THIS proposal against THIS base. Retargeting a
+        # stacked PR changes the three-dot diff while the head SHA stands
+        # still, so a carry recorded against the old base would otherwise
+        # keep reporting clean for a proposal nobody reviewed. Re-prove the
+        # live base — its branch AND the commit — against what was recorded,
+        # and fail closed on anything unreadable.
+        carried_base_ref=$(printf '%s' "$carry_entry" | jq -r '.base_ref // empty')
+        carried_base_sha=$(printf '%s' "$carry_entry" | jq -r '.base_sha // empty')
+        carry_pr_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") ||
+            bounded_wait "cannot re-confirm the PR base behind a carried verdict"
+        live_base_ref=$(printf '%s' "$carry_pr_payload" | jq -r '.base.ref // empty')
+        live_base_sha=$(printf '%s' "$carry_pr_payload" | jq -r '.base.sha // empty')
+        if [ -z "$carried_base_ref" ] || [ -z "$carried_base_sha" ] ||
+            [ -z "$live_base_ref" ] || [ -z "$live_base_sha" ]; then
+            emit indeterminate "a carried verdict cannot be revalidated against the PR's live base"
+            exit 2
+        fi
+        case "$carried_base_ref" in
+        refs/remotes/origin/*) carried_base_name=${carried_base_ref#refs/remotes/origin/} ;;
+        origin/*) carried_base_name=${carried_base_ref#origin/} ;;
+        refs/heads/*) carried_base_name=${carried_base_ref#refs/heads/} ;;
+        *) carried_base_name=$carried_base_ref ;;
+        esac
+        if [ "$carried_base_name" != "$live_base_ref" ] ||
+            [ "$carried_base_sha" != "$live_base_sha" ]; then
+            emit findings "the PR's base moved since the verdict was carried; the carried proposal is not the current one"
+            exit 10
+        fi
+    fi
     if [ -n "$carried_from" ] &&
         [ "$(jq -r '.last_result // empty' "$state_file")" = "clean" ]; then
         if [ -n "$shell_barrier" ]; then
@@ -2384,6 +2421,18 @@ carry)
             diff_fingerprint:$diff_fingerprint,carried_at:$carried_at
           }])
         ' "$state_file")
+    # Re-prove the head immediately before committing the payload. The check
+    # above happened before two fingerprint computations, and a push landing
+    # in that window would rewrite `.head` to a SHA the PR has already left —
+    # the next `check` then exits head-changed and the clean verdict is no
+    # longer carryable at all. Narrow window, cheap proof, and the failure it
+    # prevents costs a whole review cycle to recover from.
+    final_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") ||
+        die "cannot re-confirm the PR head before writing the carry"
+    final_head=$(printf '%s' "$final_payload" | jq -r '.head.sha // empty')
+    [ "$final_head" = "$new_head" ] ||
+        die "the PR head moved to $final_head while carrying; nothing was written — re-run against the new head"
+
     write_state "$state_file" "$payload"
     release_state_lock
     printf '%s\n' "$payload"
