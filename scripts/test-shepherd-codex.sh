@@ -2552,7 +2552,7 @@ write_badged_comment() {
           id:$id,user:{id:$actor,login:$login},
           created_at:"2026-07-31T08:00:02Z",updated_at:$updated,
           issue_url:"https://api.github.com/repos/example/repo/issues/493",
-          body:("P1: the rollback path loses data.\n\n**Reviewed commit:** `" +
+          body:("**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the rollback path loses data**\n\n**Reviewed commit:** `" +
             $prefix + "`")
         }' >"${fixtures}/comment-${1}.json"
     jq -c '[[.]]' "${fixtures}/comment-${1}.json" \
@@ -2571,7 +2571,7 @@ write_badged_review() {
           id:$id,user:{id:$actor,login:$login},
           submitted_at:"2026-07-31T08:00:04Z",
           commit_id:$head,
-          body:"### Codex Review\n\nP1: the rollback path also loses data."
+          body:"### Codex Review\n\n**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the rollback path also loses data**"
         }' >"${fixtures}/review-${1}.json"
     jq -c '[[.]]' "${fixtures}/review-${1}.json" \
         >"${fixtures}/reviews.pages.json"
@@ -2708,7 +2708,7 @@ jq -cn \
       id:77,user:{id:$outsider,login:"bystander"},
       created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
       issue_url:"https://api.github.com/repos/example/repo/issues/493",
-      body:("P1: the rollback path loses data.\n\n**Reviewed commit:** `" + $prefix + "`")
+      body:("**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the rollback path loses data**\n\n**Reviewed commit:** `" + $prefix + "`")
     }' >"${fixtures}/comment-77.json"
 run_settle --surface comment --id 77 --disposition declined --note "declined"
 [ "$settle_rc" -eq 2 ] ||
@@ -2795,7 +2795,7 @@ jq -cn \
         id:78,user:{id:$id,login:$login},
         created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
         issue_url:"https://api.github.com/repos/example/repo/issues/493",
-        body:("**Reviewed commit:** `" + $prefix + "`\n\nP1: the first finding\n\nP2: the second finding")
+        body:("**Reviewed commit:** `" + $prefix + "`\n\n**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the first finding**\n\n**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  the second finding**")
       }
     ]]' >"${fixtures}/comments.pages.json"
 jq -cn \
@@ -2806,7 +2806,7 @@ jq -cn \
       id:78,user:{id:$id,login:$login},
       created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
       issue_url:"https://api.github.com/repos/example/repo/issues/493",
-      body:("**Reviewed commit:** `" + $prefix + "`\n\nP1: the first finding\n\nP2: the second finding")
+      body:("**Reviewed commit:** `" + $prefix + "`\n\n**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the first finding**\n\n**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  the second finding**")
     }' >"${fixtures}/comment-78.json"
 run_settle --surface comment --id 78 --disposition declined --note "answered"
 [ "$settle_rc" -eq 2 ] ||
@@ -2862,5 +2862,17 @@ mv "${state}.next" "$state"
 run_check '2026-07-31T08:01:00Z'
 [ "$check_rc" -eq 2 ] ||
     fail "an unknown-surface entry must exit 2, got rc=$check_rc: $check_out"
+
+# The rendered badge Codex actually posts carries the severity TWICE — alt text
+# and URL — so a token scan reported two findings for one and demanded
+# `--covers 2` for the ordinary single-finding case (PR #424 shepherd round 2).
+echo "==> one rendered badge counts as one finding, no --covers needed"
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "answered"
+[ "$settle_rc" -eq 0 ] ||
+    fail "a single rendered badge must settle without --covers: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
 # Last line on purpose: every case above must have run for this to print.
 echo "shepherd Codex cloud-review classifier: PASS"

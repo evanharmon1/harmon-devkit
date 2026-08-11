@@ -2005,9 +2005,20 @@ settle)
     # no mechanism can judge whether an adjudication is any good — but it
     # cannot be satisfied by accident, which is the whole difference between
     # settling a body and settling the one finding you happened to notice.
+    # Count RENDERED badges, not severity tokens. Codex writes a finding as
+    # `![P2 Badge](https://img.shields.io/badge/P2-yellow…)`, which carries the
+    # severity twice — alt text and URL — so a token scan reports two findings
+    # for one and demands `--covers 2` for the ordinary single-finding case,
+    # breaking the documented invocation. Matching the alt-text form counts
+    # each badge once. A body that states findings as plain prose renders no
+    # badge at all, so that shape falls back to the token scan, which is
+    # correct for it; `has_severity_marker` above has already established that
+    # at least one finding is present either way.
     badge_count=$(printf '%s' "$target" |
-        jq -r '[(.body // "") | ascii_downcase |
-                 scan("\\bp[0-2]\\b")] | length') ||
+        jq -r '((.body // "") | ascii_downcase) as $body |
+               ([$body | scan("!\\[p[0-2] badge\\]")] | length) as $rendered |
+               if $rendered > 0 then $rendered
+               else ([$body | scan("\\bp[0-2]\\b")] | length) end') ||
         die "cannot count the findings in target $target_id"
     if [ "$badge_count" -gt 1 ]; then
         [ -n "$covers" ] ||
