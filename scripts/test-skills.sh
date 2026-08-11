@@ -984,11 +984,21 @@ expect_fail "standards catalog does not source the vocabulary ADR from mutable m
 expect_ok "standards catalog classifies missing registries as version lag" \
     grep -qF 'If that revision lacks the registry, report template-version lag' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog marks Claude workflow inventory pre-rollout" \
-    grep -qF 'The three `claude-*` rows describe current pre-rollout template behavior.' \
+expect_ok "standards catalog describes mention-only Claude workflow triggers" \
+    sh -c 'test "$(grep -cF "Mention-only, no label trigger" "$1")" = 3' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog records the Claude workflow target" \
-    grep -qF 'target is mention-only and `claim:claude`-aware' \
+expect_ok "standards catalog records the claim:claude lifecycle" \
+    sh -c 'grep -qF "Claim the target with claim:claude" "$1" &&
+        grep -qF "claude-claim-" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+# The catalog must not reconstruct a live trigger phrase: quoted into an issue
+# or PR comment, the workflows' contains() gate matches it and starts a real
+# run (observed on harmon-init#718). Normalize whitespace first — rendered
+# markdown rejoins a phrase split across a line break. The needle is assembled
+# from two pieces so this guard is not itself a literal trigger phrase.
+expect_fail "standards catalog reconstructs no literal Claude trigger phrase" \
+    sh -c 'mention="@claude"
+        tr -s "[:space:]" " " <"$1" | grep -qE "${mention} (plan|implement|review)"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog keeps migration procedures out of the catalog" \
     grep -qF 'not a second procedure in this catalog' \

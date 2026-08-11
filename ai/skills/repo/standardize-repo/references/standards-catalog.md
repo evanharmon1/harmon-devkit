@@ -475,20 +475,57 @@ Workflow inventory:
 | Workflow | Triggers / role | Source |
 |---|---|---|
 | `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; jobs `lint`, `security` (+ `build-test` node, `lighthouse` web-astro); Semgrep runs for free private repos or profiles without CodeQL; aggregate `verify` | [copier] |
-| `claude-plan.yml` | Pre-rollout: `@claude plan` / `claude-plan` label → posts a plan, no writes (`--disallowedTools Edit Write Bash`, `--model opus`) | [copier] |
-| `claude-implement.yml` | Pre-rollout: `@claude implement` / `claude-implement` label → opens a PR on a `claude/` branch (`--model sonnet`) | [copier] |
-| `claude-review.yml` | Pre-rollout: `@claude review` / `claude-review` label → review comment, no writes (sticky comment) | [copier] |
+| `claude-plan.yml` | Mention-only, no label trigger: an authorized sender's comment or review body carrying the bot mention and then the `plan` subcommand → claims the target, posts a plan, no writes (`--disallowedTools Edit Write Bash`, `--model opus`) | [copier] |
+| `claude-implement.yml` | Mention-only, no label trigger: same gate with the `implement` subcommand → claims the target, opens a **draft** PR on a `claude/` branch (`--model opus`, `gh pr ready` denied) | [copier] |
+| `claude-review.yml` | Mention-only, no label trigger: same gate with the `review` subcommand, PR targets only, senders extended with the review bots (renovate/dependabot, coderabbit when enabled) → claims the target, posts a sticky review comment, no writes | [copier] |
 | `release.yml` | release-please; only when `use_release_please` | [copier] |
 | `codeql.yml` | only when `use_codeql=true`; triggers on PR and `merge_group` so required `codeql-verify` reports; matrix is exactly `codeql_languages`; automatic/free for public repos; private/internal requires GitHub Code Security + `FULL_SECURITY_SCAN=true` | [copier] |
 | `snyk-scheduled.yml` | only when `snyk_scan_schedule` is `weekly` or `daily`; schedule/manual advisory SAST + SCA, no PR/push trigger or required check | [copier] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
 
-The three `claude-*` rows describe current pre-rollout template behavior. The
-registry/ADR target is mention-only and `claim:claude`-aware with unconditional
-claim cleanup; harmon-init#664 owns that workflow migration. Until a selected
-release contains it, report the difference as template-version lag rather than
-claiming the target behavior is already present.
+**Mention-only trigger gate** (all three `claude-*` workflows, since
+harmon-init#664 / v4.25). They subscribe to `issue_comment` (created),
+`pull_request_review_comment` (created), and `pull_request_review` (submitted)
+— every comment event in the repo — and filter in the job `if:`: the sender
+must be on the explicit `claude_authorized_members` allowlist, and the body
+must contain that workflow's trigger phrase, which is the `@claude` mention
+followed by the workflow's own subcommand word. A token-free
+`Verify sender is authorized` step re-asserts the same allowlist before any
+App token is minted, so a spoof-shaped gap in the `if:` expression cannot reach
+credential creation. The old per-workflow label triggers (one label
+named after each workflow) and the `issues: [opened, assigned]` trigger were
+**removed**:
+a label or an assignment carries no actor the allowlist can check. A repo still
+carrying them is template-version lag; report it as such.
+
+**Never write a trigger phrase out in full** — not in this catalog, a repo's
+docs, an issue, or a PR comment. The gate is a bare `contains()` on the comment
+body, so quoting the phrase anywhere a workflow can read it starts a real run
+(observed live on harmon-init#718). Describe it as a mention plus a separate
+subcommand token, and keep the two apart even across a line break — rendered
+markdown joins wrapped lines back into one string.
+
+**Claim lifecycle** (all three, identical). A **job-level** `concurrency` group
+`claude-claim-<issue-or-PR-number>` — deliberately the same name in all three,
+so a plan and an implement run on one target serialize over their shared
+`claim:claude` label — with `cancel-in-progress: false`. It is job-level, not
+workflow-level, because these workflows fire on every comment event and filter
+in the job, so a workflow-level group would let skipped runs displace queued
+ones. Then a `Claim the target with claim:claude` step paginates the target's
+labels and refuses loudly (`::error::` + exit 1) when any `claim:`/`agent:`-
+prefixed label is present, when the label list is unreadable, or when
+`claim:claude` will not apply — all before the App token is minted, so a
+refused run costs and writes nothing. It creates the label (colour `006B75`,
+description `Claimed by Claude`, verbatim from `agent-registry.json`) when the
+repo lacks it. The prefix test is deliberate: it also catches `claim:claude:opus`,
+`claim:gpt`, and legacy `agent:*`, while `suggest:*` is never matched — that is
+advice, not ownership. An event with no issue or PR number runs unclaimed.
+Release is an `if: always()` step gated on this run having acquired the claim;
+it deletes the label, treats a 404 as success, retries once, and otherwise
+turns the job red rather than reporting a release over a surviving marker. The
+model step also carries its own `timeout-minutes` 30 minutes below the job cap,
+so the step timeout always fires first and the release step still runs.
 
 **GitHub App auth** (the claude-* workflows, `release.yml`, and
 `project-automation.yml`): authenticate as a **`<owner>-ci` GitHub App** (one App
