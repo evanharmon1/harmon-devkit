@@ -1644,6 +1644,30 @@ check)
           .submitted_at? | select(type == "string")] | max // ""
         ' "$workdir/reviews.json")
 
+    # Did any recorded disposition actually apply on this head? A disposed
+    # finding contributes neither `findings` nor `clean` to the aggregates, so
+    # without this the settle path could only ever reach a terminal state by
+    # borrowing an unrelated clean verdict or reaction — and on its own it fell
+    # through to the bounded wait and escalated, which is the deadlock `settle`
+    # exists to end.
+    disposed_applied=0
+    disposed_review_hits=$(jq -r \
+        --argjson id "$actor_id" \
+        --arg head "$state_head" \
+        --argjson disposed "$disposed_reviews" \
+        "$codex_verdict_defs"'
+          [.[] | select(
+            .user.id? == $id and
+            (.commit_id? == $head) and
+            (body_text != "")
+          ) | . as $review |
+          select(verdict_class == "findings") |
+          select((($review.id? | type) == "number") and
+                 (($disposed | index($review.id)) != null))
+          ] | length
+        ' "$workdir/reviews.json") || die "cannot evaluate recorded dispositions"
+    [ "$disposed_review_hits" -eq 0 ] || disposed_applied=1
+
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
@@ -1738,6 +1762,7 @@ check)
         if [ "$classification" = "findings" ] && valid_uint "$comment_id" &&
             printf '%s' "$disposed_comments" |
             jq -e --argjson id "$comment_id" 'index($id) != null' >/dev/null; then
+            disposed_applied=1
             continue
         fi
         resolved_payload=$(run_gh api "repos/$state_repo/commits/$prefix") ||
@@ -1940,6 +1965,22 @@ check)
         exit 0
     fi
 
+    # Every non-thread finding on this head carries a recorded disposition and
+    # nothing on any surface contradicts it (findings and unrecognized results
+    # exited above). That is terminal, and it is reported with its own detail:
+    # a human wrote these dispositions, exactly as with the inline
+    # adjudicated-clean path, and the caller must be able to tell that from a
+    # verdict Codex itself posted.
+    if [ "$disposed_applied" = "1" ]; then
+        if [ -n "$shell_barrier" ]; then
+            emit pending "an empty review shell is still unresolved for this head"
+            exit 11
+        fi
+        record_check_result clean
+        emit clean "current-head non-thread findings are all settled by recorded dispositions"
+        exit 0
+    fi
+
     # Last of all, and only here: a verdict carried forward by `carry`
     # substitutes for the ABSENCE of terminal evidence on this head, never for
     # evidence that contradicts it. Everything above has already run, so any
@@ -2131,6 +2172,18 @@ carry)
     # bytes, which is the cost the issue exists to eliminate.
     [ -n "$new_head" ] && [ -n "$actor_id" ] && [ -n "$base_ref" ] || usage
     valid_uint "$actor_id" || die "invalid actor ID"
+    # Same identity proof `check` performs. The freshness sweep below filters
+    # every surface by this ID, so a mistyped or non-Codex value does not fail
+    # loudly — it silently matches nothing, reports no newer activity, and
+    # carries a verdict past the delayed finding it was meant to catch.
+    actor=$(run_gh api "users/$actor_login") ||
+        die "cannot authenticate the configured Codex actor"
+    printf '%s' "$actor" | jq -e \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" '
+          (.id == $id) and (.login == $login) and (.type == "Bot")
+        ' >/dev/null ||
+        die "the configured Codex login does not resolve to the pinned Bot actor ID"
     need git
     valid_sha "$new_head" || die "--new-head must be a full 40-hex commit"
     carried_at=$(now_utc)

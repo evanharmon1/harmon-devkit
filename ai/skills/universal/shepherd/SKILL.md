@@ -734,9 +734,15 @@ you rather than the bot):
   # The PR's OWN base, never a hard-coded main: a stacked or release-branch
   # PR merged with main is contaminated with commits from the wrong branch,
   # and the carry would then be validated against a base the PR never had.
+  # Fetch from the BASE REPOSITORY by URL, not from `origin`: on a fork
+  # checkout `origin` is the fork, so `origin/$base` is a fork branch that may
+  # be stale or carry fork-only commits — and merging that pushes the
+  # contamination into the PR before `carry` ever validates anything.
   base="$(gh pr view <n> --repo "$repo" --json baseRefName --jq .baseRefName)"
-  git fetch origin "$base"
-  git merge --no-edit "origin/$base" && git push
+  base_repo="$(gh pr view <n> --repo "$repo" \
+    --json baseRepository --jq '.baseRepository.owner.login + "/" + .baseRepository.name')"
+  git fetch "https://github.com/$base_repo.git" "$base"
+  git merge --no-edit FETCH_HEAD && git push
   "$helper" carry --state "$state" --actor-id 199175422 \
     --new-head "<the merged head>" --base-ref "origin/$base"
   ```

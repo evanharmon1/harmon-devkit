@@ -2606,8 +2606,14 @@ run_settle --surface comment --id 77 --disposition declined \
     fail "the disposition was not preserved: $(jq -c .settled "$state")"
 [ -n "$(jq -r '.settled[0].content_fingerprint // empty' "$state")" ] ||
     fail "the disposition carries no fingerprint: $(jq -c .settled "$state")"
+# Terminal-clean on the strength of the disposition ALONE. Reported with its
+# own detail because a human wrote the reasoning, exactly as with the inline
+# adjudicated path. Before PR #410's shepherd round this fell through to the
+# bounded wait and escalated, which is the deadlock `settle` exists to end.
 run_check '2026-07-31T08:01:00Z'
-assert_status 11 pending
+assert_status 0 clean
+printf '%s' "$check_out" | jq -e '.detail | test("disposition")' >/dev/null ||
+    fail "a disposition-clean must name its provenance: $check_out"
 
 echo "==> a settled review body stops blocking the cycle"
 new_cycle
@@ -2631,6 +2637,9 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 
+# A disposition settles the finding it was recorded against, and nothing more:
+# the review body stops reporting findings, and the cycle is terminal on the
+# disposition alone.
 echo "==> settling a finding edited since the disposition blocks again"
 # Codex edits a finding in place when it revises it. The disposition answered
 # the earlier text, so it stops applying — and the entry is kept, not deleted,
@@ -2640,7 +2649,7 @@ write_badged_comment 77
 run_settle --surface comment --id 77 --disposition declined --note "declined"
 [ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
 run_check '2026-07-31T08:01:00Z'
-assert_status 11 pending
+assert_status 0 clean
 jq -c '[[.[0][0] | .updated_at = "2026-07-31T08:00:45Z"]]' \
     "${fixtures}/comments.pages.json" >"${fixtures}/comments.next"
 mv "${fixtures}/comments.next" "${fixtures}/comments.pages.json"
@@ -3025,8 +3034,6 @@ run_carry --new-head "$carry_new_head" --base-ref carry-base
 [ "$carry_rc" -eq 2 ] ||
     fail "a findings verdict must refuse the carry, got rc=$carry_rc: $carry_out"
 
-echo "shepherd Codex cloud-review classifier: PASS"
-
 # The recorded clean result is a cache; Codex can post after it. A delayed
 # old-head finding would become unreachable the moment the head moves, so any
 # bot activity newer than the recorded result refuses the carry
@@ -3224,3 +3231,6 @@ run_carry --new-head "$carry_new_head" --base-ref carry-base
 [ "$carry_rc" -eq 2 ] ||
     fail "same-second activity must refuse the carry, got rc=$carry_rc: $carry_out"
 printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
+
+# Last line on purpose: every case above must have run for this to print.
+echo "shepherd Codex cloud-review classifier: PASS"
