@@ -5316,6 +5316,21 @@ fi
 cp "$DT_TEMPLATE/template/renovate.json" "$DT_TARGET/renovate.json"
 cp "$DT_TEMPLATE/template/AGENTS.md" "$DT_TARGET/AGENTS.md"
 
+dt_skip_decl_variant() {
+    # $1 = destination, $2… = the _skip_if_exists lines to write (none = drop it)
+    dsv_dest="$1"
+    shift
+    cp -pR "$DT_TEMPLATE" "$dsv_dest"
+    {
+        printf '%s\n' '_min_copier_version: "9.4.0"' '_subdirectory: template' \
+            '_preserve_symlinks: true'
+        [ "$#" -eq 0 ] || printf '%s\n' "$@"
+        printf '%s\n' 'project_name:' '  type: str' '  default: Test Project'
+    } >"$dsv_dest/copier.yml"
+    git_commit_all "$dsv_dest" "rewrite the _skip_if_exists declaration"
+    git -C "$dsv_dest" tag -f v1.0.0 >/dev/null
+}
+
 # --- OWNED: the template's own _skip_if_exists declaration (issue 359) --------
 # Both declared paths diverge permanently in the clean target, so this run also
 # re-asserts the baseline: the class is informational and must not gate. The
@@ -5353,6 +5368,50 @@ if printf '%s\n' "$owned_out" | grep -qF "2 OWNED"; then
     ok "diff-template counts OWNED in its summary"
 else
     bad "diff-template counts OWNED in its summary"
+fi
+
+# OWNED must not be granted through the .yml/.yaml twin mapping. repo_variant
+# resolves a rendered `config.yml` to a repo `config.yaml`, which is right for
+# every other class — the repo renamed the file and its content is comparable.
+# It is wrong here: OWNED claims copier will not rewrite THIS PATH, and copier's
+# existence check is path-specific, so with `config.yml` absent from the
+# destination the next update writes it alongside the `config.yaml` the repo
+# kept. The divergence must gate.
+DT_TWIN_TEMPLATE="$TMPROOT/diff-template-twin-source"
+dt_skip_decl_variant "$DT_TWIN_TEMPLATE" '_skip_if_exists:' '  - config.yml'
+printf '%s\n' 'setting: template-default' >"$DT_TWIN_TEMPLATE/template/config.yml"
+git_commit_all "$DT_TWIN_TEMPLATE" "add a declared yml the repo may carry as yaml"
+git -C "$DT_TWIN_TEMPLATE" tag -f v1.0.0 >/dev/null
+DT_TWIN_TARGET="$TMPROOT/diff-template-twin-target"
+cp -pR "$DT_TARGET" "$DT_TWIN_TARGET"
+printf '%s\n' 'setting: repo-renamed-and-diverged' >"$DT_TWIN_TARGET/config.yaml"
+git_commit_all "$DT_TWIN_TARGET" "carry the declared path under the other extension"
+twin_rc=0
+twin_out="$(HARMON_INIT="$DT_TWIN_TEMPLATE" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TWIN_TARGET" 2>&1)" || twin_rc=$?
+if [ "$twin_rc" -eq 1 ]; then
+    ok "diff-template gates a declared path the repo carries under the twin extension"
+else
+    bad "diff-template gates a declared path the repo carries under the twin extension (got $twin_rc)"
+fi
+if printf '%s\n' "$twin_out" | grep -qF "OWNED    config.yaml"; then
+    bad "diff-template grants no OWNED through a .yml/.yaml extension alias"
+else
+    ok "diff-template grants no OWNED through a .yml/.yaml extension alias"
+fi
+# The same declaration on the path the repo really has is still OWNED, so the
+# guard above narrows the class rather than disabling it.
+DT_EXACT_TARGET="$TMPROOT/diff-template-twin-exact-target"
+cp -pR "$DT_TARGET" "$DT_EXACT_TARGET"
+printf '%s\n' 'setting: repo-diverged' >"$DT_EXACT_TARGET/config.yml"
+git_commit_all "$DT_EXACT_TARGET" "carry the declared path at its declared name"
+exact_rc=0
+exact_out="$(HARMON_INIT="$DT_TWIN_TEMPLATE" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_EXACT_TARGET" 2>&1)" || exact_rc=$?
+if printf '%s\n' "$exact_out" | grep -qF "OWNED    config.yml"; then
+    ok "diff-template still grants OWNED at the declared path itself"
+else
+    bad "diff-template still grants OWNED at the declared path itself (got rc $exact_rc)"
 fi
 
 # The exemption is about CONTENT, exactly like CO-OWNED. A declared path that
@@ -5393,20 +5452,6 @@ fi
 # the class and must SAY so, which is what keeps a degraded run from reading
 # like a normal one. Each control is a copy of the working template with only
 # its declaration changed.
-dt_skip_decl_variant() {
-    # $1 = destination, $2… = the _skip_if_exists lines to write (none = drop it)
-    dsv_dest="$1"
-    shift
-    cp -pR "$DT_TEMPLATE" "$dsv_dest"
-    {
-        printf '%s\n' '_min_copier_version: "9.4.0"' '_subdirectory: template' \
-            '_preserve_symlinks: true'
-        [ "$#" -eq 0 ] || printf '%s\n' "$@"
-        printf '%s\n' 'project_name:' '  type: str' '  default: Test Project'
-    } >"$dsv_dest/copier.yml"
-    git_commit_all "$dsv_dest" "rewrite the _skip_if_exists declaration"
-    git -C "$dsv_dest" tag -f v1.0.0 >/dev/null
-}
 # A baseline older than the declaration: the run proceeds, says so twice (stderr
 # and the summary), grants no OWNED exemption, and — because there is no class
 # for it to land in — restores CHANGELOG.md's historical hard skip rather than
@@ -5571,6 +5616,39 @@ if [ "$globstar_rc" -ne 2 ]; then
 else
     bad "diff-template still accepts _skip_if_exists globs that both matchers agree on: $globstar_out"
 fi
+# A template's OWN _envops delimiters, DERIVED rather than enumerated. copier
+# renders each pattern with the environment `_envops` describes, so a template
+# using `<%` gets a pattern copier renders and this evaluator would otherwise
+# match literally — reporting a repo-owned path as gating DRIFT.
+dt_skip_decl_variant "$TMPROOT/diff-template-envops-source" \
+    '_envops:' '  variable_start_string: "<%"' '  variable_end_string: "%>"' \
+    '_skip_if_exists:' '  - "<% project_name %>.code-workspace"'
+envops_rc=0
+envops_out="$(HARMON_INIT="$TMPROOT/diff-template-envops-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || envops_rc=$?
+if [ "$envops_rc" -eq 2 ]; then
+    ok "diff-template exits 2 on a pattern using the template's own _envops delimiter"
+else
+    bad "diff-template exits 2 on a pattern using the template's own _envops delimiter (got $envops_rc)"
+fi
+if printf '%s\n' "$envops_out" | grep -qF "it uses the template's own _envops delimiter '<%'"; then
+    ok "diff-template names the derived _envops delimiter it refused on"
+else
+    bad "diff-template names the derived _envops delimiter it refused on"
+fi
+# The converse: a delimiter sequence is only special when the template actually
+# configures it. `[[` was hardcoded before and would have refused this pattern
+# for a template whose jinja environment is the default one.
+dt_skip_decl_variant "$TMPROOT/diff-template-noenvops-source" \
+    '_skip_if_exists:' '  - "[[weird]].txt"'
+noenvops_rc=0
+noenvops_out="$(HARMON_INIT="$TMPROOT/diff-template-noenvops-source" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || noenvops_rc=$?
+if [ "$noenvops_rc" -ne 2 ]; then
+    ok "diff-template refuses a delimiter only when the template configures it"
+else
+    bad "diff-template refuses a delimiter only when the template configures it: $noenvops_out"
+fi
 # Non-ASCII is refused for the Unicode-normalization half of the same problem:
 # copier NFD-normalizes patterns, git normalizes nothing, and the filesystem has
 # opinions of its own.
@@ -5610,8 +5688,14 @@ if printf '%s\n' "$caseskip_out" | grep -qF "OWNED    CHANGELOG.md"; then
 else
     ok "diff-template grants no OWNED exemption on a case-mismatched declaration"
 fi
+# jinja's DEFAULT delimiters are refused unconditionally, because they are what
+# a template with no `_envops` of its own renders with. (An earlier version of
+# this case used `[[ project_name ]]` against a template that configures no such
+# delimiters, asserting a hardcoded list that was wrong in both directions — it
+# refused sequences the template never made special, and missed the ones it did.
+# The `[[weird]]` counter-case and the `<%` case above replace it.)
 dt_skip_decl_variant "$TMPROOT/diff-template-jinjaskip-source" \
-    '_skip_if_exists:' '  - "[[ project_name ]].code-workspace"'
+    '_skip_if_exists:' '  - "{{ project_name }}.code-workspace"'
 jinjaskip_rc=0
 jinjaskip_out="$(HARMON_INIT="$TMPROOT/diff-template-jinjaskip-source" \
     bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || jinjaskip_rc=$?

@@ -962,6 +962,25 @@ if [ "$skip_decl_available" -eq 1 ]; then
     fi
 fi
 if [ "$skip_decl_available" -eq 1 ]; then
+    # The template's own jinja OPENING delimiters, read from the same config the
+    # declaration came from. Only the openers are needed: a pattern cannot use a
+    # closing delimiter without an opening one, and matching on the opener alone
+    # keeps this from tripping over a literal `>>` in a filename. A template that
+    # sets no `_envops` yields nothing here and is covered by the hardcoded
+    # jinja defaults in the loop below.
+    #
+    # `|| exit 2` rather than a default: an `_envops` this cannot read is a
+    # config whose delimiters are unknown, and matching patterns against unknown
+    # delimiters is exactly the guess this block exists to refuse.
+    skip_decl_delims="$(
+        yq -r '[._envops.variable_start_string, ._envops.block_start_string,
+               ._envops.comment_start_string] | map(select(. != null)) | .[]' \
+            "$skip_decl_yml" 2>/dev/null
+    )" || {
+        echo "FAIL: cannot read _envops from $skip_decl_source" >&2
+        echo "  refusing to continue: unknown jinja delimiters would let a templated pattern match literally" >&2
+        exit 2
+    }
     # Two pattern shapes are REFUSED rather than matched, because for each of
     # them this evaluator and copier's would disagree, and a disagreement here
     # silently reclassifies real drift as somebody's property:
@@ -1017,19 +1036,32 @@ if [ "$skip_decl_available" -eq 1 ]; then
             echo "  refusing to continue: git cannot re-include beneath an excluded directory, so this evaluator would disagree with copier" >&2
             exit 2
             ;;
-        *'[['* | *'[%'* | *'[#'* | *'{{'* | *'{%'* | *'{#'*)
-            # Both delimiter sets: harmon-init's `_envops` (`[[`/`[%`/`[#`) and
-            # jinja's defaults (`{{`/`{%`/`{#`), because the declaration is read
-            # from whatever template the answers point at, not only from this
-            # one. `{#` was missing and is the reason this list is enumerated
-            # rather than guessed at: a comment delimiter renders away to
-            # nothing, so the raw pattern would have been matched literally and
-            # the path reported as gating DRIFT instead of OWNED.
+        *'{{'* | *'{%'* | *'{#'*)
+            # Jinja's DEFAULT delimiters, which apply when the template
+            # configures no `_envops` of its own. A pattern using them renders to
+            # something else entirely — a comment delimiter renders away to
+            # nothing — so matching the raw text would classify the wrong path.
             echo "FAIL: templated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
             echo "  refusing to continue: matching it unrendered would classify the wrong paths" >&2
             exit 2
             ;;
         esac
+        # The template's OWN delimiters, DERIVED rather than enumerated. This
+        # started as a hardcoded list of harmon-init's `[[`/`[%`/`[#` beside the
+        # defaults above, which is wrong in both directions: it refuses those
+        # three sequences for templates that never configured them, and it misses
+        # a template that configures anything else (`<%`, `<<`). copier renders
+        # each pattern with the environment `_envops` describes, so the only
+        # correct source for "is this pattern templated" is that same block.
+        for skip_decl_delim in $skip_decl_delims; do
+            case "$skip_decl_pattern" in
+            *"$skip_decl_delim"*)
+                echo "FAIL: templated _skip_if_exists pattern is not supported: $skip_decl_pattern" >&2
+                echo "  refusing to continue: it uses the template's own _envops delimiter '$skip_decl_delim', and matching it unrendered would classify the wrong paths" >&2
+                exit 2
+                ;;
+            esac
+        done
     done <"$skip_decl_patterns"
     # Matched with `git check-ignore` against a scratch repo whose .gitignore IS
     # the declaration. With negation refused above this is not an approximation:
@@ -1048,6 +1080,27 @@ if [ "$skip_decl_available" -eq 1 ]; then
         exit 2
     }
 fi
+
+# OWNED for the file actually in hand: the declaration must cover the rendered
+# path AND the repo's copy must BE that path, not a `.yml`/`.yaml` twin of it.
+#
+# `repo_variant` resolves a rendered `config.yml` to a repo `config.yaml`, which
+# is right for every other class — the repo renamed the file and its content is
+# still comparable. It is wrong for this one, because the claim OWNED makes is
+# specifically that COPIER WILL NOT REWRITE THIS PATH, and copier's
+# `_skip_if_exists` check is path-specific: with `config.yml` itself absent from
+# the destination, nothing is skipped and the next update writes it, alongside
+# the `config.yaml` the repo kept. Suppressing the divergence there would claim
+# a freeze that is not happening.
+#
+# CO-OWNED deliberately keeps the twin: that class says the repo owns the PROSE,
+# which is just as true under the other extension.
+is_owned_here() {
+    ioh_rendered="$1"
+    ioh_repo_relpath="$2"
+    [ "$ioh_rendered" = "$ioh_repo_relpath" ] || return 1
+    is_template_declared_owned "$ioh_rendered"
+}
 
 # Does the template's own declaration say the REPO owns this rendered path? A
 # baseline that declares nothing answers "no" to every path, which is precisely
@@ -1702,7 +1755,7 @@ while IFS= read -r abs; do
             # change was already reported above and is not content.
             if [ "$index_structural" -eq 0 ] &&
                 [ "$index_content_divergent" -eq 1 ] &&
-                ! is_template_declared_owned "$g" && ! is_co_owned "$g"; then
+                ! is_owned_here "$g" "$rv_display" && ! is_co_owned "$g"; then
                 echo "DRIFT    $rv_display  (uncurated — staged content differs from the template though the worktree matches; the next commit carries it)"
                 drift=1
                 uncurated_drift_count=$((uncurated_drift_count + 1))
@@ -1726,7 +1779,7 @@ while IFS= read -r abs; do
         # kept the tag.
         presence_class=""
         if [ "$compare_structural" -eq 0 ]; then
-            if is_template_declared_owned "$g"; then
+            if is_owned_here "$g" "$rv_display"; then
                 presence_class=owned
             elif is_co_owned "$g"; then
                 presence_class=co-owned
