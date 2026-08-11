@@ -6301,6 +6301,36 @@ else
     bad "diff-template gates an index-only file-to-symlink conversion (diagnostic missing)"
 fi
 
+# The SAME conversion the other way round, which is the case a byte comparison
+# can never see: HEAD is a symlink, the index stages its unchanged blob as a
+# REGULAR FILE, and the worktree holds the template's bytes. Nothing about the
+# blob moved, and index and render are both regular files so there is no type
+# mismatch to call structural — yet committing produces a file whose CONTENT is
+# the old link target rather than the template's.
+#
+# renovate.json rather than AGENTS.md deliberately: this is a CONTENT verdict,
+# and a co-owned path's staged content stays exempt by the documented contract,
+# which would mask the mechanism under test rather than exercise it.
+DT_STAGED_UNLINK="$TMPROOT/diff-template-staged-unlink"
+cp -pR "$DT_TARGET" "$DT_STAGED_UNLINK"
+rm "$DT_STAGED_UNLINK/renovate.json"
+ln -s docs/guide.md "$DT_STAGED_UNLINK/renovate.json"
+git_commit_all "$DT_STAGED_UNLINK" "renovate config is committed as a symlink"
+staged_unlink_blob="$(git -C "$DT_STAGED_UNLINK" rev-parse HEAD:renovate.json)"
+git -C "$DT_STAGED_UNLINK" update-index --add --cacheinfo \
+    "100644,$staged_unlink_blob,renovate.json"
+rm "$DT_STAGED_UNLINK/renovate.json"
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_STAGED_UNLINK/renovate.json"
+if staged_unlink_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_STAGED_UNLINK" 2>&1)"; then
+    bad "diff-template gates a staged symlink-to-file conversion (expected non-zero exit)"
+elif printf '%s\n' "$staged_unlink_out" |
+    grep -qF "DRIFT    renovate.json  (uncurated — staged content differs"; then
+    ok "diff-template gates a staged symlink-to-file conversion"
+else
+    bad "diff-template gates a staged symlink-to-file conversion (DRIFT diagnostic missing)"
+fi
+
 # --- an unborn repository stages everything ----------------------------------
 # Before the first commit there is no committed state, so every index entry is
 # staged by definition and the initial commit carries all of it. Ending the

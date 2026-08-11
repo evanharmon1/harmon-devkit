@@ -902,6 +902,7 @@ index_structural=0
 index_present=0
 index_bytes_staged=0
 index_mode_staged=0
+index_type_staged=0
 index_note=""
 index_diverges() {
     idx_render="$1"  # path inside the render
@@ -913,6 +914,7 @@ index_diverges() {
     index_present=0
     index_bytes_staged=0
     index_mode_staged=0
+    index_type_staged=0
     index_note=""
     [ "$target_owns_worktree" -eq 1 ] || return 1
     case "$idx_variant" in
@@ -957,24 +959,44 @@ index_diverges() {
     # false: no such entry is written by an ordinary commit.
     index_bytes_staged=0
     index_mode_staged=0
+    index_type_staged=0
     if load_staged_entries "$idx_rel"; then
         [ "$staged_index_blob" = "$staged_head_blob" ] || index_bytes_staged=1
         [ "$staged_index_mode" = "$staged_head_mode" ] || index_mode_staged=1
+        # A blob has no meaning without its mode: the SAME bytes are a path
+        # string under 120000 and file content under 100644. So a staged TYPE
+        # change reinterprets an inherited blob into a genuinely new artifact,
+        # and "the bytes did not move" stops being a reason to call the
+        # divergence committed. An ordinary 100644→100755 chmod is NOT that —
+        # the bytes still mean what they meant — which is why this is a
+        # separate question from index_mode_staged.
+        staged_head_is_link=0
+        staged_index_is_link=0
+        [ "$staged_head_mode" != 120000 ] || staged_head_is_link=1
+        [ "$staged_index_mode" != 120000 ] || staged_index_is_link=1
+        if [ -n "$staged_head_mode" ] &&
+            [ "$staged_head_is_link" -ne "$staged_index_is_link" ]; then
+            index_type_staged=1
+        fi
     fi
-    # A TYPE change is staged in the MODE, not in the bytes: git records a
-    # regular file as 100644 and a symlink as 120000, and a file whose contents
-    # are exactly the link's target text has the SAME blob under both. Keying
-    # the structural verdict on staged bytes alone therefore dropped an
-    # index-only file↔symlink conversion — blob unchanged, mode changed — and
-    # the exec-bit branch above cannot catch it either, because it exempts
-    # symlinks by design. Structure survives whenever EITHER dimension moved.
+    # Nothing staged at all: every verdict above is inherited committed state,
+    # which the worktree comparison already speaks for.
     if [ "$index_bytes_staged" -eq 0 ] && [ "$index_mode_staged" -eq 0 ]; then
         index_content_divergent=0
         index_structural=0
         index_note=""
-    elif [ "$index_bytes_staged" -eq 0 ] && [ "$index_structural" -eq 0 ]; then
-        # Only the mode moved and the types agree: the byte divergence is
-        # inherited committed state, which the worktree comparison speaks for.
+    elif [ "$index_bytes_staged" -eq 0 ] && [ "$index_type_staged" -eq 0 ] &&
+        [ "$index_structural" -eq 0 ]; then
+        # Only a mode within one type moved — a chmod. The bytes are inherited
+        # AND still mean what they meant, so a byte divergence here is committed
+        # state, not something this staging introduces.
+        #
+        # A staged TYPE change is deliberately excluded from that reasoning, in
+        # BOTH directions: staging an unchanged blob as a symlink makes the
+        # commit a link (structural), and staging an unchanged link's blob as a
+        # regular file makes the commit a file whose CONTENT is the old link
+        # target — drift against the render that no byte comparison with HEAD
+        # can see, because the bytes never moved.
         index_content_divergent=0
         index_note=""
     fi
