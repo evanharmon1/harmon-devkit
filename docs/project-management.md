@@ -425,10 +425,12 @@ wrapper's base family rather than the model actually running — deriving the
 rewired family into the claim label is future skill work. The registry vocabulary also
 allows an optional model segment (`claim:claude:opus`), but standard provisioning
 emits only family-level labels and does not add a model-level one — a model-pinned
-label exists only where it was created by hand. The family vocabulary — `claude`,
-`codex`, `copilot`, `qwen`,
-`deepseek`, `glm`, `kimi`, `minimax`, `gemini` — is defined once in harmon-init's
-`agent-registry.json` and provisioned by `task setup:github-labels` (mid-migration
+label exists only where it was created by hand. The family vocabulary is
+defined once in
+[`agent-registry.json`](#agent-families-and-harnesses) — deliberately not
+repeated here, because a hand-copied list is exactly the fork this section
+says cannot happen; read the generated table below for the current families —
+and provisioned by `task setup:github-labels` (mid-migration
 — see the transition note under **Claiming** below); don't invent a per-repo slug. Foreman arming stays
 separate and harness-centric (`foreman:<adapter>`) — a `suggest:*` label is
 advice, never an arming signal.
