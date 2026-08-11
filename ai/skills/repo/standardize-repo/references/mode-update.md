@@ -99,7 +99,7 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
 - **`MODE`** — the executable bit differs. Copier can preserve content while a
   hand copy silently drops `+x`, leaving a generated script present but
   unusable, so this is reported independently of content — and independently of
-  the class the file lands in: a `CO-OWNED` or `IGNORED` file that lost `+x` is
+  the class the file lands in: an `OWNED`, `CO-OWNED`, or `IGNORED` file that lost `+x` is
   a broken script rather than expected drift, so it **gates** like any other
   `MODE` finding. Symlinks are exempt: the bit belongs to the link target.
 - **`MISSING`** — a template file the repo lacks entirely. This scan walks the
@@ -119,6 +119,29 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
 - **`EQUIV`** — a mature nested Terraform layout or established/renumbered ADR
   log intentionally replaces a generated seed path. This is informational and
   does not fail the comparison.
+- **`OWNED`** — the **template itself** declares the path repo-owned, by listing
+  it in `copier.yml`'s `_skip_if_exists`: `CHANGELOG.md`, `*.code-workspace`,
+  `.github/CODEOWNERS`, `.devcontainer/related-repos.txt`, and
+  `.release-please-manifest.json`. Copier never rewrites such a file once it
+  exists, on adopt or on update, so its divergence is the designed steady state
+  rather than drift — before this class existed the first two of those reported
+  as gating uncurated `DRIFT` in every mature repo (issue 359). **Presence-only**
+  and non-gating on content, exactly like `CO-OWNED` but for a different reason,
+  which is why the tag is separate: `CO-OWNED` is a hand-maintained judgement
+  about prose the repo rewrote, `OWNED` is the template's machine-readable
+  statement about ownership, and it covers files nobody would call prose
+  (`.release-please-manifest.json`, `CODEOWNERS`). Where the two overlap
+  (`*.code-workspace` is on both lists) `OWNED` wins. The list is **derived**
+  from the rendered commit's own `copier.yml` at run time and matched with git's
+  gitignore dialect — the same semantics copier uses — so it cannot go stale;
+  the script exits `2` if the declaration is unreadable, malformed, negated, or
+  templated. A baseline that predates the declaration (added in harmon-init
+  v3.4.0) is not an error: the run continues without the class and prints a
+  note saying so, which is also when `CHANGELOG.md`'s historical hard skip
+  applies. **Absence is not covered**: copier freezes a declared path only
+  when it *exists*, so a declared path the repo lacks is rendered fresh by the
+  next update and is still reported `MISSING`. Like `IGNORED`, it is
+  **sweep-only** — a path on the curated manifest gates regardless.
 - **`CO-OWNED`** — the template *seeds* the file but the repo owns its prose:
   `AGENTS.md` and its `CLAUDE.md` / `GEMINI.md` /
   `.github/copilot-instructions.md` symlink aliases, `README.md`, `DESIGN.md`,
@@ -183,7 +206,7 @@ Symlinks are compared by **link target**, not content. The template ships
 `AGENTS.md`, so content-diffing them would report one `AGENTS.md` divergence
 four times over. A path that is a symlink on one side and a regular file on the
 other — or a link pointing somewhere else — is a **structural** divergence and
-always gates, `CO-OWNED` or not: a flattened alias means the repo now carries
+always gates, `OWNED` or `CO-OWNED` or not: a flattened alias means the repo now carries
 two independent copies of the agent instructions that will silently
 desynchronize, and the finding is one line of metadata rather than a diff worth
 withholding. This holds for **curated** entries too. A plain `diff -q` follows a
@@ -1281,6 +1304,13 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # be offered again; reading "the repo owns its prose" as "the repo meant to
   # delete it" invents a decision nobody made, which is the exact failure this
   # report exists to end. Those paths get table rows.
+  #
+  # diff-template.sh's OWNED class is likewise absent, and needs even less
+  # apology than the rest of `is_co_owned`. That class is derived from the
+  # template's `_skip_if_exists`, which copier consults ONLY when the path
+  # exists: a declared path the repo lacks is rendered fresh by the very next
+  # update, so it is neither frozen nor declined and it gets an ordinary table
+  # row. Nothing here needs to know the declaration exists.
   #
   # This is a NOTE, not a filter, and §5 keeps it in the disposition TABLE. It
   # once routed a row to the compact list on the grounds that a repo carries tens
@@ -2607,6 +2637,19 @@ are symlinks compared by link target, so they stay silent while they remain
 links — a `DRIFT … (symlink mismatch …)` on one of them means an update flattened
 it into a second, independently drifting copy of the instructions.
 
+**`OWNED` lines read the same way, and a vanished one is worse.** The class is
+presence-only for the same reason, so note the §1 `OWNED` paths too and confirm
+each is still listed afterwards. A `CHANGELOG.md` or `.release-please-manifest.json`
+that stopped diverging is a **prompt to check**, not a verdict. Copier is
+supposed to make a clobber impossible here (`_skip_if_exists` freezes the path),
+so if one happened the restore is urgent — but a vanished line has an innocent
+cause too: a newer template seed can simply have caught up with the repo's
+content (a release-manifest seed that now names the version the repo is on), and
+then the render compares equal although the freeze worked perfectly. Diff the
+file against its pre-update content (`git show HEAD:<path>`) before treating it
+as a clobber; the destination changing is what makes it one, not the line
+disappearing.
+
 **Heavily-forked files: take `--ours` and re-apply the new bits.** When a file is
 *heavily* customized (a forked `Taskfile.yml`, a bespoke `status.sh`), copier's
 three-way merge can scramble it — a single conflict hunk spanning several unrelated
@@ -2828,9 +2871,12 @@ customization — confirm against the §2 renamed-files note before dismissing i
 about the hand-maintained manifest, not a lower severity, so each one is still
 either an explainable customization or a missed update, and the ones nobody has
 ever looked at are exactly where a silently dropped template improvement hides.
-`CO-OWNED` and `IGNORED` lines need no such adjudication — they are expected to
-differ — but do check them for *absences*: a `CO-OWNED` path that stopped being
-listed was clobbered (see the AGENTS.md note in §2 above).
+`OWNED`, `CO-OWNED`, and `IGNORED` lines need no such adjudication — they are
+expected to differ — but do check them for *absences*: a `CO-OWNED` or `OWNED`
+path that stopped being listed is a prompt to diff that file against its
+pre-update content, which is what distinguishes a real clobber from a template
+seed that merely caught up with the repo's copy (see the AGENTS.md note in §2
+above).
 
 **Cross-check that same re-run against the persisted non-adoption report** —
 `git rev-parse --path-format=absolute --git-path

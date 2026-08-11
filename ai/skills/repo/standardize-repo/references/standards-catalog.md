@@ -99,10 +99,15 @@ report plain `DRIFT`, every other rendered path the repo also has reports the
 same `DRIFT` tagged `(uncurated — not in template-owned-files.txt)` — the tag
 records that the hand-maintained manifest has not adopted the file, not a lower
 severity — and the equally manifest-independent `MISSING` scan catches template
-files the repo lacks entirely. Two classes are informational: `CO-OWNED` (prose
-the repo owns) and `IGNORED` (untracked, and ignored by the repo *and the
-template*); their content never affects the exit status and their diffs are
-withheld even under `--show`. `IGNORED` is **sweep-only**: a path on
+files the repo lacks entirely. Three classes are informational: `OWNED` (the
+template's own `copier.yml` `_skip_if_exists` declares the path repo-owned, so
+copier will never rewrite it — derived from the rendered commit at run time,
+never mirrored; an unreadable, malformed, negated, or templated declaration
+exits 2, while a baseline older than the declaration itself keeps running
+without the class and says so), `CO-OWNED` (prose the repo owns) and `IGNORED` (untracked, and
+ignored by the repo *and the template*); their content never affects the exit
+status and their diffs are withheld even under `--show`.
+`OWNED` and `IGNORED` are **sweep-only** classes: a path on
 [`template-owned-files.txt`](../assets/template-owned-files.txt) always gates,
 ignore rules or not, because the manifest is itself an assertion of template
 ownership and ignore-based leniency cannot override it — `.claude/settings.json`

@@ -446,10 +446,30 @@ drift; once the deletion is staged it is real `MISSING`. Mature nested Terraform
 roots and an established or renumbered ADR log are reported as benign `EQUIV`
 instead of false `MISSING` and do not affect the exit status.
 
-Two further classes are informational — **their content never affects the exit
+Three further classes are informational — **their content never affects the exit
 status** (a `MODE` finding on the same file still gates) — and their diffs are
 withheld even under `--show`:
 
+- **`OWNED`** — the **template itself** declares the path repo-owned, by listing
+  it in `copier.yml`'s `_skip_if_exists` (`CHANGELOG.md`, `*.code-workspace`,
+  `.github/CODEOWNERS`, `.devcontainer/related-repos.txt`,
+  `.release-please-manifest.json`). Once such a file exists copier never writes
+  it again — not on adopt, not on update — so its divergence is not drift in any
+  sense the template can act on, and it used to report as gating uncurated
+  `DRIFT` in every mature repo. The list is **derived at run time** from the very
+  commit that was rendered, matched with git's own gitignore dialect (the same
+  one copier uses), so it cannot go stale; a declaration that cannot be read, is
+  malformed, negated, or templated exits `2` rather than quietly returning every
+  declared path to `DRIFT`. A baseline that simply **predates** the declaration
+  is a different fact — harmon-init added `_skip_if_exists` in v3.4.0 while a
+  guarded audit accepts any v3.0.0 descendant — so those runs continue without
+  the class and **say so**, on stderr and again in the summary, rather than
+  being refused or quietly degraded. Distinct from `CO-OWNED` on purpose: that one
+  is a hand-maintained judgement about *prose the repo rewrote*, this one is the
+  template's machine-readable statement about *who owns the file*, and it covers
+  paths nobody would call prose. Where the two overlap, `OWNED` wins. It says
+  nothing about **absence** — copier freezes a declared path only when it
+  exists — so a declared path the repo lacks is still `MISSING`.
 - **`CO-OWNED`** — the template seeds the file but the repo owns its **prose**
   (`AGENTS.md` and its symlink aliases, `README.md`, the **`*.md` under**
   `docs/` and `specs/`, the devcontainer `config/zshrc`, …). Those two tree
@@ -481,7 +501,7 @@ withheld even under `--show`:
 Symlinks are compared by **link target**, so the `CLAUDE.md` / `GEMINI.md` /
 `.github/copilot-instructions.md` aliases stay silent instead of restating one
 `AGENTS.md` divergence four times. A symlink-versus-regular-file mismatch is
-structural and **does** gate, `CO-OWNED` or not.
+structural and **does** gate, `OWNED` or `CO-OWNED` or not.
 Because the render is at `_commit`, each **`DRIFT`** is the repo's **local
 customization** relative to its own baseline — or a **regression** where a past
 hand-reconcile dropped a same-baseline improvement (the status.sh / lint-hygiene /
