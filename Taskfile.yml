@@ -76,6 +76,7 @@ tasks:
       - task: test:codex-review
       - task: test:shepherd-codex
       - task: test:shepherd-marker
+      - task: test:shepherd-readiness
       - task: test:release-title
       - task: test:notify-release
       - task: test:setup-github-project
@@ -325,6 +326,11 @@ tasks:
     desc: Unit-test the shepherd gate-then-push marker parser (require-marker.sh)
     cmds:
       - ./scripts/test-shepherd-marker.sh
+
+  test:shepherd-readiness:
+    desc: Unit-test the shepherd readiness gate + read-only gh wrapper (offline, stubbed gh)
+    cmds:
+      - ./scripts/test-shepherd-readiness.sh
 
   test:release-title:
     desc: Unit-test the release-content title guard (require-release-title.sh)

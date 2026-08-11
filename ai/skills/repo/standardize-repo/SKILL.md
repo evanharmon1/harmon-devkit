@@ -202,9 +202,11 @@ automation available only through `pull_request.ready_for_review` as a
 configuration blocker: ready can notify human reviewers immediately and is not
 a reversible automation probe. Freeze one final snapshot of the head, draft
 state, checks, reviews, mergeability, deferred findings, and unanswered threads.
-For the content half of that snapshot, use the `promo_fp` recipe from the
-shepherd skill's stop conditions (`shepherd/SKILL.md` §6) whenever that skill
-is installed alongside this one — one recipe, not a re-derivation. When it is
+For the content half of that snapshot, use the shepherd skill's readiness-gate
+script (`shepherd/assets/readiness-gate.sh`, per `shepherd/SKILL.md` §6 —
+`check` prints the fingerprint on a pass, `fingerprint` recomputes it after
+promotion) whenever that skill
+is installed alongside this one — one implementation, not a re-derivation. When it is
 not (this fallback exists precisely for targets without a vendored shepherd,
 and this skill can be installed without it), construct the fingerprint to the
 same contract, which is stated here in full because the file may be absent:
