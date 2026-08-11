@@ -3011,6 +3011,15 @@ run_carry --new-head "$carry_new_head" --base-ref carry-base
     fail "a newer trigger reaction must refuse the carry, got rc=$carry_rc: $carry_out"
 printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
 
+echo "==> carry without an explicit base ref refuses instead of assuming main"
+carry_setup
+carry_clean_cycle
+run_carry --new-head "$carry_new_head"
+[ "$carry_rc" -eq 2 ] ||
+    fail "a carry without --base-ref must refuse, got rc=$carry_rc: $carry_out"
+[ "$(jq -r .head "$state")" = "$carry_old_head" ] ||
+    fail "a refused baseless carry must not touch the state: $(jq -c . "$state")"
+
 echo "==> a state without a recorded snapshot refuses the carry"
 carry_setup
 carry_clean_cycle

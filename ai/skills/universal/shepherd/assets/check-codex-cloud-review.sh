@@ -37,7 +37,7 @@ Usage:
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh check --state FILE --actor-id N [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
   check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--now ISO8601]
-  check-codex-cloud-review.sh carry --state FILE --actor-id N --new-head SHA [--base-ref REF] [--now ISO8601]
+  check-codex-cloud-review.sh carry --state FILE --actor-id N --new-head SHA --base-ref REF [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
 EOF
@@ -87,7 +87,10 @@ target_id=
 disposition=
 note=
 new_head=
-base_ref=origin/main
+# No default. `origin/main` silently fingerprinted a stacked or
+# release-branch PR against a base it never had, proving nothing about the
+# diff that was actually reviewed while still reporting a carry.
+base_ref=
 lock_dir=
 reap_entries=
 reap_lock=
@@ -2066,7 +2069,7 @@ carry)
     # the Codex re-review came back clean. Removing the carve-out means
     # spending a full reviewer window per catch-up to re-attest identical
     # bytes, which is the cost the issue exists to eliminate.
-    [ -n "$new_head" ] && [ -n "$actor_id" ] || usage
+    [ -n "$new_head" ] && [ -n "$actor_id" ] && [ -n "$base_ref" ] || usage
     valid_uint "$actor_id" || die "invalid actor ID"
     need git
     valid_sha "$new_head" || die "--new-head must be a full 40-hex commit"

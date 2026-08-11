@@ -642,6 +642,10 @@ you rather than the bot):
     --new-head "<the merged head>" --base-ref "origin/$base"
   ```
 
+  `--base-ref` is REQUIRED: there is no default, because a stacked or
+  release-branch PR fingerprinted against `main` proves nothing about the
+  diff that was reviewed. Pass the PR's own `baseRefName`, as above.
+
   It carries the verdict only when a pinned exact-diff fingerprint (canonical
   `git diff` bytes, hashed — deliberately NOT `git patch-id`, which
   normalizes the whitespace that is semantic in Python or YAML) proves the
