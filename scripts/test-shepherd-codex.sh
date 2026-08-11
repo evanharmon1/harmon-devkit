@@ -2638,13 +2638,28 @@ run_settle --surface comment --id 77 --disposition declined --note "declined"
 [ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
-jq -c '[[.[0][0] | .updated_at = "2026-07-31T08:00:45Z"]]' \
-    "${fixtures}/comments.pages.json" >"${fixtures}/comments.next"
-mv "${fixtures}/comments.next" "${fixtures}/comments.pages.json"
+# Both fixtures move together: the single-comment endpoint is what `settle`
+# re-fetches, the list is what `check` classifies, and GitHub would of course
+# report one edit on both.
+jq -c '.updated_at = "2026-07-31T08:00:45Z"' \
+    "${fixtures}/comment-77.json" >"${fixtures}/comment-77.next"
+mv "${fixtures}/comment-77.next" "${fixtures}/comment-77.json"
+jq -c '[[.]]' "${fixtures}/comment-77.json" >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
 [ "$(jq -r '.settled | length' "$state")" = "1" ] ||
     fail "an invalidated disposition must be kept, not deleted: $(jq -c .settled "$state")"
+# Re-settling against the new text keeps the superseded entry too: the record
+# of what was decided about the old text survives, and only the entry whose
+# fingerprint matches the body as it stands now is honoured
+# (PR #424 shepherd round 3).
+run_settle --surface comment --id 77 --disposition declined \
+    --note "declined again, against the revised text"
+[ "$settle_rc" -eq 0 ] || fail "re-settling should have recorded: $settle_out"
+[ "$(jq -r '.settled | length' "$state")" = "2" ] ||
+    fail "re-settling must keep the superseded entry: $(jq -c .settled "$state")"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
 
 echo "==> a settled review body does not settle its own inline findings"
 # The two sets compose. Settling the body says nothing about the inline

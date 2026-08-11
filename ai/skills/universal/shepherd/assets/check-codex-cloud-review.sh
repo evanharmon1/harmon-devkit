@@ -2044,9 +2044,14 @@ settle)
         --arg fingerprint "$settle_fingerprint" \
         --arg settled_at "$settled_at" '
           .version = 2 |
+          # APPENDED, never replaced. `check` honours only the entry whose
+          # fingerprint matches the body as it stands now, so a superseded
+          # disposition is inert without being erased — and erasing it would
+          # destroy the record of what was decided about the earlier text,
+          # which is exactly what SKILL.md promises is kept. The list grows
+          # only when Codex edits a finding, which is rare and bounded.
           .settled = (
-            ((.settled // []) |
-              map(select((.surface != $surface) or (.id != $id)))) +
+            (.settled // []) +
             [{
               surface:$surface,id:$id,disposition:$disposition,note:$note,
               content_fingerprint:$fingerprint,settled_at:$settled_at
