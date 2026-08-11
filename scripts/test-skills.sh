@@ -1018,17 +1018,24 @@ expect_fail "standards catalog reconstructs no literal Claude trigger phrase" \
 # phrases in a file that is itself quotable — the exact hazard this guard
 # exists to catch — while testing nothing extra: the pipeline only ever sees
 # the joined string.
+#
+# For the same reason each fixture is reported by a LABEL, never by its
+# content: test output is routinely pasted into an issue or a PR comment, so
+# echoing the assembled phrase would put a live trigger in the one place that
+# acts on it. Entries are `label|content`; only the label is ever printed.
 _m=$(printf '@%s' claude)
 _M=$(printf '@%s' Claude)
-for _trigger_fixture in \
-    "post an ${_m} plan comment" \
-    "post an \`${_m}\` \`plan\` comment" \
-    "post an ${_M} Review comment" \
-    "post an ${_m} **implement** comment" \
-    "post an ${_m} [plan](docs/x.md) comment"; do
+for _trigger_case in \
+    "same-line adjacency|post an ${_m} plan comment" \
+    "backtick-separated tokens|post an \`${_m}\` \`plan\` comment" \
+    "case variant|post an ${_M} Review comment" \
+    "bold subcommand|post an ${_m} **implement** comment" \
+    "linked subcommand|post an ${_m} [plan](docs/x.md) comment"; do
+    _label=${_trigger_case%%|*}
+    _trigger_fixture=${_trigger_case#*|}
     _tf=$(mktemp)
     printf '%s\n' "$_trigger_fixture" >"$_tf"
-    expect_ok "trigger-phrase guard fires on: $_trigger_fixture" \
+    expect_ok "trigger-phrase guard fires on the $_label fixture" \
         sh -c 'mention="@claude"
             tr -s "[:space:]" " " <"$1" | sed -E "s/\]\([^)]*\)//g" |
                 grep -qiE "${mention}[[:space:][:punct:]\`\$+<=>^|~]{1,20}(plan|implement|review)"' sh \

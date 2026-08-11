@@ -491,10 +491,13 @@ Workflow inventory:
 harmon-init#664 / v4.25). They subscribe to `issue_comment` (created),
 `pull_request_review_comment` (created), and `pull_request_review` (submitted)
 — every comment event in the repo — and filter in the job `if:`: the sender
-must be on the explicit `claude_authorized_members` allowlist, and the body
+must be on that workflow's authorized-sender set, and the body
 must contain that workflow's trigger phrase, which is the `@claude` mention
-followed by the workflow's own subcommand word. A token-free
-`Verify sender is authorized` step re-asserts the same allowlist before any
+followed by the workflow's own subcommand word. The sender set is the explicit
+`claude_authorized_members` allowlist for plan and implement; review extends it
+with the bots whose PRs it runs on (Renovate, Dependabot, and CodeRabbit when
+`use_coderabbit`), which is also what it passes as `allowed_bots`. A token-free
+`Verify sender is authorized` step re-asserts that same set before any
 App token is minted, so a spoof-shaped gap in the `if:` expression cannot reach
 credential creation. The old per-workflow label triggers (one label
 named after each workflow) and the `issues: [opened, assigned]` trigger were
