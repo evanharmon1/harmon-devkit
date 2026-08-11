@@ -961,9 +961,21 @@ index_diverges() {
         [ "$staged_index_blob" = "$staged_head_blob" ] || index_bytes_staged=1
         [ "$staged_index_mode" = "$staged_head_mode" ] || index_mode_staged=1
     fi
-    if [ "$index_bytes_staged" -eq 0 ]; then
+    # A TYPE change is staged in the MODE, not in the bytes: git records a
+    # regular file as 100644 and a symlink as 120000, and a file whose contents
+    # are exactly the link's target text has the SAME blob under both. Keying
+    # the structural verdict on staged bytes alone therefore dropped an
+    # index-only file↔symlink conversion — blob unchanged, mode changed — and
+    # the exec-bit branch above cannot catch it either, because it exempts
+    # symlinks by design. Structure survives whenever EITHER dimension moved.
+    if [ "$index_bytes_staged" -eq 0 ] && [ "$index_mode_staged" -eq 0 ]; then
         index_content_divergent=0
         index_structural=0
+        index_note=""
+    elif [ "$index_bytes_staged" -eq 0 ] && [ "$index_structural" -eq 0 ]; then
+        # Only the mode moved and the types agree: the byte divergence is
+        # inherited committed state, which the worktree comparison speaks for.
+        index_content_divergent=0
         index_note=""
     fi
     [ "$index_mode_staged" -eq 1 ] || index_mode_divergent=0
@@ -995,15 +1007,23 @@ load_staged_entries() {
     staged_index_mode=""
     staged_index_blob=""
     [ "$target_owns_worktree" -eq 1 ] || return 1
-    git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1 || return 1
-    # Both probes are the fail-closed ones: a probe ERROR aborts rather than
-    # reading as "no entry", which would silently downgrade every staged
-    # question below to "nothing staged".
-    staged_probe "HEAD membership" "$lse_path" ls-tree HEAD -- "$lse_path"
-    if [ -n "$staged_probe_out" ]; then
-        # `<mode> <type> <blob>\t<path>`
-        staged_head_mode="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $1 }')"
-        staged_head_blob="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $3 }')"
+    # An UNBORN HEAD leaves both HEAD fields empty rather than ending the
+    # inspection. There is no committed state, so every index entry is staged by
+    # definition — the first commit carries all of it — and returning early here
+    # made a pre-first-commit repo the one place staged divergence went
+    # unreported. The empty HEAD blob is also what keeps the co-owned clobber
+    # gate honest there: see its `staged_head_blob` condition, which asks
+    # whether there was ever a committed customization to lose.
+    if git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+        # Both probes are the fail-closed ones: a probe ERROR aborts rather than
+        # reading as "no entry", which would silently downgrade every staged
+        # question below to "nothing staged".
+        staged_probe "HEAD membership" "$lse_path" ls-tree HEAD -- "$lse_path"
+        if [ -n "$staged_probe_out" ]; then
+            # `<mode> <type> <blob>\t<path>`
+            staged_head_mode="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $1 }')"
+            staged_head_blob="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $3 }')"
+        fi
     fi
     staged_probe "the index entry" "$lse_path" ls-files -s -- "$lse_path"
     if [ -n "$staged_probe_out" ]; then
@@ -1439,8 +1459,13 @@ while IFS= read -r abs; do
             # whose committed bytes already match the template would satisfy
             # every other condition and claim a prose clobber that no commit
             # performs — mode and content stage independently.
+            # `staged_head_blob` non-empty is the "there was something to lose"
+            # half: a clobber replaces a COMMITTED customization. An unborn HEAD
+            # (or a path not in HEAD) has none — the prose lives only in the
+            # worktree and survives the commit on disk, exactly as any unstaged
+            # edit does — so the claim would be false there.
             if [ "$index_present" -eq 1 ] && [ "$index_bytes_staged" -eq 1 ] &&
-                [ "$index_content_divergent" -eq 0 ]; then
+                [ -n "$staged_head_blob" ] && [ "$index_content_divergent" -eq 0 ]; then
                 echo "DRIFT    $rv_display  (staged copy is byte-identical to the template — the next commit clobbers the repo's customization)"
                 drift=1
                 uncurated_drift_count=$((uncurated_drift_count + 1))

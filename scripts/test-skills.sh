@@ -6275,6 +6275,74 @@ else
     bad "diff-template keeps the co-owned class when only a mode was staged"
 fi
 
+# --- a staged TYPE change hides in the mode, not in the bytes ----------------
+# git records a regular file as 100644 and a symlink as 120000, and a file whose
+# contents are exactly the link's target text has the SAME blob under both. So
+# an index-only file→symlink conversion moves the mode while the blob stands
+# still: keying the structural verdict on staged bytes misses it, and the
+# exec-bit branch cannot catch it either because it exempts symlinks by design.
+DT_STAGED_TYPE="$TMPROOT/diff-template-staged-type"
+cp -pR "$DT_TARGET" "$DT_STAGED_TYPE"
+# AGENTS.md's committed bytes become the link text, so the blob is shared by the
+# regular file and the symlink that points at it — the whole point of the case.
+printf 'docs/guide.md' >"$DT_STAGED_TYPE/AGENTS.md"
+git_commit_all "$DT_STAGED_TYPE" "agent prose is exactly a path string"
+staged_type_blob="$(printf 'docs/guide.md' |
+    git -C "$DT_STAGED_TYPE" hash-object -w --stdin)"
+git -C "$DT_STAGED_TYPE" update-index --add --cacheinfo \
+    "120000,$staged_type_blob,AGENTS.md"
+if staged_type_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_STAGED_TYPE" 2>&1)"; then
+    bad "diff-template gates an index-only file-to-symlink conversion (expected non-zero exit)"
+elif printf '%s\n' "$staged_type_out" |
+    grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch"; then
+    ok "diff-template gates an index-only file-to-symlink conversion"
+else
+    bad "diff-template gates an index-only file-to-symlink conversion (diagnostic missing)"
+fi
+
+# --- an unborn repository stages everything ----------------------------------
+# Before the first commit there is no committed state, so every index entry is
+# staged by definition and the initial commit carries all of it. Ending the
+# inspection at the absent HEAD made this the one place staged divergence went
+# unreported entirely.
+DT_UNBORN="$TMPROOT/diff-template-unborn"
+cp -pR "$DT_TARGET" "$DT_UNBORN"
+rm -rf "$DT_UNBORN/.git"
+git_init "$DT_UNBORN"
+printf '%s\n' '{ "extends": ["unborn-staged-divergence"] }' \
+    >"$DT_UNBORN/renovate.json"
+git -C "$DT_UNBORN" add -- renovate.json
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_UNBORN/renovate.json"
+if unborn_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_UNBORN" 2>&1)"; then
+    bad "diff-template reports staged divergence before the first commit (expected non-zero exit)"
+elif printf '%s\n' "$unborn_out" |
+    grep -qF "DRIFT    renovate.json  (uncurated — staged content differs"; then
+    ok "diff-template reports staged divergence before the first commit"
+else
+    bad "diff-template reports staged divergence before the first commit (DRIFT diagnostic missing)"
+fi
+# …and the clobber gate stays silent there: with nothing committed, no
+# customization can be lost, so a co-owned worktree edit is an ordinary local
+# edit rather than a clobber.
+git -C "$DT_UNBORN" reset -q -- renovate.json
+cp "$DT_TEMPLATE/template/renovate.json" "$DT_UNBORN/renovate.json"
+git -C "$DT_UNBORN" add -- AGENTS.md
+printf '%s\n' '# Test Project agents' 'seeded agent prose' 'unborn-local-edit' \
+    >"$DT_UNBORN/AGENTS.md"
+if unborn_clobber_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+    "$DT_UNBORN" 2>&1)"; then
+    ok "diff-template claims no clobber in a repo with no commits"
+else
+    bad "diff-template claims no clobber in a repo with no commits: $unborn_clobber_out"
+fi
+if printf '%s\n' "$unborn_clobber_out" | grep -qF "staged copy is byte-identical"; then
+    bad "diff-template makes no clobber claim without a committed customization"
+else
+    ok "diff-template makes no clobber claim without a committed customization"
+fi
+
 # --- the staged-removal probes must fail CLOSED ------------------------------
 # `cat-file -e "HEAD:$p"` exits 128 for a path merely ABSENT from HEAD, so
 # "absent" and "the probe itself failed" were indistinguishable by exit code and
