@@ -1507,6 +1507,18 @@ check)
         # head that resolves the cycle either way. `>=` would trade that
         # bounded delay for a promote-during-the-gap race inside the
         # coincidence second.
+        #
+        # Accepted residual, stated so nobody rediscovers it: attempt 2 can
+        # post a clean verdict while attempt 1's review — same head, same
+        # diff, declared dead a full window ago — is somehow still running,
+        # and that newer verdict clears attempt 1's shell. Timestamps cannot
+        # correlate a verdict with a shell, so no comparison closes this
+        # without reopening the abandoned-shell deadlock on the other side.
+        # The exposure requires Codex to contradict itself on identical
+        # input, is caught by the caller's mandatory pre-promotion re-check
+        # when the late findings land before promotion, and beyond that a
+        # reviewer that may post arbitrarily late defeats any polling design
+        # — which is why the gate promotes to ready-for-review, not merge.
         clean_review_time=""
         if [ "$review_result" = "clean" ]; then
             clean_review_time=$(jq -r \
@@ -1610,9 +1622,16 @@ check)
         # review body, a top-level comment, or a reaction, and each exits
         # above through its own time-ordered gate — so a shell that is still
         # dangling at this point is a review in flight or an abandoned one,
-        # and both are pending: fail closed, bounded by the attempt window,
-        # and self-healing, since attempt 2 makes Codex post strictly newer
-        # evidence for this head that resolves the cycle either way.
+        # and both are pending: fail closed, bounded by the attempt window.
+        # Attempt 2's newer evidence resolves the cycle when it is a clean
+        # verdict or reaction (the time-ordered exits above accept it). When
+        # attempt 2 instead returns findings and an ABANDONED attempt-1
+        # shell still dangles, this exit stays pending after those findings
+        # are adjudicated, and the cycle ends in the attempt machinery's
+        # escalation. Deliberate, not a gap: an actor shell nobody can
+        # explain plus adjudicated findings is incomplete evidence, and the
+        # checker's discipline for incomplete evidence is a human hand-off,
+        # never a green it cannot support.
         if [ -n "$shell_barrier" ]; then
             emit pending "an empty review shell is still unresolved for this head"
             exit 11
