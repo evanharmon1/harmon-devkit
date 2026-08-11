@@ -13,6 +13,13 @@
 #   2  indeterminate — malformed, changed head, usage error, or a
 #      current-head verdict whose shape cannot be classified
 #
+# `settle` records the disposition of a badged finding that lives OUTSIDE an
+# inline thread — a top-level conversation comment or a review body — because
+# those two surfaces carry no reply linkage, so the in-thread adjudication path
+# can never reach them and `check` would report `findings` for them forever.
+# `carry` moves a terminal-clean verdict onto a new head across a pure base
+# catch-up merge, when git can prove the proposed diff did not change.
+#
 # `reserve` creates the state a cycle runs on; `reap` is the other half of that
 # lifecycle. Nothing else removes a state file — a shepherded PR is still open
 # when its session stops, so a cycle can never reap its own state, and without
@@ -29,6 +36,8 @@ Usage:
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh check --state FILE --actor-id N [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
+  check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--now ISO8601]
+  check-codex-cloud-review.sh carry --state FILE --new-head SHA [--base-ref REF] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
 EOF
@@ -73,6 +82,12 @@ timeout_min=15
 timeout_min_set=0
 timeout_min_adopted=0
 now=
+surface=
+target_id=
+disposition=
+note=
+new_head=
+base_ref=origin/main
 lock_dir=
 reap_entries=
 reap_lock=
@@ -81,7 +96,7 @@ reap_deadline_epoch=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --new-head | --base-ref)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -99,6 +114,12 @@ while [ "$#" -gt 0 ]; do
             ;;
         --budget-sec) reap_budget_sec=$2 ;;
         --now) now=$2 ;;
+        --surface) surface=$2 ;;
+        --id) target_id=$2 ;;
+        --disposition) disposition=$2 ;;
+        --note) note=$2 ;;
+        --new-head) new_head=$2 ;;
+        --base-ref) base_ref=$2 ;;
         esac
         shift 2
         ;;
@@ -216,8 +237,61 @@ resolve_timeout_min() {
 persist_adopted_timeout() {
     [ "$timeout_min_adopted" = 1 ] || return 0
     payload=$(jq --argjson timeout_min "$timeout_min" \
-        '.timeout_min = $timeout_min' "$state_file")
+        '.version = 2 | .timeout_min = $timeout_min' "$state_file")
     write_state "$state_file" "$payload"
+}
+
+now_utc() {
+    if [ -n "$now" ]; then
+        valid_time "$now" || die "--now must be an ISO-8601 UTC second"
+        printf '%s' "$now"
+    else
+        date -u '+%Y-%m-%dT%H:%M:%SZ'
+    fi
+}
+
+# A disposition is recorded against the exact text it answered, so an edited
+# finding stops being settled. The body is hashed in its JSON-ENCODED form:
+# command substitution strips trailing newlines, and the encoded string keeps
+# them (and every other whitespace edit) inside the value being hashed. The
+# edit timestamp rides along where the surface exposes one — reviews expose
+# only `submitted_at`, so for them the body hash is the whole of the evidence.
+# `cksum` rather than a digest tool: it is POSIX, ships everywhere this helper
+# already runs, and this is change detection between two co-operating reads of
+# the same API, not a defence against a forged body.
+content_fingerprint() {
+    body_json=$1
+    edited_at=$2
+    body_sum=$(printf '%s' "$body_json" | cksum | tr ' ' '-') ||
+        die "cannot fingerprint a review body"
+    printf '%s|%s' "$edited_at" "$body_sum"
+}
+
+# `carry` has to know whether the state's CURRENT head was ever proven clean,
+# and `check` is the only thing that can say so. Written on terminal outcomes
+# only: pending and retry are mid-cycle and must never overwrite a verdict,
+# and `reserve` clears the record whenever it moves the head.
+record_check_result() {
+    record_result=$1
+    # `--now` when it is usable, so a fixed-clock caller records a fixed clock;
+    # otherwise the wall clock. Never a `die` on a malformed `--now`: this runs
+    # on the way out of a verdict that has already been decided, and the
+    # timestamp is provenance, not evidence.
+    record_at=$now
+    valid_time "$record_at" ||
+        record_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    payload=$(jq --arg result "$record_result" --arg at "$record_at" '
+          .version = 2 | .last_result = $result | .last_result_at = $at
+        ' "$state_file") || die "cannot record the check result"
+    write_state "$state_file" "$payload"
+}
+
+# The PR's three-dot diff reduced to git's own content identity. `--stable` is
+# not optional: the default patch-id depends on the order the hunks arrive in,
+# which is exactly what a merge is free to change.
+diff_patch_id() {
+    patch_base=$(git merge-base "$1" "$2") || return 1
+    git diff "$patch_base" "$2" | git patch-id --stable | cut -d' ' -f1
 }
 
 provider_head() {
@@ -268,11 +342,27 @@ write_state() {
     fi
 }
 
+# Version 2 added `settled`, `carries`, and the `last_result` pair. A version-1
+# file is read as if those were empty and is REWRITTEN as version 2 by the next
+# command that writes it, so an in-flight cycle survives the upgrade. A version
+# this helper has never heard of is refused outright rather than read
+# optimistically: an unknown field could carry exactly the evidence a newer
+# writer expects this one to honour.
 read_state() {
     [ -f "$state_file" ] || die "state file does not exist: $state_file"
+    state_version=$(jq -r 'select(type == "object") | .version | tostring' \
+        "$state_file" 2>/dev/null) || die "malformed state file: $state_file"
+    case "$state_version" in
+    1 | 2) ;;
+    *) die "state file is version $state_version, which this helper does not understand: $state_file" ;;
+    esac
     jq -e '
       type == "object" and
-      (.version == 1) and
+      (.version == 1 or .version == 2) and
+      (.settled == null or (.settled | type == "array")) and
+      (.carries == null or (.carries | type == "array")) and
+      (.last_result == null or (.last_result | type == "string")) and
+      (.last_result_at == null or (.last_result_at | type == "string")) and
       (.repo | type == "string") and
       (.pr | type == "number") and
       (.head | type == "string") and
@@ -356,6 +446,7 @@ bounded_wait() {
         emit retry "$detail; attempt 1 window elapsed"
         exit 12
     fi
+    record_check_result escalate
     emit escalate "$detail; both attempt windows elapsed"
     exit 13
 }
@@ -560,6 +651,21 @@ reserve)
     reserved_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     cycle_requested_at=
     previous_trigger_id=null
+    # Settlements, carry provenance, and the recorded verdict are all
+    # statements about a HEAD, not about an attempt, so attempt 2 of the same
+    # head keeps them — discarding them would make every attempt-2 cycle
+    # re-block on findings a human already disposed of. A different head
+    # invalidates all three, and this payload starts them empty.
+    carried_settled='[]'
+    carried_carries='[]'
+    carried_result=null
+    carried_result_at=null
+    if [ -f "$state_file" ] && [ "$(jq -r '.head' "$state_file")" = "$head" ]; then
+        carried_settled=$(jq -c '.settled // []' "$state_file")
+        carried_carries=$(jq -c '.carries // []' "$state_file")
+        carried_result=$(jq -c '.last_result // null' "$state_file")
+        carried_result_at=$(jq -c '.last_result_at // null' "$state_file")
+    fi
     if [ "$attempt" = "2" ]; then
         cycle_requested_at=$(jq -r '.cycle_requested_at' "$state_file")
         previous_reserved_at=$(jq -r '.reserved_at' "$state_file")
@@ -618,14 +724,20 @@ reserve)
         --arg cycle_requested_at "$cycle_requested_at" \
         --argjson previous_trigger_id "$previous_trigger_id" \
         --argjson timeout_min "$payload_timeout_min" \
+        --argjson settled "$carried_settled" \
+        --argjson carries "$carried_carries" \
+        --argjson last_result "$carried_result" \
+        --argjson last_result_at "$carried_result_at" \
         '{
-          version:1,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
+          version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
           trigger_comment_id:null,requested_at:null,
           cycle_requested_at:
             (if $cycle_requested_at == "" then null else $cycle_requested_at end),
           previous_trigger_comment_id:$previous_trigger_id,
-          timeout_min:$timeout_min
+          timeout_min:$timeout_min,
+          settled:$settled,carries:$carries,
+          last_result:$last_result,last_result_at:$last_result_at
         }')
     write_state "$state_file" "$payload"
     release_state_lock
@@ -682,6 +794,7 @@ attach)
     payload=$(jq \
         --argjson id "$trigger_id" \
         --arg requested_at "$requested_at" '
+          .version = 2 |
           .phase = "attached" |
           .trigger_comment_id = $id |
           .requested_at = $requested_at |
@@ -751,7 +864,7 @@ reap)
 
         state_repo=$(jq -er '
               select(
-                type == "object" and (.version == 1) and
+                type == "object" and (.version == 1 or .version == 2) and
                 (.repo | type == "string") and (.pr | type == "number")
               ) | .repo
             ' "$candidate" 2>/dev/null) || {
@@ -1015,6 +1128,53 @@ check)
         }
     done
 
+    # Settled dispositions are re-verified against the evidence just fetched,
+    # never trusted from the state file alone. An entry is honoured only while
+    # the target still reads exactly as it did when the disposition was
+    # written; an edited finding is a different finding, and its stale entry is
+    # ignored (not deleted — the operator settles it again, and the record of
+    # what was decided about the earlier text stays put). A target that has
+    # since vanished from the evidence settles nothing, which costs nothing:
+    # there is no finding left to suppress.
+    disposed_comments='[]'
+    disposed_reviews='[]'
+    settled_list="$workdir/settled.tsv"
+    jq -r '
+          (.settled // [])[] |
+          select((.id | type) == "number") |
+          [(.surface // ""), (.id | tostring), (.content_fingerprint // "")] |
+          @tsv
+        ' "$state_file" >"$settled_list"
+    while IFS='	' read -r settled_surface settled_id settled_fingerprint; do
+        [ -n "$settled_surface" ] || continue
+        case "$settled_surface" in
+        comment) settled_evidence="$workdir/comments.json" ;;
+        review) settled_evidence="$workdir/reviews.json" ;;
+        *) continue ;;
+        esac
+        settled_target=$(jq -c \
+            --argjson id "$settled_id" '
+              [.[] | select(.id? == $id)] | first // empty
+            ' "$settled_evidence")
+        [ -n "$settled_target" ] || continue
+        settled_body=$(printf '%s' "$settled_target" |
+            jq -r '(.body // "") | @json')
+        settled_edited=$(printf '%s' "$settled_target" |
+            jq -r '.updated_at // .submitted_at // ""')
+        [ "$(content_fingerprint "$settled_body" "$settled_edited")" = \
+            "$settled_fingerprint" ] || continue
+        case "$settled_surface" in
+        comment)
+            disposed_comments=$(printf '%s' "$disposed_comments" |
+                jq -c --argjson id "$settled_id" '. + [$id] | unique')
+            ;;
+        review)
+            disposed_reviews=$(printf '%s' "$disposed_reviews" |
+                jq -c --argjson id "$settled_id" '. + [$id] | unique')
+            ;;
+        esac
+    done <"$settled_list"
+
     # Current-head inline findings are PARTITIONED, not counted
     # (evanharmon1/harmon-devkit#275). Counting them made the two-attempt
     # contract unfinishable for any head carrying a declined P2: the settled
@@ -1217,6 +1377,7 @@ check)
             exit 2
         }
         if [ "$inline_unadjudicated" -gt 0 ]; then
+            record_check_result findings
             emit findings "authenticated current-head inline review findings are unanswered by a trusted in-thread reply"
             exit 10
         fi
@@ -1383,6 +1544,7 @@ check)
         --argjson id "$actor_id" \
         --arg head "$state_head" \
         --argjson settled "$settled_reviews" \
+        --argjson disposed "$disposed_reviews" \
         "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
@@ -1391,7 +1553,14 @@ check)
           ) |
           . as $review | verdict_class as $class |
           if $class == "findings" then
+            # A recorded disposition settles the review BODY on its own,
+            # badge and prose included — that is what was disposed of. It
+            # says nothing about the inline comments hanging off that same
+            # review, which keep their own reply-based path above.
             (if (($review.id? | type) == "number") and
+                ($disposed | index($review.id))
+             then "settled"
+             elif (($review.id? | type) == "number") and
                 ($settled | index($review.id)) and
                 ((has_severity_marker) | not) and
                 is_carrier_only
@@ -1417,6 +1586,7 @@ check)
           ) | .id] | unique
         ' "$workdir/reviews.json")
     if [ "$review_result" = "findings" ]; then
+        record_check_result findings
         emit findings "authenticated current-head review requires adjudication"
         exit 10
     fi
@@ -1455,6 +1625,17 @@ check)
         prefix_lower=$(printf '%s' "$prefix" | tr '[:upper:]' '[:lower:]')
         head_lower=$(printf '%s' "$state_head" | tr '[:upper:]' '[:lower:]')
         case "$head_lower" in "$prefix_lower"*) ;; *) continue ;; esac
+        # A disposed finding contributes neither `findings` nor `clean`: it is
+        # answered, not a verdict. Skipping it here rather than after the
+        # resolve is deliberate — `settle` already resolved this exact prefix
+        # against this exact head, and the head cannot have moved since (both
+        # head checks above pin it), so the call would re-prove a fact the
+        # disposition already carries.
+        if [ "$classification" = "findings" ] && valid_uint "$comment_id" &&
+            printf '%s' "$disposed_comments" |
+            jq -e --argjson id "$comment_id" 'index($id) != null' >/dev/null; then
+            continue
+        fi
         resolved_payload=$(run_gh api "repos/$state_repo/commits/$prefix") ||
             bounded_wait "cannot resolve a reviewed commit prefix through GitHub"
         resolved=$(printf '%s' "$resolved_payload" | jq -er '.sha') || {
@@ -1486,6 +1667,7 @@ check)
     done <"$comment_candidates"
 
     if [ "$comment_result" = "findings" ]; then
+        record_check_result findings
         emit findings "authenticated current-head conversation finding requires adjudication"
         exit 10
     fi
@@ -1541,6 +1723,7 @@ check)
             emit pending "a newer empty review shell is still in flight for this head"
             exit 11
         fi
+        record_check_result clean
         emit clean "authenticated bot posted a current-head clean result"
         exit 0
     fi
@@ -1568,6 +1751,7 @@ check)
             emit pending "a newer empty review shell is still in flight for this head"
             exit 11
         fi
+        record_check_result clean
         emit clean "authenticated bot reacted +1 on the exact current-head trigger"
         exit 0
     fi
@@ -1636,11 +1820,245 @@ check)
             emit pending "an empty review shell is still unresolved for this head"
             exit 11
         fi
+        record_check_result clean
         emit clean "current-head findings are all adjudicated by trusted in-thread replies"
         exit 0
     fi
 
+    # Last of all, and only here: a verdict carried forward by `carry`
+    # substitutes for the ABSENCE of terminal evidence on this head, never for
+    # evidence that contradicts it. Everything above has already run, so any
+    # current-head finding, unrecognized verdict, or in-flight review shell
+    # outranks the carry — and the detail names the carry so the caller can
+    # tell a verdict Codex wrote about this head from one git proved still
+    # applies to it.
+    #
+    # Two conditions, both about the CURRENT head: the newest carry must have
+    # landed on it (the entries outlive later head changes, and a carry to
+    # some earlier head vouches for nothing here), and the last recorded check
+    # result must still be clean. Together they mean each successive carry
+    # revalidates from where the state actually is rather than from wherever
+    # the chain began.
+    carried_from=$(jq -r --arg head "$state_head" '
+          [(.carries // [])[] | select(.carried_to == $head)] as $chain |
+          ($chain | length) as $depth |
+          if $depth == 0 then empty
+          else ($chain[$depth - 1] | .carried_from // empty) end
+        ' "$state_file")
+    if [ -n "$carried_from" ] &&
+        [ "$(jq -r '.last_result // empty' "$state_file")" = "clean" ]; then
+        if [ -n "$shell_barrier" ]; then
+            emit pending "an empty review shell is still unresolved for this head"
+            exit 11
+        fi
+        record_check_result clean
+        emit clean "clean carried from $carried_from under identical patch-id"
+        exit 0
+    fi
+
     bounded_wait "no terminal current-head evidence yet"
+    ;;
+
+settle)
+    # Inline findings are settled by a trusted reply in their own thread. A
+    # badged finding stated in a top-level comment or in a review BODY has no
+    # thread to reply to, so nothing on GitHub can ever record that a human
+    # answered it and `check` reports `findings` for that head forever — the
+    # #275 deadlock, reappearing on the two surfaces the reply rule cannot
+    # reach. This command is the local record of that answer, and it is
+    # deliberately narrow: it refuses anything it cannot prove is a badged
+    # finding, from the pinned actor, about the state's own head.
+    [ -n "$surface" ] && [ -n "$target_id" ] && [ -n "$disposition" ] &&
+        [ -n "$note" ] && [ -n "$actor_id" ] || usage
+    valid_uint "$actor_id" || die "invalid actor ID"
+    valid_uint "$target_id" || die "invalid target ID"
+    case "$surface" in
+    comment | review) ;;
+    *) die "surface must be comment or review" ;;
+    esac
+    case "$disposition" in
+    declined | filed) ;;
+    *) die "disposition must be declined or filed" ;;
+    esac
+    settled_at=$(now_utc)
+    acquire_state_lock
+    read_state
+
+    state_repo=$(jq -r '.repo' "$state_file")
+    state_pr=$(jq -r '.pr' "$state_file")
+    state_head=$(jq -r '.head' "$state_file")
+    valid_repo "$state_repo" || die "state has an invalid repository"
+    valid_uint "$state_pr" || die "state has an invalid PR number"
+    valid_sha "$state_head" || die "state has an invalid head"
+    # `state_reserved` is deliberately left unset, which gives `run_gh` its flat
+    # per-call budget: settlement is a human act that lands after the cycle
+    # reported findings, often long after the attempt window closed, and
+    # budgeting these reads against an elapsed reservation would leave them one
+    # second to complete.
+
+    case "$surface" in
+    comment)
+        target=$(run_gh api "repos/$state_repo/issues/comments/$target_id") ||
+            die "cannot fetch conversation comment $target_id"
+        printf '%s' "$target" | jq -e \
+            --argjson id "$actor_id" \
+            --argjson target "$target_id" \
+            --arg suffix "/issues/$state_pr" '
+              (.id == $target) and (.user.id? == $id) and
+              ((.issue_url // "") | endswith($suffix))
+            ' >/dev/null ||
+            die "comment $target_id is not a Codex comment on this PR"
+        # Same discipline `check` applies to a top-level result: the comment
+        # must name a commit prefix that GitHub resolves to this head. A
+        # disposition recorded against some other head answers nothing.
+        settle_prefix=$(printf '%s' "$target" | jq -r '
+              (.body // "") |
+              try match(
+                "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
+                "i"
+              ).captures[0].string catch ""
+            ')
+        printf '%s' "$settle_prefix" | grep -Eq '^[0-9a-fA-F]{7,40}$' ||
+            die "comment $target_id does not identify a reviewed commit"
+        settle_prefix_lower=$(printf '%s' "$settle_prefix" |
+            tr '[:upper:]' '[:lower:]')
+        settle_head_lower=$(printf '%s' "$state_head" |
+            tr '[:upper:]' '[:lower:]')
+        case "$settle_head_lower" in
+        "$settle_prefix_lower"*) ;;
+        *) die "comment $target_id reviews a commit that is not this head" ;;
+        esac
+        settle_resolved_payload=$(run_gh api \
+            "repos/$state_repo/commits/$settle_prefix") ||
+            die "cannot resolve the reviewed commit prefix through GitHub"
+        settle_resolved=$(printf '%s' "$settle_resolved_payload" |
+            jq -er '.sha') ||
+            die "GitHub returned malformed commit-prefix data"
+        valid_sha "$settle_resolved" ||
+            die "GitHub returned an invalid resolved commit"
+        [ "$settle_resolved" = "$state_head" ] ||
+            die "comment $target_id reviews a commit that is not this head"
+        ;;
+    review)
+        target=$(run_gh api \
+            "repos/$state_repo/pulls/$state_pr/reviews/$target_id") ||
+            die "cannot fetch review $target_id"
+        printf '%s' "$target" | jq -e \
+            --argjson id "$actor_id" \
+            --argjson target "$target_id" \
+            --arg head "$state_head" '
+              (.id == $target) and (.user.id? == $id) and (.commit_id? == $head)
+            ' >/dev/null ||
+            die "review $target_id is not a current-head Codex review"
+        ;;
+    esac
+
+    # The badge is the only machine-emitted signal that this is a finding at
+    # all. Requiring it keeps settlement off every other shape the surfaces
+    # carry — a clean verdict, a carrier body, an unrecognized one — none of
+    # which a disposition would mean anything about.
+    printf '%s' "$target" |
+        jq -e "$codex_verdict_defs"' has_severity_marker' >/dev/null ||
+        die "target $target_id carries no P0/P1/P2 badge, so it is not a finding to settle"
+
+    settle_body=$(printf '%s' "$target" | jq -r '(.body // "") | @json')
+    settle_edited=$(printf '%s' "$target" |
+        jq -r '.updated_at // .submitted_at // ""')
+    settle_fingerprint=$(content_fingerprint "$settle_body" "$settle_edited")
+
+    # Re-settling the same target REPLACES its entry rather than appending: the
+    # ordinary reason to settle twice is that Codex edited the finding and the
+    # first disposition no longer applies to the text on the PR.
+    payload=$(jq \
+        --arg surface "$surface" \
+        --argjson id "$target_id" \
+        --arg disposition "$disposition" \
+        --arg note "$note" \
+        --arg fingerprint "$settle_fingerprint" \
+        --arg settled_at "$settled_at" '
+          .version = 2 |
+          .settled = (
+            ((.settled // []) |
+              map(select((.surface != $surface) or (.id != $id)))) +
+            [{
+              surface:$surface,id:$id,disposition:$disposition,note:$note,
+              content_fingerprint:$fingerprint,settled_at:$settled_at
+            }]
+          )
+        ' "$state_file")
+    write_state "$state_file" "$payload"
+    release_state_lock
+    printf '%s\n' "$payload"
+    ;;
+
+carry)
+    # A base catch-up merge moves the PR's head without changing what the PR
+    # proposes. Re-running a full review cycle for a diff no reviewer would
+    # read differently costs an attempt window on every merge of a busy base,
+    # so a terminal-clean verdict is carried forward instead — but only when
+    # `git patch-id --stable` proves the three-dot diff is byte-identical, and
+    # never over an ambiguity. CI is NOT carried and is not this command's
+    # concern: the caller's readiness gate re-runs the checks on the new head
+    # unconditionally, because a merge changes what the tests run against even
+    # when it changes nothing about the diff.
+    [ -n "$new_head" ] || usage
+    need git
+    valid_sha "$new_head" || die "--new-head must be a full 40-hex commit"
+    carried_at=$(now_utc)
+    acquire_state_lock
+    read_state
+
+    state_head=$(jq -r '.head' "$state_file")
+    valid_sha "$state_head" || die "state has an invalid head"
+    [ "$(jq -r '.last_result // empty' "$state_file")" = "clean" ] ||
+        die "the state head has no terminal-clean check result to carry"
+    [ "$new_head" != "$state_head" ] ||
+        die "--new-head is already this state's head"
+    # A dirty tree means the commits being compared are not the whole story of
+    # what the checkout holds, and the operator may be mid-merge.
+    [ -z "$(git status --porcelain)" ] ||
+        die "refusing to carry a verdict over a dirty working tree"
+    git rev-parse --verify --quiet "$state_head^{commit}" >/dev/null ||
+        die "the state head does not resolve in this checkout: $state_head"
+    git rev-parse --verify --quiet "$new_head^{commit}" >/dev/null ||
+        die "--new-head does not resolve in this checkout: $new_head"
+    git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null ||
+        die "--base-ref does not resolve in this checkout: $base_ref"
+    # Merge-only, as issue #752 specifies. A rebase or an amend rewrites the
+    # commits the review was attributed to, and identical content there is not
+    # the same claim: the reviewed objects no longer exist on the branch.
+    git merge-base --is-ancestor "$state_head" "$new_head" ||
+        die "--new-head does not descend from the state head, so this is not a catch-up merge"
+
+    old_patch_id=$(diff_patch_id "$base_ref" "$state_head") ||
+        die "cannot compute the state head's diff against $base_ref"
+    new_patch_id=$(diff_patch_id "$base_ref" "$new_head") ||
+        die "cannot compute --new-head's diff against $base_ref"
+    [ -n "$old_patch_id" ] && [ -n "$new_patch_id" ] ||
+        die "an empty diff has no patch identity to compare"
+    [ "$old_patch_id" = "$new_patch_id" ] ||
+        die "the proposed diff changed across the catch-up (patch-id $old_patch_id became $new_patch_id); run a fresh review cycle"
+
+    # `carried_to` is recorded alongside the provenance the issue asks for so
+    # that `check` can prove a carry applies to the head it is classifying,
+    # rather than trusting the newest entry in a list that survives later
+    # head changes.
+    payload=$(jq \
+        --arg old "$state_head" \
+        --arg new "$new_head" \
+        --arg base "$base_ref" \
+        --arg patch_id "$old_patch_id" \
+        --arg carried_at "$carried_at" '
+          .version = 2 |
+          .head = $new |
+          .carries = ((.carries // []) + [{
+            carried_from:$old,carried_to:$new,base_ref:$base,
+            patch_id:$patch_id,carried_at:$carried_at
+          }])
+        ' "$state_file")
+    write_state "$state_file" "$payload"
+    release_state_lock
+    printf '%s\n' "$payload"
     ;;
 
 *) usage ;;

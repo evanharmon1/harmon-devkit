@@ -103,9 +103,22 @@ fi
 case "$endpoint" in
 users/*) file=actor.json ;;
 */reactions?per_page=100) file=reactions.pages.json ;;
-repos/*/issues/comments/*) file=trigger.json ;;
+# `settle` fetches one comment or one review by ID. A per-ID fixture answers
+# it when the case under test wrote one; otherwise this stays the trigger
+# comment, exactly as before settlement existed. `settle` against an ID with
+# no fixture is the missing-target case and must fail the way GitHub would.
+repos/*/issues/comments/*)
+    # A `missing-<id>` marker makes that one comment 404 the way GitHub would.
+    [ ! -f "$GH_FIXTURES/missing-${endpoint##*/}" ] || exit 95
+    file="comment-${endpoint##*/}.json"
+    [ -f "$GH_FIXTURES/$file" ] || file=trigger.json
+    ;;
 repos/*/issues/*/comments?per_page=100) file=comments.pages.json ;;
 repos/*/pulls/*/reviews?per_page=100) file=reviews.pages.json ;;
+repos/*/pulls/*/reviews/*)
+    file="review-${endpoint##*/}.json"
+    [ -f "$GH_FIXTURES/$file" ] || exit 95
+    ;;
 repos/*/pulls/*/comments?per_page=100) file=inline.pages.json ;;
 # The PR object, fetched only for its author identity when the head carries
 # inline findings. It must sort AFTER the sub-resource patterns above, which it
@@ -209,6 +222,8 @@ write_defaults() {
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
     rm -f "${fixtures}/slow-pr"
+    rm -f "${fixtures}"/comment-*.json "${fixtures}"/review-*.json
+    rm -f "${fixtures}"/missing-*
     : >"$log"
 }
 
@@ -2394,5 +2409,453 @@ set -e
     fail "a leading-zero --timeout-min should fail closed, got rc=$leading_zero_rc: $leading_zero_out"
 [ ! -f "$state" ] ||
     fail "a rejected leading-zero --timeout-min must not create state"
+
+# --------------------------------------------------------------------------
+# `settle` — dispositions for badged findings that live outside inline threads
+# (harmon-devkit#391). Fixtures are built ONCE per case and the listing is
+# derived from the single object with `[[.]]`, so the body and edit timestamp
+# `settle` fingerprints are byte-identical to the ones `check` re-reads. A
+# hand-written second copy would make a fingerprint mismatch look like a bug
+# in the code under test.
+# --------------------------------------------------------------------------
+
+# The timeout cases above leave the harness clock wherever they needed it;
+# everything below runs on the fixed 08:00 cycle clock again.
+request_time='2026-07-31T08:00:00Z'
+trigger_id=123
+
+run_settle() {
+    set +e
+    settle_out="$("$helper" settle --state "$state" --actor-id "$actor_id" \
+        "$@" 2>&1)"
+    settle_rc=$?
+    set -e
+}
+
+# A badged top-level conversation comment: a finding with no thread to reply
+# to, which is the whole reason `settle` exists.
+write_badged_comment() {
+    comment_prefix=${2:-${head_sha:0:10}}
+    jq -cn \
+        --argjson id "$1" \
+        --argjson actor "$actor_id" \
+        --arg login "$actor_login" \
+        --arg prefix "$comment_prefix" \
+        --arg updated "${3:-2026-07-31T08:00:02Z}" \
+        '{
+          id:$id,user:{id:$actor,login:$login},
+          created_at:"2026-07-31T08:00:02Z",updated_at:$updated,
+          issue_url:"https://api.github.com/repos/example/repo/issues/493",
+          body:("P1: the rollback path loses data.\n\n**Reviewed commit:** `" +
+            $prefix + "`")
+        }' >"${fixtures}/comment-${1}.json"
+    jq -c '[[.]]' "${fixtures}/comment-${1}.json" \
+        >"${fixtures}/comments.pages.json"
+}
+
+# A badged review BODY: the other unreachable surface — its finding is stated
+# in the body itself, where no inline comment exists to carry a reply.
+write_badged_review() {
+    jq -cn \
+        --argjson id "$1" \
+        --argjson actor "$actor_id" \
+        --arg login "$actor_login" \
+        --arg head "${2:-$head_sha}" \
+        '{
+          id:$id,user:{id:$actor,login:$login},
+          submitted_at:"2026-07-31T08:00:04Z",
+          commit_id:$head,
+          body:"### Codex Review\n\nP1: the rollback path also loses data."
+        }' >"${fixtures}/review-${1}.json"
+    jq -c '[[.]]' "${fixtures}/review-${1}.json" \
+        >"${fixtures}/reviews.pages.json"
+}
+
+echo "==> a settled top-level finding stops blocking the cycle"
+new_cycle
+write_badged_comment 77
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface comment --id 77 --disposition declined \
+    --note "bounded by the attempt deadline; reasoning posted on the PR"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+[ "$(jq -r '[.settled[] | select(.surface == "comment" and .id == 77)] | length' \
+    "$state")" = "1" ] ||
+    fail "the disposition was not recorded: $(jq -c .settled "$state")"
+[ "$(jq -r '.settled[0].disposition' "$state")" = "declined" ] ||
+    fail "the disposition was not preserved: $(jq -c .settled "$state")"
+[ -n "$(jq -r '.settled[0].content_fingerprint // empty' "$state")" ] ||
+    fail "the disposition carries no fingerprint: $(jq -c .settled "$state")"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> a settled review body stops blocking the cycle"
+new_cycle
+write_badged_review 120
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface review --id 120 --disposition filed \
+    --note "filed as follow-up example/repo#900"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+# The 👍 proves the settled body is out of the way of a real clean verdict,
+# not merely that the review stopped reporting findings.
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        user:{id:$id,login:$login},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> settling a finding edited since the disposition blocks again"
+# Codex edits a finding in place when it revises it. The disposition answered
+# the earlier text, so it stops applying — and the entry is kept, not deleted,
+# because what was decided about that text is still a record worth having.
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+jq -c '[[.[0][0] | .updated_at = "2026-07-31T08:00:45Z"]]' \
+    "${fixtures}/comments.pages.json" >"${fixtures}/comments.next"
+mv "${fixtures}/comments.next" "${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+[ "$(jq -r '.settled | length' "$state")" = "1" ] ||
+    fail "an invalidated disposition must be kept, not deleted: $(jq -c .settled "$state")"
+
+echo "==> a settled review body does not settle its own inline findings"
+# The two sets compose. Settling the body says nothing about the inline
+# comments hanging off the same review, which keep the reply-based path.
+new_cycle
+write_badged_review 120
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_settle --surface review --id 120 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> settle refuses a finding about another head"
+new_cycle
+previous_head="$(git rev-parse HEAD~1)"
+write_badged_comment 77 "${previous_head:0:10}"
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a wrong-head disposition should fail closed, got rc=$settle_rc: $settle_out"
+new_cycle
+write_badged_review 120 "$previous_head"
+run_settle --surface review --id 120 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a wrong-head review disposition should fail closed, got rc=$settle_rc: $settle_out"
+
+echo "==> settle refuses an unbadged target"
+# Without a badge there is no finding to dispose of, and settling whatever
+# else the surface carries would suppress a verdict rather than answer one.
+new_cycle
+jq -cn \
+    --argjson actor "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '{
+      id:77,user:{id:$actor,login:$login},
+      created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
+      issue_url:"https://api.github.com/repos/example/repo/issues/493",
+      body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + $prefix + "`")
+    }' >"${fixtures}/comment-77.json"
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "an unbadged disposition should fail closed, got rc=$settle_rc: $settle_out"
+
+echo "==> settle refuses a target the pinned actor did not write"
+new_cycle
+jq -cn \
+    --argjson outsider "$outsider_id" \
+    --arg prefix "${head_sha:0:10}" \
+    '{
+      id:77,user:{id:$outsider,login:"bystander"},
+      created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
+      issue_url:"https://api.github.com/repos/example/repo/issues/493",
+      body:("P1: the rollback path loses data.\n\n**Reviewed commit:** `" + $prefix + "`")
+    }' >"${fixtures}/comment-77.json"
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a foreign-author disposition should fail closed, got rc=$settle_rc: $settle_out"
+
+echo "==> settle refuses a target that does not exist"
+new_cycle
+: >"${fixtures}/missing-77"
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a missing comment should fail closed, got rc=$settle_rc: $settle_out"
+rm -f "${fixtures}/missing-77"
+new_cycle
+run_settle --surface review --id 999 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "a missing review should fail closed, got rc=$settle_rc: $settle_out"
+
+echo "==> settle rejects an unknown surface or disposition"
+new_cycle
+write_badged_comment 77
+run_settle --surface issue --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "an unknown surface should fail closed, got rc=$settle_rc: $settle_out"
+run_settle --surface comment --id 77 --disposition ignored --note "declined"
+[ "$settle_rc" -eq 2 ] ||
+    fail "an unknown disposition should fail closed, got rc=$settle_rc: $settle_out"
+
+echo "==> a version-1 state is read and rewritten as version 2"
+new_cycle
+[ "$(jq -r .version "$state")" = "2" ] ||
+    fail "reserve must write version 2: $(jq -c . "$state")"
+jq 'del(.settled,.carries,.last_result,.last_result_at) | .version = 1' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        user:{id:$id,login:$login},
+        content:"+1",created_at:"2026-07-31T08:00:00Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+[ "$(jq -r .version "$state")" = "2" ] ||
+    fail "a terminal check must rewrite the state as version 2: $(jq -c . "$state")"
+[ "$(jq -r .last_result "$state")" = "clean" ] ||
+    fail "a terminal check must record its result: $(jq -c . "$state")"
+
+echo "==> a state version this helper does not understand fails closed"
+new_cycle
+jq '.version = 3' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+future_out="$("$helper" show --state "$state" 2>&1)"
+future_rc=$?
+set -e
+[ "$future_rc" -eq 2 ] ||
+    fail "a version-3 state should fail closed, got rc=$future_rc: $future_out"
+set +e
+"$helper" check --state "$state" --actor-id "$actor_id" \
+    --now '2026-07-31T08:01:00Z' >/dev/null 2>&1
+future_check_rc=$?
+set -e
+[ "$future_check_rc" -eq 2 ] ||
+    fail "check on a version-3 state should fail closed, got rc=$future_check_rc"
+
+# --------------------------------------------------------------------------
+# `carry` — moving a terminal-clean verdict across a pure base catch-up merge
+# (harmon-init#752). These cases need real commits, so they build their own
+# branches in the harness repo and run last.
+# --------------------------------------------------------------------------
+
+run_carry() {
+    set +e
+    carry_out="$("$helper" carry --state "$state" "$@" 2>&1)"
+    carry_rc=$?
+    set -e
+}
+
+# Reserve and attach a cycle whose head is an arbitrary commit, so the carry
+# cases can drive the real git graph below instead of the harness's original
+# two empty commits.
+new_cycle_at() {
+    write_defaults
+    printf '%s\n' "$1" >"${fixtures}/head"
+    printf '%s\n' "$1" >"${fixtures}/resolved-head"
+    jq -cn --argjson author "$pr_author_id" --arg head "$1" \
+        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head}}' \
+        >"${fixtures}/pr.json"
+    rm -f "$state"
+    "$helper" reserve \
+        --state "$state" --repo example/repo --pr 493 \
+        --head "$1" --attempt 1 >/dev/null
+    jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+        "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+}
+
+# The graph every carry case starts from: a PR branch carrying one change, a
+# base that has since advanced, and the catch-up merge of that base into the
+# PR branch. The merge changes the head and leaves the three-dot diff exactly
+# as it was, which is the only situation a carry is for.
+carry_setup() {
+    git checkout -q -B carry-base "$head_sha"
+    printf 'base\n' >base.txt
+    git add base.txt
+    git commit -q -m "base: initial"
+    git checkout -q -B carry-pr
+    printf 'feature\n' >feature.txt
+    git add feature.txt
+    git commit -q -m "feat: the proposed change"
+    carry_old_head="$(git rev-parse HEAD)"
+    git checkout -q carry-base
+    printf 'more base\n' >>base.txt
+    git add base.txt
+    git commit -q -m "base: advance"
+    git checkout -q carry-pr
+    git merge -q --no-edit carry-base
+    carry_new_head="$(git rev-parse HEAD)"
+}
+
+# A cycle whose old head is genuinely clean: the 👍 path runs for real, so the
+# `last_result` a carry depends on is written by `check` rather than injected.
+carry_clean_cycle() {
+    new_cycle_at "$carry_old_head"
+    jq -cn \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" \
+        '[[
+          {
+            user:{id:$id,login:$login},
+            content:"+1",created_at:"2026-07-31T08:00:00Z"
+          }
+        ]]' >"${fixtures}/reactions.pages.json"
+    run_check '2026-07-31T08:01:00Z'
+    assert_status 0 clean
+    # The reaction is dropped afterwards so nothing but the carry itself can
+    # produce a clean result on the new head.
+    printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
+    printf '%s\n' "$carry_new_head" >"${fixtures}/head"
+    printf '%s\n' "$carry_new_head" >"${fixtures}/resolved-head"
+    jq -cn --argjson author "$pr_author_id" --arg head "$carry_new_head" \
+        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head}}' \
+        >"${fixtures}/pr.json"
+}
+
+echo "==> an identical patch-id carries the clean verdict onto the merged head"
+carry_setup
+carry_clean_cycle
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 0 ] || fail "carry should have succeeded: $carry_out"
+[ "$(jq -r .head "$state")" = "$carry_new_head" ] ||
+    fail "carry must move the state head: $(jq -c . "$state")"
+[ "$(jq -r '.carries | length' "$state")" = "1" ] ||
+    fail "carry must record its provenance: $(jq -c .carries "$state")"
+[ "$(jq -r '.carries[0].carried_from' "$state")" = "$carry_old_head" ] ||
+    fail "carry recorded the wrong origin: $(jq -c .carries "$state")"
+[ -n "$(jq -r '.carries[0].patch_id // empty' "$state")" ] ||
+    fail "carry recorded no patch id: $(jq -c .carries "$state")"
+[ "$(jq -r .last_result "$state")" = "clean" ] ||
+    fail "carry must preserve the terminal-clean provenance: $(jq -c . "$state")"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+printf '%s' "$check_out" | grep -Fq "carried from $carry_old_head" ||
+    fail "a carried clean must name the carry in its detail: $check_out"
+
+echo "==> a carried head still loses to findings on the new head"
+# The carry substitutes for the ABSENCE of evidence, never for evidence that
+# contradicts it.
+carry_setup
+carry_clean_cycle
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 0 ] || fail "carry should have succeeded: $carry_out"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$carry_new_head" \
+    '[[
+      {
+        id:130,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:40Z",
+        commit_id:$head,
+        body:"### Codex Review\n\nP1: the merge reopened the rollback path."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> a changed diff refuses the carry and leaves the state alone"
+carry_setup
+carry_clean_cycle
+printf 'feature changed\n' >feature.txt
+git add feature.txt
+git commit -q -m "feat: one more byte"
+carry_changed_head="$(git rev-parse HEAD)"
+run_carry --new-head "$carry_changed_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "a changed diff must refuse the carry, got rc=$carry_rc: $carry_out"
+[ "$(jq -r .head "$state")" = "$carry_old_head" ] ||
+    fail "a refused carry must not touch the state: $(jq -c . "$state")"
+[ "$(jq -r '.carries | length' "$state")" = "0" ] ||
+    fail "a refused carry must record nothing: $(jq -c .carries "$state")"
+
+echo "==> a dirty tree refuses the carry"
+carry_setup
+carry_clean_cycle
+printf 'uncommitted\n' >>feature.txt
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "a dirty tree must refuse the carry, got rc=$carry_rc: $carry_out"
+[ "$(jq -r .head "$state")" = "$carry_old_head" ] ||
+    fail "a refused carry must not touch the state: $(jq -c . "$state")"
+git checkout -q -- feature.txt
+
+echo "==> a rebased head refuses the carry"
+# The rewritten commits carry the same content, but the objects the review was
+# attributed to are no longer on the branch. #752 specifies merge-only.
+carry_setup
+carry_clean_cycle
+git checkout -q -B carry-rebase carry-base
+printf 'feature\n' >feature.txt
+git add feature.txt
+git commit -q -m "feat: the proposed change"
+carry_rebased_head="$(git rev-parse HEAD)"
+git checkout -q carry-pr
+run_carry --new-head "$carry_rebased_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "a rebase must refuse the carry, got rc=$carry_rc: $carry_out"
+[ "$(jq -r .head "$state")" = "$carry_old_head" ] ||
+    fail "a refused carry must not touch the state: $(jq -c . "$state")"
+
+echo "==> a head with no terminal-clean result refuses the carry"
+carry_setup
+new_cycle_at "$carry_old_head"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "an unproven head must refuse the carry, got rc=$carry_rc: $carry_out"
+[ "$(jq -r .head "$state")" = "$carry_old_head" ] ||
+    fail "a refused carry must not touch the state: $(jq -c . "$state")"
+
+echo "==> a findings result cannot be carried as if it were clean"
+carry_setup
+new_cycle_at "$carry_old_head"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$carry_old_head" \
+    '[[
+      {
+        id:140,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"### Codex Review\n\nP1: the rollback path loses data."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+[ "$(jq -r .last_result "$state")" = "findings" ] ||
+    fail "a findings verdict must be recorded: $(jq -c . "$state")"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "a findings verdict must refuse the carry, got rc=$carry_rc: $carry_out"
 
 echo "shepherd Codex cloud-review classifier: PASS"
