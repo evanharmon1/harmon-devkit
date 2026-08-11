@@ -1356,6 +1356,29 @@ check)
     # still includes shells: inline comments attribute to them by review ID,
     # and dropping the ID would make those comments read as naming a review
     # nobody fetched.
+    # A DANGLING shell — an empty-body current-head review by the actor with
+    # no inline comment attributed to it — is a review still in flight:
+    # Codex posts the shell first and its verdict or findings only after, so
+    # clean evidence OLDER than the newest dangling shell may be about to be
+    # contradicted and is not accepted, while evidence NEWER than the shell
+    # stands (that is the normal shell -> verdict order, so an abandoned
+    # shell ages out instead of deadlocking the cycle). Every clean exit
+    # below compares its own evidence timestamp against this barrier;
+    # GitHub's ISO-8601 UTC strings compare correctly as strings.
+    shell_barrier=$(jq -r \
+        --argjson id "$actor_id" \
+        --arg head "$state_head" \
+        --argjson attributed "$attributed_reviews" '
+          [.[] | select(
+            .user.id? == $id and
+            (.commit_id? == $head) and
+            ((.body // "") == "") and
+            ((.id? | type) == "number")
+          ) |
+          select(.id as $rid | ($attributed | index($rid)) | not) |
+          .submitted_at? | select(type == "string")] | max // ""
+        ' "$workdir/reviews.json")
+
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
@@ -1416,12 +1439,14 @@ check)
           [
             $prefix,
             verdict_class,
-            (.id | tostring)
+            (.id | tostring),
+            (.created_at // "")
           ] | @tsv
         ' "$workdir/comments.json" >"$comment_candidates"
 
     comment_result=none
-    while IFS='	' read -r prefix classification comment_id; do
+    clean_comment_time=""
+    while IFS='	' read -r prefix classification comment_id comment_created; do
         [ -n "$prefix" ] || continue
         printf '%s' "$prefix" | grep -Eq '^[0-9a-fA-F]{7,40}$' || {
             emit indeterminate "bot review comment contains a malformed commit prefix"
@@ -1453,6 +1478,10 @@ check)
         elif [ "$comment_result" = "none" ]; then
             comment_result=clean
         fi
+        if [ "$classification" = "clean" ] &&
+            [ "$comment_created" \> "$clean_comment_time" ]; then
+            clean_comment_time=$comment_created
+        fi
         : "$comment_id"
     done <"$comment_candidates"
 
@@ -1465,10 +1494,44 @@ check)
         exit 2
     fi
     if [ "$review_result" = "clean" ] || [ "$comment_result" = "clean" ]; then
+        # The newest clean evidence must be NEWER than the dangling-shell
+        # barrier above: an older clean result cannot vouch for a head whose
+        # next review is already in flight.
+        clean_review_time=""
+        if [ "$review_result" = "clean" ]; then
+            clean_review_time=$(jq -r \
+                --argjson id "$actor_id" \
+                --arg head "$state_head" \
+                "$codex_verdict_defs"'
+                  [.[] | select(
+                    .user.id? == $id and
+                    (.commit_id? == $head) and
+                    (body_text != "")
+                  ) | select(verdict_class == "clean") |
+                  .submitted_at? | select(type == "string")] | max // ""
+                ' "$workdir/reviews.json")
+        fi
+        newest_clean=$clean_review_time
+        if [ "$clean_comment_time" \> "$newest_clean" ]; then
+            newest_clean=$clean_comment_time
+        fi
+        if [ -n "$shell_barrier" ] && ! [ "$newest_clean" \> "$shell_barrier" ]; then
+            emit pending "a newer empty review shell is still in flight for this head"
+            exit 11
+        fi
         emit clean "authenticated bot posted a current-head clean result"
         exit 0
     fi
 
+    like_time=$(jq -r \
+        --argjson id "$actor_id" \
+        --arg requested "$cycle_requested" '
+          [.[] | select(
+            .user.id? == $id and
+            .content? == "+1" and
+            (.created_at? >= $requested)
+          ) | .created_at? | select(type == "string")] | max // ""
+        ' "$workdir/reactions.json")
     exact_like=$(jq \
         --argjson id "$actor_id" \
         --arg requested "$cycle_requested" '
@@ -1479,6 +1542,10 @@ check)
           )] | length
         ' "$workdir/reactions.json")
     if [ "$exact_like" -gt 0 ]; then
+        if [ -n "$shell_barrier" ] && ! [ "$like_time" \> "$shell_barrier" ]; then
+            emit pending "a newer empty review shell is still in flight for this head"
+            exit 11
+        fi
         emit clean "authenticated bot reacted +1 on the exact current-head trigger"
         exit 0
     fi
@@ -1519,6 +1586,18 @@ check)
             emit indeterminate "current-head findings are adjudicated but their review attribution is incomplete across the comment and review endpoints"
             exit 2
         }
+        # Same barrier as the other clean exits: the newest inline activity
+        # (the findings and the replies that settled them) must postdate any
+        # dangling shell, or a round still in flight is being vouched for by
+        # the previous round's adjudication.
+        inline_latest_time=$(jq -r '
+            [.[] | .created_at? | select(type == "string")] | max // ""
+        ' "$workdir/inline.json")
+        if [ -n "$shell_barrier" ] &&
+            ! [ "$inline_latest_time" \> "$shell_barrier" ]; then
+            emit pending "a newer empty review shell is still in flight for this head"
+            exit 11
+        fi
         emit clean "current-head findings are all adjudicated by trusted in-thread replies"
         exit 0
     fi

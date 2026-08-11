@@ -443,6 +443,62 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 
+# The inverse ordering is the race (devkit#392 challenge round 1): Codex posts
+# the shell BEFORE its verdict or findings, so a shell NEWER than the clean
+# evidence means the next review is already in flight and the older clean
+# result cannot vouch for it. Time-ordered deliberately — a dangling shell
+# older than the clean evidence (the previous case) ages out rather than
+# deadlocking the cycle.
+echo "==> a dangling shell newer than the clean evidence keeps the cycle pending"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:104,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",
+        commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues."
+      },
+      {
+        id:105,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:06Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> a dangling shell newer than the trigger thumbs-up keeps the cycle pending"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:105,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:06Z",
+        commit_id:$head,
+        body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        user:{id:$id,login:$login},
+        content:"+1",
+        created_at:"2026-07-31T08:00:05Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
 # A concern on its OWN line is still caught, by the boilerplate rule — the tail
 # exemption is confined to the verdict line and does not extend down the body.
 echo "==> a concern on its own line is still indeterminate"
