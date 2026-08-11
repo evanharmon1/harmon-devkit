@@ -807,7 +807,11 @@ is optional in addition, never a substitute for per-thread replies.
   just intend to; a fix that can't pass locally doesn't get pushed.
   Confirming exit 0 is mechanical: the push — like any external write
   gated on a local check — chains only off the **gate's verdict**, either
-  in the same foreground chain (`task ci && git push …`) or, when the gate
+  in the same foreground chain — `sha="$(git rev-parse HEAD)"; task ci &&
+  [ "$(git rev-parse HEAD)" = "$sha" ] && git push …`, carrying the same
+  moved-HEAD guard as the marker form below, because another process
+  advancing HEAD while the gate runs would otherwise hand the push a
+  commit the gate never saw — or, when the gate
   ran in the background and wrote its verdict as a marker line, off
   `"$skill_dir"/assets/require-marker.sh <file> <token>` (exit 0 only when
   the file's marker line equals the token). The parser proves what the

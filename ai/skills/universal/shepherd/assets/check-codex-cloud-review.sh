@@ -681,20 +681,14 @@ attach)
     persisted_timeout_min=$(jq -r '.timeout_min // empty' "$state_file")
     resolve_timeout_min "$persisted_timeout_min"
     persist_adopted_timeout
-    phase=$(jq -r '.phase' "$state_file")
-    if [ "$phase" = "attached" ]; then
-        existing_id=$(jq -r '.trigger_comment_id' "$state_file")
-        [ "$existing_id" = "$trigger_id" ] ||
-            die "state is already attached to a different trigger"
-        cat "$state_file"
-        exit 0
-    fi
-
     state_repo=$(jq -r '.repo' "$state_file")
     state_pr=$(jq -r '.pr' "$state_file")
     state_head=$(jq -r '.head' "$state_file")
     state_reserved=$(jq -r '.reserved_at' "$state_file")
     valid_time "$state_reserved" || die "state has an invalid reservation time"
+    # The liveness re-check runs before the attached fast path below: a
+    # resumed attach must refuse a since-closed/merged PR (or a moved head)
+    # rather than answer success from local state alone.
     provider_status=0
     live_head=$(provider_head "$state_pr" "$state_repo") || provider_status=$?
     if [ "$provider_status" -eq 3 ]; then
@@ -704,6 +698,14 @@ attach)
     fi
     [ "$live_head" = "$state_head" ] ||
         die "PR head changed before trigger attachment"
+    phase=$(jq -r '.phase' "$state_file")
+    if [ "$phase" = "attached" ]; then
+        existing_id=$(jq -r '.trigger_comment_id' "$state_file")
+        [ "$existing_id" = "$trigger_id" ] ||
+            die "state is already attached to a different trigger"
+        cat "$state_file"
+        exit 0
+    fi
 
     comment=$(run_gh api "repos/$state_repo/issues/comments/$trigger_id") ||
         die "cannot fetch exact trigger comment $trigger_id"

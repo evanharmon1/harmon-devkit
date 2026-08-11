@@ -1572,6 +1572,38 @@ esac
 [ "$(jq -r '.phase' "$state")" = "reserved" ] ||
     fail "a refused attach must not mutate the reservation: $(jq -c . "$state")"
 
+echo "==> a resumed attach refuses a PR that closed after attachment"
+# The attached fast path used to answer from local state before the liveness
+# re-check ran, so a resumed attach on a dead PR reported success. The fast
+# path may only answer for a PR still open on the reserved head.
+write_defaults
+rm -f "$state" "${fixtures}/pr-state-493"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+printf '%s\n' MERGED >"${fixtures}/pr-state-493"
+set +e
+resumed_attach_out="$("$helper" attach \
+    --state "$state" --trigger-id "$trigger_id" 2>&1)"
+resumed_attach_rc=$?
+set -e
+[ "$resumed_attach_rc" -eq 2 ] ||
+    fail "a resumed attach on a merged PR must fail closed: $resumed_attach_out"
+case "$resumed_attach_out" in
+*MERGED*) ;;
+*) fail "the resumed refusal should name the PR state: $resumed_attach_out" ;;
+esac
+[ "$(jq -r '.phase' "$state")" = "attached" ] ||
+    fail "a refused resumed attach must not mutate attached state: $(jq -c . "$state")"
+
+echo "==> a resumed attach on a still-open PR stays idempotent"
+rm -f "${fixtures}/pr-state-493"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null ||
+    fail "an idempotent re-attach on an open PR must still succeed"
+[ "$(jq -r '.trigger_comment_id' "$state")" = "$trigger_id" ] ||
+    fail "idempotent re-attach must keep the trigger id"
+
 echo "==> a delayed previous-head Reviewed commit is ignored"
 new_cycle
 old_head="$(git rev-parse HEAD^)"

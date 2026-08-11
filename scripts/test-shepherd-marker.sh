@@ -158,4 +158,32 @@ if "$helper" "${test_tmp}/chain-red" CI-GREEN 2>/dev/null; then
 fi
 [ ! -f "${test_tmp}/pushed" ] || fail "a FAILED marker must block the write"
 
+echo "==> the documented moved-HEAD guard blocks the write after HEAD advances"
+# The chain form above proves the marker link; this proves the SHA guard —
+# commit A is gated, HEAD moves to commit B, and the documented chain must
+# refuse the write even though the marker file is green.
+guard_repo="${test_tmp}/guard-repo"
+git init -q "$guard_repo"
+git -C "$guard_repo" config user.name "Marker Test"
+git -C "$guard_repo" config user.email "marker-test@example.invalid"
+git -C "$guard_repo" commit -q --allow-empty -m "gated commit"
+sha="$(git -C "$guard_repo" rev-parse HEAD)"
+t="CI-GREEN-${sha}-$$"
+printf 'gate output\n%s\n' "$t" >"${test_tmp}/guard-marker"
+rm -f "${test_tmp}/pushed"
+if [ "$(git -C "$guard_repo" rev-parse HEAD)" = "$sha" ] &&
+    "$helper" "${test_tmp}/guard-marker" "$t"; then
+    : >"${test_tmp}/pushed"
+fi
+[ -f "${test_tmp}/pushed" ] ||
+    fail "an unmoved HEAD with a green marker should allow the write"
+git -C "$guard_repo" commit -q --allow-empty -m "ungated commit"
+rm -f "${test_tmp}/pushed"
+if [ "$(git -C "$guard_repo" rev-parse HEAD)" = "$sha" ] &&
+    "$helper" "${test_tmp}/guard-marker" "$t"; then
+    : >"${test_tmp}/pushed"
+fi
+[ ! -f "${test_tmp}/pushed" ] ||
+    fail "a moved HEAD must block the write even with a green marker"
+
 echo "shepherd gate-then-push marker parser: PASS"
