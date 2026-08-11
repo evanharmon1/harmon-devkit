@@ -2958,3 +2958,54 @@ run_carry --new-head "$carry_new_head" --base-ref carry-base
     fail "a carry must clear an adopted timeout: $(jq -c . "$state")"
 [ "$(jq -r .reserved_at "$state")" != "$request_time" ] ||
     fail "a carry must restart the reservation clock: $(jq -c . "$state")"
+
+# The carry cutoff is the check's SNAPSHOT time, not its record time: evidence
+# that arrives mid-fetch is absent from what was classified yet timestamped
+# before any post-verdict clock (devkit challenge round 3).
+echo "==> an edited old-head finding refuses the carry"
+carry_setup
+carry_clean_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$carry_old_head" \
+    '[[
+      {
+        id:141,user:{id:$id,login:$login},
+        created_at:"2026-07-31T07:00:00Z",updated_at:"2026-07-31T09:45:00Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:151,
+        body:"P1: edited in place after the clean check"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "an edited old-head finding must refuse the carry, got rc=$carry_rc: $carry_out"
+printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
+
+# A 👀 from an overlapping attempt means a review is still running against the
+# old head; carrying past it would put its findings out of reach.
+echo "==> a newer trigger reaction refuses the carry"
+carry_setup
+carry_clean_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        user:{id:$id,login:$login},
+        content:"eyes",created_at:"2026-07-31T09:50:00Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "a newer trigger reaction must refuse the carry, got rc=$carry_rc: $carry_out"
+printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
+
+echo "==> a state without a recorded snapshot refuses the carry"
+carry_setup
+carry_clean_cycle
+jq 'del(.last_snapshot_at)' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "a snapshotless state must refuse the carry, got rc=$carry_rc: $carry_out"

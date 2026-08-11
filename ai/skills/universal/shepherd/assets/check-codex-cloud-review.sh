@@ -280,8 +280,10 @@ record_check_result() {
     record_at=$now
     valid_time "$record_at" ||
         record_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-    payload=$(jq --arg result "$record_result" --arg at "$record_at" '
-          .version = 2 | .last_result = $result | .last_result_at = $at
+    payload=$(jq --arg result "$record_result" --arg at "$record_at" \
+        --arg snapshot "${snapshot_at:-}" '
+          .version = 2 | .last_result = $result | .last_result_at = $at |
+          .last_snapshot_at = (if $snapshot == "" then $at else $snapshot end)
         ' "$state_file") || die "cannot record the check result"
     write_state "$state_file" "$payload"
 }
@@ -1095,6 +1097,15 @@ check)
         emit indeterminate "exact trigger metadata changed or is malformed"
         exit 2
     }
+
+    # The freshness boundary a later `carry` trusts, captured BEFORE the first
+    # evidence fetch rather than after the verdict. A finding that arrives
+    # while these endpoints are being read is absent from the snapshot but
+    # carries a GitHub timestamp older than any post-verdict clock, so a
+    # cutoff taken at record time silently classifies it as already-seen.
+    snapshot_at=$now
+    valid_time "$snapshot_at" ||
+        snapshot_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
     fetch_evidence \
         "repos/$state_repo/issues/comments/$state_trigger/reactions?per_page=100" \
@@ -2057,9 +2068,14 @@ carry)
     valid_uint "$state_pr" || die "state has an invalid PR number"
     [ "$(jq -r '.last_result // empty' "$state_file")" = "clean" ] ||
         die "the state head has no terminal-clean check result to carry"
-    last_result_at=$(jq -r '.last_result_at // empty' "$state_file")
+    # The cutoff is the check's SNAPSHOT time, not when it recorded its
+    # verdict: evidence arriving mid-fetch is absent from what was classified
+    # yet timestamped before any post-verdict clock, so a record-time cutoff
+    # would wave it through. A v1/older state that never recorded one is
+    # refused rather than fall back to the weaker boundary.
+    last_result_at=$(jq -r '.last_snapshot_at // empty' "$state_file")
     valid_time "$last_result_at" ||
-        die "the recorded clean result has no usable timestamp to check for staleness"
+        die "the recorded clean result predates snapshot tracking; re-check the old head before carrying"
     [ "$new_head" != "$state_head" ] ||
         die "--new-head is already this state's head"
     # A dirty tree means the commits being compared are not the whole story of
@@ -2090,10 +2106,18 @@ carry)
     carry_workdir=$(mktemp -d -t codex-cloud-review-carry-XXXXXX) ||
         die "cannot create a working directory"
     trap 'rm -rf "$carry_workdir"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
-    for carry_source in \
-        "issues/$state_pr/comments:comments" \
-        "pulls/$state_pr/reviews:reviews" \
-        "pulls/$state_pr/comments:inline"; do
+    state_trigger=$(jq -r '.trigger_comment_id // empty' "$state_file")
+    carry_sources="issues/$state_pr/comments:comments pulls/$state_pr/reviews:reviews pulls/$state_pr/comments:inline"
+    # The reaction surface counts too: a 👀 from an overlapping attempt means
+    # a review is still running against the old head, and carrying past it
+    # would put its findings out of reach.
+    [ -z "$state_trigger" ] ||
+        carry_sources="$carry_sources issues/comments/$state_trigger/reactions:reactions"
+    # Deliberately word-split, not piped into `while`: a pipeline would run
+    # the loop in a subshell where `die` exits only that subshell. No entry
+    # contains whitespace.
+    # shellcheck disable=SC2086
+    for carry_source in $carry_sources; do
         carry_endpoint="repos/$state_repo/${carry_source%%:*}?per_page=100"
         carry_dest="$carry_workdir/${carry_source##*:}.json"
         fetch_pages "$carry_endpoint" "$carry_dest" ||
@@ -2102,12 +2126,14 @@ carry)
             --argjson id "$actor_id" \
             --arg since "$last_result_at" '
               [.[] | select(.user.id? == $id) |
-                ((.submitted_at // .created_at // "") | select(. > $since))
+                ([.created_at?, .updated_at?, .submitted_at?] |
+                  map(select(type == "string")) | max // "") |
+                select(. > $since)
               ] | length
             ' "$carry_dest") ||
             die "cannot interpret ${carry_source##*:} while checking for newer activity"
         [ "$carry_newer" -eq 0 ] ||
-            die "Codex posted ${carry_source##*:} activity after the recorded clean result; re-check the old head before carrying"
+            die "Codex posted ${carry_source##*:} activity after the checked snapshot; re-check the old head before carrying"
     done
 
     old_fingerprint=$(diff_fingerprint "$base_ref" "$state_head") ||
