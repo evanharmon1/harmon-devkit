@@ -2118,6 +2118,13 @@ carry)
     # costs the fresh cycle that was the status quo before carrying existed,
     # and being wrong in that direction is the whole point.
     #
+    # The comparison is `>=`, not `>`: GitHub timestamps to whole seconds, so
+    # activity created within the snapshot's own second — and absent from what
+    # was classified — compares equal, and local/GitHub clock skew widens the
+    # tie. An ambiguous second refuses the carry, which costs a fresh cycle;
+    # accepting it costs a lost finding. Same direction as every other tie in
+    # this file.
+    #
     # The irreducible residual: evidence posted after an endpoint is read here
     # but before the state is written is missed, and once the head moves it is
     # filtered as old-head. No sequence of independent reads can close that —
@@ -2138,6 +2145,12 @@ carry)
     # would put its findings out of reach.
     [ -z "$state_trigger" ] ||
         carry_sources="$carry_sources issues/comments/$state_trigger/reactions:reactions"
+    # Attempt 2 keeps attempt 1's trigger live — `check` reads both — so the
+    # sweep must too: a late reaction on the FIRST trigger means that review
+    # is still running, and carrying past it puts its findings out of reach.
+    state_previous_trigger=$(jq -r '.previous_trigger_comment_id // empty' "$state_file")
+    [ -z "$state_previous_trigger" ] ||
+        carry_sources="$carry_sources issues/comments/$state_previous_trigger/reactions:previous-reactions"
     # Deliberately word-split, not piped into `while`: a pipeline would run
     # the loop in a subshell where `die` exits only that subshell. No entry
     # contains whitespace.
@@ -2153,7 +2166,7 @@ carry)
               [.[] | select(.user.id? == $id) |
                 ([.created_at?, .updated_at?, .submitted_at?] |
                   map(select(type == "string")) | max // "") |
-                select(. > $since)
+                select(. >= $since)
               ] | length
             ' "$carry_dest") ||
             die "cannot interpret ${carry_source##*:} while checking for newer activity"

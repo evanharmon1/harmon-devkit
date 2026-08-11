@@ -102,7 +102,16 @@ fi
 
 case "$endpoint" in
 users/*) file=actor.json ;;
-*/reactions?per_page=100) file=reactions.pages.json ;;
+*/reactions?per_page=100)
+    # Per-trigger routing when a case writes one, so a sweep that must read
+    # BOTH the current and the previous attempt's trigger can be told apart
+    # from one that reads only the current. Otherwise every trigger shares the
+    # one fixture, exactly as before.
+    reactions_id="${endpoint%/reactions?per_page=100}"
+    reactions_id="${reactions_id##*/}"
+    file="reactions-${reactions_id}.pages.json"
+    [ -f "$GH_FIXTURES/$file" ] || file=reactions.pages.json
+    ;;
 # `settle` fetches one comment or one review by ID. A per-ID fixture answers
 # it when the case under test wrote one; otherwise this stays the trigger
 # comment, exactly as before settlement existed. `settle` against an ID with
@@ -212,6 +221,7 @@ write_defaults() {
           issue_url:"https://api.github.com/repos/example/repo/issues/493"
         }' >"${fixtures}/trigger.json"
     printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
+    rm -f "${fixtures}"/reactions-*.pages.json
     printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
@@ -3009,3 +3019,50 @@ mv "${state}.next" "$state"
 run_carry --new-head "$carry_new_head" --base-ref carry-base
 [ "$carry_rc" -eq 2 ] ||
     fail "a snapshotless state must refuse the carry, got rc=$carry_rc: $carry_out"
+
+# Attempt 2 keeps attempt 1's trigger live, and `check` reads both — so a late
+# reaction on the FIRST trigger means that review is still running
+# (devkit review round 1).
+echo "==> a newer reaction on the previous attempt's trigger refuses the carry"
+carry_setup
+carry_clean_cycle
+jq --arg prev "9911" '.previous_trigger_comment_id = ($prev | tonumber)' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        user:{id:$id,login:$login},
+        content:"eyes",created_at:"2026-07-31T09:55:00Z"
+      }
+    ]]' >"${fixtures}/reactions-9911.pages.json"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "a newer previous-trigger reaction must refuse the carry, got rc=$carry_rc: $carry_out"
+rm -f "${fixtures}/reactions-9911.pages.json"
+
+# One-second GitHub precision plus clock skew makes an equal timestamp
+# ambiguous; ambiguity refuses (devkit review round 1).
+echo "==> activity inside the snapshot's own second refuses the carry"
+carry_setup
+carry_clean_cycle
+carry_snapshot="$(jq -r .last_snapshot_at "$state")"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$carry_old_head" \
+    --arg at "$carry_snapshot" \
+    '[[
+      {
+        id:142,user:{id:$id,login:$login},
+        created_at:$at,updated_at:$at,
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:152,
+        body:"P1: landed inside the snapshot second"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "same-second activity must refuse the carry, got rc=$carry_rc: $carry_out"
+printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
