@@ -77,6 +77,9 @@
 #     artifact. `git check-ignore` answers the tracked half exactly — it
 #     consults the index, so it never calls a tracked file ignored — and a
 #     scratch repo built from the RENDER's .gitignore files answers the other.
+#     That scratch repo carries only the ignore files GIT ITSELF would honor: a
+#     symlinked .gitignore is one git refuses to follow, so the paths it lists
+#     are not ignored in any real clone and must not collect this class.
 #   – WITHHOLDING follows the PATH alone, under the UNION of both rule sets
 #     (`check-ignore --no-index` on the repo side so the index cannot mask the
 #     pattern). NO diff this script prints for a pattern-matching path is ever
@@ -87,7 +90,10 @@
 #     credentials. A repo can also `git add -f` a resolved config, and tracking
 #     it makes that file reviewable, not publishable — or simply FAIL to ignore
 #     what the template declares local, which is the same secret in a less
-#     careful repo. A one-line note replaces the body.
+#     careful repo. A one-line note replaces the body. Its render-side evaluator
+#     is the WIDER of the two: a symlinked .gitignore enforces nothing in a real
+#     clone, but the template still MARKED those paths local-only, and being
+#     unenforceable is no reason to print them.
 # CLASSIFICATION requires the target to be a repository root of its OWN. A plain
 # directory nested inside somebody else's work tree gets no IGNORED class,
 # because inheriting a stranger's ignore rules would silently downgrade real
@@ -610,38 +616,62 @@ variant_display() {
 # collapsing them means a broken setup silently downgrades every IGNORED path to
 # a printable one — the exact direction this whole class of guarantee must not
 # fail in.
+#
+# TWO evaluators, because the render's ignore files answer two different
+# questions and a SYMLINKED .gitignore splits them apart. Git refuses to follow
+# one — it reports `unable to access '.gitignore'` and the listed paths come out
+# untracked-and-not-ignored — so in a freshly generated repo such a file
+# enforces nothing:
+#   • CLASSIFICATION must match git, or the informational IGNORED class is
+#     granted to a path every real clone treats as tracked, quietly downgrading
+#     drift on the strength of rules that never applied. Regular files only.
+#   • WITHHOLDING must not, because it asks whether somebody MARKED this path
+#     local-only, and a template that wrote `.envrc` into its ignore rules said
+#     so whether or not git enforces the link. Dropping those rules is the one
+#     direction this guarantee may never fail in: it prints the body. Symlinked
+#     ones included, resolved through `cp`.
+# A `-type f` walk fed BOTH answers from the regular files alone, so a template
+# shipping its rules through a symlink printed the very bodies it declared
+# local.
 render_ignore_root="$workdir/render-ignore"
+render_withhold_root="$workdir/render-withhold"
 render_has_ignore_rules=0
+render_has_withhold_rules=0
 mkdir -p "$workdir/empty-git-template" || {
     echo "FAIL: cannot prepare the template ignore evaluator" >&2
     exit 2
 }
-git init -q --template="$workdir/empty-git-template" \
-    "$render_ignore_root" >/dev/null 2>&1 || {
-    echo "FAIL: cannot initialize the template ignore evaluator" >&2
-    exit 2
-}
+for ignore_eval_root in "$render_ignore_root" "$render_withhold_root"; do
+    git init -q --template="$workdir/empty-git-template" \
+        "$ignore_eval_root" >/dev/null 2>&1 || {
+        echo "FAIL: cannot initialize the template ignore evaluator" >&2
+        exit 2
+    }
+done
 # Every .gitignore in the render, at its own relative path: a nested one only
 # governs its own subtree, so flattening them would change what they mean. Today
 # the template ships just the root file; copying all of them costs one `find`
 # and stops that from being an assumption.
 #
-# `-type l` alongside `-type f` for the same reason the sweep walks links: with
-# _preserve_symlinks a template can ship a .gitignore AS a symlink, and a
-# `-type f` walk never even visits it — the evaluator would then answer "the
-# template declares nothing local" and every IGNORED path would become a
-# printable one. `cp` resolves the link and copies the referent's CONTENT, which
-# is what the evaluator needs; a DANGLING one has no rules to read, and the
-# copy's failure aborts the run rather than quietly dropping the file's rules.
+# A dangling symlink has no rules to read, and `cp` failing on it aborts the run
+# rather than quietly dropping a file's rules.
 while IFS= read -r render_gitignore; do
     render_gitignore_rel="${render_gitignore#"$render"/}"
-    render_gitignore_dest="$render_ignore_root/$render_gitignore_rel"
-    if ! mkdir -p "$(dirname "$render_gitignore_dest")" ||
-        ! cp "$render_gitignore" "$render_gitignore_dest"; then
-        echo "FAIL: cannot stage the render's $render_gitignore_rel for ignore evaluation" >&2
-        exit 2
-    fi
-    render_has_ignore_rules=1
+    for ignore_eval_root in "$render_ignore_root" "$render_withhold_root"; do
+        # A symlinked .gitignore reaches the withholding evaluator only.
+        if [ -L "$render_gitignore" ] &&
+            [ "$ignore_eval_root" = "$render_ignore_root" ]; then
+            continue
+        fi
+        render_gitignore_dest="$ignore_eval_root/$render_gitignore_rel"
+        if ! mkdir -p "$(dirname "$render_gitignore_dest")" ||
+            ! cp "$render_gitignore" "$render_gitignore_dest"; then
+            echo "FAIL: cannot stage the render's $render_gitignore_rel for ignore evaluation" >&2
+            exit 2
+        fi
+    done
+    render_has_withhold_rules=1
+    [ -L "$render_gitignore" ] || render_has_ignore_rules=1
 done < <(find "$render" \( -type f -o -type l \) -name .gitignore | LC_ALL=C sort)
 
 # `git check-ignore` is THREE-valued: 0 = the path matches an ignore rule, 1 =
@@ -671,6 +701,21 @@ is_render_ignored() {
             check-ignore -q --no-index -- "$1" 2>&1
     )" || ignore_probe_rc=$?
     ignore_probe_verdict "$ignore_probe_rc" "the template's ignore rules" \
+        "$1" "$ignore_probe_err"
+}
+
+# The withholding half of the render's declaration: the same probe against the
+# evaluator that also carries symlinked .gitignore files. Never a substitute for
+# is_render_ignored — that one answers what a real clone would ignore, and the
+# IGNORED class may only ever be granted on THAT answer.
+is_render_withheld() {
+    [ "$render_has_withhold_rules" -eq 1 ] || return 1
+    ignore_probe_rc=0
+    ignore_probe_err="$(
+        git -C "$render_withhold_root" -c core.excludesFile=/dev/null \
+            check-ignore -q --no-index -- "$1" 2>&1
+    )" || ignore_probe_rc=$?
+    ignore_probe_verdict "$ignore_probe_rc" "the template's local-only markings" \
         "$1" "$ignore_probe_err"
 }
 
@@ -720,7 +765,7 @@ is_ignore_pattern_match() {
             return 0
         fi
     fi
-    is_render_ignored "$2"
+    is_render_withheld "$2"
 }
 
 # A path can be STAGED FOR REMOVAL while its working-tree copy survives, which
@@ -1214,26 +1259,16 @@ while IFS= read -r abs; do
         fi
         content_divergent=0
         same_as_render "$render/$g" "$rv" || content_divergent=1
-        if [ "$mode_divergent" -eq 0 ] && [ "$content_divergent" -eq 0 ]; then
-            # The disk copy matches — but a TRACKED file's staged copy can
-            # still diverge, and that is what the next commit carries. Content
-            # is reported unless the repo owns the prose (the CO-OWNED contract
-            # is about content, staged or not); the exec bit is structural and
-            # gates for every class, exactly as above.
-            if index_diverges "$render/$g" "$rv_display" "$rv"; then
-                if [ "$index_mode_divergent" -eq 1 ]; then
-                    echo "MODE     $rv_display  (staged mode differs from the template though the worktree matches — the next commit carries it)"
-                    drift=1
-                    uncurated_mode_count=$((uncurated_mode_count + 1))
-                fi
-                if [ "$index_content_divergent" -eq 1 ] && ! is_co_owned "$g"; then
-                    echo "DRIFT    $rv_display  (uncurated — staged content differs from the template though the worktree matches; the next commit carries it)"
-                    drift=1
-                    uncurated_drift_count=$((uncurated_drift_count + 1))
-                fi
-            fi
-            continue
-        fi
+        # The disk copy is not the whole repo state: a TRACKED file's staged
+        # copy can diverge on either dimension independently, and that is what
+        # the next commit carries. Probed PER DIMENSION rather than only when
+        # the disk came out clean on both — a path whose content drifts on disk
+        # while its exec bit drifts in the index has two findings, and gating on
+        # one of them is not a reason to hide the other. Each staged line is
+        # suppressed when the disk already reported that same dimension: the
+        # index is a second PLACE the divergence can live, not a second finding
+        # about it.
+        index_diverges "$render/$g" "$rv_display" "$rv" || true
         # The exec bit is settled FIRST, independent of — and before — any
         # content classification. Mode is STRUCTURAL, the same reason a symlink
         # mismatch gates straight through the CO-OWNED exemption: nobody "owns"
@@ -1252,8 +1287,22 @@ while IFS= read -r abs; do
             echo "MODE     $rv_display  ($mode_note)"
             drift=1
             uncurated_mode_count=$((uncurated_mode_count + 1))
+        elif [ "$index_mode_divergent" -eq 1 ]; then
+            echo "MODE     $rv_display  (staged mode differs from the template though the worktree matches — the next commit carries it)"
+            drift=1
+            uncurated_mode_count=$((uncurated_mode_count + 1))
         fi
-        [ "$content_divergent" -eq 1 ] || continue
+        if [ "$content_divergent" -eq 0 ]; then
+            # Content is reported unless the repo owns the prose: the CO-OWNED
+            # contract is about content, staged or not. The exec bit above is
+            # structural and gates for every class, exactly as on disk.
+            if [ "$index_content_divergent" -eq 1 ] && ! is_co_owned "$g"; then
+                echo "DRIFT    $rv_display  (uncurated — staged content differs from the template though the worktree matches; the next commit carries it)"
+                drift=1
+                uncurated_drift_count=$((uncurated_drift_count + 1))
+            fi
+            continue
+        fi
         # Content classification: a structural (symlink) mismatch always gates,
         # then the two presence-only classes, then ordinary uncurated drift.
         if [ "$compare_structural" -eq 0 ] && is_co_owned "$g"; then

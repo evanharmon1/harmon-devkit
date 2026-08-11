@@ -5921,6 +5921,29 @@ git -C "$DT_TARGET" update-index --chmod=-x -- renovate.json
 git -C "$DT_TARGET" reset -q HEAD -- renovate.json
 git -C "$DT_TARGET" checkout HEAD -- renovate.json
 
+# MIXED state: the worktree diverges on content while the index independently
+# carries a staged mode change. The dimensions are probed separately, so gating
+# on the disk finding is no reason to hide the staged one — a clean-on-both
+# precondition would have skipped the index entirely.
+printf '%s\n' '{ "extends": ["mixed-state-sentinel"] }' >"$DT_TARGET/renovate.json"
+git -C "$DT_TARGET" update-index --chmod=+x -- renovate.json
+if mixed_state_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports both a worktree and a staged dimension (expected non-zero exit)"
+elif printf '%s\n' "$mixed_state_out" | grep -qF "DRIFT    renovate.json  (uncurated"; then
+    ok "diff-template reports both a worktree and a staged dimension"
+else
+    bad "diff-template reports both a worktree and a staged dimension (DRIFT diagnostic missing)"
+fi
+if printf '%s\n' "$mixed_state_out" |
+    grep -qF "MODE     renovate.json  (staged mode differs"; then
+    ok "diff-template reports a staged mode change alongside worktree content drift"
+else
+    bad "diff-template reports a staged mode change alongside worktree content drift"
+fi
+git -C "$DT_TARGET" update-index --chmod=-x -- renovate.json
+git -C "$DT_TARGET" reset -q HEAD -- renovate.json
+git -C "$DT_TARGET" checkout HEAD -- renovate.json
+
 # The curated loop owes the same guarantee — the manifest is the more
 # load-bearing set, not the weaker one.
 printf '%s\n' '#!/usr/bin/env bash' 'echo staged curated' \
@@ -6020,12 +6043,19 @@ else
     ok "diff-template prints no diff body for a foreign-work-tree target"
 fi
 
-# --- a template-shipped SYMLINK .gitignore still declares paths local --------
-# The scratch evaluator staged the render's ignore files with `find -type f`,
-# which never even visits a `.gitignore` shipped as a symlink (_preserve_symlinks
-# makes that a shape a template can have). The evaluator then answered "the
-# template declares nothing local" and every IGNORED path became a gating,
-# printable one. `cp` resolves the link, so the rules reach the evaluator.
+# --- a template-shipped SYMLINK .gitignore marks paths without enforcing -----
+# _preserve_symlinks lets a template ship its ignore rules as a symlink, and the
+# two axes answer that shape DIFFERENTLY:
+#   • git refuses to follow a symlinked .gitignore (`unable to access`), so a
+#     freshly generated repo enforces nothing from it. CLASSIFICATION must agree
+#     — granting the informational IGNORED class there would downgrade drift on
+#     rules no clone ever applies.
+#   • WITHHOLDING must not agree: the template still WROTE those paths into its
+#     ignore rules, so printing their bodies leaks exactly what somebody marked
+#     local-only. The `-type f` walk fed both answers from regular files alone,
+#     so this template's declared-local bodies were printed outright.
+# Two files carry the two halves: .envrc, which the repo does NOT ignore, is the
+# leak control; secrets.env, which the repo DOES ignore, is the git-parity one.
 DT_LINKIGNORE_TEMPLATE="$TMPROOT/diff-template-linkignore-source"
 mkdir -p "$DT_LINKIGNORE_TEMPLATE/template"
 cat >"$DT_LINKIGNORE_TEMPLATE/copier.yml" <<'EOF'
@@ -6036,49 +6066,71 @@ project_name:
   type: str
   default: Link Ignore
 EOF
-printf '%s\n' '.envrc' >"$DT_LINKIGNORE_TEMPLATE/template/gitignore-rules"
+printf '%s\n' '.envrc' 'secrets.env' \
+    >"$DT_LINKIGNORE_TEMPLATE/template/gitignore-rules"
 ln -s gitignore-rules "$DT_LINKIGNORE_TEMPLATE/template/.gitignore"
 printf '%s\n' 'export EXAMPLE_SETTING=template-default' \
     >"$DT_LINKIGNORE_TEMPLATE/template/.envrc"
+printf '%s\n' 'EXAMPLE_TOKEN=template-default' \
+    >"$DT_LINKIGNORE_TEMPLATE/template/secrets.env"
 git_init "$DT_LINKIGNORE_TEMPLATE"
-git -C "$DT_LINKIGNORE_TEMPLATE" add -f -- template/.envrc
+git -C "$DT_LINKIGNORE_TEMPLATE" add -f -- template/.envrc template/secrets.env
 git_commit_all "$DT_LINKIGNORE_TEMPLATE" "template ships a symlink .gitignore"
 git -C "$DT_LINKIGNORE_TEMPLATE" tag v1.0.0
 DT_LINKIGNORE_TARGET="$TMPROOT/diff-template-linkignore-target"
 mkdir -p "$DT_LINKIGNORE_TARGET"
-printf '%s\n' '.envrc' >"$DT_LINKIGNORE_TARGET/gitignore-rules"
+printf '%s\n' '.envrc' 'secrets.env' >"$DT_LINKIGNORE_TARGET/gitignore-rules"
 ln -s gitignore-rules "$DT_LINKIGNORE_TARGET/.gitignore"
-printf '%s\n' 'export EXAMPLE_SETTING=linkignore-sentinel' \
+printf '%s\n' 'export EXAMPLE_SETTING=linkignore-envrc-sentinel' \
     >"$DT_LINKIGNORE_TARGET/.envrc"
+printf '%s\n' 'EXAMPLE_TOKEN=linkignore-secrets-sentinel' \
+    >"$DT_LINKIGNORE_TARGET/secrets.env"
 cat >"$DT_LINKIGNORE_TARGET/.copier-answers.yml" <<EOF
 _commit: v1.0.0
 _src_path: file://$DT_LINKIGNORE_TEMPLATE
 project_name: Link Ignore
 EOF
 git_init "$DT_LINKIGNORE_TARGET"
-# git does not follow a symlinked .gitignore, so the repo-side rule goes where a
-# repo-local habit belongs. That is the point of the case: the RENDER's
-# declaration is the only thing that can grant the exemption, and it is exactly
-# what the `-type f` walk was dropping.
+# Only secrets.env is ignored repo-side, and through info/exclude because git
+# would not read the symlinked .gitignore anyway. .envrc is left plainly visible
+# to the repo, which is what makes it the leak control: nothing but the
+# template's own (symlinked) declaration can withhold its body.
 mkdir -p "$DT_LINKIGNORE_TARGET/.git/info"
-printf '%s\n' '.envrc' >"$DT_LINKIGNORE_TARGET/.git/info/exclude"
+printf '%s\n' 'secrets.env' >"$DT_LINKIGNORE_TARGET/.git/info/exclude"
 git_commit_all "$DT_LINKIGNORE_TARGET" "target mirrors the symlink .gitignore"
 if linkignore_out="$(HARMON_INIT="$DT_LINKIGNORE_TEMPLATE" \
     bash "$STANDARDIZE_ASSETS/diff-template.sh" --show "$DT_LINKIGNORE_TARGET" 2>&1)"; then
-    ok "diff-template reads a template-shipped symlink .gitignore"
+    bad "diff-template gates paths a symlink .gitignore cannot enforce (expected non-zero exit)"
+elif printf '%s\n' "$linkignore_out" | grep -qF "DRIFT    .envrc"; then
+    ok "diff-template gates paths a symlink .gitignore cannot enforce"
 else
-    bad "diff-template reads a template-shipped symlink .gitignore: $linkignore_out"
+    bad "diff-template gates paths a symlink .gitignore cannot enforce (DRIFT diagnostic missing)"
 fi
+# The leak control: the repo has no rule of its own for .envrc, so the body is
+# withheld only because the template marked the path local — through a link git
+# itself will not follow.
+if printf '%s\n' "$linkignore_out" | grep -qF 'linkignore-envrc-sentinel'; then
+    bad "diff-template withholds a body a symlink .gitignore marks local"
+else
+    ok "diff-template withholds a body a symlink .gitignore marks local"
+fi
+# The git-parity control: a real clone enforces nothing from that link, so the
+# repo's own ignore rule cannot be upgraded into the template's declaration.
 if printf '%s\n' "$linkignore_out" |
-    grep -qF "IGNORED  .envrc  (template ships it gitignored"; then
-    ok "a symlink .gitignore still grants the template's IGNORED declaration"
+    grep -qF "DRIFT    secrets.env  (repo-ignored, but the template tracks this file"; then
+    ok "a symlink .gitignore grants no IGNORED class git would not grant"
 else
-    bad "a symlink .gitignore still grants the template's IGNORED declaration"
+    bad "a symlink .gitignore grants no IGNORED class git would not grant"
 fi
-if printf '%s\n' "$linkignore_out" | grep -qF 'linkignore-sentinel'; then
-    bad "diff-template withholds a body declared local by a symlink .gitignore"
+if printf '%s\n' "$linkignore_out" | grep -qF "IGNORED  "; then
+    bad "diff-template emits no IGNORED line for unenforceable template rules"
 else
-    ok "diff-template withholds a body declared local by a symlink .gitignore"
+    ok "diff-template emits no IGNORED line for unenforceable template rules"
+fi
+if printf '%s\n' "$linkignore_out" | grep -qF 'linkignore-secrets-sentinel'; then
+    bad "diff-template withholds a repo-ignored body under a symlink .gitignore"
+else
+    ok "diff-template withholds a repo-ignored body under a symlink .gitignore"
 fi
 
 # --- a curated path the template renders as a DANGLING symlink ---------------
@@ -6156,7 +6208,14 @@ printf '%s\n' '# outside root' >"$DT_TF_OUTSIDE/production/main.tf"
 DT_TF_LINKED="$TMPROOT/diff-template-terraform-linked"
 cp -pR "$DT_TARGET" "$DT_TF_LINKED"
 rm -rf "$DT_TF_LINKED/terraform/environments"
-ln -s ../diff-template-terraform-outside "$DT_TF_LINKED/terraform/environments"
+# Two levels deep, so the relative target needs two hops: `../` alone would
+# resolve inside the copy and leave a dangling link that models nothing.
+ln -s ../../diff-template-terraform-outside "$DT_TF_LINKED/terraform/environments"
+if [ -f "$DT_TF_LINKED/terraform/environments/production/main.tf" ]; then
+    ok "the symlinked-parent Terraform fixture points at a real outside root"
+else
+    bad "the symlinked-parent Terraform fixture points at a real outside root"
+fi
 if tf_linked_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     "$DT_TF_LINKED" 2>&1)"; then
     bad "diff-template resolves no Terraform equivalence through a symlinked parent (expected non-zero exit)"
