@@ -127,16 +127,17 @@ repos/*/commits/*/statuses*) file=statuses.pages.json ;;
 repos/*/pulls/*) file=pr.json ;;
 *) exit 93 ;;
 esac
-# The gate evaluates checks twice (entry + immediately before the verdict);
-# check-runs-second.pages.json, when present, is what the LATER fetches see.
-if [ "$file" = check-runs.pages.json ]; then
-    count_file="$GH_FIXTURES/check-runs-count"
+# The gate re-reads several surfaces before its verdict (checks twice, and
+# every fingerprint surface once evaluated + once fresh); a second-<fixture>
+# file, when present, is what the LATER fetches of that fixture see.
+if [ -f "$GH_FIXTURES/second-$file" ]; then
+    count_file="$GH_FIXTURES/count-$file"
     count=0
     [ ! -f "$count_file" ] || count="$(cat "$count_file")"
     count=$((count + 1))
     printf '%s\n' "$count" >"$count_file"
-    if [ "$count" -ge 2 ] && [ -f "$GH_FIXTURES/check-runs-second.pages.json" ]; then
-        file=check-runs-second.pages.json
+    if [ "$count" -ge 2 ]; then
+        file="second-$file"
     fi
 fi
 cat "$GH_FIXTURES/$file"
@@ -199,7 +200,7 @@ write_defaults() {
         >"${fixtures}/threads.pages.json"
     rm -f "${fixtures}/fail-endpoint" "${fixtures}/codex-exit"
     rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json"
-    rm -f "${fixtures}/check-runs-count" "${fixtures}/check-runs-second.pages.json"
+    rm -f "${fixtures}"/count-* "${fixtures}"/second-*
     rm -f "${fixtures}/ro-exit"
     : >"$log"
 }
@@ -556,19 +557,40 @@ jq -cn --arg head "$head_sha" \
 run_gate --codex-disabled
 assert_gate 1 fail merge-state-dirty
 
-echo "==> the fingerprint hashes the exact PR object the gate evaluated (one fetch)"
+echo "==> the fingerprint is double-read: gated evaluation plus a fresh compare"
 write_defaults
 run_gate --codex-disabled
 assert_gate 0 pass ready
 pr_object_fetches="$(grep -cxF 'api repos/example/repo/pulls/493' "$log")"
-[ "$pr_object_fetches" -eq 1 ] ||
-    fail "expected exactly one PR-object fetch (the gated body is what gets hashed), saw $pr_object_fetches"
+[ "$pr_object_fetches" -eq 2 ] ||
+    fail "expected exactly two PR-object fetches (the gated body, then the fresh compare), saw $pr_object_fetches"
+
+echo "==> a body edit mid-gate fails as content-moved, never laundered into a pass"
+write_defaults
+edited_body="$(printf '## Deferred findings\n\n- [ ] scripts/sneaky.sh:1 — added after the deferred check ran\n')"
+jq -cn --arg head "$head_sha" --arg body "$edited_body" \
+    '{number:493,title:"t",body:$body,head:{sha:$head},
+      user:{id:4242,login:"pr-author"}}' >"${fixtures}/second-pr.json"
+run_gate --codex-disabled
+assert_gate 1 fail content-moved
+printf '%s\n' "$gate_out" | grep -Fq 'PR-title/body' ||
+    fail "content-moved did not name the changed surface: $gate_out"
+
+echo "==> a top-level comment landing mid-gate fails as content-moved"
+write_defaults
+jq -cn '[[{id:70,user:{login:"reviewer-bot"},body:"a late finding",
+           updated_at:"2026-08-01T03:00:00Z"}]]' \
+    >"${fixtures}/second-top.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail content-moved
+printf '%s\n' "$gate_out" | grep -Fq 'top-level-comments' ||
+    fail "content-moved did not name the changed surface: $gate_out"
 
 echo "==> a check turning red mid-gate fails on the final re-evaluation"
 write_defaults
 jq -cn '[{total_count:1,check_runs:[
     {name:"late-red",status:"completed",conclusion:"failure"}]}]' \
-    >"${fixtures}/check-runs-second.pages.json"
+    >"${fixtures}/second-check-runs.pages.json"
 run_gate --codex-disabled
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'late-red' ||
@@ -651,6 +673,11 @@ jq -cn '[{total_count:1,check_runs:[
     >"${fixtures}/check-runs.pages.json"
 run_audit --codex-disabled
 assert_gate 1 fail checks-failing
+
+echo "==> audit refuses a draft target — there is no promotion to audit"
+write_defaults
+run_audit --codex-disabled
+assert_gate 1 fail pr-draft
 
 echo "==> the Codex mode is never skippable by silence"
 write_defaults

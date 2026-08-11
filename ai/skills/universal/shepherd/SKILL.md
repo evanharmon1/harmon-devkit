@@ -1030,7 +1030,11 @@ loops indefinitely:
      evaluated (PR title/body, reviews, top-level comments, inline comments
      including replies, GraphQL review-thread resolution), each captured and
      exit-checked before hashing, so a failed fetch is a loud *unknown*
-     rather than a stable hash missing a surface. Content-bearing fields
+     rather than a stable hash missing a surface. The hash is double-read:
+     computed over the exact content the conditions judged, then re-fetched
+     fresh and required identical before any pass exists (`content-moved`
+     otherwise), so an edit landing mid-gate fails before promotion
+     notifies anyone rather than after. Content-bearing fields
      only: the PR object's own `updated_at`, draft flag, and mergeability
      stay out, because `gh pr ready` mutates those and would invalidate
      every normal promotion (#227). Keep the value — it is the "before" of
@@ -1095,7 +1099,8 @@ loops indefinitely:
    and `gh pr ready` must not be called again. Audit the existing handoff on
    the current head with the same script's `audit` mode —
    `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh audit …`, the identical
-   fail-closed evaluation minus the draft requirement, run instead of
+   fail-closed evaluation with the draft requirement inverted (its target
+   must still be non-draft), run instead of
    hand-rolling the evidence — but do not manufacture another ready event:
    an `audit` pass never authorizes `gh pr ready`. This audit is also
    what step 2's unexplained-promotion procedure points at: where that

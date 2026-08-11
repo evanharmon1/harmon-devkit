@@ -23,14 +23,19 @@
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 #
 # `check` evaluates the gate for the adjudicated 40-hex head SHA and, on full
-# pass only, prints `{"status":"pass",...,"fingerprint":...}`. `audit` is the
-# same evaluation minus the draft requirement: it answers "does this head
-# independently pass everything else" for a PR somebody already promoted —
-# §2's unexplained-promotion reconcile branch and §6's already-non-draft
-# audit run it instead of hand-rolling the evidence — and its pass never
-# authorizes `gh pr ready`; only a passing `check` does. `fingerprint`
-# recomputes the same five-surface content fingerprint with no gate attached —
-# it is the post-promotion read the caller compares against `check`'s value.
+# pass only, prints `{"status":"pass",...,"fingerprint":...}` — where the
+# fingerprint is double-read: computed over the exact content the conditions
+# judged, then re-fetched fresh and required identical (`content-moved`
+# otherwise), so a mid-gate edit fails before promotion notifies anyone.
+# `audit` is the same evaluation with the draft requirement inverted (its
+# target must be non-draft — it judges an existing promotion): it answers
+# "does this head independently pass everything else" for a PR somebody
+# already promoted — §2's unexplained-promotion reconcile branch and §6's
+# already-non-draft audit run it instead of hand-rolling the evidence — and
+# its pass never authorizes `gh pr ready`; only a passing `check` does.
+# `fingerprint` recomputes the same five-surface content fingerprint with no
+# gate attached — it is the post-promotion read the caller compares against
+# `check`'s value.
 #
 # Exit codes:
 #   0  pass — every condition held; the fingerprint is on stdout
@@ -91,8 +96,9 @@ Usage:
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
-audit is the same evaluation minus the draft requirement, for judging a PR
-somebody already promoted — its pass never authorizes gh pr ready.
+audit is the same evaluation with the draft requirement inverted (the PR
+must be non-draft), for judging a PR somebody already promoted — its pass
+never authorizes gh pr ready.
 fingerprint recomputes the five-surface content fingerprint for the
 post-promotion compare. --codex-state FILE runs the sibling
 check-codex-cloud-review.sh against that attempt state (Codex cloud review
@@ -265,10 +271,12 @@ fp_threads=
 
 fetch_fingerprint_surfaces() {
     # $fp_pr and $fp_inline may be pre-seeded by `check` — deliberately: the
-    # fingerprint must hash the exact body the deferred-findings condition
-    # evaluated and the exact comments the thread predicate classified. A
-    # fresh fetch here would launder a mid-gate edit into both the pass and
-    # post-promotion fingerprints without either ever being validated.
+    # EVALUATED fingerprint must hash the exact body the deferred-findings
+    # condition judged and the exact comments the thread predicate
+    # classified. A silent fresh fetch here would launder a mid-gate edit
+    # into a passing fingerprint unvalidated; the fresh read the gate does
+    # take is explicit, comes after every condition, and must equal the
+    # evaluated one or the gate fails as content-moved.
     owner="${repo%/*}"
     name="${repo#*/}"
     if [ -z "$fp_pr" ]; then
@@ -343,6 +351,12 @@ pr_state="$(jq -er '.state | select(type == "string")' <<<"$scalars")" ||
 if [ "$require_draft" = 1 ]; then
     jq -e '.isDraft == true' <<<"$scalars" >/dev/null ||
         fail_condition pr-not-draft "PR is not a draft — promotion is idempotently complete or someone else promoted; run audit, do not re-promote"
+else
+    # Audit judges an existing promotion, so its target must actually be
+    # promoted: a PR converted back to draft since the caller observed it
+    # has no standing handoff to accept.
+    jq -e '.isDraft == false' <<<"$scalars" >/dev/null ||
+        fail_condition pr-draft "the PR is a draft — there is no promotion to audit; check is the gate for promoting one"
 fi
 
 live_head="$(jq -er '.headRefOid | select(type == "string")' <<<"$scalars")" ||
@@ -602,9 +616,40 @@ fi
 # exactly the failure this script exists to make impossible.
 evaluate_checks
 
-# 11. Re-read every scalar condition as the LAST network read before the
-# verdict — after the second checks evaluation, so no fetch runs behind it
-# (the fingerprint below is pure local computation). A changed head
+# 11. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
+# and require equality before any pass. The evaluated fingerprint hashes the
+# exact bytes the conditions above judged (the gated body, the classified
+# threads); the fresh read is the recipe's "re-fetch and compare as the last
+# content read" — a review, comment, body edit, or resolution change landing
+# while the gate evaluated fails HERE, before `gh pr ready` notifies anyone,
+# not merely in the post-promotion compare that undo cannot fully walk back.
+compute_fingerprint
+evaluated_fingerprint="$fingerprint"
+evaluated_c1="$c1"
+evaluated_c2="$c2"
+evaluated_c3="$c3"
+evaluated_c4="$c4"
+evaluated_c5="$c5"
+fp_pr=
+fp_reviews=
+fp_top=
+fp_inline=
+fp_threads=
+fetch_fingerprint_surfaces
+compute_fingerprint
+if [ "$fingerprint" != "$evaluated_fingerprint" ]; then
+    changed_surfaces=""
+    [ "$c1" = "$evaluated_c1" ] || changed_surfaces="$changed_surfaces PR-title/body"
+    [ "$c2" = "$evaluated_c2" ] || changed_surfaces="$changed_surfaces reviews"
+    [ "$c3" = "$evaluated_c3" ] || changed_surfaces="$changed_surfaces top-level-comments"
+    [ "$c4" = "$evaluated_c4" ] || changed_surfaces="$changed_surfaces inline-comments"
+    [ "$c5" = "$evaluated_c5" ] || changed_surfaces="$changed_surfaces thread-resolution"
+    fail_condition content-moved "review content changed while the gate was evaluating (${changed_surfaces# }) — re-adjudicate against the current content"
+fi
+
+# 12. Re-read every scalar condition as the LAST network read before the
+# verdict — after the fresh content compare, so no fetch runs behind it
+# (everything after this is local). A changed head
 # invalidates every result this gate relied on, and never wait out a
 # mismatch: a fresh replica showing someone else's newer push is evidence,
 # and re-polling until it converges would discard it. The review decision
@@ -621,6 +666,9 @@ jq -e '.state == "OPEN"' <<<"$recheck" >/dev/null ||
 if [ "$require_draft" = 1 ]; then
     jq -e '.isDraft == true' <<<"$recheck" >/dev/null ||
         fail_condition pr-not-draft "the PR was promoted while the gate was reading it"
+else
+    jq -e '.isDraft == false' <<<"$recheck" >/dev/null ||
+        fail_condition pr-draft "the PR returned to draft while the audit was reading it — the promotion under audit no longer stands"
 fi
 jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
     fail_condition head-moved "PR head changed while the gate was reading it"
@@ -634,7 +682,6 @@ UNKNOWN | "")
     ;;
 esac
 
-compute_fingerprint
 if [ "$require_draft" = 1 ]; then
     verdict_condition=ready
     verdict_detail="every mechanically checkable readiness condition holds; ready_for_review-only automation and the Codex Auto-review knobs remain human-verified prerequisites"
