@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.27.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.26.1...v0.27.0) (2026-08-11)
+
+
+### Features
+
+* **shepherd:** executable readiness gate + scoped read-only gh wrapper ([#403](https://github.com/evanharmon1/harmon-devkit/issues/403)) ([5c3a51e](https://github.com/evanharmon1/harmon-devkit/commit/5c3a51ed7c1643f1066801bc07dc57f896d521e6))
+
+
+### Bug Fixes
+
+* **shepherd:** never chain external writes off non-gate exits; abort when the PR closes ([#395](https://github.com/evanharmon1/harmon-devkit/issues/395)) ([d0dc8d6](https://github.com/evanharmon1/harmon-devkit/commit/d0dc8d6605c21fad511f0f2d09298465d6ad4b4d))
+* **standardize-repo:** fail-closed hardening batch for diff-template.sh and the non-adoption probes ([#400](https://github.com/evanharmon1/harmon-devkit/issues/400)) ([17616eb](https://github.com/evanharmon1/harmon-devkit/commit/17616ebec55aba6c531e59fe36de58a1994df927))
+
 ## [0.26.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.26.0...v0.26.1) (2026-08-11)
 
 
