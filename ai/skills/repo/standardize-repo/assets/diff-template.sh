@@ -374,6 +374,18 @@ if [ "$toplevel_rc" -eq 0 ]; then
     if [ -d "$toplevel" ] &&
         [ "$(cd "$toplevel" && pwd -P)" = "$target_physical" ]; then
         target_owns_worktree=1
+    elif [ -e "$target/.git" ] || [ -L "$target/.git" ]; then
+        # A DIFFERENT toplevel while the target carries a .git of its own is not
+        # the nested-plain-directory shape this audit accepts: a misconfigured
+        # `core.worktree` (or a gitfile pointing at somebody else's work tree)
+        # reports exactly this, and taking the plain-directory path there would
+        # silently disable the repo half of the withholding probe for a
+        # directory that IS a repository. That is the same fail-OPEN direction
+        # the unreadable-metadata case below refuses, so it refuses too.
+        echo "FAIL: $target has its own .git but git reports a different work tree" >&2
+        printf '  reported toplevel: %s\n' "$toplevel" >&2
+        echo "  refusing to continue: a misconfigured work tree would skip the repo-side ignore probe" >&2
+        exit 2
     fi
 elif [ "$toplevel_says_no_repo" -eq 1 ] &&
     [ ! -e "$target/.git" ] && [ ! -L "$target/.git" ]; then
@@ -613,6 +625,14 @@ git init -q --template="$workdir/empty-git-template" \
 # governs its own subtree, so flattening them would change what they mean. Today
 # the template ships just the root file; copying all of them costs one `find`
 # and stops that from being an assumption.
+#
+# `-type l` alongside `-type f` for the same reason the sweep walks links: with
+# _preserve_symlinks a template can ship a .gitignore AS a symlink, and a
+# `-type f` walk never even visits it — the evaluator would then answer "the
+# template declares nothing local" and every IGNORED path would become a
+# printable one. `cp` resolves the link and copies the referent's CONTENT, which
+# is what the evaluator needs; a DANGLING one has no rules to read, and the
+# copy's failure aborts the run rather than quietly dropping the file's rules.
 while IFS= read -r render_gitignore; do
     render_gitignore_rel="${render_gitignore#"$render"/}"
     render_gitignore_dest="$render_ignore_root/$render_gitignore_rel"
@@ -622,7 +642,7 @@ while IFS= read -r render_gitignore; do
         exit 2
     fi
     render_has_ignore_rules=1
-done < <(find "$render" -type f -name .gitignore | LC_ALL=C sort)
+done < <(find "$render" \( -type f -o -type l \) -name .gitignore | LC_ALL=C sort)
 
 # `git check-ignore` is THREE-valued: 0 = the path matches an ignore rule, 1 =
 # it does not, anything else = the probe itself failed. Every caller below folds
@@ -728,17 +748,45 @@ is_ignore_pattern_match() {
 # that deliberately omits this path would misdirect. Commit the deletion and the
 # path becomes genuinely absent, at which point the ordinary MISSING lines
 # report it and the §9 pointer is finally the true one.
+#
+# Both probes are THREE-valued and were read as two, exactly like the ignore
+# probes before them: `cat-file -e "HEAD:$p"` exits 128 — not 1 — for a path
+# that is simply absent from HEAD, so "absent" and "the probe failed" were
+# already indistinguishable by exit code, and `ls-files --error-unmatch`
+# collapses "untracked" into the same nonzero. An unreadable object store or a
+# corrupt index therefore answered "nothing is staged for removal" and the
+# staged deletion of a template-owned file went unreported. `ls-tree` and a bare
+# `ls-files` separate the two cleanly instead: rc 0 with EMPTY output is the
+# real "not there", and any nonzero rc is a probe error that stops the run with
+# the script's setup-error status rather than being guessed at.
+staged_probe_out=""
+staged_probe_err="$workdir/staged-probe.err"
+staged_probe() {
+    sp_what="$1"
+    sp_path="$2"
+    shift 2
+    sp_rc=0
+    # Never called from inside a command substitution: `exit` there would leave
+    # only the subshell and the run would continue on a failed probe, which is
+    # the very thing this exists to prevent.
+    staged_probe_out="$(git -C "$target" "$@" 2>"$staged_probe_err")" || sp_rc=$?
+    [ "$sp_rc" -ne 0 ] || return 0
+    echo "FAIL: cannot evaluate $sp_what for '$sp_path' (git exit $sp_rc)" >&2
+    [ ! -s "$staged_probe_err" ] || sed 's/^/  /' "$staged_probe_err" >&2
+    echo "  refusing to continue: an unevaluated probe would miss a staged deletion" >&2
+    exit 2
+}
 is_staged_removal() {
     p="$1"
     [ "$target_owns_worktree" -eq 1 ] || return 1
     # An unborn HEAD (`git init` with no commit yet) has no committed state to
     # have removed anything from. Checking it explicitly keeps the intent legible
-    # and the failure quiet, rather than leaning on `cat-file` to error out.
+    # and the failure quiet, rather than leaning on the probes to error out.
     git -C "$target" rev-parse --verify -q HEAD >/dev/null 2>&1 || return 1
-    git -C "$target" cat-file -e "HEAD:$p" 2>/dev/null || return 1
-    if git -C "$target" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
-        return 1 # still in the index — nothing is staged for removal
-    fi
+    staged_probe "HEAD membership" "$p" ls-tree -z HEAD -- "$p"
+    [ -n "$staged_probe_out" ] || return 1 # not in HEAD — nothing to remove
+    staged_probe "the index entry" "$p" ls-files -s -z -- "$p"
+    [ -z "$staged_probe_out" ] || return 1 # still in the index
     return 0
 }
 
@@ -776,6 +824,49 @@ same_as_render() {
         return 0
     fi
     return 1
+}
+
+# A tracked file's WORK-TREE copy can match the render while its STAGED copy
+# does not: edit, `git add`, then restore the worktree from HEAD and the audit
+# saw a clean file while the next commit carries the divergence. That is the
+# same class of finding as a staged removal — what the repo is about to commit,
+# not what is on disk this second — so the comparison inspects the index too
+# whenever the disk copy came out clean.
+#
+# Only when the resolved variant IS the work-tree copy. resolve_variant already
+# falls back to the index snapshot for a transiently deleted file, and that
+# comparison was against the index to begin with; re-reading it here would just
+# report the same bytes twice.
+index_content_divergent=0
+index_mode_divergent=0
+index_diverges() {
+    idx_render="$1"  # path inside the render
+    idx_rel="$2"     # repo-relative path of the resolved variant
+    idx_variant="$3" # the resolved variant itself
+    index_content_divergent=0
+    index_mode_divergent=0
+    [ "$target_owns_worktree" -eq 1 ] || return 1
+    case "$idx_variant" in
+    "$target"/*) ;;
+    *) return 1 ;;
+    esac
+    idx_staged="$(index_variant "$idx_rel")" || return 1
+    if [ ! -L "$idx_render" ] && [ ! -L "$idx_staged" ]; then
+        idx_render_exec=0
+        idx_staged_exec=0
+        [ -x "$idx_render" ] && idx_render_exec=1
+        [ -x "$idx_staged" ] && idx_staged_exec=1
+        [ "$idx_render_exec" -eq "$idx_staged_exec" ] || index_mode_divergent=1
+    fi
+    # same_as_render sets the shared compare_* globals, and the caller reached
+    # this point precisely because ITS comparison came back clean. Restore them
+    # so a staged divergence cannot rewrite the verdict on the disk copy.
+    idx_saved_note="$compare_note"
+    idx_saved_structural="$compare_structural"
+    same_as_render "$idx_render" "$idx_staged" || index_content_divergent=1
+    compare_note="$idx_saved_note"
+    compare_structural="$idx_saved_structural"
+    [ "$index_content_divergent" -eq 1 ] || [ "$index_mode_divergent" -eq 1 ]
 }
 
 # Print a drifting file's body under --show, or a one-line note when the path is
@@ -822,8 +913,25 @@ while IFS= read -r f; do
         fi
         continue
     fi
-    [ -f "$render/$f" ] || continue # conditional file not in this profile
+    # `-L` alongside `-f`, and for the same reason the sweep walks links: `-f`
+    # FOLLOWS a symlink, so a manifest-listed path the template renders as a
+    # DANGLING link read as "not in this profile" and was skipped here — while
+    # the sweep skipped it too, deferring to the manifest that owns it. The run
+    # could then exit clean having reported nothing at all about a curated path.
+    if [ ! -f "$render/$f" ] && [ ! -L "$render/$f" ]; then
+        continue # conditional file not in this profile
+    fi
     checked=$((checked + 1))
+    if [ -L "$render/$f" ] && [ ! -e "$render/$f" ]; then
+        # The render's own copy leads nowhere, so there is no template content
+        # to compare the repo's against. Gating rather than informational: a
+        # curated path nobody can render correctly is a template defect, and
+        # exiting 0 on it is how it stayed invisible.
+        echo "DRIFT    $f  (template renders a dangling symlink → $(readlink "$render/$f"); nothing to compare — review the template)"
+        drift=1
+        drift_count=$((drift_count + 1))
+        continue
+    fi
     rv="$(repo_variant "$f")"
     if [ -z "$rv" ]; then
         echo "MISSING  $f  (template ships it; repo doesn't; a copier update will not restore it unless _skip_if_exists or the render's own .gitignore covers it — copier-gotchas.md §9)"
@@ -853,12 +961,14 @@ while IFS= read -r f; do
     # divergence always gates" rule held for uncurated files only. `-x` follows
     # links too, hence the same exec-bit exemption the sweep uses: the bit
     # belongs to the link target, not to the alias.
+    mode_divergent=0
     if [ ! -L "$render/$f" ] && [ ! -L "$rv" ]; then
         render_exec=0
         repo_exec=0
         [ -x "$render/$f" ] && render_exec=1
         [ -x "$rv" ] && repo_exec=1
         if [ "$render_exec" -ne "$repo_exec" ]; then
+            mode_divergent=1
             if [ "$render_exec" -eq 1 ]; then
                 mode_note="template is executable; repo is not"
             else
@@ -869,7 +979,9 @@ while IFS= read -r f; do
             mode_count=$((mode_count + 1))
         fi
     fi
+    content_divergent=0
     if ! same_as_render "$render/$f" "$rv"; then
+        content_divergent=1
         if [ "$compare_structural" -eq 1 ]; then
             echo "DRIFT    $rv_display  (symlink mismatch — $compare_note)"
         else
@@ -881,6 +993,22 @@ while IFS= read -r f; do
         # dangling link just errors); the note above already says it all.
         if [ "$show" -eq 1 ] && [ "$compare_structural" -eq 0 ]; then
             show_diff_body "$rv_display" "$rv" "$render/$f"
+        fi
+    fi
+    # Only what the disk copy did NOT already report: the index is a second
+    # place the same divergence can live, not a second finding about the same
+    # one. No body is printed either way — the staged bytes are not on disk to
+    # diff against, and the line says everything actionable.
+    if index_diverges "$render/$f" "$rv_display" "$rv"; then
+        if [ "$index_mode_divergent" -eq 1 ] && [ "$mode_divergent" -eq 0 ]; then
+            echo "MODE     $rv_display  (staged mode differs from the template though the worktree matches — the next commit carries it)"
+            drift=1
+            mode_count=$((mode_count + 1))
+        fi
+        if [ "$index_content_divergent" -eq 1 ] && [ "$content_divergent" -eq 0 ]; then
+            echo "DRIFT    $rv_display  (staged content differs from the template though the worktree matches — the next commit carries it)"
+            drift=1
+            drift_count=$((drift_count + 1))
         fi
     fi
 done <"$manifest"
@@ -902,15 +1030,7 @@ has_repo_equivalent() {
     equivalent_note=""
     case "$g" in
     terraform/main.tf | terraform/variables.tf | terraform/outputs.tf | terraform/tfvars.env.example)
-        if [ -d "$target/terraform" ] &&
-            find "$target/terraform" -type f -name '*.tf' 2>/dev/null |
-            awk -v root="$target/terraform/" '
-                    index($0, root) == 1 {
-                        rel = substr($0, length(root) + 1)
-                        if (rel ~ /\//) found = 1
-                    }
-                    END { exit(found ? 0 : 1) }
-                '; then
+        if [ -d "$target/terraform" ] && has_nested_terraform_root; then
             equivalent_note="repo uses nested/split Terraform roots"
             return 0
         fi
@@ -918,6 +1038,7 @@ has_repo_equivalent() {
     docs/decisions/0001-record-architecture-decisions.md)
         for adr in "$target"/docs/decisions/[0-9]*.md; do
             [ -f "$adr" ] || continue
+            repo_parent_diverges "$adr" && continue
             case "${adr##*/}" in
             *-record-architecture-decisions.md)
                 equivalent_note="repo carries a renumbered equivalent ADR"
@@ -925,15 +1046,44 @@ has_repo_equivalent() {
                 ;;
             esac
         done
-        if [ -f "$target/docs/decisions/README.md" ]; then
+        if [ -f "$target/docs/decisions/README.md" ] &&
+            ! repo_parent_diverges "$target/docs/decisions/README.md"; then
             for adr in "$target"/docs/decisions/[0-9]*.md; do
                 [ -f "$adr" ] || continue
+                repo_parent_diverges "$adr" && continue
                 equivalent_note="repo already has an active ADR log; the seed ADR is redundant"
                 return 0
             done
         fi
         ;;
     esac
+    return 1
+}
+
+# Is there a REAL nested Terraform root under $target/terraform? Two things this
+# walk must not count, both of which would award a benign EQUIV to a repo that
+# still has no replacement for the flat seeds:
+#   • `.terraform/` — `terraform init` fills `.terraform/modules/**` with
+#     vendored module sources, so an unpruned walk reads running `init` once as
+#     evidence that the repo outgrew the seed layout. The non-adoption
+#     classifier in mode-update.md §1 (`nonadoption_has_nested_terraform`)
+#     prunes it for exactly this reason; the two are kept in step by hand.
+#   • anything under a symlinked parent — the rest of this script refuses to
+#     resolve repo paths through a swapped-out directory, and a presence test is
+#     no exception: files in somebody else's tree are not this repo's roots.
+has_nested_terraform_root() {
+    while IFS= read -r hnt_tf; do
+        [ -n "$hnt_tf" ] || continue
+        hnt_rel="${hnt_tf#"$target"/terraform/}"
+        # Nested is the whole point: a flat `terraform/*.tf` IS the seed layout.
+        case "$hnt_rel" in
+        */*) ;;
+        *) continue ;;
+        esac
+        repo_parent_diverges "$hnt_tf" && continue
+        return 0
+    done < <(find "$target/terraform" -name .terraform -prune -o \
+        -type f -name '*.tf' -print 2>/dev/null | LC_ALL=C sort)
     return 1
 }
 
@@ -947,11 +1097,14 @@ has_repo_equivalent() {
 #
 # The `docs/`/`specs/` branch below — and ONLY that branch — is duplicated by
 # the guarded update's non-adoption classifier (mode-update.md §1, the
-# `nonadoption-classify` markers), as `nonadoption_is_collapsible_prose`. What
+# `nonadoption-classify` markers), as `nonadoption_is_doc_prose`. What
 # must agree is the whole shape, not just the two globs: the Markdown-only filter
 # is load-bearing there too, because a copy that kept the bare `docs/*` would
-# file a missing generated asset as somebody's owned prose and collapse it out of
-# the report. Change one, change the other.
+# file a missing generated asset as somebody's owned prose and annotate it as
+# prose the repo owns. Over there the absence is still TABLED — §5 rows it with
+# a `co-owned-prose` note rather than collapsing it out of the report — so what
+# the duplicate decides is the NOTE, not whether the operator sees the path.
+# Change one, change the other.
 #
 # The rest of this list is intentionally NOT mirrored there, and the asymmetry is
 # the point. Co-ownership is a CONTENT exemption — this script withholds a diff
@@ -1062,6 +1215,23 @@ while IFS= read -r abs; do
         content_divergent=0
         same_as_render "$render/$g" "$rv" || content_divergent=1
         if [ "$mode_divergent" -eq 0 ] && [ "$content_divergent" -eq 0 ]; then
+            # The disk copy matches — but a TRACKED file's staged copy can
+            # still diverge, and that is what the next commit carries. Content
+            # is reported unless the repo owns the prose (the CO-OWNED contract
+            # is about content, staged or not); the exec bit is structural and
+            # gates for every class, exactly as above.
+            if index_diverges "$render/$g" "$rv_display" "$rv"; then
+                if [ "$index_mode_divergent" -eq 1 ]; then
+                    echo "MODE     $rv_display  (staged mode differs from the template though the worktree matches — the next commit carries it)"
+                    drift=1
+                    uncurated_mode_count=$((uncurated_mode_count + 1))
+                fi
+                if [ "$index_content_divergent" -eq 1 ] && ! is_co_owned "$g"; then
+                    echo "DRIFT    $rv_display  (uncurated — staged content differs from the template though the worktree matches; the next commit carries it)"
+                    drift=1
+                    uncurated_drift_count=$((uncurated_drift_count + 1))
+                fi
+            fi
             continue
         fi
         # The exec bit is settled FIRST, independent of — and before — any
