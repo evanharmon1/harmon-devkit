@@ -309,7 +309,21 @@ diff_fingerprint() {
         diff --no-color --no-ext-diff --no-textconv --full-index \
         --unified=3 "$fp_base" "$2") || return 1
     [ -n "$fp_bytes" ] || return 0
-    printf '%s' "$fp_bytes" | cksum | tr ' ' '-'
+    # A collision-resistant digest, not `cksum`: cksum is a 32-bit CRC, and
+    # equal CRCs do not prove equal bytes. The carry invariant is
+    # byte-identical, and on a PR from an untrusted contributor a CRC is
+    # forgeable by construction — a changed patch that carries an unreviewed
+    # verdict is exactly the outcome this command exists to prevent.
+    # sha256sum is coreutils (Linux); macOS ships `shasum` instead. The helper
+    # already requires GNU timeout from the same package family, so this adds
+    # no dependency class.
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$fp_bytes" | sha256sum | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$fp_bytes" | shasum -a 256 | cut -d' ' -f1
+    else
+        return 1
+    fi
 }
 
 provider_head() {
@@ -2103,6 +2117,17 @@ carry)
     # not "is it a finding": classification lives in `check`, a refusal only
     # costs the fresh cycle that was the status quo before carrying existed,
     # and being wrong in that direction is the whole point.
+    #
+    # The irreducible residual: evidence posted after an endpoint is read here
+    # but before the state is written is missed, and once the head moves it is
+    # filtered as old-head. No sequence of independent reads can close that —
+    # GitHub offers no atomic snapshot across these endpoints and no
+    # conditional write to fence one — so widening the sweep cannot fix it,
+    # only shrink it. What bounds the consequence is downstream, not here: the
+    # caller re-checks immediately before promoting, and promotion is to
+    # ready-for-review, where a human reads the PR. A reviewer free to post at
+    # any moment defeats every polling design; the cost of the window is one
+    # missed old-head comment on a diff that provably did not change.
     carry_workdir=$(mktemp -d -t codex-cloud-review-carry-XXXXXX) ||
         die "cannot create a working directory"
     trap 'rm -rf "$carry_workdir"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
@@ -2137,7 +2162,7 @@ carry)
     done
 
     old_fingerprint=$(diff_fingerprint "$base_ref" "$state_head") ||
-        die "cannot compute the state head's diff against $base_ref"
+        die "cannot compute the state head's diff against $base_ref (a SHA-256 tool is required)"
     new_fingerprint=$(diff_fingerprint "$base_ref" "$new_head") ||
         die "cannot compute --new-head's diff against $base_ref"
     [ -n "$old_fingerprint" ] && [ -n "$new_fingerprint" ] ||

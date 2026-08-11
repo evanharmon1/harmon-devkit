@@ -632,9 +632,14 @@ you rather than the bot):
   head's terminal-clean cycle:
 
   ```bash
-  git merge --no-edit origin/main && git push
-  "$helper" carry --state "$state" --new-head "<the merged head>" \
-    --base-ref origin/main
+  # The PR's OWN base, never a hard-coded main: a stacked or release-branch
+  # PR merged with main is contaminated with commits from the wrong branch,
+  # and the carry would then be validated against a base the PR never had.
+  base="$(gh pr view <n> --repo "$repo" --json baseRefName --jq .baseRefName)"
+  git fetch origin "$base"
+  git merge --no-edit "origin/$base" && git push
+  "$helper" carry --state "$state" --actor-id 199175422 \
+    --new-head "<the merged head>" --base-ref "origin/$base"
   ```
 
   It carries the verdict only when a pinned exact-diff fingerprint (canonical
