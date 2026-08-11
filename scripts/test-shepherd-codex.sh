@@ -2741,7 +2741,7 @@ carry_clean_cycle() {
         >"${fixtures}/pr.json"
 }
 
-echo "==> an identical patch-id carries the clean verdict onto the merged head"
+echo "==> an identical exact diff carries the clean verdict onto the merged head"
 carry_setup
 carry_clean_cycle
 run_carry --new-head "$carry_new_head" --base-ref carry-base
@@ -2752,7 +2752,7 @@ run_carry --new-head "$carry_new_head" --base-ref carry-base
     fail "carry must record its provenance: $(jq -c .carries "$state")"
 [ "$(jq -r '.carries[0].carried_from' "$state")" = "$carry_old_head" ] ||
     fail "carry recorded the wrong origin: $(jq -c .carries "$state")"
-[ -n "$(jq -r '.carries[0].patch_id // empty' "$state")" ] ||
+[ -n "$(jq -r '.carries[0].diff_fingerprint // empty' "$state")" ] ||
     fail "carry recorded no patch id: $(jq -c .carries "$state")"
 [ "$(jq -r .last_result "$state")" = "clean" ] ||
     fail "carry must preserve the terminal-clean provenance: $(jq -c . "$state")"
@@ -2797,6 +2797,47 @@ run_carry --new-head "$carry_changed_head" --base-ref carry-base
     fail "a refused carry must not touch the state: $(jq -c . "$state")"
 [ "$(jq -r '.carries | length' "$state")" = "0" ] ||
     fail "a refused carry must record nothing: $(jq -c .carries "$state")"
+
+# `git patch-id` would have carried this: patch-ids normalize whitespace, and
+# a whitespace-only change is semantic in Python or YAML. The exact-diff
+# fingerprint sees the changed bytes and refuses (devkit challenge round 1).
+echo "==> a whitespace-only change still refuses the carry"
+carry_setup
+carry_clean_cycle
+printf 'feature \n' >feature.txt
+git add feature.txt
+git commit -q -m "style: trailing space only"
+carry_ws_head="$(git rev-parse HEAD)"
+run_carry --new-head "$carry_ws_head" --base-ref carry-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "a whitespace-only change must refuse the carry, got rc=$carry_rc: $carry_out"
+[ "$(jq -r .head "$state")" = "$carry_old_head" ] ||
+    fail "a refused whitespace carry must not touch the state: $(jq -c . "$state")"
+
+# The old cycle's trigger — and its 👍 — survive a carry in the state file.
+# That reaction is OLD-head evidence: the direct reaction path must not
+# report it as an authenticated current-head result; the carry branch owns
+# the verdict and names its provenance (devkit challenge round 1).
+echo "==> a carried head reports the carry, not the old trigger's reaction"
+carry_setup
+carry_clean_cycle
+# Restore the old cycle's reaction instead of leaving it dropped: the direct
+# path must decline it on provenance, not on absence.
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        user:{id:$id,login:$login},
+        content:"+1",created_at:"2026-07-31T08:00:00Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_carry --new-head "$carry_new_head" --base-ref carry-base
+[ "$carry_rc" -eq 0 ] || fail "carry should have succeeded: $carry_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+printf '%s' "$check_out" | grep -Fq "carried from $carry_old_head" ||
+    fail "a carried head must report the carry, not the stale reaction: $check_out"
 
 echo "==> a dirty tree refuses the carry"
 carry_setup

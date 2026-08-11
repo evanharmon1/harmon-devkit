@@ -637,8 +637,10 @@ you rather than the bot):
     --base-ref origin/main
   ```
 
-  It carries the verdict only when `git patch-id --stable` proves the PR's
-  three-dot diff against the base is byte-identical across the merge, and
+  It carries the verdict only when a pinned exact-diff fingerprint (canonical
+  `git diff` bytes, hashed — deliberately NOT `git patch-id`, which
+  normalizes the whitespace that is semantic in Python or YAML) proves the
+  PR's three-dot diff against the base is byte-identical across the merge, and
   refuses (exit 2, state untouched) on every ambiguity: a changed diff, a
   dirty working tree, a head that does not descend from the old one (a rebase
   or force-push rewrites the commits the review was attributed to — that needs
@@ -646,7 +648,7 @@ you rather than the bot):
   refusal, run a normal reserve/trigger/attach cycle for the new head.
 
   `check` then reports the carried head clean with a detail naming the carry
-  (`clean carried from <old-head> under identical patch-id`), so a carried
+  (`clean carried from <old-head> under an identical exact diff`), so a carried
   result is never mistaken for one Codex wrote about this head. It still reads
   all four surfaces first: any finding, unrecognized verdict, or in-flight
   review shell on the **new** head outranks the carry. **CI is not carried** —

@@ -286,12 +286,21 @@ record_check_result() {
     write_state "$state_file" "$payload"
 }
 
-# The PR's three-dot diff reduced to git's own content identity. `--stable` is
-# not optional: the default patch-id depends on the order the hunks arrive in,
-# which is exactly what a merge is free to change.
-diff_patch_id() {
-    patch_base=$(git merge-base "$1" "$2") || return 1
-    git diff "$patch_base" "$2" | git patch-id --stable | cut -d' ' -f1
+# The PR's three-dot diff reduced to a fingerprint of its EXACT bytes. Not
+# `git patch-id`: patch-id normalizes whitespace by design, and a
+# whitespace-only change is semantic in Python or YAML — the carry invariant
+# is byte-identical, so the identity primitive must be too. Byte-exactness is
+# safe against merges because the input is a two-point diff between the same
+# content states: for identical states git emits identical bytes, provided
+# the emission is pinned — hence every flag and -c override below, which
+# force the algorithm, prefixes, context, color, and index width regardless
+# of local configuration. cksum keeps the no-new-dependency constraint.
+diff_fingerprint() {
+    fp_base=$(git merge-base "$1" "$2") || return 1
+    git -c diff.algorithm=myers -c diff.mnemonicPrefix=false \
+        -c diff.noprefix=false -c diff.external= \
+        diff --no-color --no-ext-diff --no-textconv --full-index \
+        --unified=3 "$fp_base" "$2" | cksum | tr ' ' '-'
 }
 
 provider_head() {
@@ -1728,6 +1737,17 @@ check)
         exit 0
     fi
 
+    # A carried head keeps the OLD cycle's trigger in the state file, so a 👍
+    # that made the previous head clean still satisfies the created_at window
+    # below. That reaction is old-head evidence: on a carried head this direct
+    # path is skipped entirely, and the carry branch at the end reports the
+    # verdict with its carry-naming detail instead of misattributing the old
+    # reaction as a current-head result. Fresh direct evidence for a carried
+    # head cannot exist without a new trigger, which only `reserve` creates —
+    # and a new reservation resets the carried state anyway.
+    head_is_carried=$(jq -r --arg head "$state_head" '
+          [(.carries // [])[] | select(.carried_to == $head)] | length
+        ' "$state_file")
     like_time=$(jq -r \
         --argjson id "$actor_id" \
         --arg requested "$cycle_requested" '
@@ -1746,7 +1766,7 @@ check)
             (.created_at? >= $requested)
           )] | length
         ' "$workdir/reactions.json")
-    if [ "$exact_like" -gt 0 ]; then
+    if [ "$exact_like" -gt 0 ] && [ "$head_is_carried" -eq 0 ]; then
         if [ -n "$shell_barrier" ] && ! [ "$like_time" \> "$shell_barrier" ]; then
             emit pending "a newer empty review shell is still in flight for this head"
             exit 11
@@ -1852,7 +1872,7 @@ check)
             exit 11
         fi
         record_check_result clean
-        emit clean "clean carried from $carried_from under identical patch-id"
+        emit clean "clean carried from $carried_from under an identical exact diff"
         exit 0
     fi
 
@@ -2030,14 +2050,14 @@ carry)
     git merge-base --is-ancestor "$state_head" "$new_head" ||
         die "--new-head does not descend from the state head, so this is not a catch-up merge"
 
-    old_patch_id=$(diff_patch_id "$base_ref" "$state_head") ||
+    old_fingerprint=$(diff_fingerprint "$base_ref" "$state_head") ||
         die "cannot compute the state head's diff against $base_ref"
-    new_patch_id=$(diff_patch_id "$base_ref" "$new_head") ||
+    new_fingerprint=$(diff_fingerprint "$base_ref" "$new_head") ||
         die "cannot compute --new-head's diff against $base_ref"
-    [ -n "$old_patch_id" ] && [ -n "$new_patch_id" ] ||
+    [ -n "$old_fingerprint" ] && [ -n "$new_fingerprint" ] ||
         die "an empty diff has no patch identity to compare"
-    [ "$old_patch_id" = "$new_patch_id" ] ||
-        die "the proposed diff changed across the catch-up (patch-id $old_patch_id became $new_patch_id); run a fresh review cycle"
+    [ "$old_fingerprint" = "$new_fingerprint" ] ||
+        die "the proposed diff changed across the catch-up (fingerprint $old_fingerprint became $new_fingerprint); run a fresh review cycle"
 
     # `carried_to` is recorded alongside the provenance the issue asks for so
     # that `check` can prove a carry applies to the head it is classifying,
@@ -2047,13 +2067,13 @@ carry)
         --arg old "$state_head" \
         --arg new "$new_head" \
         --arg base "$base_ref" \
-        --arg patch_id "$old_patch_id" \
+        --arg diff_fingerprint "$old_fingerprint" \
         --arg carried_at "$carried_at" '
           .version = 2 |
           .head = $new |
           .carries = ((.carries // []) + [{
             carried_from:$old,carried_to:$new,base_ref:$base,
-            patch_id:$patch_id,carried_at:$carried_at
+            diff_fingerprint:$diff_fingerprint,carried_at:$carried_at
           }])
         ' "$state_file")
     write_state "$state_file" "$payload"

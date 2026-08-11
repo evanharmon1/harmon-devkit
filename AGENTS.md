@@ -268,6 +268,17 @@ error silently reverts the lifecycle rather than fixing anything.
   inline findings, and reactions never count for a newer head. A 👀 is pending,
   not success; if it disappears without a terminal result, the attempt is
   incomplete.
+  One proof-carrying exception: after a pure base **catch-up merge**, the
+  vendored checker's `carry` subcommand may carry the old head's
+  terminal-clean verdict onto the new head — only when the old head is an
+  ancestor, the working tree is clean, and the PR's three-dot diff is
+  **byte-identical** under a pinned exact-diff fingerprint, and fail-closed
+  on every ambiguity. Codex attests the diff, and an unchanged diff is the
+  same reviewed artifact; everything a base merge can change outside the
+  diff is owned by CI, which always re-runs on the new head — the readiness
+  gate's CI condition is untouched by a carry. A carried verdict reports
+  itself as carried, never as a fresh current-head result, and any fresh
+  finding on the new head outranks it.
   Give each attempt a full 10–15 minute window. If the first attempt is
   incomplete, post `@codex review` once more for the same head and run one more
   full window, recording and using the new trigger comment ID. If both attempts
