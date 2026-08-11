@@ -2177,6 +2177,26 @@ carry)
             die "Codex posted ${carry_source##*:} activity after the checked snapshot; re-check the old head before carrying"
     done
 
+    # `--base-ref` must be the PR's OWN base, proved against GitHub rather
+    # than trusted. Requiring the flag (review round 2) stops the silent
+    # main default; it does not stop a wrong ref. Two refs can both produce
+    # matching fingerprints while the PR's real three-dot diff grew by the
+    # merged branch's commits, and the carry would then attest a diff nobody
+    # reviewed.
+    pr_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") ||
+        die "cannot read the PR to confirm its base branch"
+    pr_base=$(printf '%s' "$pr_payload" | jq -r '.base.ref // empty') ||
+        die "cannot interpret the PR base branch"
+    [ -n "$pr_base" ] || die "the PR reports no base branch to validate against"
+    case "$base_ref" in
+    refs/remotes/origin/*) base_name=${base_ref#refs/remotes/origin/} ;;
+    origin/*) base_name=${base_ref#origin/} ;;
+    refs/heads/*) base_name=${base_ref#refs/heads/} ;;
+    *) base_name=$base_ref ;;
+    esac
+    [ "$base_name" = "$pr_base" ] ||
+        die "--base-ref names $base_name but the PR's base is $pr_base; carry must be proved against the PR's own base"
+
     old_fingerprint=$(diff_fingerprint "$base_ref" "$state_head") ||
         die "cannot compute the state head's diff against $base_ref (a SHA-256 tool is required)"
     new_fingerprint=$(diff_fingerprint "$base_ref" "$new_head") ||

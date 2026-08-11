@@ -225,8 +225,12 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
+    # `.base.ref` is here rather than in the carry block because every
+    # `new_cycle` rewrites this fixture: carry validates --base-ref against
+    # the PR's own base, and the carry cases merge `carry-base`.
     jq -cn --argjson author "$pr_author_id" --arg head "$head_sha" \
-        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head}}' \
+        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
+          base:{ref:"carry-base"}}' \
         >"${fixtures}/pr.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/slow-endpoint"
@@ -2691,7 +2695,8 @@ new_cycle_at() {
     printf '%s\n' "$1" >"${fixtures}/head"
     printf '%s\n' "$1" >"${fixtures}/resolved-head"
     jq -cn --argjson author "$pr_author_id" --arg head "$1" \
-        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head}}' \
+        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
+          base:{ref:"carry-base"}}' \
         >"${fixtures}/pr.json"
     rm -f "$state"
     "$helper" reserve \
@@ -2747,7 +2752,8 @@ carry_clean_cycle() {
     printf '%s\n' "$carry_new_head" >"${fixtures}/head"
     printf '%s\n' "$carry_new_head" >"${fixtures}/resolved-head"
     jq -cn --argjson author "$pr_author_id" --arg head "$carry_new_head" \
-        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head}}' \
+        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
+          base:{ref:"carry-base"}}' \
         >"${fixtures}/pr.json"
 }
 
@@ -3019,6 +3025,19 @@ run_carry --new-head "$carry_new_head"
     fail "a carry without --base-ref must refuse, got rc=$carry_rc: $carry_out"
 [ "$(jq -r .head "$state")" = "$carry_old_head" ] ||
     fail "a refused baseless carry must not touch the state: $(jq -c . "$state")"
+
+# Requiring the flag stops the silent main default; it does not stop a wrong
+# ref, whose fingerprints can match while the PR's real diff grew
+# (devkit review round 3).
+echo "==> a base ref that is not the PR's base refuses the carry"
+carry_setup
+carry_clean_cycle
+git branch -q -f decoy-base carry-base
+run_carry --new-head "$carry_new_head" --base-ref decoy-base
+[ "$carry_rc" -eq 2 ] ||
+    fail "a non-PR base must refuse the carry, got rc=$carry_rc: $carry_out"
+printf '%s' "$carry_out" | grep -Fq "the PR's base" ||
+    fail "a wrong-base refusal must name the PR's base: $carry_out"
 
 echo "==> a state without a recorded snapshot refuses the carry"
 carry_setup
