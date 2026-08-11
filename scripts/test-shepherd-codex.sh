@@ -2826,5 +2826,41 @@ run_settle --surface comment --id 78 --disposition declined --note "both answere
 [ "$settle_rc" -eq 0 ] || fail "a matching --covers should settle: $settle_out"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
+
+# A settlement is the record that a human adjudicated a finding: an entry
+# missing its disposition or note is no record at all, and honouring one would
+# let `check` report clean with nothing behind it (PR #424 shepherd round 1).
+echo "==> a settled entry missing its disposition fails closed"
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+jq 'del(.settled[0].disposition)' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check '2026-07-31T08:01:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "a dispositionless entry must exit 2, got rc=$check_rc: $check_out"
+
+echo "==> a settled entry with an empty note fails closed"
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+jq '.settled[0].note = ""' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check '2026-07-31T08:01:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "an empty-note entry must exit 2, got rc=$check_rc: $check_out"
+
+echo "==> a settled entry with an unknown surface fails closed"
+new_cycle
+write_badged_comment 77
+run_settle --surface comment --id 77 --disposition declined --note "declined"
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+jq '.settled[0].surface = "elsewhere"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check '2026-07-31T08:01:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "an unknown-surface entry must exit 2, got rc=$check_rc: $check_out"
 # Last line on purpose: every case above must have run for this to print.
 echo "shepherd Codex cloud-review classifier: PASS"

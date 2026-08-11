@@ -343,6 +343,13 @@ write_state() {
     fi
 }
 
+# Every field `settle` writes is validated here, not just the pair that
+# identifies the target. A settlement is the record that a human adjudicated a
+# finding, so an entry missing its disposition or its note is not a weaker
+# record — it is no record at all, and honouring one would let `check` report
+# clean with nothing behind it. Corrupted or hand-reconstructed state must
+# reach the malformed-state refusal instead.
+#
 # Version 2 added `settled`. A version-1 file is read as if it were empty and
 # is REWRITTEN as version 2 by the next command that writes it, so an in-flight
 # cycle survives the upgrade. A version this helper has never heard of is
@@ -361,7 +368,13 @@ read_state() {
       (.version == 1 or .version == 2) and
       (.settled == null or ((.settled | type == "array") and
         (.settled | all(type == "object" and
-          (.surface | type == "string") and (.id | type == "number"))))) and
+          ((.surface == "comment") or (.surface == "review")) and
+          (.id | type == "number") and
+          ((.disposition == "declined") or (.disposition == "filed")) and
+          (.note | type == "string") and ((.note | length) > 0) and
+          (.content_fingerprint | type == "string") and
+          ((.content_fingerprint | length) > 0) and
+          (.settled_at | type == "string"))))) and
       (.repo | type == "string") and
       (.pr | type == "number") and
       (.head | type == "string") and
