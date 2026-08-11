@@ -550,18 +550,31 @@ you rather than the bot):
   # check concluded, and none failed. With --json, `gh pr checks` exits 0
   # whenever the fetch succeeded (the 8/1 exits belong to the non-JSON
   # form), so this exit distinguishes only read from unread, and the
-  # payload is the verdict: non-empty, every bucket `pass` or `skipping`
-  # (skipping is neutral, per §2). `fail` and `cancel` block too — a red
-  # head gets a fix round, not a reviewer window its fix push would
-  # immediately reset. An empty list is indeterminate, not settled, and no
-  # snapshot can see checks GitHub has not registered yet — §2's bounded
-  # no-checks-yet poll during the watch is what closes that window; this
-  # step re-verifies its outcome, never replaces it.
+  # payload is the verdict: every bucket `pass` or `skipping` (skipping is
+  # neutral, per §2). `fail` and `cancel` block too — a red head gets a
+  # fix round, not a reviewer window its fix push would immediately reset.
+  # No snapshot can see checks GitHub has not registered yet — §2's
+  # bounded no-checks-yet poll during the watch is what closes that
+  # window; this step re-verifies its outcome, never replaces it.
+  #
+  # §2's no-CI carve-out stays available and stays EXPLICIT: set no_ci=1
+  # only after the watch concluded this repo genuinely has no applicable
+  # CI (its bounded poll found nothing to register — absence confirmed,
+  # not merely nothing yet). It is never inferred here from an empty or
+  # failed read, and it waives only absence — checks that do exist must
+  # still be green. gh answers a checkless head with an error ("no checks
+  # reported"), not an empty list, so absence surfaces on the fetch arm.
+  no_ci="${no_ci:-0}"
   checks="$(gh pr checks <n> --repo "$repo" --json bucket)" || {
-    echo 'cannot read check status — do not reserve or trigger'
-    exit 1
+    if [ "$no_ci" = 1 ]; then
+      checks='[]'
+    else
+      echo 'cannot read check status — do not reserve or trigger'
+      exit 1
+    fi
   }
-  [ "$(jq -r 'length > 0 and
+  [ "$(jq -r --argjson no_ci "$no_ci" '
+        (length > 0 or $no_ci == 1) and
         all(.[]; .bucket == "pass" or .bucket == "skipping")' \
     <<<"$checks" 2>/dev/null)" = true ] || {
     echo 'checks absent, unconcluded, or not green — do not reserve or trigger'
