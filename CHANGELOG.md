@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.29.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.29.0...v0.29.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* **shepherd:** correct the settle procedure and stop restating its command ([#430](https://github.com/evanharmon1/harmon-devkit/issues/430)) ([8a3e306](https://github.com/evanharmon1/harmon-devkit/commit/8a3e30603be8c0c5829da1e4c75ecd69f3531c88))
+
 ## [0.29.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.28.0...v0.29.0) (2026-08-11)
 
 
