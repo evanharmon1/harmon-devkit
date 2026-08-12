@@ -324,17 +324,23 @@ error silently reverts the lifecycle rather than fixing anything.
   A badged finding stated **outside an inline thread** — in a top-level
   comment or in a review's own body — has no reply linkage, so the
   reply-based adjudication path cannot reach it and findings outrank a later
-  clean result on the same head. Record its disposition with the checker's
-  `settle` subcommand: answer the finding on the PR as usual (fix it, decline
-  it with evidence, or file it), then `settle --surface comment|review --id N
-  --disposition declined|filed --note …`, adding `--covers <n>` where the
-  target states more than one finding. `check` then treats that finding as
-  answered and the cycle can reach terminal-clean, reported with a detail
-  naming the disposition. The record is durable and head-bound: it is
-  fingerprinted against the body it settled, so a finding Codex edits
-  afterwards blocks again, and any push starts a fresh cycle as usual.
-  Settling is not a substitute for answering — it records an adjudication a
-  human wrote, and the note is required for that reason.
+  clean result on the same head. The checker's `settle` subcommand records the
+  disposition instead; its exact invocation lives with the recipe in
+  `ai/skills/universal/shepherd/SKILL.md`, which this file deliberately does
+  not restate — the same reason it routes you to the checker rather than
+  describing how to poll.
+  What belongs here is when it applies. Answer the finding on the PR as usual,
+  and note that only two of the three answers end with `settle`: **fixing** it
+  means a push, which moves the head and starts a fresh cycle that reviews the
+  fix on its own merits, and `settle` neither applies nor accepts that
+  disposition. It records the two answers that leave the code alone —
+  declining with evidence, or filing it as follow-up work — and requires a
+  note for exactly that reason: the record is a human's adjudication, not a
+  suppression. It is head-bound and fingerprinted against the body it settled,
+  so a finding Codex edits afterwards blocks again while the superseded entry
+  survives as the record of what was decided about the earlier text. Once
+  every non-thread finding on the head carries one, `check` reports clean with
+  a detail naming the disposition applied.
   Shepherd is **externally driven** — CI results and other people's comments
   are its input, so it cannot manufacture a round on its own. A round is one
   fix push, or one no-change cycle where everything is answered and nothing

@@ -700,8 +700,12 @@ you rather than the bot):
   reply to, so no act on GitHub can ever record that you answered it and
   `check` returns exit 10 for that head forever — the deadlock the inline
   adjudication path was built to end, reappearing on the two surfaces it
-  cannot see. Answer the finding on the PR as usual (fix it, decline it with
-  reasoning, or file it), then record the disposition:
+  cannot see. Answer the finding on the PR as usual — and note that only two
+  of the three answers end here. **Fixing** it means a push, which moves the
+  head and starts a fresh cycle that reviews the fix on its own merits;
+  `settle` neither applies nor accepts that disposition. For the two answers
+  that leave the code alone — declining with reasoning, or filing it as
+  follow-up work — record the disposition:
 
   ```bash
   "$helper" settle --state "$state" --actor-id 199175422 \
