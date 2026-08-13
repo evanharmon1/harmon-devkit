@@ -322,6 +322,23 @@ if [ "$base_origin" != "explicit" ] && ! git show-ref --verify --quiet "refs/hea
     remote_count=0
     while IFS= read -r remote_name; do
         [ -n "$remote_name" ] || continue
+        # Refresh this exact branch before deciding it does not exist. A
+        # collaborator may have pushed it since our last fetch; creating a
+        # same-named local branch from the default base would silently diverge.
+        # Exit 2 means the remote has no such ref. Any other failure is
+        # indeterminate, so fail closed and let an explicit --base opt out.
+        remote_probe_rc=0
+        git ls-remote --exit-code --heads "$remote_name" "refs/heads/$branch" \
+            >/dev/null 2>&1 || remote_probe_rc=$?
+        case "$remote_probe_rc" in
+        0)
+            git fetch --no-tags "$remote_name" \
+                "+refs/heads/$branch:refs/remotes/$remote_name/$branch" >/dev/null ||
+                die "could not refresh '$branch' from remote '$remote_name'"
+            ;;
+        2) ;;
+        *) die "could not determine whether '$branch' exists on remote '$remote_name' — pass --base <ref> to work offline" ;;
+        esac
         candidate="refs/remotes/$remote_name/$branch"
         if git show-ref --verify --quiet "$candidate"; then
             remote_matches="$candidate"

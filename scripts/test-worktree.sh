@@ -437,6 +437,16 @@ new remote-only >/dev/null || fail "worktree-new.sh failed for a remote-only bra
 rm_wt remote-only >/dev/null || fail "cleanup of the remote-only tree failed"
 git -C "$fixture" branch -D remote-only >/dev/null 2>&1 || true
 
+echo "==> a branch pushed after the last fetch is refreshed before creation"
+git -C "$fixture" update-ref -d refs/remotes/origin/late-remote
+git -C "$fixture" push -q origin HEAD:refs/heads/late-remote
+new late-remote >/dev/null || fail "worktree-new.sh failed for a stale-fetch remote branch"
+[ "$(git -C "$fixture/.worktrees/late-remote" rev-parse HEAD)" = \
+    "$(git -C "$fixture" ls-remote origin refs/heads/late-remote | awk '{print $1}')" ] ||
+    fail "worktree-new.sh created a divergent branch instead of refreshing the remote"
+rm_wt late-remote >/dev/null || fail "cleanup of the stale-fetch remote branch failed"
+git -C "$fixture" branch -D late-remote >/dev/null 2>&1 || true
+
 # ── partial-failure rollback ─────────────────────────────────────────
 # `git worktree add` is not atomic: a failing post-checkout hook leaves the tree
 # registered and the branch created while the command still exits non-zero. The
@@ -900,6 +910,19 @@ grep -qx "post-checkout $fixture/.worktrees/ordered-tree" "$test_tmp/post-checko
     fail "post-checkout did not run in the new tree after provisioning"
 rm_wt ordered-tree >/dev/null || fail "cleanup of the ordered tree failed"
 rm -f "$shared_hooks/post-checkout"
+# The ordered-tree case changed the fixture's tracked hook configuration as
+# well as its generated hook. Reset both halves before the next case, or
+# worktree:new sees post-checkout as configured and can reinstall/invoke the
+# hook that this cleanup meant to retire (harmon-init#802).
+cat >"$fixture/lefthook.yml" <<'EOF'
+pre-commit:
+  commands:
+    noop:
+      run: "true"
+EOF
+git -C "$fixture" add lefthook.yml
+LEFTHOOK=0 git -C "$fixture" commit -qm "chore: reset post-checkout fixture" \
+    >"$test_tmp/commit.log" 2>&1 || fail "resetting the post-checkout fixture failed"
 
 echo "==> --no-install skips the dependency install"
 : >"$pnpm_marker"
