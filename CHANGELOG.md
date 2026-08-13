@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.30.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.29.1...v0.30.0) (2026-08-13)
+
+
+### Features
+
+* **shepherd:** settle the Auto-review knobs as fact and harden the readiness gate against ARG_MAX ([#445](https://github.com/evanharmon1/harmon-devkit/issues/445)) ([99500ef](https://github.com/evanharmon1/harmon-devkit/commit/99500ef4178cd9f2f01ac8854651a4e606826c3b))
+
 ## [0.29.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.29.0...v0.29.1) (2026-08-12)
 
 
