@@ -437,6 +437,16 @@ new remote-only >/dev/null || fail "worktree-new.sh failed for a remote-only bra
 rm_wt remote-only >/dev/null || fail "cleanup of the remote-only tree failed"
 git -C "$fixture" branch -D remote-only >/dev/null 2>&1 || true
 
+echo "==> a branch pushed after the last fetch is refreshed before creation"
+git -C "$fixture" update-ref -d refs/remotes/origin/late-remote
+git -C "$fixture" push -q origin HEAD:refs/heads/late-remote
+new late-remote >/dev/null || fail "worktree-new.sh failed for a stale-fetch remote branch"
+[ "$(git -C "$fixture/.worktrees/late-remote" rev-parse HEAD)" = \
+    "$(git -C "$fixture" ls-remote origin refs/heads/late-remote | awk '{print $1}')" ] ||
+    fail "worktree-new.sh created a divergent branch instead of refreshing the remote"
+rm_wt late-remote >/dev/null || fail "cleanup of the stale-fetch remote branch failed"
+git -C "$fixture" branch -D late-remote >/dev/null 2>&1 || true
+
 # ── partial-failure rollback ─────────────────────────────────────────
 # `git worktree add` is not atomic: a failing post-checkout hook leaves the tree
 # registered and the branch created while the command still exits non-zero. The
