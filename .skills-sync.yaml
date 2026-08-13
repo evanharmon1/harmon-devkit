@@ -9,7 +9,7 @@
 source:
   repo: https://github.com/evanharmon1/harmon-devkit.git
   # renovate: datasource=github-releases depName=evanharmon1/harmon-devkit
-  ref: v0.27.0 # pinned tag — bump deliberately to a released harmon-devkit tag
+  ref: v0.30.0 # pinned tag — bump deliberately to a released harmon-devkit tag
 categories:
   - universal
   - repo

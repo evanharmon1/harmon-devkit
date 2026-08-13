@@ -86,9 +86,13 @@ tasks:
       - task: test:notify-release
       - task: test:setup-github-project
       - task: test:sync-devkit-release
+      - task: test:worktree
       - task: test:hooks
       - task: test:statusline
       - task: test:devcontainer:permissions
+      - task: test:link-claude-json
+      - task: test:image-staleness
+      - task: test:open-devcontainer
       - task: test
 
   # ── Quality Checks ────────────────────────────────────────────
@@ -309,6 +313,11 @@ tasks:
     cmds:
       - ./scripts/test-agent-registry.sh
 
+  test:worktree:
+    desc: Behavioral test for worktree:new / worktree:rm (create → verify hooks → remove, in a throwaway fixture repo)
+    cmds:
+      - ./scripts/test-worktree.sh
+
   test:agent-instructions-size:
     desc: Unit-test the non-blocking AGENTS.md size advisory
     cmds:
@@ -426,6 +435,21 @@ tasks:
     cmds:
       - ./scripts/test-statusline.sh
 
+  test:link-claude-json:
+    desc: Unit-test the ~/.claude.json persistence helper (no container needed)
+    cmds:
+      - ./scripts/test-link-claude-json.sh
+
+  test:image-staleness:
+    desc: Unit-test the image-staleness warning (no container needed)
+    cmds:
+      - ./scripts/test-image-staleness.sh
+
+  test:open-devcontainer:
+    desc: Unit-test the client-side dev container launcher (no VS Code needed)
+    cmds:
+      - ./scripts/test-open-devcontainer.sh
+
   test:hooks:
     desc: Round-trip the Taskfile targets the Claude hooks delegate to
     cmds:
@@ -514,16 +538,7 @@ tasks:
   security:secrets:
     desc: Scan for leaked secrets (gitleaks)
     cmds:
-      - |
-        if [ -z "$GITHUB_STEP_SUMMARY" ]; then
-          gitleaks detect --no-banner --redact --source .
-        else
-          rc=0
-          gitleaks detect --no-banner --redact --source . \
-            --report-format json --report-path /tmp/harmon-devkit-gitleaks.json || rc=$?
-          node scripts/summarize-gitleaks.mjs /tmp/harmon-devkit-gitleaks.json
-          exit $rc
-        fi
+      - ./scripts/gitleaks-scan.sh
 
   security:audit:
     desc: Dependency audit
@@ -697,6 +712,25 @@ tasks:
     cmds:
       - ./scripts/check-changelog-coverage.sh "$TAG"
 
+  # ── Worktrees ──────────────────────────────────────────────────
+  # One blessed entrypoint for parallel/isolated work, so anything that calls it
+  # (a second agent session, a terminal multiplexer, a human) gets the same
+  # ready tree instead of rediscovering the setup and the breakers.
+  # See docs/conventions.md § Worktrees.
+  #
+  # Foreman is NOT routed through this task: it creates worktrees itself, inside
+  # the pinned upstream CLI, and nothing here redirects that. This entrypoint
+  # only makes sure the two agree on `.worktrees/` as the location.
+  worktree:new:
+    desc: "Create a ready linked worktree (usage: task worktree:new -- <name> [--branch b] [--base ref] [--no-install])"
+    cmds:
+      - ./scripts/worktree-new.sh {{.CLI_ARGS}}
+
+  worktree:rm:
+    desc: "Remove a linked worktree and prune its gitlink debris (usage: task worktree:rm -- <name> [--force])"
+    cmds:
+      - ./scripts/worktree-rm.sh {{.CLI_ARGS}}
+
   # ── Clean ──────────────────────────────────────────────────────
   clean:
     desc: Remove build artifacts and caches
@@ -733,6 +767,11 @@ tasks:
     desc: Environment info section
     cmds:
       - ./scripts/status.sh env
+
+  status:image:
+    desc: Warn if the container's image-baked config has drifted from the checkout (silent when fresh)
+    cmds:
+      - bash .devcontainer/scripts/check-image-staleness.sh
 
   status:setup:
     desc: Setup completeness audit (GitHub, toolchain, devcontainer, dev env)

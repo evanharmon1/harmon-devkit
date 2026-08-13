@@ -103,7 +103,23 @@ for var in "${ALLOWED_VARS[@]}"; do
 done
 ALLOWED_VARS=("${FILTERED_ALLOWED_VARS[@]}")
 
-touch "$ENV_FILE"
+# Create the env-file if it is missing — but NEVER touch an existing one: the
+# whole point of the compare below is to leave an unchanged file's mtime alone,
+# and an unconditional `touch` here would defeat it on its own.
+if [ ! -f "$ENV_FILE" ]; then
+    touch "$ENV_FILE"
+fi
+
+# Compose the new content in a scratch file and only write it back if it
+# actually differs (see the cmp at the bottom). This script runs as
+# initializeCommand — on EVERY VS Code connect, not just rebuilds — so an
+# unconditional rewrite churned the env-file's mtime, which is enough for
+# Coder's devcontainer integration to consider the config dirty and recreate
+# the container. Everything below therefore reads and writes WORK_FILE, never
+# ENV_FILE.
+WORK_FILE="$(mktemp)"
+trap 'rm -f "$WORK_FILE"' EXIT
+cat "$ENV_FILE" >"$WORK_FILE"
 
 # Remove every line setting $1 from $2, portably. GNU `sed -i` is not
 # available on macOS (BSD sed needs a suffix arg after -i, so `sed -i expr
@@ -123,7 +139,7 @@ strip_var() {
 # value it set independently.
 for var in "${EVICT_VARS[@]}"; do
     if ! contains "$var" "${ALLOWED_VARS[@]}"; then
-        strip_var "$var" "$ENV_FILE"
+        strip_var "$var" "$WORK_FILE"
     fi
 done
 
@@ -150,9 +166,9 @@ missing=""
 for var in "${ALLOWED_VARS[@]}"; do
     val="${!var:-}"
     if [ -n "$val" ]; then
-        strip_var "$var" "$ENV_FILE"
-        echo "${var}=${val}" >>"$ENV_FILE"
-    elif ! grep -q "^${var}=." "$ENV_FILE"; then
+        strip_var "$var" "$WORK_FILE"
+        echo "${var}=${val}" >>"$WORK_FILE"
+    elif ! grep -q "^${var}=." "$WORK_FILE"; then
         # `=.` requires at least one character after the `=`: a bare "VAR="
         # line (or a host var exported empty, which "${!var:-}" already treats
         # as unset) leaves the container with no usable value, so it warns the
@@ -161,6 +177,18 @@ for var in "${ALLOWED_VARS[@]}"; do
         missing="${missing:+$missing }${var}"
     fi
 done
+
+# Write back ONLY on a real difference, so a no-op run leaves the env-file's
+# mtime (and inode) untouched.
+if ! cmp -s "$WORK_FILE" "$ENV_FILE"; then
+    mv "$WORK_FILE" "$ENV_FILE"
+fi
+# Enforce 0600 on EVERY run, not just rewrites: a pre-existing env-file (say,
+# copied from devcontainer.env.example under a permissive umask) holds secrets
+# at 0644, and the skip-on-identical path above would otherwise leave it that
+# way forever. chmod never changes mtime, so this cannot re-trigger the
+# recreation churn the compare exists to prevent.
+chmod 600 "$ENV_FILE"
 
 # Names only, never values — this lands in build logs. Non-fatal by design: a
 # rebuild must not be blocked by an optional secret, and this script runs as

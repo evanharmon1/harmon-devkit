@@ -81,6 +81,54 @@ alert-remediation PRs (`vulnerabilityAlerts.enabled=true`). Do not add a
 `dependabot.yml`: Dependabot update PRs would compete with Renovate. The
 package-manager audit remains in CI as an immediate provider-independent check.
 
+Detection runs on two feeds with **different reach**, and the difference decides
+what each is good for:
+
+- `vulnerabilityAlerts` reacts to GitHub's Dependabot alerts, which read the
+  dependency graph and therefore reach **transitive** packages — where nearly
+  every advisory that actually bites a lockfile lives — wherever GitHub's
+  dependency graph extracts transitive dependencies for that ecosystem, which
+  for a committed `pnpm-lock.yaml` / `uv.lock` it does. Ecosystems and manifests
+  outside that support resolve to direct dependencies only, so confirm the
+  graph before relying on the reach. It produces
+  nothing when Dependabot alerts are switched off for the repository, and being
+  switched off is invisible from the config, which still reads `enabled=true`.
+  Verify the feature itself, not the config: `gh api
+  repos/<owner>/<repo>/vulnerability-alerts` returns `204` when enabled and
+  `404` when not. Read that `404` carefully — the endpoint needs
+  Administration-read, which the machine-user PAT deliberately omits, so an
+  under-privileged token returns `404` as well. Check it with an admin-capable
+  credential, or read the state from Settings → Advanced Security instead.
+- `osvVulnerabilityAlerts=true` queries `osv.dev` independently of repository
+  visibility and of any GitHub Advanced Security setting, but Renovate
+  [surfaces OSV alerts for **direct dependencies only**](https://docs.renovatebot.com/configuration-options/#osvvulnerabilityalerts).
+  It is a second feed for first-party dependencies, **not** a fallback for
+  transitive ones.
+
+So a repository with Dependabot alerts disabled has no continuous transitive
+Renovate feed, whatever `renovate.json` says — nothing there will open a
+remediation PR for a transitive advisory. Enabling the Dependabot alert feed is
+what closes that gap; OSV narrows the direct-dependency window alongside it.
+
+Two other checks can also surface a transitive advisory, and neither replaces
+the feed. The package-manager audit in CI is PR-triggered, so it reports when
+somebody next opens a PR rather than when the advisory is published — which is
+exactly how a batch of unrelated advisories turns up inside somebody's docs
+change.
+A scheduled Snyk SCA scan (`snyk_scan_schedule` is `weekly`
+here, see below) runs on its own clock, but it needs `SNYK_TOKEN` configured to
+run at all.
+
+**Do not assume any of these three reach your whole dependency tree.** Each
+one's depth is a property of the specific ecosystem, manifest, and vendor plan
+in play, not of the setting being switched on — GitHub's graph extracts
+transitive dependencies for some ecosystems and not others, and Snyk gates some
+of its own package-manager support behind plan tier and preview flags (its `uv`
+support, for one, requires an Enterprise plan with the uv Preview feature
+enabled, so a Python project on the free posture gets far less than the setting
+implies). Establish the real depth for the stack you actually ship, per tool,
+and treat a green run as evidence only for what you confirmed it inspects.
+
 ### Snyk second opinion and scheduling
 
 Snyk is not installed by default and is not part of `task security` or required

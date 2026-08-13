@@ -341,6 +341,58 @@ assert_unit() {
     *harmon-sentinel*) fail "init-env.sh printed a secret VALUE in its warning output" ;;
     esac
 
+    # 6b. A run that changes nothing must not TOUCH the env-file. init-env.sh is
+    #     an initializeCommand, so it fires on every VS Code connect, not just
+    #     rebuilds — and an unconditional rewrite churns the file's mtime, which
+    #     is enough for Coder's devcontainer integration to read the config as
+    #     dirty and recreate the container. mtime, not just content, is the
+    #     assertion: a byte-identical rewrite would pass a content-only check
+    #     and still cause the recreation loop.
+    local mtime_before mtime_after content_before
+    env_file="${work_dir}/env-idempotent"
+    printf 'TS_AUTHKEY=stable\nCLAUDE_CODE_OAUTH_TOKEN=tok\nAGENT_DECK_TELEGRAM_KEY=key\n' >"$env_file"
+    # First run settles the file (it may legitimately rewrite here).
+    TS_AUTHKEY=stable CLAUDE_CODE_OAUTH_TOKEN=tok AGENT_DECK_TELEGRAM_KEY=key \
+        bash "$init_env" "$env_file" "${dev_allow[@]}" 2>/dev/null
+    content_before="$(cat "$env_file")"
+    mtime_before="$(stat -c %Y "$env_file" 2>/dev/null || stat -f %m "$env_file")"
+    sleep 1
+    # Second run with an identical host env: nothing to inject, nothing to evict.
+    TS_AUTHKEY=stable CLAUDE_CODE_OAUTH_TOKEN=tok AGENT_DECK_TELEGRAM_KEY=key \
+        bash "$init_env" "$env_file" "${dev_allow[@]}" 2>/dev/null
+    mtime_after="$(stat -c %Y "$env_file" 2>/dev/null || stat -f %m "$env_file")"
+    [ "$mtime_before" = "$mtime_after" ] ||
+        fail "init-env.sh rewrote an unchanged env-file (mtime ${mtime_before} -> ${mtime_after}) — the mtime churn makes Coder recreate the container on every connect"
+    [ "$(cat "$env_file")" = "$content_before" ] ||
+        fail "init-env.sh changed the contents of an already-settled env-file"
+
+    #     A run that DOES have work to do must still write. Guards the obvious
+    #     wrong fix for the above: skipping the write unconditionally.
+    env_file="${work_dir}/env-idempotent-change"
+    printf 'TS_AUTHKEY=old\n' >"$env_file"
+    TS_AUTHKEY=new bash "$init_env" "$env_file" "${dev_allow[@]}" 2>/dev/null
+    grep -q '^TS_AUTHKEY=new$' "$env_file" ||
+        fail "init-env.sh skipped a write it needed to make — the changed TS_AUTHKEY never reached the env-file"
+
+    # 6c. Permissions are enforced even when the CONTENT needs no write. A
+    #     pre-existing env-file (copied from devcontainer.env.example under a
+    #     permissive umask) holds secrets at 0644, and a skip-on-identical run
+    #     must still tighten it — while leaving mtime alone (chmod never
+    #     touches mtime, so both assertions can hold at once).
+    env_file="${work_dir}/env-loose-perms"
+    printf 'TS_AUTHKEY=stable\nCLAUDE_CODE_OAUTH_TOKEN=tok\nAGENT_DECK_TELEGRAM_KEY=key\n' >"$env_file"
+    chmod 644 "$env_file"
+    mtime_before="$(stat -c %Y "$env_file" 2>/dev/null || stat -f %m "$env_file")"
+    sleep 1
+    TS_AUTHKEY=stable CLAUDE_CODE_OAUTH_TOKEN=tok AGENT_DECK_TELEGRAM_KEY=key \
+        bash "$init_env" "$env_file" "${dev_allow[@]}" 2>/dev/null
+    mode_after="$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file")"
+    [ "$mode_after" = "600" ] ||
+        fail "init-env.sh left a secret env-file at mode ${mode_after} — 0600 must be enforced on every run, not only on rewrites"
+    mtime_after="$(stat -c %Y "$env_file" 2>/dev/null || stat -f %m "$env_file")"
+    [ "$mtime_before" = "$mtime_after" ] ||
+        fail "init-env.sh churned mtime while fixing permissions on an unchanged env-file"
+
     # 7. tailscale-connect.sh no-ops (exit 0, prints its "unavailable" message)
     #    when `tailscale` is not on PATH. Invoke with an absolute bash path so
     #    the unreachable PATH doesn't also hide the interpreter.

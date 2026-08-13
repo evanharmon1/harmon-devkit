@@ -237,11 +237,14 @@ task check      # fast inner loop while editing
 task verify     # definition-of-done gate
 task challenge  # adversarial second model — adjudicate, fix, re-challenge
                 # until TWO CONSECUTIVE rounds adjudicate to zero P0/P1
-                # (any round with no findings at all ends it), ≤4 rounds
-task review     # verification checkpoint — same convergence rule, ≤4 rounds
+                # (any round with no findings at all ends it), under the
+                # challenge cap resolved from .devflow.toml
+task review     # verification checkpoint — same convergence rule, under its
+                # own resolved review cap
 task ci         # full CI mirror
 # → open a DRAFT PR, then shepherd it: watch CI + reviews, settle the deferred
-#   P2s, adjudicate → fix → push, ≤4 rounds (independent of the loops above)
+#   P2s, adjudicate → fix → push, under the shepherd cap (independent of the
+#   loops above)
 # → readiness gate passes → gh pr ready (the handoff to a human)
 # → merging stays a human decision
 ```
@@ -250,6 +253,14 @@ The full staged loop — including the PR-shepherding rounds and the readiness
 gate that ends them — is defined in AGENTS.md ("Dev Loop"). The PR is a
 **draft** for every stage above: it is the agent's workbench, and promoting it
 is the one signal that the automated work is finished.
+
+The caps are not written down here, or in AGENTS.md. They live in
+[`.devflow.toml`](../../.devflow.toml) as `rigor` tiers, and **AGENTS.md alone
+defines how a change resolves one** — restating that chain here would only give
+it a second place to drift from, and which inputs are even available depends on
+how the repository is set up. Only `challenge` and `review` vary by tier; the
+shepherd cap is fixed, because it bounds other people's findings rather than
+self-generated work. Announce the resolved caps when you enter the loop.
 
 If Codex cloud review is connected to the repo, PRs
 get a cloud pass too: inline comments only for high-priority findings, a
@@ -298,7 +309,8 @@ left to re-raise and counts toward convergence. Reflexively hardening the
 previous round's fix is the failure mode; naming it on the table is the
 check.
 
-Two things do not move. The **4-round cap** per stage stands, and persistent
+Two things do not move. The **per-stage cap** stands — whatever rigor tier
+resolved it — and persistent
 P0/P1 disagreement at the cap is escalated rather than iterated on. And the
 deferred-P2 chain is a **precondition** of the exit, not a casualty of it:
 every P2 open at convergence must already be in the sidecar below, so

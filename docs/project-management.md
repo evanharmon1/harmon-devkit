@@ -381,6 +381,15 @@ families, color-coded by family; the starter set is created by
 - **Layer** — `layer:ui`, `layer:logic`, `layer:data`, `layer:integration`
 - **Domain** — start with `domain:auth`, `domain:billing`, `domain:platform`;
   grow from your ERD entities
+- **Rigor** — `rigor:light`, `rigor:standard`, `rigor:deep`: which round-cap
+  tier in [`.devflow.toml`](../.devflow.toml) an agent works the issue under
+  (AGENTS.md, "Round caps are resolved, not stated here"). An agent reads it
+  and never self-applies one. It is advisory rather than an authenticated
+  gate: nothing verifies who applied it, and the **triage** role can label an
+  issue with no push access — so AGENTS.md requires any cap resolving below
+  `default_rigor` to be stated in the PR body, keeping a reduced budget visible
+  to the reviewer. Two present resolve per stage to the highest cap, so a
+  conflict can only ever buy more review.
 
 Two more families name **model intelligence** rather than a facet of the work,
 and their vocabulary is not hand-listed anywhere: it is rendered from
@@ -509,6 +518,7 @@ it creates it on demand, and provisioning deliberately leaves it alone.
 | `needs-triage`, `needs-requirements`, `blocked`, `waiting`, `needs-decision`, `needs-response`, `needs-communication` | humans, at triage | humans, the Triage view | provisioned; inert | transient — removed as soon as the state clears |
 | `layer:{ui,logic,data,integration}` | humans, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; mirrors the `Layer` field, with no sync between them |
 | `domain:{auth,billing,platform,…}` | humans, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; mirrors the `Domain` field, with no sync between them |
+| `rigor:{light,standard,deep}` | humans, at triage — **never an agent on itself** | agents, when entering the Dev Loop | provisioned; **read by agents** — selects a round-cap tier, arms nothing | set when the default budget is wrong for the change; survives the work |
 | `suggest:<family>` | humans, at planning | humans, the Agent queue view | provisioned from the registry (family level only); advisory — arms nothing | set at planning; survives the work and is never rewritten by a claim |
 | `suggest:<family>:<model>` | humans | humans | **tool-owned, created on demand** — seeding every model would be an unbounded roster | refines the family label; apply both |
 | `claim:<family>` | the agent itself — a vendored claim skill, or a Claude Actions run | humans; the Claude Actions claim gate; `claim-release.yml` | provisioned from the registry; a **gate**, never a trigger | added at claim, removed at release — by the workflow's `always()` step, or by `claim-release.yml` on close |
