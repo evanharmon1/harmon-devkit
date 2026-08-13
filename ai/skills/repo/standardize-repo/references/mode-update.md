@@ -1140,6 +1140,12 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   if test "$NONADOPT_REHEARSED" -eq 1; then
   NONADOPT_SCRATCH="$(mktemp -d -t copier-nonadoption-apply-XXXXXX)" ||
     { echo "failed to create the scratch apply directory" >&2; exit 1; }
+  # macOS exposes the same temporary directory as both /var/folders/... and
+  # /private/var/folders/.... Normalize before comparing the cloned git dir to
+  # its scratch parent or the lexical containment check rejects a safe clone
+  # (harmon-init#847).
+  NONADOPT_SCRATCH="$(cd "$NONADOPT_SCRATCH" && pwd -P)" ||
+    { echo "failed to normalize the scratch apply directory" >&2; exit 1; }
   # ZERO shared git metadata, via `git clone`. A linked worktree's `.git` is a
   # POINTER FILE, so copying it verbatim would leave the scratch operating on the
   # real worktree's index and object store — and copier's update runs

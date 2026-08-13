@@ -7585,6 +7585,9 @@ GU_NONADOPT_RUNNER="$TMPROOT/nonadoption-runner.sh"
 expect_ok "the guarded copier wrapper is extractable alongside the snippet" \
     sh -c 'grep -qF "run_guarded_copier() {" "$1" &&
         grep -qF "COPIER_CACHE_DIR=" "$1"' sh "$GU_NONADOPT_RUNNER"
+expect_ok "the non-adoption scratch canonicalizes macOS temp-path aliases" \
+    grep -qF 'NONADOPT_SCRATCH="$(cd "$NONADOPT_SCRATCH" && pwd -P)"' \
+    "$GU_NONADOPT_RUNNER"
 GU_RECONCILE="$TMPROOT/nonadoption-reconcile.sh"
 {
     printf '%s\n' 'set -eu' 'GUARDED_STATE=.copier-guarded-update'
@@ -7947,6 +7950,7 @@ git_commit_all "$GU_NA_REPO" "a directory where a file belongs"
 # under it.
 NA_REFUSAL_TMP="$TMPROOT/dir-refusal-tmp"
 mkdir -p "$NA_REFUSAL_TMP"
+NA_REFUSAL_TMP="$(cd "$NA_REFUSAL_TMP" && pwd -P)"
 na_classify_private_tmp() {
     (
         TMPDIR="$NA_REFUSAL_TMP"
@@ -8548,6 +8552,10 @@ git_commit_all "$SKIP_TPL" "skip baseline"
 git -C "$SKIP_TPL" tag v1.0.0
 copier copy --trust --defaults --vcs-ref=v1.0.0 \
     "$SKIP_TPL" "$SKIP_PROJ" >/dev/null
+# Copier 9.16 compares the update destination lexically with a resolved
+# repository top. Canonicalize this macOS mktemp-derived path so /var and
+# /private/var aliases cannot make the fixture crash (harmon-init#847).
+SKIP_PROJ="$(cd "$SKIP_PROJ" && pwd -P)"
 git_init "$SKIP_PROJ"
 git_commit_all "$SKIP_PROJ" "generated"
 rm "$SKIP_PROJ/.github/CODEOWNERS" "$SKIP_PROJ/proj.code-workspace" \
