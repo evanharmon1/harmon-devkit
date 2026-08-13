@@ -87,7 +87,22 @@ layer:integration|1D76DB|External boundary: webhooks, API clients, credentials
 domain:auth|FBCA04|Authentication and authorization
 domain:billing|FBCA04|Billing and payments
 domain:platform|FBCA04|CI, build, test infra, and tooling in this repo
+rigor:light|D4C5F9|Dev Loop caps: trivial, low-blast-radius change
+rigor:standard|D4C5F9|Dev Loop caps: the default budget
+rigor:deep|D4C5F9|Dev Loop caps: security, migrations, irreversible paths
 "
+
+# The `rigor:*` family selects which round-cap tier in `.devflow.toml` an agent
+# works an issue under (AGENTS.md, "Round caps are resolved, not stated here").
+# It is an input an agent READS and never applies to itself. It is advisory,
+# not an authenticated gate: nothing verifies who applied it, and GitHub's
+# triage role can label an issue with no push access at all — so a budget can
+# be retuned by someone who could not edit `.devflow.toml`. AGENTS.md requires
+# any cap resolving below `default_rigor` to be stated in the PR body, which
+# keeps a reduced budget visible to the human reviewer.
+# Labels are multi-select and nothing stops two being applied, so AGENTS.md
+# resolves per stage by taking the HIGHEST cap present: a conflict can only
+# ever buy more review, never less, and no ranking of tier names is needed.
 
 # The model-centric agent vocabulary — `suggest:<family>` (advisory routing) and
 # `claim:<family>` (live ownership) — is rendered from the machine-readable agent

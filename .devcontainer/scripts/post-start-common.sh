@@ -17,13 +17,10 @@ done
 # Claude Code stores interactive session state in ~/.claude.json (in the home
 # dir, outside the ~/.claude/ volume). Without this, interactive `claude`
 # forces a full OAuth login after every rebuild even though credentials in
-# ~/.claude/.credentials.json are valid.
-if [ -d "$HOME/.claude" ] && [ ! -L "$HOME/.claude.json" ]; then
-    if [ -f "$HOME/.claude.json" ]; then
-        mv "$HOME/.claude.json" "$HOME/.claude/.claude.json"
-    fi
-    ln -sfn "$HOME/.claude/.claude.json" "$HOME/.claude.json"
-fi
+# ~/.claude/.credentials.json are valid. post-create runs the same helper
+# EARLY, before anything that can spawn `claude`; see the script for why a
+# stray real file is merged into the volume copy rather than moved over it.
+bash .devcontainer/scripts/link-claude-json.sh
 
 # --- Enable Claude Code Remote Control for every interactive session ---
 # Sets remoteControlAtStartup=true so agent-deck-spawned `claude` sessions
@@ -69,9 +66,13 @@ fi
 # Start the conductor session if it exists but is stopped.
 # Check for "stopped" specifically — the previous "! grep running" approach
 # was fooled by the bridge's status also appearing in conductor status output.
+#
+# No directory probe: `conductor status <name>` is already the authoritative
+# existence check (exit 0 iff registered) and stays correct when conductors
+# are relocated with `agent-deck conductor migrate-dir --apply` — a fixed
+# path would go stale there. Matches post-create-common.sh's setup guard.
 REPO_NAME="$(basename "$PWD")"
 if command -v agent-deck &>/dev/null &&
-    [ -d "$HOME/.agent-deck/conductor/$REPO_NAME" ] &&
     agent-deck conductor status "$REPO_NAME" 2>/dev/null | grep -qi "stopped"; then
     agent-deck session start "conductor-$REPO_NAME" 2>/dev/null &
     echo "==> Conductor $REPO_NAME started"
@@ -84,6 +85,15 @@ if [ -f "$BRIDGE_PY" ] && ! pgrep -f "bridge.py" >/dev/null 2>&1; then
     nohup python3 "$BRIDGE_PY" >>"$HOME/.agent-deck/conductor/bridge.log" 2>&1 &
     echo "==> Agent-Deck Telegram bridge started (PID $!)"
 fi
+
+# --- Image staleness ---
+# Warn (only) when this container's image-baked config has drifted from the
+# checkout — the tell that the container predates the repo state and wants a
+# rebuild. Placed before the Tailscale block rather than at the very end so a
+# connect failure cannot skip it, and `|| true` because a diagnostic must never
+# be the thing that aborts the lifecycle it diagnoses (the helper exits 0 on its
+# own; this is the belt to that suspenders).
+bash .devcontainer/scripts/check-image-staleness.sh || true
 
 if [ "${DEVCONTAINER_TAILSCALE:-}" = "true" ]; then
     echo "==> Connecting to Tailscale..."

@@ -565,6 +565,17 @@ if should_show "env"; then
         else
             kv "Devcontainer" "not detected"
         fi
+
+        # Image staleness — silent unless this container's image-baked config
+        # has drifted from the checkout's .devcontainer/config/. It belongs on
+        # the board rather than only in the post-start log because the log is
+        # not somewhere a human looks; the symptom (an old prompt, a retired
+        # statusline) is what they see, and this is the line that explains it.
+        # The helper is the single implementation — `task status:image` and
+        # post-start run this same script — and it always exits 0.
+        if [ -r .devcontainer/scripts/check-image-staleness.sh ]; then
+            bash .devcontainer/scripts/check-image-staleness.sh || true
+        fi
     } | section_box
 fi
 

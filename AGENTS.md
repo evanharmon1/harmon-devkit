@@ -180,7 +180,49 @@ private repositories to paid plans (docs/CHECKLIST.md). If `gh pr create
 --draft` is rejected, stop and report it — dropping `--draft` to get past the
 error silently reverts the lifecycle rather than fixing anything.
 
-- **Branch** — feature branch off `main`; never commit directly to `main`.
+**Round caps are resolved, not stated here.** The stages below are each
+capped, but this file names no numbers: the caps live in
+[`.devflow.toml`](.devflow.toml) as `rigor` tiers, so there is one place to
+change them and one place to read them. Resolve in this order — an explicit
+instruction in this session, then a `rigor:*` label on the issue, then `default_rigor`,
+then a built-in 4 / 4 / 4 if the file is absent. When the change under review
+**edits `.devflow.toml` itself**, resolve its caps from the **merge-base** copy
+rather than the branch copy: otherwise a branch can lower the very gate it is
+changing, and dropping every tier together evades the below-default disclosure
+because nothing is left to be below. An explicit human instruction still
+overrides.
+Labels are multi-select and nothing stops an issue carrying two, so resolution
+is **per stage, taking the highest cap present**: a conflict can then only ever
+buy more review, never less, and no ranking of the tier names has to be agreed
+on anywhere. Because that is per stage, two retuned tiers can yield caps
+belonging to no single tier — so what you announce is the **caps**, naming a
+tier only when one supplied all of them, and the disclosure below compares caps
+rather than tier names. A `rigor:` value naming no tier in the file is ignored
+rather than guessed at. Treat the label as advisory: it is applied by people and
+verified by nothing, and GitHub's **triage** role can label an issue with no
+push access at all — so a budget can be retuned by someone who could not edit
+`.devflow.toml`. An agent never applies one to itself, and **says so in the
+announcement and in the PR body whenever any resolved cap is below what
+`default_rigor` would give**, so a reduced budget is visible to the human
+reviewer instead of silent.
+**Announce the resolved caps on entering the loop** — "rigor:
+`<tier>` (`<source>`) → challenge ≤`<n>`, review ≤`<n>`, shepherd `<n>`", filled in
+by reading the file rather than from memory — and carry it into the PR body, so
+a later round or a different session can see which budget it is spending
+instead of inferring one. Everything else about these stages is policy rather
+than a parameter and does not vary by tier: the exit condition, the escalation
+rule, the round-2 scaffolding checkpoint, the deferred-P2 sidecar, and the
+readiness gate all hold identically at every rigor. A cap is a ceiling, never a
+quota — a stage that meets its exit condition on round 1 is done, whatever the
+tier allowed.
+
+- **Branch** — feature branch off `main`; never commit directly to `main`. For
+  parallel or isolated work, take the branch in its own worktree via
+  **`task worktree:new -- <name>`** (and `task worktree:rm -- <name>` when
+  done) rather than a hand-rolled `git worktree add` — it installs that tree's
+  dependencies and proves the hooks fire in it. See
+  [docs/conventions.md](docs/conventions.md) § Worktrees, including why
+  `-c core.hooksPath=.git/hooks` must never be passed inside one.
 - **Edit + `task check`** — the fast inner loop; run it constantly and fix
   lint immediately.
 - **`task verify`** — when the change feels done, loop edit → verify until
@@ -205,8 +247,9 @@ error silently reverts the lifecycle rather than fixing anything.
   them to the PR (see "Deferring P2s" below). This loop is
   **self-referential** — the fixes you make in response to a round become the
   next round's input, so it can generate its own work indefinitely — and that
-  is what the cap defends against: max **4** challenge → fix → re-challenge
-  rounds; if P0/P1 findings persist, stop and escalate to the maintainer. A
+  is what the cap defends against: the resolved **challenge cap** bounds the
+  challenge → fix → re-challenge rounds; if P0/P1 findings persist at it, stop
+  and escalate to the maintainer. A
   capped final round that adjudicates to zero P0/P1 ends the stage by itself — its
   confirmation would be a run the cap forbids, and a clean last round is
   convergence, not the persisting disagreement escalation exists for.
@@ -226,8 +269,9 @@ error silently reverts the lifecycle rather than fixing anything.
 - **`task review`** — verification-checkpoint review; same adjudication, the
   same two-consecutive-adjudicated-clean exit condition counted over its own
   rounds, the same self-referential shape and so the
-  same reason for a cap, and the same background-and-poll handling, with its
-  own max **4** rounds. The two stages are counted separately: a converged
+  same reason for a cap, and the same background-and-poll handling, under
+  its own resolved **review cap**. The two stages are counted separately — and
+  capped separately, even where the tier gives them equal numbers: a converged
   challenge says nothing about review.
 - **`task ci`** — the full CI mirror; fix anything it catches.
 - **Open the draft PR** — conventional commit, push the branch,
@@ -246,7 +290,8 @@ error silently reverts the lifecycle rather than fixing anything.
   `git -c credential.helper= -c credential.helper='!gh auth git-credential' -c url."https://github.com/".insteadOf="git@github.com:" -c url."https://github.com/".insteadOf="ssh://git@github.com/" -c url."https://github.com/".insteadOf="ssh://git@ssh.github.com:443/" -c url."https://github.com/".insteadOf="ssh://git@ssh.github.com/" push`
   (a credential helper only applies to HTTPS, and `insteadOf` is prefix
   matching — every SSH form needs its own mapping, hence all four).
-- **Shepherd the draft to ready for review (`/shepherd`, max 4 rounds).**
+- **Shepherd the draft to ready for review (`/shepherd`, under the resolved
+  shepherd cap).**
   `gh pr create --draft` returning is
   the trigger for this stage, not the end of the work — enter it deliberately
   instead of judging for yourself when the PR is finished. The PR stays draft
@@ -361,8 +406,11 @@ error silently reverts the lifecycle rather than fixing anything.
   resolve halts the whole change rather than one loop, so it is not a licence
   to move on to the next stage either — escalate and wait, do not open the PR
   anyway.
-  If checks still fail or findings remain after 4 rounds,
-  stop and summarize what's unresolved on the PR for the maintainer. Where a
+  If checks still fail or findings remain at the shepherd cap,
+  stop and summarize what's unresolved on the PR for the maintainer. That cap
+  does not vary by rigor tier — it bounds other people's findings, not your
+  own work, so lowering it would abandon unanswered reviews rather than save
+  effort. Where a
   **vendored** skill (`/shepherd`) states a different cap or exit condition,
   **this file wins** — vendored skills are synced on their own release
   cadence and can lag a policy change made here.
@@ -392,8 +440,9 @@ its current `headRefOid`:
   *indeterminate*, not a pass — GitHub populates it asynchronously, so a read
   taken moments after the push reports nothing having run rather than nothing
   to run.
-- The current-head Codex cycle above is terminal and clean, or terminal with
-  every finding settled under the no-thread disposition rule above.
+- The current-head Codex cycle above is terminal and clean — including clean
+  by way of dispositions recorded with `settle`, or the recorded-comment
+  equivalent where the checker is absent.
 - Every review finding is fixed, declined with evidence, or filed as follow-up
   work.
 - Every inline review comment has its required per-thread reply.
@@ -656,8 +705,9 @@ practice could spend every remaining round re-proving a change nobody still
 disputed. Two things ride along with the exit: every P2
 deferred during the stage must already be recorded in the sidecar (an exit
 that drops a P2 is not an exit), and round 2 owes the scaffolding checkpoint
-above. The caps are unchanged at **4** challenge iterations and **4** review
-iterations (challenge → fix → re-challenge, and likewise for review); if
+above. Each stage's cap is the one resolved from `.devflow.toml` per "Round
+caps are resolved, not stated here" in the Dev Loop above (challenge → fix →
+re-challenge, and likewise for review), counted separately per stage; if
 P0/P1 disagreement persists at the cap, stop and surface it to the maintainer
 instead of iterating further — escalation at the cap is for P0/P1 that
 **persist**, nothing else. The maintainer may always ask for more rounds —

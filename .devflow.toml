@@ -1,0 +1,68 @@
+# .devflow.toml — round caps for the Dev Loop stages defined in AGENTS.md.
+#
+# The numbers live here rather than in prose so that there is exactly one place
+# to change them and one place to read them.
+#
+# Resolution order (AGENTS.md states the rule; only this file states numbers):
+#
+#   explicit instruction in the session
+#     > a rigor:* label on the issue, where the repo provisions them
+#       > default_rigor below
+#         > the built-in fallback stated in AGENTS.md, if this file is absent
+#
+# Announce the resolved caps on entering the Dev Loop and carry them into the
+# PR body, so the budget a change was reviewed under is on the record rather
+# than recalled.
+#
+# When the change under review edits THIS FILE, resolve its caps from the
+# merge-base copy rather than the branch copy — otherwise a branch can lower
+# the very gate it is changing. An explicit human instruction still overrides.
+#
+# These are ceilings, not quotas. A stage exits the moment any of its exit
+# conditions in AGENTS.md is met: two consecutive rounds adjudicated to zero
+# P0/P1, any single round with no findings at all, or a round that hits the cap
+# below having adjudicated to zero P0/P1 — the confirming round it would
+# otherwise owe is one the cap forbids, so a clean last round is convergence,
+# not grounds to escalate. Nothing here obliges a round to be run.
+#
+# Retuning these is expected. The Dev Loop assumes four invariants, and nothing
+# at runtime will tell you if an edit breaks one:
+#   - every tier defines challenge, review and shepherd, all integers
+#   - challenge and review are >= 2, because the exit condition needs two
+#     consecutive adjudicated-clean rounds; at 1, one finding is an escalation
+#   - shepherd is the same in every tier (see below)
+#   - default_rigor names a tier that exists here
+#
+# `challenge` and `review` are inert wherever no second-model reviewer is
+# configured: those stages never run, so their caps bound nothing. `shepherd`
+# always applies.
+
+default_rigor = "standard"
+
+# `shepherd` is deliberately identical in every tier, and is not a knob to
+# turn down.
+#
+# `challenge` and `review` bound work the agent generates itself — each round's
+# fixes are the next round's input — which is exactly what makes capping them
+# low safe. `shepherd` bounds *other people's* findings: CI failures, human
+# review, Codex. Lowering it does not reduce effort spent; it abandons reviews
+# that are already unanswered, and the readiness gate then refuses to promote
+# the PR anyway. The key is present so that a tier is one consistent shape.
+
+# Trivial, low-blast-radius work: doc touch-ups, mechanical bumps, typo fixes.
+[rigor.light]
+challenge = 2 # 2 is the floor, never 1: the exit condition needs two
+review    = 2 # consecutive adjudicated-clean rounds, so a cap of 1 turns any
+shepherd  = 4 # single finding into an immediate escalation.
+
+# The default for ordinary changes.
+[rigor.standard]
+challenge = 3
+review    = 3
+shepherd  = 4
+
+# Security, migrations, data paths — anything with an irreversible failure mode.
+[rigor.deep]
+challenge = 5
+review    = 5
+shepherd  = 4

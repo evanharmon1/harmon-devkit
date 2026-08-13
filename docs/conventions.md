@@ -82,6 +82,46 @@ skill at authoring time and by the **tracking guard**
   gives the closing-keyword guard nothing to read, so the protection silently
   does not apply.
 
+## Worktrees
+
+- **`.worktrees/` is THE location** for linked git worktrees, and it is
+  gitignored. Lint globs and security-scan excludes already assume it; put a
+  tree anywhere else and those excludes stop applying.
+- **Create them with `task worktree:new -- <name>`**, never a bare
+  `git worktree add`. The task (`scripts/worktree-new.sh`) creates or attaches
+  the branch — including one that exists only on a remote, which it tracks
+  rather than recreating — installs **this tree's** dependencies, proves the
+  git hooks fire inside it, prints the ready path, and rolls the tree back if
+  any of that fails. A new branch is based on the **main worktree's HEAD**, not
+  the caller's, so running the task from inside a worktree does not silently
+  stack the new branch on that one; `--base HEAD` stacks deliberately.
+  `--branch` and `--no-install` cover the rest.
+  One entrypoint means a second agent session, a terminal multiplexer, or a
+  human all get the same tree instead of each rediscovering the setup.
+- **Remove them with `task worktree:rm -- <name>`** (`--force` to discard
+  uncommitted work). It refuses on uncommitted changes **and** on ignored local
+  files such as a `.env` — `git worktree remove` counts modified and untracked
+  files but not ignored ones, so a plain remove would take those with it.
+  Ignored *directories* (`node_modules/`, `.venv/`, `dist/`) do not block it:
+  `worktree:new` reinstalls them, and refusing there would make `--force`
+  routine and so meaningless. It also prunes the registry and clears leftover
+  gitlink directories — stale ones make later tooling treat a dead path as a
+  live checkout.
+- **A fresh worktree has no `node_modules`/`.venv`.** Working files are per-tree,
+  so dependency install is per-tree too; that is what `worktree:new` runs and
+  why "it worked in the main checkout" is not evidence.
+- **Never pass `-c core.hooksPath=.git/hooks` to git in a worktree.** In a
+  linked worktree `.git` is a **file**, not a directory, so that path resolves
+  to nothing and commits run **hook-less and silently**. Git's own defaults are
+  correct: hooks live in the shared `$GIT_COMMON_DIR/hooks` and
+  `git rev-parse --git-path hooks` resolves them from any tree. Plain
+  `git commit` is the right command.
+- **Devcontainer smoke tests are an explicit exclusion.** Only the workspace
+  folder is mounted, and a linked worktree's `.git` file points outside it, so
+  post-create sees no repository. `scripts/devcontainer-smoke.sh` detects this
+  and says so instead of failing opaquely. Run it from the main checkout, or
+  build the image and `docker run` it directly.
+
 ## Task runner (Taskfile)
 
 - Tasks are named **`group:action`** — the group/domain comes first, the action

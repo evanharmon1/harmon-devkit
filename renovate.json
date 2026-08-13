@@ -9,6 +9,7 @@
   "vulnerabilityAlerts": {
     "enabled": true
   },
+  "osvVulnerabilityAlerts": true,
   "customManagers": [
     {
       "customType": "regex",
