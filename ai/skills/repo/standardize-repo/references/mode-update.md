@@ -1138,7 +1138,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     NONADOPT_REHEARSED=1
   fi
   if test "$NONADOPT_REHEARSED" -eq 1; then
-  NONADOPT_SCRATCH="$(mktemp -d -t copier-nonadoption-apply-XXXXXX)" ||
+  NONADOPT_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/copier-nonadoption-apply-XXXXXX")" ||
     { echo "failed to create the scratch apply directory" >&2; exit 1; }
   # macOS exposes the same temporary directory as both /var/folders/... and
   # /private/var/folders/.... Normalize before comparing the cloned git dir to

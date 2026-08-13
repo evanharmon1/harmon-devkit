@@ -7586,7 +7586,8 @@ expect_ok "the guarded copier wrapper is extractable alongside the snippet" \
     sh -c 'grep -qF "run_guarded_copier() {" "$1" &&
         grep -qF "COPIER_CACHE_DIR=" "$1"' sh "$GU_NONADOPT_RUNNER"
 expect_ok "the non-adoption scratch canonicalizes macOS temp-path aliases" \
-    grep -qF 'NONADOPT_SCRATCH="$(cd "$NONADOPT_SCRATCH" && pwd -P)"' \
+    sh -c 'grep -qF '\''mktemp -d "${TMPDIR:-/tmp}/copier-nonadoption-apply-XXXXXX"'\'' "$1" &&
+        grep -qF '\''NONADOPT_SCRATCH="$(cd "$NONADOPT_SCRATCH" && pwd -P)"'\'' "$1"' sh \
     "$GU_NONADOPT_RUNNER"
 GU_RECONCILE="$TMPROOT/nonadoption-reconcile.sh"
 {
