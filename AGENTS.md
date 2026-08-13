@@ -427,13 +427,6 @@ Promotion is the one-way door in this lifecycle — it notifies CODEOWNERS and
 requested reviewers, and `gh pr ready --undo` cannot unsend that — so an
 unproven condition means stay draft, not promote and watch.
 
-The Codex Auto-review knobs are deliberately **not** one of these conditions
-while the dated attestation in docs/CHECKLIST.md stands (see "Codex Automatic
-reviews must stay disabled" below): rely on it silently — no question to the
-maintainer, no line about it in the ready report — and reopen the question only
-on the unsolicited-review drift signature recorded there. With no attestation
-on file, their state is unknown, and unknown is indeterminate: stop and ask.
-
 ## Definition of Done
 
 - `task verify` passes.
@@ -506,43 +499,21 @@ workbench, and the second is actively harmful here — `gh pr ready` would kick
 off a fresh asynchronous review *after* the gate that was supposed to complete
 the automated work, so non-draft would stop meaning "ready for a human". The
 lifecycle therefore uses explicit `@codex review` requests while the PR is
-draft, per the current-head cycle above. Turn personal Auto review off and set
-the repository's Auto code review preference to **Follow personal** — and its
-review **Trigger** knob to Follow personal too. A
-repo-level "On every push" trigger is dormant while Auto review is off, so it
-reads as harmless; it arms the moment the personal toggle changes, across every
-repo set that way at once (observed drift, corrected 2026-08-10). That state is
-a **human-configured prerequisite**, not
-something any API confirms, so never report it as mechanically verified; if it
-changes, the readiness gate stops being valid until it is restored.
+draft, per the current-head cycle above.
 
-**The attestation is that confirmation, and it is durable.** The maintainer
-records the three knob values and the date they were confirmed as a dated
-**Codex Auto-review attestation** under the *[human-only] Disable Codex
-Automatic reviews* item in [docs/CHECKLIST.md](docs/CHECKLIST.md) (§2, GitHub
-repo settings). It is maintainer-owned: created or re-dated only at the
-maintainer's explicit direction, never on an agent's own initiative.
-**While it stands, promotions rely on it silently** — do not ask
-the maintainer to re-confirm the knobs, and do not spend a report line
-restating the prerequisite. Nothing above is weakened by that: the honesty this
-paragraph demands is about *mechanical* verification, and a human record was
-always the sanctioned alternative to it. What changes is the frequency — a
-confirmation given once, in writing and dated, is not made truer by being
-requested again at every promotion, and a per-promotion restatement is the
-wrong alarm shape for a drift that has a concrete signature.
+**They are disabled, platform-wide.** Personal Auto review is off; this
+repository's Auto code review preference and its review **Trigger** are both on
+**Follow personal**. The maintainer confirmed that on 2026-08-13 and recorded
+it under the *[human-only] Disable Codex Automatic reviews* item in
+[docs/CHECKLIST.md](docs/CHECKLIST.md), which is where the knob-flipping how-to
+lives and stays. Nothing in the lifecycle gates on it.
 
-**Only drift evidence re-arms the question**, and only one thing counts as
-that evidence: a Codex cloud review firing **unsolicited** — after a push or a
-promotion that no `@codex review` comment triggered (the 2026-08-10 signature
-above). Age is not evidence; an old confirmation date does not expire the
-attestation, because nothing but a settings change can invalidate it and a
-settings change is what that signature shows. On that evidence, stop rather
-than promote, name the attestation as stale in the blocker report, and ask the
-maintainer to re-confirm the knobs and re-date the entry.
-
-**Absent the record, the earlier behaviour stands**: the knob state is
-unknown, unknown is indeterminate rather than a pass, and the fail-closed rule
-applies — stop at promotion and ask.
+One thing is worth telling the maintainer: if a Codex cloud review ever fires
+**unsolicited** — after a push or a promotion that no `@codex review` comment
+triggered — say so. That is the 2026-08-10 drift signature, when a repo-level
+"On every push" trigger sitting dormant behind the personal toggle armed across
+every Follow-personal repo at once. Reporting an anomaly you happened to
+observe is not a check to run, and nothing waits on it.
 
 **Treat Codex findings as hypotheses, not authority.** For every finding:
 

@@ -214,21 +214,6 @@ run_gate() {
     check_watchdog "$gate_rc" run_gate "$gate_out"
 }
 
-# Same as run_gate, but from a given checkout: the pass detail's attestation
-# lookup reads the CWD repository's docs/CHECKLIST.md, so those cases must not
-# inherit this repo's own record.
-run_gate_in() {
-    run_gate_cwd=$1
-    shift
-    set +e
-    gate_out="$(cd "$run_gate_cwd" &&
-        "$watchdog_bin" -k 5 "$watchdog_sec" "$gate" check \
-            --repo example/repo --pr 493 --head "$head_sha" "$@" 2>&1)"
-    gate_rc=$?
-    set -e
-    check_watchdog "$gate_rc" "run_gate_in $run_gate_cwd" "$gate_out"
-}
-
 run_audit() {
     set +e
     gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" audit \
@@ -293,43 +278,6 @@ check_watchdog "$fp_rc" fingerprint "$fp_out"
 standalone_fingerprint="$(printf '%s\n' "$fp_out" | tail -n 1 | jq -r '.fingerprint')"
 [ "$standalone_fingerprint" = "$first_fingerprint" ] ||
     fail "fingerprint subcommand disagrees with check's: $standalone_fingerprint vs $first_fingerprint"
-
-echo "==> the pass detail cites a dated Auto-review attestation when the checkout has one"
-# The detail string is what consumers reading the gate's JSON directly (no
-# shepherd skill in the loop) will repeat, so both wordings are pinned here.
-# Both cases run the gate from a throwaway checkout rather than this repo, so
-# the assertion cannot flip when the real docs/CHECKLIST.md is edited.
-attested_repo="${test_tmp}/attested"
-mkdir -p "${attested_repo}/docs"
-git -C "$attested_repo" init -q
-cat >"${attested_repo}/docs/CHECKLIST.md" <<'CHECKLIST'
-- [ ] **[human-only] Disable Codex Automatic reviews** — prose above.
-      **Codex Auto-review attestation (confirmed 2026-08-13):** personal Auto
-      review **off**; Auto code review **Follow personal**; Trigger **Follow
-      personal**.
-CHECKLIST
-write_defaults
-run_gate_in "$attested_repo" --codex-disabled
-assert_gate 0 pass ready
-attested_detail="$(gate_field detail)"
-printf '%s\n' "$attested_detail" |
-    grep -Fq 'Codex Auto-review knobs are covered by the dated attestation in docs/CHECKLIST.md (confirmed 2026-08-13)' ||
-    fail "the pass detail did not cite the attestation: $attested_detail"
-printf '%s\n' "$attested_detail" |
-    grep -Fq 'ready_for_review-only automation remains a human-verified prerequisite' ||
-    fail "the attested detail dropped the prerequisite the gate genuinely cannot check: $attested_detail"
-
-echo "==> without an attestation the pass detail keeps its legacy wording exactly"
-# Fail-closed in the honest direction: a checkout with no record must never be
-# told one covers it, and older consumers must keep seeing the string they know.
-bare_repo_dir="${test_tmp}/unattested"
-mkdir -p "$bare_repo_dir"
-git -C "$bare_repo_dir" init -q
-write_defaults
-run_gate_in "$bare_repo_dir" --codex-disabled
-assert_gate 0 pass ready
-[ "$(gate_field detail)" = "every mechanically checkable readiness condition holds; ready_for_review-only automation and the Codex Auto-review knobs remain human-verified prerequisites" ] ||
-    fail "the unattested pass detail is not the legacy wording: $(gate_field detail)"
 
 echo "==> BLOCKED mergeStateStatus and REVIEW_REQUIRED are promotable (never require CLEAN)"
 # The defaults above already pin BLOCKED + REVIEW_REQUIRED; this case exists

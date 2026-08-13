@@ -55,13 +55,11 @@
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, usage              (indeterminate)
 #
-# Three readiness conditions are deliberately NOT verified here, because no
+# Two readiness conditions are deliberately NOT verified here, because no
 # API answers them — the caller must hold them as prose prerequisites:
 #   - required automation that reacts only to `pull_request.ready_for_review`
 #     (a configuration blocker: promotion would notify humans before its
 #     result exists);
-#   - the Codex Automatic-review knobs being off/Follow-personal (a
-#     human-configured prerequisite; GitHub exposes no reliable API for it);
 #   - a required context that NEVER REGISTERED on this head. The checks
 #     condition judges every check GitHub reports for the commit; a required
 #     workflow that failed to trigger appears in no list, and the only state
@@ -699,38 +697,9 @@ UNKNOWN | "")
     ;;
 esac
 
-# The Codex Auto-review knobs are unreadable from any API, so this gate never
-# checks them and says so. Where the maintainer has recorded a dated
-# attestation that they were confirmed, saying so *again* on every pass is the
-# nag that record exists to end — and consumers that read this detail verbatim
-# (Foreman, headless runners) never see the shepherd skill's don't-relay rule.
-# So look the record up, read-only and best-effort: one file read of the
-# checkout's docs/CHECKLIST.md, off the mechanical path, changing no gate
-# condition. Every failure mode — no git, no repo, no file, no match — falls
-# back to the legacy wording, which is the honest one for a repo with no
-# record, and is what every consumer already handles.
-attestation_confirmed() {
-    command -v git >/dev/null 2>&1 || return 0
-    attestation_root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
-    [ -n "$attestation_root" ] || return 0
-    attestation_file="$attestation_root/docs/CHECKLIST.md"
-    [ -r "$attestation_file" ] || return 0
-    attestation_match="$(grep -m1 -oE \
-        'Codex Auto-review attestation \(confirmed [0-9]{4}-[0-9]{2}-[0-9]{2}\)' \
-        "$attestation_file" 2>/dev/null)" || return 0
-    [ -n "$attestation_match" ] || return 0
-    attestation_match="${attestation_match##*confirmed }"
-    printf '%s' "${attestation_match%)}"
-}
-
 if [ "$require_draft" = 1 ]; then
     verdict_condition=ready
-    attestation_date="$(attestation_confirmed)" || attestation_date=
-    if [ -n "$attestation_date" ]; then
-        verdict_detail="every mechanically checkable readiness condition holds; Codex Auto-review knobs are covered by the dated attestation in docs/CHECKLIST.md (confirmed $attestation_date); ready_for_review-only automation remains a human-verified prerequisite"
-    else
-        verdict_detail="every mechanically checkable readiness condition holds; ready_for_review-only automation and the Codex Auto-review knobs remain human-verified prerequisites"
-    fi
+    verdict_detail="every mechanically checkable readiness condition holds"
 else
     verdict_condition=audit
     verdict_detail="every mechanically checkable condition except the draft requirement holds; this audits an existing promotion and never authorizes gh pr ready"
