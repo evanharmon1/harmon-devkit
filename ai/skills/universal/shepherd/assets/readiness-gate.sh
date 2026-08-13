@@ -440,10 +440,21 @@ evaluate_checks() {
         indeterminate malformed-data "check states could not be classified"
     [ "$(jq -r '.total' <<<"$checks_summary")" -gt 0 ] ||
         indeterminate checks-indeterminate "GitHub reports no checks for this head — populated asynchronously, so re-poll; if the repo truly has no CI, that is a human call, not a pass"
-    failing_checks="$(jq -r '.failing | join(", ")' <<<"$checks_summary")"
+    # Bound the name lists the detail carries: with thousands of failing
+    # checks the joined names are themselves a multi-megabyte string, and
+    # emit's `jq --arg detail` puts that back into a single argv entry — the
+    # same ARG_MAX death the --slurpfile change above just removed, one step
+    # downstream. Twenty names diagnose as well as twenty thousand.
+    failing_checks="$(jq -r '
+        .failing | if length > 20
+        then (.[0:20] | join(", ")) + " … and \(length - 20) more"
+        else join(", ") end' <<<"$checks_summary")"
     [ -z "$failing_checks" ] ||
         fail_condition checks-failing "checks failing: $failing_checks"
-    pending_checks="$(jq -r '.pending | join(", ")' <<<"$checks_summary")"
+    pending_checks="$(jq -r '
+        .pending | if length > 20
+        then (.[0:20] | join(", ")) + " … and \(length - 20) more"
+        else join(", ") end' <<<"$checks_summary")"
     [ -z "$pending_checks" ] ||
         fail_condition checks-pending "checks not yet concluded: $pending_checks"
 }

@@ -368,6 +368,28 @@ assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
     fail "the oversized payload was not classified — the failing check went unnamed: $gate_out"
 
+# The downstream twin of the same death: with the classification surviving
+# --slurpfile, a payload where the checks FAIL en masse used to join every
+# name into the detail string, and emit's `jq --arg detail` put that
+# multi-megabyte join back into one argv entry (exit 126). The detail must
+# stay bounded — first names plus a count — while still naming real checks.
+echo "==> an oversized payload of FAILING checks yields a bounded detail"
+write_defaults
+jq -cn '[{total_count:60000,
+    check_runs:[range(0;60000) |
+        {name:("broken-" + (. | tostring)),
+         status:"completed",conclusion:"failure"}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'broken-0' ||
+    fail "the bounded detail names no failing check: $gate_out"
+printf '%s\n' "$gate_out" | grep -Eq 'and 599[0-9]+ more' ||
+    fail "the bounded detail does not carry the truncation count: $gate_out"
+detail_bytes="$(printf '%s' "$gate_out" | wc -c)"
+[ "$detail_bytes" -lt 8192 ] ||
+    fail "the failing-checks detail is ${detail_bytes} bytes — unbounded diagnostics reintroduce the argv death one step downstream"
+
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \
