@@ -55,13 +55,11 @@
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, usage              (indeterminate)
 #
-# Three readiness conditions are deliberately NOT verified here, because no
+# Two readiness conditions are deliberately NOT verified here, because no
 # API answers them — the caller must hold them as prose prerequisites:
 #   - required automation that reacts only to `pull_request.ready_for_review`
 #     (a configuration blocker: promotion would notify humans before its
 #     result exists);
-#   - the Codex Automatic-review knobs being off/Follow-personal (a
-#     human-configured prerequisite; GitHub exposes no reliable API for it);
 #   - a required context that NEVER REGISTERED on this head. The checks
 #     condition judges every check GitHub reports for the commit; a required
 #     workflow that failed to trigger appears in no list, and the only state
@@ -411,9 +409,19 @@ evaluate_checks() {
     # suites asynchronously, so a read moments after a push reports nothing
     # having run rather than nothing to run. A repo with genuinely no CI
     # needs a human to say so — this gate cannot tell the two apart.
+    # --slurpfile over process substitution, never --argjson: a much-rerun
+    # head's check-runs payload exceeds the per-argument limit as argv and jq
+    # dies "Argument list too long", which this gate could only report as
+    # `malformed-data` — indeterminate for a purely mechanical reason, on
+    # exactly the heads it matters most for (observed on harmon-init#821's
+    # gate after three infra reruns, 2026-08-12, where it also masked a real
+    # merge-state-behind condition). printf is a shell builtin, so no exec
+    # carries the payload; the fd does. $runs/$statuses are bound below so the
+    # classification program itself is unchanged.
     checks_summary="$(jq -cn \
-        --argjson runs "$check_runs" \
-        --argjson statuses "$statuses" '
+        --slurpfile runs_sf <(printf '%s' "$check_runs") \
+        --slurpfile statuses_sf <(printf '%s' "$statuses") '
+          $runs_sf[0] as $runs | $statuses_sf[0] as $statuses |
           def run_state:
             if .status != "completed" then "pending"
             elif (.conclusion == "success" or .conclusion == "neutral"
@@ -432,10 +440,21 @@ evaluate_checks() {
         indeterminate malformed-data "check states could not be classified"
     [ "$(jq -r '.total' <<<"$checks_summary")" -gt 0 ] ||
         indeterminate checks-indeterminate "GitHub reports no checks for this head — populated asynchronously, so re-poll; if the repo truly has no CI, that is a human call, not a pass"
-    failing_checks="$(jq -r '.failing | join(", ")' <<<"$checks_summary")"
+    # Bound the name lists the detail carries: with thousands of failing
+    # checks the joined names are themselves a multi-megabyte string, and
+    # emit's `jq --arg detail` puts that back into a single argv entry — the
+    # same ARG_MAX death the --slurpfile change above just removed, one step
+    # downstream. Twenty names diagnose as well as twenty thousand.
+    failing_checks="$(jq -r '
+        .failing | if length > 20
+        then (.[0:20] | join(", ")) + " … and \(length - 20) more"
+        else join(", ") end' <<<"$checks_summary")"
     [ -z "$failing_checks" ] ||
         fail_condition checks-failing "checks failing: $failing_checks"
-    pending_checks="$(jq -r '.pending | join(", ")' <<<"$checks_summary")"
+    pending_checks="$(jq -r '
+        .pending | if length > 20
+        then (.[0:20] | join(", ")) + " … and \(length - 20) more"
+        else join(", ") end' <<<"$checks_summary")"
     [ -z "$pending_checks" ] ||
         fail_condition checks-pending "checks not yet concluded: $pending_checks"
 }
@@ -691,7 +710,7 @@ esac
 
 if [ "$require_draft" = 1 ]; then
     verdict_condition=ready
-    verdict_detail="every mechanically checkable readiness condition holds; ready_for_review-only automation and the Codex Auto-review knobs remain human-verified prerequisites"
+    verdict_detail="every mechanically checkable readiness condition holds"
 else
     verdict_condition=audit
     verdict_detail="every mechanically checkable condition except the draft requirement holds; this audits an existing promotion and never authorizes gh pr ready"

@@ -345,6 +345,51 @@ jq -cn '[[{context:"ci/legacy",state:"success",id:1},
 run_gate --codex-disabled
 assert_gate 1 fail checks-failing
 
+echo "==> a multi-MB check-runs payload still classifies (ARG_MAX regression)"
+# A much-rerun head accumulates thousands of check runs. Passed to jq through
+# argv (`--argjson runs`), that payload exceeds the kernel's per-argument
+# limit and jq dies "Argument list too long" — which the gate could only
+# report as `malformed-data`, indeterminate for a mechanical reason, on
+# exactly the heads it matters most for (harmon-init#821's gate, 2026-08-12).
+# The fixture must stay far above the limit for this test to keep reproducing,
+# so its size is asserted rather than assumed.
+write_defaults
+jq -cn '[{total_count:60001,
+    check_runs:([range(0;60000) |
+        {name:("rerun-" + (. | tostring)),
+         status:"completed",conclusion:"success"}] +
+        [{name:"lint",status:"completed",conclusion:"failure"}])}]' \
+    >"${fixtures}/check-runs.pages.json"
+oversized_bytes="$(wc -c <"${fixtures}/check-runs.pages.json")"
+[ "$oversized_bytes" -gt 1048576 ] ||
+    fail "the ARG_MAX fixture shrank to ${oversized_bytes} bytes — below the per-argument limit it exists to exceed, so it no longer reproduces"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
+    fail "the oversized payload was not classified — the failing check went unnamed: $gate_out"
+
+# The downstream twin of the same death: with the classification surviving
+# --slurpfile, a payload where the checks FAIL en masse used to join every
+# name into the detail string, and emit's `jq --arg detail` put that
+# multi-megabyte join back into one argv entry (exit 126). The detail must
+# stay bounded — first names plus a count — while still naming real checks.
+echo "==> an oversized payload of FAILING checks yields a bounded detail"
+write_defaults
+jq -cn '[{total_count:60000,
+    check_runs:[range(0;60000) |
+        {name:("broken-" + (. | tostring)),
+         status:"completed",conclusion:"failure"}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'broken-0' ||
+    fail "the bounded detail names no failing check: $gate_out"
+printf '%s\n' "$gate_out" | grep -Eq 'and 599[0-9]+ more' ||
+    fail "the bounded detail does not carry the truncation count: $gate_out"
+detail_bytes="$(printf '%s' "$gate_out" | wc -c)"
+[ "$detail_bytes" -lt 8192 ] ||
+    fail "the failing-checks detail is ${detail_bytes} bytes — unbounded diagnostics reintroduce the argv death one step downstream"
+
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \

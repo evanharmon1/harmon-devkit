@@ -55,9 +55,12 @@ primary agent to adjudicate — the protocol and the loop caps live in AGENTS.md
    the PR is a draft for the whole automated lifecycle, so the first never
    fires, and the second fires *after* the readiness gate — starting a new
    asynchronous review at the exact moment "non-draft" is supposed to mean the
-   automated work is done. No API reports this setting, so it is a
-   human-configured prerequisite recorded in docs/CHECKLIST.md; the readiness
-   gate trusts that record and must never claim it was mechanically verified.
+   automated work is done. This is settled: the maintainer confirmed all three
+   knobs on 2026-08-13, recorded under docs/CHECKLIST.md's *Disable Codex
+   Automatic reviews* item. Nothing verifies it at promotion time and no agent
+   asks about it. If a cloud review ever fires that no `@codex review` comment
+   triggered, tell the maintainer — that is the drift signature, and reporting
+   it is all that is asked.
 
 ## Manual reviews
 

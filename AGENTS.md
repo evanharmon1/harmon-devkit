@@ -499,15 +499,21 @@ workbench, and the second is actively harmful here — `gh pr ready` would kick
 off a fresh asynchronous review *after* the gate that was supposed to complete
 the automated work, so non-draft would stop meaning "ready for a human". The
 lifecycle therefore uses explicit `@codex review` requests while the PR is
-draft, per the current-head cycle above. Turn personal Auto review off and set
-the repository's Auto code review preference to **Follow personal** (see
-docs/CHECKLIST.md) — and its review **Trigger** knob to Follow personal too. A
-repo-level "On every push" trigger is dormant while Auto review is off, so it
-reads as harmless; it arms the moment the personal toggle changes, across every
-repo set that way at once (observed drift, corrected 2026-08-10). That state is
-a **human-configured prerequisite**, not
-something any API confirms, so never report it as mechanically verified; if it
-changes, the readiness gate stops being valid until it is restored.
+draft, per the current-head cycle above.
+
+**They are disabled, platform-wide.** Personal Auto review is off; this
+repository's Auto code review preference and its review **Trigger** are both on
+**Follow personal**. The maintainer confirmed that on 2026-08-13 and recorded
+it under the *[human-only] Disable Codex Automatic reviews* item in
+[docs/CHECKLIST.md](docs/CHECKLIST.md), which is where the knob-flipping how-to
+lives and stays. Nothing in the lifecycle gates on it.
+
+One thing is worth telling the maintainer: if a Codex cloud review ever fires
+**unsolicited** — after a push or a promotion that no `@codex review` comment
+triggered — say so. That is the 2026-08-10 drift signature, when a repo-level
+"On every push" trigger sitting dormant behind the personal toggle armed across
+every Follow-personal repo at once. Reporting an anomaly you happened to
+observe is not a check to run, and nothing waits on it.
 
 **Treat Codex findings as hypotheses, not authority.** For every finding:
 

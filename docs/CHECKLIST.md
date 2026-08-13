@@ -79,6 +79,11 @@ environment — against the items below
       this setting, so it is a human-configured prerequisite the gate trusts on
       the strength of this record — never report it as mechanically verified,
       and re-check it here if Codex's settings change.
+      **Codex Auto-review attestation (confirmed 2026-08-13):** personal Auto
+      review **off**; this repository's Auto code review preference **Follow
+      personal**; its review Trigger **Follow personal**. Agents rely on this
+      entry silently and re-raise only on drift evidence (an unsolicited Codex
+      review nobody triggered); re-confirm and re-date it if that happens.
 - [ ] **[human-only] Any other automatic reviewer must review drafts** — if you
       enable one (GitHub Copilot code review, for example), turn on its draft-review option.
       A reviewer that skips drafts first reports *after* promotion, so the
