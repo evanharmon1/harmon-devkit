@@ -61,6 +61,9 @@ jobs:
       - run: task test:ci-results
       - run: task test:status
       - run: task test:worktree
+      - run: task test:link-claude-json
+      - run: task test:image-staleness
+      - run: task test:open-devcontainer
       - run: task test:lint-hygiene
       - run: task test:release-title
       - run: task test:track-work

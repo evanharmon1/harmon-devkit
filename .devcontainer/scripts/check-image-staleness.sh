@@ -71,6 +71,15 @@ rel_to_root() {
 # and is handled below as INDETERMINATE, never as fresh.
 diff_rc=0
 diff_out="$(LC_ALL=C diff -q -r "${baked}" "${checkout}" 2>/dev/null)" || diff_rc=$?
+
+# BSD diff can exit 0 while writing only a diagnostic for two equal dangling
+# symlinks. Detect unreadable link targets ourselves so that platform quirk
+# cannot turn an indeterminate comparison into a false "fresh" result.
+for root in "${baked}" "${checkout}"; do
+    while IFS= read -r link; do
+        [ -e "${link}" ] || diff_rc=2
+    done < <(find "${root}" -type l 2>/dev/null)
+done
 count=0
 names=""
 while IFS= read -r line; do

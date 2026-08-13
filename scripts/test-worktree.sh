@@ -1016,7 +1016,8 @@ chmod +x "$fixture/scripts/worktree-new.sh"
 # paths — the subshell's assignments keep the live $test_tmp and sentinel out
 # of its `rm -rf`.
 echo "==> the EXIT trap turns a swallowed timeout into a failing suite"
-trap -p EXIT | grep -q 'worktree_exit' ||
+exit_trap="$(trap -p EXIT)"
+printf '%s\n' "$exit_trap" | grep -q 'worktree_exit' ||
     fail "the EXIT trap is no longer wired to worktree_exit"
 trap_log="$test_tmp/trap.log"
 if (
