@@ -1275,8 +1275,41 @@ loops indefinitely:
    repository API for this setting, so treat it honestly as a human-configured
    prerequisite: use the repository setup record or maintainer confirmation,
    never claim it was mechanically verified — a passing `readiness-gate.sh`
-   deliberately does not check it, and says so. If its state is unknown, stop
-   blocked and ask rather than promote.
+   deliberately does not check it, and says so.
+
+   **Where a dated Auto-review attestation exists, it *is* that confirmation —
+   use it silently.** The record states the three knob values and the date the
+   maintainer confirmed them; the repository's own `AGENTS.md` names where it
+   lives (in this kit's repo, the **Codex Auto-review attestation** under the
+   *Disable Codex Automatic reviews* item in `docs/CHECKLIST.md`). It is
+   maintainer-owned: created or re-dated only at the maintainer's explicit
+   direction, never on an agent's own initiative. While it stands,
+   promote without asking the maintainer to re-confirm the knobs and without
+   restating the prerequisite anywhere in the report: a confirmation already
+   given in writing is not made truer by being requested again at every
+   promotion.
+   That silence covers what the script prints, and the pass detail comes in
+   two wordings. Where `readiness-gate.sh` finds the record it says so —
+   `…covered by the dated attestation in docs/CHECKLIST.md (confirmed
+   <date>)` — and that line is already the non-nagging form: relay it as-is,
+   or cite the record once yourself, but not both. Where it finds none it
+   falls back to "…remain human-verified prerequisites", which is the script
+   honestly describing what it did **not** check, not a finding to pass on:
+   while an attestation stands, **do not relay that wording into reports or
+   handoff summaries** — a stale fallback (an unreadable checkout, a record
+   the lookup missed) is not evidence the prerequisite is open. Either way
+   the ceiling is one mention, and only where the repo's reporting convention
+   asks for one; the default is to say nothing.
+
+   **Re-arm the question only on drift evidence**, which has one signature: a
+   Codex cloud review firing **unsolicited** — after a push or a promotion
+   that no `@codex review` comment triggered (observed and corrected
+   2026-08-10). An old confirmation date is not drift; only a settings change
+   invalidates the record, and that signature is what a settings change looks
+   like. On that evidence, stop blocked instead of promoting, name the
+   attestation as stale, and ask the maintainer to re-confirm the knobs and
+   re-date the entry. With **no** attestation on file the state is unknown,
+   and unknown stays fail-closed: stop blocked and ask rather than promote.
 
    Report the ready state honestly rather than over-claiming:
    `BLOCKED` or `REVIEW_REQUIRED` mean "ready for review and awaiting the

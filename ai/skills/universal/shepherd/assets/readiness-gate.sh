@@ -411,9 +411,19 @@ evaluate_checks() {
     # suites asynchronously, so a read moments after a push reports nothing
     # having run rather than nothing to run. A repo with genuinely no CI
     # needs a human to say so — this gate cannot tell the two apart.
+    # --slurpfile over process substitution, never --argjson: a much-rerun
+    # head's check-runs payload exceeds the per-argument limit as argv and jq
+    # dies "Argument list too long", which this gate could only report as
+    # `malformed-data` — indeterminate for a purely mechanical reason, on
+    # exactly the heads it matters most for (observed on harmon-init#821's
+    # gate after three infra reruns, 2026-08-12, where it also masked a real
+    # merge-state-behind condition). printf is a shell builtin, so no exec
+    # carries the payload; the fd does. $runs/$statuses are bound below so the
+    # classification program itself is unchanged.
     checks_summary="$(jq -cn \
-        --argjson runs "$check_runs" \
-        --argjson statuses "$statuses" '
+        --slurpfile runs_sf <(printf '%s' "$check_runs") \
+        --slurpfile statuses_sf <(printf '%s' "$statuses") '
+          $runs_sf[0] as $runs | $statuses_sf[0] as $statuses |
           def run_state:
             if .status != "completed" then "pending"
             elif (.conclusion == "success" or .conclusion == "neutral"
@@ -689,9 +699,38 @@ UNKNOWN | "")
     ;;
 esac
 
+# The Codex Auto-review knobs are unreadable from any API, so this gate never
+# checks them and says so. Where the maintainer has recorded a dated
+# attestation that they were confirmed, saying so *again* on every pass is the
+# nag that record exists to end — and consumers that read this detail verbatim
+# (Foreman, headless runners) never see the shepherd skill's don't-relay rule.
+# So look the record up, read-only and best-effort: one file read of the
+# checkout's docs/CHECKLIST.md, off the mechanical path, changing no gate
+# condition. Every failure mode — no git, no repo, no file, no match — falls
+# back to the legacy wording, which is the honest one for a repo with no
+# record, and is what every consumer already handles.
+attestation_confirmed() {
+    command -v git >/dev/null 2>&1 || return 0
+    attestation_root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+    [ -n "$attestation_root" ] || return 0
+    attestation_file="$attestation_root/docs/CHECKLIST.md"
+    [ -r "$attestation_file" ] || return 0
+    attestation_match="$(grep -m1 -oE \
+        'Codex Auto-review attestation \(confirmed [0-9]{4}-[0-9]{2}-[0-9]{2}\)' \
+        "$attestation_file" 2>/dev/null)" || return 0
+    [ -n "$attestation_match" ] || return 0
+    attestation_match="${attestation_match##*confirmed }"
+    printf '%s' "${attestation_match%)}"
+}
+
 if [ "$require_draft" = 1 ]; then
     verdict_condition=ready
-    verdict_detail="every mechanically checkable readiness condition holds; ready_for_review-only automation and the Codex Auto-review knobs remain human-verified prerequisites"
+    attestation_date="$(attestation_confirmed)" || attestation_date=
+    if [ -n "$attestation_date" ]; then
+        verdict_detail="every mechanically checkable readiness condition holds; Codex Auto-review knobs are covered by the dated attestation in docs/CHECKLIST.md (confirmed $attestation_date); ready_for_review-only automation remains a human-verified prerequisite"
+    else
+        verdict_detail="every mechanically checkable readiness condition holds; ready_for_review-only automation and the Codex Auto-review knobs remain human-verified prerequisites"
+    fi
 else
     verdict_condition=audit
     verdict_detail="every mechanically checkable condition except the draft requirement holds; this audits an existing promotion and never authorizes gh pr ready"
