@@ -1,0 +1,339 @@
+{
+  "$schema": "./label-registry.schema.json",
+  "version": 1,
+  "families": [
+    {
+      "family": "concerns",
+      "prefix": null,
+      "purpose": "Cross-cutting quality concerns a piece of work carries, independent of which subsystem it changes.",
+      "axis": "concern",
+      "color": "5319E7",
+      "writers": ["human"],
+      "lifecycle": "Applied while the concern applies and removed when it stops; not a triage state and not a classification axis.",
+      "exclusive": false,
+      "source": "inline",
+      "values": [
+        { "name": "sec", "description": "Security concern" },
+        { "name": "a11y", "description": "Accessibility concern" },
+        { "name": "perf", "description": "Performance concern" },
+        { "name": "tech-debt", "description": "Technical debt" },
+        { "name": "i18n", "description": "Internationalization" },
+        { "name": "l10n", "description": "Localization" }
+      ]
+    },
+    {
+      "family": "provenance",
+      "prefix": null,
+      "purpose": "Where the work came from: a customer asked for it, or an AI agent authored it.",
+      "axis": "provenance",
+      "color": "EC4899",
+      "writers": ["human", "agent"],
+      "lifecycle": "Never removed. Provenance is a historical fact about how the issue came to exist, not a state that can stop being true.",
+      "exclusive": false,
+      "source": "inline",
+      "values": [
+        { "name": "customer-request", "description": "Requested by a customer" },
+        { "name": "ai-generated", "description": "Created or authored by an AI agent" }
+      ]
+    },
+    {
+      "family": "workflow-state",
+      "prefix": null,
+      "purpose": "Transient process states: what the issue is currently waiting on before it can move.",
+      "axis": "workflow",
+      "color": "E36209",
+      "writers": ["human"],
+      "lifecycle": "Transient — removed as soon as the state it names no longer holds.",
+      "exclusive": false,
+      "source": "inline",
+      "values": [
+        {
+          "name": "needs-triage",
+          "description": "Awaiting triage",
+          "writers": ["human", "agent"],
+          "lifecycle": "Added freely; removed only when classification is complete."
+        },
+        { "name": "needs-requirements", "description": "Requirements not yet defined" },
+        {
+          "name": "blocked",
+          "description": "Blocked by a non-issue dependency (reason in a comment)"
+        },
+        { "name": "waiting", "description": "Waiting on an external party" },
+        { "name": "needs-decision", "description": "Needs a decision before it can proceed" },
+        { "name": "needs-response", "description": "Awaiting a response" },
+        {
+          "name": "needs-communication",
+          "description": "An update needs to be communicated out"
+        }
+      ]
+    },
+    {
+      "family": "layer",
+      "prefix": "layer",
+      "purpose": "Stack slice the change lands in. Mirrors the Layer project field's option list, with no per-issue sync.",
+      "axis": "layer",
+      "color": "1D76DB",
+      "writers": ["human", "agent"],
+      "lifecycle": "Set at triage and corrected as scope changes; at most one per issue.",
+      "exclusive": true,
+      "source": "inline",
+      "values": [
+        {
+          "name": "ui",
+          "description": "Components, styling, interaction, tokens, a11y. No data change"
+        },
+        { "name": "logic", "description": "Business rules, handlers, calculation" },
+        { "name": "data", "description": "Schema, indexes, validators, migrations" },
+        {
+          "name": "integration",
+          "description": "External boundary: webhooks, API clients, credentials"
+        }
+      ]
+    },
+    {
+      "family": "domain",
+      "prefix": "domain",
+      "purpose": "Product capability (problem space) the work belongs to. Mirrors the Domain project field's option list.",
+      "axis": "domain",
+      "color": "FBCA04",
+      "writers": ["human", "agent"],
+      "lifecycle": "Set at triage and corrected as scope changes; at most one per issue.",
+      "exclusive": true,
+      "source": "inline",
+      "values": [
+        { "name": "auth", "description": "Authentication and authorization" },
+        { "name": "billing", "description": "Billing and payments" },
+        { "name": "platform", "description": "CI, build, test infra, and tooling in this repo" }
+      ]
+    },
+    {
+      "family": "rigor",
+      "prefix": "rigor",
+      "purpose": "Which round-cap tier in .devflow.toml an agent works the issue under (AGENTS.md, \"Round caps are resolved, not stated here\").",
+      "axis": "rigor",
+      "color": "D4C5F9",
+      "writers": ["human"],
+      "lifecycle": "Applied by a human before work starts. An agent reads it and is never a writer of it — never on itself.",
+      "exclusive": false,
+      "source": "inline",
+      "values": [
+        { "name": "light", "description": "Dev Loop caps: trivial, low-blast-radius change" },
+        { "name": "standard", "description": "Dev Loop caps: the default budget" },
+        {
+          "name": "deep",
+          "description": "Dev Loop caps: security, migrations, irreversible paths"
+        }
+      ]
+    },
+    {
+      "family": "suggest",
+      "prefix": "suggest",
+      "purpose": "Advisory routing: which agent family should implement the issue. Routes nothing by itself and is never arming.",
+      "axis": "model",
+      "color": "BFD4F2",
+      "writers": ["human"],
+      "lifecycle": "Set at triage and replaced when routing changes; survives the work, unlike a claim.",
+      "exclusive": false,
+      "source": "agent-registry",
+      "registry": { "mode": "suggest-claim" }
+    },
+    {
+      "family": "claim",
+      "prefix": "claim",
+      "purpose": "Live ownership: which agent family is working the issue right now, written by the agent itself.",
+      "axis": "model",
+      "color": "006B75",
+      "writers": ["agent"],
+      "lifecycle": "Added when an agent claims the issue and released when it wraps up or abandons the work.",
+      "exclusive": false,
+      "source": "agent-registry",
+      "registry": { "mode": "suggest-claim" }
+    },
+    {
+      "family": "foreman",
+      "prefix": "foreman",
+      "purpose": "Foreman's arming selectors and its own workflow protocol. The only arming namespace: upstream reads any unrecognized value here as a backend selector.",
+      "axis": "arming",
+      "color": "1D76DB",
+      "writers": ["trusted-human"],
+      "lifecycle": "Applied by hand as an input foreman reads. Removal is per value, below — foreman never clears its own inputs.",
+      "exclusive": false,
+      "source": "inline",
+      "registry": { "mode": "foreman-adapters" },
+      "values": [
+        {
+          "name": "approved",
+          "description": "Arm with the repo default backend",
+          "lifecycle": "Applied to arm the issue; stays on it. The adapter selectors composed into this family behave the same way."
+        },
+        {
+          "name": "hold",
+          "description": "Exclude from foreman dispatch (always wins)",
+          "color": "D93F0B",
+          "writers": ["human"],
+          "lifecycle": "Applied to exclude the issue, removed by a human to re-include it."
+        },
+        {
+          "name": "satisfied",
+          "description": "Human override: treat this dependency as satisfied",
+          "color": "0E8A16",
+          "writers": ["human"],
+          "lifecycle": "Applied per dependency decision and left in place as the record of that decision."
+        },
+        {
+          "name": "external",
+          "description": "External dependency: satisfied when closed as completed",
+          "color": "BFDADC",
+          "writers": ["human"],
+          "lifecycle": "Applied per dependency decision and left in place as the record of that decision."
+        },
+        {
+          "name": "dispatched",
+          "description": "Foreman is working this issue; its draft PR carries the same label",
+          "writers": ["tool:foreman"],
+          "lifecycle": "Written by foreman on dispatch and superseded by foreman:ready-for-review.",
+          "source": "tool-owned"
+        },
+        {
+          "name": "ready-for-review",
+          "description": "Foreman's draft passed its readiness gate and is handed to a human",
+          "writers": ["tool:foreman"],
+          "lifecycle": "Written by foreman when it promotes its draft; cleared by the human who merges or closes it.",
+          "source": "tool-owned"
+        }
+      ]
+    },
+    {
+      "family": "tier",
+      "prefix": "tier",
+      "purpose": "Advisory model routing: which model stratum a consumer should prefer. Inert on its own — nothing invokes a model because the label exists.",
+      "axis": "tier",
+      "color": "7057FF",
+      "writers": ["human"],
+      "lifecycle": "Set at triage. Two present resolve strongest-wins, so a conflict can only ever buy more capability.",
+      "exclusive": false,
+      "source": "inline",
+      "values": [
+        {
+          "name": "local",
+          "description": "Model tier: self-hosted endpoint first; may escalate to economy"
+        },
+        {
+          "name": "economy",
+          "description": "Model tier: cheapest qualified hosted model first; escalation allowed"
+        },
+        {
+          "name": "standard",
+          "description": "Model tier: reliable general-purpose coding model first"
+        },
+        {
+          "name": "frontier",
+          "description": "Model tier: opus-class heavyweights; no warm-up on weaker models"
+        },
+        { "name": "apex", "description": "Model tier: mythos-class leading edge (fable, sol)" },
+        {
+          "name": "adaptive",
+          "description": "Model tier: cheap preflight classifies, then chooses or escalates"
+        }
+      ]
+    },
+    {
+      "family": "method",
+      "prefix": "method",
+      "purpose": "Advisory execution topology: how an agent should work the issue. Conflicts resolve by the configured method rank, most human oversight first.",
+      "axis": "method",
+      "color": "BF3989",
+      "writers": ["human"],
+      "lifecycle": "Set at triage and advisory only; a consumer with no method configuration ignores it.",
+      "exclusive": false,
+      "source": "inline",
+      "values": [
+        { "name": "oneshot", "description": "Execution: single agent, no separate plan phase" },
+        {
+          "name": "plan",
+          "description": "Execution: agent plans then implements; no human plan gate"
+        },
+        {
+          "name": "plan-approved",
+          "description": "Execution: plan requires human approval before implementation"
+        },
+        {
+          "name": "orchestrate",
+          "description": "Execution: conductor session drives subagents, possibly across related issues"
+        },
+        {
+          "name": "council",
+          "description": "Execution: N independent implementations; judged, best or synthesis wins"
+        },
+        {
+          "name": "human-led",
+          "description": "Execution: human owns central decisions; AI does bounded pieces"
+        }
+      ]
+    },
+    {
+      "family": "area",
+      "prefix": "area",
+      "purpose": "Codebase subsystem (solution space) the work touches. Area is where the change lands, domain is the capability it serves.",
+      "axis": "area",
+      "color": "0E8A16",
+      "writers": ["human", "agent"],
+      "lifecycle": "Set at triage and corrected as scope changes; at most one per issue.",
+      "exclusive": true,
+      "source": "inline",
+      "values": [
+        { "name": "build", "description": "Build system and packaging" },
+        { "name": "ci", "description": "GitHub Actions workflows and CI plumbing" },
+        { "name": "deps", "description": "Dependency management and pins" },
+        { "name": "docs", "description": "Documentation content and structure" },
+        { "name": "skills", "description": "Agent skills (ai/skills) and their packaging" }
+      ]
+    },
+    {
+      "family": "work-type",
+      "prefix": null,
+      "purpose": "Kind of work, for repos with no native issue Type. Deliberately not a type:* family — that prefix is foreman's conventional-commit override.",
+      "axis": "work-type",
+      "writers": ["human", "agent"],
+      "lifecycle": "At most one per issue; the axis is exclusive. Nothing applies one — the issue forms set no label, so triage does. Where an org has native Type, that is authoritative and these are unused.",
+      "exclusive": true,
+      "source": "inline",
+      "values": [
+        { "name": "bug", "source": "github-default" },
+        { "name": "documentation", "source": "github-default" },
+        { "name": "enhancement", "source": "github-default" },
+        { "name": "question", "source": "github-default" },
+        {
+          "name": "task",
+          "description": "General work: maintenance, chores, cleanup",
+          "color": "6E7781"
+        },
+        {
+          "name": "research",
+          "description": "Produces a decision or written answer, not a code change",
+          "color": "0E7C86"
+        }
+      ]
+    },
+    {
+      "family": "autorelease",
+      "prefix": null,
+      "purpose": "release-please's bookkeeping on the rolling release PR. Documented so triage recognizes it; the colon-space in each name is release-please's own spelling.",
+      "axis": "release",
+      "writers": ["tool:release-please"],
+      "lifecycle": "Created and moved by release-please on its own release PR; never applied, removed, or provisioned by hand.",
+      "exclusive": false,
+      "source": "tool-owned",
+      "values": [
+        {
+          "name": "autorelease: pending",
+          "description": "release-please: the release PR is open and not yet merged"
+        },
+        {
+          "name": "autorelease: tagged",
+          "description": "release-please: the merged release has been tagged"
+        }
+      ]
+    }
+  ]
+}

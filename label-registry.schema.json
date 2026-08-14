@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-init/label-registry.schema.json",
+  "title": "Harmon label registry",
+  "$comment": "Machine-readable label taxonomy. One family per axis, each naming who may write it (writers), how long a value lives (lifecycle), and where its values come from (source). setup-github-labels.sh and status.sh read the RENDERED form (scripts/label-registry-labels.mjs); the triage skill and track-work's metadata checker read this file directly. Structural rules only — the either/or rules between source, values, and registry live in scripts/validate-label-registry.mjs, which reports them by name. There is deliberately no `type:*` family: that prefix is foreman's conventional-commit override, so work type lives in native issue Type on org repos and in the work-type family here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "version", "families"],
+  "properties": {
+    "$schema": { "const": "./label-registry.schema.json" },
+    "version": { "const": 1 },
+    "families": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/family" }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "prefix": {
+      "$comment": "null means the family's values are bare label names (`sec`, `blocked`). A string is joined to each value with a colon (`layer` + `ui` -> `layer:ui`).",
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "labelName": {
+      "$comment": "A value's own name. Spaces are permitted because tool-owned labels have them (release-please ships `autorelease: pending`); 50 is GitHub's cap on a label name, and the validator re-checks it AFTER the prefix is joined on.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._ -]*$"
+    },
+    "color": {
+      "$comment": "Six uppercase hex digits, no leading `#` — the form `gh label create --color` takes. GitHub treats hex as case-insensitive; uppercase is this repo's convention so the manifest and the renderer compare byte-for-byte.",
+      "type": "string",
+      "pattern": "^[0-9A-F]{6}$"
+    },
+    "description": {
+      "$comment": "GitHub caps label descriptions at 100 characters and rejects the whole label past it (harmon-init#680). agent-registry.schema.json carries the same cap on the display_name it renders descriptions from.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "lifecycle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "axis": {
+      "$comment": "The question the family answers. Two families may share an axis (`suggest`/`claim` are both `model`); `exclusive` is what limits an axis to one label per issue.",
+      "enum": [
+        "work-type",
+        "area",
+        "domain",
+        "layer",
+        "concern",
+        "provenance",
+        "workflow",
+        "rigor",
+        "tier",
+        "method",
+        "model",
+        "arming",
+        "release"
+      ]
+    },
+    "writer": {
+      "$comment": "`trusted-human` marks a value an actor-verifying consumer additionally authenticates (foreman's arming inputs). The label itself still carries no permission — the class names which consumer-side check applies. `tool:<name>` is a label its owning tool creates and moves.",
+      "type": "string",
+      "pattern": "^(?:human|trusted-human|agent|tool:[a-z0-9]+(?:-[a-z0-9]+)*)$"
+    },
+    "writers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/writer" }
+    },
+    "registry": {
+      "$comment": "Composes values from agent-registry.json instead of (or alongside) an inline list, so the two manifests cannot fork. The renderer spawns scripts/agent-registry-labels.mjs in this mode and keeps the lines matching the family prefix.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["suggest-claim", "foreman-adapters"] }
+      }
+    },
+    "value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/labelName" },
+        "description": { "$ref": "#/$defs/description" },
+        "color": { "$ref": "#/$defs/color" },
+        "writers": { "$ref": "#/$defs/writers" },
+        "lifecycle": { "$ref": "#/$defs/lifecycle" },
+        "source": {
+          "$comment": "Both values mean the same two things: documented here, never provisioned, never deleted. They differ in who does create the label — its owning tool on demand (`tool-owned`), or GitHub when it seeds a new repository (`github-default`). A github-default value carries no color or description because GitHub's own are authoritative and this manifest must not restate them.",
+          "enum": ["tool-owned", "github-default"]
+        }
+      }
+    },
+    "family": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "prefix",
+        "purpose",
+        "axis",
+        "writers",
+        "lifecycle",
+        "exclusive",
+        "source"
+      ],
+      "properties": {
+        "family": { "$ref": "#/$defs/slug" },
+        "prefix": { "$ref": "#/$defs/prefix" },
+        "purpose": { "$ref": "#/$defs/purpose" },
+        "axis": { "$ref": "#/$defs/axis" },
+        "color": { "$ref": "#/$defs/color" },
+        "writers": { "$ref": "#/$defs/writers" },
+        "lifecycle": { "$ref": "#/$defs/lifecycle" },
+        "exclusive": {
+          "$comment": "true means at most one label of this family per issue. Advisory axes are false even where they resolve strongest-wins, because two labels are a legal state a consumer has to resolve rather than a taxonomy violation.",
+          "type": "boolean"
+        },
+        "source": { "enum": ["inline", "agent-registry", "tool-owned"] },
+        "registry": { "$ref": "#/$defs/registry" },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/value" }
+        }
+      }
+    }
+  }
+}

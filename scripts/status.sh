@@ -1109,37 +1109,90 @@ if [[ "${SECTION}" == "setup" ]]; then
                         "unreadable — ${GH_REMEDY}"
                 fi
                 if [ -f scripts/setup-github-labels.sh ]; then
-                    # The expected set is read out of the setup script's own
-                    # `name|color|description` table rather than probed with one
+                    # The expected set is ENUMERATED rather than probed with one
                     # sentinel label: a repo seeded before the set grew (a new
                     # layer:/domain: value, say) has the sentinel and is missing
                     # the rest, and a single probe would call that green.
-                    # The foreman:* arming table is opt-in (--foreman, passed
+                    # The foreman:* arming axis is opt-in (--foreman, passed
                     # only when the repo uses foreman — the wrapper taskfile is
                     # its render-time marker), so expect it only there or a
                     # non-foreman repo reports 11 permanently-missing labels.
                     #
-                    # The suggest:/claim:/foreman:<adapter> families are NOT
-                    # literal `name|color|desc` lines in the setup script — it
-                    # renders them from the agent registry — so parse the same
-                    # renderer here too, or this check would silently ignore
-                    # every registry-driven label and call an unsynced repo green.
-                    # If the registry ships but node is missing we CANNOT enumerate
-                    # those labels, so the inventory is incomplete: report unknown
-                    # rather than grading the reduced set as "all seeded".
+                    # Where the repo carries the label taxonomy manifest
+                    # (label-registry.json), the inventory comes from its
+                    # renderer — the SAME command setup-github-labels.sh runs,
+                    # so what is expected here cannot disagree with what
+                    # provisioning would create.
+                    #
+                    # Without a manifest, fall back to scraping the setup
+                    # script's own `name|color|description` table, plus the
+                    # agent registry's renderer for the suggest:/claim:/foreman:
+                    # families it composes (those are not literal lines in the
+                    # script) — or the check would silently ignore every
+                    # registry-driven label and call an unsynced repo green.
+                    #
+                    # If either manifest ships but node is missing we CANNOT
+                    # enumerate the set, so the inventory is incomplete: report
+                    # unknown rather than grading a reduced set as "all seeded".
+                    # With a taxonomy manifest that case must never fall through
+                    # to the scrape: a manifest-driven setup script carries no
+                    # literal label lines at all, so the scrape yields an EMPTY
+                    # set and would report a fully seeded repo as unseeded.
                     registry_incomplete=0
-                    if [ -f scripts/agent-registry-labels.mjs ] && ! command -v node >/dev/null 2>&1; then
-                        registry_incomplete=1
-                    fi
-                    want_labels="$(
-                        sed -n -E 's/^([A-Za-z0-9:._-]+)\|[0-9A-Fa-f]{6}\|.*/\1/p' scripts/setup-github-labels.sh
-                        if [ -f scripts/agent-registry-labels.mjs ] && command -v node >/dev/null 2>&1; then
-                            node scripts/agent-registry-labels.mjs all 2>/dev/null |
-                                sed -n -E 's/^([A-Za-z0-9:._-]+)\|[0-9A-Fa-f]{6}\|.*/\1/p'
+                    registry_detail=""
+                    want_labels=""
+                    if [ -f label-registry.json ]; then
+                        # Pick the same renderer mode setup-github-labels.sh
+                        # would: `provision` excludes the arming axis BY AXIS,
+                        # where filtering `^foreman:` off the full set only
+                        # happens to work while `foreman` is the sole arming
+                        # prefix — a renamed or additional arming family would
+                        # then be reported permanently missing on every repo
+                        # whose setup deliberately never creates it.
+                        label_mode=provision
+                        if [ -f taskfiles/foreman.yml ]; then
+                            label_mode=all
                         fi
-                    )"
-                    if [ ! -f taskfiles/foreman.yml ]; then
-                        want_labels="$(printf '%s\n' "${want_labels}" | grep -v '^foreman:')"
+                        if [ -f scripts/label-registry-labels.mjs ] &&
+                            command -v node >/dev/null 2>&1; then
+                            # Capture the renderer's own exit status: swallowing a
+                            # render failure into an empty set would report a fully
+                            # seeded repo as unseeded and send the operator to
+                            # `task setup:github-labels`, which would fail the same
+                            # way. An unreadable inventory is unknown, not missing.
+                            # The renderer validates the manifest first, so an
+                            # invalid hand-edit lands here as unknown too.
+                            if label_records="$(node scripts/label-registry-labels.mjs "${label_mode}" 2>/dev/null)"; then
+                                want_labels="$(printf '%s\n' "${label_records}" |
+                                    sed -n -E 's/^([A-Za-z0-9:._-]+)\|[0-9A-Fa-f]{6}\|.*/\1/p')"
+                            else
+                                registry_incomplete=1
+                                registry_detail="label-registry.json did not render — run task test:label-registry"
+                            fi
+                        else
+                            registry_incomplete=1
+                            registry_detail="node or label renderer unavailable — inventory unchecked"
+                        fi
+                    else
+                        if [ -f scripts/agent-registry-labels.mjs ] && ! command -v node >/dev/null 2>&1; then
+                            registry_incomplete=1
+                            registry_detail="node unavailable — registry labels unchecked"
+                        fi
+                        want_labels="$(
+                            sed -n -E 's/^([A-Za-z0-9:._-]+)\|[0-9A-Fa-f]{6}\|.*/\1/p' scripts/setup-github-labels.sh
+                            if [ -f scripts/agent-registry-labels.mjs ] && command -v node >/dev/null 2>&1; then
+                                node scripts/agent-registry-labels.mjs all 2>/dev/null |
+                                    sed -n -E 's/^([A-Za-z0-9:._-]+)\|[0-9A-Fa-f]{6}\|.*/\1/p'
+                            fi
+                        )"
+                        # Only the manifest-less path needs a prefix filter: the
+                        # pre-manifest script hard-lists foreman's protocol rows
+                        # and renders every adapter selector unconditionally, so
+                        # there is no axis to select on. The manifest path picks
+                        # the renderer mode above instead.
+                        if [ ! -f taskfiles/foreman.yml ]; then
+                            want_labels="$(printf '%s\n' "${want_labels}" | grep -v '^foreman:')"
+                        fi
                     fi
                     have_labels="$(cat "${d}/labels.txt" 2>/dev/null || true)"
                     want_count=0
@@ -1150,7 +1203,7 @@ if [[ "${SECTION}" == "setup" ]]; then
                             missing_count=$((missing_count + 1))
                     done
                     if [ "${registry_incomplete}" -eq 1 ]; then
-                        checkline unknown "Starter labels" "node unavailable — registry labels unchecked"
+                        checkline unknown "Starter labels" "${registry_detail}"
                     elif [ -z "${have_labels}" ] || [ "${want_count}" -eq 0 ]; then
                         checkline no "Starter labels" "run task setup:github-labels"
                     elif [ "${missing_count}" -eq 0 ]; then

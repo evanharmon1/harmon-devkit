@@ -181,15 +181,16 @@ environment — against the items below
       separate follow-up — the board is set up, but issue/PR status isn't
       auto-synced yet. `Domain` is seeded with `auth`/`billing`/`platform` only —
       add this product's real domains in the Project UI, and matching `domain:`
-      labels in `scripts/setup-github-labels.sh`. Re-runs **append** any starter
+      values to the `domain` family in `label-registry.json` (which is what
+      `task setup:github-labels` renders). Re-runs **append** any starter
       option a single-select field is missing (so a value added by a later
       harmon-init release lands on the next run) and never touch, reorder, or
       delete the options you added.
 - [ ] Labels: run `task setup:github-labels` to seed this repo's starter label
-      families (concerns/source/workflow/layer/domain — see
-      [project-management.md](project-management.md)). Labels are per-repo, so run
-      it in each repo; org default labels (org Settings → Repository, UI-only) only
-      seed new repos.
+      families from `label-registry.json` — the machine-readable taxonomy it
+      renders (see [project-management.md](project-management.md)). Labels are
+      per-repo, so run it in each repo; org default labels (org Settings →
+      Repository, UI-only) only seed new repos.
 - [ ] **[human-only] Retire any legacy `agent:*` claim labels** — needed only
       where `gh label list --limit 200` still shows the harness-named family
       (`agent:claude-code`, `agent:gemini-cli`, …) a pre-registry harmon-init

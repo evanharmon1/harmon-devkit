@@ -1,12 +1,33 @@
 #!/usr/bin/env bash
 # setup-github-labels.sh — idempotently create/update this repo's starter label
-# set (docs/project-management.md). Colors are grouped by family (concerns=purple,
-# source=pink, workflow=orange, layer=blue, domain=yellow).
+# set from the machine-readable taxonomy in label-registry.json.
+#
+# The MANIFEST is the source of truth, not this script: every label, color,
+# description, and which families are opt-in comes out of
+# `node scripts/label-registry-labels.mjs`. Nothing is hand-listed here, so the
+# provisioned set and `task status`'s expected-label inventory cannot fork —
+# those are the two consumers that read the manifest today. Add or retire a
+# label in label-registry.json and re-run this; `task test:label-registry` and
+# `task test:registry-drift` gate the bindings.
+#
+# The manifest carries more than those two need — `writers`, `lifecycle`,
+# `exclusive`, `axis` — for consumers that are specified but NOT yet built: a
+# triage skill (evanharmon1/harmon-devkit#455) and track-work's issue-metadata
+# checker (#449), both of which read this file with a `gh label list` fallback.
+# Until they land, editing those fields changes documentation and validation
+# only; nothing else behaves differently.
+#
+# The manifest also records what this script deliberately does NOT provision:
+# `tool-owned` values (release-please's `autorelease: *`, foreman's own
+# `dispatched`/`ready-for-review` outputs) are created by their owning tool on
+# demand, and `github-default` values (`bug`, `enhancement`, …) are seeded by
+# GitHub itself. Both are documented, never provisioned, never deleted.
 #
 # The `layer:` and `domain:` families deliberately mirror the Layer and Domain
 # single-select fields created by setup-github-issue-fields.sh (org) /
 # setup-github-project.sh (personal account) — same vocabulary, so a label and a
-# field value never disagree. Keep the three lists in step when you extend them.
+# field value never disagree. Keep the manifest and the two field lists in step
+# when you extend them.
 #
 # Labels are REPO-level in GitHub — there's no shared org label pool. Run this in
 # each repo; org "default labels" (Settings → Repository, UI-only, no API) only
@@ -20,10 +41,11 @@
 # Usage: setup-github-labels.sh --repo <owner/repo> [--foreman]
 # Needs: gh authed with repo write.
 #
-# --foreman additionally creates the foreman arming labels (human inputs the
-# foreman CLI reads but never auto-creates). The flag is passed by the
-# Taskfile target when the repo uses foreman, keeping this script identical
-# across repos that do and don't.
+# --foreman additionally creates the arming axis — the `foreman:*` labels a
+# human applies as inputs the foreman CLI reads but never auto-creates. The flag
+# is passed by the Taskfile target when the repo uses foreman, keeping this
+# script identical across repos that do and don't. The manifest marks that axis
+# `arming`, which is what the renderer's `provision` / `foreman` split reads.
 #
 # NOTE: hits the live GitHub API, so it is not exercised by `task test:template`
 # (guarded by shellcheck + shfmt only). Test it against a scratch repo.
@@ -61,90 +83,62 @@ for tool in gh node; do
 done
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-labels_helper="$script_dir/agent-registry-labels.mjs"
+labels_helper="$script_dir/label-registry-labels.mjs"
+manifest="$script_dir/../label-registry.json"
 
-# name|hex-color|description — one per line. Color encodes the family.
-labels="
-sec|5319E7|Security concern
-a11y|5319E7|Accessibility concern
-perf|5319E7|Performance concern
-tech-debt|5319E7|Technical debt
-i18n|5319E7|Internationalization
-l10n|5319E7|Localization
-customer-request|EC4899|Requested by a customer
-ai-generated|EC4899|Created or authored by an AI agent
-needs-triage|E36209|Awaiting triage
-needs-requirements|E36209|Requirements not yet defined
-blocked|E36209|Blocked by a non-issue dependency (reason in a comment)
-waiting|E36209|Waiting on an external party
-needs-decision|E36209|Needs a decision before it can proceed
-needs-response|E36209|Awaiting a response
-needs-communication|E36209|An update needs to be communicated out
-layer:ui|1D76DB|Components, styling, interaction, tokens, a11y. No data change
-layer:logic|1D76DB|Business rules, handlers, calculation
-layer:data|1D76DB|Schema, indexes, validators, migrations
-layer:integration|1D76DB|External boundary: webhooks, API clients, credentials
-domain:auth|FBCA04|Authentication and authorization
-domain:billing|FBCA04|Billing and payments
-domain:platform|FBCA04|CI, build, test infra, and tooling in this repo
-rigor:light|D4C5F9|Dev Loop caps: trivial, low-blast-radius change
-rigor:standard|D4C5F9|Dev Loop caps: the default budget
-rigor:deep|D4C5F9|Dev Loop caps: security, migrations, irreversible paths
-"
+for required in "$labels_helper" "$manifest"; do
+    if [ ! -f "$required" ]; then
+        echo "Required label-taxonomy asset not found: $required" >&2
+        exit 1
+    fi
+done
 
-# The `rigor:*` family selects which round-cap tier in `.devflow.toml` an agent
-# works an issue under (AGENTS.md, "Round caps are resolved, not stated here").
-# It is an input an agent READS and never applies to itself. It is advisory,
-# not an authenticated gate: nothing verifies who applied it, and GitHub's
-# triage role can label an issue with no push access at all — so a budget can
-# be retuned by someone who could not edit `.devflow.toml`. AGENTS.md requires
-# any cap resolving below `default_rigor` to be stated in the PR body, which
-# keeps a reduced budget visible to the human reviewer.
-# Labels are multi-select and nothing stops two being applied, so AGENTS.md
-# resolves per stage by taking the HIGHEST cap present: a conflict can only
-# ever buy more review, never less, and no ranking of tier names is needed.
-
-# The model-centric agent vocabulary — `suggest:<family>` (advisory routing) and
-# `claim:<family>` (live ownership) — is rendered from the machine-readable agent
-# registry (agent-registry.json), NOT hand-listed here, so this script and the
-# registry cannot fork (ADR 0005; test:registry-drift gates the two together).
-# The retired `agent:*` family is intentionally gone; only family-level labels
-# are seeded (model-level `suggest:/claim:<family>:<model>` are created on demand).
+# name|hex-color|description — one per line, rendered from label-registry.json.
+# The renderer fails closed on GitHub's 50-char name and 100-char description
+# limits and on any field that would corrupt this record stream, so the whole
+# set is rejected before a partial run can reach GitHub.
 #
-# TRANSITION: this stops SEEDING agent:* but never deletes existing labels, so a
-# repo that already has agent:claude-code keeps it and its claims keep working.
-# The skill half of the cutover has shipped: the vendored /claim adds a claim:*
-# label where the repo has that family and falls back to a live agent:* one only
-# where provisioning has not migrated, while /wrap and release-claim.sh recognize
-# BOTH families. That is exactly why this stays additive — seeding claim:* beside
-# a surviving agent:* label strands no in-flight claim either way.
-# What is left is a one-time, per-repo rename of the LIVE labels
-# (`gh label edit agent:<harness> --name claim:<family>`, which preserves issue
-# associations) — a human operator step in docs/CHECKLIST.md, deliberately not a
-# permanent migration in this script. Until an operator runs it, a repo simply
-# carries both families, which the readers above already tolerate.
-labels="$labels
-$(node "$labels_helper" suggest-claim)"
-
-# Foreman arming labels (--foreman): human inputs for label-mode arming
-# (ponderousdev/foreman). The `foreman:<adapter>` SELECTORS are rendered from the
-# agent registry below — provisioned ONLY for adapters that exist in the pinned
-# Foreman release (a selector with no production adapter can strand armed work,
-# ADR 0005 D11). The labels here are foreman's own workflow-state protocol, not
-# adapter selectors, so they are registry-independent. Distinct from the
-# `claim:*` family above: a claim says which agent IS working an issue, a
-# `foreman:*` selector arms it for dispatch. Colors/descriptions mirror
-# ponderousdev/foreman's own labels.
-foreman_labels="
-foreman:approved|1D76DB|Arm with the repo default backend
-foreman:hold|D93F0B|Exclude from foreman dispatch (always wins)
-foreman:satisfied|0E8A16|Human override: treat this dependency as satisfied
-foreman:external|BFDADC|External dependency: satisfied when closed as completed
-"
+# Two families in here are composed from agent-registry.json rather than listed
+# in the label manifest: the model-centric `suggest:<family>` (advisory routing)
+# and `claim:<family>` (live ownership), plus the `foreman:<adapter>` selectors
+# under --foreman. The label renderer spawns agent-registry-labels.mjs for
+# those, so the two manifests cannot fork (ADR 0005; test:registry-drift gates
+# the chain). Only family-level labels are seeded — model-level
+# `suggest:/claim:<family>:<model>` are created on demand.
+#
+# TRANSITION: this stops SEEDING the retired agent:* family but never deletes
+# existing labels, so a repo that already has agent:claude-code keeps it and its
+# claims keep working. The skill half of the cutover has shipped: the vendored
+# /claim adds a claim:* label where the repo has that family and falls back to a
+# live agent:* one only where provisioning has not migrated, while /wrap and
+# release-claim.sh recognize BOTH families. That is exactly why this stays
+# additive — seeding claim:* beside a surviving agent:* label strands no
+# in-flight claim either way. What is left is a one-time, per-repo rename of the
+# LIVE labels (`gh label edit agent:<harness> --name claim:<family>`, which
+# preserves issue associations) — a human operator step in docs/CHECKLIST.md,
+# deliberately not a permanent migration in this script. Until an operator runs
+# it, a repo simply carries both families, which the readers above already
+# tolerate.
+#
+# --foreman adds the arming axis: human inputs for foreman's label-mode arming
+# (ponderousdev/foreman), plus foreman's own workflow-state protocol. Distinct
+# from the `claim:*` family: a claim says which agent IS working an issue, a
+# `foreman:*` selector arms it for dispatch. Adapter selectors are provisioned
+# ONLY for adapters that exist in the pinned Foreman release — a selector with
+# no production adapter can strand armed work (ADR 0005 D11) — which is why the
+# renderer composes them from the agent registry instead of listing them.
+#
+# ONE render call, not two. `all` is `provision` followed by `foreman`, so
+# concatenating two separate runs would produce the same lines — but the
+# renderer's duplicate-name check runs per invocation, so a collision that
+# spans the two halves (a bare value name that happens to equal a composed
+# arming label) would pass both runs and then have `gh label create --force`
+# silently overwrite the first record with the second.
+label_mode=provision
 if [ "$foreman" = 1 ]; then
-    labels="$labels$foreman_labels
-$(node "$labels_helper" foreman-adapters)"
+    label_mode=all
 fi
+labels="$(node "$labels_helper" "$label_mode")"
 
 printf '%s\n' "$labels" | while IFS='|' read -r name color desc; do
     [ -z "$name" ] && continue

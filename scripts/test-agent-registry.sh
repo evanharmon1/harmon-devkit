@@ -87,6 +87,20 @@ switch (mutation) {
   case 'bad-claude-harness':
     adapter('claude').harness = 'qwen-code'
     break
+  case 'overlong-display-name':
+    // 48 code points: one past the 47-char cap that keeps the rendered ADAPTER
+    // description (`Arm this issue for foreman dispatch with the … backend`, 53
+    // literal chars) inside GitHub's 100-character limit.
+    adapter('claude').display_name = 'x'.repeat(48)
+    break
+  case 'family-display-name-at-adapter-cap':
+    // 48 chars is fine for a FAMILY: its longest template is 36 literal chars,
+    // so the cap there is 64. The two bounds are per-template, not shared.
+    registry.families[0].display_name = 'x'.repeat(48)
+    break
+  case 'overlong-family-display-name':
+    registry.families[0].display_name = 'x'.repeat(65)
+    break
   case 'non-production-claude':
     Object.assign(adapter('claude'), {
       classification: 'test-only',
@@ -234,6 +248,30 @@ rejects "a legacy claude adapter mapped to the wrong harness" \
 rejects "a non-production legacy claude adapter" \
     'non-production-claude' \
     'legacy Foreman adapter claude must be production-dispatchable and provisionable'
+rejects "an adapter display_name that would overflow GitHub's label-description limit" \
+    'overlong-display-name' \
+    'must contain at most 47 character(s)'
+rejects "a family display_name that would overflow GitHub's label-description limit" \
+    'overlong-family-display-name' \
+    'must contain at most 64 character(s)'
+
+# The two caps are per-TEMPLATE, not one shared bound: a 48-char family name
+# renders `Suggested for the … family (advisory)` at 84 chars, well inside
+# GitHub's limit, and must not be rejected just because the adapter template
+# needs a tighter bound.
+if ! node --input-type=module - "$registry" "$mutated" <<'NODE'; then
+import { readFile, writeFile } from 'node:fs/promises'
+const [inputPath, outputPath] = process.argv.slice(2)
+const registry = JSON.parse(await readFile(inputPath, 'utf8'))
+registry.families[0].display_name = 'x'.repeat(48)
+await writeFile(outputPath, `${JSON.stringify(registry, null, 2)}\n`)
+NODE
+    fail "could not build the 48-char family display_name fixture"
+fi
+if ! output="$(node "$validator" "$mutated" "$schema" 2>&1)"; then
+    fail "validator rejected a 48-char family display_name, which its own template allows: $output"
+fi
+echo "PASS: accepts a family display_name past the adapter-only 47-char cap"
 
 node --input-type=module - "$schema" "$mutated_schema" <<'NODE'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -268,6 +306,25 @@ case "$output" in
 *) fail "malformed minLength failed for the wrong reason: $output" ;;
 esac
 echo "PASS: rejects malformed supported schema keyword values"
+
+# An inverted length pair can never be satisfied, so without this guard every
+# instance would fail with a length complaint and none would name the schema.
+node --input-type=module - "$schema" "$mutated_schema" <<'NODE'
+import { readFile, writeFile } from 'node:fs/promises'
+
+const [inputPath, outputPath] = process.argv.slice(2)
+const schema = JSON.parse(await readFile(inputPath, 'utf8'))
+schema.$defs.familyDisplayName.maxLength = 0
+await writeFile(outputPath, `${JSON.stringify(schema, null, 2)}\n`)
+NODE
+if output="$(node "$validator" "$registry" "$mutated_schema" 2>&1)"; then
+    fail "validator accepted a maxLength below its own minLength"
+fi
+case "$output" in
+*'maxLength: must not be below minLength'*) ;;
+*) fail "inverted length pair failed for the wrong reason: $output" ;;
+esac
+echo "PASS: rejects a maxLength below minLength"
 
 node --input-type=module - "$schema" "$mutated_schema" <<'NODE'
 import { readFile, writeFile } from 'node:fs/promises'

@@ -308,8 +308,13 @@ Both owner types — the org-only follow-ups are in the next section.
   > Create-or-update (`--force`); it never deletes, so pruning GitHub's defaults —
   > or a pre-`ui`/`logic`/`data`/`integration` repo's stale `layer:frontend`,
   > `layer:backend`, `layer:infra` labels — stays manual. Whenever you add a
-  > `domain:` option, add it to `scripts/setup-github-labels.sh` **and re-run this
-  > task**: editing the script alone does not touch the live labels.
+  > `domain:` option, add it to the label vocabulary **and re-run this task**:
+  > editing the vocabulary alone does not touch the live labels. Where the repo
+  > carries a `label-registry.json` (a machine-readable label taxonomy), that
+  > manifest is the vocabulary — add a value to its `domain` family; the setup
+  > script renders from it and hand-editing the script does nothing. Where there
+  > is no manifest, the vocabulary is the `name|color|description` table inside
+  > `scripts/setup-github-labels.sh`. Check which one the repo has before editing.
 
 - [ ] **[manual — GitHub UI]** Create the project's **starter views** — **Board**,
       **Triage**, **Agent queue**, **Planning**, **Mine**. Projects V2 has no view
@@ -394,9 +399,11 @@ answering `linear`/`none` has no such task and should skip them.
       seeds `auth`/`billing`/`platform` only — add this product's real domains
       (from your ERD entities) in the org's issue-field settings. The field is
       org-wide while labels are per-repo, so each repo carries the `domain:` labels
-      for the domains it actually uses: add those to
-      `scripts/setup-github-labels.sh` and re-run `task setup:github-labels` in
-      that repo. `Layer` (`ui`/`logic`/`data`/`integration`) is product-independent
+      for the domains it actually uses: add those to that repo's label vocabulary
+      — its `label-registry.json` `domain` family where it has one, otherwise the
+      `name|color|description` table in `scripts/setup-github-labels.sh` — and
+      re-run `task setup:github-labels` in that repo.
+      `Layer` (`ui`/`logic`/`data`/`integration`) is product-independent
       and normally needs no edits. A re-run appends any missing *starter* option,
       but never your repo-specific ones and never a **removal** — retiring an
       option is manual too, and only after re-mapping (deleting an assigned option

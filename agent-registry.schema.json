@@ -39,6 +39,18 @@
       "minLength": 1,
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
     },
+    "familyDisplayName": {
+      "$comment": "A family display_name that agent-registry-labels.mjs splices into a LABEL DESCRIPTION, so its length is bounded by GitHub's 100-character description cap (harmon-init#680; label-registry.schema.json caps its own descriptions at the same 100). 64 = 100 minus the longest family template in that renderer, `Suggested for the <display_name> family (advisory)` (36 literal characters); the `Claimed by <display_name>` template is shorter. The cap is per TEMPLATE rather than shared with foremanAdapter below, so a family name is not held to a bound only the adapter template needs. The renderer also fails closed on the rendered length, so this is the earlier of two gates; keep the constant in step if that template changes.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "adapterDisplayName": {
+      "$comment": "As familyDisplayName, but for the longest description template in the renderer: `Arm this issue for foreman dispatch with the <display_name> backend` (53 literal characters), so 47 = 100 - 53.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 47
+    },
     "labelNamespace": {
       "type": "object",
       "additionalProperties": false,
@@ -70,7 +82,7 @@
       "required": ["slug", "display_name", "models"],
       "properties": {
         "slug": { "$ref": "#/$defs/slug" },
-        "display_name": { "type": "string", "minLength": 1 },
+        "display_name": { "$ref": "#/$defs/familyDisplayName" },
         "models": {
           "type": "array",
           "items": { "$ref": "#/$defs/model" }
@@ -132,7 +144,7 @@
       ],
       "properties": {
         "slug": { "$ref": "#/$defs/slug" },
-        "display_name": { "type": "string", "minLength": 1 },
+        "display_name": { "$ref": "#/$defs/adapterDisplayName" },
         "source_file": {
           "type": "string",
           "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*[.]sh$"

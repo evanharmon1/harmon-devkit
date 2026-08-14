@@ -82,11 +82,20 @@ const field = (value, where) => {
 // whole set is rejected before any of it reaches GitHub.
 const GH_LABEL_NAME_MAX = 50
 const GH_LABEL_DESC_MAX = 100
+// Counted in CODE POINTS, not UTF-16 units, so an astral character counts once —
+// the same semantics validate-agent-registry.mjs's maxLength keyword uses. When
+// the two disagreed, a display_name the schema accepted could still be rejected
+// here, so passing validation did not mean the registry would render.
+const codePointLength = (value) => {
+  let length = 0
+  for (const _ of value) length += 1
+  return length
+}
 const labelName = (prefix, slug) => {
   const name = `${prefix}:${slug}`
-  if (name.length > GH_LABEL_NAME_MAX) {
+  if (codePointLength(name) > GH_LABEL_NAME_MAX) {
     console.error(
-      `agent-registry-labels: label '${name}' is ${name.length} chars, over GitHub's ` +
+      `agent-registry-labels: label '${name}' is ${codePointLength(name)} chars, over GitHub's ` +
         `${GH_LABEL_NAME_MAX}-char limit — shorten the slug in agent-registry.json`
     )
     process.exit(1)
@@ -94,10 +103,11 @@ const labelName = (prefix, slug) => {
   return name
 }
 const record = (name, color, description) => {
-  if (description.length > GH_LABEL_DESC_MAX) {
+  if (codePointLength(description) > GH_LABEL_DESC_MAX) {
     console.error(
-      `agent-registry-labels: label '${name}' description is ${description.length} chars, over ` +
-        `GitHub's ${GH_LABEL_DESC_MAX}-char limit — shorten the display_name in agent-registry.json`
+      `agent-registry-labels: label '${name}' description is ${codePointLength(description)} ` +
+        `chars, over GitHub's ${GH_LABEL_DESC_MAX}-char limit — shorten the display_name in ` +
+        `agent-registry.json`
     )
     process.exit(1)
   }

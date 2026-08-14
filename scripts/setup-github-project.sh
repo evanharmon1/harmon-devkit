@@ -502,8 +502,9 @@ create_text "Product"
 # by the agent itself. A single-select field could carry neither answer without
 # duplicating the label vocabulary (docs/project-management.md, ADR 0005 D4).
 # Domain (what part of the product) and Layer (which slice of the stack) mirror
-# the `domain:` / `layer:` label families in setup-github-labels.sh — keep the
-# lists in step. Domain is a starter set; real domains come from your product's
+# the `domain:` / `layer:` label families — in label-registry.json where the repo
+# carries that manifest, otherwise in setup-github-labels.sh's own table — so
+# keep the lists in step. Domain is a starter set; real domains come from your product's
 # entities. create_single_select only ever ADDS to an existing field, so options
 # you add in the Project UI survive every re-run — and a starter value added by a
 # later harmon-init release lands on the next one, the same way a new

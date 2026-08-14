@@ -73,6 +73,7 @@ tasks:
       - task: test:agent-registry
       - task: test:registry-drift
       - task: test:registry-docs
+      - task: test:label-registry
       - task: test:tasks
       - task: test:ci-results
       - task: test:status
@@ -344,6 +345,11 @@ tasks:
       COPIER_ANSWERS_FILE: ".copier-answers.yml"
     cmds:
       - ./scripts/test-registry-docs.sh
+
+  test:label-registry:
+    desc: Schema-check the machine-readable label taxonomy and bind the label renderer, provisioning script, and .devflow.toml tiers to it (offline)
+    cmds:
+      - ./scripts/test-label-registry.sh
 
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)

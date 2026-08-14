@@ -13,7 +13,12 @@
 #                      the family-level + provisionable set the registry implies
 #                      (no agent:*, no seeded model-level, no non-production adapter).
 #   3. provisioning  — setup-github-labels.sh renders those labels from the
-#                      registry instead of hand-listing a forkable copy.
+#                      registry instead of hand-listing a forkable copy. Where
+#                      the repo carries a label taxonomy manifest, that is now a
+#                      CHAIN — setup-github-labels.sh → label-registry-labels.mjs
+#                      → agent-registry-labels.mjs — and every link is asserted:
+#                      a broken middle link renders the agent vocabulary from
+#                      nothing while the end of the chain still looks wired up.
 #   4. wrappers      — every claude-<family> provider wrapper maps to a
 #                      provider-rewired harness registered in agent-registry.json.
 #   5. adapters      — the provisionable Foreman adapters are internally coherent;
@@ -35,6 +40,9 @@ schema="${2:-agent-registry.schema.json}"
 validator="scripts/validate-agent-registry.mjs"
 renderer="scripts/agent-registry-labels.mjs"
 labels_script="scripts/setup-github-labels.sh"
+# The label-taxonomy renderer, where the profile ships one: setup-github-labels.sh
+# calls it and it composes the agent vocabulary by spawning $renderer.
+label_renderer="scripts/label-registry-labels.mjs"
 # The provider wrappers live under whichever devcontainer path the profile
 # rendered; there is at most one.
 wrappers_glob=".devcontainer/config/claude-providers.sh"
@@ -101,9 +109,26 @@ fi
 
 # ── 3. provisioning script ─────────────────────────────────────────────────
 if [ -f "$labels_script" ]; then
-    # It must delegate to the renderer, not carry a forkable hand-list.
-    grep -q 'agent-registry-labels.mjs' "$labels_script" ||
-        fail "$labels_script does not render its agent labels from the registry (missing agent-registry-labels.mjs call) — hand-listed labels fork from agent-registry.json"
+    # It must delegate to a renderer, not carry a forkable hand-list. Two shapes
+    # are legitimate across the render matrix, and each is asserted end to end:
+    #
+    #   * taxonomy-manifest repos call label-registry-labels.mjs, which composes
+    #     the agent vocabulary by spawning agent-registry-labels.mjs. Asserting
+    #     only the first link would pass a middle renderer that had stopped
+    #     consulting the agent registry at all — the labels would still render,
+    #     from a hand-list, which is the exact fork this gate exists to catch.
+    #   * pre-manifest repos call agent-registry-labels.mjs directly.
+    if grep -q 'label-registry-labels.mjs' "$labels_script"; then
+        if [ -f "$label_renderer" ]; then
+            grep -q 'agent-registry-labels.mjs' "$label_renderer" ||
+                fail "$label_renderer does not compose the agent vocabulary from the registry (missing agent-registry-labels.mjs call) — the suggest:/claim:/foreman: families would fork from agent-registry.json"
+        else
+            fail "$labels_script renders labels via $label_renderer but that file is missing — provisioning would fail closed at run time"
+        fi
+    else
+        grep -q 'agent-registry-labels.mjs' "$labels_script" ||
+            fail "$labels_script does not render its agent labels from the registry (no label-registry-labels.mjs or agent-registry-labels.mjs call) — hand-listed labels fork from agent-registry.json"
+    fi
     # No hardcoded agent:* / suggest:* / claim:* / foreman:<family> selector
     # lines (the leading `word:` of a `name|color|desc` label line).
     if grep -Eq '^agent:[a-z0-9-]+\|' "$labels_script"; then

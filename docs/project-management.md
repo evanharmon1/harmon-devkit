@@ -371,7 +371,16 @@ lands on the next run.
 Labels are **repo-level** and orthogonal to `Status` (pipeline position) and
 `Type` (kind of work) — they tag cross-cutting *facets*. Keep them in a few
 families, color-coded by family; the starter set is created by
-`task setup:github-labels`:
+`task setup:github-labels`.
+
+[`label-registry.json`](../label-registry.json) is the **machine-readable source
+of truth** for this vocabulary — per family: prefix, color, purpose, axis,
+`writers`, lifecycle, exclusivity, and which values are provisioned rather than
+created by GitHub or by another tool. Provisioning and `task status`'s
+expected-label inventory both render from it, so the families below describe that
+manifest rather than being a second list to keep in step.
+
+The families:
 
 - **Concerns** — `sec`, `a11y`, `perf`, `tech-debt`, `i18n`, `l10n`
 - **Source** — `customer-request`, `ai-generated`
@@ -390,6 +399,35 @@ families, color-coded by family; the starter set is created by
   `default_rigor` to be stated in the PR body, keeping a reduced budget visible
   to the reviewer. Two present resolve per stage to the highest cap, so a
   conflict can only ever buy more review.
+- **Area** — `area:build`, `area:ci`, `area:deps`, `area:docs`, `area:skills`:
+  the codebase subsystem the work touches. Area is *where* the change lands,
+  domain is the capability it serves; at most one per issue
+- **Work type** — `bug`, `documentation`, `enhancement`, `question` (GitHub's own
+  defaults), plus `task` and `research`: the kind of work, for repos with no
+  native issue `Type`. At most one per issue — the axis is exclusive — but
+  nothing applies one automatically: `.github/ISSUE_TEMPLATE/*.yml` declares no
+  `labels:`, so an issue opened from a form carries none until triage adds it.
+  (Teaching the forms to apply one is upstream
+  [harmon-init#852](https://github.com/evanharmon1/harmon-init/issues/852), which
+  owns their shape.) Deliberately **not** a `type:*`
+  family — that prefix is Foreman's conventional-commit override.
+  **Where the owner is an organization with native issue `Type`, the Type is
+  authoritative and these labels are redundant.** Setup creates `task` and
+  `research` there anyway — the renderer is deliberately offline and cannot know
+  the owner type — while GitHub's own four defaults are *never* provisioned
+  (GitHub seeds them at repo creation and setup never recreates a deleted or
+  customized one). The two it does create are additive and inert: nothing reads
+  them where a Type exists. Making provisioning owner-aware belongs with the
+  owner-scoping the triage skill already specifies, not with an offline renderer
+- **Tier** — `tier:local`, `tier:economy`, `tier:standard`, `tier:frontier`,
+  `tier:apex`, `tier:adaptive`: which model stratum a consumer should prefer.
+  Advisory and inert on its own — nothing invokes a model because the label
+  exists. Two present resolve strongest-wins, so a conflict can only ever buy
+  more capability
+- **Method** — `method:oneshot`, `method:plan`, `method:plan-approved`,
+  `method:orchestrate`, `method:council`, `method:human-led`: the execution
+  topology an agent should use. Advisory; conflicts resolve by the configured
+  method rank, most human oversight first
 
 Two more families name **model intelligence** rather than a facet of the work,
 and their vocabulary is not hand-listed anywhere: it is rendered from
@@ -515,10 +553,15 @@ it creates it on demand, and provisioning deliberately leaves it alone.
 |---|---|---|---|---|
 | `sec`, `a11y`, `perf`, `tech-debt`, `i18n`, `l10n` | humans, at triage | humans, saved views | provisioned; inert | applied when true, removed when not |
 | `customer-request`, `ai-generated` | whoever files or authors the work, human or agent | humans, saved views | provisioned; inert | durable provenance — never removed |
-| `needs-triage`, `needs-requirements`, `blocked`, `waiting`, `needs-decision`, `needs-response`, `needs-communication` | humans, at triage | humans, the Triage view | provisioned; inert | transient — removed as soon as the state clears |
-| `layer:{ui,logic,data,integration}` | humans, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; mirrors the `Layer` field, with no sync between them |
-| `domain:{auth,billing,platform,…}` | humans, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; mirrors the `Domain` field, with no sync between them |
+| `needs-triage`, `needs-requirements`, `blocked`, `waiting`, `needs-decision`, `needs-response`, `needs-communication` | humans, at triage — plus agents for `needs-triage`, which they add freely and remove only once classification is complete | humans, the Triage view | provisioned; inert | transient — removed as soon as the state clears |
+| `layer:{ui,logic,data,integration}` | humans and agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; mirrors the `Layer` field, with no sync between them |
+| `domain:{auth,billing,platform,…}` | humans and agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; mirrors the `Domain` field, with no sync between them |
 | `rigor:{light,standard,deep}` | humans, at triage — **never an agent on itself** | agents, when entering the Dev Loop | provisioned; **read by agents** — selects a round-cap tier, arms nothing | set when the default budget is wrong for the change; survives the work |
+| `area:{build,ci,deps,docs,skills}` | humans and agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification — the subsystem the work touches; at most one |
+| `bug`, `documentation`, `enhancement`, `question` | humans and agents, at authoring | humans, the native `Type` where the org has one | **GitHub's own defaults** — documented, never provisioned, never deleted | at most one work type per issue; the issue forms apply none, so triage adds it |
+| `task`, `research` | humans and agents, at authoring | as above | provisioned; inert — the two work types GitHub does not seed | as above |
+| `tier:{local,economy,standard,frontier,apex,adaptive}` | humans, at triage | agents and other consumers, when routing | provisioned; advisory — **inert on its own**, nothing invokes a model because the label exists | set when the default stratum is wrong; two present resolve strongest-wins |
+| `method:{oneshot,plan,plan-approved,orchestrate,council,human-led}` | humans, at triage | agents, when choosing an execution topology | provisioned; advisory — arms nothing | set when the default topology is wrong; conflicts resolve by the configured rank |
 | `suggest:<family>` | humans, at planning | humans, the Agent queue view | provisioned from the registry (family level only); advisory — arms nothing | set at planning; survives the work and is never rewritten by a claim |
 | `suggest:<family>:<model>` | humans | humans | **tool-owned, created on demand** — seeding every model would be an unbounded roster | refines the family label; apply both |
 | `claim:<family>` | the agent itself — a vendored claim skill, or a Claude Actions run | humans; the Claude Actions claim gate; `claim-release.yml` | provisioned from the registry; a **gate**, never a trigger | added at claim, removed at release — by the workflow's `always()` step, or by `claim-release.yml` on close |
