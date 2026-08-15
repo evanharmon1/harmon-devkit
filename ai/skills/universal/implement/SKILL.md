@@ -213,7 +213,11 @@ unmerged PR's claim only when the PR's head matches it
 (`track-work/references/claim-lifecycle.md`). Post a new `Claiming —` comment
 with the real branch and the same record values (latest trusted claim wins,
 so this becomes the claim of record; nothing else changed, so the record
-lines carry over verbatim). Skip this when the names already match.
+lines carry over verbatim). **Copy the `Preflight (§3):` block over verbatim
+too**, where the claim comment carries one: it is the durable record of the
+credential gaps and human-only steps that claim found, and the refreshed
+comment is the one a maintainer or a later session reads. Skip this when the
+names already match.
 
 The default branch is not always named `main`, which is why it is resolved
 rather than assumed.
