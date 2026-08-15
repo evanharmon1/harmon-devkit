@@ -55,7 +55,8 @@ assume them.
   valid, so fall back to asking the platform before stopping:
 
   ```sh
-  git fetch origin                                        # the tip, not just the name
+  git fetch origin                    # the tips
+  git remote set-head origin -a       # (re)establish origin/HEAD from the remote
   default="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
   [ -n "$default" ] || default="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
   current="$(git branch --show-current)"
@@ -72,9 +73,12 @@ assume them.
   workflow, `origin` is the upstream and the fork is a second, differently
   named push remote). Where `origin` is not and cannot be made the PR
   target, **stop and say so** — prescribing flag workarounds here would
-  review half the scope (§7, damper 10). The `git fetch` is load-bearing:
+  review half the scope (§7, damper 10). Both setup lines are load-bearing:
   a stale `origin/<default>` tip silently folds already-merged commits into
-  every review and the release-title preflight. `$base_ref` is resolved
+  every review and the release-title preflight, and a stale or absent
+  `origin/HEAD` — the ref the bare reviewer resolves — makes the harness
+  review a renamed default's old branch while `$base_ref` points at the new
+  one; after a rename, confirm the two agree before round 1. `$base_ref` is resolved
   **once, here**, and every later step consumes it: the merge-base lookup in
   §2, the bare reviewer rounds in §3–4, the release-title preflight and PR
   creation in §10.
@@ -427,9 +431,14 @@ commits *and* working tree — so a fix can never narrow the re-review to itself
 An explicit `--base`/`--uncommitted` reviews one half only, and a stage that
 exits on a half-scoped clean round has confirmed nothing.
 
-**11. Independent judge.** The reviewer is a **different model family than the
-author, by design** — self-review exhibits self-bias and a self-correction
-blind spot, and a model grading its own work converges on approving it. The
+**11. Independent judge.** The reviewer is **independent of the authoring
+session by design** — a separate instance with none of the author's context,
+and a different model family wherever the harness provides one — because
+self-review exhibits self-bias and a self-correction blind spot, and a model
+grading its own work converges on approving it. Where author and reviewer
+unavoidably share a family (a Codex-driven session reviewing with Codex),
+say so in the announcement; the shepherd's cloud review of the final head is
+then the nearest cross-check, not a substitute for this damper. The
 author never disables, bypasses, or reconfigures the gate to pass it. Where an
 automatic stop-gate BLOCKs on something you classified P2: adjudicate it on its
 own terms — fix it, or state the reasoning — **never** disable the gate. A
@@ -512,7 +521,11 @@ In order:
    <finding>` — with enough detail to adjudicate later. The body also carries
    what/why/how-it-was-verified (name the gates you actually ran) and the
    budget line from §2, including the reduced-budget disclosure if one applies.
-5. **`gh pr create --draft`.** Push the branch to a remote you can write to,
+5. **Re-check ownership immediately before creating.** A claim is not a
+   lock: re-read the bound issue and list its linked/open PRs — another
+   worker may have opened one during the rounds. A live duplicate means
+   stop and reconcile, not open a second PR.
+6. **`gh pr create --draft`.** Push the branch to a remote you can write to,
    named explicitly, then create the PR as a **draft** — binding the target
    explicitly when more than one repo is in play: `--repo <upstream>` for the
    base, `--head <owner>:<branch>` when pushing from a fork, and
@@ -520,7 +533,7 @@ In order:
    the fork as base or infer the wrong head. If `--draft` is
    rejected — GitHub restricts drafts on private repos to paid plans — stop and
    report it; dropping `--draft` reverts the lifecycle rather than fixing it.
-6. **Verify the result.** Read `headRefOid,isDraft` and require both the SHA
+7. **Verify the result.** Read `headRefOid,isDraft` and require both the SHA
    you pushed and `isDraft == true`:
 
    ```sh
@@ -530,7 +543,7 @@ In order:
 
    A non-draft result is not the normal publication path — reconcile it before
    going further.
-7. **Delete the scratch files last** — the deferred-findings sidecar **and the
+8. **Delete the scratch files last** — the deferred-findings sidecar **and the
    adjudication ledger** — only once `gh pr create` has returned a URL *and*
    you have re-read the body and confirmed the findings are in it. The sidecar
    is the sole durable copy: a rejected push, a validation error, or a lost
