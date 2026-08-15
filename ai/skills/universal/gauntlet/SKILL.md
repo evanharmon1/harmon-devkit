@@ -133,8 +133,9 @@ An explicit human instruction still overrides that.
 2 — the two-consecutive exit ends a stage at round 2 whatever the floor says,
 so larger values cannot bind; repos that validate the config reject them). In
 a repo where nothing validates the file, do not interpret an out-of-range or
-non-integer value: read it as the nearest of 1 or 2 (above 2 → 2, otherwise
-1) and say so in the announcement, so a typo retunes the budget visibly
+non-integer value: clamp it **fail-safe** — anything greater than 1 reads as
+2, anything else as 1, so the ambiguity always buys more review, never
+less — and say so in the announcement, so a typo retunes the budget visibly
 rather than silently. It is the minimum
 number of rounds a stage must run before the **empty-round instant exit** in §5
 may be taken, so a deeper tier can require independent confirmation even when
