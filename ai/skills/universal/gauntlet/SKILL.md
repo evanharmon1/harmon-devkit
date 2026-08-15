@@ -35,7 +35,8 @@ states different caps, exit conditions, gates, or sidecar locations, follow
 file actually says rather than inferring its vintage: vendored skills sync on
 their own release cadence and can lag a policy change made there. A repo with
 no second-model reviewer configured is not a repo doing it wrong; in one, this
-skill reduces to its entry gate, §9, and §10.
+skill reduces to its entry gate, §2 (the budget line and shepherd cap are
+still required downstream), §9, and §10.
 
 Writes — commits, gate runs, `git push`, `gh pr create` — always go through the
 normal permission prompt.
@@ -133,10 +134,10 @@ An explicit human instruction still overrides that.
 2 — the two-consecutive exit ends a stage at round 2 whatever the floor says,
 so larger values cannot bind; repos that validate the config reject them). In
 a repo where nothing validates the file, do not interpret an out-of-range or
-non-integer value: clamp it **fail-safe** — anything greater than 1 reads as
-2, anything else as 1, so the ambiguity always buys more review, never
-less — and say so in the announcement, so a typo retunes the budget visibly
-rather than silently. It is the minimum
+non-integer value: clamp it **fail-safe** — every non-numeric value reads as
+2, and a numeric one reads as 2 when greater than 1, else 1 — so ambiguity
+always buys more review, never less; say so in the announcement, so a typo
+retunes the budget visibly rather than silently. It is the minimum
 number of rounds a stage must run before the **empty-round instant exit** in §5
 may be taken, so a deeper tier can require independent confirmation even when
 round 1 comes back clean. **Tolerate its absence: a tier that does not define
@@ -293,8 +294,12 @@ just earlier because it is in your way: read the orphan records, adopt
 anything that belongs to live work, and move the rest aside. Never delete
 them blind.
 
-One line per adjudicated finding: **path, a few distinctive substance words,
-the disposition, and the stage/round it came from**. Example:
+One line per adjudicated finding — and **one line per round outcome**, empty
+rounds included (`challenge r1 | no findings`), so a resumed session or a
+re-entered stage can count rounds already spent against the cap and floor
+instead of restarting the count. Per finding: **path, a few distinctive
+substance words, the disposition, and the stage/round it came from**.
+Example:
 
 ```text
 scripts/foo.sh:41 | pid reuse in the watcher loop | declined: recipe deleted (moot) | challenge r2
@@ -350,6 +355,10 @@ sidecar="$(git rev-parse --git-path "deferred-findings/$(git branch --show-curre
 mkdir -p "$(dirname "$sidecar")"
 ```
 
+The same prefix-orphan accounting specified for the ledger in §6 applies
+here before the first append: a stale file or directory of a dead branch
+occupying this path is read, adopted where live, and moved aside — not
+deleted blind, and not left to block the record until §10's sweep.
 Append **only if not already listed**, matched by location plus substance — an
 unchanged deferred finding is re-reported by design every remaining round, and
 appending blindly would hand the shepherd four copies of one finding. A P2 you
@@ -513,13 +522,16 @@ In order:
    ```sh
    for tree in deferred-findings adjudication-ledger; do
      dir="$(git rev-parse --git-path "$tree")"
-     [ -e "$dir" ] && ls -R "$dir" || echo "$tree: empty sweep"
+     if [ ! -e "$dir" ]; then echo "$tree: empty sweep"
+     else ls -R "$dir" || { echo "$tree: listing FAILED — stop"; exit 1; }
+     fi
    done
    ```
 
-   An absent tree is an **empty sweep, not a failure** — a change whose
-   stages deferred nothing never creates these directories, and a clean
-   review must not make the exit ceremony error.
+   Only an **absent** tree is an empty sweep — a change whose stages
+   deferred nothing never creates these directories. A tree that exists but
+   cannot be fully listed is a stop, not an empty result: opening the PR
+   over an unreadable record drops findings.
 
    A branch renamed or deleted mid-change strands its notes under the old name,
    where nothing will look for them again. Adopt an orphan into this PR if it
@@ -550,7 +562,10 @@ In order:
    another supported path and say so, rather than bending the flags. If `--draft` is
    rejected — GitHub restricts drafts on private repos to paid plans — stop and
    report it; dropping `--draft` reverts the lifecycle rather than fixing it.
-7. **Verify the result.** Read `headRefOid,isDraft` and require both the SHA
+7. **Verify the result.** Read `headRefOid,isDraft,baseRefName` — the base
+   must equal the branch `$base_ref` names (a rename during the long review
+   loops, or an alternative creation path, can silently target another
+   base). Then require and require both the SHA
    you pushed and `isDraft == true`:
 
    ```sh
@@ -576,8 +591,9 @@ In order:
    finding from the record — a "hand-off note" anywhere else is a location
    nothing downstream is defined to look in.
 
-**Then enter the shepherd stage.** `gh pr create --draft` returning is the
-trigger for that stage, not the end of the work: unpolled checks and
+**Then enter the shepherd stage.** The verified draft existing (step 7) is
+the trigger for that stage — whichever creation path produced it — not the
+end of the work: unpolled checks and
 unanswered reviews are its input, and the deferred findings above are still
 open. Where the shepherd skill is vendored, enter it the way the repo's
 policy says — read `.agents/skills/shepherd/SKILL.md` (or

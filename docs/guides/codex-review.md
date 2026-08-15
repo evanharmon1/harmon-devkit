@@ -310,8 +310,12 @@ The **scaffolding damper** is what replaces the cap as the first line of
 defense. At round 2 — the earliest round that can show the pattern — say on
 the table, for each finding, whether its subject exists only because an earlier
 round of the same stage added it. Where it does, adjudicate it with one of two
-dispositions written down: delete the scaffolding, or state that the code is
-in scope and why the change needs it. A deletion does not re-score the round
+dispositions written down: delete the scaffolding, restructure it to
+invariants (replace attackable procedure-prose with the property it was
+approximating, delegate the mechanism to a testable surface, and carry the
+round's attack scenarios as required test cases — deletion by abstraction,
+for artifacts earlier rounds legitimately demanded), or state that the code
+is in scope and why the change needs it. A deletion does not re-score the round
 that flagged the code — the finding keeps its adjudicated priority there, and
 it is the **next** round, reviewing the tree without it, that finds nothing
 left to re-raise and counts toward convergence. Reflexively hardening the
