@@ -150,6 +150,7 @@ authenticated, `n/a` (not configured, or the CLI is absent) is not the same
 as missing, and `unknown` is not the same as logged out. Quote the remedy
 from the status output, not from memory. If the probe was skipped (untrusted
 branch) or unavailable (target absent) or it failed, say so in this bullet —
-that is the report item. This covers *generic* credential health only; whether
-a specific issue's new resource types need scopes the CI credential lacks is
+that is the report item. This covers whether a login exists,
+not what it is permitted to do: no line here establishes a token's **scopes**.
+Whether a specific issue needs permissions the CI credential lacks is
 `/claim`'s per-issue preflight vetting, not this probe's.

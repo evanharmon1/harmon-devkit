@@ -222,20 +222,22 @@ or reopening settled work. Then look for:
 
 ### Preflight vetting — issue-specific environment reality
 
-*Generic* credential health — logged-in state, `gh` token scopes — belongs to
-`/kickoff` (`task status:creds`) and is not repeated here. This step vets only
-what **this issue** implies, and it stays read-only: check it against the
-repo's docs, config, and code, never by rendering a template or calling an
-external API beyond the `gh` reads above.
+*Generic* credential health — whether a login exists at all, for `gh` and the
+other CLIs — belongs to `/kickoff` (`task status:creds`) and is not repeated
+here. Note what that probe does **not** establish: it resolves the stored
+credential without calling the API and reports it "not validated", so it
+proves presence, never **scopes**. No upstream step has checked those, so a
+scope this issue needs is either verified here by a scope-capable read or
+recorded as unverified — never assumed covered. This step vets only what
+**this issue** implies, and it stays read-only: check it against the repo's
+docs, config, and code, never by rendering a template or calling an external
+API beyond the `gh` reads above.
 
-All four checks run for **every** issue. Only the first is scoped per resource
-type — the others are issue-wide, and an issue that adds one more instance of
-an already-supported resource is exactly the case that has no *new* type and
-still has a human step (another forwarding destination still needs verifying).
+All four checks run for **every** issue.
 
-- **Credential/permission reality** — for each new external resource type or
-  API surface the issue implies, name the credential CI or the agent will
-  use and the scopes those resource types require, then check that it is
+- **Credential/permission reality** — for every external resource or operation
+  the issue touches, name the credential CI or the agent will use and the
+  permissions it needs, then check that it is
   documented (or read-only verifiable) to hold them. A gap is a `correction`
   at minimum. Where the fix is one only a maintainer can apply — editing a
   token in a provider dashboard, granting a scope — say so explicitly in the
