@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.32.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.31.0...v0.32.0) (2026-08-15)
+
+
+### Features
+
+* **claim:** add per-issue preflight vetting to the sanity analysis ([#469](https://github.com/evanharmon1/harmon-devkit/issues/469)) ([98da194](https://github.com/evanharmon1/harmon-devkit/commit/98da194acb56b779c5b3ba249679abd28dbec20d))
+* **skills:** add the gauntlet skill for the challenge/review stage ([#465](https://github.com/evanharmon1/harmon-devkit/issues/465)) ([c5d37dc](https://github.com/evanharmon1/harmon-devkit/commit/c5d37dc034c123f53c8443c9965aa2bab2c5eedb))
+
 ## [0.31.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.30.1...v0.31.0) (2026-08-15)
 
 
