@@ -16,6 +16,7 @@ ai/skills/
 │   ├── breakdown/SKILL.md   # /breakdown — decompose work into session-sized issues
 │   ├── claim/SKILL.md       # /claim — sanity-check + claim the issue
 │   ├── implement/SKILL.md   # /implement — claimed issue → ready-for-review PR via the dev loop
+│   ├── gauntlet/SKILL.md    # /gauntlet — second-model review to convergence → draft PR
 │   ├── shepherd/SKILL.md    # /shepherd — shepherd a draft PR to ready for review
 │   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables
 │   ├── wrap/SKILL.md        # /wrap — wrap up + rename done-<name>
@@ -28,7 +29,7 @@ ai/skills/
     └── standardize-repo/SKILL.md
 ```
 
-`universal/` ships the dev-workflow session suite — seven user-invoked slash
+`universal/` ships the dev-workflow session suite — eight user-invoked slash
 commands (`disable-model-invocation: true`) covering the phases of a working
 session, from decomposing the work and naming the session to shepherding its
 PR to ready for review — plus `track-work`,
