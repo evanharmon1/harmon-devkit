@@ -513,9 +513,15 @@ In order:
    **every** file, not just this branch's:
 
    ```sh
-   ls -R "$(git rev-parse --git-path deferred-findings)"
-   ls -R "$(git rev-parse --git-path adjudication-ledger)"
+   for tree in deferred-findings adjudication-ledger; do
+     dir="$(git rev-parse --git-path "$tree")"
+     [ -e "$dir" ] && ls -R "$dir" || echo "$tree: empty sweep"
+   done
    ```
+
+   An absent tree is an **empty sweep, not a failure** — a change whose
+   stages deferred nothing never creates these directories, and a clean
+   review must not make the exit ceremony error.
 
    A branch renamed or deleted mid-change strands its notes under the old name,
    where nothing will look for them again. Adopt an orphan into this PR if it
@@ -538,7 +544,10 @@ In order:
    explicitly when more than one repo is in play: `--repo <upstream>` for the
    base, `--head <owner>:<branch>` when pushing from a fork, and
    `--base "$default"`. An unqualified create in a fork checkout can select
-   the fork as base or infer the wrong head. If `--draft` is
+   the fork as base or infer the wrong head. One documented limitation:
+   `gh pr create` does not accept an **organization** as the `<owner>` in
+   `--head` — from an org-owned fork, create the PR through the web UI or
+   another supported path and say so, rather than bending the flags. If `--draft` is
    rejected — GitHub restricts drafts on private repos to paid plans — stop and
    report it; dropping `--draft` reverts the lifecycle rather than fixing it.
 7. **Verify the result.** Read `headRefOid,isDraft` and require both the SHA
