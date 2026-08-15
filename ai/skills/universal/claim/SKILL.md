@@ -219,14 +219,49 @@ or reopening settled work. Then look for:
   from the target issue.
 - **Ambiguities** — anything that would force you to invent requirements;
   surface these before coding, not during.
-- **Human-only steps** — anything needing credentials or access the agent
-  does not have.
+
+### Preflight vetting — issue-specific environment reality
+
+*Generic* credential health — logged-in state, `gh` token scopes — belongs to
+`/kickoff` (`task status:creds`) and is not repeated here. This step vets only
+what **this issue** implies, and it stays read-only: check it against the
+repo's docs, config, and code, never by rendering a template or calling an
+external API beyond the `gh` reads above.
+
+For each new external resource type or API surface the issue implies:
+
+- **Credential/permission reality** — name the credential CI or the agent will
+  use and the scopes the new resource types require, then check that it is
+  documented (or read-only verifiable) to hold them. A gap is a `correction`
+  at minimum. Where the fix is one only a maintainer can apply — editing a
+  token in a provider dashboard, granting a scope — say so explicitly in the
+  claim comment; it is lead time, not a step you can take.
+- **Human-step / out-of-band dependencies** — does anything depend on state
+  only a maintainer can create, or on access the agent does not have: email
+  verification, dashboard toggles, DNS at a third party, account approvals? If
+  so, say how the work is sequenced so CI and applies stay green around it —
+  typically a phase gate (a bool variable defaulting off, gating the dependent
+  resources, flipped in a follow-up PR) rather than one apply that partially
+  fails.
+- **Plan-vs-apply blind spots** — where can the dry-run gate (`terraform
+  plan`, a `--dry-run` script, a lint pass) structurally not see the failure?
+  Create-time authorization and eventual verification both pass plan and fail
+  apply, on the default branch, after merge. Name the blind spot and state
+  what will prove it instead.
+- **Stale-reference sweep** — the result of the stale-reference and
+  template-ownership checks above; fold it in here rather than re-running it.
 
 ## 4. Report findings
 
 Numbered findings, each with evidence and a severity: `blocker`,
 `correction`, or `note`. If there is any `blocker`: stop, do **not** claim
 the issue, and ask the user how to proceed.
+
+Precede them with a **preflight block** — one line per §3 preflight check,
+each `ok`, the gap found, or `n/a`. An issue implying no external surface
+scores `n/a` across the board; say that in one line rather than dropping the
+block, so a reader can tell the checks ran from the fact that they are
+answered.
 
 ## 5. Claim the issue
 
