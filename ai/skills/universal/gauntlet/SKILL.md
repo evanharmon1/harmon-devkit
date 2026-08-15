@@ -7,7 +7,7 @@ description: >-
   green. Exit: a draft PR is open and the shepherd stage takes over. Convergence
   is the exit; fixing findings is not. Invoke as /gauntlet.
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branch --show-current), Bash(git rev-parse:*), Bash(git log:*), Bash(git diff:*), Bash(git merge-base:*), Bash(git show:*), Bash(task --list-all:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh issue view:*), Bash(gh repo view:*)
+allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branch --show-current), Bash(git rev-parse:*), Bash(git merge-base:*), Bash(task --list-all:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh issue view:*), Bash(gh repo view:*)
 ---
 
 # Gauntlet
