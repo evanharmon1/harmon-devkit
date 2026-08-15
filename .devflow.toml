@@ -14,18 +14,20 @@
 # PR body, so the budget a change was reviewed under is on the record rather
 # than recalled.
 #
-# When the change under review edits THIS FILE, resolve its caps from the
-# merge-base copy rather than the branch copy — otherwise a branch can lower
-# the very gate it is changing. An explicit human instruction still overrides.
+# When the change under review edits THIS FILE, resolve its caps AND floor
+# from the merge-base copy rather than the branch copy — otherwise a branch
+# can lower the very gate it is changing, a self-lowered min_rounds buying an
+# earlier empty-round exit. An explicit human instruction still overrides.
 #
 # These are ceilings, not quotas. A stage exits the moment any of its exit
 # conditions in AGENTS.md is met: two consecutive rounds adjudicated to zero
-# P0/P1, any single round with no findings at all, or a round that hits the cap
+# P0/P1, any single round with no findings at all (once the tier's min_rounds
+# floor is met), or a round that hits the cap
 # below having adjudicated to zero P0/P1 — the confirming round it would
 # otherwise owe is one the cap forbids, so a clean last round is convergence,
 # not grounds to escalate. Nothing here obliges a round to be run.
 #
-# Retuning these is expected. The Dev Loop assumes four invariants, and nothing
+# Retuning these is expected. The Dev Loop assumes five invariants, and nothing
 # at runtime will tell you if an edit breaks one:
 #   - every tier defines challenge, review and shepherd, all integers
 #   - challenge and review are >= 2, because the exit condition needs two

@@ -207,8 +207,8 @@ announcement and in the PR body whenever any resolved cap or floor is below what
 `default_rigor` would give**, so a reduced budget is visible to the human
 reviewer instead of silent.
 **Announce the resolved caps on entering the loop** — "rigor:
-`<tier>` (`<source>`) → challenge ≤`<n>`, review ≤`<n>`, shepherd `<n>`", filled in
-by reading the file rather than from memory — and carry it into the PR body, so
+`<tier>` (`<source>`) → challenge ≤`<n>`, review ≤`<n>`, shepherd `<n>`,
+min_rounds `<n>`", filled in by reading the file rather than from memory — and carry it into the PR body, so
 a later round or a different session can see which budget it is spending
 instead of inferring one. Everything else about these stages is policy rather
 than a parameter and does not vary by tier: the exit condition, the escalation

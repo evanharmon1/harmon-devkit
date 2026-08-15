@@ -237,8 +237,9 @@ task check      # fast inner loop while editing
 task verify     # definition-of-done gate
 task challenge  # adversarial second model — adjudicate, fix, re-challenge
                 # until TWO CONSECUTIVE rounds adjudicate to zero P0/P1
-                # (any round with no findings at all ends it), under the
-                # challenge cap resolved from .devflow.toml
+                # (a round with no findings ends it once the tier's
+                # min_rounds floor is met), under the challenge cap
+                # resolved from .devflow.toml
 task review     # verification checkpoint — same convergence rule, under its
                 # own resolved review cap
 task ci         # full CI mirror
