@@ -309,7 +309,7 @@ along the way was individually defensible.
 The **scaffolding damper** is what replaces the cap as the first line of
 defense. At round 2 — the earliest round that can show the pattern — say on
 the table, for each finding, whether its subject exists only because an earlier
-round of the same stage added it. Where it does, adjudicate it with one of two
+round of the same stage added it. Where it does, adjudicate it with one of three
 dispositions written down: delete the scaffolding, restructure it to
 invariants (replace attackable procedure-prose with the property it was
 approximating, delegate the mechanism to a testable surface, and carry the

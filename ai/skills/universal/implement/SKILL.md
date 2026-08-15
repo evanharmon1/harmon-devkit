@@ -255,6 +255,13 @@ say so.
 
 ## 6. Second-model review
 
+**Where the `gauntlet` skill is vendored, it is the procedure for this step
+through step 8**: read `.agents/skills/gauntlet/SKILL.md` (or
+`.claude/skills/gauntlet/SKILL.md`) and follow it — it carries the
+adjudication ledger, durable round accounting, and the full PR-opening
+ceremony that the abbreviated steps below do not. The steps below are the
+procedure only where it is not vendored.
+
 Where the repo runs one (harmon-init and harmon-devkit: `task challenge`, then
 `task review`), it belongs here — after `verify` is green, before the CI
 mirror. Follow the repo's own adjudication contract; the shape it is usually in:
