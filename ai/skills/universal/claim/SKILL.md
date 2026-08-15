@@ -270,10 +270,15 @@ Numbered findings, each with evidence and a severity: `blocker`,
 the issue, and ask the user how to proceed.
 
 Precede them with a **preflight block** — one line per §3 preflight check,
-each `ok`, `unverified`, the gap found, or `n/a`. `n/a` is only ever right for the
-credential line, and only when the issue implies no external surface; the
-other three are issue-wide and always have an answer. Never drop the block: a
-reader can tell the checks ran only from the fact that they are answered.
+each `ok`, `unverified`, the gap found, or `n/a`. `n/a` is only ever right for
+the credential line — when the issue implies no external surface, or when the
+operations it does imply genuinely need no credential (a public unauthenticated
+API); the other three are issue-wide and always have an answer. An `ok` names
+what it vetted — the actor, its credential, and the permissions — because a
+successful check produces no numbered finding, so the line is the only record
+that distinguishes a complete check from an actor nobody looked at. Never drop
+the block: a reader can tell the checks ran only from the fact that they are
+answered.
 
 The block is also **carried into the §5 claim comment**, so it outlives this
 session — see the comment body there.
@@ -433,7 +438,7 @@ actually added.
   Claiming — starting implementation on branch <branch> (session <name>).
 
   Preflight (§3):
-  - credentials/scopes: <ok | unverified — what was never checked and why | the gap, naming the credential and the missing scope | n/a — no external surface>
+  - credentials/scopes: <ok — the actor, its credential, the permissions needed, and the evidence | unverified — what was never checked and why | the gap, naming the credential and the missing permission | n/a — no external surface, or the operation needs no credential (name it)>
   - human/out-of-band steps: <none | the step, who must do it, and how the work is sequenced around it>
   - plan-vs-apply blind spots: <none | the blind spot and what will prove it instead>
   - stale references: <none | what drifted | unproven — what could not be classified and why (a stale or unavailable source checkout, a tag-valued `_commit`)>
