@@ -558,7 +558,9 @@ In order:
    A non-draft result is not the normal publication path — reconcile it before
    going further.
 8. **Delete the scratch files last** — the deferred-findings sidecar **and the
-   adjudication ledger** — only once `gh pr create` has returned a URL *and*
+   adjudication ledger** — only once the PR verifiably exists (step 7's
+   check, whichever creation path produced it — the org-fork web path never
+   returns a CLI URL) *and*
    you have re-read the body and confirmed the findings are in it. The sidecar
    is the sole durable copy: a rejected push, a validation error, or a lost
    session between the delete and the create takes every deferred finding with
