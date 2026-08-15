@@ -50,13 +50,22 @@ assume them.
   handed a tree that does not build spends its round on the build.
 - **You are not on the default branch.** Resolve the default rather than
   assuming `main`; an empty current branch means detached HEAD and is also a
-  stop.
+  stop. `origin/HEAD` is only the first attempt — a checkout with another
+  remote name, or one where `origin/HEAD` was never initialized, is still
+  valid, so fall back to asking the platform before stopping:
 
   ```sh
-  default="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+  remote="$(git remote | head -n1)"                       # usually origin
+  default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD" 2>/dev/null | sed "s|^$remote/||")"
+  [ -n "$default" ] || default="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
   current="$(git branch --show-current)"
   [ -n "$default" ] && [ -n "$current" ] && [ "$current" != "$default" ]
   ```
+
+  **Any failed predicate is a stop**: on the default branch, detached HEAD
+  (empty `current`), or an unresolvable default all halt the stage. The
+  both-empty case is the one to report rather than guess a name for; the
+  others are simply the wrong place to run a gauntlet from.
 
 - **The work is committed.** Bare reviewer runs cover branch commits *and* the
   working tree, so an uncommitted tree is reviewable — but §6's ledger and §9's
@@ -70,6 +79,13 @@ the design phase.
 
 The numbers live in `.devflow.toml`, never in prose. Read the file; do not
 recall it.
+
+**Bind the issue first.** `$ARGUMENTS`, the branch's claim, or the session's
+stated target names the issue this change implements; fetch **that issue's**
+labels before resolving anything. If no issue can be bound unambiguously, say
+so in the announcement — resolution then falls through to `default_rigor`,
+and the announcement must name "no issue bound" as the source so a stricter
+label cannot be silently skipped.
 
 **Resolution order**, highest precedence first:
 
@@ -88,7 +104,7 @@ gate that is reviewing it, and dropping every tier together would evade the
 disclosure below by leaving nothing to be below:
 
 ```sh
-base="$(git merge-base HEAD "origin/$default")"
+base="$(git merge-base HEAD "$remote/$default")"   # $remote/$default from §1
 git show "$base:.devflow.toml"
 ```
 
@@ -117,8 +133,9 @@ yield a combination belonging to no single tier, so what you announce is the
 caps. Carry the same line into the PR body in §10, so a later round or a
 different session can see which budget it is spending instead of inferring one.
 
-**Disclose a reduced budget.** Whenever any resolved cap is **below what
-`default_rigor` would give**, say so in the announcement and in the PR body. A
+**Disclose a reduced budget.** Whenever any resolved cap **or floor** is
+**below what `default_rigor` would give**, say so in the announcement and in
+the PR body. A
 `rigor:*` label is applied by people and verified by nothing — GitHub's triage
 role can apply one with no push access at all — so a budget can be retuned by
 someone who could not edit `.devflow.toml`. **An agent never applies one to
@@ -430,8 +447,11 @@ In order:
    check the intended title locally before opening anything:
 
    ```sh
-   PR_TITLE="feat: …" BASE_SHA=main task guard:release-title
+   PR_TITLE="feat: …" BASE_SHA="$default" task guard:release-title
    ```
+
+   `$default` is the base resolved in §1 — do not reintroduce a hard-coded
+   branch name here.
 
    Retitle rather than bypass.
 2. **Closing keywords are a decision, not a formality** (`track-work`).
@@ -443,6 +463,7 @@ In order:
 
    ```sh
    ls -R "$(git rev-parse --git-path deferred-findings)"
+   ls -R "$(git rev-parse --git-path adjudication-ledger)"
    ```
 
    A branch renamed or deleted mid-change strands its notes under the old name,
@@ -456,7 +477,11 @@ In order:
    what/why/how-it-was-verified (name the gates you actually ran) and the
    budget line from §2, including the reduced-budget disclosure if one applies.
 5. **`gh pr create --draft`.** Push the branch to a remote you can write to,
-   named explicitly, then create the PR as a **draft**. If `--draft` is
+   named explicitly, then create the PR as a **draft** — binding the target
+   explicitly when more than one repo is in play: `--repo <upstream>` for the
+   base, `--head <owner>:<branch>` when pushing from a fork, and
+   `--base "$default"`. An unqualified create in a fork checkout can select
+   the fork as base or infer the wrong head. If `--draft` is
    rejected — GitHub restricts drafts on private repos to paid plans — stop and
    report it; dropping `--draft` reverts the lifecycle rather than fixing it.
 6. **Verify the result.** Read `headRefOid,isDraft` and require both the SHA
@@ -474,10 +499,14 @@ In order:
    you have re-read the body and confirmed the findings are in it. The sidecar
    is the sole durable copy: a rejected push, a validation error, or a lost
    session between the delete and the create takes every deferred finding with
-   it, and the shepherd then settles a list it cannot know is short. Carry
-   whatever the ledger still says forward into the hand-off note before
-   removing it, so the shepherd's cloud-review rounds can still answer a
-   repeat finding from the record.
+   it, and the shepherd then settles a list it cannot know is short. The
+   ledger's durable home is the **PR body**: append its surviving lines under
+   a collapsed `## Adjudication record` section (`<details>` is fine) in the
+   same edit that carries the deferred findings, re-read the body to confirm
+   both sections landed, and only then delete the files. That section is the
+   contract the shepherd's cloud-review rounds read to answer a repeat
+   finding from the record — a "hand-off note" anywhere else is a location
+   nothing downstream is defined to look in.
 
 **Then enter the shepherd stage.** `gh pr create --draft` returning is the
 trigger for that stage, not the end of the work: unpolled checks and

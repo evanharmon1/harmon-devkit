@@ -203,7 +203,7 @@ rather than guessed at. Treat the label as advisory: it is applied by people and
 verified by nothing, and GitHub's **triage** role can label an issue with no
 push access at all — so a budget can be retuned by someone who could not edit
 `.devflow.toml`. An agent never applies one to itself, and **says so in the
-announcement and in the PR body whenever any resolved cap is below what
+announcement and in the PR body whenever any resolved cap or floor is below what
 `default_rigor` would give**, so a reduced budget is visible to the human
 reviewer instead of silent.
 **Announce the resolved caps on entering the loop** — "rigor:
@@ -594,8 +594,9 @@ exit the cap is no longer the only thing standing between you and a loop that
 feeds on itself, so the check has to happen where it first can. At round 2,
 for every finding, say on the adjudication table whether its subject exists
 only because an **earlier round of this same stage** added it. A finding that
-does gets adjudicated with one of two dispositions written out: **delete** the
-scaffolding (which moots the finding — see below), or state that it is in
+does gets adjudicated with one of three dispositions written out: **delete**
+the scaffolding (which moots the finding — see below), **restructure it to
+invariants** (deletion by abstraction — see below), or state that it is in
 scope and why the change genuinely needs it. What is not allowed is hardening
 round-1's scaffolding by reflex and letting round 3 attack the result.
 
@@ -615,6 +616,16 @@ re-raise. Name the mooted findings
 in the adjudication table *and* in the message of the commit that removes the
 code — the table is scrollback, but the commit is why the code is gone, and it
 is the record a later round or a different session can still find.
+
+**Restructuring to invariants is the same move where deletion is unavailable**
+— deletion by abstraction. When the artifact is a spec or document whose
+accreted procedure-prose cannot simply be dropped because earlier rounds
+legitimately demanded it, replace the attackable procedure with the
+universally-quantified property it was approximating, delegate the mechanism
+to the implementation surface that can be tested, and carry the review's
+attack scenarios over as required test cases. The next round finds no wording
+seam to attack, and the obligation is preserved rather than dropped. Name it
+on the table and in the commit message exactly as a deletion is named.
 
 One endpoint is worth knowing: if the deletion empties the change *entirely*,
 there is no round to converge on — `codex-review.sh` refuses an empty scope
