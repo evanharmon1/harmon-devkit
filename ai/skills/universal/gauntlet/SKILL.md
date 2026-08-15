@@ -565,12 +565,12 @@ In order:
 7. **Verify the result.** Read `headRefOid,isDraft,baseRefName` — the base
    must equal the branch `$base_ref` names (a rename during the long review
    loops, or an alternative creation path, can silently target another
-   base). Then require and require both the SHA
+   base). Then require both the SHA
    you pushed and `isDraft == true`:
 
    ```sh
    pushed="$(git rev-parse HEAD)"
-   gh pr view <n> --json headRefOid,isDraft
+   gh pr view <n> --json headRefOid,isDraft,baseRefName
    ```
 
    A non-draft result is not the normal publication path — reconcile it before
