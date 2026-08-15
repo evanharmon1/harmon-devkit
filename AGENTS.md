@@ -185,11 +185,13 @@ capped, but this file names no numbers: the caps live in
 [`.devflow.toml`](.devflow.toml) as `rigor` tiers, so there is one place to
 change them and one place to read them. Resolve in this order — an explicit
 instruction in this session, then a `rigor:*` label on the issue, then `default_rigor`,
-then a built-in 4 / 4 / 4 if the file is absent. When the change under review
-**edits `.devflow.toml` itself**, resolve its caps from the **merge-base** copy
-rather than the branch copy: otherwise a branch can lower the very gate it is
-changing, and dropping every tier together evades the below-default disclosure
-because nothing is left to be below. An explicit human instruction still
+then a built-in 4 / 4 / 4 if the file is absent — with a `min_rounds` floor
+of 1 for any tier that does not define it. When the change under review
+**edits `.devflow.toml` itself**, resolve its caps **and floor** from the
+**merge-base** copy rather than the branch copy: otherwise a branch can lower
+the very gate it is changing — a self-lowered `min_rounds` buys an earlier
+empty-round exit — and dropping every tier together evades the below-default
+disclosure because nothing is left to be below. An explicit human instruction still
 overrides.
 Labels are multi-select and nothing stops an issue carrying two, so resolution
 is **per stage, taking the highest cap present**: a conflict can then only ever
