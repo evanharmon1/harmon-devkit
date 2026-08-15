@@ -228,10 +228,14 @@ what **this issue** implies, and it stays read-only: check it against the
 repo's docs, config, and code, never by rendering a template or calling an
 external API beyond the `gh` reads above.
 
-For each new external resource type or API surface the issue implies:
+All four checks run for **every** issue. Only the first is scoped per resource
+type — the others are issue-wide, and an issue that adds one more instance of
+an already-supported resource is exactly the case that has no *new* type and
+still has a human step (another forwarding destination still needs verifying).
 
-- **Credential/permission reality** — name the credential CI or the agent will
-  use and the scopes the new resource types require, then check that it is
+- **Credential/permission reality** — for each new external resource type or
+  API surface the issue implies, name the credential CI or the agent will
+  use and the scopes those resource types require, then check that it is
   documented (or read-only verifiable) to hold them. A gap is a `correction`
   at minimum. Where the fix is one only a maintainer can apply — editing a
   token in a provider dashboard, granting a scope — say so explicitly in the
@@ -258,10 +262,13 @@ Numbered findings, each with evidence and a severity: `blocker`,
 the issue, and ask the user how to proceed.
 
 Precede them with a **preflight block** — one line per §3 preflight check,
-each `ok`, the gap found, or `n/a`. An issue implying no external surface
-scores `n/a` across the board; say that in one line rather than dropping the
-block, so a reader can tell the checks ran from the fact that they are
-answered.
+each `ok`, the gap found, or `n/a`. `n/a` is only ever right for the
+credential line, and only when the issue implies no external surface; the
+other three are issue-wide and always have an answer. Never drop the block: a
+reader can tell the checks ran only from the fact that they are answered.
+
+The block is also **carried into the §5 claim comment**, so it outlives this
+session — see the comment body there.
 
 ## 5. Claim the issue
 
@@ -417,6 +424,12 @@ actually added.
   gh issue comment <n> --repo "$repo" --body-file - <<'CLAIM_BODY_9f3k'
   Claiming — starting implementation on branch <branch> (session <name>).
 
+  Preflight (§3):
+  - credentials/scopes: <ok | the gap, naming the credential and the missing scope | n/a — no external surface>
+  - human/out-of-band steps: <none | the step, who must do it, and how the work is sequenced around it>
+  - plan-vs-apply blind spots: <none | the blind spot and what will prove it instead>
+  - stale references: <none | what drifted>
+
   Claim record (for `/wrap` — undo only what this claim added):
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
@@ -429,7 +442,12 @@ actually added.
   ```
 
   The comment is the durable record — it survives compaction, a lost session,
-  and a different agent doing the hand-back.
+  and a different agent doing the hand-back. That is why the §3 preflight
+  block rides in it: a credential gap or a human-only step that only ever
+  appeared in the session transcript reaches the maintainer nowhere. The
+  preflight lines are prose and sit **above** the claim record; the parser
+  described below anchors on the record's own field names, so they do not
+  affect it — but keep them above it rather than interleaved.
 
   **The record is a parsed contract, not prose.** The `Claim released —`
   workflow (`.github/workflows/claim-release.yml` where installed) machine-
