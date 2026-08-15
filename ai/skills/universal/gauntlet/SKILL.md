@@ -132,8 +132,10 @@ round 1 is done, whatever the tier allowed. Nothing here obliges a round to run.
 `task challenge` — the adversarial pass: architecture and approach,
 authorization bypasses, data-loss paths, unsafe rollback, races, hidden
 coupling, operational failure modes, needless complexity. Steer it when the
-change has an obvious pressure point (`task challenge -- --base main focus on
-the migration path`).
+change has an obvious pressure point by passing focus text to a bare run
+(`task challenge -- focus on the migration path`) — do not hard-code a base
+branch; the default resolved in §1 is the base, and an explicit `--base`
+narrows the scope (§7, damper 10).
 
 Each round:
 
@@ -143,10 +145,13 @@ Each round:
    table (§6). Fix only what is confirmed.
 3. **Re-run `task verify`** after the fixes.
 4. **Commit the round's fixes as their own commit** (§7, damper 9).
-5. **Re-run bare `task challenge`** — never `--base`/`--uncommitted`, which
-   would narrow the re-review to the fix itself (§7, damper 10).
-6. Test the exit rule (§5). If it is not met and the cap is not reached, the
-   next round begins.
+5. **Test the exit rule (§5) and the cap on the round just adjudicated.** An
+   exit condition met means the stage is over now — an empty round 1 owes no
+   second run (floor permitting), and a capped final round must not launch
+   cap+1. Escalate here if adjudicated P0/P1 persist at the cap.
+6. Only if no exit holds and the cap is not reached: **re-run bare
+   `task challenge`** — never `--base`/`--uncommitted`, which would narrow the
+   re-review to the fix itself (§7, damper 10) — and the next round begins.
 
 **Round 2 owes the provenance checkpoint** (§7, damper 3) — it is the first
 round that can show the loop feeding on itself, and it is not optional.
@@ -254,8 +259,11 @@ B's PR sweep up branch A's record.
 
 **Match every new finding against the ledger first — by location plus
 substance, never exact wording.** The same finding rarely returns phrased
-identically. A match is **answered from the record**, not re-fixed and not
-re-litigated. This applies across all three passes — challenge rounds, review
+identically. A match is a **prior, not a substitute for adjudication**: verify
+it against the current head first, because a repeat can also mean the fix was
+incomplete or a later edit reintroduced the defect. Only when the code the
+disposition rests on is unchanged is the finding answered from the record
+rather than re-litigated. This applies across all three passes — challenge rounds, review
 rounds, **and the PR's cloud-review rounds under `/shepherd`** — which is why
 the ledger outlives the stage and why §10 hands it forward before deleting it.
 
@@ -471,7 +479,14 @@ In order:
    removing it, so the shepherd's cloud-review rounds can still answer a
    repeat finding from the record.
 
-**Then hand off to `/shepherd` and stop.** The draft PR is this stage's exit,
-not the end of the work: unpolled checks and unanswered reviews are the
-shepherd's stage, and the deferred findings above are still open. This skill
-never promotes a draft, never runs the readiness gate, and never merges.
+**Then enter the shepherd stage.** `gh pr create --draft` returning is the
+trigger for that stage, not the end of the work: unpolled checks and
+unanswered reviews are its input, and the deferred findings above are still
+open. Where the shepherd skill is vendored, enter it the way the repo's
+policy says — read `.agents/skills/shepherd/SKILL.md` (or
+`.claude/skills/shepherd/SKILL.md`) and follow it; it is user-invocable only,
+so it is read, not called. Where it is not vendored, the repo's `AGENTS.md`
+shepherd bullet is the procedure. Either way *this* skill's scope ends here:
+it never promotes a draft, never runs the readiness gate, and never merges —
+and stopping instead of shepherding leaves the PR at an explicitly
+non-terminal state.

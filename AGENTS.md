@@ -194,7 +194,8 @@ overrides.
 Labels are multi-select and nothing stops an issue carrying two, so resolution
 is **per stage, taking the highest cap present**: a conflict can then only ever
 buy more review, never less, and no ranking of the tier names has to be agreed
-on anywhere. Because that is per stage, two retuned tiers can yield caps
+on anywhere. `min_rounds` resolves under the same principle — the highest
+floor present wins. Because that is per stage, two retuned tiers can yield caps
 belonging to no single tier — so what you announce is the **caps**, naming a
 tier only when one supplied all of them, and the disclosure below compares caps
 rather than tier names. A `rigor:` value naming no tier in the file is ignored
@@ -236,9 +237,11 @@ tier allowed.
   table, not off the reviewer's label, and nothing further is owed after the
   second such round: the second round *is* the confirmation, so there is no
   extra clean run to buy. A round that returns **no findings at all** ends
-  the stage on its own, whenever it comes — an empty round is the old rule's
-  clean re-run, so neither a trivial change nor a clean post-fix re-run pays
-  for a confirmation pass. Fixing the findings is still not the exit
+  the stage on its own **once the tier's `min_rounds` floor is met** (1
+  wherever a tier does not set it) — an empty round is the old rule's clean
+  re-run, so neither a trivial change nor a clean post-fix re-run pays for a
+  confirmation pass, and the other two exits satisfy any floor ≤ 2 by
+  construction. Fixing the findings is still not the exit
   condition; adjudicated-clean rounds are. The exit carries one
   precondition: every P2 you deferred during the stage must already be in the
   deferred-findings sidecar (see "Deferring P2s" below) — an exit that drops
@@ -693,9 +696,11 @@ all-P2 as labeled, or P1-labeled and adjudicated down to P2; what counts is
 the **adjudicated** column of the table, not the reviewer's label, and the
 second such round is itself the confirmation, so no further run is owed. Two
 exits are faster still. A round with **no findings at all** ends the stage by
-itself, whenever it comes — an empty round is exactly the old rule's clean
-re-run, so neither a trivial change nor a clean post-fix re-run pays for a
-confirmation pass. And a **capped final round** that adjudicates to zero
+itself **once the tier's `min_rounds` floor is met** (1 wherever a tier does
+not set it) — an empty round is exactly the old rule's clean re-run, so
+neither a trivial change nor a clean post-fix re-run pays for a confirmation
+pass; the two-consecutive and capped-clean exits satisfy any floor ≤ 2 by
+construction, so the floor binds the empty-round path alone. And a **capped final round** that adjudicates to zero
 P0/P1 also ends the stage by itself: the confirmation it would otherwise owe
 is a run the cap forbids, and a rule that strands a stage holding a clean
 last round and no valid exit would be wrong — the cap bounds work, it does
