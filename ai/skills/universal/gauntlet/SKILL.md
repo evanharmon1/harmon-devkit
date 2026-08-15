@@ -67,14 +67,19 @@ assume them.
   will target (the upstream, not the fork you push to) before going on —
   `gh repo view` names the resolved repo. `$base_ref` is resolved **once,
   here**, and is the base for everything that follows: the merge-base lookup
-  in §2, the reviewer rounds in §3–4, the release-title preflight and PR
-  creation in §10. The review harness resolves its own default when run
-  bare; when its resolution would differ from `$base_ref` — fork checkouts,
-  a first remote that is not the upstream — pass the base explicitly
-  (`task challenge -- --base "$base_ref"`) so every round reviews the same
-  diff the PR will carry. That is not the scope-narrowing damper 10 forbids:
-  an explicit *base* still reviews the whole branch against it; the
-  forbidden move is narrowing a re-run to the fix.
+  in §2, the release-title preflight and PR creation in §10, and — as an
+  invariant, not a flag — the reviewer rounds in §3–4:
+
+  **Every round reviews the whole change the PR will carry — branch commits
+  and working tree together — against the PR's target base.** The harness's
+  bare run is the only invocation that covers both halves, so the checkout
+  must satisfy the invariant before round 1 rather than a flag patching it
+  per round: if a bare run would resolve a different base than `$base_ref`
+  (fork checkout, wrong first remote, stale remote HEAD), fix the checkout —
+  `git remote set-head "$remote" -a`, or point the review target at the
+  upstream — until bare resolution and the PR target agree, and stop if they
+  cannot be made to. Explicit `--base`/`--uncommitted` flags review one half
+  only and never substitute (§7, damper 10).
 
   **Any failed predicate is a stop**: on the default branch, detached HEAD
   (empty `current`), or an unresolvable default all halt the stage. The
@@ -168,14 +173,11 @@ round 1 is done, whatever the tier allowed. Nothing here obliges a round to run.
 authorization bypasses, data-loss paths, unsafe rollback, races, hidden
 coupling, operational failure modes, needless complexity. Steer it when the
 change has an obvious pressure point by passing focus text
-(`task challenge -- focus on the migration path`). Every round runs against
-the canonical base: where the harness's own default-resolution matches
-`$base_ref`, a bare run is that; where it would differ — fork checkouts, a
-first remote that is not the upstream — include `--base "$base_ref"` in
-**every** round, first run and re-runs alike. What damper 10 forbids is
-`--uncommitted`/`--base` used to narrow a re-run to the fix; an explicit
-canonical base reviews the whole branch and is required, not forbidden,
-whenever bare resolution would pick a different base.
+(`task challenge -- focus on the migration path`). Every round is a **bare
+run** — the one invocation covering branch commits and working tree
+together — against the base the entry gate proved equal to `$base_ref`; the
+checkout invariant in §1 is what makes bare correct, and no flag substitutes
+for it (§7, damper 10).
 
 Each round:
 
@@ -189,11 +191,9 @@ Each round:
    exit condition met means the stage is over now — an empty round 1 owes no
    second run (floor permitting), and a capped final round must not launch
    cap+1. Escalate here if adjudicated P0/P1 persist at the cap.
-6. Only if no exit holds and the cap is not reached: **re-run
-   `task challenge` with whole-branch scope against `$base_ref`** (bare where
-   the harness resolves the same base, `--base "$base_ref"` where it would
-   not) — never `--uncommitted` or a narrower base, which would shrink the
-   re-review to the fix itself (§7, damper 10) — and the next round begins.
+6. Only if no exit holds and the cap is not reached: **re-run bare
+   `task challenge`** — never `--base`/`--uncommitted`, which review one
+   half of the scope (§7, damper 10) — and the next round begins.
 
 **Round 2 owes the provenance checkpoint** (§7, damper 3) — it is the first
 round that can show the loop feeding on itself, and it is not optional.
@@ -283,11 +283,14 @@ ledger="$(git rev-parse --git-path "adjudication-ledger/$(git branch --show-curr
 mkdir -p "$(dirname "$ledger")"
 ```
 
-If that `mkdir` fails because a **file** occupies a parent path, that file is
-an orphaned ledger from a renamed or deleted branch whose name prefixes
-yours (`feat/foo` blocking `feat/foo/bar`). Do not delete it blind: read it,
-adopt anything that belongs to live work, then move it aside — the same
-accounting the §10 sweep applies, just earlier because it is in your way.
+If that `mkdir` fails because a **file** occupies a parent path — an
+orphaned ledger from a deleted branch whose name prefixes yours (`feat/foo`
+blocking `feat/foo/bar`) — or the ledger path itself is a **directory**
+holding nested orphans (the reverse: your `feat/foo` after a deleted
+`feat/foo/bar`), the answer is the same accounting the §10 sweep applies,
+just earlier because it is in your way: read the orphan records, adopt
+anything that belongs to live work, and move the rest aside. Never delete
+them blind.
 
 One line per adjudicated finding: **path, a few distinctive substance words,
 the disposition, and the stage/round it came from**. Example:
