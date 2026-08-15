@@ -237,8 +237,9 @@ task check      # fast inner loop while editing
 task verify     # definition-of-done gate
 task challenge  # adversarial second model — adjudicate, fix, re-challenge
                 # until TWO CONSECUTIVE rounds adjudicate to zero P0/P1
-                # (any round with no findings at all ends it), under the
-                # challenge cap resolved from .devflow.toml
+                # (a round with no findings ends it once the tier's
+                # min_rounds floor is met), under the challenge cap
+                # resolved from .devflow.toml
 task review     # verification checkpoint — same convergence rule, under its
                 # own resolved review cap
 task ci         # full CI mirror
@@ -248,6 +249,13 @@ task ci         # full CI mirror
 # → readiness gate passes → gh pr ready (the handoff to a human)
 # → merging stays a human decision
 ```
+
+The `/gauntlet` skill (`ai/skills/universal/gauntlet/`) is the procedure for
+the middle of that block — challenge and review to convergence, the CI mirror,
+and the draft-PR ritual that hands off to `/shepherd`. It carries the cap
+resolution, the adjudication table and ledger, the backgrounding recipes, and
+the damper catalog that keeps a self-reinforcing critique loop from feeding on
+its own fixes.
 
 The full staged loop — including the PR-shepherding rounds and the readiness
 gate that ends them — is defined in AGENTS.md ("Dev Loop"). The PR is a
@@ -280,7 +288,8 @@ down to
 P2; what counts is the **adjudicated** column of your adjudication table, not
 the label Codex attached. The second such round *is* the confirmation, so no
 extra run is owed after it. Two cases exit faster still. A round with **no
-findings at all** ends the stage on the spot, whenever it comes — an empty
+findings at all** ends the stage on the spot **once the tier's `min_rounds`
+floor is met** (1 wherever a tier does not set it) — an empty
 round is exactly the older "clean re-run" exit, so neither a trivial change
 nor a clean post-fix re-run pays for a confirmation pass. And a **capped
 final round** that adjudicates to zero P0/P1 ends the stage by itself: the
@@ -300,9 +309,13 @@ along the way was individually defensible.
 The **scaffolding damper** is what replaces the cap as the first line of
 defense. At round 2 — the earliest round that can show the pattern — say on
 the table, for each finding, whether its subject exists only because an earlier
-round of the same stage added it. Where it does, adjudicate it with one of two
-dispositions written down: delete the scaffolding, or state that the code is
-in scope and why the change needs it. A deletion does not re-score the round
+round of the same stage added it. Where it does, adjudicate it with one of three
+dispositions written down: delete the scaffolding, restructure it to
+invariants (replace attackable procedure-prose with the property it was
+approximating, delegate the mechanism to a testable surface, and carry the
+round's attack scenarios as required test cases — deletion by abstraction,
+for artifacts earlier rounds legitimately demanded), or state that the code
+is in scope and why the change needs it. A deletion does not re-score the round
 that flagged the code — the finding keeps its adjudicated priority there, and
 it is the **next** round, reviewing the tree without it, that finds nothing
 left to re-raise and counts toward convergence. Reflexively hardening the

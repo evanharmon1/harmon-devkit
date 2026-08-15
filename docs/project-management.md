@@ -388,8 +388,9 @@ families, color-coded by family; the starter set is created by
   gate: nothing verifies who applied it, and the **triage** role can label an
   issue with no push access — so AGENTS.md requires any cap resolving below
   `default_rigor` to be stated in the PR body, keeping a reduced budget visible
-  to the reviewer. Two present resolve per stage to the highest cap, so a
-  conflict can only ever buy more review.
+  to the reviewer — the `min_rounds` floor included. Two present resolve per
+  stage to the highest cap, and the floor likewise to the highest present, so
+  a conflict can only ever buy more review.
 
 Two more families name **model intelligence** rather than a facet of the work,
 and their vocabulary is not hand-listed anywhere: it is rendered from

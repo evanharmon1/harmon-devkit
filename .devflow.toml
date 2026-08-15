@@ -14,24 +14,36 @@
 # PR body, so the budget a change was reviewed under is on the record rather
 # than recalled.
 #
-# When the change under review edits THIS FILE, resolve its caps from the
-# merge-base copy rather than the branch copy — otherwise a branch can lower
-# the very gate it is changing. An explicit human instruction still overrides.
+# When the change under review edits THIS FILE, resolve its caps AND floor
+# from the merge-base copy rather than the branch copy — otherwise a branch
+# can lower the very gate it is changing, a self-lowered min_rounds buying an
+# earlier empty-round exit. An explicit human instruction still overrides.
 #
 # These are ceilings, not quotas. A stage exits the moment any of its exit
 # conditions in AGENTS.md is met: two consecutive rounds adjudicated to zero
-# P0/P1, any single round with no findings at all, or a round that hits the cap
+# P0/P1, any single round with no findings at all (once the tier's min_rounds
+# floor is met), or a round that hits the cap
 # below having adjudicated to zero P0/P1 — the confirming round it would
 # otherwise owe is one the cap forbids, so a clean last round is convergence,
 # not grounds to escalate. Nothing here obliges a round to be run.
 #
-# Retuning these is expected. The Dev Loop assumes four invariants, and nothing
+# Retuning these is expected. The Dev Loop assumes five invariants, and nothing
 # at runtime will tell you if an edit breaks one:
 #   - every tier defines challenge, review and shepherd, all integers
 #   - challenge and review are >= 2, because the exit condition needs two
 #     consecutive adjudicated-clean rounds; at 1, one finding is an escalation
 #   - shepherd is the same in every tier (see below)
 #   - default_rigor names a tier that exists here
+#   - min_rounds is 1 or 2, never more: two consecutive adjudicated-clean
+#     rounds — empty rounds included — exit a stage at round 2 whatever the
+#     floor says, so a value above 2 is a budget no stage ever spends
+#
+# `min_rounds` is the floor a stage must reach before a single round with no
+# findings at all may end it on its own. It exists so that a deeper tier can
+# still buy independent confirmation when round 1 comes back clean. It does not
+# bind the other two exits: the two-consecutive-clean and capped-clean paths
+# both consume at least two rounds, so any floor of 1 or 2 is already satisfied
+# by construction there. A tier that omits the key has a floor of 1.
 #
 # `challenge` and `review` are inert wherever no second-model reviewer is
 # configured: those stages never run, so their caps bound nothing. `shepherd`
@@ -51,18 +63,21 @@ default_rigor = "standard"
 
 # Trivial, low-blast-radius work: doc touch-ups, mechanical bumps, typo fixes.
 [rigor.light]
-challenge = 2 # 2 is the floor, never 1: the exit condition needs two
-review    = 2 # consecutive adjudicated-clean rounds, so a cap of 1 turns any
-shepherd  = 4 # single finding into an immediate escalation.
+challenge  = 2 # 2 is the floor, never 1: the exit condition needs two
+review     = 2 # consecutive adjudicated-clean rounds, so a cap of 1 turns any
+shepherd   = 4 # single finding into an immediate escalation.
+min_rounds = 1 # a clean first round is enough for work this small.
 
 # The default for ordinary changes.
 [rigor.standard]
-challenge = 3
-review    = 3
-shepherd  = 4
+challenge  = 3
+review     = 3
+shepherd   = 4
+min_rounds = 1
 
 # Security, migrations, data paths — anything with an irreversible failure mode.
 [rigor.deep]
-challenge = 5
-review    = 5
-shepherd  = 4
+challenge  = 5
+review     = 5
+shepherd   = 4
+min_rounds = 1

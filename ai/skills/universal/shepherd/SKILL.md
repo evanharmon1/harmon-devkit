@@ -788,6 +788,23 @@ you rather than the bot):
 
 ## 3. Adjudicate findings (hypotheses, not authority)
 
+**Check the PR body's `## Adjudication record` section first, where one
+exists.** The gauntlet stage hands its per-branch adjudication ledger forward
+there — one line per finding already adjudicated locally: path, substance
+words, disposition, stage/round. Match each incoming finding against it by
+**location plus substance, never exact wording**. A match is a **prior, not a
+substitute for adjudication**: verify it against the current head — a repeat
+can also mean the fix was incomplete or a later push reintroduced the
+defect — and only when the code the disposition rests on is unchanged is the
+finding answered from the record instead of re-litigated. A finding raised
+once across all passes and never again is a noise candidate; still adjudicate
+it, with that prior weighing in. The record is **append-mode, not
+read-only**: when you settle a finding the gauntlet never saw — fix,
+decline, or file — add its line (path, substance words, disposition, round)
+to the same section in the body edit that answers it, so the next
+current-head cycle can be answered from the record instead of re-litigating
+what this one decided.
+
 Failing CI/CD workflows are findings too — first-class ones, not background
 noise behind the reviewer:
 
