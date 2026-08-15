@@ -60,7 +60,21 @@ assume them.
   [ -n "$default" ] || default="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
   current="$(git branch --show-current)"
   [ -n "$default" ] && [ -n "$current" ] && [ "$current" != "$default" ]
+  base_ref="$remote/$default"   # THE base — every later step uses this one
   ```
+
+  In a fork or multi-remote checkout, confirm `$remote` is the remote the PR
+  will target (the upstream, not the fork you push to) before going on —
+  `gh repo view` names the resolved repo. `$base_ref` is resolved **once,
+  here**, and is the base for everything that follows: the merge-base lookup
+  in §2, the reviewer rounds in §3–4, the release-title preflight and PR
+  creation in §10. The review harness resolves its own default when run
+  bare; when its resolution would differ from `$base_ref` — fork checkouts,
+  a first remote that is not the upstream — pass the base explicitly
+  (`task challenge -- --base "$base_ref"`) so every round reviews the same
+  diff the PR will carry. That is not the scope-narrowing damper 10 forbids:
+  an explicit *base* still reviews the whole branch against it; the
+  forbidden move is narrowing a re-run to the fix.
 
   **Any failed predicate is a stop**: on the default branch, detached HEAD
   (empty `current`), or an unresolvable default all halt the stage. The
@@ -112,7 +126,11 @@ An explicit human instruction still overrides that.
 
 **`min_rounds` — the floor.** A tier may define `min_rounds` (an integer, 1 or
 2 — the two-consecutive exit ends a stage at round 2 whatever the floor says,
-so larger values cannot bind and are rejected where the config is validated). It is the minimum
+so larger values cannot bind; repos that validate the config reject them). In
+a repo where nothing validates the file, do not interpret an out-of-range or
+non-integer value: read it as the nearest of 1 or 2 (above 2 → 2, otherwise
+1) and say so in the announcement, so a typo retunes the budget visibly
+rather than silently. It is the minimum
 number of rounds a stage must run before the **empty-round instant exit** in §5
 may be taken, so a deeper tier can require independent confirmation even when
 round 1 comes back clean. **Tolerate its absence: a tier that does not define
@@ -257,6 +275,12 @@ deferred-findings sidecar, at the path
 ledger="$(git rev-parse --git-path "adjudication-ledger/$(git branch --show-current)")"
 mkdir -p "$(dirname "$ledger")"
 ```
+
+If that `mkdir` fails because a **file** occupies a parent path, that file is
+an orphaned ledger from a renamed or deleted branch whose name prefixes
+yours (`feat/foo` blocking `feat/foo/bar`). Do not delete it blind: read it,
+adopt anything that belongs to live work, then move it aside — the same
+accounting the §10 sweep applies, just earlier because it is in your way.
 
 One line per adjudicated finding: **path, a few distinctive substance words,
 the disposition, and the stage/round it came from**. Example:
