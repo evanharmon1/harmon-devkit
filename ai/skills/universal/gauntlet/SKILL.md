@@ -48,50 +48,35 @@ assume them.
 - **The definition-of-done gate is green** (`task verify` where it exists).
   Run it and read the exit code — "should pass" is not a result. A reviewer
   handed a tree that does not build spends its round on the build.
-- **You are not on the default branch.** Resolve the default rather than
-  assuming `main`; an empty current branch means detached HEAD and is also a
-  stop. **An `origin` remote pointing at the PR target repository is
-  required** — the supported-topology rule below — so the commands may name
-  it plainly; `origin/HEAD` needing to be (re)established is ordinary and
-  handled, `origin` being absent is a stop, and the `gh` fallback covers
-  only a default name the symbolic ref cannot supply:
+- **The canonical base is established, fresh, and verified — or you stop.**
+  Four properties must all hold before round 1, checked in this order, and
+  **every failure, error, or uncertainty is a stop, never a fallback**:
 
-  ```sh
-  git fetch origin                    # the tips
-  git remote set-head origin -a       # (re)establish origin/HEAD from the remote
-  default="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
-  if [ -z "$default" ]; then          # fallback must also establish the REF —
-    default="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
-    [ -n "$default" ] && git symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$default"
-  fi                                  # bare rounds resolve origin/HEAD, not a name in a variable
-  current="$(git branch --show-current)"
-  [ -n "$default" ] && [ -n "$current" ] && [ "$current" != "$default" ]
-  base_ref="origin/$default"   # THE base — every later step uses this one
-  ```
+  1. `origin` exists and is the repository the PR will target (`gh repo
+     view` names the resolved repo; in a fork workflow `origin` is the
+     upstream and the fork is a second, differently named push remote).
+  2. `git fetch origin` **and** `git remote set-head origin -a` both
+     **succeed** — check their exit codes. A stale `origin/HEAD` surviving a
+     failed refresh is precisely the state that reviews the wrong diff, so a
+     transient remote error here is a stop, not a reason to proceed on what
+     is already local.
+  3. `refs/remotes/origin/HEAD` exists afterwards, and `default` reads from
+     it: `default="$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's|^origin/||')"`.
+     There is deliberately no name-lookup fallback — the bare reviewer
+     rounds resolve this **ref**, so a default name known only to a variable
+     would let the gate pass while every round reviews something else. A
+     remote that advertises no HEAD is a stop to report.
+  4. The current branch is nonempty (detached HEAD is a stop) and differs
+     from `$default` (the default branch is the wrong place to run a
+     gauntlet from).
 
-  **The supported topology is: `origin` is the repository the PR will
-  target.** The review harness resolves its base from `origin`'s default
-  branch, and its bare run is the only invocation that reviews both halves
-  of the change — branch commits and working tree together — so `origin`
-  being the PR target is what makes every round review the diff the PR will
-  carry. Verify it (`gh repo view` names the resolved repo; in a fork
-  workflow, `origin` is the upstream and the fork is a second, differently
-  named push remote). Where `origin` is not and cannot be made the PR
-  target, **stop and say so** — prescribing flag workarounds here would
-  review half the scope (§7, damper 10). Both setup lines are load-bearing:
-  a stale `origin/<default>` tip silently folds already-merged commits into
-  every review and the release-title preflight, and a stale or absent
-  `origin/HEAD` — the ref the bare reviewer resolves — makes the harness
-  review a renamed default's old branch while `$base_ref` points at the new
-  one; after a rename, confirm the two agree before round 1. `$base_ref` is resolved
-  **once, here**, and every later step consumes it: the merge-base lookup in
-  §2, the bare reviewer rounds in §3–4, the release-title preflight and PR
-  creation in §10.
-
-  **Any failed predicate is a stop**: on the default branch, detached HEAD
-  (empty `current`), or an unresolvable default all halt the stage. The
-  both-empty case is the one to report rather than guess a name for; the
-  others are simply the wrong place to run a gauntlet from.
+  Then `base_ref="origin/$default"` — resolved **once, here**; every later
+  step consumes it: the merge-base lookup in §2, the bare reviewer rounds in
+  §3–4 (their bare run is the only invocation reviewing branch commits and
+  working tree together, which is why the topology above is required rather
+  than worked around with flags — §7, damper 10), and the release-title
+  preflight and PR creation in §10. After a default-branch rename, these
+  same four properties are the check that the harness and `$base_ref` agree.
 
 - **The work is committed — `git status --porcelain` is empty.** Bare
   reviewer runs would cover a dirty tree, but the PR pushes only `HEAD`: an
@@ -135,8 +120,12 @@ disclosure below by leaving nothing to be below:
 
 ```sh
 base="$(git merge-base HEAD "$base_ref")"          # $base_ref from §1
-git show "$base:.devflow.toml"
+git show "$base:.devflow.toml"                     # absent at the merge base?
 ```
+
+A merge base that predates `.devflow.toml` — the branch introduces it — is
+the absent-file case of the resolution order: the built-in 4 / 4 / 4 and a
+floor of 1, not an error and not the branch's own copy.
 
 An explicit human instruction still overrides that.
 
