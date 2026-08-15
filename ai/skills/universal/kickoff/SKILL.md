@@ -30,8 +30,18 @@ commands otherwise:
 - Otherwise run `git status -sb`, `git log --oneline -5`,
   `gh pr list --limit 10`, and `gh issue list --limit 10`.
 
-Keep this bounded — if `gh` hangs or is unauthenticated, note it and move on
-rather than blocking the session start.
+Separately, as a credential preflight, check
+`task --list-all 2>/dev/null | grep -q 'status:creds'`. Where present, run
+`task status:creds`. The same untrusted-branch caution applies — on an
+untrusted branch, skip this probe rather than run it. There is no raw
+fallback for it: if the target is absent, note "no creds probe available" in
+the report and move on.
+
+Keep all of this bounded — if `gh`, `task status:git`, `task status:gh`, or
+`task status:creds` hangs or is unauthenticated, note it and move on rather
+than blocking the session start. A missing or failed creds probe is a
+**report item, never a kickoff blocker** — kickoff proceeds either way and the
+summary says what couldn't be checked.
 
 **Sweep for stale claims.** The claim `/claim` makes has no owner once its
 session ends: `/shepherd` stops before the merge, `/wrap` leaves an open PR
@@ -126,6 +136,18 @@ context even after compaction.
 ## 5. Summarize
 
 Finish with 3–5 orientation bullets: current branch, clean/dirty tree,
-notable open PRs or issues, and the suggested next step. If implementation
-work is coming, suggest `/claim` next — it sanity-checks the issue and
-claims it, and `/implement` expects that claim to already exist.
+notable open PRs or issues, credential readiness, and the suggested next
+step. If implementation work is coming, suggest `/claim` next — it
+sanity-checks the issue and claims it, and `/implement` expects that claim to
+already exist.
+
+**Credential readiness bullet.** Summarize what `task status:creds` found:
+what is logged in, what is missing or unknown, and the remedy the status
+output itself named (e.g. `gh auth login`, `codex login`,
+`claude auth login`). Preserve the probe's own distinctions rather than
+flattening them — "credential stored (not validated)" is not the same as
+authenticated, `n/a` (not configured, or the CLI is absent) is not the same
+as missing, and `unknown` is not the same as logged out. Quote the remedy
+from the status output, not from memory. If the probe was skipped (untrusted
+branch) or unavailable (target absent) or it failed, say so in this bullet —
+that is the report item.
