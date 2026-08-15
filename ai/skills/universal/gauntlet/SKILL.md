@@ -90,9 +90,12 @@ assume them.
   both-empty case is the one to report rather than guess a name for; the
   others are simply the wrong place to run a gauntlet from.
 
-- **The work is committed.** Bare reviewer runs cover branch commits *and* the
-  working tree, so an uncommitted tree is reviewable — but §6's ledger and §9's
-  rollback damper both key on commits, so commit each unit as you go.
+- **The work is committed — `git status --porcelain` is empty.** Bare
+  reviewer runs would cover a dirty tree, but the PR pushes only `HEAD`: an
+  implementation living in the working tree can pass every round and CI
+  locally and then be silently absent from the draft. Commit before round 1;
+  each round's fixes then get their own commit (§7, damper 9), and §10
+  re-checks the tree is clean immediately before the push.
 
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
@@ -114,9 +117,10 @@ label cannot be silently skipped.
 
 1. an explicit instruction in this session;
 2. a `rigor:*` label on the issue, **per stage, taking the highest cap
-   present** — labels are multi-select, so a conflict can only ever buy more
-   review, never less. A `rigor:` value naming no tier in the file is ignored,
-   not guessed at;
+   present — and the highest `min_rounds` floor present, under the same
+   principle** — labels are multi-select, so a conflict can only ever buy
+   more review, never less, in caps and floor alike. A `rigor:` value naming
+   no tier in the file is ignored, not guessed at;
 3. `default_rigor` in the file;
 4. the built-in fallback **4 / 4 / 4** (challenge / review / shepherd) if the
    file is absent.
@@ -527,7 +531,9 @@ In order:
    lock: re-read the bound issue and list its linked/open PRs — another
    worker may have opened one during the rounds. A live duplicate means
    stop and reconcile, not open a second PR.
-6. **`gh pr create --draft`.** Push the branch to a remote you can write to,
+6. **`gh pr create --draft`.** Re-check `git status --porcelain` is empty —
+   an uncommitted file here is work the push will silently omit — then push
+   the branch to a remote you can write to,
    named explicitly, then create the PR as a **draft** — binding the target
    explicitly when more than one repo is in play: `--repo <upstream>` for the
    base, `--head <owner>:<branch>` when pushing from a fork, and
