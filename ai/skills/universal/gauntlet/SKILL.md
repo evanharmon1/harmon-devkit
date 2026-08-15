@@ -562,15 +562,17 @@ In order:
    another supported path and say so, rather than bending the flags. If `--draft` is
    rejected — GitHub restricts drafts on private repos to paid plans — stop and
    report it; dropping `--draft` reverts the lifecycle rather than fixing it.
-7. **Verify the result.** Read `headRefOid,isDraft,baseRefName` — the base
-   must equal the branch `$base_ref` names (a rename during the long review
-   loops, or an alternative creation path, can silently target another
-   base). Then require both the SHA
-   you pushed and `isDraft == true`:
+7. **Verify the result.** Read
+   `headRefOid,isDraft,baseRefName,headRefName,headRepositoryOwner` — the
+   base must equal the branch `$base_ref` names, and the head must be
+   *this* branch in the repository you pushed to (an alternative creation
+   path can bind a different branch that happens to point at the same
+   commit, which passes a SHA-only check and then strands the shepherd's
+   target gate). Then require the SHA you pushed and `isDraft == true`:
 
    ```sh
    pushed="$(git rev-parse HEAD)"
-   gh pr view <n> --json headRefOid,isDraft,baseRefName
+   gh pr view <n> --json headRefOid,isDraft,baseRefName,headRefName,headRepositoryOwner
    ```
 
    A non-draft result is not the normal publication path — reconcile it before

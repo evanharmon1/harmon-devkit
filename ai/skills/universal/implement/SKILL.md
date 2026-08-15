@@ -255,12 +255,15 @@ say so.
 
 ## 6. Second-model review
 
-**Where the `gauntlet` skill is vendored, it is the procedure for this step
-through step 8**: read `.agents/skills/gauntlet/SKILL.md` (or
+**Where the `gauntlet` skill is vendored and its supported topology holds —
+`origin` is the repository the PR will target — it is the procedure for this
+step through step 8**: read `.agents/skills/gauntlet/SKILL.md` (or
 `.claude/skills/gauntlet/SKILL.md`) and follow it — it carries the
 adjudication ledger, durable round accounting, and the full PR-opening
-ceremony that the abbreviated steps below do not. The steps below are the
-procedure only where it is not vendored.
+ceremony that the abbreviated steps below do not. In the fork topology this
+skill supports where `origin` is the writable fork rather than the target,
+gauntlet's entry gate would stop by design, so the steps below remain the
+procedure there — as they do wherever the skill is not vendored.
 
 Where the repo runs one (harmon-init and harmon-devkit: `task challenge`, then
 `task review`), it belongs here — after `verify` is green, before the CI
