@@ -55,31 +55,29 @@ assume them.
   valid, so fall back to asking the platform before stopping:
 
   ```sh
-  remote="$(git remote | head -n1)"                       # usually origin
-  default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD" 2>/dev/null | sed "s|^$remote/||")"
+  git fetch origin                                        # the tip, not just the name
+  default="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
   [ -n "$default" ] || default="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
   current="$(git branch --show-current)"
   [ -n "$default" ] && [ -n "$current" ] && [ "$current" != "$default" ]
-  base_ref="$remote/$default"   # THE base — every later step uses this one
+  base_ref="origin/$default"   # THE base — every later step uses this one
   ```
 
-  In a fork or multi-remote checkout, confirm `$remote` is the remote the PR
-  will target (the upstream, not the fork you push to) before going on —
-  `gh repo view` names the resolved repo. `$base_ref` is resolved **once,
-  here**, and is the base for everything that follows: the merge-base lookup
-  in §2, the release-title preflight and PR creation in §10, and — as an
-  invariant, not a flag — the reviewer rounds in §3–4:
-
-  **Every round reviews the whole change the PR will carry — branch commits
-  and working tree together — against the PR's target base.** The harness's
-  bare run is the only invocation that covers both halves, so the checkout
-  must satisfy the invariant before round 1 rather than a flag patching it
-  per round: if a bare run would resolve a different base than `$base_ref`
-  (fork checkout, wrong first remote, stale remote HEAD), fix the checkout —
-  `git remote set-head "$remote" -a`, or point the review target at the
-  upstream — until bare resolution and the PR target agree, and stop if they
-  cannot be made to. Explicit `--base`/`--uncommitted` flags review one half
-  only and never substitute (§7, damper 10).
+  **The supported topology is: `origin` is the repository the PR will
+  target.** The review harness resolves its base from `origin`'s default
+  branch, and its bare run is the only invocation that reviews both halves
+  of the change — branch commits and working tree together — so `origin`
+  being the PR target is what makes every round review the diff the PR will
+  carry. Verify it (`gh repo view` names the resolved repo; in a fork
+  workflow, `origin` is the upstream and the fork is a second, differently
+  named push remote). Where `origin` is not and cannot be made the PR
+  target, **stop and say so** — prescribing flag workarounds here would
+  review half the scope (§7, damper 10). The `git fetch` is load-bearing:
+  a stale `origin/<default>` tip silently folds already-merged commits into
+  every review and the release-title preflight. `$base_ref` is resolved
+  **once, here**, and every later step consumes it: the merge-base lookup in
+  §2, the bare reviewer rounds in §3–4, the release-title preflight and PR
+  creation in §10.
 
   **Any failed predicate is a stop**: on the default branch, detached HEAD
   (empty `current`), or an unresolvable default all halt the stage. The
@@ -123,7 +121,7 @@ gate that is reviewing it, and dropping every tier together would evade the
 disclosure below by leaving nothing to be below:
 
 ```sh
-base="$(git merge-base HEAD "$remote/$default")"   # $remote/$default from §1
+base="$(git merge-base HEAD "$base_ref")"          # $base_ref from §1
 git show "$base:.devflow.toml"
 ```
 
@@ -396,11 +394,15 @@ Then **delegate the mechanism** to the implementation surface, carrying the
 review's attack scenarios there as required test cases. The next round finds no
 wording seam to attack, and the obligation is preserved rather than dropped.
 
-**6. Scope-splitting.** A finding that demands a **new mechanism** is spun out
-as an issue instead of grown onto the branch. The branch answers the change it
-set out to make; a mechanism is its own change with its own review. The sidecar
-and the ledger are what make deferring safe — they are why "file it" is a
-disposition and not a euphemism for dropping it.
+**6. Scope-splitting.** A **non-blocking** finding that demands a new
+mechanism — an adjudicated P2, or work genuinely outside this change's
+contract — is spun out as an issue instead of grown onto the branch. The
+branch answers the change it set out to make; a mechanism is its own change
+with its own review. The sidecar and the ledger are what make deferring
+safe — they are why "file it" is a disposition and not a euphemism for
+dropping it. **A confirmed P0/P1 in this change never takes this exit**: it
+is fixed here, or the stage stops and escalates — filing it away would let
+the convergence rule open a PR over a known blocker.
 
 **7. Fingerprint findings across stages, simply.** The ledger of §6, matched by
 location plus substance across challenge, review, and the PR's cloud-review
