@@ -240,7 +240,9 @@ API beyond the `gh` reads above.
 All four checks run for **every** issue.
 
 - **Credential/permission reality** — for every external resource or operation
-  the issue touches, name the credential CI or the agent will use and the
+  the issue touches, name the credential **whichever actor performs it** will
+  use — CI, the implementing agent, or a deployed runtime identity such as a
+  Lambda execution role, service account, or application token — and the
   permissions it needs, then check that it is
   documented (or read-only verifiable) to hold them. A gap is a `correction`
   at minimum. Where the fix is one only a maintainer can apply — editing a
@@ -434,7 +436,7 @@ actually added.
   - credentials/scopes: <ok | unverified — what was never checked and why | the gap, naming the credential and the missing scope | n/a — no external surface>
   - human/out-of-band steps: <none | the step, who must do it, and how the work is sequenced around it>
   - plan-vs-apply blind spots: <none | the blind spot and what will prove it instead>
-  - stale references: <none | what drifted>
+  - stale references: <none | what drifted | unproven — what could not be classified and why (a stale or unavailable source checkout, a tag-valued `_commit`)>
 
   Claim record (for `/wrap` — undo only what this claim added):
   - board: <board title from --show, or "none">
