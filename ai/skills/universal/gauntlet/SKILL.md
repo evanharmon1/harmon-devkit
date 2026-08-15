@@ -533,8 +533,10 @@ In order:
    budget line from §2, including the reduced-budget disclosure if one applies.
 5. **Re-check ownership immediately before creating.** A claim is not a
    lock: re-read the bound issue and list its linked/open PRs — another
-   worker may have opened one during the rounds. A live duplicate means
-   stop and reconcile, not open a second PR.
+   worker may have opened one during the rounds. On §2's no-issue-bound
+   path, the check is the repository's open PRs instead: any PR whose head
+   is this branch or whose change covers this work. Either way a live
+   duplicate means stop and reconcile, not open a second PR.
 6. **`gh pr create --draft`.** Re-check `git status --porcelain` is empty —
    an uncommitted file here is work the push will silently omit — then push
    the branch to a remote you can write to,
