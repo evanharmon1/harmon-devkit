@@ -219,14 +219,69 @@ or reopening settled work. Then look for:
   from the target issue.
 - **Ambiguities** — anything that would force you to invent requirements;
   surface these before coding, not during.
-- **Human-only steps** — anything needing credentials or access the agent
-  does not have.
+
+### Preflight vetting — issue-specific environment reality
+
+*Generic* credential health — whether a login exists at all, for `gh` and the
+other CLIs — belongs to `/kickoff` (`task status:creds`) and is not repeated
+here. Do not assume it ran, and do not assume it reached far enough: `/claim`
+is independently invokable, and that probe covers only the GitHub, Codex, and
+Claude logins — an AWS, Cloudflare, or other provider credential is outside
+it. Note too what it does **not** establish even where it did run: it resolves
+the stored credential without calling the API and reports it "not validated",
+so it proves presence, never **scopes**. Anything no upstream step actually
+checked — a provider login it never probed, or any scope at all — is recorded
+below as **unverified** rather than reported `ok`. `ok` means you saw
+evidence; this skill is read-only and does not go looking for a credential. This step vets only what
+**this issue** implies, and it stays read-only: check it against the repo's
+docs, config, and code, never by rendering a template or calling an external
+API beyond the `gh` reads above.
+
+All four checks run for **every** issue.
+
+- **Credential/permission reality** — for every external resource or operation
+  the issue touches, name the credential **whichever actor performs it** will
+  use — CI, the implementing agent, or a deployed runtime identity such as a
+  Lambda execution role, service account, or application token — and the
+  permissions it needs, then check that it is
+  documented (or read-only verifiable) to hold them. A gap is a `correction`
+  at minimum. Where the fix is one only a maintainer can apply — editing a
+  token in a provider dashboard, granting a scope — say so explicitly in the
+  claim comment; it is lead time, not a step you can take.
+- **Human-step / out-of-band dependencies** — does anything depend on state
+  only a maintainer can create, or on access the agent does not have: email
+  verification, dashboard toggles, DNS at a third party, account approvals? If
+  so, say how the work is sequenced so CI and applies stay green around it —
+  typically a phase gate (a bool variable defaulting off, gating the dependent
+  resources, flipped in a follow-up PR) rather than one apply that partially
+  fails.
+- **Plan-vs-apply blind spots** — where can the dry-run gate (`terraform
+  plan`, a `--dry-run` script, a lint pass) structurally not see the failure?
+  Create-time authorization and eventual verification both pass plan and fail
+  apply, on the default branch, after merge. Name the blind spot and state
+  what will prove it instead.
+- **Stale-reference sweep** — the result of the stale-reference and
+  template-ownership checks above; fold it in here rather than re-running it.
 
 ## 4. Report findings
 
 Numbered findings, each with evidence and a severity: `blocker`,
 `correction`, or `note`. If there is any `blocker`: stop, do **not** claim
 the issue, and ask the user how to proceed.
+
+Precede them with a **preflight block** — one line per §3 preflight check,
+each `ok`, `unverified`, the gap found, or `n/a`. `n/a` is only ever right for
+the credential line — when the issue implies no external surface, or when the
+operations it does imply genuinely need no credential (a public unauthenticated
+API); the other three are issue-wide and always have an answer. An `ok` names
+what it vetted — the actor, its credential, and the permissions — because a
+successful check produces no numbered finding, so the line is the only record
+that distinguishes a complete check from an actor nobody looked at. Never drop
+the block: a reader can tell the checks ran only from the fact that they are
+answered.
+
+The block is also **carried into the §5 claim comment**, so it outlives this
+session — see the comment body there.
 
 ## 5. Claim the issue
 
@@ -382,6 +437,12 @@ actually added.
   gh issue comment <n> --repo "$repo" --body-file - <<'CLAIM_BODY_9f3k'
   Claiming — starting implementation on branch <branch> (session <name>).
 
+  Preflight (§3):
+  - credentials/scopes: <ok — the actor, its credential, the permissions needed, and the evidence | unverified — what was never checked and why | the gap, naming the credential and the missing permission | n/a — no external surface, or the operation needs no credential (name it)>
+  - human/out-of-band steps: <none | the step, who must do it, and how the work is sequenced around it>
+  - plan-vs-apply blind spots: <none | the blind spot and what will prove it instead>
+  - stale references: <none | what drifted | unproven — what could not be classified and why (a stale or unavailable source checkout, a tag-valued `_commit`)>
+
   Claim record (for `/wrap` — undo only what this claim added):
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
@@ -394,7 +455,12 @@ actually added.
   ```
 
   The comment is the durable record — it survives compaction, a lost session,
-  and a different agent doing the hand-back.
+  and a different agent doing the hand-back. That is why the §3 preflight
+  block rides in it: a credential gap or a human-only step that only ever
+  appeared in the session transcript reaches the maintainer nowhere. The
+  preflight lines are prose and sit **above** the claim record; the parser
+  described below anchors on the record's own field names, so they do not
+  affect it — but keep them above it rather than interleaved.
 
   **The record is a parsed contract, not prose.** The `Claim released —`
   workflow (`.github/workflows/claim-release.yml` where installed) machine-
