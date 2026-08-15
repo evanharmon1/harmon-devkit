@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.31.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.30.1...v0.31.0) (2026-08-15)
+
+
+### Features
+
+* **kickoff:** run and report status:creds credential preflight ([#458](https://github.com/evanharmon1/harmon-devkit/issues/458)) ([60d2c37](https://github.com/evanharmon1/harmon-devkit/commit/60d2c37d66ff3bf10ba5c5c3d2fc9ff7196f24fe))
+
 ## [0.30.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.30.0...v0.30.1) (2026-08-13)
 
 
