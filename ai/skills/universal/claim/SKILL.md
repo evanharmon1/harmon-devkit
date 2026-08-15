@@ -224,11 +224,15 @@ or reopening settled work. Then look for:
 
 *Generic* credential health — whether a login exists at all, for `gh` and the
 other CLIs — belongs to `/kickoff` (`task status:creds`) and is not repeated
-here. Note what that probe does **not** establish: it resolves the stored
-credential without calling the API and reports it "not validated", so it
-proves presence, never **scopes**. No upstream step has checked those, so a
-scope this issue needs is either verified here by a scope-capable read or
-recorded as unverified — never assumed covered. This step vets only what
+here. Do not assume it ran, and do not assume it reached far enough: `/claim`
+is independently invokable, and that probe covers only the GitHub, Codex, and
+Claude logins — an AWS, Cloudflare, or other provider credential is outside
+it. Note too what it does **not** establish even where it did run: it resolves
+the stored credential without calling the API and reports it "not validated",
+so it proves presence, never **scopes**. Anything no upstream step actually
+checked — a provider login it never probed, or any scope at all — is recorded
+below as **unverified** rather than reported `ok`. `ok` means you saw
+evidence; this skill is read-only and does not go looking for a credential. This step vets only what
 **this issue** implies, and it stays read-only: check it against the repo's
 docs, config, and code, never by rendering a template or calling an external
 API beyond the `gh` reads above.
@@ -264,7 +268,7 @@ Numbered findings, each with evidence and a severity: `blocker`,
 the issue, and ask the user how to proceed.
 
 Precede them with a **preflight block** — one line per §3 preflight check,
-each `ok`, the gap found, or `n/a`. `n/a` is only ever right for the
+each `ok`, `unverified`, the gap found, or `n/a`. `n/a` is only ever right for the
 credential line, and only when the issue implies no external surface; the
 other three are issue-wide and always have an answer. Never drop the block: a
 reader can tell the checks ran only from the fact that they are answered.
@@ -427,7 +431,7 @@ actually added.
   Claiming — starting implementation on branch <branch> (session <name>).
 
   Preflight (§3):
-  - credentials/scopes: <ok | the gap, naming the credential and the missing scope | n/a — no external surface>
+  - credentials/scopes: <ok | unverified — what was never checked and why | the gap, naming the credential and the missing scope | n/a — no external surface>
   - human/out-of-band steps: <none | the step, who must do it, and how the work is sequenced around it>
   - plan-vs-apply blind spots: <none | the blind spot and what will prove it instead>
   - stale references: <none | what drifted>
