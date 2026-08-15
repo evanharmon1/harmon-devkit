@@ -287,7 +287,8 @@ down to
 P2; what counts is the **adjudicated** column of your adjudication table, not
 the label Codex attached. The second such round *is* the confirmation, so no
 extra run is owed after it. Two cases exit faster still. A round with **no
-findings at all** ends the stage on the spot, whenever it comes — an empty
+findings at all** ends the stage on the spot **once the tier's `min_rounds`
+floor is met** (1 wherever a tier does not set it) — an empty
 round is exactly the older "clean re-run" exit, so neither a trivial change
 nor a clean post-fix re-run pays for a confirmation pass. And a **capped
 final round** that adjudicates to zero P0/P1 ends the stage by itself: the

@@ -167,10 +167,15 @@ round 1 is done, whatever the tier allowed. Nothing here obliges a round to run.
 `task challenge` — the adversarial pass: architecture and approach,
 authorization bypasses, data-loss paths, unsafe rollback, races, hidden
 coupling, operational failure modes, needless complexity. Steer it when the
-change has an obvious pressure point by passing focus text to a bare run
-(`task challenge -- focus on the migration path`) — do not hard-code a base
-branch; the default resolved in §1 is the base, and an explicit `--base`
-narrows the scope (§7, damper 10).
+change has an obvious pressure point by passing focus text
+(`task challenge -- focus on the migration path`). Every round runs against
+the canonical base: where the harness's own default-resolution matches
+`$base_ref`, a bare run is that; where it would differ — fork checkouts, a
+first remote that is not the upstream — include `--base "$base_ref"` in
+**every** round, first run and re-runs alike. What damper 10 forbids is
+`--uncommitted`/`--base` used to narrow a re-run to the fix; an explicit
+canonical base reviews the whole branch and is required, not forbidden,
+whenever bare resolution would pick a different base.
 
 Each round:
 
@@ -184,8 +189,10 @@ Each round:
    exit condition met means the stage is over now — an empty round 1 owes no
    second run (floor permitting), and a capped final round must not launch
    cap+1. Escalate here if adjudicated P0/P1 persist at the cap.
-6. Only if no exit holds and the cap is not reached: **re-run bare
-   `task challenge`** — never `--base`/`--uncommitted`, which would narrow the
+6. Only if no exit holds and the cap is not reached: **re-run
+   `task challenge` with whole-branch scope against `$base_ref`** (bare where
+   the harness resolves the same base, `--base "$base_ref"` where it would
+   not) — never `--uncommitted` or a narrower base, which would shrink the
    re-review to the fix itself (§7, damper 10) — and the next round begins.
 
 **Round 2 owes the provenance checkpoint** (§7, damper 3) — it is the first
@@ -471,11 +478,11 @@ In order:
    check the intended title locally before opening anything:
 
    ```sh
-   PR_TITLE="feat: …" BASE_SHA="$default" task guard:release-title
+   PR_TITLE="feat: …" BASE_SHA="$base_ref" task guard:release-title
    ```
 
-   `$default` is the base resolved in §1 — do not reintroduce a hard-coded
-   branch name here.
+   `$base_ref` is the remote-qualified base resolved in §1 — a bare local
+   branch name can be stale and misjudge the release-worthiness of the diff.
 
    Retitle rather than bypass.
 2. **Closing keywords are a decision, not a formality** (`track-work`).
