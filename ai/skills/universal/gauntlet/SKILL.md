@@ -50,9 +50,11 @@ assume them.
   handed a tree that does not build spends its round on the build.
 - **You are not on the default branch.** Resolve the default rather than
   assuming `main`; an empty current branch means detached HEAD and is also a
-  stop. `origin/HEAD` is only the first attempt — a checkout with another
-  remote name, or one where `origin/HEAD` was never initialized, is still
-  valid, so fall back to asking the platform before stopping:
+  stop. **An `origin` remote pointing at the PR target repository is
+  required** — the supported-topology rule below — so the commands may name
+  it plainly; `origin/HEAD` needing to be (re)established is ordinary and
+  handled, `origin` being absent is a stop, and the `gh` fallback covers
+  only a default name the symbolic ref cannot supply:
 
   ```sh
   git fetch origin                    # the tips

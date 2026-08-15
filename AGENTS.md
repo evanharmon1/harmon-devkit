@@ -41,7 +41,7 @@ One of four repos in **harmon-platform** (Evan's developer & DevOps platform + h
   `name`/`description` frontmatter); the standouts are `repo/standardize-repo`
   (applies harmon-init's conventions to a repo), the `design/` suite, and the
   `universal/` dev-workflow session suite (`/kickoff`, `/breakdown`,
-  `/claim`, `/implement`, `/shepherd`, `/retro`, `/wrap`). `agents/` holds shared
+  `/claim`, `/implement`, `/gauntlet`, `/shepherd`, `/retro`, `/wrap`). `agents/` holds shared
   subagents — one flat `<name>.md` each, thin by design and deferring to the
   skills above; see [ai/agents/README.md](ai/agents/README.md) for the layout
   and the portability contract.
