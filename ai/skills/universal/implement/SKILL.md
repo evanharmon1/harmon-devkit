@@ -216,13 +216,18 @@ so this becomes the claim of record; nothing else changed, so the record
 lines carry over verbatim). **Copy the `Preflight (§3):` block over verbatim
 too**, where the claim comment carries one: it is the durable record of the
 credential gaps and human-only steps that claim found, and the refreshed
-comment is the one a maintainer or a later session reads. Verbatim only holds
-while the scope does: where step 2 accepted a scope change from the issue's
-comments, the old block's conclusions are about a spec that no longer applies
-— re-run the affected §3 preflight checks against the accepted scope and post
-the recomputed block, rather than carrying `n/a` forward over a provider the
-issue has since grown. Skip this when the
+comment is the one a maintainer or a later session reads. Skip this when the
 names already match.
+
+**A scope change refreshes the claim on its own, whatever the branch is
+named.** Where step 2 accepted a scope change from the issue's comments, the
+recorded preflight block describes a spec that no longer applies — so re-run
+the affected §3 checks against the accepted scope and post the recomputed
+block, rather than leaving the claim of record asserting `n/a` over a provider
+or a human prerequisite the issue has since grown. This is not conditional on
+the branch name: a claim that already named the eventual branch is exactly the
+case where the copy-forward above never runs and the stale block would survive
+untouched.
 
 The default branch is not always named `main`, which is why it is resolved
 rather than assumed.
