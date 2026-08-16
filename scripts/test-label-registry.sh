@@ -225,7 +225,19 @@ layer:data|1D76DB|Schema, indexes, validators, migrations
 layer:integration|1D76DB|External boundary: webhooks, API clients, credentials
 rigor:light|D4C5F9|Dev Loop caps: trivial, low-blast-radius change
 rigor:standard|D4C5F9|Dev Loop caps: the default budget
-rigor:deep|D4C5F9|Dev Loop caps: security, migrations, irreversible paths"
+rigor:deep|D4C5F9|Dev Loop caps: security, migrations, irreversible paths
+tier:local|7057FF|Model tier: self-hosted endpoint first; may escalate to economy
+tier:economy|7057FF|Model tier: cheapest qualified hosted model first; escalation allowed
+tier:standard|7057FF|Model tier: reliable general-purpose coding model first
+tier:frontier|7057FF|Model tier: opus-class heavyweights; no warm-up on weaker models
+tier:apex|7057FF|Model tier: mythos-class leading edge (fable, sol)
+tier:adaptive|7057FF|Model tier: cheap preflight classifies, then chooses or escalates
+method:oneshot|BF3989|Execution: single agent, no separate plan phase
+method:plan|BF3989|Execution: agent plans then implements; no human plan gate
+method:plan-approved|BF3989|Execution: plan requires human approval before implementation
+method:orchestrate|BF3989|Execution: conductor session drives subagents, possibly across related issues
+method:council|BF3989|Execution: N independent implementations; judged, best or synthesis wins
+method:human-led|BF3989|Execution: human owns central decisions; AI does bounded pieces"
 root_only_inline="domain:template|FBCA04|Generating a new repo from the template — the copier copy journey
 domain:standardization|FBCA04|Keeping existing repos current — copier update, drift audits, migrations, adoption
 domain:dev-loop|FBCA04|The daily developer workflow: gates, hooks, tasks, worktrees, review stages
@@ -247,19 +259,7 @@ area:worktree|0E8A16|Worktree lifecycle tooling
 area:release|0E8A16|release-please, tags, release guards
 area:security|0E8A16|Scanners, secret handling, hardening
 area:pm|0E8A16|Labels, projects, issue tooling, PM docs
-area:docs|0E8A16|Documentation content and structure
-tier:local|7057FF|Model tier: self-hosted endpoint first; may escalate to economy
-tier:economy|7057FF|Model tier: cheapest qualified hosted model first; escalation allowed
-tier:standard|7057FF|Model tier: reliable general-purpose coding model first
-tier:frontier|7057FF|Model tier: opus-class heavyweights; no warm-up on weaker models
-tier:apex|7057FF|Model tier: mythos-class leading edge (fable, sol)
-tier:adaptive|7057FF|Model tier: cheap preflight classifies, then chooses or escalates
-method:oneshot|BF3989|Execution: single agent, no separate plan phase
-method:plan|BF3989|Execution: agent plans then implements; no human plan gate
-method:plan-approved|BF3989|Execution: plan requires human approval before implementation
-method:orchestrate|BF3989|Execution: conductor session drives subagents, possibly across related issues
-method:council|BF3989|Execution: N independent implementations; judged, best or synthesis wins
-method:human-led|BF3989|Execution: human owns central decisions; AI does bounded pieces"
+area:docs|0E8A16|Documentation content and structure"
 foreman_inline="foreman:approved|1D76DB|Arm with the repo default backend
 foreman:hold|D93F0B|Exclude from foreman dispatch (always wins)
 foreman:satisfied|0E8A16|Human override: treat this dependency as satisfied
@@ -307,15 +307,16 @@ area:gauntlet|0E8A16|The challenge/review second-model stage: scripts, gates, an
 $template_only_inline" "template layer"
 
     # The manifests are an allowlisted dogfood-parity divergence, but the
-    # divergence is exactly the root-only families — everything else is shared
-    # semantics generated repos must not lag on (writers, lifecycle, gates,
-    # notes). Compare canonically with the root-only families removed, so a
-    # root-side edit to a shared record fails here instead of shipping stale.
+    # divergence is now exactly the per-layer area/domain values — everything
+    # else is shared semantics generated repos must not lag on (writers,
+    # lifecycle, gates, notes, and the tier/method families, fleet-wide as of
+    # #913). Compare canonically with those values emptied, so a root-side edit
+    # to a shared record fails here instead of shipping stale.
     strip_per_layer='(.families[] | select(.family == "area" or .family == "domain") | .values) = []'
     if ! diff \
-        <(jq -S "del(.families[] | select(.family == \"tier\" or .family == \"method\")) | $strip_per_layer" label-registry.json) \
+        <(jq -S "$strip_per_layer" label-registry.json) \
         <(jq -S "$strip_per_layer" template/label-registry.json) >&2; then
-        fail "template/label-registry.json drifted from the root manifest outside the per-layer surfaces (tier/method families; area/domain values) — shared family metadata and every other family must match"
+        fail "template/label-registry.json drifted from the root manifest outside the per-layer surfaces (area/domain values) — shared family metadata and every other family (including tier/method) must match"
     fi
 else
     echo "note: not the template repository — skipping the migration lockfile" >&2

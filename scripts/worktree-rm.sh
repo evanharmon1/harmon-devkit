@@ -92,6 +92,14 @@ case "$name" in
 /* | -*) die "invalid name '$name': must not start with '/' or '-'" ;;
 *..*) die "invalid name '$name': must not contain '..'" ;;
 esac
+# The same character whitelist creation enforces. Removal used to get away
+# without it, but lock entries are derived from the name, and a name
+# carrying whitespace, glob characters, or the encoding characters would
+# corrupt the lock bookkeeping (harmon-init#784) — and no conforming
+# creation can have produced such a worktree anyway.
+case "$name" in
+*[!A-Za-z0-9._/-]*) die "invalid name '$name': use only A-Z a-z 0-9 . _ - /" ;;
+esac
 # The same component rule creation enforces, and for the same reason: every
 # decision below compares `$tree` against git's CANONICAL registry paths as
 # text. `./live` would miss the record for the live worktree at `live`, and the
@@ -107,6 +115,22 @@ main_root="$(git worktree list --porcelain | awk '/^worktree /{print substr($0, 
 [ -n "$main_root" ] && [ -d "$main_root" ] || die "could not resolve the main worktree root"
 
 tree="$main_root/.worktrees/$name"
+
+# ── Per-path lifecycle locks ─────────────────────────────────────────
+# The protocol lives in worktree-lock.sh, SHARED with the sibling command:
+# both must run identical lock semantics, so there is exactly one copy to
+# correct. See that file for the design and its residuals.
+# shellcheck source=scripts/worktree-lock.sh
+. "$(dirname "$0")/worktree-lock.sh"
+
+# The traps are armed BEFORE the first acquisition, so a signal or failure
+# landing mid-acquisition still releases whatever partial set was taken.
+# Held from before the entry snapshots to script exit, so no step of the
+# removal ever acts on a worktree that appeared at this path after the
+# command started.
+trap release_locks EXIT
+trap 'exit 129' HUP INT TERM
+acquire_path_locks "$name"
 
 # Liveness comes from the worktree REGISTRY, not from running git inside the
 # directory: `git -C <dir> rev-parse` walks upward and happily finds the
@@ -335,6 +359,19 @@ fi
 # only ever removes an EMPTY directory, so this cannot take a live tree with it.
 parent="$(dirname "$tree")"
 while [ "$parent" != "$main_root" ] && [ "$parent" != "/" ]; do
+    # Never delete a shared ancestor a live sibling operation still holds:
+    # the walk yields to any foreign holder marker rather than racing the
+    # sibling's own two-step path claim. An empty directory left under
+    # contention is noise; a deleted one is a spurious sibling failure.
+    parent_rel="${parent#"$main_root/.worktrees"}"
+    parent_rel="${parent_rel#/}"
+    if [ -n "$parent_rel" ]; then
+        parent_enc="$(printf '%s' "$parent_rel" | tr '/' '%' | tr '[:upper:]' '[:lower:]')"
+        if [ "${#parent_enc}" -gt 200 ]; then
+            parent_enc="h$(printf '%s' "$parent_enc" | cksum | tr ' \t' '--')"
+        fi
+        ancestor_holders_quiet "$parent_enc" || break
+    fi
     rmdir "$parent" 2>/dev/null || break
     parent="$(dirname "$parent")"
 done

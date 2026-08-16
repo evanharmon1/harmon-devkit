@@ -331,6 +331,90 @@
       ]
     },
     {
+      "family": "tier",
+      "prefix": "tier",
+      "purpose": "Model-routing stratum for the issue — the human-decided policy layer of the model axis.",
+      "axis": "strategy",
+      "source": "inline",
+      "writers": ["human"],
+      "writer_note": "humans, at triage or planning — never an agent on itself",
+      "readers": "humans and agents — informational until the tier resolution config ships",
+      "lifecycle": "durable",
+      "lifecycle_note": "set when the default tier would be wrong; strongest-wins resolution once semantics ship",
+      "trust_note": "provisioned; **informational** — classifies only until resolution semantics ship; arms nothing",
+      "exclusive": false,
+      "provision": true,
+      "color": "7057FF",
+      "values": [
+        {
+          "value": "local",
+          "description": "Model tier: self-hosted endpoint first; may escalate to economy"
+        },
+        {
+          "value": "economy",
+          "description": "Model tier: cheapest qualified hosted model first; escalation allowed"
+        },
+        {
+          "value": "standard",
+          "description": "Model tier: reliable general-purpose coding model first"
+        },
+        {
+          "value": "frontier",
+          "description": "Model tier: opus-class heavyweights; no warm-up on weaker models"
+        },
+        {
+          "value": "apex",
+          "description": "Model tier: mythos-class leading edge (fable, sol)"
+        },
+        {
+          "value": "adaptive",
+          "description": "Model tier: cheap preflight classifies, then chooses or escalates"
+        }
+      ]
+    },
+    {
+      "family": "method",
+      "prefix": "method",
+      "purpose": "Execution topology for working the issue; conflicts resolve by the config-backed rank.",
+      "axis": "strategy",
+      "source": "inline",
+      "writers": ["human"],
+      "writer_note": "humans, at triage or planning — never an agent on itself",
+      "readers": "humans and agents — informational until the method resolution config ships",
+      "lifecycle": "durable",
+      "lifecycle_note": "set when the default method would be wrong; config-backed rank resolution once semantics ship",
+      "trust_note": "provisioned; **informational** — classifies only until resolution semantics ship; arms nothing",
+      "exclusive": false,
+      "provision": true,
+      "color": "BF3989",
+      "values": [
+        {
+          "value": "oneshot",
+          "description": "Execution: single agent, no separate plan phase"
+        },
+        {
+          "value": "plan",
+          "description": "Execution: agent plans then implements; no human plan gate"
+        },
+        {
+          "value": "plan-approved",
+          "description": "Execution: plan requires human approval before implementation"
+        },
+        {
+          "value": "orchestrate",
+          "description": "Execution: conductor session drives subagents, possibly across related issues"
+        },
+        {
+          "value": "council",
+          "description": "Execution: N independent implementations; judged, best or synthesis wins"
+        },
+        {
+          "value": "human-led",
+          "description": "Execution: human owns central decisions; AI does bounded pieces"
+        }
+      ]
+    },
+    {
       "family": "suggest",
       "prefix": "suggest",
       "purpose": "Advisory routing: which agent family should implement the issue. Never Foreman arming.",

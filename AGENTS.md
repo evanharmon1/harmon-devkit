@@ -287,8 +287,40 @@ tier allowed.
   "Between rounds, check what the findings are about" below is how you catch
   the loop feeding on itself before the cap does, and round 2 is where that
   check is owed rather than optional.
+  **Each adjudicated round, before the draft PR exists, ends in one
+  conventional commit, pushed.** Per
+  *round*, not per finding: five fixes are one commit, and a round adjudicated
+  clean with nothing to fix commits and pushes nothing. Before the draft PR
+  exists this costs essentially nothing — the generated `build.yml` triggers
+  on `pull_request` and pushes to the default branch only (re-check your own
+  triggers if you have changed them), Codex
+  cloud review is comment-triggered,  and a bare `task challenge`/`task review` covers branch commits *and*
+  working tree alike, so commit boundaries never change what a round reviews.
+  It must not outrun secret scanning, though, and that is an obligation rather
+  than a claim about your setup: **every round's commit is secret-scanned
+  before it is pushed.** Where the `pre-push` hook is installed it is
+  automatic; where it is not — `run_task_install` defaults to no, so a repo
+  that has not run `task install:hooks` has no hooks at all — run
+  `task security:secrets` yourself first. The rest of the security suite still
+  runs at `task ci` before the PR exists. **Push to the branch's own writable
+  remote** — the one `gh pr create` will push to — and set it on the first
+  push (`git push -u <remote> <branch>`), since a new branch has no upstream
+  to infer.
+  What it buys is that a lost environment costs at most the current round's
+  *code* rather than every round's, and that a push-permission gap surfaces at
+  round 1 rather than at `gh pr create`. It buys nothing beyond the code: it
+  does **not** carry the deferred-findings sidecar
+  or the adjudication ledger, which live in the git directory and are never
+  pushed, so a resumed session recovers the commits and still re-runs the
+  stage. Those stay single-copy until the PR body takes them, and the exit
+  precondition above is not discharged by having pushed. After the draft PR
+  exists the granularity changes: pushes batch per shepherd round, because
+  each one spends a CI run and starts a fresh
+  current-head Codex cycle.
+  Amending or otherwise rewriting anything already pushed stays forbidden at
+  every stage.
 - **`task review`** — verification-checkpoint review, run out of the same
-  procedure; same adjudication, the
+  procedure; same adjudication, the same per-round commit-and-push, the
   same exit condition counted over its own
   rounds, the same self-referential shape and so the
   same reason for a cap, under
@@ -296,7 +328,8 @@ tier allowed.
   capped separately, even where the tier gives them equal numbers: a converged
   challenge says nothing about review.
 - **`task ci`** — the full CI mirror; fix anything it catches.
-- **Open the draft PR** — conventional commit, push the branch,
+- **Open the draft PR** — conventional commit, push whatever the rounds above
+  have not already pushed,
   **`gh pr create --draft`** with a clear what/why/verification summary. Then
   fetch `headRefOid,isDraft` and require both the SHA you pushed and
   `isDraft == true`: a non-draft result is not the normal publication path, so
