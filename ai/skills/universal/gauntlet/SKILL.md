@@ -221,44 +221,28 @@ Each round:
    past most agents' tool-call timeouts.
 2. **Adjudicate every finding** through the damper catalog (§7) and record the
    table (§6). Fix only what is confirmed.
-3. **Re-run `task verify`** after the fixes.
-4. **Commit the round's fixes as their own commit, and push it** to the
-   push remote resolved at the entry gate (§7, damper 9). Per **round**, not
-   per finding: five fixes are one commit, and a round adjudicated clean with
-   nothing to fix commits and pushes nothing. Read step 3's exit code before
-   committing — a gate verdict consumed through a pipeline a reader can mask
-   is how a failing gate reaches a push. Then push it with the helper below.
+3. **Commit the round's fixes as their own commit.** Per **round**, not per
+   finding: five fixes are one commit, and a round adjudicated clean with
+   nothing to fix commits and pushes nothing. Commit *before* gating, so what the gate
+   runs against is an immutable object rather than a working tree — a commit
+   hook that rewrites the index has already run by then.
+4. **Gate that commit, then push it** to the push remote resolved at the entry
+   gate (§7, damper 9). Capture the SHA once the tree is clean
+   (`sha="$(git rev-parse HEAD)"`), run `task verify`, read its **exit code**
+   directly — a verdict consumed through a pipeline a reader can mask is how a
+   failing gate reaches a push — and push that SHA rather than `HEAD`, which
+   git re-resolves when the push runs.
 
-   **The push contract.** Every push in this stage — this one and §10's —
-   goes through the vendored helper, which is tested rather than described:
-
-   ```sh
-   <skill-dir>/assets/push-round.sh --remote <remote> --branch <branch> --sha "${sha}"
-   ```
-
-   Exit **0** pushed, **2** usage, **3** refused with a reason on stderr and
-   nothing pushed, **4** the push itself failed. A refusal is a stop, not a
-   prompt to push by hand.
-
-   Three properties it enforces, each with a failure mode that prose could not
-   reliably prevent:
-
-   1. **What lands is the commit the gate passed** — pass the SHA you captured
-      *before* the gate, never `HEAD`, which git re-resolves at push time.
-   2. **The push touches only this branch** — with no refspec on the command
-      line git consults `remote.<name>.push`, so a wildcard there publishes
-      unrelated local branches.
-   3. **The push never destroys another actor's work; it fails instead** —
-      a lease alone does not give this, because it authorizes a
-      *non-fast-forward* update to the value you observed.
-
-   Why a helper and not a recipe here: every one of those, plus a masked
-   `ls-remote` failure and a zsh refspec-mangling bug, was found in the prose
-   version — several of them one review round after the previous fix. The
-   mechanism belongs somewhere `task test:gauntlet-push` can assert it, and
-   each of those defects is now a test case. This is the same reason the
-   shepherd skill ships `require-marker.sh` rather than describing how to
-   chain a push off a gate verdict.
+   Two properties the push owes, beyond landing the gated commit: it touches
+   **only this branch** (with no refspec on the command line git consults
+   `remote.<name>.push`, so a wildcard there publishes unreviewed branches),
+   and it **fails rather than destroying another actor's work**. Getting the
+   second right is more intricate than it looks — a lease authorizes a
+   non-fast-forward update to the value you observed, and an ancestry check
+   still accepts a remote that moved backward — so the mechanism is being
+   built and tested as a helper rather than prescribed here as a recipe
+   (#499). Until it lands, satisfy the properties deliberately and check what
+   you pushed.
 
 5. **Test the exit rule (§5) and the cap on the round just adjudicated.** An
    exit condition met means the stage is over now — an empty round 1 owes no
@@ -669,7 +653,7 @@ In order:
 6. **`gh pr create --draft`.** Re-check `git status --porcelain` is empty —
    an uncommitted file here is work the push will silently omit — then push
    whatever the rounds have not already pushed, to the push remote resolved
-   at the entry gate and **through `assets/push-round.sh`** (§3, step 4). That
+   at the entry gate, under the same properties §3 step 4 states. That
    matters most here: when the rounds stayed local, or every round came back
    clean, this is the *only* push the stage makes, so it carries the whole
    branch under a contract nothing earlier exercised.
