@@ -115,6 +115,16 @@ assume them.
   excludes the security suite in most repos. A stronger probe is not worth
   reordering the gate around.
 
+**This stage runs before a PR exists.** §10 is what creates one, and the
+shepherd stage owns every push after that. So if you know — or notice at any
+point — that this branch already backs a PR, **stop**: the work belongs to
+shepherd, and a round push would land in that PR, spending its CI and, on a
+promoted one, moving the head out from under the claim that promotion makes.
+Treat that as a precondition, not a guarantee you can prove: a head can be the
+subject of a PR in any repository that could host one, and no check is atomic
+with a later push. It is worth stopping on what you *do* see; it is not worth
+building a search that pretends to have seen everything.
+
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
 the design phase.
@@ -224,6 +234,18 @@ Each round:
    committing — a gate verdict consumed through a pipeline a reader can mask
    is how a failing gate reaches a push. Set the upstream on the first push
    (`-u`), since a new branch has no upstream to infer.
+
+   **This is cheap only where branch pushes trigger nothing — check.** The
+   argument for pushing every round is that a pre-PR branch push spends no
+   CI and starts no cloud review. That is a fact about a repo's workflow
+   triggers, not a law: where workflows run on feature-branch pushes, each
+   round spends a CI run, and a round that *changed a workflow* executes it
+   with repository permissions before §9's `task ci` has run SAST over it.
+   In such a repo, run the full gate before the first round push, or keep
+   the rounds local and accept that the durability the push buys is lost.
+   Where the repo's `AGENTS.md` states an order — `task ci` before the first
+   push is a common one — it outranks this skill, and the policy is what
+   changes first.
 5. **Test the exit rule (§5) and the cap on the round just adjudicated.** An
    exit condition met means the stage is over now — an empty round 1 owes no
    second run (floor permitting), and a capped final round must not launch
