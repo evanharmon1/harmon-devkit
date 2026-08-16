@@ -86,85 +86,39 @@ assume them.
   each round's fixes then get their own commit and push (§3, step 4), and §10
   re-checks the tree is clean immediately before the push.
 
-- **You can push.** Rounds push (§3, step 4), so the credential is proved here
-  rather than discovered after a converged stage. Same rule as the base checks
-  above: **every failure, error, or uncertainty is a stop, never a fallback.**
+- **You can push.** Rounds push (§3, step 4), so the credential is proved
+  here rather than discovered after a converged stage — the observed failure
+  is a stage converging and only then finding it could never have pushed.
+  Same rule as the base checks above: **every failure, error, or uncertainty
+  is a stop, never a fallback.**
 
-  1. **Resolve the push remote, then resolve where it actually points.** The
-     one `gh pr create` will push to — under the fork topology in property 1
-     that is the fork, *not* `origin`. The name does not establish the
-     destination: `remote.<name>.pushurl` overrides the fetch URL for pushes
-     and **every** configured push URL receives the push. So enumerate them
-     and require exactly one, matching the repository you mean on normalized
-     host and path.
-
-     **Never render a push URL.** An HTTPS remote may carry userinfo — a PAT
-     embedded as `https://x-access-token:<token>@host/owner/repo` — and
-     printing it puts a live push credential into the terminal, and from
-     there into an agent transcript, before any review sees it. Count and
-     normalize without echoing the raw value, and redact userinfo from
-     anything you do display:
+  1. **Resolve the push remote** — the one `gh pr create` will push to. Under
+     the fork topology in property 1 that is the fork, *not* `origin`.
+     Resolve it explicitly rather than assuming a name.
+  2. **Ask the forge whether you may write to it**, at the host that remote
+     resolves to:
 
      ```sh
-     # count destinations without rendering any of them
-     n="$(git remote get-url --push --all <remote> | wc -l)"
-     # display only after dropping userinfo and normalizing the scp form
-     git remote get-url --push --all <remote> \
-       | sed -E 's#^([a-z+]+://)[^/@]*@#\1#' \
-       | sed -E 's#^(ssh://)?git@([^:/]+)[:/]#https://\2/#'
+     gh api --hostname <host> repos/<owner>/<repo> --jq '.permissions.push'
      ```
 
-     Three stops, all of them before round 1: **more than one** destination,
-     one that is **not** the intended head repository, or a push URL that
-     **carries userinfo at all** — a credential in `git config` is a finding
-     in its own right, not a shape to normalize around. Never push to a raw
-     URL either: it bypasses the named remote and leaves stale tracking refs.
-  2. **Probe the permission without invoking git push** — ask the forge, at
-     the host the destination from step 1 actually names:
+     `false`, an error, or anything you cannot resolve is a stop.
 
-     ```sh
-     gh api --hostname <host-of-the-push-url> \
-       repos/<push-remote-owner>/<repo> --jq '.permissions.push'
-     ```
+  **Do not substitute `git push --dry-run`.** It is not a read: a dry run
+  still runs the repo's `pre-push` hook, and a failing hook makes it report a
+  push failure. Verified on git 2.51.1 — a marker hook executes under
+  `--dry-run`, and one exiting non-zero aborts it with `failed to push some
+  refs`. So the "probe" would execute branch-controlled code from a tree no
+  reviewer has seen, and misreport a hook failure as a credential failure.
 
-     `false`, or an error, is a stop. This is what catches the observed
-     failure — a converged stage discovering at `gh pr create` that it could
-     never have pushed at all. Pass `--hostname` from the *normalized push
-     URL*, never by assuming: it defaults to `github.com`, so against a
-     GitHub Enterprise remote the bare form asks the wrong forge — rejecting
-     a valid Enterprise credential, or, where the same owner/repo exists on
-     both, reporting permission for a repository that will never receive
-     the push.
-
-     **Do not substitute `git push --dry-run`.** It is not a read: a dry run
-     still runs the repo's `pre-push` hook, and a failing hook makes it
-     report a push failure. Verified on git 2.51.1 — a marker `pre-push` hook
-     executes under `--dry-run`, and one exiting non-zero aborts it with
-     `failed to push some refs`. So the "probe" would execute
-     branch-controlled code from the tree the reviewers have not yet seen,
-     and misreport a hook failure as a credential failure.
-
-  **A push-permitted credential can still be refused on a path.** Forge
-  permission is repository-scoped: a token with Contents write but no
-  Workflows permission reports `push: true` and is then rejected by the first
-  push that touches `.github/workflows/` — the late capability failure this
-  gate exists to prevent, arriving anyway. The path-scoped permission is not
-  uniformly introspectable, so where the branch changes workflow files, treat
-  the probe as **indeterminate** rather than passed — and indeterminate is a
-  **stop**, like every other uncertainty in this gate. Do not read "it cannot
-  answer" as weaker than "it failed"; that reading would make the stop rule
-  optional wherever a check is imprecise, which is where it matters most.
-  Two things clear it, both decisions rather than inferences: confirm the
-  credential carries the workflows scope, or take the local-rounds fallback
-  (§3, step 4) deliberately, pushing once at §10 and accepting that a
-  workflow-permission failure surfaces there.
-
-  Be exact about what this proves. It establishes the **permission**, and
-  nothing that evaluates only on a real ref update: branch protection,
-  rulesets, and pre-receive hooks all see nothing here. Those surface at the
-  first round that pushes, or, on a stage whose rounds are all clean, not
-  until §10. A forge without such an API drops to that same position — say so
-  rather than reaching for the dry run.
+  What this establishes is the **permission**, and nothing that evaluates
+  only on a real ref update — branch protection, rulesets, pre-receive hooks
+  and path-scoped permissions all see nothing here, and surface at the first
+  round that pushes or, on an all-clean stage, at §10. Hardening this check
+  further — enumerating `pushurl` destinations, redacting credentials
+  embedded in URLs, and handling workflow-path permissions — is deliberately
+  out of scope here and tracked as a unit; those interact, and settling them
+  one at a time is what this section is recovering from.
 
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
@@ -567,8 +521,8 @@ why in the revert's message, exactly as damper 4 requires of a deletion.
   environment costs one round" is true only after that first push; before it,
   losing the checkout loses the whole implementation. State that limit rather
   than working around it: an early push to buy durability would publish the
-  implementation ahead of §9's security gate, and the secret-scan obligation
-  below is scoped to a round's commit, so nothing would have scanned it.
+  implementation ahead of §9's security gate, with only the secret scan below
+  standing between it and the remote.
 - **The whole unpushed range is secret-scanned before a push — not just the
   round's commit.** `git push` updates the remote branch to your local ref,
   so it carries **every** commit the remote does not have. The entry gate
