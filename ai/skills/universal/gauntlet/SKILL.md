@@ -43,7 +43,7 @@ normal permission prompt.
 
 ## 1. Entry gate
 
-Three things must hold before the first reviewer round. Check them; do not
+Four things must hold before the first reviewer round. Check them; do not
 assume them.
 
 - **The definition-of-done gate is green** (`task verify` where it exists).
@@ -83,8 +83,40 @@ assume them.
   reviewer runs would cover a dirty tree, but the PR pushes only `HEAD`: an
   implementation living in the working tree can pass every round and CI
   locally and then be silently absent from the draft. Commit before round 1;
-  each round's fixes then get their own commit (§7, damper 9), and §10
+  each round's fixes then get their own commit and push (§3, step 4), and §10
   re-checks the tree is clean immediately before the push.
+
+- **You can push, and you know what you would be pushing into.** Rounds push
+  (§3, step 4), so both halves of "may I push, and into what?" are settled
+  here rather than discovered mid-stage. Same rule as the base checks above:
+  **every failure, error, or uncertainty is a stop, never a fallback.**
+
+  1. **Resolve the push remote** — the one `gh pr create` will push to.
+     Under the fork topology in property 1 above, that is the fork, which is
+     *not* `origin`; a repo whose `origin` you can write to is its own push
+     remote. Resolve it explicitly rather than assuming a name, and never
+     push to a raw URL: a URL push bypasses the named remote and leaves
+     stale tracking refs.
+  2. **Probe it without writing:**
+     `git push --dry-run -u <remote> <branch>` — read the exit code. A
+     permission gap, an SSO-unauthorized credential, or a protected-branch
+     rule surfaces here, at round 1, instead of after a converged stage.
+     This is the failure the per-round push exists to catch early; running
+     the probe means round 1 does not have to be the thing that catches it.
+  3. **Resolve any PR already on this branch:**
+     `gh pr list --repo <repo> --state open --head <branch> --json number,isDraft`.
+     None is the ordinary case. A **draft** you own is fine to continue
+     into — the draft is the workbench, and pushes into it are its expected
+     shape. A **non-draft** is a stop: promotion means the automated
+     lifecycle is complete, and a mid-stage push would move the head out
+     from under that claim without un-notifying the reviewers it summoned.
+     One owned by another worker is a stop to reconcile, not to push into.
+
+  Property 3 is why this is an entry-gate check and not a §10 one. §10 step 5
+  re-checks ownership immediately before **creating** a PR, which is the right
+  moment for that write and the wrong one for this: with rounds pushing, the
+  first write into a PR that already exists lands at round 1, several rounds
+  before §10 runs.
 
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
@@ -188,7 +220,13 @@ Each round:
 2. **Adjudicate every finding** through the damper catalog (§7) and record the
    table (§6). Fix only what is confirmed.
 3. **Re-run `task verify`** after the fixes.
-4. **Commit the round's fixes as their own commit** (§7, damper 9).
+4. **Commit the round's fixes as their own commit, and push it** to the
+   push remote resolved at the entry gate (§7, damper 9). Per **round**, not
+   per finding: five fixes are one commit, and a round adjudicated clean with
+   nothing to fix commits and pushes nothing. Read step 3's exit code before
+   committing — a gate verdict consumed through a pipeline a reader can mask
+   is how a failing gate reaches a push. Set the upstream on the first push
+   (`-u`), since a new branch has no upstream to infer.
 5. **Test the exit rule (§5) and the cap on the round just adjudicated.** An
    exit condition met means the stage is over now — an empty round 1 owes no
    second run (floor permitting), and a capped final round must not launch
@@ -204,7 +242,8 @@ round that can show the loop feeding on itself, and it is not optional.
 
 `task review` — the verification checkpoint: implementation correctness,
 consistency with the repo's conventions, error handling, test coverage. Same
-adjudication, same table, same backgrounding, same exit rule — under its **own
+adjudication, same table, same backgrounding, same per-round commit-and-push,
+same exit rule — under its **own
 cap, counted separately**. A converged challenge says nothing about review, and
 the two are capped separately even where the tier gives them equal numbers.
 
@@ -433,11 +472,37 @@ evidence that cannot rot. Self-correction needs external feedback to work at
 all; a third round of prose is the thing that does not. **No cheap assertion
 available → escalate**, rather than argue it a third time.
 
-**9. Best-so-far rollback.** Commit each round's fixes as **their own commit**,
-so the branch history is a best-so-far record. **Reverting to an earlier commit
-is a legitimate adjudication outcome** when later rounds churned without
-adjudicated improvement. Running to the cap is not the goal, and the history is
-what makes going back cheap enough to actually do.
+**9. Best-so-far rollback.** Commit each round's fixes as **their own commit**
+and push it, so the branch history is a best-so-far record that survives the
+machine it was made on. **Returning to an earlier state is a legitimate
+adjudication outcome** when later rounds churned without adjudicated
+improvement. Running to the cap is not the goal, and the history is what makes
+going back cheap enough to actually do.
+
+**Go back by adding, not by rewriting.** Because the rounds are pushed, the
+history is published, and rewriting published history is forbidden — no
+`reset --hard` over a pushed round, no amend, no force-push, no matter how
+much tidier the result would look. Revert the rounds you are undoing
+(`git revert`, newest first) and push that; the branch then records both what
+was tried and that it was withdrawn, which is what a later round or a
+different session needs in order not to retry it. Name the reverted rounds and
+why in the revert's message, exactly as damper 4 requires of a deletion.
+
+**Two costs the push does not cover.** It carries commits and nothing else:
+
+- The **deferred-findings sidecar and the adjudication ledger** live in the
+  git directory (§6) and are never pushed, so a lost environment costs at
+  most the current round's *code* while taking the whole adjudication record.
+  A resumed session recovers the commits and still re-runs the stage. Say
+  that plainly rather than letting "the rounds are pushed" be read as crash
+  recovery; the sidecar's transfer into the PR body in §10 is still the only
+  thing that makes those findings durable.
+- **A round's commit is secret-scanned before it is pushed.** This is an
+  obligation, not a claim about any repo's setup: where a `pre-push` hook
+  runs the scan it is automatic, and where none is installed — hook
+  installation is opt-in in most generated repos — run the repo's secret
+  scan yourself first. The rest of the security suite still runs at §9
+  before the PR exists.
 
 **10. Whole-branch scope every round.** Re-run the reviewer **bare** — branch
 commits *and* working tree — so a fix can never narrow the re-review to itself.
@@ -551,7 +616,8 @@ In order:
    duplicate means stop and reconcile, not open a second PR.
 6. **`gh pr create --draft`.** Re-check `git status --porcelain` is empty —
    an uncommitted file here is work the push will silently omit — then push
-   the branch to a remote you can write to,
+   whatever the rounds have not already pushed, to the push remote resolved
+   at the entry gate,
    named explicitly, then create the PR as a **draft** — binding the target
    explicitly when more than one repo is in play: `--repo <upstream>` for the
    base, `--head <owner>:<branch>` when pushing from a fork, and
@@ -592,6 +658,12 @@ In order:
    contract the shepherd's cloud-review rounds read to answer a repeat
    finding from the record — a "hand-off note" anywhere else is a location
    nothing downstream is defined to look in.
+
+**The push cadence changes here.** Round-per-push is a *pre-PR* rule, and the
+draft existing is what ends it: from this point each push spends a CI run and
+starts a fresh current-head cloud-review cycle, so the shepherd batches one
+push per its own round rather than one per fix. What does not change is that
+nothing already pushed is ever amended, rebased, or force-pushed.
 
 **Then enter the shepherd stage.** The verified draft existing (step 7) is
 the trigger for that stage — whichever creation path produced it — not the
