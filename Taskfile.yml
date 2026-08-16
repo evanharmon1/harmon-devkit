@@ -81,6 +81,7 @@ tasks:
       - task: test:shepherd-codex
       - task: test:shepherd-marker
       - task: test:shepherd-readiness
+      - task: test:gauntlet-push
       - task: test:lint-hygiene
       - task: test:release-title
       - task: test:notify-release
@@ -379,6 +380,11 @@ tasks:
     desc: Unit-test the shepherd gate-then-push marker parser (require-marker.sh)
     cmds:
       - ./scripts/test-shepherd-marker.sh
+
+  test:gauntlet-push:
+    desc: Unit-test the gauntlet round-push helper (push-round.sh) — hermetic, local bare remotes
+    cmds:
+      - ./scripts/test-gauntlet-push.sh
 
   test:shepherd-readiness:
     desc: Unit-test the shepherd readiness gate + read-only gh wrapper (offline, stubbed gh)
