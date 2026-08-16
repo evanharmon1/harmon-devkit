@@ -102,16 +102,23 @@ assume them.
      stale tracking refs.
   2. **No PR may be open on this branch** — and this is checked **before**
      anything is pushed, or the push it is meant to prevent has already
-     landed in the PR it was meant to find. Scope it to the branch *in the
-     repository you resolved in step 1*, since `--head` filters on branch
-     name alone and a contributor's unrelated PR from another fork can carry
-     the same name:
+     landed in the PR it was meant to find. Ask **the repository the PR would
+     target** — `origin`, per property 1 — not the remote you push to: a pull
+     request is stored in its *base* repository, so a fork's PR is listed
+     upstream and a query against the fork finds nothing. Then filter by head
+     owner, because `--head` matches on branch name alone and an unrelated
+     contributor's PR from a different fork can carry the same name:
 
      ```sh
-     gh pr list --repo <repo> --state open --head <branch> \
+     gh pr list --repo <origin-repo> --state open --head <branch> \
        --json number,headRefName,headRepositoryOwner \
        --jq '.[] | select(.headRepositoryOwner.login == "<push-remote-owner>") | .number'
      ```
+
+     In the ordinary same-repo case the two are the same repository and the
+     filter is a no-op; it is the fork case that needs both halves, and
+     getting either half wrong fails **open** — an existing PR goes unseen
+     and every round pushes into it.
 
      Any hit is a **stop**, draft or not. This stage runs *before* a PR
      exists: §10 is what creates one, and it refuses to create a second. A
