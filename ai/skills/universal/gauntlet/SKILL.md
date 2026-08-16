@@ -227,13 +227,50 @@ Each round:
    per finding: five fixes are one commit, and a round adjudicated clean with
    nothing to fix commits and pushes nothing. Read step 3's exit code before
    committing — a gate verdict consumed through a pipeline a reader can mask
-   is how a failing gate reaches a push. **Name the ref explicitly** —
-   `git push <remote> HEAD:refs/heads/<branch>` — and add `-u` on the first
-   push, since a new branch has no upstream to infer. A bare `git push` is
-   not equivalent: with no refspec on the command line, git uses
-   `remote.<name>.push`, so a configured wildcard publishes unrelated local
-   branches that no round reviewed and that the unpushed-range scan above
-   never covered.
+   is how a failing gate reaches a push. Then push it **under the push
+   contract below**, which every push in this stage uses — this one and
+   §10's alike.
+
+   **The push contract.** Stated once, here, and referenced rather than restated. Where the shepherd
+   skill is vendored this is the contract it already runs every fix round
+   (`shepherd/SKILL.md:900-926` and `:1027-1032`); it is written out so a repo
+   without that skill still has the rule, and so the two cannot drift.
+
+   ```sh
+   sha="$(git rev-parse HEAD)"          # capture BEFORE the gate
+   task verify                          # read the exit code, do not pipe it
+   oid="$(git ls-remote <remote> refs/heads/<branch> | cut -f1)"   # empty if new
+   git push <remote> "${sha}:refs/heads/<branch>" \
+     ${oid:+--force-with-lease="<branch>:${oid}"}
+   ```
+
+   **The braces are load-bearing, not style.** In zsh — the default shell on
+   macOS and in these devcontainers — an *unbraced* `"$sha:refs/…"` parses as
+   the parameter `sha` with the history modifier `:r` applied, then the
+   literal `efs/…`. It silently pushes a mangled refspec: observed as
+   `error: src refspec <sha>efs/heads/<branch> does not match any`. Bash does
+   not do this, so a snippet tested only under bash looks correct. Write
+   `${sha}` and `${oid}` in any refspec.
+
+   Three properties, each closing a specific hole:
+
+   1. **Push the gated SHA, never `HEAD`.** Git resolves `HEAD` at push time,
+      so a commit hook that rewrites the tree — or anything advancing `HEAD`
+      between the round commit and the push — publishes a commit the gate
+      never saw. Capture the SHA before the gate and push that.
+   2. **Name the ref explicitly.** With no refspec on the command line git
+      consults `remote.<name>.push`, so a configured wildcard publishes
+      unrelated local branches that no round reviewed and no scan covered.
+      Add `-u` on the first push, which has no upstream to infer.
+   3. **Lease against the observed remote head.** Read the remote ref
+      immediately before pushing and bind the push to it. If another actor
+      deleted or reset the branch since your last round, an ordinary push
+      recreates the ref or resurrects commits behind that reset; the lease
+      makes it **refuse** instead. This is a fast-forward guard, not history
+      rewriting — damper 9's prohibition is on discarding published commits,
+      and this is the opposite. On a branch the remote does not yet have
+      there is nothing to lease against, so the lease is omitted for that
+      first push only.
 
    **Two preconditions, or the rounds stay local.** Branch pushes must
    trigger no workflows, and the repo's `AGENTS.md` must not order the CI
@@ -649,8 +686,11 @@ In order:
 6. **`gh pr create --draft`.** Re-check `git status --porcelain` is empty —
    an uncommitted file here is work the push will silently omit — then push
    whatever the rounds have not already pushed, to the push remote resolved
-   at the entry gate,
-   named explicitly, then create the PR as a **draft** — binding the target
+   at the entry gate and **under the push contract in §3, step 4**. That
+   matters most here: when the rounds stayed local, or every round came back
+   clean, this is the *only* push the stage makes, so it carries the whole
+   branch under a contract nothing earlier exercised.
+   Then create the PR as a **draft** — binding the target
    explicitly when more than one repo is in play: `--repo <upstream>` for the
    base, `--head <owner>:<branch>` when pushing from a fork, and
    `--base "$default"`. An unqualified create in a fork checkout can select
