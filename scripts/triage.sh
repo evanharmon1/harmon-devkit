@@ -66,6 +66,13 @@ repo="$(gh repo view "$(git remote get-url origin)" \
 # different repository it happens to have credentials for.
 export TRIAGE_REPO="$repo"
 
+# The worker gets no mktemp and no general Write: the wrapper owns the scratch
+# directory, the Write grant below is scoped to it, and triage-report.sh
+# refuses an entries file outside it — so the report can only ever publish
+# run-generated content, never an arbitrary readable file.
+scratch="$(mktemp -d)" || die "could not create a scratch directory"
+export TRIAGE_SCRATCH="$scratch"
+
 if [ "$mode" = "execute" ]; then
     # Supervised runs only: a human must be watching (v1's [HUMAN] gate). The
     # supervision flow is dry-run -> review -> execute; the confirmation below
@@ -86,7 +93,7 @@ else
 scripts say they WOULD write."
 fi
 
-tools="Read,Glob,Grep"
+tools="Read,Glob,Grep,Write(//${scratch#/}/**)"
 tools="$tools,Bash($skill_dir/assets/triage-scan.sh:*)"
 tools="$tools,Bash($skill_dir/assets/triage-apply.sh:*)"
 tools="$tools,Bash($skill_dir/assets/triage-report.sh:*)"
@@ -96,6 +103,8 @@ prompt="You are running the triage skill headlessly over one repository.
 
 Repo: $repo
 Skill: $skill_dir/SKILL.md
+Scratch directory (already created — write scan.json and entries.md here;
+do not run mktemp): $scratch
 Mode: $mode_text
 
 Read the skill file and follow its steps exactly, in order. Use only the

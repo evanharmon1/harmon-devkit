@@ -54,10 +54,10 @@ Set two values and a scratch directory:
   `.claude/skills/triage`.
 - `REPO` — the `owner/repo` your runner named. If none was named, run
   `gh repo view --json nameWithOwner -q .nameWithOwner` and use that.
-
-```sh
-SCRATCH="$(mktemp -d)"
-```
+- `SCRATCH` — the scratch directory your runner named. Only if it named none
+  (an interactive session), create one: `SCRATCH="$(mktemp -d)"`. Every file
+  you create in this run (`scan.json`, `entries.md`) goes in `$SCRATCH` —
+  nowhere else.
 
 ## Step 1 — Scan
 

@@ -64,28 +64,36 @@ die() {
 
 # Print the open report issue's number, or nothing. Dies on ambiguity.
 #
-# The marker alone is forgeable — any issue author can paste it. Candidates
-# are therefore also filtered by AUTHOR: only issues created by the
-# authenticated login or the repo owner qualify, so a stranger's
-# marker-carrying issue can neither become the report nor block the real one.
+# The marker alone is forgeable — any issue author can paste it. The invariant
+# is that report identity must be unforgeable by untrusted authors yet stable
+# across every legitimate operator, so candidates are filtered by
+# `author_association`: only OWNER/MEMBER/COLLABORATOR-authored issues
+# qualify. A stranger's marker-carrying issue can neither become the report
+# nor block the real one, and a report created by any trusted operator stays
+# visible to all of them.
 find_report() {
-    local repo="$1" viewer owner matches
-    viewer="$(gh api user -q .login)" ||
-        die 2 "could not resolve the authenticated login"
-    owner="${repo%%/*}"
-    matches="$(gh issue list --repo "$repo" --state open --limit 200 \
-        --json number,body,author -q \
-        "[.[] | select((.body | contains(\"$MARKER\"))
-                       and ((.author.login == \"$viewer\")
-                            or (.author.login == \"$owner\")))
-              | .number] | .[]")" ||
+    local repo="$1" candidates matches="" n assoc count=0
+    candidates="$(gh issue list --repo "$repo" --state open --limit 200 \
+        --json number,body -q \
+        "[.[] | select(.body | contains(\"$MARKER\")) | .number] | .[]")" ||
         die 2 "could not list open issues of $repo"
-    local count
-    count="$(printf '%s' "$matches" | grep -c . || true)"
+    while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        assoc="$(gh api "repos/$repo/issues/$n" \
+            -q .author_association </dev/null)" ||
+            die 2 "could not verify the author of marker candidate #$n"
+        case "$assoc" in
+        OWNER | MEMBER | COLLABORATOR)
+            matches="$matches$n"$'\n'
+            count=$((count + 1))
+            ;;
+        *) ;; # untrusted author's forged marker — ignored
+        esac
+    done <<<"$candidates"
     [ "$count" -le 1 ] ||
         die 2 "ambiguous: $count open issues carry the report marker" \
             "($(printf '%s' "$matches" | tr '\n' ' ')) — close the extras first"
-    printf '%s' "$matches"
+    printf '%s' "${matches%$'\n'}"
 }
 
 cmd_find() {
@@ -162,6 +170,20 @@ cmd_sync() {
             "repository '$TRIAGE_REPO'"
     fi
     [ -f "$entries" ] || die 2 "entries file not found: $entries"
+    # When the wrapper bound a scratch directory, the entries file must live
+    # inside it: the worker's Write grant is scoped there, so any path outside
+    # is a prompt-injected attempt to publish an arbitrary readable file
+    # (a key, a config) into a GitHub issue body.
+    if [ -n "${TRIAGE_SCRATCH:-}" ]; then
+        local entries_abs
+        entries_abs="$(cd "$(dirname "$entries")" && pwd)/$(basename "$entries")" ||
+            die 2 "could not resolve the entries file path"
+        case "$entries_abs" in
+        "$TRIAGE_SCRATCH"/*) ;;
+        *) die 4 "refused: --entries-file must live under this run's" \
+            "scratch directory ($TRIAGE_SCRATCH)" ;;
+        esac
+    fi
     validate_entries "$entries"
 
     local now body
@@ -210,6 +232,14 @@ cmd_sync() {
             die 2 "could not re-read $repo#$target before editing"
         printf '%s' "$live" | grep -qF "$MARKER" ||
             die 4 "refused: $repo#$target no longer carries the report marker"
+        # Idempotency: identical findings must not churn the issue. The
+        # timestamp line is generation metadata, so compare without it and
+        # skip the edit when nothing else changed.
+        if [ "$(printf '%s\n' "$body" | grep -v '^_Last generated: ')" = \
+            "$(printf '%s\n' "$live" | grep -v '^_Last generated: ')" ]; then
+            echo "no content change — skipping edit of $repo#$target"
+            return 0
+        fi
         printf '%s\n' "$body" |
             gh issue edit "$target" --repo "$repo" --body-file - >/dev/null ||
             die 1 "write failed: gh issue edit $repo#$target"

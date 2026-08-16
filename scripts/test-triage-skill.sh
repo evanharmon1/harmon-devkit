@@ -42,7 +42,6 @@ cat >"$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"${GH_STUB_LOG:?}"
-[ -t 0 ] || cat >/dev/null
 q=""
 state=""
 prev=""
@@ -64,6 +63,11 @@ case "${1:-} ${2:-}" in
     [ "${GH_STUB_NATIVE_TYPE:-}" = "ERROR" ] && exit 1
     printf '%s\n' "${GH_STUB_NATIVE_TYPE:-}"
     ;;
+api\ repos/*/issues/*)
+    n="${2##*/}"
+    v="GH_STUB_ASSOC_$n"
+    printf '%s\n' "${!v:-OWNER}"
+    ;;
 api\ repos/*)
     printf '%s\n' "${GH_STUB_OWNER_TYPE:?}"
     ;;
@@ -71,7 +75,10 @@ api\ repos/*)
 "issue list") emit "${GH_STUB_DIR:?}/issues-${state:?}.json" ;;
 "issue view") emit "${GH_STUB_DIR:?}/issue-${3:?}.json" ;;
 "repo view") printf '%s\n' "${GH_STUB_REPO:?}" ;;
-"issue edit" | "issue create") ;;
+# Only the body-carrying writes read stdin (--body-file -): drain just there,
+# so a stubbed read call inside a caller's while-read loop cannot eat the
+# loop's remaining input or hang on a never-closing stdin.
+"issue edit" | "issue create") [ -t 0 ] || cat >/dev/null ;;
 *)
     echo "gh stub: unexpected call: $*" >&2
     exit 97
@@ -88,6 +95,7 @@ fi
 printf '%s\n' "ARGS: $*" >>"${GH_STUB_LOG:?}"
 printf '%s\n' "TRIAGE_EXECUTE=${TRIAGE_EXECUTE:-unset}" >>"${GH_STUB_LOG:?}"
 printf '%s\n' "TRIAGE_REPO=${TRIAGE_REPO:-unset}" >>"${GH_STUB_LOG:?}"
+printf '%s\n' "TRIAGE_SCRATCH=${TRIAGE_SCRATCH:-unset}" >>"${GH_STUB_LOG:?}"
 STUB
 chmod +x "$tmp/bin/gh" "$tmp/bin/claude"
 
@@ -320,7 +328,8 @@ cat >"$stub_dir/issues-open.json" <<JSON
 JSON
 [ "$(run "$report" find --repo "$repo")" = 2 ] || fail "ambiguous must exit 2"
 
-echo "==> report find: a stranger's forged marker is not the report"
+echo "==> report find: an untrusted author's forged marker is not the report"
+export GH_STUB_ASSOC_66="NONE"
 cat >"$stub_dir/issues-open.json" <<JSON
 [{"number": 66, "body": "$marker forged", "author": {"login": "attacker"}},
  {"number": 99, "body": "$marker", "author": {"login": "testowner"}}]
@@ -332,6 +341,12 @@ cat >"$stub_dir/issues-open.json" <<JSON
 JSON
 [ "$(run "$report" find --repo "$repo")" = 0 ] || fail "forged-only find failed"
 grep -qx "none" "$tmp/out" || fail "a forged-only marker must read as none"
+
+echo "==> report find: a MEMBER-authored report stays visible to other runners"
+export GH_STUB_ASSOC_66="MEMBER"
+[ "$(run "$report" find --repo "$repo")" = 0 ] || fail "member find failed"
+grep -qx "66" "$tmp/out" || fail "member-authored report must be found"
+unset GH_STUB_ASSOC_66
 
 entries="$tmp/entries.md"
 cat >"$entries" <<'MD'
@@ -396,6 +411,32 @@ echo "==> report sync: --execute without the env gate is refused"
 echo "==> report sync: a mismatched --repo is refused when the run is bound"
 [ "$(run env TRIAGE_REPO="$repo" "$report" sync --repo other/elsewhere \
     --entries-file "$entries")" = 4 ] || fail "unbound repo sync must exit 4"
+
+echo "==> report sync: an entries file outside the bound scratch is refused"
+mkdir -p "$tmp/scratch"
+[ "$(run env TRIAGE_SCRATCH="$tmp/scratch" "$report" sync --repo "$repo" \
+    --entries-file "$entries")" = 4 ] ||
+    fail "entries outside scratch must exit 4"
+cp "$entries" "$tmp/scratch/entries.md"
+[ "$(run env TRIAGE_SCRATCH="$tmp/scratch" "$report" sync --repo "$repo" \
+    --entries-file "$tmp/scratch/entries.md")" = 0 ] ||
+    fail "entries inside scratch must pass: $(cat "$tmp/out")"
+
+echo "==> report sync: an unchanged report body skips the edit (timestamp aside)"
+cat >"$stub_dir/issues-open.json" <<JSON
+[{"number": 99, "body": "$marker", "author": {"login": "testowner"}}]
+JSON
+run env TRIAGE_NOW=2026-01-01 "$report" sync --repo "$repo" \
+    --entries-file "$entries" >/dev/null
+sed -n '/^DRY-RUN body follows:$/,$p' "$tmp/out" | tail -n +2 >"$tmp/livebody"
+jq -n --rawfile b "$tmp/livebody" '{"labels": [], "body": $b}' \
+    >"$stub_dir/issue-99.json"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 TRIAGE_NOW=2026-02-02 "$report" sync \
+    --repo "$repo" --entries-file "$entries" --execute)" = 0 ] ||
+    fail "unchanged sync failed: $(cat "$tmp/out")"
+grep -q "skipping edit" "$tmp/out" || fail "unchanged body must skip the edit"
+grep -q "issue edit" "$GH_STUB_LOG" && fail "unchanged body must not edit"
 
 # ── scan ─────────────────────────────────────────────────────────────────────
 cat >"$stub_dir/issues-open.json" <<JSON
@@ -497,6 +538,9 @@ grep -q "DRY-RUN" "$GH_STUB_LOG" || fail "prompt must state DRY-RUN"
 grep -q -- "--model haiku" "$GH_STUB_LOG" || fail "default model must be haiku"
 grep -q -- "--setting-sources" "$GH_STUB_LOG" ||
     fail "worker must run with settings isolated"
+grep -q "TRIAGE_SCRATCH=/" "$GH_STUB_LOG" || fail "run must bind a scratch dir"
+grep -q -- "Write(//" "$GH_STUB_LOG" ||
+    fail "worker Write grant must be scratch-scoped"
 
 echo "==> wrapper: --execute without a terminal is refused"
 [ "$(run "$wrapper" --execute)" = 2 ] ||
