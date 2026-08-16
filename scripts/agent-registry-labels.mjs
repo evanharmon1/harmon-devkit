@@ -84,9 +84,9 @@ const GH_LABEL_NAME_MAX = 50
 const GH_LABEL_DESC_MAX = 100
 const labelName = (prefix, slug) => {
   const name = `${prefix}:${slug}`
-  if (name.length > GH_LABEL_NAME_MAX) {
+  if ([...name].length > GH_LABEL_NAME_MAX) {
     console.error(
-      `agent-registry-labels: label '${name}' is ${name.length} chars, over GitHub's ` +
+      `agent-registry-labels: label '${name}' is ${[...name].length} chars, over GitHub's ` +
         `${GH_LABEL_NAME_MAX}-char limit — shorten the slug in agent-registry.json`
     )
     process.exit(1)
@@ -94,9 +94,9 @@ const labelName = (prefix, slug) => {
   return name
 }
 const record = (name, color, description) => {
-  if (description.length > GH_LABEL_DESC_MAX) {
+  if ([...description].length > GH_LABEL_DESC_MAX) {
     console.error(
-      `agent-registry-labels: label '${name}' description is ${description.length} chars, over ` +
+      `agent-registry-labels: label '${name}' description is ${[...description].length} chars, over ` +
         `GitHub's ${GH_LABEL_DESC_MAX}-char limit — shorten the display_name in agent-registry.json`
     )
     process.exit(1)

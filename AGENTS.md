@@ -185,21 +185,25 @@ capped, but this file names no numbers: the caps live in
 [`.devflow.toml`](.devflow.toml) as `rigor` tiers, so there is one place to
 change them and one place to read them. Resolve in this order — an explicit
 instruction in this session, then a `rigor:*` label on the issue, then `default_rigor`,
-then a built-in 4 / 4 / 4 if the file is absent — with a `min_rounds` floor
-of 1 for any tier that does not define it. When the change under review
+then a built-in 4 / 4 / 4 if the file is absent — with a `min_rounds` floor of
+1 for any tier that does not define it — the absent-file case, a legacy config
+predating the key, and a partially migrated one where only some tiers state it
+alike — which is also the floor every shipped tier states explicitly. When the change under review
 **edits `.devflow.toml` itself**, resolve its caps **and floor** from the
 **merge-base** copy rather than the branch copy: otherwise a branch can lower
-the very gate it is changing — a self-lowered `min_rounds` buys an earlier
-empty-round exit — and dropping every tier together evades the below-default
-disclosure because nothing is left to be below. An explicit human instruction still
+the very gate it is changing — the floor included, since a self-lowered
+`min_rounds` buys an earlier empty-round exit, and dropping every tier together evades the below-default disclosure
+because nothing is left to be below. An explicit human instruction still
 overrides.
 Labels are multi-select and nothing stops an issue carrying two, so resolution
 is **per stage, taking the highest cap present**: a conflict can then only ever
 buy more review, never less, and no ranking of the tier names has to be agreed
 on anywhere. `min_rounds` resolves under the same principle — the highest
-floor present wins. Because that is per stage, two retuned tiers can yield caps
+floor present wins — so a label conflict cannot quietly select the lower floor
+either. Because that is per stage, two retuned tiers can yield caps
 belonging to no single tier — so what you announce is the **caps**, naming a
-tier only when one supplied all of them, and the disclosure below compares caps
+tier only when one supplied all of them — the floor included — and the
+disclosure below compares caps
 rather than tier names. A `rigor:` value naming no tier in the file is ignored
 rather than guessed at. Treat the label as advisory: it is applied by people and
 verified by nothing, and GitHub's **triage** role can label an issue with no
@@ -209,8 +213,8 @@ announcement and in the PR body whenever any resolved cap or floor is below what
 `default_rigor` would give**, so a reduced budget is visible to the human
 reviewer instead of silent.
 **Announce the resolved caps on entering the loop** — "rigor:
-`<tier>` (`<source>`) → challenge ≤`<n>`, review ≤`<n>`, shepherd `<n>`,
-min_rounds `<n>`", filled in by reading the file rather than from memory — and carry it into the PR body, so
+`<tier>` (`<source>`) → challenge ≤`<n>`, review ≤`<n>`, shepherd `<n>`, min_rounds `<n>`", filled in
+by reading the file rather than from memory — and carry it into the PR body, so
 a later round or a different session can see which budget it is spending
 instead of inferring one. Everything else about these stages is policy rather
 than a parameter and does not vary by tier: the exit condition, the escalation
@@ -230,26 +234,48 @@ tier allowed.
   lint immediately.
 - **`task verify`** — when the change feels done, loop edit → verify until
   green; verify is the definition-of-done gate.
-- **`task challenge`** — adversarial second-model review. Adjudicate per
-  "Second-Model Review" below, fix confirmed findings, re-run `task verify`,
-  then **re-run `task challenge`**. The stage ends when **two consecutive
+- **`task challenge`** — adversarial second-model review, under the resolved
+  **challenge cap**. Where the optional `/gauntlet` skill is vendored **and its
+  supported topology holds — `origin` is the repository the PR will
+  target** — it is the procedure, and it is **user-invocable only**
+  (`disable-model-invocation: true`): an agent enters the stage by reading
+  `.claude/skills/gauntlet/SKILL.md` and following it, not by calling a slash
+  command it cannot call. That skill carries the mechanics this file does not
+  restate — backgrounding the long reviewer runs, the adjudication table and
+  its ledger, the deferred-findings sidecar recipe, and the PR-open ritual.
+  Where it is not vendored — or the checkout is the conventional fork layout
+  whose `origin` is the writable fork, which the skill's entry gate stops on
+  by design — the stage still runs from what ships without it:
+  the backgrounding guidance in
+  [docs/guides/codex-review.md](docs/guides/codex-review.md) ("Duration and
+  backgrounding"), the sidecar obligation in "Deferring P2s" below, and the
+  Dev Loop's draft-PR bullet — the ledger and the extended ritual are
+  gauntlet enhancements a no-skill repo simply does not owe. What stays here
+  is the policy they run under, and where a **vendored** skill (`/gauntlet`)
+  states a different cap, floor, or exit condition, **this file wins** —
+  vendored skills are synced on their own release cadence and can lag a policy
+  change made here.
+  The stage ends when **two consecutive
   rounds adjudicate to zero P0 and zero P1 findings** — whether those rounds
   came back empty, all-P2 as labeled, or P1-labeled and adjudicated down to
   P2. Severity is read off the **adjudicated** column of your adjudication
   table, not off the reviewer's label, and nothing further is owed after the
   second such round: the second round *is* the confirmation, so there is no
   extra clean run to buy. A round that returns **no findings at all** ends
-  the stage on its own **once the tier's `min_rounds` floor is met** (1
-  wherever a tier does not set it) — an empty round is the old rule's clean
-  re-run, so neither a trivial change nor a clean post-fix re-run pays for a
-  confirmation pass, and the other two exits satisfy any floor ≤ 2 by
-  construction. Fixing the findings is still not the exit
+  the stage on its own **once at least `min_rounds` rounds have run** — an
+  empty round is the old rule's clean re-run, so neither a trivial change nor
+  a clean post-fix re-run pays for a confirmation pass, but a tier that sets a
+  floor buys the rounds it asked for before that shortcut opens. The other two
+  exits satisfy any floor of 2 or less by construction — two consecutive clean
+  rounds *are* two rounds, and a capped final round is at least the cap, which
+  is never below 2 — so `min_rounds` binds the empty-round path and nothing
+  else. Fixing the findings is still not the exit
   condition; adjudicated-clean rounds are. The exit carries one
   precondition: every P2 you deferred during the stage must already be in the
   deferred-findings sidecar (see "Deferring P2s" below) — an exit that drops
   a P2 is not an exit, because nothing downstream will ever see it again.
   **P2s do not gate this stage**: carry
-  them to the PR (see "Deferring P2s" below). This loop is
+  them to the PR. This loop is
   **self-referential** — the fixes you make in response to a round become the
   next round's input, so it can generate its own work indefinitely — and that
   is what the cap defends against: the resolved **challenge cap** bounds the
@@ -261,20 +287,11 @@ tier allowed.
   "Between rounds, check what the findings are about" below is how you catch
   the loop feeding on itself before the cap does, and round 2 is where that
   check is owed rather than optional.
-  A `task challenge` round is long — 5–15 minutes is ordinary, past most
-  agents' tool-call timeouts — so **run it in the background and poll**
-  instead of blocking one call on it. Growing output means running, not hung;
-  relaunching a live run only doubles the cost. Re-challenge with a bare
-  `task challenge` — it covers the branch's commits *and* the working tree,
-  so an uncommitted fix cannot narrow the re-run to itself; an explicit
-  `--base`/`--uncommitted` reviews one half only. Committing each round's
-  fixes first is still tidier, not load-bearing. Details:
-  [docs/guides/codex-review.md](docs/guides/codex-review.md) ("Duration and
-  backgrounding").
-- **`task review`** — verification-checkpoint review; same adjudication, the
-  same two-consecutive-adjudicated-clean exit condition counted over its own
+- **`task review`** — verification-checkpoint review, run out of the same
+  procedure; same adjudication, the
+  same exit condition counted over its own
   rounds, the same self-referential shape and so the
-  same reason for a cap, and the same background-and-poll handling, under
+  same reason for a cap, under
   its own resolved **review cap**. The two stages are counted separately — and
   capped separately, even where the tier gives them equal numbers: a converged
   challenge says nothing about review.
@@ -538,7 +555,12 @@ Setup and mechanics: [docs/guides/codex-review.md](docs/guides/codex-review.md).
   past a BLOCK** — adjudicate the finding or escalate to the maintainer instead.
 
 These tasks slot into the **Dev Loop** above: after `task verify` goes green,
-before `task ci`.
+before `task ci` — and where the optional `/gauntlet` skill is vendored **and
+its supported topology holds (`origin` is the repository the PR will
+target)**, the procedure for running them to convergence is that skill,
+entered by reading `.claude/skills/gauntlet/SKILL.md`; otherwise the Dev
+Loop's fallback above is the procedure. What follows here is the policy it runs
+under; where the two disagree, this file wins.
 Codex cloud review is also connected to the repo; it reviews PRs too and posts
 inline comments only for high-priority findings.
 During shepherding, accept its clean comments, reviews, or reactions only under
@@ -578,8 +600,11 @@ observe is not a check to run, and nothing waits on it.
    appropriate.
 4. Explain why any rejected finding is incorrect or irrelevant.
 5. Re-run `task verify` (and the other relevant gates) after fixes.
-6. Finish with a concise adjudication table: finding → priority →
-   classification → evidence → action taken.
+6. Finish the round with an adjudication table — at minimum finding →
+   reviewer priority → **adjudicated** priority → classification → evidence →
+   action, plus the round-2 provenance column — and record it; where the
+   `/gauntlet` skill is vendored it adds the per-branch ledger the rows are
+   written to.
 
 **Between rounds, check what the findings are about.** Those six steps are all
 *per-finding*, so a reviewer can be right every round while the loop as a whole
@@ -620,14 +645,15 @@ code — the table is scrollback, but the commit is why the code is gone, and it
 is the record a later round or a different session can still find.
 
 **Restructuring to invariants is the same move where deletion is unavailable**
-— deletion by abstraction. When the artifact is a spec or document whose
-accreted procedure-prose cannot simply be dropped because earlier rounds
+— deletion by abstraction. When the artifact is a spec or a document whose
+accreted procedure-prose *cannot* simply be dropped because earlier rounds
 legitimately demanded it, replace the attackable procedure with the
-universally-quantified property it was approximating, delegate the mechanism
-to the implementation surface that can be tested, and carry the review's
-attack scenarios over as required test cases. The next round finds no wording
-seam to attack, and the obligation is preserved rather than dropped. Name it
-on the table and in the commit message exactly as a deletion is named.
+universally-quantified property it was approximating, delegate the mechanism to
+the implementation surface that can be tested, and carry the review's attack
+scenarios over as required test cases. The next round finds no wording seam to
+attack, and the obligation is preserved rather than dropped — which is what
+separates this from quietly deleting a requirement. Name it on the table and in
+the commit message exactly as a deletion is named.
 
 One endpoint is worth knowing: if the deletion empties the change *entirely*,
 there is no round to converge on — `codex-review.sh` refuses an empty scope
@@ -655,44 +681,16 @@ This is not bookkeeping: `task challenge` and `task review` run locally and
 their output is ephemeral, and the cloud reviewer reposts only high-priority
 findings, so a P2 that is not written into the PR body is simply lost.
 
-Record each one **the moment you defer it**. Challenge and review both run
-before `gh pr create`, so there is usually no PR body to write to yet: append
-it to the file
-`git rev-parse --git-path "deferred-findings/$(git branch --show-current)"`
-names (`mkdir -p` its directory first) — but only if that finding is not
-already listed. A P2 you leave open is reported again by design — it is
-unchanged code, so every remaining round of the stage and the next stage after
-it will raise it; appending blindly would hand the shepherd four copies
-of one finding to settle. Match on location plus substance, not exact
-wording — the same finding rarely comes back phrased identically. Then
-move the list into the description when you open the PR (then delete the
-file). Terminal scrollback is not a record — a context reset between
-`task challenge` and `gh pr create` would take the findings with it.
-
-**Sweep for orphans when you open the PR.** List the whole tree —
-`ls -R "$(git rev-parse --git-path deferred-findings)"` — and account for
-every file it holds, not just your branch's. Renaming a branch (`git branch
--m`) or deleting one strands its notes under the old name, where nothing will
-ever look for them again; a rename mid-change is exactly when that happens.
-Adopt an orphan into this PR if it belongs to this work, otherwise leave it
-and say it is there. Listing costs one command; migration logic would cost a
-mechanism that then needs its own correctness argument.
-
-That path is not arbitrary. It sits in the **git directory**, so it is
-deterministic (any later session in this checkout finds it the same way, and
-`git rev-parse` resolves it correctly inside a linked worktree) and invisible
-to `git status`. It is keyed by **branch** because an ordinary clone switches
-branches in place: with one shared file, opening branch B's PR would sweep up
-branch A's findings and then delete A's only copy of them. The branch name
-becomes a *path*, verbatim and without a suffix — folding `/` to `-` would
-collide `feat/x` with `feat-x` and reintroduce exactly that loss, and adding
-an extension would make `foo` (a file) block `foo.md/bar` (needing a
-directory). Used as-is, the mapping is git's own ref namespace, and git
-already forbids one live branch from being a path prefix of another. A note in the *worktree* would be worse than none:
-`codex-review.sh` puts uncommitted files in scope whenever the tree is dirty,
-so the note would be handed to the next bare `task challenge` as part of the
-change under review — a file of open findings, presented to the reviewer as
-work to adjudicate.
+Record each one **the moment you defer it**, and never twice. Challenge and
+review both run before `gh pr create`, so there is usually no PR body to write
+to yet: it goes to the per-branch sidecar in the git directory, and the sweep
+for stray notes happens when you open the PR. The path, the reason it is keyed
+by branch and lives outside the worktree, and the append-once matching rule
+are the `/gauntlet` skill's where it is vendored, with the recipe in
+[docs/guides/codex-review.md](docs/guides/codex-review.md) either way — this
+file states only the obligation, because terminal scrollback is not a record:
+a context reset between `task challenge` and `gh pr create` would take the
+findings with it.
 
 The shepherd stage settles every entry and **edits the PR body to tick it**
 (`- [x] … — fixed in <sha>` / `declined: <reason>` / `filed as #<n>`) in the
@@ -709,11 +707,16 @@ all-P2 as labeled, or P1-labeled and adjudicated down to P2; what counts is
 the **adjudicated** column of the table, not the reviewer's label, and the
 second such round is itself the confirmation, so no further run is owed. Two
 exits are faster still. A round with **no findings at all** ends the stage by
-itself **once the tier's `min_rounds` floor is met** (1 wherever a tier does
-not set it) — an empty round is exactly the old rule's clean re-run, so
-neither a trivial change nor a clean post-fix re-run pays for a confirmation
-pass; the two-consecutive and capped-clean exits satisfy any floor ≤ 2 by
-construction, so the floor binds the empty-round path alone. And a **capped final round** that adjudicates to zero
+itself **once the stage has run at least `min_rounds` rounds** (the per-tier
+floor in `.devflow.toml`; 1 if the file is absent) — an empty round is exactly
+the old rule's clean re-run, so neither a trivial change nor a clean post-fix
+re-run pays for a confirmation pass, and the floor only stops that shortcut
+being taken before the tier's minimum work has happened. Say plainly what
+follows: the other two exits satisfy any floor of 2 or less **by
+construction** — the two-consecutive exit runs two rounds by definition, and
+the capped-clean exit runs the cap, which is never below 2 — so `min_rounds`
+constrains the empty-round exit alone and needs no separate check on the
+other two. And a **capped final round** that adjudicates to zero
 P0/P1 also ends the stage by itself: the confirmation it would otherwise owe
 is a run the cap forbids, and a rule that strands a stage holding a clean
 last round and no valid exit would be wrong — the cap bounds work, it does

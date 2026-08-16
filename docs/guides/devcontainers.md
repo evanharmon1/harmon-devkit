@@ -378,9 +378,16 @@ you log in as yourself:
 
 ```sh
 gh auth login --hostname github.com --git-protocol https \
-  --web --scopes "workflow,project"
+  --web --scopes "$(bash -c '. scripts/gh-scopes.sh && gh_scopes_request_list')"
 gh auth setup-git
 ```
+
+The scope list is **derived**, not typed: `scripts/gh-scopes.sh` is the single
+source this repo's session-start check and `task setup:gh-scopes` read, so the
+login above asks for exactly what the check demands — including profile-specific
+additions such as `admin:org` in an organization repo. Outside a checkout, use
+the literal `--scopes "workflow,project"` and then run `task setup:gh-scopes`
+once you have cloned, which adds anything missing and verifies it landed.
 
 `--scopes` is *additive* to gh's defaults (`repo`, `read:org`, `gist`). `project`
 is what Projects V2 writes need — without it `task status:gh` reports the board

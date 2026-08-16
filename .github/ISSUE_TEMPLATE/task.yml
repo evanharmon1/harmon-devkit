@@ -1,13 +1,15 @@
 name: Task
 description: General work — maintenance, chores, cleanup, or a small improvement
-title: "[Task]: "
 assignees:
   - evanharmon1
+labels:
+  - task
+  - needs-triage
 body:
   - type: textarea
     id: description
     attributes:
-      label: What needs doing?
+      label: Problem
       description: Briefly describe the task and the outcome it should achieve.
     validations:
       required: true
@@ -15,8 +17,10 @@ body:
     id: acceptance
     attributes:
       label: Acceptance criteria
-      value: |
-        - [ ]
+      description: >-
+        Optional. One `- [ ]` item per criterion; tag `[CI]`/`[HUMAN]` where
+        useful. Leave blank to file without criteria — triage adds them
+        before this is dispatched.
   - type: textarea
     id: verify
     attributes:

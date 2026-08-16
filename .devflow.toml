@@ -21,17 +21,27 @@
 #
 # These are ceilings, not quotas. A stage exits the moment any of its exit
 # conditions in AGENTS.md is met: two consecutive rounds adjudicated to zero
-# P0/P1, any single round with no findings at all (once the tier's min_rounds
-# floor is met), or a round that hits the cap
-# below having adjudicated to zero P0/P1 — the confirming round it would
-# otherwise owe is one the cap forbids, so a clean last round is convergence,
-# not grounds to escalate. Nothing here obliges a round to be run.
+# P0/P1, any single round with no findings at all (once `min_rounds` rounds
+# have run), or a round that hits the cap below having adjudicated to zero
+# P0/P1 — the confirming round it would otherwise owe is one the cap forbids,
+# so a clean last round is convergence, not grounds to escalate. Nothing here
+# obliges a round to be run.
+#
+# `min_rounds` is the one number here that is a floor rather than a ceiling: it
+# is the minimum number of rounds a stage must actually run before the
+# empty-round instant exit is available. The other two exits already run two
+# rounds and one capped round respectively, so any floor of 2 or less is
+# satisfied by construction and `min_rounds` binds only the empty-round path.
 #
 # Retuning these is expected. The Dev Loop assumes five invariants, and nothing
 # at runtime will tell you if an edit breaks one:
-#   - every tier defines challenge, review and shepherd, all integers
+#   - every tier defines challenge, review, shepherd and min_rounds, all
+#     integers
 #   - challenge and review are >= 2, because the exit condition needs two
 #     consecutive adjudicated-clean rounds; at 1, one finding is an escalation
+#   - min_rounds is 1 or 2, never more: two consecutive adjudicated-clean
+#     rounds — empty rounds included — exit a stage at round 2 whatever the
+#     floor says, so a value above 2 is a budget no stage ever spends
 #   - shepherd is the same in every tier (see below)
 #   - default_rigor names a tier that exists here
 #   - min_rounds is 1 or 2, never more: two consecutive adjudicated-clean

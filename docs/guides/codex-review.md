@@ -266,9 +266,10 @@ The caps are not written down here, or in AGENTS.md. They live in
 [`.devflow.toml`](../../.devflow.toml) as `rigor` tiers, and **AGENTS.md alone
 defines how a change resolves one** — restating that chain here would only give
 it a second place to drift from, and which inputs are even available depends on
-how the repository is set up. Only `challenge` and `review` vary by tier; the
+how the repository is set up. `challenge`, `review`, and the `min_rounds` floor vary by tier; the
 shepherd cap is fixed, because it bounds other people's findings rather than
-self-generated work. Announce the resolved caps when you enter the loop.
+self-generated work. Announce the resolved caps — the floor included — when
+you enter the loop.
 
 If Codex cloud review is connected to the repo, PRs
 get a cloud pass too: inline comments only for high-priority findings, a
@@ -289,9 +290,11 @@ P2; what counts is the **adjudicated** column of your adjudication table, not
 the label Codex attached. The second such round *is* the confirmation, so no
 extra run is owed after it. Two cases exit faster still. A round with **no
 findings at all** ends the stage on the spot **once the tier's `min_rounds`
-floor is met** (1 wherever a tier does not set it) — an empty
-round is exactly the older "clean re-run" exit, so neither a trivial change
-nor a clean post-fix re-run pays for a confirmation pass. And a **capped
+floor is met** (1 wherever a tier does not set it) — an empty round is exactly
+the older "clean re-run" exit, so neither a trivial change nor a clean
+post-fix re-run pays for a confirmation pass, and a floor of 2 only delays
+that shortcut, never the other two exits, which run at least two rounds by
+construction. And a **capped
 final round** that adjudicates to zero P0/P1 ends the stage by itself: the
 confirmation it would otherwise owe is a run the cap forbids, and escalation
 at the cap is reserved for P0/P1 findings that persist — a clean last round
@@ -309,13 +312,27 @@ along the way was individually defensible.
 The **scaffolding damper** is what replaces the cap as the first line of
 defense. At round 2 — the earliest round that can show the pattern — say on
 the table, for each finding, whether its subject exists only because an earlier
-round of the same stage added it. Where it does, adjudicate it with one of three
-dispositions written down: delete the scaffolding, restructure it to
-invariants (replace attackable procedure-prose with the property it was
-approximating, delegate the mechanism to a testable surface, and carry the
-round's attack scenarios as required test cases — deletion by abstraction,
-for artifacts earlier rounds legitimately demanded), or state that the code
-is in scope and why the change needs it. A deletion does not re-score the round
+round of the same stage added it. Where it does, adjudicate it with one of
+three dispositions written down: delete the scaffolding, restructure it to
+invariants, or state that the code is in scope and why the change needs it.
+
+**Restructuring to invariants** is deletion by abstraction, and it is the
+disposition to reach for when plain deletion is unavailable. Some artifacts —
+specs, policy documents, AGENTS.md itself — accrete procedure-prose that
+earlier rounds legitimately demanded, so it cannot just be dropped without
+dropping the obligation with it. Instead, replace the attackable procedure with
+the universally-quantified property it was approximating, delegate the
+mechanism to the implementation surface that can actually be tested, and carry
+the round's attack scenarios across as required test cases. The wording seam
+the next round would have attacked is gone, and the obligation survives as a
+property plus its tests rather than as prose. Three rounds of trust-rule
+whack-a-mole in the 2026-08-13/14 spec session ended in exactly one such
+restructure. It shares deletion's accounting: it does not re-score the round
+that raised the findings, and it must be named on the table and in the commit
+message, because "the procedure is gone" and "the requirement is gone" look
+identical in a diff and are not the same thing.
+
+A deletion does not re-score the round
 that flagged the code — the finding keeps its adjudicated priority there, and
 it is the **next** round, reviewing the tree without it, that finds nothing
 left to re-raise and counts toward convergence. Reflexively hardening the

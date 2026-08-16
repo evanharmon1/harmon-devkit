@@ -73,9 +73,11 @@ tasks:
       - task: test:agent-registry
       - task: test:registry-drift
       - task: test:registry-docs
+      - task: test:label-registry
       - task: test:tasks
       - task: test:ci-results
       - task: test:status
+      - task: test:gh-scopes
       - task: test:meta-install
       - task: test:codex-review
       - task: test:shepherd-codex
@@ -345,6 +347,17 @@ tasks:
     cmds:
       - ./scripts/test-registry-docs.sh
 
+  test:label-registry:
+    # COPIER_ANSWERS_FILE tells the verbatim-twin script which tracker this
+    # repo rendered — the linear project-management document shares the GitHub
+    # one's path and must not be held to the label-taxonomy markers. Same
+    # env-not-argument reasoning as test:registry-docs above.
+    desc: Bind label provisioning, the docs taxonomy table, and the status inventory to the label registry
+    env:
+      COPIER_ANSWERS_FILE: ".copier-answers.yml"
+    cmds:
+      - ./scripts/test-label-registry.sh
+
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)
     cmds:
@@ -359,6 +372,11 @@ tasks:
     desc: Unit-test the status board-writes + local-credential checks (stubbed CLIs, no network)
     cmds:
       - ./scripts/test-status.sh
+
+  test:gh-scopes:
+    desc: Unit-test the gh scope refresh task's refusals and post-refresh verification (stubbed gh, no network)
+    cmds:
+      - ./scripts/test-setup-gh-scopes.sh
 
   test:meta-install:
     desc: Unit-test the .meta sidecar installer's ~-expansion and refusals
@@ -620,16 +638,32 @@ tasks:
     desc: >-
       Idempotently create/sync the owner's GitHub Project V2 board + Status
       pipeline + Size number field (on a personal account also the other
-      metadata fields). Requires `gh auth refresh -s project`.
+      metadata fields). Requires the Projects scopes — `task setup:gh-scopes`.
     cmds:
       - ./scripts/setup-github-project.sh --owner "evanharmon1" --title "evanharmon1 Project"
+
+  setup:gh-scopes:
+    desc: >-
+      OPERATOR / DEV PROFILE ONLY: refresh your interactive gh login so it
+      carries every scope this repo needs (refuses against a GH_TOKEN env
+      credential and without a TTY; verifies the grant landed). Bot containers
+      must reissue GH_TOKEN instead.
+    # Load-bearing, not cosmetic. This Taskfile sets `output: group` globally,
+    # which pipes every task's stdout — so the script's own `[ -t 1 ]` guard saw
+    # a pipe and refused with "no TTY" even in a real terminal, making the
+    # documented entry point impossible to use. `interactive: true` tells Task
+    # to skip output grouping and attach the task to the terminal, which is what
+    # both the guard and the browser device-code flow it protects require.
+    interactive: true
+    cmds:
+      - ./scripts/setup-gh-scopes.sh
 
   setup:github-labels:
     desc: Idempotently create/update this repo's starter labels incl. the foreman arming labels. Requires `gh` with repo write.
     vars:
       REPO: "evanharmon1/harmon-devkit"
     cmds:
-      - ./scripts/setup-github-labels.sh --repo "{{.REPO}}" --foreman
+      - ./scripts/setup-github-labels.sh --repo "{{.REPO}}" --foreman --release-please
 
   # One-time, idempotent repo settings applied via gh (safe to re-run); run once
   # the repo exists on GitHub. The remaining setup steps need a browser or a real
@@ -754,7 +788,7 @@ tasks:
       - ./scripts/status.sh gh
 
   status:creds:
-    desc: Local credential section (gh, Codex, Claude Code logins — local probes, no network)
+    desc: Credential section (gh, Codex, Claude Code logins + gh token scopes — local probes plus one bounded scope check; STATUS_NO_NETWORK=1 skips it)
     cmds:
       - ./scripts/status.sh creds
 

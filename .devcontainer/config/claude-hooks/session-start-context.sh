@@ -18,24 +18,32 @@ strip_ansi() { sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g'; }
 
 # The outer deadlines must exceed what the sections themselves allow, or the
 # inner bounds are pointless: whatever the section was about to report is lost
-# wholesale, because status.sh buffers each section before printing it. status:gh
-# spends up to NETWORK_TIMEOUT (5s) on the auth probe and then up to another 5s
-# on the PR/run probes it launches in parallel — 10s worst case, so 12 here.
-# status:git makes no network calls at all.
+# wholesale, because status.sh buffers each section before printing it.
+#
+# Each probe's worst case is its deadline PLUS status.sh's kill grace — the
+# second run_timeout waits between SIGTERM and SIGKILL for a probe that ignores
+# the first. Budgeting from the deadline alone understates every probe by that
+# second, which was the whole of the margin these numbers used to carry.
+#
+# status:gh spends up to NETWORK_TIMEOUT (5s) on the auth probe and then up to
+# another 5s on the PR/run probes it launches in parallel — 12s worst case with
+# the grace, so 14 here. status:git makes no network calls at all.
 #
 # status:creds is budgeted from its own probes rather than by copying a
-# neighbour's number: it makes NO network call (that is why it can be here at
-# all — status:gh already spends this startup's only auth round trip), and runs
-# three LOCAL probes back to back, each bounded at 3s inside status.sh — 9s
-# worst case, so 11 here for the `task` and shell startup around them.
+# neighbour's number: it runs three LOCAL probes back to back, each bounded at
+# 3s inside status.sh, plus ONE bounded 3s call to read the gh token's SCOPES
+# (a server-side property no local file records — issue #827), which is why it
+# is capped at the local bound rather than NETWORK_TIMEOUT. Four probes, so
+# 12s of deadlines plus four kill graces — 16s worst case, so 17 here for the
+# `task` and shell startup around them.
 #
 # There is a SECOND deadline above all of these: the `timeout` on the
 # SessionStart entries in claude-settings.json, which Claude Code applies to this
 # whole script. Overrunning it is worse than any single section overrunning its
 # own bound — the hook is killed before `jq` emits anything, so the entire
 # payload is lost rather than one section of it. The sections are therefore run
-# in PARALLEL: the hook's wall clock is then the LONGEST deadline (12s), which
-# fits inside that outer timeout, where the sum (25s) would not.
+# in PARALLEL: the hook's wall clock is then the LONGEST deadline (17s), which
+# fits inside that outer timeout, where the sum (36s) would not.
 git_out="$(mktemp)"
 gh_out="$(mktemp)"
 creds_out="$(mktemp)"
@@ -43,9 +51,9 @@ trap 'rm -f "${git_out}" "${gh_out}" "${creds_out}"' EXIT
 
 timeout 5 task status:git >"$git_out" 2>/dev/null &
 git_pid=$!
-timeout 12 task status:gh >"$gh_out" 2>/dev/null &
+timeout 14 task status:gh >"$gh_out" 2>/dev/null &
 gh_pid=$!
-timeout 11 task status:creds >"$creds_out" 2>/dev/null &
+timeout 17 task status:creds >"$creds_out" 2>/dev/null &
 creds_pid=$!
 
 # `wait` on each, with the failure recorded rather than propagated: `set -e`

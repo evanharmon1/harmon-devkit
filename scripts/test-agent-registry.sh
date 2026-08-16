@@ -94,6 +94,17 @@ switch (mutation) {
       provision_label: false
     })
     break
+  case 'overlong-display-name':
+    // 65 chars: one over the family bound (64, from the longest description
+    // wrapper) — the schema's maxLength must reject it declaratively (#680).
+    registry.families[0].display_name = 'X'.repeat(65)
+    break
+  case 'overlong-adapter-display-name':
+    // 48 chars: inside the shared 50 cap but over the adapter-specific 47 —
+    // the foreman description wrapper is the longest, so the adapter bound is
+    // tighter and needs its own declarative limit.
+    adapter('claude').display_name = 'X'.repeat(48)
+    break
   default:
     throw new Error(`unknown mutation: ${mutation}`)
 }
@@ -234,6 +245,12 @@ rejects "a legacy claude adapter mapped to the wrong harness" \
 rejects "a non-production legacy claude adapter" \
     'non-production-claude' \
     'legacy Foreman adapter claude must be production-dispatchable and provisionable'
+rejects "a display_name over the schema's declarative length cap" \
+    'overlong-display-name' \
+    'must contain at most 64 character(s)'
+rejects "an adapter display_name over its tighter 47-char cap" \
+    'overlong-adapter-display-name' \
+    'must contain at most 47 character(s)'
 
 node --input-type=module - "$schema" "$mutated_schema" <<'NODE'
 import { readFile, writeFile } from 'node:fs/promises'

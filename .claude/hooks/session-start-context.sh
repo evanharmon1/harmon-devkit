@@ -18,17 +18,25 @@ strip_ansi() { sed -E 's/\x1B\[''[0-9;]*[A-Za-z]//g'; }
 
 # The outer deadlines must exceed what the sections themselves allow, or the
 # inner bounds are pointless: whatever the section was about to report is lost
-# wholesale, because status.sh buffers each section before printing it. status:gh
-# spends up to NETWORK_TIMEOUT (5s) on the auth probe and then up to another 5s
-# on the PR/run probes it launches in parallel — 10s worst case, so 12 here.
-# status:git makes no network calls at all.
+# wholesale, because status.sh buffers each section before printing it.
+#
+# Each probe's worst case is its deadline PLUS status.sh's kill grace — the
+# second run_timeout waits between SIGTERM and SIGKILL for a probe that ignores
+# the first. Budgeting from the deadline alone understates every probe by that
+# second, which was the whole of the margin these numbers used to carry.
+#
+# status:gh spends up to NETWORK_TIMEOUT (5s) on the auth probe and then up to
+# another 5s on the PR/run probes it launches in parallel — 12s worst case with
+# the grace, so 14 here. status:git makes no network calls at all.
 #
 # status:creds is budgeted from its own probes rather than by copying a
-# neighbour's number: it makes NO network call (that is why it can be here at
-# all — status:gh already spends this startup's only auth round trip), and runs
-# three LOCAL probes back to back, each bounded at 3s inside status.sh — 9s
-# worst case, so 11 here for the `task` and shell startup around them. The three run in
-# parallel, so it adds nothing to the wall clock the gh deadline already allows.
+# neighbour's number: it runs three LOCAL probes back to back, each bounded at
+# 3s inside status.sh, plus ONE bounded 3s call to read the gh token's SCOPES
+# (a server-side property no local file records — issue #827), which is why it
+# is capped at the local bound rather than NETWORK_TIMEOUT. Four probes, so
+# 12s of deadlines plus four kill graces — 16s worst case, so 17 here for the
+# `task` and shell startup around them. The three run in parallel, so it
+# adds nothing to the wall clock the gh deadline already allows.
 remote_url="$(git config --get remote.origin.url 2>/dev/null || echo '')"
 host_owner="$(echo "$remote_url" | sed -E 's/^(https?:\/\/|git@)([^:\/]+)[:\/]([^\/]+)\/[^\/]+(\.git)?$/\2 \3/')"
 host="${host_owner% *}"
@@ -46,9 +54,9 @@ if [ "$host" = "github.com" ]; then
         fi
         "$timeout_cmd" 5 task status:git >"$git_out" 2>/dev/null &
         git_pid=$!
-        "$timeout_cmd" 12 task status:gh >"$gh_out" 2>/dev/null &
+        "$timeout_cmd" 14 task status:gh >"$gh_out" 2>/dev/null &
         gh_pid=$!
-        "$timeout_cmd" 11 task status:creds >"$creds_out" 2>/dev/null &
+        "$timeout_cmd" 17 task status:creds >"$creds_out" 2>/dev/null &
         creds_pid=$!
 
         git_rc=0

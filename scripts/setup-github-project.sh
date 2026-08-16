@@ -6,9 +6,11 @@
 # because only project number fields sum in view group headers (issue-field
 # columns can group/filter/sort, not sum). The other metadata on an ORGANIZATION
 # are org-level ISSUE fields (Priority/Effort are GitHub built-ins, left at
-# their defaults; setup-github-issue-fields.sh adds Product, Domain, and
-# Layer); on a personal account (no org issue fields) this script creates
-# Priority/Product/Domain/Layer as project fields too.
+# their defaults; setup-github-issue-fields.sh adds Product); on a personal
+# account (no org issue fields) this script creates Priority/Product as
+# project fields too. Domain and Layer are deliberately NOT fields — the
+# `domain:`/`layer:` labels (setup-github-labels.sh) are their only surface
+# (#875).
 #
 # Safe to re-run and safe to run from every repo the owner controls: it looks the
 # project up by title, so the first run creates it and later runs just reconcile
@@ -478,11 +480,10 @@ create_number "Size"
 # Other metadata: on an ORGANIZATION these are org-level ISSUE fields (durable —
 # the value is on the issue, shared across every project; see
 # docs/project-management.md). Priority is a GitHub built-in;
-# setup-github-issue-fields.sh adds Product, Domain, and Layer. A personal
-# account has no org issue fields, so fall back to creating them as project
-# fields here.
+# setup-github-issue-fields.sh adds Product. A personal account has no org
+# issue fields, so fall back to creating them as project fields here.
 if [ "$owner_type" = "Organization" ]; then
-    echo "==> Other metadata are org issue fields (Priority/Effort built-ins, left at their defaults; run setup-github-issue-fields.sh for Product/Domain/Layer)"
+    echo "==> Other metadata are org issue fields (Priority/Effort built-ins, left at their defaults; run setup-github-issue-fields.sh for Product)"
     report_incompatible
     echo "==> Done — project #$project_number: $title"
     exit 0
@@ -501,24 +502,9 @@ create_text "Product"
 # the `Status: Agent Queue` lane; the live claim is a `claim:*` label written
 # by the agent itself. A single-select field could carry neither answer without
 # duplicating the label vocabulary (docs/project-management.md, ADR 0005 D4).
-# Domain (what part of the product) and Layer (which slice of the stack) mirror
-# the `domain:` / `layer:` label families in setup-github-labels.sh — keep the
-# lists in step. Domain is a starter set; real domains come from your product's
-# entities. create_single_select only ever ADDS to an existing field, so options
-# you add in the Project UI survive every re-run — and a starter value added by a
-# later harmon-init release lands on the next one, the same way a new
-# `domain:`/`layer:` label does.
-create_single_select "Domain" '[
-  {"name":"auth","color":"PURPLE","description":"Authentication and authorization"},
-  {"name":"billing","color":"GREEN","description":"Billing and payments"},
-  {"name":"platform","color":"GRAY","description":"CI, build, test infra, and tooling in this repo"}
-]'
-create_single_select "Layer" '[
-  {"name":"ui","color":"BLUE","description":"Components, styling, interaction, tokens, a11y. No data change"},
-  {"name":"logic","color":"GREEN","description":"Business rules, handlers, calculation"},
-  {"name":"data","color":"YELLOW","description":"Schema, indexes, validators, migrations"},
-  {"name":"integration","color":"ORANGE","description":"External boundary: webhooks, API clients, credentials"}
-]'
+# There is likewise deliberately no Domain or Layer field (#875) — same
+# reasoning as Agent: the `domain:`/`layer:` labels in setup-github-labels.sh
+# are the only surface now. See docs/project-management.md, "Label or field?".
 
 report_incompatible
 echo "==> Done — project #$project_number: $title"

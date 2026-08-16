@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-init/label-registry.schema.json",
+  "title": "Harmon label registry",
+  "description": "Machine-readable source of truth for every GitHub label family this repository knows about. Rendered into provisioning (setup-github-labels.sh), the docs taxonomy table, and skill behavior (the writers field is the triage write-allowlist). Mixed namespaces (foreman:*) are split into separately modeled families sharing a prefix, so `source` stays family-level; writers/lifecycle/color/arming still override per value.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "families"],
+  "properties": {
+    "$schema": { "const": "./label-registry.schema.json" },
+    "schema_version": { "const": 1 },
+    "families": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/family" }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "color": {
+      "type": "string",
+      "pattern": "^[0-9A-F]{6}$"
+    },
+    "writer": {
+      "description": "human = anyone with triage access; trusted-human = an actor-verifying consumer additionally authenticates the applier (the label still carries no permission — the class names which consumer-side check applies); agent = an AI agent may write it (the triage skill's allowlist reads exactly this); tool:<name> = written only by that tool's own machinery.",
+      "type": "string",
+      "pattern": "^(human|trusted-human|agent|tool:[a-z0-9-]+)$"
+    },
+    "writers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/writer" }
+    },
+    "lifecycle": {
+      "description": "durable = stays on the issue once true; transient = removed as soon as the state clears; claim-release = added at claim, removed at release; tool-managed = the owning tool applies and removes it.",
+      "enum": ["durable", "transient", "claim-release", "tool-managed"]
+    },
+    "value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value"],
+      "properties": {
+        "value": {
+          "description": "The part after `<prefix>:`, or the complete label name when the family's prefix is null (which is how names outside the family:value convention, like `autorelease: pending`, are modeled).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "description": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "color": { "$ref": "#/$defs/color" },
+        "writers": { "$ref": "#/$defs/writers" },
+        "writer_note": { "type": "string", "minLength": 1 },
+        "readers": { "type": "string", "minLength": 1 },
+        "lifecycle": { "$ref": "#/$defs/lifecycle" },
+        "lifecycle_note": { "type": "string", "minLength": 1 },
+        "trust_note": { "type": "string", "minLength": 1 },
+        "arming": { "type": "boolean" },
+        "provision": {
+          "description": "Per-value off switch (only false is legal): the value belongs to the family's semantics but is never seeded — e.g. work types GitHub already ships at repo creation. A family-off has no per-value on switch.",
+          "const": false
+        },
+        "retired": { "type": "boolean" }
+      }
+    },
+    "family": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "prefix",
+        "purpose",
+        "axis",
+        "source",
+        "writers",
+        "readers",
+        "lifecycle",
+        "exclusive",
+        "provision",
+        "values"
+      ],
+      "properties": {
+        "family": { "$ref": "#/$defs/slug" },
+        "prefix": {
+          "description": "Label-name prefix (`area` renders `area:<value>`); null for families of bare label names.",
+          "type": ["string", "null"],
+          "maxLength": 40,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "purpose": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "axis": {
+          "description": "Which question the family answers. classification = area/domain/layer (at most one each); strategy = advisory execution/routing axes; model = the suggest/claim agent vocabulary; foreman = arming inputs and lifecycle outputs; release/meta = tool and platform namespaces.",
+          "enum": [
+            "classification",
+            "strategy",
+            "model",
+            "work-type",
+            "concern",
+            "workflow",
+            "provenance",
+            "foreman",
+            "release",
+            "meta"
+          ]
+        },
+        "source": {
+          "description": "inline = values enumerated here; agent-registry = values rendered from agent-registry.json (values must be empty here); tool-owned = the consuming tool creates the labels on demand and provisioning leaves them alone.",
+          "enum": ["inline", "agent-registry", "tool-owned"]
+        },
+        "registry_set": {
+          "description": "Which agent-registry render feeds a source: agent-registry family.",
+          "enum": ["suggest", "claim", "foreman-adapters"]
+        },
+        "writers": { "$ref": "#/$defs/writers" },
+        "writer_note": { "type": "string", "minLength": 1 },
+        "readers": { "type": "string", "minLength": 1 },
+        "lifecycle": { "$ref": "#/$defs/lifecycle" },
+        "lifecycle_note": { "type": "string", "minLength": 1 },
+        "trust_note": { "type": "string", "minLength": 1 },
+        "exclusive": {
+          "description": "True when an issue should carry at most one value of the family (the classification axes). Advisory families whose conflicts have a defined resolution (tier strongest-wins, method rank) are not exclusive.",
+          "type": "boolean"
+        },
+        "arming": { "type": "boolean" },
+        "provision": {
+          "description": "True when `task setup:github-labels` seeds the family. Tool-owned and retired families are never provisioned.",
+          "type": "boolean"
+        },
+        "gate": {
+          "description": "The family exists only where the named opt-in is active: provisioning includes it only under the matching renderer flag (--foreman / --release-please), and the generated docs wrap or drop its rows per profile. Applies to non-provisioned families too — a tool-owned family whose tool ships behind the opt-in is gated the same way.",
+          "enum": ["foreman", "release-please"]
+        },
+        "retired": {
+          "description": "Legacy family: never provisioned, rendered as retired in docs. Provisioning is additive-only, so live labels survive until an operator re-maps and deletes them by hand (`gh label edit --name` preserves issue associations).",
+          "type": "boolean"
+        },
+        "open_values": {
+          "description": "The family legitimately has un-enumerated members (created on demand); placeholder names the docs rendering.",
+          "type": "boolean"
+        },
+        "placeholder": { "type": "string", "minLength": 1, "maxLength": 50 },
+        "color": { "$ref": "#/$defs/color" },
+        "values": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/value" }
+        }
+      }
+    }
+  }
+}

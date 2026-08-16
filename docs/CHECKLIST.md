@@ -176,20 +176,27 @@ environment — against the items below
       `evanharmon1 Project`) and idempotently sync its `Status` pipeline and
       `Size` number field — see
       [project-management.md](project-management.md).
-      On a personal account it also creates Priority/Product/Domain/Layer/
-      Size as project fields (issue fields are org-only); status automation is a
-      separate follow-up — the board is set up, but issue/PR status isn't
-      auto-synced yet. `Domain` is seeded with `auth`/`billing`/`platform` only —
-      add this product's real domains in the Project UI, and matching `domain:`
-      labels in `scripts/setup-github-labels.sh`. Re-runs **append** any starter
-      option a single-select field is missing (so a value added by a later
-      harmon-init release lands on the next run) and never touch, reorder, or
-      delete the options you added.
+      On a personal account it also creates Priority/Product/Size as project
+      fields (issue fields are org-only; there is deliberately no Domain or
+      Layer field — see [project-management.md](project-management.md), "Label
+      or field?"); status automation is a separate follow-up — the board is set
+      up, but issue/PR status isn't auto-synced yet. Re-runs **append** any
+      starter option a single-select field is missing (so a value added by a
+      later harmon-init release lands on the next run) and never touch,
+      reorder, or delete the options you added.
+- [ ] **Upgrading from a release before harmon-init#875?**
+      If this repo's board still carries `Domain`/`Layer` fields from an
+      earlier release, they are not deleted automatically.
+      Retiring them is a deliberate, irreversible operator step — see
+      [project-management.md](project-management.md), "Migrating a board that
+      still has one."
 - [ ] Labels: run `task setup:github-labels` to seed this repo's starter label
-      families (concerns/source/workflow/layer/domain — see
-      [project-management.md](project-management.md)). Labels are per-repo, so run
-      it in each repo; org default labels (org Settings → Repository, UI-only) only
-      seed new repos.
+      families from `label-registry.json` (see the generated taxonomy table in
+      [project-management.md](project-management.md)) — grow `domain:` values
+      there as the product's own vocabulary; `layer:` is product-independent
+      and normally needs no edits. Labels are per-repo, so run it in each repo;
+      org default labels (org Settings → Repository, UI-only) only seed new
+      repos.
 - [ ] **[human-only] Retire any legacy `agent:*` claim labels** — needed only
       where `gh label list --limit 200` still shows the harness-named family
       (`agent:claude-code`, `agent:gemini-cli`, …) a pre-registry harmon-init

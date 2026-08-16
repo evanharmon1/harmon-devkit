@@ -39,6 +39,13 @@
       "minLength": 1,
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
     },
+    "labelSlug": {
+      "$comment": "Slugs that render into label names: the longest prefixes (suggest:/foreman:) are 8 chars with the colon, so 42 keeps every <prefix>:<slug> within GitHub's 50-char name limit. Model and harness slugs are runtime identifiers and stay unbounded.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 42,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
     "labelNamespace": {
       "type": "object",
       "additionalProperties": false,
@@ -69,8 +76,13 @@
       "additionalProperties": false,
       "required": ["slug", "display_name", "models"],
       "properties": {
-        "slug": { "$ref": "#/$defs/slug" },
-        "display_name": { "type": "string", "minLength": 1 },
+        "slug": { "$ref": "#/$defs/labelSlug" },
+        "display_name": {
+          "$comment": "64: the longest family description wrapper ('Suggested for the … family (advisory)') is 36 chars, so 64 is the longest display_name whose rendered descriptions stay under GitHub's 100.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
         "models": {
           "type": "array",
           "items": { "$ref": "#/$defs/model" }
@@ -131,8 +143,13 @@
         "provision_label"
       ],
       "properties": {
-        "slug": { "$ref": "#/$defs/slug" },
-        "display_name": { "type": "string", "minLength": 1 },
+        "slug": { "$ref": "#/$defs/labelSlug" },
+        "display_name": {
+          "$comment": "47, not family's 50: the foreman description wrapper is 53 chars, so 47 is the longest display_name whose rendered description stays under GitHub's 100.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 47
+        },
         "source_file": {
           "type": "string",
           "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*[.]sh$"

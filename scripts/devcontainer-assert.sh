@@ -525,6 +525,14 @@ assert_unit() {
     sed -n '/^gh_auth_help()/,/^}/p' "$post_create_common" >"$helper_src"
     [ -s "$helper_src" ] || fail "could not extract gh_auth_help() from ${post_create_common}"
 
+    # The banner asks scripts/gh-scopes.sh for the scope list (the single
+    # source shared with status.sh and setup:gh-scopes), and the extraction
+    # above takes the function body ALONE. Without the library, the call
+    # resolves to nothing, the banner renders `--scopes ""`, and a check that
+    # only looked for a login command would pass on a broken banner.
+    local scopes_lib="${repo_root}/scripts/gh-scopes.sh"
+    [ -f "$scopes_lib" ] || fail "scripts/gh-scopes.sh not found at ${scopes_lib}"
+
     # Match a pasteable COMMAND line — `gh` as the first token — not the bare
     # phrase. The token message names `gh auth login` on purpose, in a "do NOT
     # run this here" warning; a substring test would read that warning as the
@@ -533,15 +541,28 @@ assert_unit() {
         printf '%s\n' "$1" | grep -qE '^[[:space:]]*gh[[:space:]]+auth[[:space:]]+login'
     }
 
-    help_out="$(unset DEVCONTAINER_GH_AUTH && "$bash_bin" -c '. "$1"; gh_auth_help "gh auth setup-git"' _ "$helper_src")"
+    help_out="$(unset DEVCONTAINER_GH_AUTH && "$bash_bin" -c '. "$2"; . "$1"; gh_auth_help "gh auth setup-git"' _ "$helper_src" "$scopes_lib")"
     if offers_login "$help_out"; then
         fail "post-create gh guidance offers an operator login by default — a bot container must never be told to run one"
     fi
 
-    help_out="$(DEVCONTAINER_GH_AUTH=login "$bash_bin" -c '. "$1"; gh_auth_help "gh auth setup-git"' _ "$helper_src")"
+    help_out="$(DEVCONTAINER_GH_AUTH=login "$bash_bin" -c '. "$2"; . "$1"; gh_auth_help "gh auth setup-git"' _ "$helper_src" "$scopes_lib")"
     if ! offers_login "$help_out"; then
         fail "post-create gh guidance omits the operator login where the profile declares one"
     fi
+
+    # The login it offers must carry the DERIVED scopes, not an empty or
+    # hardcoded list — that agreement between the banner and the scope check is
+    # the acceptance criterion the single source exists to satisfy (#827).
+    case "$help_out" in
+    *'--scopes ""'*) fail "post-create login line renders an empty scope list — gh-scopes.sh was not in scope" ;;
+    esac
+    for required_scope in repo workflow; do
+        case "$help_out" in
+        *"${required_scope}"*) ;;
+        *) fail "post-create login line omits the '${required_scope}' scope: ${help_out}" ;;
+        esac
+    done
 
     # 10. Static devcontainer.json invariants via the devcontainers CLI.
     assert_config_invariants "$repo_root" "$bot_config" bot
