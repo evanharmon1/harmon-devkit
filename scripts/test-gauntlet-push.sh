@@ -275,6 +275,19 @@ run push --remote origin --branch main --host github.com --repo owner/repo \
 assert_rc 3
 assert_reason
 
+echo "  -> a failed post-gate status read is unknown, never clean"
+root="$(new_fixture status-failure)"
+cd "${root}/work"
+sha="$(git rev-parse HEAD)"
+write_gate "$sha" status-failure
+printf 'broken index\n' >.git/index
+run push --remote origin --branch main --host github.com --repo owner/repo \
+    --sha "$sha" --expect absent --gate-file "$gate_file" --gate-token "$gate_token"
+assert_rc 3
+case "$err" in *status*) : ;; *) fail "status failure should be named: $err" ;; esac
+[ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
+    fail "failed status read must not push"
+
 echo "  -> ls-remote failures never become an absent branch"
 root="$(new_fixture lsremote-failure)"
 cd "${root}/work"
@@ -372,6 +385,17 @@ run push --remote transport --branch main --sha "$sha" --expect absent \
 assert_rc 0
 [ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$sha" ] ||
     fail "transport override did not reach git push"
+
+echo "  -> push-affecting or unrelated -c overrides are refused"
+root="$(new_fixture config-allowlist)"
+cd "${root}/work"
+run preflight --remote origin --branch main --host github.com --repo owner/repo \
+    -c url.file:///tmp/elsewhere.pushInsteadOf=https://github.com/owner/repo.git
+assert_rc 3
+assert_reason
+run preflight --remote origin --branch main --host github.com --repo owner/repo \
+    -c remote.origin.pushurl=https://github.com/owner/other.git
+assert_rc 3
 
 echo "  -> helper invocation is shell-independent"
 if command -v zsh >/dev/null 2>&1; then

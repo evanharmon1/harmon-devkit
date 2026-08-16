@@ -37,10 +37,12 @@ gate succeeds, following the shepherd marker contract:
   task verify >"$out" 2>&1 && task security:secrets >>"$out" 2>&1 \
     && printf '\n%s\n' "$token" >>"$out"
 
-Each -c NAME=VALUE is passed to every git invocation, including ls-remote and
-push, so an unprovisioned host can supply the repository's documented HTTPS
-transport overrides without bypassing the named remote. VALUE may be empty,
-as required to reset Git's credential-helper chain.
+Each accepted -c NAME=VALUE is passed to ls-remote and push, so an
+unprovisioned host can supply the repository's documented HTTPS transport
+overrides without bypassing the named remote. The allowlist is deliberately
+narrow: credential.helper, url.*.insteadOf, and protocol.*.allow. Config that
+can redirect a push (including url.*.pushInsteadOf) is refused. VALUE may be
+empty, as required to reset Git's credential-helper chain.
 
 Exit status:
   0  preflight passed, or the gated commit was pushed/already current
@@ -134,10 +136,18 @@ while [ "$#" -gt 0 ]; do
         shift 2
         ;;
     -c)
+        config_name=
+        config_name_lower=
         [ "$#" -ge 2 ] || die_usage "-c needs NAME=VALUE"
         case "$2" in
         ?*=*) ;;
         *) die_usage "-c needs NAME=VALUE" ;;
+        esac
+        config_name=${2%%=*}
+        config_name_lower="$(printf '%s' "$config_name" | tr '[:upper:]' '[:lower:]')"
+        case "$config_name_lower" in
+        credential.helper | url.*.insteadof | protocol.*.allow) ;;
+        *) refuse "-c '$config_name' is not an approved transport-only override" ;;
         esac
         git_args+=("-c" "$2")
         shift 2
@@ -350,7 +360,11 @@ marker="$(awk '
 head_sha="$(git rev-parse HEAD)"
 [ "$head_sha" = "$resolved" ] ||
     refuse "HEAD moved after the gate; gate the current commit before pushing"
-[ -z "$(git status --porcelain --untracked-files=all)" ] ||
+status_rc=0
+status_output="$(git status --porcelain --untracked-files=all 2>/dev/null)" || status_rc=$?
+[ "$status_rc" -eq 0 ] ||
+    refuse "git status failed after the gate; worktree cleanliness is unknown"
+[ -z "$status_output" ] ||
     refuse "the worktree changed during the gate; commit and re-gate before pushing"
 
 read_remote_head || refuse "$remote_error"

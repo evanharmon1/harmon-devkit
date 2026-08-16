@@ -109,7 +109,8 @@ assume them.
   On an unprovisioned host, pass each documented Git transport override as
   `-c name=value` to both preflight and every later helper call. The helper
   applies them to its `ls-remote` and `push` operations without bypassing the
-  named remote.
+  named remote. It accepts only credential-helper resets, `url.*.insteadOf`,
+  and protocol allowances; push-affecting or unrelated config is a stop.
 
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
