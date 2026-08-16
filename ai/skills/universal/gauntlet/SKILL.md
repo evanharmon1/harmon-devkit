@@ -43,7 +43,7 @@ normal permission prompt.
 
 ## 1. Entry gate
 
-Four things must hold before the first reviewer round. Check them; do not
+Five things must hold before the first reviewer round. Check them; do not
 assume them.
 
 - **The definition-of-done gate is green** (`task verify` where it exists).
@@ -115,15 +115,33 @@ assume them.
   excludes the security suite in most repos. A stronger probe is not worth
   reordering the gate around.
 
-**This stage runs before a PR exists.** §10 is what creates one, and the
-shepherd stage owns every push after that. So if you know — or notice at any
-point — that this branch already backs a PR, **stop**: the work belongs to
-shepherd, and a round push would land in that PR, spending its CI and, on a
-promoted one, moving the head out from under the claim that promotion makes.
-Treat that as a precondition, not a guarantee you can prove: a head can be the
-subject of a PR in any repository that could host one, and no check is atomic
-with a later push. It is worth stopping on what you *do* see; it is not worth
-building a search that pretends to have seen everything.
+- **No PR is open on this branch in the repository you are targeting.** §10
+  is what creates a PR and the shepherd stage owns every push after that, so
+  a round push landing in an existing PR crosses that boundary — spending its
+  CI, and on a promoted one moving the head out from under the claim that
+  promotion makes. §10 step 5 checks this too, but only before *creating*,
+  which is several rounds after the first push. Look before round 1:
+
+  ```sh
+  gh pr list --repo <origin-repo> --state open --head <branch> \
+    --json number,headRefName,headRepositoryOwner \
+    --jq '.[] | select(.headRepositoryOwner.login == "<push-remote-owner>") | .number'
+  ```
+
+  Ask **`origin`** — the repository the PR would target, per property 1 — not
+  the remote you push to: a pull request lives in its *base* repository, so a
+  fork's PR is listed upstream. Filter by head owner, because `--head` matches
+  branch name alone and an unrelated fork's PR can carry the same name. Any
+  hit is a **stop**: the work belongs to shepherd, whatever the PR's draft
+  state.
+
+  **This is best-effort by construction, and saying so is part of the check.**
+  A head can back a PR in any repository that could host one, so a single
+  lookup cannot prove none exists; and no lookup is atomic with a later push,
+  so a PR opened mid-stage is not caught at all. Run it because it catches the
+  case that actually happens — a branch you already opened a PR for — not
+  because it makes the boundary airtight. Do not grow it into a search across
+  the fork network chasing a guarantee it cannot deliver.
 
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
