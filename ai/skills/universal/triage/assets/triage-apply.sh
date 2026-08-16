@@ -249,6 +249,13 @@ cmd_label() {
         in_list "$l" "$allowlist" ||
             die 4 "refused: '$l' is not on the triage write-allowlist"
     done
+    # Removal is a write too: a manifest that withholds needs-triage from
+    # agents withholds the removal as much as the add.
+    if [ "${#removes[@]}" -gt 0 ]; then
+        in_list "needs-triage" "$allowlist" ||
+            die 4 "refused: this repo's manifest does not grant agents" \
+                "needs-triage, so triage may not remove it either"
+    fi
 
     local current
     current="$(gh issue view "$issue" --repo "$repo" --json labels \

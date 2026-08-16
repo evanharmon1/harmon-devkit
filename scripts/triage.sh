@@ -72,6 +72,8 @@ export TRIAGE_REPO="$repo"
 # run-generated content, never an arbitrary readable file.
 scratch="$(mktemp -d)" || die "could not create a scratch directory"
 export TRIAGE_SCRATCH="$scratch"
+# Scratch holds scan.json (issue metadata); do not let runs accumulate it.
+trap 'rm -rf "$scratch"' EXIT
 
 if [ "$mode" = "execute" ]; then
     # Supervised runs only: a human must be watching (v1's [HUMAN] gate). The
@@ -93,7 +95,13 @@ else
 scripts say they WOULD write."
 fi
 
-tools="Read,Glob,Grep,Write(//${scratch#/}/**)"
+# Reads are scoped like the writes: the worker may read its own scratch and
+# the skill it is executing, nothing else on disk — file contents outside
+# those trees must never be copyable into a published report entry. Glob/Grep
+# are omitted entirely; scan.json is the worker's data.
+skill_abs="$(cd "$skill_dir" && pwd)"
+tools="Read(//${scratch#/}/**),Read(//${skill_abs#/}/**)"
+tools="$tools,Write(//${scratch#/}/**)"
 tools="$tools,Bash($skill_dir/assets/triage-scan.sh:*)"
 tools="$tools,Bash($skill_dir/assets/triage-apply.sh:*)"
 tools="$tools,Bash($skill_dir/assets/triage-report.sh:*)"
@@ -118,8 +126,9 @@ fi
 # --setting-sources "" launches the worker with NO settings files loaded:
 # --allowedTools only ever adds grants, and this repo's own settings allow
 # e.g. Bash(task:*), which would hand a prompt-injected worker tools far
-# outside the three guarded scripts.
-exec claude -p "$prompt" \
+# outside the three guarded scripts. Not exec'd: the EXIT trap above must
+# still remove the scratch directory.
+claude -p "$prompt" \
     --model "${TRIAGE_MODEL:-haiku}" \
     --setting-sources "" \
     --allowedTools "$tools"

@@ -245,6 +245,16 @@ echo "==> label: exclusive axes refuse a second value"
 [ "$(run "$apply" label --repo "$repo" --issue 11 --add area:ci \
     --manifest "$manifest")" = 4 ] || fail "second area label must exit 4"
 
+echo "==> label: removal is refused where the manifest withholds needs-triage"
+jq '.families |= map(if .family == "workflow"
+    then .values |= map(if .value == "needs-triage"
+                        then .writers = ["human"] else . end)
+    else . end)' "$manifest" >"$tmp/human-only.json"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
+    --inapplicable layer --inapplicable domain \
+    --manifest "$tmp/human-only.json")" = 4 ] ||
+    fail "human-only needs-triage removal must exit 4"
+
 echo "==> label: --remove accepts only needs-triage"
 [ "$(run "$apply" label --repo "$repo" --issue 10 --remove area:ci \
     --manifest "$manifest")" = 2 ] || fail "--remove area:ci must exit 2"
@@ -520,6 +530,14 @@ jq -e '[.open[] | select(.work_type == []) | .flags[]]
     fail "org repo must not flag missing-needs-triage on empty work-type"
 GH_STUB_OWNER_TYPE="User"
 
+echo "==> scan: reports truncation when a page fills its window"
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest" --limit 5)" = 0 ] ||
+    fail "truncation scan failed"
+jq -e '.truncated_open == true' "$tmp/out" >/dev/null ||
+    fail "a full page must set truncated_open"
+jq -e '.truncated_open == false and .truncated_closed == false' "$scan_out" \
+    >/dev/null || fail "an unfilled page must not read as truncated"
+
 echo "==> scan: --all includes the quiet issue"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
     fail "scan --all failed"
@@ -541,6 +559,10 @@ grep -q -- "--setting-sources" "$GH_STUB_LOG" ||
 grep -q "TRIAGE_SCRATCH=/" "$GH_STUB_LOG" || fail "run must bind a scratch dir"
 grep -q -- "Write(//" "$GH_STUB_LOG" ||
     fail "worker Write grant must be scratch-scoped"
+grep -q -- "Read(//" "$GH_STUB_LOG" ||
+    fail "worker Read grant must be path-scoped"
+grep -qE "ARGS: .*(Glob|Grep)" "$GH_STUB_LOG" &&
+    fail "worker must not be granted Glob/Grep"
 
 echo "==> wrapper: --execute without a terminal is refused"
 [ "$(run "$wrapper" --execute)" = 2 ] ||

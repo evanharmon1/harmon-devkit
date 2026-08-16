@@ -79,9 +79,12 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
   never label it, never add report entries about it).
 
 **The reading budget.** Steps 2 and 3 sometimes require reading an issue
-(`gh issue view`). Budget at most 50 such reads per run, spent in `open[]`
-order. When the budget runs out: stop labeling issues that would need a read,
-and report-verify no further candidates — but **never drop them silently**.
+(`gh issue view`). Budget at most 50 such reads per run, spent on issues in
+**oldest `updatedAt` first** order — labeling an issue updates its timestamp
+and sends it to the back of the line, so successive runs rotate through the
+backlog instead of re-reading the same head. When the budget runs out: stop
+labeling issues that would need a read, and report-verify no further
+candidates — but **never drop them silently**.
 Everything computable straight from `scan.json` (deterministic report entries,
 label calls that need no reading) is exempt from the budget and covers the
 whole scan, and step 3 lists every unverified candidate by number so nothing
@@ -182,7 +185,7 @@ budget from step 1. The rows whose flag **is** the finding are deterministic:
 write them for **every** flagged issue in the scan, budget or not — the scan
 already did the work.
 
-Then three optional **aggregate** sections (plain `##` headings at the end of
+Then four optional **aggregate** sections (plain `##` headings at the end of
 the entries file, no entry keys):
 
 - `## Title violations` — one bullet `#<n> — <title>` per issue flagged
@@ -191,6 +194,10 @@ the entries file, no entry keys):
   `#<n> — <flag>` for every verification-needing candidate the reading
   budget did not reach this run. Required whenever the budget ran out: an
   unverified candidate left off the report vanishes as though resolved.
+- `## Scan truncation` — required whenever the scan set `truncated_open` or
+  `truncated_closed`: one line saying which window was truncated, so a
+  finding missing from this report may simply be outside it rather than
+  resolved.
 - `## Tier/method proposals` — only if, while reading an issue, you are
   confident a `tier:*` or `method:*` value fits it far better than the
   default. One bullet with the issue, the value, and one line of reasoning.

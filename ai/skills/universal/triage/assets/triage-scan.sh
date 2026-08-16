@@ -128,10 +128,19 @@ closed_json="$(gh issue list --repo "$repo" --state closed \
     --json number,title,labels,stateReason,closedAt,body)" ||
     die "could not list closed issues of $repo"
 
+# A page equal to the limit means the backlog may extend beyond it — say so
+# in the output rather than letting a truncated snapshot pose as complete.
+truncated_open=false
+[ "$(jq length <<<"$open_json")" -lt "$limit" ] || truncated_open=true
+truncated_closed=false
+[ "$(jq length <<<"$closed_json")" -lt "$closed_limit" ] || truncated_closed=true
+
 jq -n \
     --arg repo "$repo" \
     --arg owner_type "$owner_type" \
     --arg mode "$mode" \
+    --argjson truncated_open "$truncated_open" \
+    --argjson truncated_closed "$truncated_closed" \
     --argjson report "$report_json" \
     --argjson allow "$allow_json" \
     --argjson vocabulary "$vocabulary" \
@@ -153,6 +162,8 @@ jq -n \
     mode: $mode,
     thresholds: {claim_stale_days: $claim_stale,
                  needs_stale_days: $needs_stale},
+    truncated_open: $truncated_open,
+    truncated_closed: $truncated_closed,
     report_issue: $report,
     allowlist: $allow,
     vocabulary: $vocabulary,

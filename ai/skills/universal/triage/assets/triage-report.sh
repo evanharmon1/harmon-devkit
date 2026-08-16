@@ -73,7 +73,7 @@ die() {
 # visible to all of them.
 find_report() {
     local repo="$1" candidates matches="" n assoc count=0
-    candidates="$(gh issue list --repo "$repo" --state open --limit 200 \
+    candidates="$(gh issue list --repo "$repo" --state open --limit 1000 \
         --json number,body -q \
         "[.[] | select(.body | contains(\"$MARKER\")) | .number] | .[]")" ||
         die 2 "could not list open issues of $repo"
