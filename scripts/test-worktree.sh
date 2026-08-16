@@ -11,6 +11,15 @@
 # hook assertion runs everywhere — including CI runners that carry no lefthook.
 set -euo pipefail
 
+# The suite reads nothing from stdin, and its children must not inherit one
+# that never ends: lefthook blocks `run post-checkout` until stdin reaches EOF
+# (observed on v2.1.10), so an invocation context holding stdin open — an
+# agent harness socket, a task runner pipe — deadlocks the fixture's hooks
+# (harmon-init#802). /dev/null hands every child an immediate EOF. One case
+# below deliberately re-introduces a never-ending stdin to prove the
+# entrypoint itself is immune.
+exec </dev/null
+
 repo="$(git rev-parse --show-toplevel)"
 
 # Hooks export GIT_DIR/GIT_WORK_TREE; left set, every `git` below would retarget
@@ -85,8 +94,18 @@ rm -f "$WORKTREE_TIMEOUT_SENTINEL"
 # as the refusal it was asserting. A hang would be accepted as a pass. The
 # sentinel escapes every subshell — it is a file, not an exit status — so
 # however the status is swallowed, the suite still ends non-zero and says why.
+# Initialized empty BEFORE the trap is armed: an exported variable of this
+# name would otherwise flow in from the environment and the cleanup below
+# would kill a PID this suite never owned.
+WORKTREE_STDIN_HOLDER=""
 worktree_exit() {
     exit_status=$?
+    # Reap the hostile-stdin writer if a case aborted before its explicit kill
+    # — it is backgrounded outside the timeout's process group, so nothing
+    # else collects it on a failing run (harmon-init#802).
+    if [ -n "${WORKTREE_STDIN_HOLDER:-}" ]; then
+        kill "$WORKTREE_STDIN_HOLDER" 2>/dev/null || true
+    fi
     if [ -e "$WORKTREE_TIMEOUT_SENTINEL" ]; then
         # Print what the sentinel HOLDS, not where it lives: it is removed
         # immediately below, so a path would point at nothing by the time
@@ -155,7 +174,7 @@ export PATH
 # ── Fixture repository ───────────────────────────────────────────────
 fixture="$test_tmp/fixture"
 mkdir -p "$fixture/scripts"
-cp "$repo/scripts/worktree-new.sh" "$repo/scripts/worktree-rm.sh" "$fixture/scripts/"
+cp "$repo/scripts/worktree-new.sh" "$repo/scripts/worktree-rm.sh" "$repo/scripts/worktree-lock.sh" "$fixture/scripts/"
 chmod +x "$fixture/scripts/worktree-new.sh" "$fixture/scripts/worktree-rm.sh"
 cat >"$fixture/lefthook.yml" <<'EOF'
 pre-commit:
@@ -436,16 +455,6 @@ new remote-only >/dev/null || fail "worktree-new.sh failed for a remote-only bra
     fail "worktree-new.sh did not set up tracking for the remote-only branch"
 rm_wt remote-only >/dev/null || fail "cleanup of the remote-only tree failed"
 git -C "$fixture" branch -D remote-only >/dev/null 2>&1 || true
-
-echo "==> a branch pushed after the last fetch is refreshed before creation"
-git -C "$fixture" update-ref -d refs/remotes/origin/late-remote
-git -C "$fixture" push -q origin HEAD:refs/heads/late-remote
-new late-remote >/dev/null || fail "worktree-new.sh failed for a stale-fetch remote branch"
-[ "$(git -C "$fixture/.worktrees/late-remote" rev-parse HEAD)" = \
-    "$(git -C "$fixture" ls-remote origin refs/heads/late-remote | awk '{print $1}')" ] ||
-    fail "worktree-new.sh created a divergent branch instead of refreshing the remote"
-rm_wt late-remote >/dev/null || fail "cleanup of the stale-fetch remote branch failed"
-git -C "$fixture" branch -D late-remote >/dev/null 2>&1 || true
 
 # ── partial-failure rollback ─────────────────────────────────────────
 # `git worktree add` is not atomic: a failing post-checkout hook leaves the tree
@@ -821,6 +830,629 @@ rm_wt team-only >/dev/null || fail "cleanup of the slash-remote tree failed"
 git -C "$fixture" branch -D team-only >/dev/null 2>&1 || true
 git -C "$fixture" remote remove team/sub
 
+# ── stale remote state must not decide anything (#813 / #840) ────────
+echo "==> a branch pushed after the last fetch is still detected and tracked"
+# Push, then delete the tracking ref the push just wrote: the local
+# refs/remotes namespace now predates the branch, which is exactly the state
+# after a collaborator pushes and nothing fetches (harmon-init#840).
+git -C "$fixture" push -q origin HEAD:refs/heads/late-remote
+git -C "$fixture" update-ref -d refs/remotes/origin/late-remote
+late_tip="$(git -C "$fixture" ls-remote origin refs/heads/late-remote | awk '{print $1}')"
+# Advance main past the push, so a helper that misses the remote branch
+# creates 'late-remote' at a DIFFERENT commit — the divergence itself, not
+# only the missing tracking, is what the assertion below must catch.
+printf 'ahead of late-remote\n' >"$fixture/LATE.md"
+git -C "$fixture" add LATE.md
+LEFTHOOK=0 git -C "$fixture" commit -qm "chore: move main ahead of the late-pushed branch" >"$test_tmp/commit.log" 2>&1 ||
+    fail "committing ahead of the late-pushed branch failed"
+new late-remote >/dev/null || fail "worktree-new.sh failed for a branch with no local tracking ref"
+[ "$(git -C "$fixture/.worktrees/late-remote" rev-parse HEAD)" = "$late_tip" ] ||
+    fail "worktree-new.sh created 'late-remote' from the default base instead of the remote branch (harmon-init#840)"
+[ "$(git -C "$fixture" rev-parse --abbrev-ref late-remote@{upstream} 2>/dev/null)" = "origin/late-remote" ] ||
+    fail "worktree-new.sh did not set up tracking for the late-pushed branch"
+rm_wt late-remote >/dev/null || fail "cleanup of the late-remote tree failed"
+git -C "$fixture" branch -D late-remote >/dev/null 2>&1 || true
+
+echo "==> a stale tracking ref is refreshed to the remote's current tip"
+git -C "$fixture" push -q origin HEAD:refs/heads/moving-remote
+stale_tip="$(git -C "$fixture" rev-parse refs/remotes/origin/moving-remote)"
+printf 'advance\n' >"$fixture/MOVING.md"
+git -C "$fixture" add MOVING.md
+LEFTHOOK=0 git -C "$fixture" commit -qm "chore: advance the moving branch" >"$test_tmp/commit.log" 2>&1 ||
+    fail "committing the moving-branch advance failed"
+git -C "$fixture" push -q origin HEAD:refs/heads/moving-remote
+moving_tip="$(git -C "$fixture" rev-parse HEAD)"
+# Roll main back and force the tracking ref stale, so only a live probe plus
+# fetch can know where the remote actually is.
+git -C "$fixture" reset -q --hard HEAD~1
+git -C "$fixture" update-ref refs/remotes/origin/moving-remote "$stale_tip"
+new moving-remote >/dev/null || fail "worktree-new.sh failed for a branch with a stale tracking ref"
+[ "$(git -C "$fixture/.worktrees/moving-remote" rev-parse HEAD)" = "$moving_tip" ] ||
+    fail "worktree-new.sh attached 'moving-remote' at the stale tracking tip instead of the remote's current commit (harmon-init#840)"
+rm_wt moving-remote >/dev/null || fail "cleanup of the moving-remote tree failed"
+git -C "$fixture" branch -D moving-remote >/dev/null 2>&1 || true
+
+echo "==> an unqueryable remote fails closed, and an explicit --base opts out"
+git -C "$fixture" remote add badremote "$test_tmp/nonexistent-bare.git"
+if new probe-fail >/dev/null 2>&1; then
+    fail "worktree-new.sh invented a new branch although a remote could not be queried (harmon-init#840)"
+fi
+refute_exists "$fixture/.worktrees/probe-fail" "the fail-closed probe left a tree behind"
+if git -C "$fixture" show-ref --verify --quiet refs/heads/probe-fail; then
+    fail "the fail-closed probe left the branch behind"
+fi
+new probe-fail --base HEAD >/dev/null || fail "an explicit --base did not skip the remote probe"
+rm_wt probe-fail >/dev/null || fail "cleanup of the probe-fail tree failed"
+git -C "$fixture" branch -D probe-fail >/dev/null 2>&1 || true
+git -C "$fixture" remote remove badremote
+
+echo "==> a default base behind its upstream hands out the upstream tip"
+base_upstream="$test_tmp/base-upstream.git"
+git init -q --bare "$base_upstream"
+git -C "$fixture" remote add baseup "$base_upstream"
+fixture_head_branch="$(git -C "$fixture" symbolic-ref --short HEAD)"
+git -C "$fixture" push -q -u baseup "$fixture_head_branch" >/dev/null 2>&1 ||
+    fail "seeding the base upstream failed"
+anchor_sha="$(git -C "$fixture" rev-parse HEAD)"
+printf 'merged upstream\n' >"$fixture/UPSTREAM.md"
+git -C "$fixture" add UPSTREAM.md
+LEFTHOOK=0 git -C "$fixture" commit -qm "chore: land work on the upstream" >"$test_tmp/commit.log" 2>&1 ||
+    fail "committing the upstream advance failed"
+git -C "$fixture" push -q baseup "$fixture_head_branch"
+upstream_sha="$(git -C "$fixture" rev-parse HEAD)"
+# Roll local back AND stale the tracking ref: only the fetch inside
+# worktree-new.sh can now learn where the upstream is (harmon-init#813).
+git -C "$fixture" reset -q --hard "$anchor_sha"
+git -C "$fixture" update-ref "refs/remotes/baseup/$fixture_head_branch" "$anchor_sha"
+base_out="$(new fresh-base)" || fail "worktree-new.sh failed with a behind upstream"
+[ "$(git -C "$fixture/.worktrees/fresh-base" rev-parse HEAD)" = "$upstream_sha" ] ||
+    fail "worktree-new.sh based 'fresh-base' on the stale local HEAD instead of the upstream tip (harmon-init#813)"
+case "$base_out" in *"is behind baseup/$fixture_head_branch"*) : ;; *) fail "worktree-new.sh did not announce the behind-upstream base" ;; esac
+rm_wt fresh-base >/dev/null || fail "cleanup of the fresh-base tree failed"
+git -C "$fixture" branch -D fresh-base >/dev/null 2>&1 || true
+
+echo "==> losing the upstream ref-lock race still reads the winner's update"
+# The loser of two parallel worktree:new runs fails its own fetch while the
+# tracking ref already holds the winner's fresher value. Deterministic
+# reconstruction of that instant: the REMOTE is one commit past the winner's
+# value (commit-tree, so the local checkout never moves), the tracking ref
+# holds the winner's value, and a held ref lock makes THIS fetch fail — it
+# has an update to attempt and cannot take the lock. The loser must base on
+# the winner's value, read after the failed fetch, never return early on its
+# stale pre-fetch snapshot (which would base the tree on the local anchor).
+race_tip="$(git -C "$fixture" commit-tree -m "race remote tip" -p "$upstream_sha" "$(git -C "$fixture" rev-parse "$upstream_sha^{tree}")")"
+git -C "$fixture" push -q baseup "$race_tip:refs/heads/$fixture_head_branch"
+git -C "$fixture" update-ref "refs/remotes/baseup/$fixture_head_branch" "$upstream_sha"
+race_lock="$fixture/.git/refs/remotes/baseup/$fixture_head_branch.lock"
+mkdir -p "$(dirname "$race_lock")"
+: >"$race_lock"
+race_out="$(new race-base 2>&1)" || {
+    rm -f "$race_lock"
+    fail "worktree-new.sh failed outright when the upstream fetch lost the ref lock"
+}
+rm -f "$race_lock"
+[ "$(git -C "$fixture/.worktrees/race-base" rev-parse HEAD)" = "$upstream_sha" ] ||
+    fail "the fetch-race loser based on its stale snapshot instead of the winner's ref (harmon-init#813)"
+case "$race_out" in *"could not fetch"*) : ;; *) fail "the lost ref-lock race produced no warning" ;; esac
+rm_wt race-base >/dev/null || fail "cleanup of the race-base tree failed"
+git -C "$fixture" branch -D race-base >/dev/null 2>&1 || true
+# Put the remote back at the winner's value for the cases that follow.
+git -C "$fixture" push -q -f baseup "$upstream_sha:refs/heads/$fixture_head_branch"
+git -C "$fixture" update-ref "refs/remotes/baseup/$fixture_head_branch" "$upstream_sha"
+
+echo "==> a non-identity fetch refspec still verifies against the true source branch"
+# The upstream's short name and its source branch deliberately differ
+# (+refs/heads/trunk-src:refs/remotes/niup/localname): a helper that derives
+# the fetch source by splitting the abbreviated upstream name would fetch a
+# branch that does not exist and silently keep the stale base (challenge
+# round 2 of harmon-init#813/#840).
+ni_upstream="$test_tmp/ni-upstream.git"
+git init -q --bare "$ni_upstream"
+git -C "$fixture" remote add niup "$ni_upstream"
+git -C "$fixture" config remote.niup.fetch "+refs/heads/trunk-src:refs/remotes/niup/localname"
+git -C "$fixture" push -q niup HEAD:refs/heads/trunk-src
+ni_anchor="$(git -C "$fixture" rev-parse HEAD)"
+printf 'landed on trunk-src\n' >"$fixture/NI.md"
+git -C "$fixture" add NI.md
+LEFTHOOK=0 git -C "$fixture" commit -qm "chore: advance the non-identity upstream" >"$test_tmp/commit.log" 2>&1 ||
+    fail "committing the non-identity advance failed"
+git -C "$fixture" push -q niup HEAD:refs/heads/trunk-src
+ni_tip="$(git -C "$fixture" rev-parse HEAD)"
+git -C "$fixture" reset -q --hard "$ni_anchor"
+git -C "$fixture" config "branch.$fixture_head_branch.remote" niup
+git -C "$fixture" config "branch.$fixture_head_branch.merge" refs/heads/trunk-src
+git -C "$fixture" update-ref refs/remotes/niup/localname "$ni_anchor"
+new ni-base >/dev/null || fail "worktree-new.sh failed with a non-identity upstream refspec"
+[ "$(git -C "$fixture/.worktrees/ni-base" rev-parse HEAD)" = "$ni_tip" ] ||
+    fail "worktree-new.sh did not fetch the true source branch through the non-identity refspec (harmon-init#813)"
+rm_wt ni-base >/dev/null || fail "cleanup of the ni-base tree failed"
+git -C "$fixture" branch -D ni-base >/dev/null 2>&1 || true
+git -C "$fixture" config "branch.$fixture_head_branch.remote" baseup
+git -C "$fixture" config "branch.$fixture_head_branch.merge" "refs/heads/$fixture_head_branch"
+git -C "$fixture" remote remove niup
+
+echo "==> a default base diverged from its upstream is refused"
+printf 'local divergence\n' >"$fixture/DIVERGED.md"
+git -C "$fixture" add DIVERGED.md
+LEFTHOOK=0 git -C "$fixture" commit -qm "chore: diverge from the upstream" >"$test_tmp/commit.log" 2>&1 ||
+    fail "committing the divergence failed"
+if new diverged-base >/dev/null 2>&1; then
+    fail "worktree-new.sh picked a base although local and upstream have diverged (harmon-init#813)"
+fi
+refute_exists "$fixture/.worktrees/diverged-base" "the diverged-base refusal left a tree behind"
+new diverged-base --base HEAD >/dev/null || fail "an explicit --base did not bypass the divergence refusal"
+rm_wt diverged-base >/dev/null || fail "cleanup of the diverged-base tree failed"
+git -C "$fixture" branch -D diverged-base >/dev/null 2>&1 || true
+
+echo "==> attaching an existing branch is never blocked by base staleness"
+# The default base is only consumed when a NEW branch is created from it, so
+# the diverged main that just refused 'diverged-base' must not block — or
+# even warn about — attaching a branch that already exists: the base plays
+# no part in that path (harmon-init#813, challenge round 1).
+git -C "$fixture" branch attach-diverged
+local_tip="$(git -C "$fixture" rev-parse HEAD)"
+attach_out="$(new attach-diverged 2>&1)" || fail "worktree-new.sh refused to attach an existing branch while main is diverged from its upstream"
+[ "$(git -C "$fixture/.worktrees/attach-diverged" rev-parse HEAD)" = "$local_tip" ] ||
+    fail "the attach did not check out the existing branch tip"
+case "$attach_out" in *"has diverged from"*) fail "attaching an existing branch surfaced the base divergence it never uses" ;; esac
+rm_wt attach-diverged >/dev/null || fail "cleanup of the attach-diverged tree failed"
+git -C "$fixture" branch -D attach-diverged >/dev/null 2>&1 || true
+# Teardown: restore the pre-case fixture state so later default-base cases
+# are decided by the local HEAD again, exactly as before this block.
+git -C "$fixture" branch --unset-upstream >/dev/null 2>&1 || true
+git -C "$fixture" remote remove baseup
+git -C "$fixture" reset -q --hard "$anchor_sha"
+
+echo "==> a remote-only branch under a custom refspec never clobbers foreign tracking refs"
+# The remote maps ONLY decoy into refs/remotes/cref/victim. Creating the
+# remote-only branch 'victim' must attach it at the remote's tip via the
+# probe — not via any ref this script writes — and the mapped tracking ref
+# that belongs to decoy must be exactly as it was afterwards.
+cref_up="$test_tmp/cref-up.git"
+git init -q --bare "$cref_up"
+git -C "$fixture" remote add cref "$cref_up"
+git -C "$fixture" config remote.cref.fetch "+refs/heads/decoy:refs/remotes/cref/victim"
+git -C "$fixture" push -q cref HEAD:refs/heads/decoy
+decoy_tip="$(git -C "$fixture" rev-parse HEAD)"
+printf 'victim work\n' >"$fixture/VICTIM.md"
+git -C "$fixture" add VICTIM.md
+LEFTHOOK=0 git -C "$fixture" commit -qm "chore: advance the victim branch" >"$test_tmp/commit.log" 2>&1 ||
+    fail "committing the victim advance failed"
+git -C "$fixture" push -q cref HEAD:refs/heads/victim
+victim_tip="$(git -C "$fixture" rev-parse HEAD)"
+git -C "$fixture" reset -q --hard "$decoy_tip"
+git -C "$fixture" update-ref refs/remotes/cref/victim "$decoy_tip"
+victim_out="$(new victim)" || fail "worktree-new.sh failed for a remote-only branch under a custom refspec"
+[ "$(git -C "$fixture/.worktrees/victim" rev-parse HEAD)" = "$victim_tip" ] ||
+    fail "worktree-new.sh did not attach 'victim' at the remote tip under a custom refspec"
+[ "$(git -C "$fixture" rev-parse refs/remotes/cref/victim)" = "$decoy_tip" ] ||
+    fail "worktree-new.sh clobbered a tracking ref the custom refspec maps from another branch (harmon-init#840)"
+[ "$(git -C "$fixture" config branch.victim.remote)" = "cref" ] ||
+    fail "the custom-refspec branch is not configured to track its remote"
+[ "$(git -C "$fixture" config branch.victim.merge)" = "refs/heads/victim" ] ||
+    fail "the custom-refspec branch tracks the wrong merge ref"
+# The refspec maps only decoy, so @{upstream} for victim CANNOT resolve —
+# and the command must say so rather than claim full tracking.
+if git -C "$fixture" rev-parse --verify --quiet "victim@{upstream}" >/dev/null 2>&1; then
+    fail "victim@{upstream} resolved although the refspec maps no such branch — fixture assumption broken"
+fi
+case "$victim_out" in *"does not map refs/heads/victim"*) : ;; *) fail "the unmapped-refspec degradation was not announced" ;; esac
+rm_wt victim >/dev/null || fail "cleanup of the victim tree failed"
+git -C "$fixture" branch -D victim >/dev/null 2>&1 || true
+git -C "$fixture" remote remove cref
+
+# ── per-path lifecycle locks (#839 / #784) ───────────────────────────
+fixture_locks="$fixture/.git/worktree-locks"
+this_host="$(hostname)"
+
+echo "==> a live parent-path operation refuses a child creation, and vice versa"
+# Both #839 creation orders, deterministically: holding the entries a real
+# concurrent operation would hold IS the race's exclusion state, minus the
+# scheduler. An operation ON parent holds parent exclusively; an operation
+# on parent/child holds parent shared (a holder marker) and the child
+# exclusively.
+mkdir -p "$fixture_locks/lockparent+lock"
+printf '%s %s %s %s\n' "$$" "$this_host" "$(id -u)" "$(ps -o pgid= -p $$ | tr -d ' ')" >"$fixture_locks/lockparent+lock/owner"
+if new lockparent/child --branch lockchild >/dev/null 2>&1; then
+    fail "a child creation proceeded while a parent-path operation held the lock (harmon-init#839)"
+fi
+refute_exists "$fixture/.worktrees/lockparent/child" "the refused child creation left a tree behind"
+if git -C "$fixture" show-ref --verify --quiet refs/heads/lockchild; then
+    fail "the refused child creation left its branch behind"
+fi
+rm -rf "$fixture_locks/lockparent+lock"
+mkdir -p "$fixture_locks/lockparent+holders"
+printf '%s %s %s %s\n' "$$" "$this_host" "$(id -u)" "$(ps -o pgid= -p $$ | tr -d ' ')" >"$fixture_locks/lockparent+holders/sim.marker"
+mkdir -p "$fixture_locks/lockparent%child+lock"
+printf '%s %s %s %s\n' "$$" "$this_host" "$(id -u)" "$(ps -o pgid= -p $$ | tr -d ' ')" >"$fixture_locks/lockparent%child+lock/owner"
+if new lockparent >/dev/null 2>&1; then
+    fail "a parent creation proceeded while a child-path operation held its ancestor marker (harmon-init#839)"
+fi
+refute_exists "$fixture/.worktrees/lockparent" "the refused parent creation left a tree behind"
+refute_exists "$fixture_locks/lockparent+lock" "the refused parent creation left its exclusive lock held"
+
+echo "==> sibling operations under one ancestor stay concurrent"
+# The same child-operation simulation is still holding lockparent shared —
+# a SIBLING (lockparent/other) shares that ancestor without conflict and
+# must proceed; only an operation ON the ancestor is exclusive.
+new lockparent/other --branch locksibling >/dev/null ||
+    fail "a sibling creation was refused although only shared ancestor holds were live (harmon-init#839 round 1)"
+rm_wt lockparent/other >/dev/null || fail "cleanup of the sibling tree failed"
+git -C "$fixture" branch -D locksibling >/dev/null 2>&1 || true
+echo "==> unrelated names stay concurrent under held locks"
+new lockfree >/dev/null || fail "an unrelated creation was blocked by another name's lock"
+rm_wt lockfree >/dev/null || fail "cleanup of the unrelated tree failed"
+rm -rf "$fixture_locks/lockparent+holders" "$fixture_locks/lockparent%child+lock"
+
+echo "==> two same-process holder claims yield two markers, released cleanly"
+# Helper-level pin of the mktemp marker claim: the pre-fix implementation
+# named markers by bare PID, so two claims from one pid (as two PID
+# namespaces over a shared checkout would present) collapsed to one file
+# and a single release destroyed both holds. Two acquisitions from THIS
+# process must produce two distinct markers, and release must remove
+# exactly its own.
+(
+    cd "$fixture"
+    die() {
+        echo "lockcheck: $*" >&2
+        exit 1
+    }
+    # shellcheck source=/dev/null
+    . scripts/worktree-lock.sh
+    acquire_shared "collide-lk" "collide-lk"
+    acquire_shared "collide-lk" "collide-lk"
+    marker_count="$(find "$fixture_locks/collide-lk+holders" -type f | wc -l | tr -d ' ')"
+    [ "$marker_count" -eq 2 ] || exit 9
+    release_locks
+    remaining="$(find "$fixture_locks/collide-lk+holders" -type f | wc -l | tr -d ' ')"
+    [ "$remaining" -eq 0 ] || exit 8
+)
+collide_status=$?
+[ "$collide_status" -ne 9 ] || fail "two same-process holder claims collided into one marker (review r3/r4)"
+[ "$collide_status" -ne 8 ] || fail "release did not remove exactly its own markers"
+[ "$collide_status" -eq 0 ] || fail "the helper-level collision check failed (exit $collide_status)"
+
+echo "==> a name the whitelist refuses cannot reach the lock bookkeeping"
+if rm_wt 'bad name' >/dev/null 2>&1; then
+    fail "worktree-rm.sh accepted a name outside the creation whitelist"
+fi
+
+echo "==> case-aliased names contend on one lock key"
+# Default macOS filesystems are case-insensitive: Foo and foo are one
+# worktree path, so their operations must exclude each other whatever the
+# spelling. The key is lowercased, so holding the lower-spelling lock must
+# refuse an upper-spelling operation.
+mkdir -p "$fixture_locks/case-lk+lock"
+printf '%s %s %s %s\n' "$$" "$this_host" "$(id -u)" "$(ps -o pgid= -p $$ | tr -d ' ')" >"$fixture_locks/case-lk+lock/owner"
+if new Case-LK >/dev/null 2>&1; then
+    fail "a case-aliased spelling bypassed the held lock (PR #911 cloud review)"
+fi
+rm -rf "$fixture_locks/case-lk+lock"
+
+echo "==> a stale lock from a dead process is broken, once"
+# Death is proven through a CONTROLLED ps, not the host's: a sandbox that
+# denies or restricts ps makes the implementation (correctly) refuse to
+# break, which would fail this case for the wrong reason. The shim renders
+# every probe visible and alive — self, pid 1, anything — except the one
+# recorded dead pid, so the case tests the breaking logic itself on every
+# host.
+stale_dead_pid=999999
+psstale_dir="$test_tmp/psstale"
+mkdir -p "$psstale_dir"
+cat >"$psstale_dir/ps" <<PSSHIM
+#!/bin/sh
+# Emulated process table: every pid is visible and alive with a fixed
+# start time and lives in group 4242 — except the designated dead pid,
+# which is absent, and whose recorded group (itself) appears in no scan.
+pid=""
+prev=""
+for arg in "\$@"; do
+  if [ "\$prev" = "-p" ]; then pid="\$arg"; fi
+  prev="\$arg"
+done
+if [ "\$pid" = "$stale_dead_pid" ]; then
+  exit 1
+fi
+case "\$*" in
+*pgid*)
+  echo "4242"
+  ;;
+*lstart*) echo "Mon Jan  1 00:00:00 2026" ;;
+*) echo "\${pid:-1}" ;;
+esac
+exit 0
+PSSHIM
+chmod +x "$psstale_dir/ps"
+mkdir -p "$fixture_locks/stale-lk+lock"
+printf '%s %s %s %s\n' "$stale_dead_pid" "$this_host" "$(id -u)" "$stale_dead_pid" >"$fixture_locks/stale-lk+lock/owner"
+(
+    PATH="$psstale_dir:$PATH"
+    export PATH
+    new stale-lk >/dev/null
+) || fail "worktree-new.sh could not break a dead process's stale lock"
+refute_exists "$fixture_locks/stale-lk+lock" "the stale-lock run did not release its own lock"
+rm_wt stale-lk >/dev/null || fail "cleanup of the stale-lk tree failed"
+
+echo "==> a dead pid with a surviving process group is still alive"
+# Proven through the controlled ps shim on every host: the recorded pid is
+# the shim's dead one, but the recorded GROUP is the shim's live group
+# 4242 (self-group visible, survivor present) — alive by group evidence,
+# so the lock must refuse, not break. Removing the group scan turns this
+# into a dead verdict and fails the case.
+mkdir -p "$fixture_locks/livegroup-lk+lock"
+printf '%s %s %s %s\n' "$stale_dead_pid" "$this_host" "$(id -u)" "4242" >"$fixture_locks/livegroup-lk+lock/owner"
+if (
+    PATH="$psstale_dir:$PATH"
+    export PATH
+    new livegroup-lk >/dev/null 2>&1
+); then
+    fail "a lock with a surviving process group was broken (harmon-init#784 review r3)"
+fi
+[ -d "$fixture_locks/livegroup-lk+lock" ] || fail "the surviving-group lock was removed"
+rm -rf "$fixture_locks/livegroup-lk+lock"
+
+echo "==> a reused pid (mismatched start time) is judged dead and broken"
+# The shim reports pid 999998 as visible with a FIXED start time; an owner
+# recorded with a different start time is therefore a dead process whose
+# pid was reused, and the lock must break. Removing the start-time compare
+# turns this into a live-owner refusal and fails the case.
+mkdir -p "$fixture_locks/reuse-lk+lock"
+printf '%s %s %s %s %s %s\n' "999998" "$this_host" "$(id -u)" "999998" "n0" "Tue Feb  2 02:02:02 2027" >"$fixture_locks/reuse-lk+lock/owner"
+(
+    PATH="$psstale_dir:$PATH"
+    export PATH
+    new reuse-lk >/dev/null
+) || fail "a reused-pid stale lock (start-time mismatch) was not broken"
+rm_wt reuse-lk >/dev/null || fail "cleanup of the reuse-lk tree failed"
+
+echo "==> a dead breaker's break mutex refuses with its own remedy"
+# Break mutexes are never auto-reclaimed — that recursion has no bottom
+# (PR #911 cloud review). The refusal must name the break directory
+# itself, and removing it per the remedy must unblock the next run.
+mkdir -p "$fixture_locks/deadbreak-lk+lock"
+printf '%s %s %s %s\n' "$stale_dead_pid" "$this_host" "$(id -u)" "$stale_dead_pid" >"$fixture_locks/deadbreak-lk+lock/owner"
+mkdir -p "$fixture_locks/deadbreak-lk+lock+break"
+printf '%s %s %s %s\n' "$stale_dead_pid" "$this_host" "$(id -u)" "$stale_dead_pid" >"$fixture_locks/deadbreak-lk+lock+break/owner"
+deadbreak_out="$(
+    PATH="$psstale_dir:$PATH"
+    export PATH
+    new deadbreak-lk 2>&1
+)" && fail "a dead-owned break mutex was auto-reclaimed despite the no-reclamation policy"
+case "$deadbreak_out" in *"crashed lock-recovery attempt left"*) : ;; *) fail "the dead-breaker refusal did not name the break mutex" ;; esac
+rm -rf "$fixture_locks/deadbreak-lk+lock+break"
+(
+    PATH="$psstale_dir:$PATH"
+    export PATH
+    new deadbreak-lk >/dev/null
+) || fail "removing the break mutex per the remedy did not unblock the dead-lock break"
+rm_wt deadbreak-lk >/dev/null || fail "cleanup of the deadbreak-lk tree failed"
+
+echo "==> a foreign host's lock is refused with the remedy, never broken"
+mkdir -p "$fixture_locks/foreign-lk+lock"
+printf '%s %s %s %s\n' "12345" "not-$this_host" "$(id -u)" "12345" >"$fixture_locks/foreign-lk+lock/owner"
+foreign_out="$(new foreign-lk 2>&1)" && fail "worktree-new.sh broke a lock it could not liveness-check"
+case "$foreign_out" in *"remove the lock directory and re-run"*) : ;; *) fail "the foreign-lock refusal named no remedy" ;; esac
+[ -d "$fixture_locks/foreign-lk+lock" ] || fail "the foreign host's lock was removed"
+rm -rf "$fixture_locks/foreign-lk+lock"
+
+echo "==> an ownerless lock always refuses with the remedy, whatever its age"
+# Crash-inside-the-claim-window and suspension are indistinguishable, so
+# ownerless entries are never auto-reclaimed (challenge round 5) — the
+# refusal carries the manual remedy instead.
+mkdir -p "$fixture_locks/fresh-lk+lock"
+if new fresh-lk >/dev/null 2>&1; then
+    fail "a fresh ownerless lock (a live acquisition window) was broken"
+fi
+rm -rf "$fixture_locks/fresh-lk+lock"
+mkdir -p "$fixture_locks/aged-lk+lock"
+touch -t 202601010000 "$fixture_locks/aged-lk+lock"
+aged_out="$(new aged-lk 2>&1)" && fail "an aged ownerless lock was auto-reclaimed despite the undecidable window"
+case "$aged_out" in *"remove the lock directory and re-run"*) : ;; *) fail "the ownerless refusal named no remedy" ;; esac
+rm -rf "$fixture_locks/aged-lk+lock"
+
+echo "==> a repository path containing whitespace releases every marker"
+# The array-tracked marker paths exist for exactly this repository shape —
+# a space-joined scalar word-splits absolute paths and release strands
+# every marker. Run under /bin/bash so macOS exercises its 3.2 baseline.
+spaced_root="$test_tmp/with space"
+mkdir -p "$spaced_root/r/scripts"
+cp "$fixture/scripts/worktree-new.sh" "$fixture/scripts/worktree-rm.sh" "$fixture/scripts/worktree-lock.sh" "$spaced_root/r/scripts/"
+git -C "$spaced_root/r" init -q
+git -C "$spaced_root/r" config user.name "Worktree Test"
+git -C "$spaced_root/r" config user.email "worktree-test@example.invalid"
+git -C "$spaced_root/r" config commit.gpgsign false
+printf 'spaced\n' >"$spaced_root/r/README.md"
+git -C "$spaced_root/r" add -A
+LEFTHOOK=0 git -C "$spaced_root/r" commit -qm "chore: spaced fixture" >/dev/null 2>&1 ||
+    fail "committing the spaced fixture failed"
+(cd "$spaced_root/r" && "$TIMEOUT_BIN" -k "$WORKTREE_OP_KILL_GRACE" "$WORKTREE_OP_TIMEOUT" /bin/bash scripts/worktree-new.sh sp/child --no-install >/dev/null 2>&1) ||
+    fail "worktree:new failed in a repository path containing whitespace"
+(cd "$spaced_root/r" && "$TIMEOUT_BIN" -k "$WORKTREE_OP_KILL_GRACE" "$WORKTREE_OP_TIMEOUT" /bin/bash scripts/worktree-rm.sh sp/child >/dev/null 2>&1) ||
+    fail "worktree:rm failed in a repository path containing whitespace"
+spaced_leftover="$(find "$spaced_root/r/.git/worktree-locks" -type f 2>/dev/null | wc -l | tr -d ' ')"
+[ "$spaced_leftover" -eq 0 ] ||
+    fail "a whitespace repository path stranded $spaced_leftover lock marker(s) (review r4/r5)"
+
+echo "==> an unusable ps fails closed instead of breaking a dead lock"
+# The liveness probe must read "ps itself is broken" as indeterminate: a
+# sandboxed host that denies ps would otherwise turn every held lock into
+# a breakable one (challenge round 2 of harmon-init#839/#784).
+psshim_dir="$test_tmp/psshim"
+mkdir -p "$psshim_dir"
+printf '#!/bin/sh\nexit 1\n' >"$psshim_dir/ps"
+chmod +x "$psshim_dir/ps"
+sleep 0 &
+psdead_pid=$!
+wait "$psdead_pid" 2>/dev/null || true
+mkdir -p "$fixture_locks/psdead-lk+lock"
+printf '%s %s %s %s\n' "$psdead_pid" "$this_host" "$(id -u)" "$psdead_pid" >"$fixture_locks/psdead-lk+lock/owner"
+if (
+    PATH="$psshim_dir:$PATH"
+    export PATH
+    new psdead-lk >/dev/null 2>&1
+); then
+    fail "a dead lock was broken although ps could prove nothing (fail-open liveness)"
+fi
+[ -d "$fixture_locks/psdead-lk+lock" ] || fail "the unprovable lock was removed"
+rm -rf "$fixture_locks/psdead-lk+lock"
+
+echo "==> an empty holder marker refuses with the remedy, whatever its age"
+mkdir -p "$fixture_locks/marker-lk+holders"
+: >"$fixture_locks/marker-lk+holders/999999.marker"
+touch -t 202601010000 "$fixture_locks/marker-lk+holders/999999.marker"
+marker_out="$(new marker-lk 2>&1)" && fail "an aged empty holder marker was auto-swept despite the undecidable window"
+case "$marker_out" in *"remove the marker file and re-run"*) : ;; *) fail "the empty-marker refusal named no remedy" ;; esac
+rm -rf "$fixture_locks/marker-lk+holders"
+mkdir -p "$fixture_locks/marker2-lk+holders"
+: >"$fixture_locks/marker2-lk+holders/999999.marker"
+if new marker2-lk >/dev/null 2>&1; then
+    fail "a fresh empty holder marker (a live publication window) was ignored"
+fi
+rm -rf "$fixture_locks/marker2-lk+holders"
+
+echo "==> a post-acquisition failure releases the lock"
+new lock-rel >/dev/null || fail "creating the lock-release probe tree failed"
+if new lock-rel >/dev/null 2>&1; then
+    fail "a second creation of a registered name succeeded"
+fi
+refute_exists "$fixture_locks/lock-rel+lock" "a refused creation left its lock held"
+rm_wt lock-rel >/dev/null || fail "cleanup of the lock-rel tree failed"
+refute_exists "$fixture_locks/lock-rel+lock" "worktree:rm left its lock held"
+
+echo "==> a removal in progress refuses a same-name recreation end to end"
+# The #784 window itself, interposed: a git shim pauses worktree-rm.sh
+# inside `git worktree remove`, a recreation is attempted mid-window (it
+# must refuse at the lock), and only then is the removal released.
+new interp >/dev/null || fail "creating the interposition tree failed"
+shim_dir="$test_tmp/gitshim"
+mkdir -p "$shim_dir"
+real_git="$(command -v git)"
+# The pause lands AFTER `git worktree remove` completes: that is when the
+# tree is gone and the path is claimable again, which is exactly the window
+# between removal and the later sweep steps that #784 is about. Pausing
+# before the remove would leave the tree in place and the recreation would
+# be refused by mere path occupancy, proving nothing about the lock.
+cat >"$shim_dir/git" <<SHIM
+#!/bin/sh
+if [ "\$WTSHIM_PAUSE_REMOVE" = "1" ] && [ "\$1" = "worktree" ] && [ "\$2" = "remove" ]; then
+  "$real_git" "\$@"
+  shim_status=\$?
+  : >"$test_tmp/shim-paused"
+  while [ ! -e "$test_tmp/shim-release" ]; do sleep 0.2; done
+  exit "\$shim_status"
+fi
+exec "$real_git" "\$@"
+SHIM
+chmod +x "$shim_dir/git"
+rm -f "$test_tmp/shim-paused" "$test_tmp/shim-release"
+(cd "$fixture" && PATH="$shim_dir:$PATH" WTSHIM_PAUSE_REMOVE=1 "$TIMEOUT_BIN" -k "$WORKTREE_OP_KILL_GRACE" "$WORKTREE_OP_TIMEOUT" bash scripts/worktree-rm.sh interp >"$test_tmp/interp-rm.log" 2>&1) &
+interp_rm_pid=$!
+shim_deadline=$(($(date +%s) + 30))
+while [ ! -e "$test_tmp/shim-paused" ]; do
+    [ "$(date +%s)" -lt "$shim_deadline" ] || {
+        : >"$test_tmp/shim-release"
+        fail "the removal never reached its pause point"
+    }
+    kill -0 "$interp_rm_pid" 2>/dev/null || {
+        : >"$test_tmp/shim-release"
+        fail "the paused removal died before pausing: $(cat "$test_tmp/interp-rm.log")"
+    }
+    sleep 0.2
+done
+if new interp >/dev/null 2>&1; then
+    : >"$test_tmp/shim-release"
+    fail "a recreation succeeded while the removal held the name (harmon-init#784)"
+fi
+: >"$test_tmp/shim-release"
+wait "$interp_rm_pid" || fail "the interposed removal failed: $(cat "$test_tmp/interp-rm.log")"
+refute_exists "$fixture/.worktrees/interp" "the interposed removal left the tree behind"
+refute_exists "$fixture_locks/interp+lock" "the interposed removal left its lock held"
+new interp >/dev/null || fail "recreation after the removal completed was refused"
+rm_wt interp >/dev/null || fail "cleanup of the interp tree failed"
+
+echo "==> a child removal in progress refuses an operation on its parent"
+# worktree-rm.sh must hold the same shared ancestor markers creation holds:
+# an rm integration taking only its leaf lock would let an operation ON the
+# parent overlap the child's removal.
+new rmparent/child --branch rmancestor >/dev/null || fail "creating the rm-ancestor tree failed"
+rm -f "$test_tmp/shim-paused" "$test_tmp/shim-release"
+cat >"$shim_dir/git" <<SHIM
+#!/bin/sh
+if [ "\$WTSHIM_PAUSE_REMOVE" = "1" ] && [ "\$1" = "worktree" ] && [ "\$2" = "remove" ]; then
+  "$real_git" "\$@"
+  shim_status=\$?
+  : >"$test_tmp/shim-paused"
+  while [ ! -e "$test_tmp/shim-release" ]; do sleep 0.2; done
+  exit "\$shim_status"
+fi
+exec "$real_git" "\$@"
+SHIM
+chmod +x "$shim_dir/git"
+(cd "$fixture" && PATH="$shim_dir:$PATH" WTSHIM_PAUSE_REMOVE=1 "$TIMEOUT_BIN" -k "$WORKTREE_OP_KILL_GRACE" "$WORKTREE_OP_TIMEOUT" bash scripts/worktree-rm.sh rmparent/child >"$test_tmp/rmanc.log" 2>&1) &
+rmanc_pid=$!
+shim_deadline=$(($(date +%s) + 30))
+while [ ! -e "$test_tmp/shim-paused" ]; do
+    [ "$(date +%s)" -lt "$shim_deadline" ] || {
+        : >"$test_tmp/shim-release"
+        fail "the child removal never reached its pause point"
+    }
+    kill -0 "$rmanc_pid" 2>/dev/null || {
+        : >"$test_tmp/shim-release"
+        fail "the paused child removal died: $(cat "$test_tmp/rmanc.log")"
+    }
+    sleep 0.2
+done
+# The child's removal leaves the emptied ancestor DIRECTORY until the
+# paused script resumes; clear it so the probe below can only be refused by
+# the shared marker, never by mere path occupancy.
+rmdir "$fixture/.worktrees/rmparent" 2>/dev/null || {
+    : >"$test_tmp/shim-release"
+    fail "the emptied ancestor directory could not be cleared — the probe below would test path occupancy, not the marker"
+}
+if new rmparent >/dev/null 2>&1; then
+    : >"$test_tmp/shim-release"
+    fail "an operation on the parent proceeded while the child removal held its ancestor marker"
+fi
+: >"$test_tmp/shim-release"
+wait "$rmanc_pid" || fail "the interposed child removal failed: $(cat "$test_tmp/rmanc.log")"
+git -C "$fixture" branch -D rmancestor >/dev/null 2>&1 || true
+
+echo "==> a remote advancing between probe and fetch still lands the fresh tip"
+# The regression deferred from PR #906: the shim advances the bare remote
+# the moment worktree-new.sh runs its fetch, so the first ls-remote's
+# answer is stale by fetch time and only the UNCONDITIONAL post-fetch
+# probe attaches the fresh tip.
+padv_up="$test_tmp/probe-adv.git"
+git init -q --bare "$padv_up"
+git -C "$fixture" remote add padv "$padv_up"
+git -C "$fixture" push -q padv HEAD:refs/heads/adv-branch
+adv_a="$(git -C "$fixture" rev-parse HEAD)"
+adv_b="$(git -C "$fixture" commit-tree -m "advanced mid-operation" -p "$adv_a" "$(git -C "$fixture" rev-parse "$adv_a^{tree}")")"
+cat >"$shim_dir/git" <<SHIM
+#!/bin/sh
+if [ -n "\$WTSHIM_ADVANCE" ] && [ "\$1" != "push" ]; then
+  for _arg in "\$@"; do
+    if [ "\$_arg" = "fetch" ]; then
+      if [ ! -e "$test_tmp/shim-advanced" ]; then
+        : >"$test_tmp/shim-advanced"
+        "$real_git" -C "$fixture" push -q padv "$adv_b:refs/heads/adv-branch"
+      fi
+      break
+    fi
+  done
+fi
+exec "$real_git" "\$@"
+SHIM
+chmod +x "$shim_dir/git"
+rm -f "$test_tmp/shim-advanced"
+(cd "$fixture" && PATH="$shim_dir:$PATH" WTSHIM_ADVANCE=1 "$TIMEOUT_BIN" -k "$WORKTREE_OP_KILL_GRACE" "$WORKTREE_OP_TIMEOUT" bash scripts/worktree-new.sh adv-branch >"$test_tmp/adv.log" 2>&1) ||
+    fail "worktree-new.sh failed under the advancing remote: $(cat "$test_tmp/adv.log")"
+[ "$(git -C "$fixture/.worktrees/adv-branch" rev-parse HEAD)" = "$adv_b" ] ||
+    fail "worktree-new.sh attached the stale probed tip instead of the advanced remote tip (PR #906 deferral)"
+rm_wt adv-branch >/dev/null || fail "cleanup of the adv-branch tree failed"
+git -C "$fixture" branch -D adv-branch >/dev/null 2>&1 || true
+git -C "$fixture" remote remove padv
+
 echo "==> a dot-segment name cannot smuggle a worktree inside another"
 new dotparent >/dev/null || fail "worktree-new.sh failed creating the dot-parent tree"
 if new ./dotparent/child --branch dotchild >/dev/null 2>&1; then
@@ -910,23 +1542,50 @@ grep -qx "post-checkout $fixture/.worktrees/ordered-tree" "$test_tmp/post-checko
     fail "post-checkout did not run in the new tree after provisioning"
 rm_wt ordered-tree >/dev/null || fail "cleanup of the ordered tree failed"
 rm -f "$shared_hooks/post-checkout"
-# The ordered-tree case changed the fixture's tracked hook configuration as
-# well as its generated hook. Reset both halves before the next case, or
-# worktree:new sees post-checkout as configured and can reinstall/invoke the
-# hook that this cleanup meant to retire (harmon-init#802).
-cat >"$fixture/lefthook.yml" <<'EOF'
-pre-commit:
-  commands:
-    noop:
-      run: "true"
-EOF
-git -C "$fixture" add lefthook.yml
-LEFTHOOK=0 git -C "$fixture" commit -qm "chore: reset post-checkout fixture" \
-    >"$test_tmp/commit.log" 2>&1 || fail "resetting the post-checkout fixture failed"
 
 echo "==> --no-install skips the dependency install"
 : >"$pnpm_marker"
-new no-install-tree --no-install >/dev/null || fail "worktree-new.sh --no-install failed"
+# This case runs under a stdin that never reaches EOF — the agent-session
+# condition the suite's own `exec </dev/null` shields everything else from.
+# lefthook blocks `run post-checkout` until stdin EOF (harmon-init#802), so
+# worktree-new.sh must hand the deferred hook an already-EOF stdin. The shim
+# below asserts that invariant ITSELF (`cat` drains to EOF before logging):
+# relying on the real lefthook to do the blocking would make this case
+# vacuous under the stub (whose `run` reads nothing) and hostage to whichever
+# stdin behavior a future lefthook ships. A worktree-new.sh that ties the
+# hook to the caller's stdin blocks in `cat` and hangs into the #792 bound.
+cat >"$shared_hooks/post-checkout" <<EOF
+#!/bin/sh
+if [ "\$LEFTHOOK" = "0" ]; then
+  exit 0
+fi
+if [ -n "\$LEFTHOOK_BIN" ]; then
+  exec "\$LEFTHOOK_BIN" run "post-checkout" "\$@"
+fi
+cat >/dev/null
+printf 'post-checkout-eof %s\n' "\$PWD" >>"$test_tmp/post-checkout.log"
+EOF
+chmod +x "$shared_hooks/post-checkout"
+: >"$test_tmp/post-checkout.log"
+mkfifo "$test_tmp/hostile-stdin"
+# The writer is UNBOUNDED (`tail -f /dev/null` never exits, on macOS and
+# Linux alike): a `sleep <n>` writer would close the fifo at n seconds, and a
+# WORKTREE_OP_TIMEOUT configured above n would then hand a regressed hook its
+# EOF and pass this case instead of failing it. The explicit kill below and
+# the EXIT trap are what end this process.
+tail -f /dev/null >"$test_tmp/hostile-stdin" &
+WORKTREE_STDIN_HOLDER=$!
+new no-install-tree --no-install <"$test_tmp/hostile-stdin" >/dev/null ||
+    fail "worktree-new.sh --no-install failed under a non-EOF stdin"
+grep -qx "post-checkout-eof $fixture/.worktrees/no-install-tree" "$test_tmp/post-checkout.log" 2>/dev/null ||
+    fail "the deferred post-checkout never reached EOF on its stdin — is it still tied to the caller's stdin? (harmon-init#802)"
+kill "$WORKTREE_STDIN_HOLDER" 2>/dev/null || true
+wait "$WORKTREE_STDIN_HOLDER" 2>/dev/null || true
+WORKTREE_STDIN_HOLDER=""
+# The shim deliberately stays installed: the missing-pnpm case below runs
+# under a PATH mask that hides lefthook, so a configured-but-absent
+# post-checkout hook would fail it at the hook stage instead of the pnpm
+# gate it exists to assert.
 if [ -s "$pnpm_marker" ]; then
     fail "worktree-new.sh ran the installer despite --no-install"
 fi
@@ -1039,9 +1698,12 @@ chmod +x "$fixture/scripts/worktree-new.sh"
 # paths — the subshell's assignments keep the live $test_tmp and sentinel out
 # of its `rm -rf`.
 echo "==> the EXIT trap turns a swallowed timeout into a failing suite"
+# Captured, never piped: Bash 3.2 resets traps in a pipeline's subshell, so
+# `trap -p EXIT | grep -q …` reads an empty trap list and fails even when the
+# trap is wired (harmon-init#844). `$(trap -p EXIT)` reports the parent
+# shell's traps on every supported Bash.
 exit_trap="$(trap -p EXIT)"
-printf '%s\n' "$exit_trap" | grep -q 'worktree_exit' ||
-    fail "the EXIT trap is no longer wired to worktree_exit"
+case "$exit_trap" in *worktree_exit*) : ;; *) fail "the EXIT trap is no longer wired to worktree_exit" ;; esac
 trap_log="$test_tmp/trap.log"
 if (
     test_tmp="$(mktemp -d -t harmon-init-worktree-trap-XXXXXX)"

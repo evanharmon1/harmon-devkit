@@ -153,10 +153,15 @@ Two things not to change when backgrounding:
   mid-loop is risky — an uncommitted fix under `--uncommitted` narrows the
   re-run to just that fix, and the clean pass then attests to the fix rather
   than to the whole change. Bare `task challenge` covers both halves, so it is
-  the right thing to re-run. Committing each round's fixes first is still
-  tidier (it keeps the committed half authoritative and shrinks what Codex has
-  to reconcile), but the loop's exit condition no longer depends on your
-  remembering to.
+  the right thing to re-run — and it is why commit boundaries never change what
+  a round sees.
+
+  Commit anyway, and push: each adjudicated round ends in one conventional
+  commit pushed to the branch, which the Dev Loop makes the rule rather than a
+  tidiness preference. It also keeps the committed half authoritative and
+  shrinks what Codex has to reconcile. What it does not do is decide the exit
+  condition — that is still the adjudicated rounds, whatever the tree looked
+  like when each one ran.
 - **The runner.** Background `task challenge` itself, not
   `/codex:adversarial-review --background`: the slash command calls Codex
   directly, so it never receives the P0/P1/P2 scale that

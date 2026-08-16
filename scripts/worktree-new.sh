@@ -12,7 +12,9 @@
 #
 # Options:
 #   --branch <name>   branch to create/attach (default: the worktree name)
-#   --base <ref>      base for a NEW branch (default: HEAD)
+#   --base <ref>      base for a NEW branch (default: the main worktree's
+#                     HEAD, verified against its configured upstream; also
+#                     skips the live remote lookup for the branch name)
 #   --no-install      skip the per-tree dependency install
 #
 # Exits non-zero with the fix in the message when a precondition is missing, and
@@ -122,12 +124,125 @@ main_root="$(git worktree list --porcelain | awk '/^worktree /{print substr($0, 
 base_origin="explicit"
 if [ -z "$base" ]; then
     base_origin="the main worktree's HEAD"
-    base_label="$(git -C "$main_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
-    base="$(git -C "$main_root" rev-parse --verify --quiet HEAD || true)"
+    # The branch NAME is captured first and the SHA resolved FROM that name,
+    # never from a second HEAD read: parallel use is this entrypoint's design
+    # space, and two separate HEAD reads can straddle a concurrent branch
+    # switch in the main worktree — the pair would then mix one branch's
+    # upstream with another branch's commit. Resolving refs/heads/<captured>
+    # yields a self-consistent pair even if HEAD has moved on; the
+    # verification below reuses the same captured name and never re-reads
+    # HEAD either. A detached HEAD has no branch: its SHA is read directly
+    # and the upstream verification stays off.
+    default_base_branch="$(git -C "$main_root" symbolic-ref --quiet --short HEAD || true)"
+    if [ -n "$default_base_branch" ]; then
+        base_label="$default_base_branch"
+        base="$(git -C "$main_root" rev-parse --verify --quiet "refs/heads/$default_base_branch" || true)"
+    else
+        base_label="HEAD"
+        base="$(git -C "$main_root" rev-parse --verify --quiet HEAD || true)"
+    fi
     [ -n "$base" ] ||
         die "the main worktree has no commits yet — make an initial commit, or pass --base <ref>"
     echo "==> Base: ${base_origin} (${base_label} @ $(git rev-parse --short "$base")) — pass --base <ref> to branch elsewhere"
 fi
+
+# Every network call this script makes must stay headless-safe and bounded:
+# this entrypoint is run by agents with no terminal, where a credential
+# prompt is an indefinite hang (the same failure shape as harmon-init#802),
+# and a degraded remote that accepts the connection and then stalls would
+# hang it just as hard. GIT_TERMINAL_PROMPT=0 turns a would-be HTTP prompt
+# into a fast failure and the low-speed bounds turn an HTTP stall into one;
+# neither reaches an SSH transport, so the ssh command gets BatchMode (no
+# interactive auth) and a connect timeout too. The options are APPENDED to
+# the user's own ssh command — ssh takes the first value obtained for an
+# option, so anything they set explicitly still wins — and core.sshCommand
+# is honoured before falling back to plain ssh, so a configured proxy or
+# jump host keeps working.
+#
+# Residual, stated so nobody rediscovers it as a surprise: a server that
+# ACCEPTS a connection and then stalls mid-protocol is bounded on HTTP (the
+# low-speed limits) but not on SSH past the handshake, nor on git:// or
+# custom remote helpers. This fleet's transport is HTTPS via gh (provisioned
+# hosts rewrite SSH remotes), so the exposure is an unprovisioned host on an
+# established-then-wedged non-HTTP connection — accepted rather than closed,
+# because closing it means a hand-rolled process watchdog whose own failure
+# modes (PID reuse, signal races, orphan supervision) outweigh the residual.
+git_net() {
+    _ssh_cmd="${GIT_SSH_COMMAND:-$(git -C "$main_root" config --get core.sshCommand 2>/dev/null || true)}"
+    if [ -z "$_ssh_cmd" ] && [ -n "${GIT_SSH:-}" ]; then
+        # GIT_SSH names a bare program that accepts no extra options —
+        # appending ours would break the wrapper, and exporting
+        # GIT_SSH_COMMAND would silently bypass it. Leave the SSH transport
+        # to it, unbounded; the HTTP bounds and prompt suppression still
+        # apply.
+        GIT_TERMINAL_PROMPT=0 git -C "$main_root" \
+            -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 "$@"
+        return
+    fi
+    GIT_TERMINAL_PROMPT=0 \
+        GIT_SSH_COMMAND="${_ssh_cmd:-ssh} -o BatchMode=yes -o ConnectTimeout=30" \
+        git -C "$main_root" \
+        -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 "$@"
+}
+
+# A local HEAD goes stale: merges land on the forge and nothing pulls, so an
+# agent handed a fresh tree can be missing recently merged work
+# (harmon-init#813). When HEAD's branch has an upstream, verify against it —
+# not a guessed branch name; the upstream of whatever HEAD points at is
+# configuration, which keeps #757's no-guessing design intact. Called ONLY
+# where the default base is actually consumed — creating a NEW branch from
+# it. Attaching an existing branch or tracking a remote-only branch never
+# uses the base, so neither should be blocked (or even warned) by its
+# staleness. May rewrite $base/$base_label or die.
+verify_default_base() {
+    # Everything resolves from $default_base_branch, captured with $base —
+    # never from a fresh HEAD read (the main worktree can have switched
+    # branches since). The remote name comes from branch config, never from
+    # splitting ref text (a remote name may itself contain '/'); the fetch
+    # SOURCE comes from branch.<name>.merge, never from the abbreviated
+    # upstream name (a non-identity fetch refspec makes them differ); and the
+    # fetch DESTINATION is the upstream's full symbolic ref, never a
+    # refs/remotes/ prefix guess (a custom refspec can map outside
+    # refs/remotes/, and an ambiguous short name would mislead a prefix).
+    [ -n "$default_base_branch" ] || return 0
+    upstream_remote="$(git -C "$main_root" config --get "branch.$default_base_branch.remote" 2>/dev/null || true)"
+    upstream_merge="$(git -C "$main_root" config --get "branch.$default_base_branch.merge" 2>/dev/null || true)"
+    upstream_full="$(git -C "$main_root" rev-parse --symbolic-full-name "$default_base_branch@{upstream}" 2>/dev/null || true)"
+    { [ -n "$upstream_remote" ] && [ -n "$upstream_full" ]; } || return 0
+    upstream_label="$(git -C "$main_root" rev-parse --abbrev-ref "$default_base_branch@{upstream}" 2>/dev/null || echo "$upstream_full")"
+    fetch_failed=0
+    if [ "$upstream_remote" != "." ]; then
+        [ -n "$upstream_merge" ] || return 0
+        git_net fetch --quiet "$upstream_remote" \
+            "+$upstream_merge:$upstream_full" 2>/dev/null ||
+            fetch_failed=1
+    fi
+    # The comparison reads the tracking ref AFTER the fetch attempt, success
+    # or not: a parallel worktree:new fetching the same upstream can win the
+    # ref lock and fail THIS fetch while leaving the ref freshly updated —
+    # returning early on failure would base the loser on the stale snapshot.
+    # Only a genuinely unreadable state keeps the base as captured, and a
+    # failed fetch still says so out loud.
+    if [ "$fetch_failed" -eq 1 ]; then
+        echo "worktree:new: warning: could not fetch '$upstream_remote' — verifying ${base_label} against the last-known ${upstream_label}, which may itself be stale (harmon-init#813)" >&2
+    fi
+    upstream_tip="$(git -C "$main_root" rev-parse --verify --quiet "$upstream_full^{commit}" || true)"
+    { [ -n "$upstream_tip" ] && [ "$upstream_tip" != "$base" ]; } || return 0
+    if git -C "$main_root" merge-base --is-ancestor "$base" "$upstream_tip"; then
+        # Behind: hand out the current upstream tip, not the stale local one.
+        # Resolved to a SHA so branch creation picks up no tracking side
+        # effects.
+        echo "==> Base: ${base_label} is behind ${upstream_label} — using ${upstream_label} @ $(git rev-parse --short "$upstream_tip")"
+        base="$upstream_tip"
+        base_label="$upstream_label"
+    elif git -C "$main_root" merge-base --is-ancestor "$upstream_tip" "$base"; then
+        # Ahead: local has everything the upstream has, plus unpushed work
+        # the caller presumably wants. Say so.
+        echo "==> Note: ${base_label} is ahead of ${upstream_label}; basing on the local tip"
+    else
+        die "${base_label} has diverged from ${upstream_label} — reconcile them, or pass --base <ref> to choose a start point explicitly"
+    fi
+}
 
 # Validated here, before anything is created, so a bad --base fails without a
 # rollback message about a tree that never existed.
@@ -135,6 +250,24 @@ git rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
     die "base ref '$base' does not resolve to a commit"
 
 tree="$main_root/.worktrees/$name"
+
+# ── Per-path lifecycle locks ─────────────────────────────────────────
+# The protocol lives in worktree-lock.sh, SHARED with the sibling command:
+# both must run identical lock semantics, so there is exactly one copy to
+# correct. See that file for the design and its residuals.
+# shellcheck source=scripts/worktree-lock.sh
+. "$(dirname "$0")/worktree-lock.sh"
+
+# The traps are armed BEFORE the first acquisition, so a signal or failure
+# landing mid-acquisition still releases whatever partial set was taken.
+# `cleanup` replaces the EXIT trap once rollback is armed and releases the
+# locks itself. Held from before the registry snapshot to script exit,
+# provisioning included: a removal attempted mid-provisioning refuses with
+# "operation in progress" instead of pulling the tree out from under the
+# installer.
+trap release_locks EXIT
+trap 'exit 129' HUP INT TERM
+acquire_path_locks "$name"
 
 # Refuse to nest a worktree INSIDE another registered worktree. Git's own
 # guard is on branch names (it will not let `parent/child` coexist with
@@ -213,7 +346,17 @@ if ! mkdir "$tree" 2>/dev/null; then
     if [ -d "$tree" ]; then
         die "$tree already exists (or another worktree:new is creating it) — remove it with 'task worktree:rm -- $name' first"
     fi
-    die "could not create $tree"
+    # A sibling's removal can rmdir the emptied shared parent between our
+    # mkdir -p above and this leaf claim — both operations are deliberately
+    # admitted through the shared ancestor lock — so a missing parent gets
+    # one re-create-and-retry before the failure is real.
+    mkdir -p "$(dirname "$tree")" 2>/dev/null || true
+    if ! mkdir "$tree" 2>/dev/null; then
+        if [ -d "$tree" ]; then
+            die "$tree already exists (or another worktree:new is creating it) — remove it with 'task worktree:rm -- $name' first"
+        fi
+        die "could not create $tree"
+    fi
 fi
 
 # Roll back on any failure from here on. A half-provisioned worktree is worse
@@ -290,6 +433,7 @@ cleanup() {
             echo "worktree:new: leaving branch '$branch' alone — this run did not create it" >&2
         fi
     fi
+    release_locks
     exit "$status"
 }
 trap cleanup EXIT
@@ -319,48 +463,94 @@ trap cleanup EXIT
 remote_ref=""
 if [ "$base_origin" != "explicit" ] && ! git show-ref --verify --quiet "refs/heads/$branch"; then
     remote_matches=""
+    remote_match_remote=""
     remote_count=0
     while IFS= read -r remote_name; do
         [ -n "$remote_name" ] || continue
-        # Refresh this exact branch before deciding it does not exist. A
-        # collaborator may have pushed it since our last fetch; creating a
-        # same-named local branch from the default base would silently diverge.
-        # Exit 2 means the remote has no such ref. Any other failure is
-        # indeterminate, so fail closed and let an explicit --base opt out.
-        remote_probe_rc=0
-        git ls-remote --exit-code --heads "$remote_name" "refs/heads/$branch" \
-            >/dev/null 2>&1 || remote_probe_rc=$?
-        case "$remote_probe_rc" in
-        0)
-            git fetch --no-tags "$remote_name" \
-                "+refs/heads/$branch:refs/remotes/$remote_name/$branch" >/dev/null ||
-                die "could not refresh '$branch' from remote '$remote_name'"
-            ;;
-        2) ;;
-        *) die "could not determine whether '$branch' exists on remote '$remote_name' — pass --base <ref> to work offline" ;;
-        esac
-        candidate="refs/remotes/$remote_name/$branch"
-        if git show-ref --verify --quiet "$candidate"; then
-            remote_matches="$candidate"
+        # Each remote is probed LIVE (harmon-init#840): the local
+        # refs/remotes/* namespace is only as fresh as the last fetch, so a
+        # branch pushed since then would read as absent and be silently
+        # recreated at the default base — diverging from the collaborator's
+        # branch. `ls-remote` patterns are tail-matched, so the answer is
+        # filtered to the exact ref before it counts. A probe that cannot
+        # answer fails CLOSED: "the remote is unreachable" is not evidence
+        # the branch is new, and guessing here is the data-loss path.
+        probe_out="$(git_net ls-remote --heads "$remote_name" "refs/heads/$branch")" ||
+            die "could not query remote '$remote_name' for branch '$branch' — offline, unreachable, or needs interactive credentials; retry with network/auth, or pass --base <ref> to skip the remote lookup"
+        probe_sha="$(printf '%s\n' "$probe_out" | awk -v ref="refs/heads/$branch" -F'\t' '$2 == ref {print $1; exit}')"
+        if [ -n "$probe_sha" ]; then
+            remote_matches="refs/remotes/$remote_name/$branch"
+            remote_match_remote="$remote_name"
+            remote_probe_sha="$probe_sha"
             remote_count=$((remote_count + 1))
         fi
     done <<EOF
-$(git remote)
+$(git -C "$main_root" remote)
 EOF
     if [ "$remote_count" -gt 1 ]; then
         die "branch '$branch' exists on more than one remote — pass --base <remote>/<branch> to choose one"
     fi
-    [ "$remote_count" -eq 1 ] && remote_ref="$remote_matches"
+    if [ "$remote_count" -eq 1 ]; then
+        # Fetched WITHOUT a destination refspec, so the only tracking refs
+        # updated are the ones the remote's OWN configured refspec maps —
+        # a synthesized identity destination could overwrite a tracking ref
+        # that a custom refspec maps a different branch into. The commit to
+        # attach is the one the probe saw ($remote_probe_sha), verified
+        # present after the fetch rather than read from any ref of ours.
+        git_net fetch --quiet "$remote_match_remote" "refs/heads/$branch" ||
+            die "found branch '$branch' on remote '$remote_match_remote' but could not fetch it — retry, or pass --base <ref>"
+        # One UNCONDITIONAL post-fetch probe. The remote can advance between
+        # the first probe and the fetch, and the first probe's tip resolving
+        # locally is no evidence it stayed current — a stale tracking ref
+        # can make an outdated commit resolve just fine. The fetch already
+        # imported whatever the remote advanced to, so the fresh probe's
+        # answer normally resolves and the attach lands on it; a tip that
+        # arrives unresolvable means the remote moved again mid-operation,
+        # which no client-side sequence can chase — stop and say so. (The
+        # window between this probe and the attach is inherent; this keeps
+        # it one probe wide instead of pretending to close it.)
+        probe_out="$(git_net ls-remote --heads "$remote_match_remote" "refs/heads/$branch")" ||
+            die "remote '$remote_match_remote' became unqueryable while fetching '$branch' — retry, or pass --base <ref>"
+        remote_probe_sha="$(printf '%s\n' "$probe_out" | awk -v ref="refs/heads/$branch" -F'\t' '$2 == ref {print $1; exit}')"
+        [ -n "$remote_probe_sha" ] ||
+            die "branch '$branch' disappeared from remote '$remote_match_remote' while fetching — retry, or pass --base <ref>"
+        git rev-parse --verify --quiet "$remote_probe_sha^{commit}" >/dev/null ||
+            die "branch '$branch' on remote '$remote_match_remote' is moving — retry, or pass --base <ref>"
+        remote_ref="$remote_matches"
+    fi
 fi
 
 if git show-ref --verify --quiet "refs/heads/$branch"; then
     echo "==> Attaching existing branch '$branch'"
     LEFTHOOK=0 git worktree add "$tree" "$branch"
 elif [ -n "$remote_ref" ]; then
-    echo "==> Creating branch '$branch' tracking ${remote_ref#refs/remotes/}"
+    echo "==> Creating branch '$branch' tracking $remote_match_remote/$branch"
     branch_created=1
-    LEFTHOOK=0 git worktree add "$tree" --track -b "$branch" "${remote_ref#refs/remotes/}"
+    # Created from the PROBED commit with tracking written as plain branch
+    # config, never via `--track` DWIM and never via a ref this script
+    # wrote: --track derives the upstream by reverse-mapping the start point
+    # through the remote's fetch refspec and aborts under a non-identity
+    # one, and any destination ref we synthesized could collide with what a
+    # custom refspec maps there. branch.<name>.remote + branch.<name>.merge
+    # are correct under EVERY refspec, and @{u} then resolves through
+    # whatever mapping the repo actually configures.
+    LEFTHOOK=0 git worktree add "$tree" -b "$branch" "$remote_probe_sha"
+    git config "branch.$branch.remote" "$remote_match_remote"
+    git config "branch.$branch.merge" "refs/heads/$branch"
+    # Honesty check on the tracking claim: pull and push work off the branch
+    # config just written, but @{upstream}-based tooling (status ahead/behind,
+    # verify_default_base if this branch ever becomes the main HEAD) resolves
+    # through the remote's fetch refspec — which a custom refspec may simply
+    # not map for this branch. Say so instead of letting "tracking" imply
+    # more than it delivers.
+    git rev-parse --verify --quiet "$branch@{upstream}" >/dev/null 2>&1 ||
+        echo "==> Note: '$remote_match_remote's fetch refspec does not map refs/heads/$branch — pull/push work via branch config, but @{upstream} tooling will not see an upstream"
 else
+    # The one path that consumes the default base — verify its freshness
+    # here and nowhere earlier, so attaching an existing branch or tracking
+    # a remote-only one is never blocked by a stale or diverged main
+    # (harmon-init#813).
+    [ "$base_origin" = "explicit" ] || verify_default_base
     echo "==> Creating branch '$branch' from '$base'"
     branch_created=1
     LEFTHOOK=0 git worktree add "$tree" -b "$branch" "$base"
@@ -482,7 +672,12 @@ if [ "$run_post_checkout" -eq 1 ] && [ -x "$hooks_dir/post-checkout" ]; then
     new_head="$(git -C "$tree" rev-parse HEAD)"
     null_oid="$(printf '%s' "$new_head" | tr '[:alnum:]' '0')"
     echo "==> Running post-checkout now that the tree is provisioned"
-    (cd "$tree" && "$hooks_dir/post-checkout" "$null_oid" "$new_head" 1) ||
+    # </dev/null is load-bearing: lefthook blocks `run post-checkout` until its
+    # stdin reaches EOF (observed on v2.1.10), so inheriting a stdin the caller
+    # holds open — an agent harness socket, a task runner pipe — deadlocks the
+    # hook here indefinitely (harmon-init#802). Git hands post-checkout no
+    # stdin payload, so an immediate EOF loses nothing.
+    (cd "$tree" && "$hooks_dir/post-checkout" "$null_oid" "$new_head" 1 </dev/null) ||
         die "the repository's post-checkout hook failed in $tree"
 fi
 

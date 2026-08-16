@@ -197,6 +197,11 @@ environment — against the items below
       and normally needs no edits. Labels are per-repo, so run it in each repo;
       org default labels (org Settings → Repository, UI-only) only seed new
       repos.
+- [ ] **After a `copier update` that adds label families** (e.g. `tier:*` /
+      `method:*`), re-run `task setup:github-labels` to provision the new
+      labels here — it is additive and never deletes, so existing labels and
+      the issues they sit on are untouched — then classify open issues with the
+      added families.
 - [ ] **[human-only] Retire any legacy `agent:*` claim labels** — needed only
       where `gh label list --limit 200` still shows the harness-named family
       (`agent:claude-code`, `agent:gemini-cli`, …) a pre-registry harmon-init

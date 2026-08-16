@@ -93,8 +93,16 @@ skill at authoring time and by the **tracking guard**
   rather than recreating — installs **this tree's** dependencies, proves the
   git hooks fire inside it, prints the ready path, and rolls the tree back if
   any of that fails. A new branch is based on the **main worktree's HEAD**, not
-  the caller's, so running the task from inside a worktree does not silently
-  stack the new branch on that one; `--base HEAD` stacks deliberately.
+  the caller's — and when that branch's configured upstream resolves, the base
+  is first verified against it: behind means the fresh upstream tip is used
+  (announced), diverged refuses with a `--base` remedy, so a tree never
+  silently starts from stale history. Running the task from inside a worktree
+  does not silently stack the new branch on that one; `--base HEAD` stacks
+  deliberately. Creating a genuinely new branch also probes every configured
+  remote for a same-named branch first — a branch that exists remotely is
+  tracked, never recreated — so that path needs the remotes reachable: an
+  offline run fails closed with the fix in the message, and an explicit
+  `--base <ref>` skips the remote lookup entirely.
   `--branch` and `--no-install` cover the rest.
   One entrypoint means a second agent session, a terminal multiplexer, or a
   human all get the same tree instead of each rediscovering the setup.
