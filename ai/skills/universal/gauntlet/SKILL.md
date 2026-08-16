@@ -43,7 +43,7 @@ normal permission prompt.
 
 ## 1. Entry gate
 
-Five things must hold before the first reviewer round. Check them; do not
+Four things must hold before the first reviewer round. Check them; do not
 assume them.
 
 - **The definition-of-done gate is green** (`task verify` where it exists).
@@ -114,34 +114,6 @@ assume them.
   review meant to catch it, and it would publish an unscanned tree — `verify`
   excludes the security suite in most repos. A stronger probe is not worth
   reordering the gate around.
-
-- **No PR is open on this branch in the repository you are targeting.** §10
-  is what creates a PR and the shepherd stage owns every push after that, so
-  a round push landing in an existing PR crosses that boundary — spending its
-  CI, and on a promoted one moving the head out from under the claim that
-  promotion makes. §10 step 5 checks this too, but only before *creating*,
-  which is several rounds after the first push. Look before round 1:
-
-  ```sh
-  gh pr list --repo <origin-repo> --state open --head <branch> \
-    --json number,headRefName,headRepositoryOwner \
-    --jq '.[] | select(.headRepositoryOwner.login == "<push-remote-owner>") | .number'
-  ```
-
-  Ask **`origin`** — the repository the PR would target, per property 1 — not
-  the remote you push to: a pull request lives in its *base* repository, so a
-  fork's PR is listed upstream. Filter by head owner, because `--head` matches
-  branch name alone and an unrelated fork's PR can carry the same name. Any
-  hit is a **stop**: the work belongs to shepherd, whatever the PR's draft
-  state.
-
-  **This is best-effort by construction, and saying so is part of the check.**
-  A head can back a PR in any repository that could host one, so a single
-  lookup cannot prove none exists; and no lookup is atomic with a later push,
-  so a PR opened mid-stage is not caught at all. Run it because it catches the
-  case that actually happens — a branch you already opened a PR for — not
-  because it makes the boundary airtight. Do not grow it into a search across
-  the fork network chasing a guarantee it cannot deliver.
 
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
@@ -253,28 +225,11 @@ Each round:
    is how a failing gate reaches a push. Set the upstream on the first push
    (`-u`), since a new branch has no upstream to infer.
 
-   **Two preconditions, and where either fails the rounds stay local.**
-   Pushing every round is cheap because a pre-PR branch push spends no CI and
-   starts no cloud review — a fact about a repo's configuration, not a law.
-   Establish both before round 1, and where either fails, keep the rounds
-   local: commit each round as damper 9 says and push once at §10, accepting
-   that the durability the push would have bought is lost. That is the
-   supported fallback, not a degraded mode.
-
-   1. **Branch pushes trigger no workflows.** Where they do, every round
-      spends a CI run — and a round that *changed a workflow* executes it
-      with repository permissions before §9's `task ci` runs SAST over it.
-      Gating only the first push does not cover this: any later round can
-      touch a workflow and reach the remote on `task verify` alone. So the
-      full gate would have to precede **every** push, which is most of what
-      keeping the rounds local costs anyway.
-   2. **The repo's own policy permits it.** `AGENTS.md` outranks this skill
-      (see the top of this file), so where its Dev Loop orders `task ci`
-      before the branch is pushed, that order governs and per-round pushing
-      is simply not in effect there yet. Nothing about that is a conflict to
-      resolve inside a round: policy changes in `AGENTS.md`, and a repo whose
-      `AGENTS.md` is rendered from a template adopts it when that template
-      update lands.
+   **Two preconditions, or the rounds stay local.** Branch pushes must
+   trigger no workflows, and the repo's `AGENTS.md` must not order the CI
+   gate before the branch is pushed. Where either fails, commit each round as
+   damper 9 says and push once at §10: the durability is lost, and that is
+   the supported fallback rather than a reason to push anyway.
 5. **Test the exit rule (§5) and the cap on the round just adjudicated.** An
    exit condition met means the stage is over now — an empty round 1 owes no
    second run (floor permitting), and a capped final round must not launch
