@@ -81,6 +81,7 @@ tasks:
       - task: test:shepherd-codex
       - task: test:shepherd-marker
       - task: test:shepherd-readiness
+      - task: test:gauntlet-push
       - task: test:lint-hygiene
       - task: test:release-title
       - task: test:notify-release
@@ -384,6 +385,11 @@ tasks:
     desc: Unit-test the shepherd readiness gate + read-only gh wrapper (offline, stubbed gh)
     cmds:
       - ./scripts/test-shepherd-readiness.sh
+
+  test:gauntlet-push:
+    desc: Unit-test gauntlet's gated round-push helper (offline, local bare remotes)
+    cmds:
+      - ./scripts/test-gauntlet-push.sh
 
   test:lint-hygiene:
     desc: Behavioral fixtures for lint-hygiene's trigger-phrase adjacency scan

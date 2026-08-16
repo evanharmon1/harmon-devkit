@@ -86,39 +86,29 @@ assume them.
   each round's fixes then get their own commit and push (§3, step 4), and §10
   re-checks the tree is clean immediately before the push.
 
-- **You can push.** Rounds push (§3, step 4), so the credential is proved
-  here rather than discovered after a converged stage — the observed failure
-  is a stage converging and only then finding it could never have pushed.
-  Same rule as the base checks above: **every failure, error, or uncertainty
-  is a stop, never a fallback.**
+- **You can push.** Resolve the named push remote — the fork rather than
+  `origin` in the topology above — plus its forge host and `owner/repo`, then
+  run the tested, read-only preflight:
 
-  1. **Resolve the push remote** — the one `gh pr create` will push to. Under
-     the fork topology in property 1 that is the fork, *not* `origin`.
-     Resolve it explicitly rather than assuming a name.
-  2. **Ask the forge whether you may write to it**, at the host that remote
-     resolves to:
+  ```sh
+  expected="$(<skill-dir>/assets/push-round.sh preflight \
+    --remote "$push_remote" --branch "$branch" \
+    --host "$push_host" --repo "$push_repo")" || exit
+  ```
 
-     ```sh
-     gh api --hostname <host> repos/<owner>/<repo> --jq '.permissions.push'
-     ```
+  It prints the full remote branch head or `absent`; carry that value through
+  the stage and replace it with the pushed SHA after each successful push.
+  `false`, an API or transport error, malformed output, or any uncertainty is
+  a stop. The helper never substitutes `git push --dry-run`: a dry run still
+  executes the repository's `pre-push` hook, so it is neither read-only nor a
+  credential-only test. The forge query proves repository push permission,
+  not rulesets, hooks, or path-scoped permissions; only a real update can
+  prove those, and its first opportunity is the first round push or §10.
 
-     `false`, an error, or anything you cannot resolve is a stop.
-
-  **Do not substitute `git push --dry-run`.** It is not a read: a dry run
-  still runs the repo's `pre-push` hook, and a failing hook makes it report a
-  push failure. Verified on git 2.51.1 — a marker hook executes under
-  `--dry-run`, and one exiting non-zero aborts it with `failed to push some
-  refs`. So the "probe" would execute branch-controlled code from a tree no
-  reviewer has seen, and misreport a hook failure as a credential failure.
-
-  What this establishes is the **permission**, and nothing that evaluates
-  only on a real ref update — branch protection, rulesets, pre-receive hooks
-  and path-scoped permissions all see nothing here, and surface at the first
-  round that pushes or, on an all-clean stage, at §10. Hardening this check
-  further — enumerating `pushurl` destinations, redacting credentials
-  embedded in URLs, and handling workflow-path permissions — is deliberately
-  out of scope here and tracked as a unit; those interact, and settling them
-  one at a time is what this section is recovering from.
+  On an unprovisioned host, pass each documented Git transport override as
+  `-c name=value` to both preflight and every later helper call. The helper
+  applies them to its `ls-remote` and `push` operations without bypassing the
+  named remote.
 
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
@@ -223,41 +213,38 @@ Each round:
    table (§6). Fix only what is confirmed.
 3. **Commit the round's fixes as their own commit.** Per **round**, not per
    finding: five fixes are one commit, and a round adjudicated clean with
-   nothing to fix commits and pushes nothing. Commit *before* gating, so what the gate
-   runs against is an immutable object rather than a working tree — a commit
-   hook that rewrites the index has already run by then.
-4. **Gate that commit, then push it** to the push remote resolved at the entry
-   gate (§7, damper 9). **Re-check `git status --porcelain` is empty** — a
-   commit hook that leaves unstaged formatter or generated-file changes makes
-   the gate run against a tree the captured commit does not contain, so a
-   passing result would attest to something you are not pushing. §1's
-   clean-tree check predates every round fix and §10's comes far too late;
-   this one is the round's own. Then capture the SHA
-   (`sha="$(git rev-parse HEAD)"`), run `task verify`, read its **exit code**
-   directly — a verdict consumed through a pipeline a reader can mask is how a
-   failing gate reaches a push — and push that SHA rather than `HEAD`, which
-   git re-resolves when the push runs.
+   nothing to fix commits and pushes nothing. Commit *before* gating: commit
+   hooks have finished, and the gate can bind to an immutable object.
+4. **Gate and push that exact commit** with the helper. Its marker protocol is
+   the shepherd's tested answer to a maskable reader such as
+   `tail -1 gate.out && git push`: mint a run-unique token containing the SHA,
+   and append it only when every required gate succeeds.
 
-   **Two preconditions, or the rounds stay local.** Branch pushes must trigger
-   no workflows, and the repo's `AGENTS.md` must not order the CI gate before
-   the branch is pushed. Where either fails, commit each round as damper 9
-   says and push once at §10: the durability is lost, and that is the
-   supported fallback rather than a reason to push anyway. The first
-   precondition is the sharper one — where workflows run on branch pushes, a
-   round that *changed a workflow* executes it with repository permissions
-   before §9's `task ci` has run SAST over it, and gating only the first push
-   does not help, since any later round can touch a workflow too.
+   ```sh
+   sha="$(git rev-parse HEAD)"
+   token="GAUNTLET-GREEN-${sha}-$$"
+   out="$(mktemp)"
+   task verify >"$out" 2>&1 && task security:secrets >>"$out" 2>&1 \
+     && printf '\n%s\n' "$token" >>"$out"
+   <skill-dir>/assets/push-round.sh push \
+     --remote "$push_remote" --branch "$branch" --sha "$sha" \
+     --expect "$expected" --gate-file "$out" --gate-token "$token"
+   expected=$sha
+   ```
 
-   Two properties the push owes, beyond landing the gated commit: it touches
-   **only this branch** (with no refspec on the command line git consults
-   `remote.<name>.push`, so a wildcard there publishes unreviewed branches),
-   and it **fails rather than destroying another actor's work**. Getting the
-   second right is more intricate than it looks — a lease authorizes a
-   non-fast-forward update to the value you observed, and an ancestry check
-   still accepts a remote that moved backward — so the mechanism is being
-   built and tested as a helper rather than prescribed here as a recipe
-   (evanharmon1/harmon-devkit#499). Until it lands, satisfy the properties deliberately and check what
-   you pushed.
+   Use the repository's named definition-of-done and secret-scan commands
+   where those task names differ. Update `expected` only after exit 0; a
+   refusal is a stop, never permission to hand-write a push. The helper
+   re-checks the marker, SHA, `HEAD`, clean tree, expected remote head,
+   fast-forward ancestry, explicit one-branch refspec, lease, and landed ref.
+   This is where the branch learns mechanically that the gate's commit — and
+   only that commit — left the machine.
+
+   **Precondition or local fallback.** Use round pushes only where repository
+   policy confirms that feature-branch pushes trigger no automation and does
+   not order the full CI mirror before publishing. Otherwise commit each round
+   locally and make the one helper-mediated push at §10, explicitly losing the
+   intermediate durability rather than executing unreviewed workflows.
 
 5. **Test the exit rule (§5) and the cap on the round just adjudicated.** An
    exit condition met means the stage is over now — an empty round 1 owes no
@@ -511,52 +498,27 @@ adjudication outcome** when later rounds churned without adjudicated
 improvement. Running to the cap is not the goal, and the history is what makes
 going back cheap enough to actually do.
 
-**Go back by adding, not by rewriting.** Because the rounds are pushed, the
-history is published, and **rewriting** published history is forbidden — no
-`reset --hard` over a pushed round, no amend, no rebase, no non-fast-forward
-push, no matter how much tidier the result would look. That is a prohibition
-on *discarding* published commits, not on the `--force-with-lease` a
-fast-forward push may legitimately carry as a concurrency guard: the shepherd
-binds every fix push to the head it observed, precisely so an ordinary push
-cannot resurrect commits another actor removed. Revert the rounds you are undoing
-(`git revert`, newest first) and push that; the branch then records both what
-was tried and that it was withdrawn, which is what a later round or a
-different session needs in order not to retry it. Name the reverted rounds and
-why in the revert's message, exactly as damper 4 requires of a deletion.
+**Go back by adding, not by rewriting.** Published rounds are never amended,
+rebased, reset away, or replaced by a non-fast-forward push. Revert the rounds
+you are undoing, newest first, and helper-push the revert commit; name the
+withdrawn rounds and why in its message. The helper's lease is compatible with
+this rule: it permits only the fast-forward the helper already proved and makes
+concurrent movement refuse rather than clobber.
 
-**Two costs the push does not cover.** It carries commits and nothing else:
+**What the push does not preserve.** It carries commits, not the
+deferred-findings sidecar or adjudication ledger in the git directory (§6).
+Losing the environment still loses that record, so a resumed session recovers
+the code and re-runs the stage; §10's PR-body transfer is their first durable
+home. Durability also begins only with the first finding-bearing round: the
+read-only entry preflight publishes nothing, and an all-clean stage pushes only
+at §10.
 
-- The **deferred-findings sidecar and the adjudication ledger** live in the
-  git directory (§6) and are never pushed, so what a lost environment takes
-  is the whole adjudication record either way. A resumed session recovers
-  whatever was pushed and still re-runs the stage. Say that plainly rather
-  than letting "the rounds are pushed" be read as crash recovery; the
-  sidecar's transfer into the PR body in §10 is still the only thing that
-  makes those findings durable.
-- **Durability starts at the first round that pushes, not at the entry
-  gate.** The gate probes without writing, so until a round has fixes to
-  land, the implementation is committed locally and nowhere else — and a
-  stage whose rounds are all clean pushes nothing at all before §10. "A lost
-  environment costs one round" is true only after that first push; before it,
-  losing the checkout loses the whole implementation. State that limit rather
-  than working around it: an early push to buy durability would publish the
-  implementation ahead of §9's security gate, with only the secret scan below
-  standing between it and the remote.
-- **The whole unpushed range is secret-scanned before a push — not just the
-  round's commit.** `git push` updates the remote branch to your local ref,
-  so it carries **every** commit the remote does not have. The entry gate
-  pushes nothing, so the first round to push carries the implementation in
-  its ancestry: a scan scoped to that round's own commit would let a
-  credential in the implementation through, on the ordinary path rather than
-  some optional one. Scan `<remote>/<branch>..${sha}` — the **same commit
-  §3 step 4 captured and pushes**, never `HEAD`, which can move under you
-  while the gate runs and would then scan a range the push does not
-  publish — or the whole branch up to `${sha}` where the remote has no such
-  ref yet. This is an obligation, not a claim
-  about any repo's setup: where a `pre-push` hook runs the scan it is
-  automatic, and where none is installed — hook installation is opt-in in
-  most generated repos — run the repo's secret scan yourself first. The rest
-  of the security suite still runs at §9 before the PR exists.
+The marker in §3 is appended only after the repository's required secret scan,
+because the first round push carries the entire previously unpushed
+implementation, not merely that round's commit. Where a pre-push hook already
+enforces the scan this is redundant and cheap; where hooks were never installed
+it is the only mechanical barrier before publication. The full security suite
+still runs in §9.
 
 **10. Whole-branch scope every round.** Re-run the reviewer **bare** — branch
 commits *and* working tree — so a fix can never narrow the re-review to itself.
@@ -611,10 +573,18 @@ head="$(git rev-parse HEAD)"          # right
 
 `task ci` where it exists — the full local mirror. Fix whatever it catches.
 This is the last cheap failure; everything after it costs a round on the PR.
+Run it against the final committed SHA and produce a fresh helper marker for
+§10, exactly as §3 does but with `task ci` as the gate:
 
-If fixes landed after the last gate run, re-run with a **clean tree**, so
-nothing passes on the strength of uncommitted or untracked files the push would
-then omit.
+```sh
+sha="$(git rev-parse HEAD)"
+token="GAUNTLET-GREEN-${sha}-$$"
+out="$(mktemp)"
+task ci >"$out" 2>&1 && printf '\n%s\n' "$token" >>"$out"
+```
+
+The helper's post-gate clean-tree and `HEAD == sha` checks prevent a successful
+gate from authorizing a different or partially generated commit.
 
 ## 10. Open the draft PR — the stage's exit ceremony
 
@@ -668,13 +638,19 @@ In order:
    path, the check is the repository's open PRs instead: any PR whose head
    is this branch or whose change covers this work. Either way a live
    duplicate means stop and reconcile, not open a second PR.
-6. **`gh pr create --draft`.** Re-check `git status --porcelain` is empty —
-   an uncommitted file here is work the push will silently omit — then push
-   whatever the rounds have not already pushed, to the push remote resolved
-   at the entry gate, under the same properties §3 step 4 states. That
-   matters most here: when the rounds stayed local, or every round came back
-   clean, this is the *only* push the stage makes, so it carries the whole
-   branch under a contract nothing earlier exercised.
+6. **`gh pr create --draft`.** Run §3's helper with §9's `sha`, `token`, and
+   `out`, plus the current `expected`, to push whatever the rounds have not
+   already published. That matters most when the rounds stayed local or every
+   round came back clean: this is then the stage's only real push and its first
+   full capability proof. A refusal is a stop, never permission to bypass the
+   helper.
+
+   ```sh
+   <skill-dir>/assets/push-round.sh push \
+     --remote "$push_remote" --branch "$branch" --sha "$sha" \
+     --expect "$expected" --gate-file "$out" --gate-token "$token"
+   ```
+
    Then create the PR as a **draft** — binding the target
    explicitly when more than one repo is in play: `--repo <upstream>` for the
    base, `--head <owner>:<branch>` when pushing from a fork, and
