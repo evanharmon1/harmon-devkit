@@ -106,15 +106,22 @@ assume them.
      repository, is a **stop** — otherwise every round publishes the branch
      somewhere you did not choose. Never push to a raw URL either: it
      bypasses the named remote and leaves stale tracking refs.
-  2. **Probe the permission without invoking git push** — ask the forge:
+  2. **Probe the permission without invoking git push** — ask the forge, at
+     the host the destination from step 1 actually names:
 
      ```sh
-     gh api repos/<push-remote-owner>/<repo> --jq '.permissions.push'
+     gh api --hostname <host-of-the-push-url> \
+       repos/<push-remote-owner>/<repo> --jq '.permissions.push'
      ```
 
      `false`, or an error, is a stop. This is what catches the observed
      failure — a converged stage discovering at `gh pr create` that it could
-     never have pushed at all.
+     never have pushed at all. Pass `--hostname` from the *normalized push
+     URL*, never by assuming: it defaults to `github.com`, so against a
+     GitHub Enterprise remote the bare form asks the wrong forge — rejecting
+     a valid Enterprise credential, or, where the same owner/repo exists on
+     both, reporting permission for a repository that will never receive
+     the push.
 
      **Do not substitute `git push --dry-run`.** It is not a read: a dry run
      still runs the repo's `pre-push` hook, and a failing hook makes it
