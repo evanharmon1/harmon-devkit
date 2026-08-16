@@ -91,14 +91,41 @@ assume them.
   discovered mid-stage. Same rule as the base checks above: **every failure,
   error, or uncertainty is a stop, never a fallback.**
 
+  **The order is load-bearing**, because the last step is a real write and
+  the first three are what make it safe.
+
   1. **Resolve the push remote** — the one `gh pr create` will push to.
      Under the fork topology in property 1 above, that is the fork, which is
      *not* `origin`; a repo whose `origin` you can write to is its own push
      remote. Resolve it explicitly rather than assuming a name, and never
      push to a raw URL: a URL push bypasses the named remote and leaves
      stale tracking refs.
-  2. **Push the committed work now** — `git push -u <remote> <branch>`, and
-     read the exit code. Not a `--dry-run`: a dry run sends no ref update, so
+  2. **No PR may be open on this branch** — and this is checked **before**
+     anything is pushed, or the push it is meant to prevent has already
+     landed in the PR it was meant to find. Scope it to the branch *in the
+     repository you resolved in step 1*, since `--head` filters on branch
+     name alone and a contributor's unrelated PR from another fork can carry
+     the same name:
+
+     ```sh
+     gh pr list --repo <repo> --state open --head <branch> \
+       --json number,headRefName,headRepositoryOwner \
+       --jq '.[] | select(.headRepositoryOwner.login == "<push-remote-owner>") | .number'
+     ```
+
+     Any hit is a **stop**, draft or not. This stage runs *before* a PR
+     exists: §10 is what creates one, and it refuses to create a second. A
+     branch that already has a PR is a branch whose work belongs to the
+     shepherd stage, so the answer is to go there rather than to push into it
+     from here.
+  3. **Secret-scan the committed work** — same obligation the rounds carry
+     (§7, damper 9), owed here for the same reason: the next step publishes,
+     and deleting a credential afterwards does not remove it from remote
+     history. `verify` does not cover this in most repos and §9 is far too
+     late, so run the repo's secret scan directly where no `pre-push` hook
+     will.
+  4. **Push the committed work** — `git push -u <remote> <branch>`, and read
+     the exit code. Not a `--dry-run`: a dry run sends no ref update, so
      server-side rules that only evaluate on a real update — rulesets,
      pre-receive hooks — do not run, and it would certify a push that a
      ruleset then rejects. A real push is also the only version that holds
@@ -107,19 +134,12 @@ assume them.
      late discovery this check exists to prevent. The tree is already
      committed (the check above), so there is something to push and nothing
      to lose by pushing it.
-  3. **No PR may be open on this branch** —
-     `gh pr list --repo <repo> --state open --head <branch>`. Any hit is a
-     **stop**, draft or not. This stage runs *before* a PR exists: §10 is
-     what creates one, and it refuses to create a second. A branch that
-     already has a PR is a branch whose work belongs to the shepherd stage,
-     so the answer is to go there rather than to push into it from here.
 
-  Do not soften property 3 into "a draft is fine to continue into". The
-  distinction cannot be drawn from a PR listing anyway — in a fork workflow
-  an identical branch name can belong to a different head repository — and
-  `isDraft` is not a state to trust: a known external actor promotes drafts
-  asynchronously, carrying the maintainer's own login, so neither the flag
-  nor its author identifies who acted.
+  Do not soften property 2 into "a draft is fine to continue into". `isDraft`
+  is not a state to trust: a known external actor promotes drafts
+  asynchronously, carrying the maintainer's own login, so neither the flag nor
+  its author identifies who acted — which is why the stop is unconditional
+  rather than a judgement about whose PR it is.
 
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
@@ -229,9 +249,14 @@ Each round:
    nothing to fix commits and pushes nothing. Read step 3's exit code before
    committing — a gate verdict consumed through a pipeline a reader can mask
    is how a failing gate reaches a push. Re-check that no PR has appeared on
-   the branch (the entry gate's property 3) immediately before pushing: that
+   the branch (the entry gate's property 2) immediately before pushing: that
    check was one-time and this push is not, so a PR another worker opened
-   mid-stage would otherwise take this commit silently.
+   mid-stage would otherwise take this commit silently. The re-check
+   **narrows** that window rather than closing it — the query and the ref
+   update are not atomic, and nothing short of a lock would make them so.
+   Treat it as the cheap check that catches the realistic case, and if a
+   push does land in a PR that appeared underneath it, say so on that PR
+   rather than leaving the commit to be discovered.
 5. **Test the exit rule (§5) and the cap on the round just adjudicated.** An
    exit condition met means the stage is over now — an empty round 1 owes no
    second run (floor permitting), and a capped final round must not launch
