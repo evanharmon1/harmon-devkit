@@ -75,6 +75,23 @@ gh_target_host() {
         host="${host%%:*}"
         ;;
     esac
+    # `ssh.github.com` is GitHub's SSH-over-443 ENDPOINT, not a credential host.
+    # gh stores the credential under `github.com`, so returning the endpoint
+    # verbatim makes every caller ask about a host nobody is logged in to: the
+    # scope check reports "not authenticated" and setup-gh-scopes.sh tells the
+    # operator to log in to `ssh.github.com`, which is not a thing they can do.
+    # AGENTS.md documents this remote form as supported (it is what people
+    # behind a firewall blocking port 22 use, and the devcontainers carry an
+    # `insteadOf` mapping for both of its spellings), so it reaches this parser
+    # in normal use rather than as an exotic case.
+    #
+    # Only GitHub's own endpoint is normalized. An Enterprise host is left
+    # exactly as parsed: `ghe.example.com` really is where that credential
+    # lives, and inventing a rule for hypothetical Enterprise SSH endpoints
+    # would disown valid logins to guess at hosts this has no evidence exist.
+    case "${host}" in
+    ssh.github.com) host=github.com ;;
+    esac
     printf '%s' "${host:-github.com}"
 }
 

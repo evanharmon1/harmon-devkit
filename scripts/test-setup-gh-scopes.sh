@@ -474,4 +474,43 @@ else
     echo "     interactive path; the refusals above are covered without one)"
 fi
 
+echo "==> gh_target_host resolves the CREDENTIAL host, not the SSH endpoint"
+# gh stores one credential per credential host. `ssh.github.com` is GitHub's
+# SSH-over-443 endpoint — a transport address, never a credential host — so a
+# parser that returns it verbatim makes every caller (the status scope check,
+# and this script's own --hostname) ask about a host nobody is logged in to.
+# AGENTS.md documents both spellings of that remote as supported, so it is a
+# normal input rather than an exotic one.
+#
+# Driven through a scratch repo's real `remote.origin.url`, because that is what
+# the function reads; stubbing git would test the stub. GH_HOST is scrubbed at
+# the top of this file, and the function short-circuits on it when set.
+host_fixture="${TMP}/host-fixture"
+mkdir -p "${host_fixture}"
+git -C "${host_fixture}" init -q
+# Resolved BEFORE the subshell cds into the fixture — `scopes_lib` is relative
+# to the repo root, and resolving it after the cd looks for ./scripts there.
+scopes_lib_abs="$(cd "$(dirname "${scopes_lib}")" && pwd)/$(basename "${scopes_lib}")"
+gh_target_host_for() {
+    git -C "${host_fixture}" remote remove origin 2>/dev/null || true
+    git -C "${host_fixture}" remote add origin "$1"
+    (cd "${host_fixture}" && . "${scopes_lib_abs}" && gh_target_host)
+}
+while IFS='|' read -r url want; do
+    [ -n "${url}" ] || continue
+    got="$(gh_target_host_for "${url}")"
+    [ "${got}" = "${want}" ] ||
+        fail "gh_target_host ${url}: expected ${want}, got ${got}"
+done <<'EOF'
+ssh://git@ssh.github.com:443/evanharmon1/harmon-devkit.git|github.com
+ssh://git@ssh.github.com/evanharmon1/harmon-devkit.git|github.com
+git@ssh.github.com:evanharmon1/harmon-devkit.git|github.com
+ssh://git@github.com/evanharmon1/harmon-devkit.git|github.com
+git@github.com:evanharmon1/harmon-devkit.git|github.com
+https://github.com/evanharmon1/harmon-devkit.git|github.com
+ssh://git@ghe.example.com:22/team/repo.git|ghe.example.com
+git@ghe.example.com:team/repo.git|ghe.example.com
+https://ghe.example.com/team/repo.git|ghe.example.com
+EOF
+
 echo "setup-gh-scopes.sh tests passed"
