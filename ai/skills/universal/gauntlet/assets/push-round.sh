@@ -37,7 +37,8 @@ gate succeeds, following the shepherd marker contract:
   task verify >"$out" 2>&1 && task security:secrets >>"$out" 2>&1 \
     && printf '\n%s\n' "$token" >>"$out"
 
-Each accepted -c NAME=VALUE is passed to ls-remote and push, so an
+Each accepted -c NAME=VALUE is passed to destination resolution, ls-remote,
+and push, so an
 unprovisioned host can supply the repository's documented HTTPS transport
 overrides without bypassing the named remote. The allowlist is deliberately
 narrow: credential.helper, url.*.insteadOf, and protocol.*.allow. Config that
@@ -189,9 +190,11 @@ resolve_push_url() {
 
     push_url=
     rc=0
-    # Deliberately omit git_args here: validate the configured destination,
-    # while transport-only -c rewrites remain available to ls-remote/push.
-    output="$(git remote get-url --push --all "$remote" 2>/dev/null)" || rc=$?
+    # Resolve with the same approved transport configuration used by ls-remote
+    # and push. In particular, get-url renders an insteadOf rewrite, so the URL
+    # validated below is the effective destination rather than the configured
+    # spelling that transport may later redirect.
+    output="$(git "${git_args[@]}" remote get-url --push --all "$remote" 2>/dev/null)" || rc=$?
     [ "$rc" -eq 0 ] || refuse "the named remote has no readable push destination"
     [ -n "$output" ] || refuse "the named remote has no push destination"
     case "$output" in

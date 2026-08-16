@@ -32,7 +32,27 @@ printf '%s\n' "$*" >>"$GH_STUB_LOG"
 printf '%s\n' "${GH_STUB_RESULT:-true}"
 EOF
 chmod +x "${test_tmp}/bin/gh"
+cat >"${test_tmp}/bin/ssh" <<'EOF'
+#!/bin/sh
+set -eu
+
+remote_command=
+for argument do
+    remote_command=$argument
+done
+case "$remote_command" in
+"git-upload-pack "*) exec git-upload-pack "$GAUNTLET_TEST_BARE" ;;
+"git-receive-pack "*) exec git-receive-pack "$GAUNTLET_TEST_BARE" ;;
+*)
+    printf 'test ssh: unsupported command: %s\n' "$remote_command" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "${test_tmp}/bin/ssh"
 export PATH="${test_tmp}/bin:${PATH}"
+export GIT_SSH_COMMAND="${test_tmp}/bin/ssh"
+export GIT_SSH_VARIANT=ssh
 export GH_STUB_LOG="${test_tmp}/gh.log"
 export GH_STUB_RESULT=true
 export GH_STUB_RC=0
@@ -47,14 +67,11 @@ out=
 err=
 run() {
     local args=("$@")
-    local test_rewrite=
+    local test_bare=
 
-    test_rewrite="$(git config --get gauntlet.testRewrite 2>/dev/null || true)"
-    if [ -n "$test_rewrite" ]; then
-        args+=("-c" "$test_rewrite" "-c" "protocol.file.allow=always")
-    fi
+    test_bare="$(git config --get gauntlet.testBare 2>/dev/null || true)"
     set +e
-    out="$("$helper" "${args[@]}" 2>"${test_tmp}/stderr")"
+    out="$(GAUNTLET_TEST_BARE="$test_bare" "$helper" "${args[@]}" 2>"${test_tmp}/stderr")"
     rc=$?
     set -e
     err="$(cat "${test_tmp}/stderr")"
@@ -90,9 +107,10 @@ new_fixture() {
     git_q "${root}/work" add f
     git_q "${root}/work" commit -m one
     git_q "${root}/work" remote add origin "${root}/origin.git"
-    git_q "${root}/work" config remote.origin.pushurl https://github.com/owner/repo.git
+    git_q "${root}/work" config remote.origin.pushurl ssh://git@github.com/owner/repo.git
+    git_q "${root}/work" config gauntlet.testBare "${root}/origin.git"
     git_q "${root}/work" config gauntlet.testRewrite \
-        "url.file://${root}/origin.git.insteadOf=https://github.com/owner/repo.git"
+        "url.ssh://git@github.com/.insteadOf=git@github.com:"
     printf '%s' "$root"
 }
 
@@ -107,11 +125,11 @@ commit_on() {
 
 git_push_fixture() {
     local repo=$1
-    local test_rewrite
+    local test_bare
 
     shift
-    test_rewrite="$(git -C "$repo" config --get gauntlet.testRewrite)"
-    git -C "$repo" -c "$test_rewrite" -c protocol.file.allow=always \
+    test_bare="$(git -C "$repo" config --get gauntlet.testBare)"
+    GAUNTLET_TEST_BARE="$test_bare" git -C "$repo" \
         push "$@" >/dev/null 2>&1
 }
 
@@ -293,11 +311,11 @@ root="$(new_fixture lsremote-failure)"
 cd "${root}/work"
 git remote add broken "${test_tmp}/not-a-repository"
 sha="$(git rev-parse HEAD)"
-git config remote.broken.pushurl https://github.com/owner/broken.git
+git config remote.broken.pushurl ssh://git@github.com/owner/broken.git
+git config gauntlet.testBare "${test_tmp}/not-a-repository"
 write_gate "$sha" lsremote
 run push --remote broken --branch main --host github.com --repo owner/broken \
-    --sha "$sha" --expect absent --gate-file "$gate_file" --gate-token "$gate_token" \
-    -c "url.file://${test_tmp}/not-a-repository.insteadOf=https://github.com/owner/broken.git"
+    --sha "$sha" --expect absent --gate-file "$gate_file" --gate-token "$gate_token"
 assert_rc 3
 case "$err" in *ls-remote*) : ;; *) fail "refusal should name ls-remote: $err" ;; esac
 
@@ -370,10 +388,10 @@ fi
 echo "  -> transport overrides reach both ls-remote and push"
 root="$(new_fixture transport)"
 cd "${root}/work"
-git remote add transport ssh://git@github.com/owner/repo.git
-rewrite="url.file://${root}/origin.git.insteadOf=ssh://git@github.com/owner/repo.git"
+git remote add transport git@github.com:owner/repo.git
+rewrite="$(git config --get gauntlet.testRewrite)"
 run preflight --remote transport --branch main --host github.com --repo owner/repo \
-    -c credential.helper= -c "$rewrite" -c protocol.file.allow=always
+    -c credential.helper= -c "$rewrite"
 assert_rc 0
 [ "$out" = absent ] || fail "transport preflight should see the absent branch"
 sha="$(git rev-parse HEAD)"
@@ -381,7 +399,7 @@ write_gate "$sha" transport
 run push --remote transport --branch main --sha "$sha" --expect absent \
     --host github.com --repo owner/repo \
     --gate-file "$gate_file" --gate-token "$gate_token" \
-    -c credential.helper= -c "$rewrite" -c protocol.file.allow=always
+    -c credential.helper= -c "$rewrite"
 assert_rc 0
 [ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$sha" ] ||
     fail "transport override did not reach git push"
@@ -397,6 +415,15 @@ run preflight --remote origin --branch main --host github.com --repo owner/repo 
     -c remote.origin.pushurl=https://github.com/owner/other.git
 assert_rc 3
 
+echo "  -> insteadOf destination rewrites are resolved before validation"
+root="$(new_fixture rewrite-destination)"
+cd "${root}/work"
+run preflight --remote origin --branch main --host github.com --repo owner/repo \
+    -c url.ssh://git@github.com/owner/other.git.insteadOf=ssh://git@github.com/owner/repo.git
+assert_rc 3
+assert_reason
+case "$err" in *repository*) : ;; *) fail "rewrite refusal should name repository mismatch: $err" ;; esac
+
 echo "  -> helper invocation is shell-independent"
 if command -v zsh >/dev/null 2>&1; then
     root="$(new_fixture zsh-call)"
@@ -407,8 +434,9 @@ if command -v zsh >/dev/null 2>&1; then
     rewrite="$(git config --get gauntlet.testRewrite)"
     HELPER="$helper" REMOTE=origin BRANCH=main HOST=github.com REPO=owner/repo \
         SHA="$sha" EXPECT=absent REWRITE="$rewrite" \
+        GAUNTLET_TEST_BARE="${root}/origin.git" \
         GATE_FILE="$gate_file" GATE_TOKEN="$gate_token" \
-        zsh -c '"$HELPER" push --remote "$REMOTE" --branch "$BRANCH" --host "$HOST" --repo "$REPO" --sha "$SHA" --expect "$EXPECT" --gate-file "$GATE_FILE" --gate-token "$GATE_TOKEN" -c "$REWRITE" -c protocol.file.allow=always' \
+        zsh -c '"$HELPER" push --remote "$REMOTE" --branch "$BRANCH" --host "$HOST" --repo "$REPO" --sha "$SHA" --expect "$EXPECT" --gate-file "$GATE_FILE" --gate-token "$GATE_TOKEN" -c "$REWRITE"' \
         >/dev/null 2>"${test_tmp}/zsh-stderr"
     zsh_rc=$?
     set -e
