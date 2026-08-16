@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# triage-report.sh — find and upsert the triage skill's single rolling report
+# issue.
+#
+# The triage skill labels what it may label and reports everything else here:
+# stale claims, blocked-without-reason, aging needs-* states, closed-completed
+# issues with unticked criteria, duplicate closes missing pointers, title
+# violations, tier/method proposals. One rolling issue, not a stream — re-runs
+# UPSERT it: the body is regenerated from the current scan every run, so an
+# entry for a resolved problem disappears on the next run and re-runs are
+# idempotent (same findings in, byte-identical body out — the timestamp is
+# injectable for tests via TRIAGE_NOW).
+#
+# Identity and safety:
+#   - The report issue is identified by a stable HTML-comment marker in its
+#     body, not by memory of a number. `find` locates it; `sync` re-verifies
+#     the marker on the live body immediately before editing and REFUSES to
+#     edit any issue that lacks it — this script can never rewrite an ordinary
+#     issue's body. (The triage never-list forbids body edits on triaged
+#     issues; the report issue is the skill's own artifact and the one
+#     exception, which is why the marker check is hard.)
+#   - The scan excludes the report issue from triage (self-exclusion), so the
+#     report can never enter its own findings.
+#
+# Entries-file contract (written by the model, validated here): each per-issue
+# entry is a `### #<n> — ...` heading whose NEXT line is the entry key
+# `<!-- triage-entry:<n> -->`. Aggregate sections (title-violation sweeps and
+# other backlog-wide notes) use `## ` headings and are not keyed. A malformed
+# entries file is refused rather than published.
+#
+# Usage:
+#   triage-report.sh find --repo owner/repo [--title TITLE]
+#   triage-report.sh sync --repo owner/repo --entries-file PATH
+#                    [--title TITLE] [--execute]
+#
+# `find` prints the open report issue's number, or "none". Dry-run is sync's
+# DEFAULT: it prints the target action and the assembled body without writing.
+# --execute additionally requires TRIAGE_EXECUTE=1 in the environment (set by
+# the `task triage` wrapper for supervised runs).
+#
+# Exit: 0 = ok (found/none, applied, or dry-run resolved cleanly)
+#       1 = the write failed
+#       2 = usage/environment error, malformed entries file, or an ambiguous
+#           report (two open issues carry the marker — resolve by hand)
+#       4 = refused: the target issue's live body no longer carries the marker
+set -euo pipefail
+
+MARKER='<!-- harmon-triage-report -->'
+DEFAULT_TITLE='Triage report'
+
+usage() {
+    echo "Usage: $0 find --repo owner/repo [--title TITLE]" >&2
+    echo "       $0 sync --repo owner/repo --entries-file PATH" >&2
+    echo "            [--title TITLE] [--execute]" >&2
+    exit 2
+}
+
+die() {
+    local code="$1"
+    shift
+    echo "triage-report: $*" >&2
+    exit "$code"
+}
+
+# Print the open report issue's number, or nothing. Dies on ambiguity.
+find_report() {
+    local repo="$1" matches
+    matches="$(gh issue list --repo "$repo" --state open --limit 200 \
+        --json number,body -q \
+        "[.[] | select(.body | contains(\"$MARKER\")) | .number] | .[]")" ||
+        die 2 "could not list open issues of $repo"
+    local count
+    count="$(printf '%s' "$matches" | grep -c . || true)"
+    [ "$count" -le 1 ] ||
+        die 2 "ambiguous: $count open issues carry the report marker" \
+            "($(printf '%s' "$matches" | tr '\n' ' ')) — close the extras first"
+    printf '%s' "$matches"
+}
+
+cmd_find() {
+    local repo=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --repo)
+            [ "$#" -ge 2 ] || usage
+            repo="$2"
+            shift 2
+            ;;
+        --title)
+            # Accepted for symmetry; identity is the marker, not the title.
+            [ "$#" -ge 2 ] || usage
+            shift 2
+            ;;
+        *) usage ;;
+        esac
+    done
+    [ -n "$repo" ] || usage
+    local found
+    found="$(find_report "$repo")"
+    if [ -n "$found" ]; then echo "$found"; else echo "none"; fi
+}
+
+# Validate the entries file: every `### #<n>` heading's next line must be the
+# matching `<!-- triage-entry:<n> -->` key.
+validate_entries() {
+    local file="$1" lineno=0 pending="" line
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        if [ -n "$pending" ]; then
+            printf '%s' "$line" | grep -q "^<!-- triage-entry:${pending} -->$" ||
+                die 2 "malformed entries file: heading for #$pending (line" \
+                    "$((lineno - 1))) is not followed by <!-- triage-entry:$pending -->"
+            pending=""
+            continue
+        fi
+        if printf '%s' "$line" | grep -qE '^### #[0-9]+'; then
+            pending="$(printf '%s' "$line" | sed -E 's/^### #([0-9]+).*/\1/')"
+        fi
+    done <"$file"
+    [ -z "$pending" ] ||
+        die 2 "malformed entries file: heading for #$pending has no entry key"
+}
+
+cmd_sync() {
+    local repo="" entries="" title="$DEFAULT_TITLE" execute=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --repo)
+            [ "$#" -ge 2 ] || usage
+            repo="$2"
+            shift 2
+            ;;
+        --entries-file)
+            [ "$#" -ge 2 ] || usage
+            entries="$2"
+            shift 2
+            ;;
+        --title)
+            [ "$#" -ge 2 ] || usage
+            title="$2"
+            shift 2
+            ;;
+        --execute) execute=1 && shift ;;
+        *) usage ;;
+        esac
+    done
+    [ -n "$repo" ] && [ -n "$entries" ] || usage
+    [ -f "$entries" ] || die 2 "entries file not found: $entries"
+    validate_entries "$entries"
+
+    local now body
+    now="${TRIAGE_NOW:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
+    body="$(
+        printf '%s\n\n' "$MARKER"
+        printf '%s\n' \
+            "Rolling triage report — regenerated by the triage skill on every" \
+            'run (`task triage`). Entries describe the *current* backlog:' \
+            'resolve the underlying issue and the entry disappears on the next' \
+            'run. Do not hand-edit; anything below is overwritten.' \
+            '' \
+            "_Last generated: ${now}_" \
+            ''
+        if [ -s "$entries" ]; then
+            cat "$entries"
+        else
+            printf 'No findings this run.\n'
+        fi
+    )"
+
+    local target
+    target="$(find_report "$repo")"
+
+    if [ "$execute" -eq 0 ]; then
+        if [ -n "$target" ]; then
+            echo "DRY-RUN would edit the body of $repo#$target"
+        else
+            echo "DRY-RUN would create '$title' in $repo"
+        fi
+        echo "DRY-RUN body follows:"
+        printf '%s\n' "$body"
+        return 0
+    fi
+
+    [ "${TRIAGE_EXECUTE:-0}" = "1" ] ||
+        die 2 "--execute requires TRIAGE_EXECUTE=1 in the environment" \
+            "(set by the task triage wrapper for supervised runs)"
+
+    if [ -n "$target" ]; then
+        # Re-verify the marker on the LIVE body immediately before the edit —
+        # the one write this script makes must be provably aimed at its own
+        # artifact, whatever changed since `find`.
+        local live
+        live="$(gh issue view "$target" --repo "$repo" --json body -q .body)" ||
+            die 2 "could not re-read $repo#$target before editing"
+        printf '%s' "$live" | grep -qF "$MARKER" ||
+            die 4 "refused: $repo#$target no longer carries the report marker"
+        printf '%s\n' "$body" |
+            gh issue edit "$target" --repo "$repo" --body-file - >/dev/null ||
+            die 1 "write failed: gh issue edit $repo#$target"
+        echo "APPLIED report update to $repo#$target"
+    else
+        printf '%s\n' "$body" |
+            gh issue create --repo "$repo" --title "$title" \
+                --body-file - >/dev/null ||
+            die 1 "write failed: gh issue create in $repo"
+        echo "APPLIED report creation in $repo"
+    fi
+}
+
+[ "$#" -ge 1 ] || usage
+cmd="$1"
+shift
+case "$cmd" in
+find) cmd_find "$@" ;;
+sync) cmd_sync "$@" ;;
+*) usage ;;
+esac

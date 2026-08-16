@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# triage.sh — `task triage` entry point: run the triage skill over this repo's
+# backlog with a cheap headless model.
+#
+# The skill (ai/skills/universal/triage, vendored as .agents/skills/triage or
+# .claude/skills/triage in consumers) is written for simple models: all
+# enforcement lives in its asset scripts, the model only classifies. This
+# wrapper picks the model, grants it exactly the tools the skill needs, and —
+# most importantly — owns the write gate:
+#
+#   - DRY-RUN is the default. TRIAGE_EXECUTE is forced to 0, so even a model
+#     that passes --execute to a script is refused by the script itself.
+#   - `task triage -- --execute` is the supervised apply mode. It requires an
+#     interactive terminal: the skill's v1 gate is a human watching the first
+#     runs (issue #455's [HUMAN] criterion), so a headless --execute is
+#     refused outright rather than made configurable. Unattended cadence is a
+#     separate, later decision.
+#
+# Anything after --execute (or all args, without it) is passed to the model as
+# an operator note, e.g.: task triage -- --execute only issues touching CI
+#
+# Env: TRIAGE_MODEL (default: haiku) picks the model.
+#
+# Exit: 2 = environment/usage refusal, otherwise the model run's exit code.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+die() {
+    echo "triage: $*" >&2
+    exit 2
+}
+
+mode="dry-run"
+note=""
+if [ "${1:-}" = "--execute" ]; then
+    mode="execute"
+    shift
+fi
+[ "$#" -eq 0 ] || note="$*"
+
+command -v claude >/dev/null 2>&1 ||
+    die "the claude CLI is required (or run the skill interactively via" \
+        "your agent session instead)"
+command -v gh >/dev/null 2>&1 || die "the gh CLI is required"
+
+# Resolve the skill wherever this checkout carries it: authored source in
+# harmon-devkit itself, vendored copies in consumers.
+skill_dir=""
+for d in ai/skills/universal/triage .agents/skills/triage \
+    .claude/skills/triage; do
+    if [ -f "$d/SKILL.md" ]; then
+        skill_dir="$d"
+        break
+    fi
+done
+[ -n "$skill_dir" ] || die "no triage skill found in this checkout"
+
+repo="$(gh repo view "$(git remote get-url origin)" \
+    --json nameWithOwner -q .nameWithOwner)" ||
+    die "could not resolve the GitHub repo from the origin remote"
+
+if [ "$mode" = "execute" ]; then
+    # Supervised runs only: a human must be watching (v1's [HUMAN] gate).
+    [ -t 0 ] && [ -t 1 ] ||
+        die "--execute needs an interactive terminal — supervised runs only"
+    export TRIAGE_EXECUTE=1
+    mode_text="EXECUTE — a human is supervising. You may pass --execute to a
+triage script exactly where SKILL.md says to, and nowhere else."
+else
+    export TRIAGE_EXECUTE=0
+    mode_text="DRY-RUN — never pass --execute to any script. Report what the
+scripts say they WOULD write."
+fi
+
+tools="Read,Glob,Grep"
+tools="$tools,Bash($skill_dir/assets/triage-scan.sh:*)"
+tools="$tools,Bash($skill_dir/assets/triage-apply.sh:*)"
+tools="$tools,Bash($skill_dir/assets/triage-report.sh:*)"
+tools="$tools,Bash(gh issue view:*),Bash(gh issue list:*)"
+
+prompt="You are running the triage skill headlessly over one repository.
+
+Repo: $repo
+Skill: $skill_dir/SKILL.md
+Mode: $mode_text
+
+Read the skill file and follow its steps exactly, in order. Use only the
+tools you were granted. Finish with the summary its final step defines."
+if [ -n "$note" ]; then
+    prompt="$prompt
+
+Operator note (from the human who launched this run): $note"
+fi
+
+exec claude -p "$prompt" \
+    --model "${TRIAGE_MODEL:-haiku}" \
+    --allowedTools "$tools"
