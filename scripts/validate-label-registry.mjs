@@ -1,19 +1,24 @@
 #!/usr/bin/env node
+// validate-label-registry.mjs — schema-check label-registry.json and enforce the
+// cross-record invariants the structural schema cannot express. Self-contained
+// (no dependencies), mirroring validate-agent-registry.mjs; the schema subset it
+// supports adds maxLength so GitHub's 50-char name / 100-char description limits
+// are declarative (#680's contract, applied to this registry from day one).
 
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 
-const registryPath = path.resolve(process.argv[2] ?? 'agent-registry.json')
+const registryPath = path.resolve(process.argv[2] ?? 'label-registry.json')
 const schemaPath = path.resolve(
-  process.argv[3] ?? path.join(path.dirname(registryPath), 'agent-registry.schema.json')
+  process.argv[3] ?? path.join(path.dirname(registryPath), 'label-registry.schema.json')
 )
 
 function loadJson(file) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'))
   } catch (error) {
-    console.error(`agent registry: cannot read valid JSON from ${file}: ${error.message}`)
+    console.error(`label registry: cannot read valid JSON from ${file}: ${error.message}`)
     process.exit(1)
   }
 }
@@ -191,13 +196,6 @@ function assertSupportedSchema(
   audit.complete.add(rule)
 }
 
-try {
-  assertSupportedSchema(schema)
-} catch (error) {
-  console.error(`agent registry: invalid or unsupported schema: ${error.message}`)
-  process.exit(1)
-}
-
 function canonicalJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
@@ -212,22 +210,13 @@ function jsonEqual(left, right) {
   return canonicalJson(left) === canonicalJson(right)
 }
 
-function satisfiesMinLength(value, minimum) {
+function codePointLength(value, ceiling) {
   let length = 0
   const codePoints = value[Symbol.iterator]()
-  while (length < minimum && !codePoints.next().done) {
+  while (length <= ceiling && !codePoints.next().done) {
     length += 1
   }
-  return length >= minimum
-}
-
-function exceedsMaxLength(value, maximum) {
-  let length = 0
-  const codePoints = value[Symbol.iterator]()
-  while (length <= maximum && !codePoints.next().done) {
-    length += 1
-  }
-  return length > maximum
+  return length
 }
 
 function instanceType(value) {
@@ -280,10 +269,10 @@ function validateSchema(value, rule, location) {
   }
 
   if (typeof value === 'string') {
-    if (rule.minLength !== undefined && !satisfiesMinLength(value, rule.minLength)) {
+    if (rule.minLength !== undefined && codePointLength(value, rule.minLength) < rule.minLength) {
       errors.push(`${location}: must contain at least ${rule.minLength} character(s)`)
     }
-    if (rule.maxLength !== undefined && exceedsMaxLength(value, rule.maxLength)) {
+    if (rule.maxLength !== undefined && codePointLength(value, rule.maxLength) > rule.maxLength) {
       errors.push(`${location}: must contain at most ${rule.maxLength} character(s)`)
     }
     if (rule.pattern && !new RegExp(rule.pattern, 'u').test(value)) {
@@ -324,9 +313,11 @@ function validateSchema(value, rule, location) {
   }
 }
 
-function duplicateSlugs(rows) {
-  const seen = new Set()
-  return rows.map((row) => row.slug).filter((slug) => seen.has(slug) || !seen.add(slug))
+try {
+  assertSupportedSchema(schema)
+} catch (error) {
+  console.error(`label registry: invalid or unsupported schema: ${error.message}`)
+  process.exit(1)
 }
 
 function semanticError(message) {
@@ -335,158 +326,146 @@ function semanticError(message) {
 
 validateSchema(registry, schema, '$registry')
 
-// Cross-record constraints cannot be expressed by the structural schema alone.
-if (errors.length === 0) {
-  const familySlugs = new Set(registry.families.map((family) => family.slug))
-  const harnessSlugs = new Set(registry.harnesses.map((harness) => harness.slug))
+// Cross-record constraints the structural schema cannot express. GitHub's hard
+// limits are GH_LABEL_NAME_MAX / GH_LABEL_DESC_MAX in the renderers; the schema
+// carries maxLength on the raw fields, and the composed-name check here closes
+// the prefix+value gap between them.
+const GH_LABEL_NAME_MAX = 50
 
-  for (const slug of duplicateSlugs(registry.families))
-    semanticError(`duplicate family slug: ${slug}`)
-  for (const slug of duplicateSlugs(registry.harnesses))
-    semanticError(`duplicate harness slug: ${slug}`)
-  for (const slug of duplicateSlugs(registry.foreman_adapters)) {
-    semanticError(`duplicate Foreman adapter slug: ${slug}`)
-  }
+// Which agent-registry render feeds which prefix — a suggest family rendering
+// claim labels would provision the wrong vocabulary silently.
+const REGISTRY_SET_PREFIX = {
+  suggest: 'suggest',
+  claim: 'claim',
+  'foreman-adapters': 'foreman'
+}
+const VALUE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+if (errors.length === 0) {
+  const familyIds = new Set()
+  const provisionedNames = new Map()
 
   for (const family of registry.families) {
-    for (const slug of duplicateSlugs(family.models)) {
-      semanticError(`family ${family.slug} has duplicate model slug: ${slug}`)
-    }
-    if (harnessSlugs.has(family.slug)) {
-      semanticError(`slug ${family.slug} is both a model family and a harness`)
-    }
-  }
+    const where = `family ${family.family}`
+    if (familyIds.has(family.family)) semanticError(`duplicate family id: ${family.family}`)
+    familyIds.add(family.family)
 
-  for (const [name, namespace] of Object.entries(registry.labels)) {
-    if (namespace.prefix !== name) semanticError(`${name} label prefix must be ${name}`)
-    if (namespace.axis !== 'model') semanticError(`${name} labels must use the model axis`)
-    if (!namespace.scopes.includes('family') || !namespace.scopes.includes('model')) {
-      semanticError(`${name} labels must support family-level and optional model-level forms`)
+    const retired = family.retired === true
+    if (retired && family.provision) {
+      semanticError(`${where}: retired families are never provisioned — set provision: false`)
     }
-    if (namespace.arming !== false) semanticError(`${name} labels must never arm dispatch`)
-  }
-
-  for (const harness of registry.harnesses) {
-    const constraint = harness.family_constraint
-    if (constraint.kind === 'fixed') {
-      if (!constraint.family) {
-        semanticError(`harness ${harness.slug} has a fixed family constraint without a family`)
-      } else if (!familySlugs.has(constraint.family)) {
-        semanticError(`harness ${harness.slug} references unknown family ${constraint.family}`)
-      }
-      if (Object.hasOwn(constraint, 'default_family')) {
-        semanticError(
-          `harness ${harness.slug} has a default_family on a fixed constraint — fixed constraints use family, not default_family`
-        )
-      }
-    } else if (constraint.kind === 'broker') {
-      if (Object.hasOwn(constraint, 'family')) {
-        semanticError(
-          `harness ${harness.slug} has family ${constraint.family} on a broker constraint — did you mean default_family?`
-        )
-      }
-      if (
-        Object.hasOwn(constraint, 'default_family') &&
-        !familySlugs.has(constraint.default_family)
-      ) {
-        semanticError(
-          `harness ${harness.slug} broker default_family references unknown family ${constraint.default_family}`
-        )
-      }
-    }
-
-    // Provider-rewired harnesses are named claude-code-<fixed-family>, optionally
-    // with a -local suffix for a local-endpoint variant of the same family (ADR
-    // 0005 D9 amendment) — claude-code-qwen-local stays fixed to family "qwen",
-    // not a separate "qwen-local" family.
-    if (harness.provider_rewired) {
-      const expected = constraint.kind === 'fixed' ? `claude-code-${constraint.family}` : null
-      if (
-        constraint.kind !== 'fixed' ||
-        (harness.slug !== expected && harness.slug !== `${expected}-local`)
-      ) {
-        semanticError(
-          `provider-rewired harness ${harness.slug} must be named claude-code-<fixed-family> or claude-code-<fixed-family>-local`
-        )
-      }
-      if (harness.model_resolution.owner !== 'provider-wrapper') {
-        semanticError(
-          `provider-rewired harness ${harness.slug} must delegate model resolution to provider-wrapper`
-        )
-      }
-    } else if (harness.model_resolution.owner === 'provider-wrapper') {
+    if (!retired && family.writers.length === 0) {
       semanticError(
-        `non-rewired harness ${harness.slug} cannot delegate model resolution to provider-wrapper`
+        `${where}: a live family needs at least one writer (only retired may have none)`
       )
     }
-  }
 
-  for (const adapter of registry.foreman_adapters) {
-    if (adapter.harness !== null && !harnessSlugs.has(adapter.harness)) {
-      semanticError(`Foreman adapter ${adapter.slug} maps unknown harness ${adapter.harness}`)
-    }
-    if (adapter.production_dispatchable) {
-      if (adapter.classification !== 'production' || adapter.harness === null) {
+    if (family.source === 'agent-registry') {
+      if (!family.registry_set) {
+        semanticError(`${where}: source agent-registry requires registry_set`)
+      } else if (REGISTRY_SET_PREFIX[family.registry_set] !== family.prefix) {
         semanticError(
-          `production-dispatchable Foreman adapter ${adapter.slug} needs a production harness mapping`
+          `${where}: registry_set ${family.registry_set} renders ${REGISTRY_SET_PREFIX[family.registry_set]}:* labels but the prefix is ${family.prefix}`
         )
       }
-      if (!adapter.provision_label) {
+      if (family.values.length > 0) {
         semanticError(
-          `production-dispatchable Foreman adapter ${adapter.slug} must provision its selector label`
+          `${where}: agent-registry families take their values from agent-registry.json — the values array must be empty`
         )
       }
-    }
-    if (adapter.classification === 'test-only') {
-      if (adapter.production_dispatchable || adapter.provision_label) {
+      if (!family.provision && family.retired !== true) {
         semanticError(
-          `test-only Foreman adapter ${adapter.slug} cannot dispatch or provision a public label`
+          `${where}: agent-registry families exist to be provisioned — set provision: true (retired families are the one exception)`
         )
       }
+      if (!family.color && family.retired !== true) {
+        semanticError(
+          `${where}: agent-registry families need a color — it is what the renderer asserts ` +
+            `against the agent-registry records, and without it that drift guard is silently skipped`
+        )
+      }
+    } else if (Object.hasOwn(family, 'registry_set')) {
+      semanticError(`${where}: registry_set is only meaningful with source agent-registry`)
     }
-    if (adapter.provision_label && !adapter.production_dispatchable) {
+
+    if (family.source === 'tool-owned' && family.provision) {
       semanticError(
-        `Foreman adapter ${adapter.slug} cannot provision a label unless it is production-dispatchable`
+        `${where}: tool-owned labels are created on demand by their tool — provisioning must leave them alone (provision: false)`
       )
     }
-  }
 
-  const mock = registry.foreman_adapters.find((adapter) => adapter.slug === 'mock')
-  if (
-    !mock ||
-    mock.source_file !== 'mock.sh' ||
-    mock.classification !== 'test-only' ||
-    mock.harness !== null ||
-    mock.production_dispatchable ||
-    mock.provision_label
-  ) {
-    semanticError('mock must be a mapped file-only, test-only, non-provisionable Foreman adapter')
-  }
+    if (
+      family.source === 'inline' &&
+      family.open_values !== true &&
+      family.retired !== true &&
+      family.values.length === 0
+    ) {
+      semanticError(
+        `${where}: a closed inline family needs values — with none it silently renders nothing (mark it open_values or retired instead)`
+      )
+    }
+    if (family.open_values === true && !family.placeholder) {
+      semanticError(`${where}: open_values needs a placeholder for the docs rendering`)
+    }
+    if (family.source === 'agent-registry' && !family.placeholder) {
+      semanticError(`${where}: agent-registry families need a placeholder for the docs rendering`)
+    }
+    if (family.placeholder && family.open_values !== true && family.source !== 'agent-registry') {
+      semanticError(`${where}: placeholder without open_values documents nothing — remove one`)
+    }
 
-  const claude = registry.foreman_adapters.find((adapter) => adapter.slug === 'claude')
-  if (!claude || claude.harness !== 'claude-code' || claude.source_file !== 'claude.sh') {
-    semanticError('legacy Foreman adapter claude must map claude.sh to harness claude-code')
-  }
-  if (
-    !claude ||
-    claude.classification !== 'production' ||
-    !claude.production_dispatchable ||
-    !claude.provision_label
-  ) {
-    semanticError('legacy Foreman adapter claude must be production-dispatchable and provisionable')
-  }
+    const familyArms = family.arming === true
+    const valueNames = new Set()
+    for (const value of family.values) {
+      const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
+      const at = `${where} value ${JSON.stringify(value.value)}`
 
-  const minimax = registry.harnesses.find((harness) => harness.slug === 'claude-code-minimax')
-  if (
-    !familySlugs.has('minimax') ||
-    !minimax ||
-    minimax.family_constraint.kind !== 'fixed' ||
-    minimax.family_constraint.family !== 'minimax' ||
-    !minimax.provider_rewired
-  ) {
-    semanticError(
-      'MiniMax must use family minimax and provider-rewired harness claude-code-minimax'
-    )
+      if (valueNames.has(name)) semanticError(`${at}: duplicate value in the family`)
+      valueNames.add(name)
+
+      if (/[\n\r|]/.test(name)) {
+        semanticError(`${at}: label names must not contain newlines or '|' (the record transport)`)
+      }
+      if (family.prefix !== null && !VALUE_SLUG.test(value.value)) {
+        semanticError(`${at}: prefixed values must be lowercase slugs`)
+      }
+      if ([...name].length > GH_LABEL_NAME_MAX) {
+        semanticError(
+          `${at}: composed name '${name}' exceeds GitHub's ${GH_LABEL_NAME_MAX}-char limit`
+        )
+      }
+      if ((value.arming === true || familyArms) && family.prefix !== 'foreman') {
+        semanticError(
+          `${at}: arming outside the foreman:* namespace — foreman:* is the only arming surface (spec non-goal)`
+        )
+      }
+      if (Object.hasOwn(value, 'writers') && value.writers.length === 0) {
+        semanticError(`${at}: a per-value writers override cannot be empty`)
+      }
+
+      const provisioned = family.provision && value.provision !== false && value.retired !== true
+      if (provisioned) {
+        if (!value.description) {
+          semanticError(
+            `${at}: provisioned labels need a description (GitHub shows it at apply time)`
+          )
+        }
+        if (!value.color && !family.color) {
+          semanticError(`${at}: provisioned labels need a color (value override or family default)`)
+        }
+        if (provisionedNames.has(name)) {
+          semanticError(
+            `${at}: label '${name}' is already provisioned by family ${provisionedNames.get(name)}`
+          )
+        }
+        provisionedNames.set(name, family.family)
+      }
+    }
+    if (familyArms && family.prefix !== 'foreman' && family.values.length === 0) {
+      semanticError(
+        `${where}: arming outside the foreman:* namespace — foreman:* is the only arming surface`
+      )
+    }
   }
 }
 
@@ -495,6 +474,5 @@ if (errors.length > 0) {
   process.exit(1)
 }
 
-console.log(
-  `agent registry OK: ${registry.families.length} families, ${registry.harnesses.length} harnesses, ${registry.foreman_adapters.length} Foreman adapters`
-)
+const total = registry.families.reduce((sum, family) => sum + family.values.length, 0)
+console.log(`label registry OK: ${registry.families.length} families, ${total} inline values`)

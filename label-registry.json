@@ -1,0 +1,612 @@
+{
+  "$schema": "./label-registry.schema.json",
+  "schema_version": 1,
+  "families": [
+    {
+      "family": "concern",
+      "prefix": null,
+      "purpose": "Cross-cutting concerns worth filtering on, color-coded as one family.",
+      "axis": "concern",
+      "source": "inline",
+      "writers": ["human"],
+      "writer_note": "humans, at triage",
+      "readers": "humans, saved views",
+      "lifecycle": "durable",
+      "lifecycle_note": "applied when true, removed when not",
+      "exclusive": false,
+      "provision": true,
+      "color": "5319E7",
+      "values": [
+        {
+          "value": "sec",
+          "description": "Security concern"
+        },
+        {
+          "value": "a11y",
+          "description": "Accessibility concern"
+        },
+        {
+          "value": "perf",
+          "description": "Performance concern"
+        },
+        {
+          "value": "tech-debt",
+          "description": "Technical debt"
+        },
+        {
+          "value": "i18n",
+          "description": "Internationalization"
+        },
+        {
+          "value": "l10n",
+          "description": "Localization"
+        }
+      ]
+    },
+    {
+      "family": "provenance",
+      "prefix": null,
+      "purpose": "Where the work came from — durable provenance, never removed.",
+      "axis": "provenance",
+      "source": "inline",
+      "writers": ["human", "agent"],
+      "writer_note": "whoever files or authors the work, human or agent",
+      "readers": "humans, saved views",
+      "lifecycle": "durable",
+      "lifecycle_note": "durable provenance — never removed",
+      "exclusive": false,
+      "provision": true,
+      "color": "EC4899",
+      "values": [
+        {
+          "value": "customer-request",
+          "description": "Requested by a customer"
+        },
+        {
+          "value": "ai-generated",
+          "description": "Created or authored by an AI agent"
+        }
+      ]
+    },
+    {
+      "family": "workflow",
+      "prefix": null,
+      "purpose": "Transient triage states; blocked is the non-issue-blocker flag.",
+      "axis": "workflow",
+      "source": "inline",
+      "writers": ["human"],
+      "writer_note": "humans, at triage",
+      "readers": "humans, the Triage view",
+      "lifecycle": "transient",
+      "lifecycle_note": "transient — removed as soon as the state clears",
+      "exclusive": false,
+      "provision": true,
+      "color": "E36209",
+      "values": [
+        {
+          "value": "needs-triage",
+          "description": "Awaiting triage",
+          "writers": ["human", "agent"],
+          "writer_note": "humans, the issue forms, and the triage skill",
+          "lifecycle_note": "added freely at filing; removed only when classification is complete"
+        },
+        {
+          "value": "needs-requirements",
+          "description": "Requirements not yet defined"
+        },
+        {
+          "value": "blocked",
+          "description": "Blocked by a non-issue dependency (reason in a comment)"
+        },
+        {
+          "value": "waiting",
+          "description": "Waiting on an external party"
+        },
+        {
+          "value": "needs-decision",
+          "description": "Needs a decision before it can proceed"
+        },
+        {
+          "value": "needs-response",
+          "description": "Awaiting a response"
+        },
+        {
+          "value": "needs-communication",
+          "description": "An update needs to be communicated out"
+        }
+      ]
+    },
+    {
+      "family": "work-type",
+      "prefix": null,
+      "purpose": "Kind of work, on personal-account repos where native issue Type is unavailable; org repos set native Type instead.",
+      "axis": "work-type",
+      "source": "inline",
+      "writers": ["human", "agent"],
+      "writer_note": "the issue forms on personal-account repos; humans or agents at triage",
+      "readers": "humans, saved views",
+      "lifecycle": "durable",
+      "lifecycle_note": "durable classification — org repos use native issue Type and no work-type label",
+      "exclusive": false,
+      "provision": true,
+      "values": [
+        {
+          "value": "bug",
+          "description": "Something isn't working",
+          "color": "D73A4A"
+        },
+        {
+          "value": "feature",
+          "description": "New feature or request",
+          "color": "A2EEEF"
+        },
+        {
+          "value": "task",
+          "description": "General work: maintenance, chores, cleanup",
+          "color": "6E7781"
+        },
+        {
+          "value": "research",
+          "description": "Produces a decision or written answer, not a code change",
+          "color": "0E7C86"
+        },
+        {
+          "value": "documentation",
+          "description": "Improvements or additions to documentation",
+          "color": "0075CA",
+          "provision": false,
+          "writer_note": "GitHub ships it at repo creation; humans or agents apply it at triage",
+          "trust_note": "not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary"
+        },
+        {
+          "value": "question",
+          "description": "Further information is requested",
+          "color": "D876E3",
+          "provision": false,
+          "writer_note": "GitHub ships it at repo creation; humans or agents apply it at triage",
+          "trust_note": "not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary"
+        },
+        {
+          "value": "enhancement",
+          "description": "New feature or request",
+          "color": "A2EEEF",
+          "retired": true,
+          "writer_note": "nobody — replaced by `feature`",
+          "trust_note": "retired — the GitHub repo-creation default this vocabulary replaces with `feature`; never provisioned",
+          "lifecycle_note": "rename BEFORE provisioning creates `feature` (`gh label edit enhancement --name feature`, association-preserving); once `feature` exists the rename is refused — re-label the issues and delete `enhancement`"
+        }
+      ]
+    },
+    {
+      "family": "layer",
+      "prefix": "layer",
+      "purpose": "Stack slice the change lives in; the label family is the only surface for this taxonomy.",
+      "axis": "classification",
+      "source": "inline",
+      "writers": ["human", "agent"],
+      "writer_note": "humans or agents, at triage",
+      "readers": "humans, `gh issue list --label`",
+      "lifecycle": "durable",
+      "lifecycle_note": "durable classification; the label family is the only surface — there is no paired project field",
+      "exclusive": true,
+      "provision": true,
+      "color": "1D76DB",
+      "values": [
+        {
+          "value": "ui",
+          "description": "Components, styling, interaction, tokens, a11y. No data change"
+        },
+        {
+          "value": "logic",
+          "description": "Business rules, handlers, calculation"
+        },
+        {
+          "value": "data",
+          "description": "Schema, indexes, validators, migrations"
+        },
+        {
+          "value": "integration",
+          "description": "External boundary: webhooks, API clients, credentials"
+        }
+      ]
+    },
+    {
+      "family": "domain",
+      "prefix": "domain",
+      "purpose": "Product capability the work serves (problem space); the label family is the only surface for this taxonomy.",
+      "axis": "classification",
+      "source": "inline",
+      "writers": ["human", "agent"],
+      "writer_note": "humans or agents, at triage",
+      "readers": "humans, `gh issue list --label`",
+      "lifecycle": "durable",
+      "lifecycle_note": "durable classification; the label family is the only surface — there is no paired project field",
+      "exclusive": true,
+      "provision": true,
+      "color": "FBCA04",
+      "values": [
+        {
+          "value": "auth",
+          "description": "Authentication and authorization"
+        },
+        {
+          "value": "billing",
+          "description": "Billing and payments"
+        },
+        {
+          "value": "platform",
+          "description": "CI, build, test infra, and tooling in this repo"
+        }
+      ]
+    },
+    {
+      "family": "area",
+      "prefix": "area",
+      "purpose": "Codebase subsystem the work lives in (solution space); at most one per issue.",
+      "axis": "classification",
+      "source": "inline",
+      "writers": ["human", "agent"],
+      "writer_note": "humans or agents, at triage",
+      "readers": "humans, `gh issue list --label`",
+      "lifecycle": "durable",
+      "lifecycle_note": "durable classification; area = solution space, domain = problem space, layer = stack slice",
+      "exclusive": true,
+      "provision": true,
+      "color": "0E8A16",
+      "values": [
+        {
+          "value": "ci",
+          "description": "GitHub Actions workflows and CI plumbing"
+        },
+        {
+          "value": "docs",
+          "description": "Documentation content and structure"
+        },
+        {
+          "value": "deps",
+          "description": "Renovate, version pins, dependency bumps"
+        },
+        {
+          "value": "build",
+          "description": "Build system and artifacts"
+        },
+        {
+          "value": "tests",
+          "description": "The test suite and gate assertions"
+        },
+        {
+          "value": "tasks",
+          "description": "Taskfile targets and scripts/ glue"
+        },
+        {
+          "value": "release",
+          "description": "release-please, tags, release guards"
+        },
+        {
+          "value": "devcontainer",
+          "description": "Dev containers, images, features"
+        },
+        {
+          "value": "pm",
+          "description": "Labels, projects, issue tooling, PM docs"
+        },
+        {
+          "value": "skills",
+          "description": "Vendored/authored agent skills and the skills sync"
+        },
+        {
+          "value": "gauntlet",
+          "description": "The challenge/review second-model stage: scripts, gates, and skill wiring"
+        }
+      ]
+    },
+    {
+      "family": "rigor",
+      "prefix": "rigor",
+      "purpose": "Which round-cap level in .devflow.toml an agent works the issue under; values must match its [rigor.*] tables.",
+      "axis": "strategy",
+      "source": "inline",
+      "writers": ["human"],
+      "writer_note": "humans, at triage — **never an agent on itself**",
+      "readers": "agents, when entering the Dev Loop",
+      "lifecycle": "durable",
+      "lifecycle_note": "set when the default budget is wrong for the change; survives the work",
+      "trust_note": "provisioned; **read by agents** — selects a round-cap level, arms nothing",
+      "exclusive": false,
+      "provision": true,
+      "color": "D4C5F9",
+      "values": [
+        {
+          "value": "light",
+          "description": "Dev Loop caps: trivial, low-blast-radius change"
+        },
+        {
+          "value": "standard",
+          "description": "Dev Loop caps: the default budget"
+        },
+        {
+          "value": "deep",
+          "description": "Dev Loop caps: security, migrations, irreversible paths"
+        }
+      ]
+    },
+    {
+      "family": "suggest",
+      "prefix": "suggest",
+      "purpose": "Advisory routing: which agent family should implement the issue. Never Foreman arming.",
+      "axis": "model",
+      "source": "agent-registry",
+      "registry_set": "suggest",
+      "writers": ["human", "agent"],
+      "writer_note": "humans or agents, at planning",
+      "readers": "humans, the Agent queue view",
+      "lifecycle": "durable",
+      "lifecycle_note": "set at planning; survives the work and is never rewritten by a claim",
+      "trust_note": "provisioned from the registry (family level only); advisory — arms nothing",
+      "exclusive": false,
+      "provision": true,
+      "placeholder": "<family>",
+      "color": "BFD4F2",
+      "values": []
+    },
+    {
+      "family": "suggest-model",
+      "prefix": "suggest",
+      "purpose": "Model-level refinement of a family suggestion; applied alongside the family label, never instead of it.",
+      "axis": "model",
+      "source": "tool-owned",
+      "writers": ["human", "agent"],
+      "writer_note": "humans or agents, at planning",
+      "readers": "humans",
+      "lifecycle": "durable",
+      "lifecycle_note": "refines the family label; apply both",
+      "trust_note": "**tool-owned, created on demand** — seeding every model would be an unbounded roster",
+      "exclusive": false,
+      "provision": false,
+      "open_values": true,
+      "placeholder": "<family>:<model>",
+      "color": "BFD4F2",
+      "values": []
+    },
+    {
+      "family": "claim",
+      "prefix": "claim",
+      "purpose": "Live ownership: which agent family is working the issue right now.",
+      "axis": "model",
+      "source": "agent-registry",
+      "registry_set": "claim",
+      "writers": ["agent"],
+      "writer_note": "the agent itself — a vendored claim skill, or a Claude Actions run",
+      "readers": "humans; the Claude Actions claim gate; `claim-release.yml` where the repo ships it",
+      "lifecycle": "claim-release",
+      "lifecycle_note": "added at claim, removed at release — by the workflow's `always()` step, or by `claim-release.yml` on close where the repo ships it",
+      "trust_note": "provisioned from the registry; a **gate**, never a trigger",
+      "exclusive": false,
+      "provision": true,
+      "placeholder": "<family>",
+      "color": "006B75",
+      "values": []
+    },
+    {
+      "family": "claim-model",
+      "prefix": "claim",
+      "purpose": "Model-level refinement of a family claim; applied alongside the family label.",
+      "axis": "model",
+      "source": "tool-owned",
+      "writers": ["agent"],
+      "writer_note": "the agent itself",
+      "readers": "humans; the Claude Actions claim gate; `claim-release.yml` where the repo ships it",
+      "lifecycle": "claim-release",
+      "lifecycle_note": "refines the family label; added at claim, removed at release",
+      "trust_note": "**tool-owned, created on demand**",
+      "exclusive": false,
+      "provision": false,
+      "open_values": true,
+      "placeholder": "<family>:<model>",
+      "color": "006B75",
+      "values": []
+    },
+    {
+      "family": "agent-legacy",
+      "prefix": "agent",
+      "purpose": "The retired pre-registry claim vocabulary; recognized by readers, never seeded.",
+      "axis": "model",
+      "source": "inline",
+      "writers": [],
+      "writer_note": "nobody — never seeded into a new repo",
+      "readers": "claim skills (and `claim-release.yml` where present), which still recognize it",
+      "lifecycle": "claim-release",
+      "lifecycle_note": "delete once live claims are re-mapped to `claim:*`",
+      "trust_note": "legacy; inert",
+      "exclusive": false,
+      "provision": false,
+      "retired": true,
+      "open_values": true,
+      "placeholder": "<harness>",
+      "values": []
+    },
+    {
+      "family": "foreman-arming",
+      "prefix": "foreman",
+      "purpose": "Arming selectors: dispatch this issue with the named backend. Rendered only for production-dispatchable adapters.",
+      "axis": "foreman",
+      "source": "agent-registry",
+      "registry_set": "foreman-adapters",
+      "writers": ["trusted-human"],
+      "writer_note": "a trusted human, to arm an issue",
+      "readers": "Foreman",
+      "lifecycle": "durable",
+      "lifecycle_note": "applied to arm; stays on the issue",
+      "trust_note": "provisioned from the registry where the repo uses foreman (`--foreman`), for production-dispatchable adapters only; **actor-verified arming**",
+      "exclusive": false,
+      "arming": true,
+      "provision": true,
+      "gate": "foreman",
+      "placeholder": "<adapter>",
+      "color": "1D76DB",
+      "values": []
+    },
+    {
+      "family": "foreman-protocol",
+      "prefix": "foreman",
+      "purpose": "Foreman's own workflow-state protocol: the default-backend arming input, the hold override, and the dependency overrides.",
+      "axis": "foreman",
+      "source": "inline",
+      "writers": ["human"],
+      "readers": "Foreman",
+      "lifecycle": "durable",
+      "exclusive": false,
+      "provision": true,
+      "gate": "foreman",
+      "values": [
+        {
+          "value": "approved",
+          "description": "Arm with the repo default backend",
+          "color": "1D76DB",
+          "writers": ["trusted-human"],
+          "writer_note": "a trusted human",
+          "arming": true,
+          "trust_note": "provisioned (`--foreman`); **actor-verified arming** with the repo default backend",
+          "lifecycle_note": "applied to arm; stays on the issue"
+        },
+        {
+          "value": "hold",
+          "description": "Exclude from foreman dispatch (always wins)",
+          "color": "D93F0B",
+          "writer_note": "a human",
+          "trust_note": "provisioned (`--foreman`); non-arming and always wins",
+          "lifecycle_note": "applied to exclude, removed to re-include"
+        },
+        {
+          "value": "satisfied",
+          "description": "Human override: treat this dependency as satisfied",
+          "color": "0E8A16",
+          "writer_note": "a human",
+          "readers": "Foreman's dependency graph",
+          "trust_note": "provisioned (`--foreman`); non-arming dependency override",
+          "lifecycle_note": "applied per dependency decision"
+        },
+        {
+          "value": "external",
+          "description": "External dependency: satisfied when closed as completed",
+          "color": "BFDADC",
+          "writer_note": "a human",
+          "readers": "Foreman's dependency graph",
+          "trust_note": "provisioned (`--foreman`); non-arming dependency override",
+          "lifecycle_note": "applied per dependency decision"
+        }
+      ]
+    },
+    {
+      "family": "foreman-lifecycle",
+      "prefix": "foreman",
+      "purpose": "Foreman's PR-side lifecycle outputs, written by Foreman itself.",
+      "axis": "foreman",
+      "source": "tool-owned",
+      "writers": ["tool:foreman"],
+      "readers": "Foreman, humans",
+      "lifecycle": "tool-managed",
+      "trust_note": "**tool-owned, auto-created**",
+      "exclusive": false,
+      "provision": false,
+      "values": [
+        {
+          "value": "dispatched",
+          "writer_note": "Foreman, on the draft PR it opens",
+          "lifecycle_note": "added when the draft PR opens"
+        },
+        {
+          "value": "ready-for-review",
+          "writer_note": "Foreman, on passing its readiness gate",
+          "lifecycle_note": "added at promotion; the hand-off to human review"
+        }
+      ],
+      "gate": "foreman"
+    },
+    {
+      "family": "type-override",
+      "prefix": "type",
+      "purpose": "Optional override of the native issue Type, read by Foreman for the unit's conventional-commit type.",
+      "axis": "meta",
+      "source": "inline",
+      "writers": ["human"],
+      "writer_note": "a human, optionally",
+      "readers": "Foreman, to pick the unit's conventional-commit type",
+      "lifecycle": "durable",
+      "lifecycle_note": "applied when the native type is absent or wrong",
+      "trust_note": "**not provisioned** — an optional override of the native issue `Type`",
+      "exclusive": true,
+      "provision": false,
+      "open_values": true,
+      "placeholder": "<commit-type>",
+      "values": [],
+      "gate": "foreman"
+    },
+    {
+      "family": "autorelease",
+      "prefix": null,
+      "purpose": "release-please's own release-PR state; the space after the colon is deliberate — not the family:value convention.",
+      "axis": "release",
+      "source": "tool-owned",
+      "writers": ["tool:release-please"],
+      "writer_note": "release-please",
+      "readers": "release-please",
+      "lifecycle": "tool-managed",
+      "lifecycle_note": "pending on the open release PR, tagged once the release is cut",
+      "trust_note": "**tool-owned, auto-created**; note the space after the colon — not part of the `family:value` convention",
+      "exclusive": false,
+      "provision": false,
+      "values": [
+        {
+          "value": "autorelease: pending"
+        },
+        {
+          "value": "autorelease: tagged"
+        }
+      ],
+      "gate": "release-please"
+    },
+    {
+      "family": "github-defaults",
+      "prefix": null,
+      "purpose": "GitHub's repo-creation defaults that remain in the vocabulary; never provisioned, never deleted by setup.",
+      "axis": "meta",
+      "source": "inline",
+      "writers": ["human"],
+      "writer_note": "GitHub, at repo creation",
+      "readers": "humans",
+      "lifecycle": "durable",
+      "lifecycle_note": "prune by hand if you do not want them",
+      "trust_note": "not provisioned, never deleted by setup",
+      "exclusive": false,
+      "provision": false,
+      "values": [
+        {
+          "value": "duplicate",
+          "description": "This issue or pull request already exists",
+          "color": "CFD3D7"
+        },
+        {
+          "value": "good first issue",
+          "description": "Good for newcomers",
+          "color": "7057FF"
+        },
+        {
+          "value": "help wanted",
+          "description": "Extra attention is needed",
+          "color": "008672"
+        },
+        {
+          "value": "invalid",
+          "description": "This doesn't seem right",
+          "color": "E4E669"
+        },
+        {
+          "value": "wontfix",
+          "description": "This will not be worked on",
+          "color": "FFFFFF"
+        }
+      ]
+    }
+  ]
+}

@@ -1,13 +1,15 @@
 name: Bug
 description: Report something that's broken or behaving incorrectly
-title: "[Bug]: "
 assignees:
   - evanharmon1
+labels:
+  - bug
+  - needs-triage
 body:
   - type: textarea
     id: what-happened
     attributes:
-      label: What happened?
+      label: Problem
       description: A clear description of the bug, and what you expected instead.
     validations:
       required: true

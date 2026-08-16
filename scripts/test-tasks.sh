@@ -267,6 +267,67 @@ for category in SSH_KEY SSHKEY; do
     fi
 done
 
+echo "==> tasks whose script demands a TTY are marked interactive, in both twins"
+# A run-time-only regression, and a total one: this Taskfile sets `output:
+# group` GLOBALLY, so Task pipes each task's stdout. A script guarding on
+# `[ -t 1 ]` then sees a pipe and refuses even in a real terminal, which made
+# `task setup:gh-scopes` impossible to use through its own documented entry
+# point (the smoke tests called the script directly and never saw the wiring).
+# `interactive: true` makes Task skip grouping and attach the task to the
+# terminal.
+#
+# Pinned for BOTH twins, because a generated repo inherits the same global
+# grouping and would inherit the same defect. Asserted against the file rather
+# than by running the task: running it would open a real browser device-code
+# flow against the operator's own credential.
+#
+# Keyed to a fatal `-t 1` check specifically. A `-t 0` guard (secret:set:*,
+# codex:gate:disable) is untouched by output grouping, which redirects stdout
+# only, and status.sh's `-t 1` merely selects colour and never refuses.
+# Both layers where they exist. A GENERATED repo has only the first — it is the
+# rendered output, with no template/ of its own — so a missing file is skipped
+# rather than failed, and the counter below keeps "skipped everything" from
+# passing silently.
+tty_gated_tasks="setup:gh-scopes"
+checked_taskfiles=0
+for taskfile in Taskfile.yml template/Taskfile.yml.jinja; do
+    [ -f "$taskfile" ] || continue
+    checked_taskfiles=$((checked_taskfiles + 1))
+    for t in $tty_gated_tasks; do
+        block="$(awk -v name="  ${t}:" '
+            $0 == name { inblock = 1; next }
+            inblock && /^  [a-zA-Z0-9]/ { inblock = 0 }
+            inblock { print }
+        ' "$taskfile")"
+        [ -n "$block" ] || fail "${taskfile}: task ${t} not found — did it get renamed?"
+        # A whole-line DIRECTIVE, never a substring: the task carries a comment
+        # explaining why the key is there, and that comment names the key — so a
+        # substring match passes on the prose alone and the assertion silently
+        # stops asserting. (It did, until a mutation test caught it.)
+        printf '%s\n' "$block" |
+            grep -vE '^[[:space:]]*#' |
+            grep -qE '^[[:space:]]*interactive:[[:space:]]*true[[:space:]]*$' ||
+            fail "${taskfile}: ${t} lacks 'interactive: true' — global 'output: group' pipes its stdout, so its TTY guard refuses in a real terminal"
+    done
+done
+
+[ "$checked_taskfiles" -gt 0 ] ||
+    fail "no Taskfile was checked for the interactive: true requirement — the assertion above proved nothing"
+
+# The guard above is worth nothing if the grouping it defends against is gone;
+# in that case the requirement should be re-derived rather than silently kept.
+# GROUP specifically, not merely the presence of an `output:` key: `interleaved`
+# and `prefixed` keep the key while dropping the stdout pipe that makes
+# `interactive: true` necessary, and a check on the key alone would keep
+# demanding it long after the reason had evaporated.
+awk '
+    /^output:/ { inout = 1; next }
+    inout && /^[^[:space:]]/ { inout = 0 }
+    inout && /^[[:space:]]+group:[[:space:]]*$/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+' Taskfile.yml ||
+    fail "Taskfile.yml no longer selects 'output: group' — re-derive whether the interactive: true assertion above still describes a real hazard"
+
 if [ -x ./scripts/test-terraform-provider-locks.sh ]; then
     echo "==> Terraform provider locks cover developer and CI platforms"
     ./scripts/test-terraform-provider-locks.sh

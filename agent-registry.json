@@ -293,6 +293,33 @@
       "provision_label": false
     },
     {
+      "slug": "claude-code-glm",
+      "display_name": "Claude Code with GLM",
+      "source_file": "claude-code-glm.sh",
+      "harness": "claude-code-glm",
+      "classification": "production",
+      "production_dispatchable": false,
+      "provision_label": false
+    },
+    {
+      "slug": "claude-code-kimi",
+      "display_name": "Claude Code with Kimi",
+      "source_file": "claude-code-kimi.sh",
+      "harness": "claude-code-kimi",
+      "classification": "production",
+      "production_dispatchable": false,
+      "provision_label": false
+    },
+    {
+      "slug": "codex-cli",
+      "display_name": "OpenAI Codex CLI",
+      "source_file": "codex-cli.sh",
+      "harness": "codex-cli",
+      "classification": "production",
+      "production_dispatchable": false,
+      "provision_label": false
+    },
+    {
       "slug": "mock",
       "display_name": "Mock (tests only)",
       "source_file": "mock.sh",

@@ -1,13 +1,15 @@
 name: Feature
 description: Suggest a new capability or improvement
-title: "[Feature]: "
 assignees:
   - evanharmon1
+labels:
+  - feature
+  - needs-triage
 body:
   - type: textarea
     id: problem
     attributes:
-      label: Problem / motivation
+      label: Problem
       description: What problem does this solve? (e.g. "I'm frustrated when …")
     validations:
       required: true
@@ -22,8 +24,10 @@ body:
     id: acceptance
     attributes:
       label: Acceptance criteria
-      value: |
-        - [ ]
+      description: >-
+        Optional. One `- [ ]` item per criterion; tag `[CI]`/`[HUMAN]` where
+        useful. Leave blank to file without criteria — triage adds them
+        before this is dispatched.
   - type: textarea
     id: verify
     attributes:

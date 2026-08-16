@@ -56,6 +56,19 @@ git config --file "$ENV_GITCONFIG" user.email "${DEVCONTAINER_GIT_EMAIL}"
 #
 # $1 is an extra command for the login path (the git bridge), omitted where
 # VS Code already manages git's credential.
+# The scope list the login line below asks for comes from scripts/gh-scopes.sh,
+# the same file status.sh and setup-gh-scopes.sh read, so the banner cannot
+# drift from what the session-start check demands (issue #827). Sourced
+# defensively: this script also runs in trees where the workspace folder is not
+# yet the repo root, and a missing helper must not fail the whole post-create.
+GH_SCOPES_LIB="${GH_SCOPES_LIB:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/gh-scopes.sh}"
+if [ -r "${GH_SCOPES_LIB}" ]; then
+    # shellcheck source=scripts/gh-scopes.sh
+    . "${GH_SCOPES_LIB}"
+else
+    gh_scopes_request_list() { printf '%s' "repo,workflow,project,read:project"; }
+fi
+
 gh_auth_help() {
     echo "=============================================================="
     echo "  GitHub CLI is NOT authenticated — gh pr / gh api and the"
@@ -65,7 +78,11 @@ gh_auth_help() {
         echo "  This profile authenticates as you. Log in:"
         echo ""
         echo "    gh auth login --hostname github.com --git-protocol https \\"
-        echo "      --web --scopes \"workflow,project\""
+        echo "      --web --scopes \"$(gh_scopes_request_list)\""
+        echo ""
+        echo "  Then, in the checkout, 'task setup:gh-scopes' verifies the"
+        echo "  scopes landed and adds any this repo needs. (It refreshes an"
+        echo "  EXISTING login — it cannot replace the command above.)"
         if [ -n "${1:-}" ]; then
             echo "    $1"
         fi

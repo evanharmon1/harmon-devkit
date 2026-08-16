@@ -100,16 +100,7 @@ complete='{"data":{"node":{"fields":{"nodes":[
    {"id":"p1","name":"Urgent","color":"RED","description":""},
    {"id":"p2","name":"High","color":"ORANGE","description":""},
    {"id":"p3","name":"Medium","color":"YELLOW","description":""},
-   {"id":"p4","name":"Low","color":"GRAY","description":""}]},
- {"id":"F_dom","name":"Domain","dataType":"SINGLE_SELECT","options":[
-   {"id":"d1","name":"auth","color":"PURPLE","description":"Authentication and authorization"},
-   {"id":"d2","name":"billing","color":"GREEN","description":"Billing and payments"},
-   {"id":"d3","name":"platform","color":"GRAY","description":"CI, build, test infra, and tooling in this repo"}]},
- {"id":"F_lay","name":"Layer","dataType":"SINGLE_SELECT","options":[
-   {"id":"l1","name":"ui","color":"BLUE","description":"Components, styling, interaction, tokens, a11y. No data change"},
-   {"id":"l2","name":"logic","color":"GREEN","description":"Business rules, handlers, calculation"},
-   {"id":"l3","name":"data","color":"YELLOW","description":"Schema, indexes, validators, migrations"},
-   {"id":"l4","name":"integration","color":"ORANGE","description":"External boundary: webhooks, API clients, credentials"}]}
+   {"id":"p4","name":"Low","color":"GRAY","description":""}]}
 ]}}}}'
 
 echo "==> a re-run against an already-synced project writes nothing"
@@ -126,24 +117,24 @@ case "$(cat "$MUTATIONS")" in
 esac
 
 echo "==> a field missing a starter option gains ONLY that option"
-# Domain lacks `billing` and carries an owner-added `crm`.
+# Priority lacks `Low` and carries an owner-added `Critical`.
 partial=$(printf '%s' "$complete" | jq -c '
     .data.node.fields.nodes |= map(
-        if .name == "Domain" then
-            .options = [ .options[] | if .name == "billing"
-                then {id: "d9", name: "crm", color: "PINK", description: "owner added"}
+        if .name == "Priority" then
+            .options = [ .options[] | if .name == "Low"
+                then {id: "p9", name: "Critical", color: "PINK", description: "owner added"}
                 else . end ]
         else . end)')
 run_with "$partial"
 [ "$(updates)" = 1 ] || fail "expected exactly 1 update mutation, got $(updates)"
 mut=$(cat "$MUTATIONS")
 case "$mut" in
-*'{name:"billing"'*) : ;;
+*'{name:"Low"'*) : ;;
 *) fail "the appended option should be sent WITHOUT an id" ;;
 esac
 
 echo "==> every pre-existing option is re-sent WITH its id (identity preserved)"
-for pair in 'd1:auth' 'd9:crm' 'd3:platform'; do
+for pair in 'p1:Urgent' 'p9:Critical' 'p3:Medium'; do
     case "$mut" in
     *"{id:\"${pair%%:*}\",name:\"${pair##*:}\""*) : ;;
     *) fail "existing option '${pair##*:}' lost its id '${pair%%:*}' — item values would be cleared" ;;
@@ -152,17 +143,17 @@ done
 
 echo "==> an owner-added option survives the append"
 case "$mut" in
-*'name:"crm"'*) : ;;
-*) fail "owner-added option 'crm' was dropped from the replacement list" ;;
+*'name:"Critical"'*) : ;;
+*) fail "owner-added option 'Critical' was dropped from the replacement list" ;;
 esac
 
 echo "==> a field of the wrong data type is warned about, never appended to"
 wrong=$(printf '%s' "$complete" | jq -c '
     .data.node.fields.nodes |= map(
-        if .name == "Domain" then {id: .id, name: .name, dataType: "TEXT"} else . end)')
+        if .name == "Priority" then {id: .id, name: .name, dataType: "TEXT"} else . end)')
 run_with "$wrong"
 [ "$(updates)" = 0 ] || fail "a wrong-typed field must not receive an option update"
-grep -q "already exists as TEXT" "$tmp/out" || fail "expected a data-type warning for Domain"
+grep -q "already exists as TEXT" "$tmp/out" || fail "expected a data-type warning for Priority"
 
 echo "==> a non-single-select Status warns and is skipped, never aborting the run"
 # Status is reconciled by its own call site rather than create_single_select, so
@@ -184,21 +175,21 @@ grep -q "Status (is TEXT, wanted SINGLE_SELECT)" "$tmp/out" ||
 echo "==> a field at the option cap warns instead of attempting an oversized write"
 capped=$(printf '%s' "$complete" | jq -c '
     .data.node.fields.nodes |= map(
-        if .name == "Domain" then
-            .options = ([ .options[] | select(.name != "billing") ]
-                + [ range(0; 48) | {id: "x\(.)", name: "custom\(.)", color: "GRAY", description: ""} ])
+        if .name == "Priority" then
+            .options = ([ .options[] | select(.name != "Low") ]
+                + [ range(0; 47) | {id: "x\(.)", name: "custom\(.)", color: "GRAY", description: ""} ])
         else . end)')
 run_with "$capped"
 [ "$(updates)" = 0 ] || fail "an over-capacity append must be skipped, not attempted"
-grep -q "cannot fit billing" "$tmp/out" || fail "expected a capacity warning naming the missing option"
+grep -q "cannot fit Low" "$tmp/out" || fail "expected a capacity warning naming the missing option"
 
 echo "==> an option added after the startup snapshot survives the append"
 # The re-read immediately before the write is what saves it: the replacement is
 # built from the fresh list, not the stale one.
 concurrent=$(printf '%s' "$partial" | jq -c '
     .data.node.fields.nodes |= map(
-        if .name == "Domain" then
-            .options += [{id: "d42", name: "raced-in", color: "BLUE", description: "added concurrently"}]
+        if .name == "Priority" then
+            .options += [{id: "p42", name: "raced-in", color: "BLUE", description: "added concurrently"}]
         else . end)')
 run_with "$partial" "$concurrent"
 mut=$(cat "$MUTATIONS")

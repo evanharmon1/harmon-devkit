@@ -101,9 +101,14 @@ fi
 
 # ── 3. provisioning script ─────────────────────────────────────────────────
 if [ -f "$labels_script" ]; then
-    # It must delegate to the renderer, not carry a forkable hand-list.
-    grep -q 'agent-registry-labels.mjs' "$labels_script" ||
-        fail "$labels_script does not render its agent labels from the registry (missing agent-registry-labels.mjs call) — hand-listed labels fork from agent-registry.json"
+    # It must delegate to a renderer, not carry a forkable hand-list. The
+    # delegation is via the label-registry renderer, which spawns
+    # agent-registry-labels.mjs for the agent families (source: agent-registry
+    # in label-registry.json) — so the literal call this script once made
+    # moved one level down, and the behavioral run below is what proves the
+    # agent labels still come out.
+    grep -Eq 'label-registry-render\.mjs|agent-registry-labels\.mjs' "$labels_script" ||
+        fail "$labels_script does not render its labels from a registry (no label-registry-render.mjs or agent-registry-labels.mjs call) — hand-listed labels fork from the registries"
     # No hardcoded agent:* / suggest:* / claim:* / foreman:<family> selector
     # lines (the leading `word:` of a `name|color|desc` label line).
     if grep -Eq '^agent:[a-z0-9-]+\|' "$labels_script"; then
