@@ -577,6 +577,17 @@ jq -e '.open[] | select(.number == 23)
     "$scan_out" >/dev/null ||
     fail "an issue without needs-triage is not partially-classified"
 
+echo "==> scan: --out writes the file itself and refuses paths outside scratch"
+mkdir -p "$tmp/scanscratch"
+[ "$(run env TRIAGE_SCRATCH="$tmp/scanscratch" "$scan" --repo "$repo" \
+    --manifest "$manifest" --out "$tmp/outside.json")" = 4 ] ||
+    fail "out path outside scratch must exit 4"
+[ "$(run env TRIAGE_SCRATCH="$tmp/scanscratch" "$scan" --repo "$repo" \
+    --manifest "$manifest" --out "$tmp/scanscratch/scan.json")" = 0 ] ||
+    fail "out inside scratch must pass: $(cat "$tmp/out")"
+jq -e '.repo == "testowner/testrepo"' "$tmp/scanscratch/scan.json" \
+    >/dev/null || fail "--out file must carry the scan"
+
 echo "==> scan: reports truncation when a page fills its window"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest" --limit 5)" = 0 ] ||
     fail "truncation scan failed"

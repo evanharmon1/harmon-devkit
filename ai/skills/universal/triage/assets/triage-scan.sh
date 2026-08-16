@@ -31,9 +31,15 @@
 #
 # Usage:
 #   triage-scan.sh --repo owner/repo [--manifest PATH] [--limit N]
-#                  [--closed-limit N] [--all]
+#                  [--closed-limit N] [--all] [--out PATH]
 #
-# Exit: 0 = scan emitted, 2 = usage/environment error.
+# --out writes the scan itself (bound under TRIAGE_SCRATCH when the wrapper
+# set it), so the calling model never needs a shell redirection — granted
+# Bash commands accept redirections to arbitrary paths, and the skill's own
+# idiom must not normalize that.
+#
+# Exit: 0 = scan emitted, 2 = usage/environment error,
+#       4 = refused (repo or out-path outside this run's binding).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -54,8 +60,14 @@ manifest="./label-registry.json"
 limit=500
 closed_limit=100
 all=0
+out=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
+    --out)
+        [ "$#" -ge 2 ] || usage
+        out="$2"
+        shift 2
+        ;;
     --repo)
         [ "$#" -ge 2 ] || usage
         repo="$2"
@@ -88,6 +100,21 @@ if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then
     echo "triage-scan: refused: --repo '$repo' does not match this run's" \
         "bound repository '$TRIAGE_REPO'" >&2
     exit 4
+fi
+
+if [ -n "$out" ] && [ -n "${TRIAGE_SCRATCH:-}" ]; then
+    out_abs="$(cd "$(dirname "$out")" 2>/dev/null && pwd)/$(basename "$out")" || {
+        echo "triage-scan: could not resolve --out path" >&2
+        exit 2
+    }
+    case "$out_abs" in
+    "$TRIAGE_SCRATCH"/*) ;;
+    *)
+        echo "triage-scan: refused: --out must live under this run's" \
+            "scratch directory ($TRIAGE_SCRATCH)" >&2
+        exit 4
+        ;;
+    esac
 fi
 
 claim_stale="${TRIAGE_CLAIM_STALE_DAYS:-14}"
@@ -142,6 +169,9 @@ truncated_open=false
 [ "$(jq length <<<"$open_json")" -lt "$limit" ] || truncated_open=true
 truncated_closed=false
 [ "$(jq length <<<"$closed_json")" -lt "$closed_limit" ] || truncated_closed=true
+
+# --out: the scan owns its output file so the caller needs no redirection.
+[ -z "$out" ] || exec >"$out"
 
 jq -n \
     --arg repo "$repo" \

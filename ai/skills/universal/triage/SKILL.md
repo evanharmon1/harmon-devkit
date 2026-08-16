@@ -62,8 +62,10 @@ Set two values and a scratch directory:
 ## Step 1 — Scan
 
 ```sh
-"$DIR/assets/triage-scan.sh" --repo "$REPO" > "$SCRATCH/scan.json"
+"$DIR/assets/triage-scan.sh" --repo "$REPO" --out "$SCRATCH/scan.json"
 ```
+
+(`--out`, never a `>` redirection — the script owns where its output lands.)
 
 Read `$SCRATCH/scan.json`. It contains everything precomputed:
 
@@ -92,8 +94,15 @@ skipped disappears from the record.
 
 ## Step 2 — Label pass
 
-For each issue in `open`, decide adds/removes with the rules below, then make
-**one** apply call per issue that needs one (skip issues that need nothing):
+**Skip any issue whose `claim_labels` is non-empty — report-only.** An agent
+is (or was) working it, and a label write would refresh its `updatedAt`,
+which is exactly the signal the stale-claim report reads — labeling a claimed
+issue makes its stale claim invisible on the next run. Its classification
+can wait for the claim to release.
+
+For each remaining issue in `open`, decide adds/removes with the rules below,
+then make **one** apply call per issue that needs one (skip issues that need
+nothing):
 
 ```sh
 "$DIR/assets/triage-apply.sh" label --repo "$REPO" --issue <n> \

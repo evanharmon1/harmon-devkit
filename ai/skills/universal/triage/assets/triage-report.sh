@@ -200,10 +200,10 @@ cmd_sync() {
              print}' "$entries")"
         # The awk pass cuts at section boundaries; a single section larger
         # than the whole budget would pass through intact, so hard-cap the
-        # result as a fallback.
+        # result as a fallback. Pure bash substring — a printf|head pipeline
+        # here dies of SIGPIPE under pipefail exactly when the cap triggers.
         if [ "${#entries_content}" -gt "$budget" ]; then
-            entries_content="$(printf '%s' "$entries_content" |
-                head -c "$budget")"
+            entries_content="${entries_content:0:$budget}"
         fi
         entries_content="$entries_content
 
