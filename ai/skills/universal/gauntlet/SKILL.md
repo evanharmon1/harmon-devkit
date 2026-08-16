@@ -227,7 +227,12 @@ Each round:
    runs against is an immutable object rather than a working tree — a commit
    hook that rewrites the index has already run by then.
 4. **Gate that commit, then push it** to the push remote resolved at the entry
-   gate (§7, damper 9). Capture the SHA once the tree is clean
+   gate (§7, damper 9). **Re-check `git status --porcelain` is empty** — a
+   commit hook that leaves unstaged formatter or generated-file changes makes
+   the gate run against a tree the captured commit does not contain, so a
+   passing result would attest to something you are not pushing. §1's
+   clean-tree check predates every round fix and §10's comes far too late;
+   this one is the round's own. Then capture the SHA
    (`sha="$(git rev-parse HEAD)"`), run `task verify`, read its **exit code**
    directly — a verdict consumed through a pipeline a reader can mask is how a
    failing gate reaches a push — and push that SHA rather than `HEAD`, which
