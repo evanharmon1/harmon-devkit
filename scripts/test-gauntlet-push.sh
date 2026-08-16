@@ -45,11 +45,20 @@ assert_reason() {
 git_q() { git -C "$1" "${@:2}" >/dev/null 2>&1; }
 
 # A fresh origin+clone pair, with one commit on main.
+#
+# Both repositories pin HEAD to refs/heads/main rather than inheriting
+# init.defaultBranch: where that is `master`, the bare repo's HEAD names a ref
+# the fixture never creates, and a later `git clone` of it checks out nothing —
+# `warning: remote HEAD refers to nonexistent ref` — after which commits land on
+# an unrelated root branch. symbolic-ref is used instead of `init -b` so the
+# fixture does not require git 2.28+.
 new_fixture() {
     local name="$1" root="${test_tmp}/$1"
     mkdir -p "$root"
     git init --bare -q "${root}/origin.git"
+    git -C "${root}/origin.git" symbolic-ref HEAD refs/heads/main
     git init -q "${root}/work"
+    git -C "${root}/work" symbolic-ref HEAD refs/heads/main
     git_q "${root}/work" config user.email t@example.com
     git_q "${root}/work" config user.name Test
     git_q "${root}/work" config commit.gpgsign false
