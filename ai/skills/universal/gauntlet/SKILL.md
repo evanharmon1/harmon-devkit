@@ -238,6 +238,16 @@ Each round:
    failing gate reaches a push — and push that SHA rather than `HEAD`, which
    git re-resolves when the push runs.
 
+   **Two preconditions, or the rounds stay local.** Branch pushes must trigger
+   no workflows, and the repo's `AGENTS.md` must not order the CI gate before
+   the branch is pushed. Where either fails, commit each round as damper 9
+   says and push once at §10: the durability is lost, and that is the
+   supported fallback rather than a reason to push anyway. The first
+   precondition is the sharper one — where workflows run on branch pushes, a
+   round that *changed a workflow* executes it with repository permissions
+   before §9's `task ci` has run SAST over it, and gating only the first push
+   does not help, since any later round can touch a workflow too.
+
    Two properties the push owes, beyond landing the gated commit: it touches
    **only this branch** (with no refspec on the command line git consults
    `remote.<name>.push`, so a wildcard there publishes unreviewed branches),
