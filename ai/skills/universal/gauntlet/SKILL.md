@@ -90,30 +90,46 @@ assume them.
   rather than discovered after a converged stage. Same rule as the base checks
   above: **every failure, error, or uncertainty is a stop, never a fallback.**
 
-  1. **Resolve the push remote** — the one `gh pr create` will push to.
-     Under the fork topology in property 1 above, that is the fork, which is
-     *not* `origin`; a repo whose `origin` you can write to is its own push
-     remote. Resolve it explicitly rather than assuming a name, and never
-     push to a raw URL: a URL push bypasses the named remote and leaves
-     stale tracking refs.
-  2. **Probe it** — `git push --dry-run -u <remote> <branch>`, and read the
-     exit code. Be exact about what this proves. It **does** prove the
-     credential: an unauthorized token, an expired one, or an SSO
-     authorization the remote refuses fails here, at round 1 — and that is
-     the observed failure, a converged stage discovering at `gh pr create`
-     that it could never have pushed at all. It does **not** exercise
-     anything that evaluates only on a real ref update: branch protection,
-     rulesets, and pre-receive hooks all see nothing, because a dry run sends
-     no update. Those surface at the first round that pushes, or, on a stage
-     whose rounds are all clean, not until §10.
+  1. **Resolve the push remote, then resolve where it actually points.** The
+     one `gh pr create` will push to — under the fork topology in property 1
+     that is the fork, *not* `origin`. The name does not establish the
+     destination: `remote.<name>.pushurl` overrides the fetch URL for pushes
+     and **every** configured push URL receives the push. So enumerate them
+     and require exactly one, matching the repository you mean on normalized
+     host and path:
 
-  **The probe writes nothing, and that is deliberate.** Pushing the
-  implementation here to prove the remote harder would publish it before §9's
-  full gate has run: in a repo whose workflows trigger on branch pushes, that
-  executes changed workflow code with repository permissions ahead of the
-  review meant to catch it, and it would publish an unscanned tree — `verify`
-  excludes the security suite in most repos. A stronger probe is not worth
-  reordering the gate around.
+     ```sh
+     git remote get-url --push --all <remote>
+     ```
+
+     More than one destination, or one that is not the intended head
+     repository, is a **stop** — otherwise every round publishes the branch
+     somewhere you did not choose. Never push to a raw URL either: it
+     bypasses the named remote and leaves stale tracking refs.
+  2. **Probe the permission without invoking git push** — ask the forge:
+
+     ```sh
+     gh api repos/<push-remote-owner>/<repo> --jq '.permissions.push'
+     ```
+
+     `false`, or an error, is a stop. This is what catches the observed
+     failure — a converged stage discovering at `gh pr create` that it could
+     never have pushed at all.
+
+     **Do not substitute `git push --dry-run`.** It is not a read: a dry run
+     still runs the repo's `pre-push` hook, and a failing hook makes it
+     report a push failure. Verified on git 2.51.1 — a marker `pre-push` hook
+     executes under `--dry-run`, and one exiting non-zero aborts it with
+     `failed to push some refs`. So the "probe" would execute
+     branch-controlled code from the tree the reviewers have not yet seen,
+     and misreport a hook failure as a credential failure.
+
+  Be exact about what this proves. It establishes the **permission**, and
+  nothing that evaluates only on a real ref update: branch protection,
+  rulesets, and pre-receive hooks all see nothing here. Those surface at the
+  first round that pushes, or, on a stage whose rounds are all clean, not
+  until §10. A forge without such an API drops to that same position — say so
+  rather than reaching for the dry run.
 
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
