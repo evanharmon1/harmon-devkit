@@ -615,6 +615,11 @@ GH_STUB_OWNER_TYPE="Organization"
 jq -e '[.open[] | select(.work_type == []) | .flags[]]
        | index("missing-needs-triage") == null' "$tmp/out" >/dev/null ||
     fail "org repo must not flag missing-needs-triage on empty work-type"
+
+echo "==> scan: org issues with a legacy work-type label stay visible"
+jq -e '.open[] | select(.number == 23)
+       | .flags | index("legacy-work-type-label")' "$tmp/out" >/dev/null ||
+    fail "org issue with a work-type label must carry legacy-work-type-label"
 GH_STUB_OWNER_TYPE="User"
 
 echo "==> scan: a mismatched --repo is refused when the run is bound"

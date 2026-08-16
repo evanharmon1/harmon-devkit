@@ -186,6 +186,7 @@ a finding):
 | `aging-needs-candidate`              | nothing — the flag is the finding                    | always                                                                     |
 | `axis-conflict:*`                    | nothing — the flag is the finding                    | always; name both labels and, only if the body states one, the right one   |
 | `missing-work-type` on an org repo   | `native-type` (see 2c)                               | it prints `none` (v1 cannot write Type — a human must set it)              |
+| `legacy-work-type-label` (org only)  | `native-type` (see 2c)                               | it prints `none` — the label is legacy there and proves nothing; mention the label itself for cleanup |
 | `closed_flagged` state `completed`   | nothing — `unticked_criteria` is the finding         | always; note the unticked count                                            |
 | `closed_flagged` state `duplicate`   | `gh issue view <n> --repo "$REPO" --comments`        | no comment points at the surviving issue (`#<number>`)                     |
 
@@ -210,7 +211,10 @@ the entries file, no entry keys):
   **drop any issue your own step-2 apply call completed this run** (its
   classification finished, or its `needs-triage` was removed). This is the
   contract's "a partially classified issue keeps the label and appears in
-  the report".
+  the report". The same pre-write adjustment applies to **every**
+  deterministic entry: drop an `aging-needs-candidate` entry when the only
+  `needs-*` label it aged on was the `needs-triage` your own apply call
+  removed this run — the report must not claim a need this run resolved.
 
 - `## Title violations` — one bullet `#<n> — <title>` per issue flagged
   `title-long` or `title-prefixed`.

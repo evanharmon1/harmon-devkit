@@ -266,6 +266,13 @@ jq -n \
                 (if $needs_triage_worthy
                     and (($ls | index("needs-triage")) == null)
                  then "missing-needs-triage" else empty end),
+                # Org repos classify by native Type; a work-type LABEL there
+                # is legacy and says nothing about the Type. Flag it so the
+                # skill still runs its per-issue native-Type check — without
+                # this, a bug-labeled org issue with complete axes goes quiet
+                # and its missing native Type is never noticed.
+                (if $owner_type == "Organization" and ($have_wt | length) > 0
+                 then "legacy-work-type-label" else empty end),
                 (if $incomplete and (($ls | index("needs-triage")) != null)
                  then "partially-classified" else empty end),
                 (if (($ls | index("needs-triage")) != null)
