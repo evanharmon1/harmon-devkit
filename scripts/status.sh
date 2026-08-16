@@ -314,13 +314,24 @@ fi
 # overrides the stored one, on github.com and Enterprise alike) and cannot add a
 # fine-grained or App token's permissions, which are not OAuth scopes at all.
 GH_SCOPES_LINE=""
-# The stored-credential remedy names the TASK rather than a raw command: the
-# task refuses against an env token and without a TTY, and verifies the grant
+# The stored-credential remedy names the TASK and nothing else: the task
+# refuses against an env token and without a TTY, and verifies the grant
 # actually landed, which a pasted `gh auth refresh` does none of (issue #596).
-# The raw command rides along for a reader who is not in a checkout yet, and is
-# derived from the same required-scope list — the two divergent remedy strings
-# #596 reported were exactly this string drifting from the skills' hint.
-GH_REMEDY_DEFAULT="run: task setup:gh-scopes (or: gh auth refresh -s $(gh_scopes_request_list))"
+#
+# The raw `gh auth refresh -s …` alternative that used to ride along here — for
+# a reader not in a checkout yet — is gone, because it is the one remedy this
+# line must never hand out. A classic PAT reports QUOTED scopes, so an
+# under-scoped `ghp_` credential reaches this default remedy like any OAuth one;
+# and `gh auth refresh` cannot widen a PAT. It runs a device flow and stores the
+# resulting OAuth token OVER it, replacing a deliberately narrow credential with
+# a broad one (verified against gh 2.97.0). Offering it beside the task handed
+# the operator a bypass of the very guard in setup-gh-scopes.sh that refuses
+# exactly this.
+#
+# Only the task can tell the classes apart and give the right remedy for each —
+# re-issue for a PAT, refresh for an OAuth login, grant-at-source for a
+# fine-grained or App token — so the class-blind shortcut has no safe form here.
+GH_REMEDY_DEFAULT="run: task setup:gh-scopes"
 GH_REMEDY="${GH_REMEDY_DEFAULT}"
 
 # derive_gh_scope_state FILE — set GH_SCOPES_LINE and GH_REMEDY from a captured
