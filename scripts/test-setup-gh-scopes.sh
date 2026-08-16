@@ -59,6 +59,21 @@ make_stub() {
         echo '    [ -n "${TMP_PHASE:-}" ] && : >"$TMP_PHASE"'
         echo '    exit 0'
         echo 'fi'
+        # `gh auth token` is how the script establishes the credential CLASS
+        # positively, from the token prefix, instead of inferring it from a
+        # scope line current gh omits for fine-grained PATs.
+        echo 'if [ "$1" = "auth" ] && [ "$2" = "token" ]; then'
+        case "$scenario" in
+        fine-grained) echo '    echo "github_pat_11ABCDEFG0abcdefghijkl"' ;;
+        unknown-credential) echo '    echo "ghz_somethingGitHubAddedLater"' ;;
+        logged-out)
+            echo '    echo "no oauth token" >&2'
+            echo '    exit 1'
+            ;;
+        *) echo '    echo "gho_16CharsOfClassicOAuthToken"' ;;
+        esac
+        echo '    exit 0'
+        echo 'fi'
         echo 'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then'
         echo '    seen_active=false'
         echo '    for a in "$@"; do [ "$a" = "--active" ] && seen_active=true; done'
@@ -116,9 +131,18 @@ make_stub() {
             echo '    exit 1'
             ;;
         fine-grained)
-            # Permissions, not OAuth scopes: gh reports the line with nothing
-            # quoted. `gh auth refresh` cannot add to such a token.
-            echo '    echo "  - Token scopes: none"'
+            # What CURRENT gh actually prints for a fine-grained PAT: no
+            # `Token scopes:` line at all. Verified against gh 2.97.0. The
+            # earlier fixture emitted `Token scopes: none`, a form modern gh
+            # does not produce — so it exercised a branch real credentials
+            # never reach while the real shape fell through to the refresh.
+            echo '    echo "  ✓ Logged in to github.com account someone (keyring)"'
+            echo '    exit 0'
+            ;;
+        unknown-credential)
+            # Logged in, no scope line, and `gh auth token` yields a prefix
+            # this script does not know. Must fail CLOSED rather than refresh.
+            echo '    echo "  ✓ Logged in to github.com account someone (keyring)"'
             echo '    exit 0'
             ;;
         esac
@@ -353,6 +377,9 @@ if [ "${PTY_OK}" = true ]; then
     # stores a new CLASSIC token — silently replacing a deliberately narrow
     # credential with a broad one. The refusal has to precede the mutation, so
     # this asserts on the call log, not just the message.
+    #
+    # The stub prints NO scope line, which is what current gh does for a
+    # fine-grained PAT — the shape that previously slipped past the guard.
     STUB_CALLS="${TMP}/fg-calls.txt"
     export STUB_CALLS
     : >"${STUB_CALLS}"
@@ -362,11 +389,31 @@ if [ "${PTY_OK}" = true ]; then
     fi
     unset STUB_CALLS
     case "$out" in
-    *"reports no OAuth scopes"*"where that token was issued"*) ;;
+    *"fine-grained PAT or a GitHub App"*"where that token was issued"*) ;;
     *) fail "expected the source-side remedy for a fine-grained token, got: ${out}" ;;
     esac
     [ "$(rc_pty_of fine-grained GH_HOST=github.com)" != 0 ] ||
         fail "the fine-grained refusal must exit non-zero"
+
+    echo "==> an unidentifiable credential fails closed"
+    # A prefix GitHub adds later, or a `gh auth token` that errors. Proceeding
+    # would refresh an unknown credential class — the exact broadening the
+    # guard above exists to prevent — so the unknown case must refuse, and must
+    # name the remedy for the legitimate under-scoped OAuth user it may catch.
+    STUB_CALLS="${TMP}/unknown-calls.txt"
+    export STUB_CALLS
+    : >"${STUB_CALLS}"
+    out="$(run_sut_pty unknown-credential GH_HOST=github.com)"
+    if grep -q 'auth refresh' "${STUB_CALLS}"; then
+        fail "refreshed an unidentifiable credential: $(tr '\n' ' ' <"${STUB_CALLS}")"
+    fi
+    unset STUB_CALLS
+    case "$out" in
+    *"could not identify the credential class"*"gh auth login"*) ;;
+    *) fail "expected a fail-closed refusal naming the login remedy, got: ${out}" ;;
+    esac
+    [ "$(rc_pty_of unknown-credential GH_HOST=github.com)" != 0 ] ||
+        fail "the unidentifiable-credential refusal must exit non-zero"
 
     echo "==> the token value is never printed"
     # The script prints scope LINES; nothing it captures may contain a credential,

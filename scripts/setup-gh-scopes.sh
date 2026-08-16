@@ -121,26 +121,51 @@ fi
 
 # 3. Refuse a stored NON-OAuth credential before touching it. A fine-grained
 #    PAT or a GitHub App installation token carries permissions, not OAuth
-#    scopes, and gh reports its scope line with nothing quoted in it. Running
-#    `gh auth refresh` against one completes a device flow and STORES A NEW
-#    CLASSIC TOKEN — silently replacing a deliberately narrow credential with a
-#    broad one, and then reporting success. That is the opposite of the
-#    source-side remedy documented in docs/project-management.md.
+#    scopes. Running `gh auth refresh` against one completes a device flow and
+#    STORES A NEW CLASSIC TOKEN — silently replacing a deliberately narrow
+#    credential with a broad one, and then reporting success. That is the
+#    opposite of the source-side remedy documented in docs/project-management.md.
 #
-#    Only the definite case is refused: a scope line that is present and has no
-#    quoted scopes in it. A missing line entirely is unknown (an older gh, a
-#    changed output format), and refusing on unknown would block a legitimate
-#    OAuth user from the one command that fixes their token.
-case "${scopes_before}" in
-"") ;;    # no scope line at all — unknown, not proof of a non-OAuth token
-*"'"*) ;; # quoted scopes present — a classic OAuth credential, proceed
+#    The credential class is established POSITIVELY, from the token's own
+#    prefix, rather than inferred from the shape of the scope line. Inferring it
+#    does not work: an earlier revision refused only a scope line that was
+#    present and unquoted, treating a MISSING line as "unknown — an older gh, or
+#    a changed output format". But a missing line is precisely what current gh
+#    prints for a fine-grained PAT (verified on gh 2.97.0: no `Token scopes:`
+#    line at all, not `Token scopes: none`), so the refusal never fired for the
+#    one credential class it existed to protect, and the permissive arm ran the
+#    refresh.
+#
+#    GitHub's prefixes are the discriminator: `gho_` (OAuth) and `ghp_` (classic
+#    PAT) are refreshable, `github_pat_` (fine-grained), `ghs_` (App
+#    installation) and `ghu_` (App user-to-server) are not. The token is read
+#    into a variable and only its prefix is ever branched on — it is never
+#    printed, passed as an argument, or written anywhere.
+#
+#    Anything else — `gh auth token` failing, or a prefix GitHub adds later —
+#    fails CLOSED. Refusing is safe here in a way that proceeding is not: the
+#    remedy names the one command that fixes an under-scoped OAuth login, so a
+#    legitimate user is redirected rather than stranded, whereas proceeding on
+#    an unrecognized credential is the credential-broadening this guard exists
+#    to prevent.
+active_token=""
+active_token="$(gh auth token --hostname "${HOSTNAME_ARG}" 2>/dev/null)" || active_token=""
+case "${active_token}" in
+gho_* | ghp_*) ;; # a classic OAuth/PAT credential — refreshable, proceed
+github_pat_* | ghs_* | ghu_*)
+    die "the stored credential for ${HOSTNAME_ARG} is a fine-grained PAT or a GitHub App
+  token, which carries permissions rather than OAuth scopes. 'gh auth refresh'
+  would replace it with a broad classic token instead of fixing it. Grant the
+  matching permission where that token was issued."
+    ;;
 *)
-    die "the stored credential for ${HOSTNAME_ARG} reports no OAuth scopes — it is a
-  fine-grained PAT or a GitHub App token, which carries permissions rather than
-  scopes. 'gh auth refresh' would replace it with a broad classic token instead
-  of fixing it. Grant the matching permission where that token was issued."
+    die "could not identify the credential class for ${HOSTNAME_ARG} from its token, so
+  refreshing it might replace a deliberately narrow credential with a broad
+  classic one. If this is an OAuth login that is merely under-scoped, re-run:
+  gh auth login --hostname ${HOSTNAME_ARG} --git-protocol https --web --scopes \"${REQUEST_LIST}\""
     ;;
 esac
+unset active_token
 
 echo "==> Host:            ${HOSTNAME_ARG}"
 echo "==> Current scopes:  ${scopes_before:-<none reported>}"
