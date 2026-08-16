@@ -61,6 +61,7 @@ jobs:
       - run: task test:shepherd-codex
       - run: task test:ci-results
       - run: task test:status
+      - run: task test:gh-scopes
       - run: task test:worktree
       - run: task test:lint-hygiene
       - run: task test:release-title

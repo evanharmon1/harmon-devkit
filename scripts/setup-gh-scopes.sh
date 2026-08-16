@@ -136,11 +136,23 @@ fi
 #    one credential class it existed to protect, and the permissive arm ran the
 #    refresh.
 #
-#    GitHub's prefixes are the discriminator: `gho_` (OAuth) and `ghp_` (classic
-#    PAT) are refreshable, `github_pat_` (fine-grained), `ghs_` (App
-#    installation) and `ghu_` (App user-to-server) are not. The token is read
-#    into a variable and only its prefix is ever branched on — it is never
-#    printed, passed as an argument, or written anywhere.
+#    GitHub's prefixes are the discriminator, and only `gho_` — a token gh
+#    itself minted through the web/device OAuth flow — is refreshable. Every
+#    other class is refused: `github_pat_` (fine-grained), `ghs_` (App
+#    installation), `ghu_` (App user-to-server), and `ghp_` (classic PAT).
+#
+#    `ghp_` belongs on the refused side even though it reports OAuth scopes and
+#    therefore looks refreshable. `gh auth refresh` cannot widen a PAT — it has
+#    no way to edit a credential GitHub issued outside the OAuth flow, so it
+#    runs a fresh device flow and STORES THE RESULTING OAUTH TOKEN OVER IT.
+#    Verified against gh 2.97.0: with a stored `ghp_` token, `gh auth refresh`
+#    prints a one-time code and opens the device flow rather than refusing. A
+#    deliberately narrow classic PAT would be replaced by a broad OAuth
+#    credential — the same class change refused just below, arrived at from the
+#    one prefix that superficially looks safe.
+#
+#    The token is read into a variable and only its prefix is ever branched on —
+#    it is never printed, passed as an argument, or written anywhere.
 #
 #    Anything else — `gh auth token` failing, or a prefix GitHub adds later —
 #    fails CLOSED. Refusing is safe here in a way that proceeding is not: the
@@ -151,7 +163,16 @@ fi
 active_token=""
 active_token="$(gh auth token --hostname "${HOSTNAME_ARG}" 2>/dev/null)" || active_token=""
 case "${active_token}" in
-gho_* | ghp_*) ;; # a classic OAuth/PAT credential — refreshable, proceed
+gho_*) ;; # gh's own OAuth credential — the one class refresh can widen
+ghp_*)
+    die "the stored credential for ${HOSTNAME_ARG} is a classic personal access token.
+  'gh auth refresh' cannot widen a PAT — it would run a new OAuth device flow
+  and store the resulting token OVER it, replacing a deliberately narrow
+  credential with a broad one. Either re-issue the PAT with these scopes:
+  ${REQUEST_LIST}
+  at https://github.com/settings/tokens, or switch this host to an OAuth login:
+  gh auth login --hostname ${HOSTNAME_ARG} --git-protocol https --web --scopes \"${REQUEST_LIST}\""
+    ;;
 github_pat_* | ghs_* | ghu_*)
     die "the stored credential for ${HOSTNAME_ARG} is a fine-grained PAT or a GitHub App
   token, which carries permissions rather than OAuth scopes. 'gh auth refresh'

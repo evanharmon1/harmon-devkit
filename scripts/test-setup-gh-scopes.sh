@@ -65,6 +65,7 @@ make_stub() {
         echo 'if [ "$1" = "auth" ] && [ "$2" = "token" ]; then'
         case "$scenario" in
         fine-grained) echo '    echo "github_pat_11ABCDEFG0abcdefghijkl"' ;;
+        classic-pat) echo '    echo "ghp_ClassicPersonalAccessToken00"' ;;
         unknown-credential) echo '    echo "ghz_somethingGitHubAddedLater"' ;;
         logged-out)
             echo '    echo "no oauth token" >&2'
@@ -137,6 +138,15 @@ make_stub() {
             # does not produce — so it exercised a branch real credentials
             # never reach while the real shape fell through to the refresh.
             echo '    echo "  ✓ Logged in to github.com account someone (keyring)"'
+            echo '    exit 0'
+            ;;
+        classic-pat)
+            # A classic PAT DOES report quoted OAuth scopes, so it looks
+            # refreshable — and is not: `gh auth refresh` cannot widen a PAT,
+            # it runs a device flow and stores the OAuth token over it. Scopes
+            # are deliberately incomplete here, so a script that failed to
+            # refuse would go on to refresh and the call log would show it.
+            echo "    echo \"  - Token scopes: 'repo', 'workflow'\""
             echo '    exit 0'
             ;;
         unknown-credential)
@@ -394,6 +404,28 @@ if [ "${PTY_OK}" = true ]; then
     esac
     [ "$(rc_pty_of fine-grained GH_HOST=github.com)" != 0 ] ||
         fail "the fine-grained refusal must exit non-zero"
+
+    echo "==> a stored classic PAT is refused, despite reporting OAuth scopes"
+    # The one prefix that looks safe and is not. `gh auth refresh` has no way to
+    # edit a credential GitHub issued outside the OAuth flow, so it mints a new
+    # OAuth token and stores it over the PAT. Verified against gh 2.97.0: a
+    # stored ghp_ token sends `gh auth refresh` straight into the device flow.
+    # The stub reports INCOMPLETE scopes, so nothing short-circuits before the
+    # refresh — a missing refusal shows up in the call log.
+    STUB_CALLS="${TMP}/pat-calls.txt"
+    export STUB_CALLS
+    : >"${STUB_CALLS}"
+    out="$(run_sut_pty classic-pat GH_HOST=github.com)"
+    if grep -q 'auth refresh' "${STUB_CALLS}"; then
+        fail "refreshed a classic PAT: $(tr '\n' ' ' <"${STUB_CALLS}")"
+    fi
+    unset STUB_CALLS
+    case "$out" in
+    *"classic personal access token"*"settings/tokens"*) ;;
+    *) fail "expected the re-issue remedy for a classic PAT, got: ${out}" ;;
+    esac
+    [ "$(rc_pty_of classic-pat GH_HOST=github.com)" != 0 ] ||
+        fail "the classic-PAT refusal must exit non-zero"
 
     echo "==> an unidentifiable credential fails closed"
     # A prefix GitHub adds later, or a `gh auth token` that errors. Proceeding
