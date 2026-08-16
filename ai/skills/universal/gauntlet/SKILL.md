@@ -106,10 +106,12 @@ assume them.
      anything you do display:
 
      ```sh
-     n="$(git remote get-url --push --all <remote> | wc -l)"          # count only
+     # count destinations without rendering any of them
+     n="$(git remote get-url --push --all <remote> | wc -l)"
+     # display only after dropping userinfo and normalizing the scp form
      git remote get-url --push --all <remote> \
-       | sed -E 's#^([a-z+]+://)[^/@]*@#\1#' \                        # drop userinfo
-       | sed -E 's#^(ssh://)?git@([^:/]+)[:/]#https://\2/#'           # normalize scp form
+       | sed -E 's#^([a-z+]+://)[^/@]*@#\1#' \
+       | sed -E 's#^(ssh://)?git@([^:/]+)[:/]#https://\2/#'
      ```
 
      Three stops, all of them before round 1: **more than one** destination,
@@ -557,12 +559,18 @@ why in the revert's message, exactly as damper 4 requires of a deletion.
   than working around it: an early push to buy durability would publish the
   implementation ahead of §9's security gate, and the secret-scan obligation
   below is scoped to a round's commit, so nothing would have scanned it.
-- **A round's commit is secret-scanned before it is pushed.** This is an
-  obligation, not a claim about any repo's setup: where a `pre-push` hook
-  runs the scan it is automatic, and where none is installed — hook
-  installation is opt-in in most generated repos — run the repo's secret
-  scan yourself first. The rest of the security suite still runs at §9
-  before the PR exists.
+- **The whole unpushed range is secret-scanned before a push — not just the
+  round's commit.** `git push` updates the remote branch to your local ref,
+  so it carries **every** commit the remote does not have. The entry gate
+  pushes nothing, so the first round to push carries the implementation in
+  its ancestry: a scan scoped to that round's own commit would let a
+  credential in the implementation through, on the ordinary path rather than
+  some optional one. Scan `<remote>/<branch>..HEAD`, or the whole branch
+  where the remote has no such ref yet. This is an obligation, not a claim
+  about any repo's setup: where a `pre-push` hook runs the scan it is
+  automatic, and where none is installed — hook installation is opt-in in
+  most generated repos — run the repo's secret scan yourself first. The rest
+  of the security suite still runs at §9 before the PR exists.
 
 **10. Whole-branch scope every round.** Re-run the reviewer **bare** — branch
 commits *and* working tree — so a fix can never narrow the re-review to itself.
