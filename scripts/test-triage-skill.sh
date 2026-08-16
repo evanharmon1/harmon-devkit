@@ -57,6 +57,9 @@ emit() {
     if [ -n "$q" ]; then jq -r "$q" <"$1"; else cat "$1"; fi
 }
 case "${1:-} ${2:-}" in
+"api user")
+    printf '%s\n' "${GH_STUB_VIEWER:-testowner}"
+    ;;
 "api graphql")
     [ "${GH_STUB_NATIVE_TYPE:-}" = "ERROR" ] && exit 1
     printf '%s\n' "${GH_STUB_NATIVE_TYPE:-}"
@@ -78,8 +81,13 @@ STUB
 # claude stub for the wrapper test: record argv and the env gate's value.
 cat >"$tmp/bin/claude" <<'STUB'
 #!/usr/bin/env bash
+if [ "${1:-}" = "--help" ]; then
+    echo "  --setting-sources <sources>"
+    exit 0
+fi
 printf '%s\n' "ARGS: $*" >>"${GH_STUB_LOG:?}"
 printf '%s\n' "TRIAGE_EXECUTE=${TRIAGE_EXECUTE:-unset}" >>"${GH_STUB_LOG:?}"
+printf '%s\n' "TRIAGE_REPO=${TRIAGE_REPO:-unset}" >>"${GH_STUB_LOG:?}"
 STUB
 chmod +x "$tmp/bin/gh" "$tmp/bin/claude"
 
@@ -211,6 +219,20 @@ GH_STUB_OWNER_TYPE="Organization"
     --manifest "$manifest")" = 0 ] || fail "org axis add must pass"
 GH_STUB_OWNER_TYPE="User"
 
+echo "==> label: a second work-type label is refused (triage fills, never stacks)"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --add feature \
+    --manifest "$manifest")" = 4 ] || fail "feature over bug must exit 4"
+[ "$(run "$apply" label --repo "$repo" --issue 10 --add bug --add feature \
+    --manifest "$manifest")" = 4 ] || fail "two work-types in one call must exit 4"
+
+echo "==> label: a mismatched --repo is refused when the run is bound"
+[ "$(run env TRIAGE_REPO="$repo" "$apply" label --repo other/elsewhere \
+    --issue 10 --add area:ci --manifest "$manifest")" = 4 ] ||
+    fail "unbound repo write must exit 4"
+[ "$(run env TRIAGE_REPO="$repo" "$apply" label --repo "$repo" --issue 10 \
+    --add area:ci --manifest "$manifest")" = 0 ] ||
+    fail "bound repo write must pass"
+
 echo "==> label: exclusive axes refuse a second value"
 [ "$(run "$apply" label --repo "$repo" --issue 11 --add area:ci \
     --manifest "$manifest")" = 4 ] || fail "second area label must exit 4"
@@ -277,8 +299,9 @@ unset GH_STUB_NATIVE_TYPE
 # ── report ───────────────────────────────────────────────────────────────────
 marker='<!-- harmon-triage-report -->'
 cat >"$stub_dir/issues-open.json" <<JSON
-[{"number": 90, "body": "no marker here"},
- {"number": 99, "body": "$marker\nrolling report"}]
+[{"number": 90, "body": "no marker here", "author": {"login": "testowner"}},
+ {"number": 99, "body": "$marker\nrolling report",
+  "author": {"login": "testowner"}}]
 JSON
 
 echo "==> report find: locates the marker-carrying issue"
@@ -287,14 +310,28 @@ grep -qx "99" "$tmp/out" || fail "expected 99, got: $(cat "$tmp/out")"
 
 echo "==> report find: none without a marker; ambiguous refuses"
 cat >"$stub_dir/issues-open.json" <<'JSON'
-[{"number": 90, "body": "no marker"}]
+[{"number": 90, "body": "no marker", "author": {"login": "testowner"}}]
 JSON
 [ "$(run "$report" find --repo "$repo")" = 0 ] || fail "find(none) failed"
 grep -qx "none" "$tmp/out" || fail "expected none"
 cat >"$stub_dir/issues-open.json" <<JSON
-[{"number": 98, "body": "$marker"}, {"number": 99, "body": "$marker"}]
+[{"number": 98, "body": "$marker", "author": {"login": "testowner"}},
+ {"number": 99, "body": "$marker", "author": {"login": "testowner"}}]
 JSON
 [ "$(run "$report" find --repo "$repo")" = 2 ] || fail "ambiguous must exit 2"
+
+echo "==> report find: a stranger's forged marker is not the report"
+cat >"$stub_dir/issues-open.json" <<JSON
+[{"number": 66, "body": "$marker forged", "author": {"login": "attacker"}},
+ {"number": 99, "body": "$marker", "author": {"login": "testowner"}}]
+JSON
+[ "$(run "$report" find --repo "$repo")" = 0 ] || fail "forged find failed"
+grep -qx "99" "$tmp/out" || fail "forged marker must be ignored, want 99"
+cat >"$stub_dir/issues-open.json" <<JSON
+[{"number": 66, "body": "$marker forged", "author": {"login": "attacker"}}]
+JSON
+[ "$(run "$report" find --repo "$repo")" = 0 ] || fail "forged-only find failed"
+grep -qx "none" "$tmp/out" || fail "a forged-only marker must read as none"
 
 entries="$tmp/entries.md"
 cat >"$entries" <<'MD'
@@ -315,7 +352,7 @@ printf '### #7 — broken\nno key line\n' >"$tmp/bad.md"
 
 echo "==> report sync: dry-run assembles the body and writes nothing"
 cat >"$stub_dir/issues-open.json" <<'JSON'
-[{"number": 90, "body": "no marker"}]
+[{"number": 90, "body": "no marker", "author": {"login": "testowner"}}]
 JSON
 : >"$GH_STUB_LOG"
 [ "$(run env TRIAGE_NOW=2026-01-01 "$report" sync --repo "$repo" \
@@ -335,7 +372,7 @@ diff -u "$tmp/body1" "$tmp/out" >&2 || fail "sync is not idempotent"
 
 echo "==> report sync: updates only a live marker-carrying issue"
 cat >"$stub_dir/issues-open.json" <<JSON
-[{"number": 99, "body": "$marker"}]
+[{"number": 99, "body": "$marker", "author": {"login": "testowner"}}]
 JSON
 cat >"$stub_dir/issue-99.json" <<'JSON'
 {"labels": [], "body": "marker was edited away"}
@@ -356,11 +393,21 @@ echo "==> report sync: --execute without the env gate is refused"
 [ "$(run "$report" sync --repo "$repo" --entries-file "$entries" \
     --execute)" = 2 ] || fail "sync --execute without env must exit 2"
 
+echo "==> report sync: a mismatched --repo is refused when the run is bound"
+[ "$(run env TRIAGE_REPO="$repo" "$report" sync --repo other/elsewhere \
+    --entries-file "$entries")" = 4 ] || fail "unbound repo sync must exit 4"
+
 # ── scan ─────────────────────────────────────────────────────────────────────
 cat >"$stub_dir/issues-open.json" <<JSON
 [{"number": 99, "title": "Triage report", "body": "$marker",
+  "author": {"login": "testowner"},
   "labels": [], "createdAt": "2026-01-01T00:00:00Z",
   "updatedAt": "2026-01-01T00:00:00Z", "assignees": []},
+ {"number": 23, "title": "Typed but one axis missing",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
  {"number": 20, "title": "gauntlet: something is broken in the gate",
   "labels": [{"name": "claim:claude"}, {"name": "needs-triage"}],
   "createdAt": "2020-01-01T00:00:00Z", "updatedAt": "2020-01-02T00:00:00Z",
@@ -414,6 +461,24 @@ jq -e '.closed_flagged[] | select(.number == 40) | .unticked_criteria == 2' \
 jq -e '.work_type_values | sort == ["bug", "feature"]' "$scan_out" \
     >/dev/null || fail "work_type_values wrong"
 
+echo "==> scan: a bare missing axis does not re-add needs-triage"
+jq -e '.open[] | select(.number == 23)
+       | (.flags | index("axis-missing:area") != null)
+         and (.flags | index("missing-needs-triage") == null)' \
+    "$scan_out" >/dev/null ||
+    fail "typed issue missing one axis must not be needs-triage-worthy"
+jq -e '.open[] | select(.number == 21) | .flags | index("missing-needs-triage")' \
+    "$scan_out" >/dev/null || fail "a conflicted axis must still re-add"
+
+echo "==> scan: org repos never re-add needs-triage for a missing work-type label"
+GH_STUB_OWNER_TYPE="Organization"
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
+    fail "org scan failed: $(cat "$tmp/out")"
+jq -e '[.open[] | select(.work_type == []) | .flags[]]
+       | index("missing-needs-triage") == null' "$tmp/out" >/dev/null ||
+    fail "org repo must not flag missing-needs-triage on empty work-type"
+GH_STUB_OWNER_TYPE="User"
+
 echo "==> scan: --all includes the quiet issue"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
     fail "scan --all failed"
@@ -427,8 +492,11 @@ echo "==> wrapper: dry-run forces TRIAGE_EXECUTE=0 and a DRY-RUN prompt"
 : >"$GH_STUB_LOG"
 [ "$(run "$wrapper")" = 0 ] || fail "wrapper dry-run failed: $(cat "$tmp/out")"
 grep -q "TRIAGE_EXECUTE=0" "$GH_STUB_LOG" || fail "env gate not forced to 0"
+grep -q "TRIAGE_REPO=$repo" "$GH_STUB_LOG" || fail "run must be repo-bound"
 grep -q "DRY-RUN" "$GH_STUB_LOG" || fail "prompt must state DRY-RUN"
 grep -q -- "--model haiku" "$GH_STUB_LOG" || fail "default model must be haiku"
+grep -q -- "--setting-sources" "$GH_STUB_LOG" ||
+    fail "worker must run with settings isolated"
 
 echo "==> wrapper: --execute without a terminal is refused"
 [ "$(run "$wrapper" --execute)" = 2 ] ||

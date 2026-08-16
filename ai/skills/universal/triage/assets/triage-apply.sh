@@ -213,6 +213,12 @@ cmd_label() {
         esac
     done
     [ -n "$repo" ] && [ -n "$issue" ] || usage
+    # The wrapper binds the run to one repository; a mismatched --repo here is
+    # a confused (or prompt-injected) caller, not a supported use.
+    if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then
+        die 4 "refused: --repo '$repo' does not match this run's bound" \
+            "repository '$TRIAGE_REPO'"
+    fi
     [ "${#adds[@]}" -gt 0 ] || [ "${#removes[@]}" -gt 0 ] ||
         die 2 "nothing requested — pass --add and/or --remove"
 
@@ -268,12 +274,24 @@ cmd_label() {
         fi
     }
 
+    local wt_count=0
     for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
         if in_list "$l" "$work_types"; then
             need_owner_type
             [ "$owner_type" = "Organization" ] &&
                 die 5 "refused: '$l' — org repos use native issue Type;" \
                     "report the missing Type instead"
+            # The registry marks the family non-exclusive, but triage only
+            # ever FILLS an empty slot — it never stacks a second work type.
+            wt_count=$((wt_count + 1))
+            [ "$wt_count" -le 1 ] ||
+                die 4 "refused: '$l' — one work-type label per apply call"
+            while IFS= read -r existing; do
+                [ -n "$existing" ] || continue
+                in_list "$existing" "$current" &&
+                    die 4 "refused: '$l' — the issue already carries" \
+                        "work-type '$existing'; triage only fills an empty slot"
+            done <<<"$work_types"
         fi
     done
 

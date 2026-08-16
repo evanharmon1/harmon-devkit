@@ -63,11 +63,22 @@ die() {
 }
 
 # Print the open report issue's number, or nothing. Dies on ambiguity.
+#
+# The marker alone is forgeable — any issue author can paste it. Candidates
+# are therefore also filtered by AUTHOR: only issues created by the
+# authenticated login or the repo owner qualify, so a stranger's
+# marker-carrying issue can neither become the report nor block the real one.
 find_report() {
-    local repo="$1" matches
+    local repo="$1" viewer owner matches
+    viewer="$(gh api user -q .login)" ||
+        die 2 "could not resolve the authenticated login"
+    owner="${repo%%/*}"
     matches="$(gh issue list --repo "$repo" --state open --limit 200 \
-        --json number,body -q \
-        "[.[] | select(.body | contains(\"$MARKER\")) | .number] | .[]")" ||
+        --json number,body,author -q \
+        "[.[] | select((.body | contains(\"$MARKER\"))
+                       and ((.author.login == \"$viewer\")
+                            or (.author.login == \"$owner\")))
+              | .number] | .[]")" ||
         die 2 "could not list open issues of $repo"
     local count
     count="$(printf '%s' "$matches" | grep -c . || true)"
@@ -145,6 +156,11 @@ cmd_sync() {
         esac
     done
     [ -n "$repo" ] && [ -n "$entries" ] || usage
+    # Same run-binding as triage-apply.sh: a mismatched --repo is refused.
+    if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then
+        die 4 "refused: --repo '$repo' does not match this run's bound" \
+            "repository '$TRIAGE_REPO'"
+    fi
     [ -f "$entries" ] || die 2 "entries file not found: $entries"
     validate_entries "$entries"
 

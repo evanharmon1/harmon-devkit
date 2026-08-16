@@ -174,6 +174,16 @@ jq -n \
             as $claims
         | (($have_wt | length) == 0 or ([$ax[]] | any(. != "ok")))
             as $incomplete
+        # needs-triage is RE-ADDED only on a missing work type (personal
+        # repos, where labels are authoritative) or a conflicted axis. A bare
+        # missing axis is not enough: a removed needs-triage may rest on an
+        # --inapplicable attestation, which no label records, and re-adding
+        # would churn every legitimately attested issue forever. Org repos
+        # are exempt from the work-type trigger too — the bulk scan cannot
+        # see native issue Type, so an empty label set proves nothing there.
+        | (([$ax[]] | any(. == "conflict"))
+           or ($owner_type == "User" and ($have_wt | length) == 0))
+            as $needs_triage_worthy
         | {number, title, updatedAt,
            days_since_update: $days,
            labels: $ls,
@@ -192,7 +202,8 @@ jq -n \
                  | select(.value == "none") | "axis-missing:\(.key)"),
                 ($ax | to_entries[]
                  | select(.value == "conflict") | "axis-conflict:\(.key)"),
-                (if $incomplete and (($ls | index("needs-triage")) == null)
+                (if $needs_triage_worthy
+                    and (($ls | index("needs-triage")) == null)
                  then "missing-needs-triage" else empty end),
                 (if (($ls | index("needs-triage")) != null)
                     and ($incomplete | not)

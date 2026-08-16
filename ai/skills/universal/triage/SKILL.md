@@ -78,9 +78,14 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
 - `report_issue` — the rolling report issue (already excluded from the lists;
   never label it, never add report entries about it).
 
-If `open` has more than 50 entries, process only the first 50 this run and say
-so in the summary — a bounded run that says what it skipped beats a sloppy
-full pass.
+**The reading budget.** Steps 2 and 3 sometimes require reading an issue
+(`gh issue view`). Budget at most 50 such reads per run, spent in `open[]`
+order. When the budget runs out: stop labeling issues that would need a read,
+and report-verify no further candidates — but **never drop them silently**.
+Everything computable straight from `scan.json` (deterministic report entries,
+label calls that need no reading) is exempt from the budget and covers the
+whole scan, and step 3 lists every unverified candidate by number so nothing
+skipped disappears from the record.
 
 ## Step 2 — Label pass
 
@@ -123,7 +128,17 @@ anything** for that axis. It becomes a report entry in step 3.
 ### 2c — needs-triage
 
 - If `flags` contains `missing-needs-triage`: add `needs-triage` (include it
-  in the same apply call).
+  in the same apply call) — with one check first on `Organization` repos:
+  run
+  `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`,
+  and if it prints anything other than `none`, the issue is classified by its
+  native Type — do not add `needs-triage` for a missing work-type label
+  there. (The bulk scan cannot see native Types, so this per-issue check is
+  yours. It costs one read from the budget.)
+- Do **not** re-add `needs-triage` for a merely missing axis the scan did not
+  flag: an earlier run may have removed the label on an
+  `--inapplicable` attestation, which no label records, and re-adding it
+  would churn that issue forever.
 - Remove `needs-triage` **only if**, after your adds from 2a/2b, all of this
   holds — the script re-checks every point and refuses otherwise:
   - a work type is present (personal: a work-type label; org: the native
@@ -162,11 +177,20 @@ a finding):
 | `closed_flagged` state `completed`   | nothing — `unticked_criteria` is the finding         | always; note the unticked count                                            |
 | `closed_flagged` state `duplicate`   | `gh issue view <n> --repo "$REPO" --comments`        | no comment points at the surviving issue (`#<number>`)                     |
 
-Then two optional **aggregate** sections (plain `##` headings at the end of
+The first four rows marked "verify with `gh issue view`" spend the reading
+budget from step 1. The rows whose flag **is** the finding are deterministic:
+write them for **every** flagged issue in the scan, budget or not — the scan
+already did the work.
+
+Then three optional **aggregate** sections (plain `##` headings at the end of
 the entries file, no entry keys):
 
 - `## Title violations` — one bullet `#<n> — <title>` per issue flagged
   `title-long` or `title-prefixed`.
+- `## Unverified candidates` — one bullet
+  `#<n> — <flag>` for every verification-needing candidate the reading
+  budget did not reach this run. Required whenever the budget ran out: an
+  unverified candidate left off the report vanishes as though resolved.
 - `## Tier/method proposals` — only if, while reading an issue, you are
   confident a `tier:*` or `method:*` value fits it far better than the
   default. One bullet with the issue, the value, and one line of reasoning.

@@ -42,6 +42,9 @@ command -v claude >/dev/null 2>&1 ||
     die "the claude CLI is required (or run the skill interactively via" \
         "your agent session instead)"
 command -v gh >/dev/null 2>&1 || die "the gh CLI is required"
+claude --help 2>/dev/null | grep -q -- "--setting-sources" ||
+    die "this claude CLI lacks --setting-sources; refusing to launch the" \
+        "worker with the repo's settings grants in effect — upgrade the CLI"
 
 # Resolve the skill wherever this checkout carries it: authored source in
 # harmon-devkit itself, vendored copies in consumers.
@@ -58,11 +61,22 @@ done
 repo="$(gh repo view "$(git remote get-url origin)" \
     --json nameWithOwner -q .nameWithOwner)" ||
     die "could not resolve the GitHub repo from the origin remote"
+# Bind the run to this repository: the write scripts refuse any --repo that
+# differs, so a prompt-injected worker cannot aim an authorized script at a
+# different repository it happens to have credentials for.
+export TRIAGE_REPO="$repo"
 
 if [ "$mode" = "execute" ]; then
-    # Supervised runs only: a human must be watching (v1's [HUMAN] gate).
+    # Supervised runs only: a human must be watching (v1's [HUMAN] gate). The
+    # supervision flow is dry-run -> review -> execute; the confirmation below
+    # makes skipping the review a deliberate act rather than a default.
     [ -t 0 ] && [ -t 1 ] ||
         die "--execute needs an interactive terminal — supervised runs only"
+    printf 'triage: EXECUTE will write labels and the rolling report in %s.\n' \
+        "$repo"
+    printf 'triage: review a dry-run first if you have not. Type "yes": '
+    IFS= read -r reply
+    [ "$reply" = "yes" ] || die "execute not confirmed"
     export TRIAGE_EXECUTE=1
     mode_text="EXECUTE — a human is supervising. You may pass --execute to a
 triage script exactly where SKILL.md says to, and nowhere else."
@@ -92,6 +106,11 @@ if [ -n "$note" ]; then
 Operator note (from the human who launched this run): $note"
 fi
 
+# --setting-sources "" launches the worker with NO settings files loaded:
+# --allowedTools only ever adds grants, and this repo's own settings allow
+# e.g. Bash(task:*), which would hand a prompt-injected worker tools far
+# outside the three guarded scripts.
 exec claude -p "$prompt" \
     --model "${TRIAGE_MODEL:-haiku}" \
+    --setting-sources "" \
     --allowedTools "$tools"
