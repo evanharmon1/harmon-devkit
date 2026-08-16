@@ -17,6 +17,7 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 helper="${repo_root}/ai/skills/universal/gauntlet/assets/push-round.sh"
+skill="${repo_root}/ai/skills/universal/gauntlet/SKILL.md"
 test_tmp="$(mktemp -d -t gauntlet-push-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
@@ -45,8 +46,15 @@ rc=0
 out=
 err=
 run() {
+    local args=("$@")
+    local test_rewrite=
+
+    test_rewrite="$(git config --get gauntlet.testRewrite 2>/dev/null || true)"
+    if [ -n "$test_rewrite" ]; then
+        args+=("-c" "$test_rewrite" "-c" "protocol.file.allow=always")
+    fi
     set +e
-    out="$("$helper" "$@" 2>"${test_tmp}/stderr")"
+    out="$("$helper" "${args[@]}" 2>"${test_tmp}/stderr")"
     rc=$?
     set -e
     err="$(cat "${test_tmp}/stderr")"
@@ -82,6 +90,9 @@ new_fixture() {
     git_q "${root}/work" add f
     git_q "${root}/work" commit -m one
     git_q "${root}/work" remote add origin "${root}/origin.git"
+    git_q "${root}/work" config remote.origin.pushurl https://github.com/owner/repo.git
+    git_q "${root}/work" config gauntlet.testRewrite \
+        "url.file://${root}/origin.git.insteadOf=https://github.com/owner/repo.git"
     printf '%s' "$root"
 }
 
@@ -92,6 +103,16 @@ commit_on() {
     git_q "$repo" add f
     git_q "$repo" commit -m "$message"
     git -C "$repo" rev-parse HEAD
+}
+
+git_push_fixture() {
+    local repo=$1
+    local test_rewrite
+
+    shift
+    test_rewrite="$(git -C "$repo" config --get gauntlet.testRewrite)"
+    git -C "$repo" -c "$test_rewrite" -c protocol.file.allow=always \
+        push "$@" >/dev/null 2>&1
 }
 
 gate_file=
@@ -108,13 +129,20 @@ run_push() {
     local remote=$1 branch=$2 sha=$3 expected=$4 suffix=${5:-$$}
 
     write_gate "$sha" "$suffix"
-    run push --remote "$remote" --branch "$branch" --sha "$sha" \
+    run push --remote "$remote" --branch "$branch" \
+        --host github.com --repo owner/repo --sha "$sha" \
         --expect "$expected" --gate-file "$gate_file" --gate-token "$gate_token"
 }
 
 echo "  -> usage errors are distinct"
 run
 assert_rc 2
+
+echo "  -> skill call sites propagate failure and force untracked-file checks"
+[ "$(grep -F -c -- '--gate-token "$token" || exit' "$skill")" -eq 2 ] ||
+    fail "both documented helper calls must stop on failure"
+grep -F -- 'git status --porcelain --untracked-files=all' "$skill" >/dev/null ||
+    fail "the entry cleanliness check must force untracked-file reporting"
 run preflight --remote origin --branch main
 assert_rc 2
 run push --remote origin --branch main --sha deadbeef
@@ -130,12 +158,28 @@ assert_rc 0
 grep -F -- '--hostname github.com repos/owner/repo --jq .permissions.push' "$GH_STUB_LOG" >/dev/null ||
     fail "preflight did not query the requested forge repository"
 first="$(git rev-parse HEAD)"
-git_q "${root}/work" push origin "${first}:refs/heads/main"
+git_push_fixture "${root}/work" origin "${first}:refs/heads/main"
+git init --bare -q "${root}/fetch-only.git"
+git remote set-url origin "${root}/fetch-only.git"
 run preflight --remote origin --branch main --host github.com --repo owner/repo
 assert_rc 0
-[ "$out" = "$first" ] || fail "preflight should print the full remote head"
+[ "$out" = "$first" ] || fail "preflight should read the push destination, not the fetch URL"
+
+echo "  -> preflight rejects a mismatched or multi-valued push destination"
+root="$(new_fixture destinations)"
+cd "${root}/work"
+git config --unset-all remote.origin.pushurl
+git config remote.origin.pushurl https://github.com/owner/other.git
+run preflight --remote origin --branch main --host github.com --repo owner/repo
+assert_rc 3
+assert_reason
+git config --add remote.origin.pushurl https://github.com/owner/repo.git
+run preflight --remote origin --branch main --host github.com --repo owner/repo
+assert_rc 3
 
 echo "  -> preflight fails closed on false, malformed, or failed permission reads"
+root="$(new_fixture permissions)"
+cd "${root}/work"
 GH_STUB_RESULT=false
 run preflight --remote origin --branch main --host github.com --repo owner/repo
 assert_rc 3
@@ -170,6 +214,7 @@ sha="$(git rev-parse HEAD)"
 write_gate "$sha" good
 printf 'gate output\nGAUNTLET-FAILED\n' >"$gate_file"
 run push --remote origin --branch main --sha "$sha" --expect absent \
+    --host github.com --repo owner/repo \
     --gate-file "$gate_file" --gate-token "$gate_token"
 assert_rc 3
 assert_reason
@@ -178,6 +223,7 @@ assert_reason
 write_gate "$sha" old
 new_token="GAUNTLET-GREEN-${sha}-new"
 run push --remote origin --branch main --sha "$sha" --expect absent \
+    --host github.com --repo owner/repo \
     --gate-file "$gate_file" --gate-token "$new_token"
 assert_rc 3
 
@@ -185,12 +231,14 @@ echo "  -> gate tokens must bind this exact full SHA and run"
 write_gate "$sha" bound
 wrong_token="GAUNTLET-GREEN-0000000000000000000000000000000000000000-bound"
 run push --remote origin --branch main --sha "$sha" --expect absent \
+    --host github.com --repo owner/repo \
     --gate-file "$gate_file" --gate-token "$wrong_token"
 assert_rc 3
 short="$(git rev-parse --short HEAD)"
 short_token="GAUNTLET-GREEN-${short}-short"
 printf '%s\n' "$short_token" >"${test_tmp}/short-gate"
 run push --remote origin --branch main --sha "$short" --expect absent \
+    --host github.com --repo owner/repo \
     --gate-file "${test_tmp}/short-gate" --gate-token "$short_token"
 assert_rc 3
 
@@ -201,6 +249,7 @@ sha="$(git rev-parse HEAD)"
 write_gate "$sha" dirty
 printf 'changed after gate\n' >>f
 run push --remote origin --branch main --sha "$sha" --expect absent \
+    --host github.com --repo owner/repo \
     --gate-file "$gate_file" --gate-token "$gate_token"
 assert_rc 3
 assert_reason
@@ -210,15 +259,32 @@ sha="$(git rev-parse HEAD)"
 write_gate "$sha" moved
 commit_on "${root}/work" two two >/dev/null
 run push --remote origin --branch main --sha "$sha" --expect absent \
+    --host github.com --repo owner/repo \
     --gate-file "$gate_file" --gate-token "$gate_token"
 assert_rc 3
+
+echo "  -> configured status cannot hide untracked gate inputs"
+root="$(new_fixture hidden-untracked)"
+cd "${root}/work"
+sha="$(git rev-parse HEAD)"
+write_gate "$sha" hidden-untracked
+git config status.showUntrackedFiles no
+printf 'gate input\n' >generated.tmp
+run push --remote origin --branch main --host github.com --repo owner/repo \
+    --sha "$sha" --expect absent --gate-file "$gate_file" --gate-token "$gate_token"
+assert_rc 3
+assert_reason
 
 echo "  -> ls-remote failures never become an absent branch"
 root="$(new_fixture lsremote-failure)"
 cd "${root}/work"
 git remote add broken "${test_tmp}/not-a-repository"
 sha="$(git rev-parse HEAD)"
-run_push broken main "$sha" absent lsremote
+git config remote.broken.pushurl https://github.com/owner/broken.git
+write_gate "$sha" lsremote
+run push --remote broken --branch main --host github.com --repo owner/broken \
+    --sha "$sha" --expect absent --gate-file "$gate_file" --gate-token "$gate_token" \
+    -c "url.file://${test_tmp}/not-a-repository.insteadOf=https://github.com/owner/broken.git"
 assert_rc 3
 case "$err" in *ls-remote*) : ;; *) fail "refusal should name ls-remote: $err" ;; esac
 
@@ -243,7 +309,7 @@ root="$(new_fixture races)"
 cd "${root}/work"
 base="$(git rev-parse HEAD)"
 mine="$(commit_on "${root}/work" mine mine)"
-git_q "${root}/work" push origin "${base}:refs/heads/main"
+git_push_fixture "${root}/work" origin "${base}:refs/heads/main"
 run_push origin main "$mine" absent creation-race
 assert_rc 3
 [ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$base" ] ||
@@ -267,7 +333,7 @@ assert_rc 0
 b="$(commit_on "${root}/work" b b)"
 run_push origin main "$b" "$a" back-b
 assert_rc 0
-git_q "${root}/work" push --force origin "${a}:refs/heads/main"
+git_push_fixture "${root}/work" --force origin "${a}:refs/heads/main"
 c="$(commit_on "${root}/work" c c)"
 run_push origin main "$c" "$b" back-c
 assert_rc 3
@@ -291,8 +357,8 @@ fi
 echo "  -> transport overrides reach both ls-remote and push"
 root="$(new_fixture transport)"
 cd "${root}/work"
-git remote add transport test://round-remote
-rewrite="url.file://${root}/origin.git.insteadOf=test://round-remote"
+git remote add transport ssh://git@github.com/owner/repo.git
+rewrite="url.file://${root}/origin.git.insteadOf=ssh://git@github.com/owner/repo.git"
 run preflight --remote transport --branch main --host github.com --repo owner/repo \
     -c credential.helper= -c "$rewrite" -c protocol.file.allow=always
 assert_rc 0
@@ -300,6 +366,7 @@ assert_rc 0
 sha="$(git rev-parse HEAD)"
 write_gate "$sha" transport
 run push --remote transport --branch main --sha "$sha" --expect absent \
+    --host github.com --repo owner/repo \
     --gate-file "$gate_file" --gate-token "$gate_token" \
     -c credential.helper= -c "$rewrite" -c protocol.file.allow=always
 assert_rc 0
@@ -313,9 +380,11 @@ if command -v zsh >/dev/null 2>&1; then
     sha="$(git rev-parse HEAD)"
     write_gate "$sha" zsh
     set +e
-    HELPER="$helper" REMOTE=origin BRANCH=main SHA="$sha" EXPECT=absent \
+    rewrite="$(git config --get gauntlet.testRewrite)"
+    HELPER="$helper" REMOTE=origin BRANCH=main HOST=github.com REPO=owner/repo \
+        SHA="$sha" EXPECT=absent REWRITE="$rewrite" \
         GATE_FILE="$gate_file" GATE_TOKEN="$gate_token" \
-        zsh -c '"$HELPER" push --remote "$REMOTE" --branch "$BRANCH" --sha "$SHA" --expect "$EXPECT" --gate-file "$GATE_FILE" --gate-token "$GATE_TOKEN"' \
+        zsh -c '"$HELPER" push --remote "$REMOTE" --branch "$BRANCH" --host "$HOST" --repo "$REPO" --sha "$SHA" --expect "$EXPECT" --gate-file "$GATE_FILE" --gate-token "$GATE_TOKEN" -c "$REWRITE" -c protocol.file.allow=always' \
         >/dev/null 2>"${test_tmp}/zsh-stderr"
     zsh_rc=$?
     set -e

@@ -79,7 +79,8 @@ assume them.
   preflight and PR creation in §10. After a default-branch rename, these
   same four properties are the check that the harness and `$base_ref` agree.
 
-- **The work is committed — `git status --porcelain` is empty.** Bare
+- **The work is committed — `git status --porcelain --untracked-files=all` is
+  empty.** Bare
   reviewer runs would cover a dirty tree, but the PR pushes only `HEAD`: an
   implementation living in the working tree can pass every round and CI
   locally and then be silently absent from the draft. Commit before round 1;
@@ -227,8 +228,9 @@ Each round:
    task verify >"$out" 2>&1 && task security:secrets >>"$out" 2>&1 \
      && printf '\n%s\n' "$token" >>"$out"
    <skill-dir>/assets/push-round.sh push \
-     --remote "$push_remote" --branch "$branch" --sha "$sha" \
-     --expect "$expected" --gate-file "$out" --gate-token "$token"
+     --remote "$push_remote" --branch "$branch" \
+     --host "$push_host" --repo "$push_repo" --sha "$sha" \
+     --expect "$expected" --gate-file "$out" --gate-token "$token" || exit
    expected=$sha
    ```
 
@@ -647,8 +649,9 @@ In order:
 
    ```sh
    <skill-dir>/assets/push-round.sh push \
-     --remote "$push_remote" --branch "$branch" --sha "$sha" \
-     --expect "$expected" --gate-file "$out" --gate-token "$token"
+     --remote "$push_remote" --branch "$branch" \
+     --host "$push_host" --repo "$push_repo" --sha "$sha" \
+     --expect "$expected" --gate-file "$out" --gate-token "$token" || exit
    ```
 
    Then create the PR as a **draft** — binding the target

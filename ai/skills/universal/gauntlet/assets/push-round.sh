@@ -12,8 +12,9 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   push-round.sh preflight --remote NAME --branch NAME --host HOST --repo OWNER/REPO [-c NAME=VALUE]...
-  push-round.sh push --remote NAME --branch NAME --sha SHA --expect absent|OID \
-    --gate-file FILE --gate-token TOKEN [-c NAME=VALUE]...
+  push-round.sh push --remote NAME --branch NAME --host HOST --repo OWNER/REPO \
+    --sha SHA --expect absent|OID --gate-file FILE --gate-token TOKEN \
+    [-c NAME=VALUE]...
 
 preflight is read-only. It requires the forge to report push permission and
 prints the remote branch's current full object ID, or "absent", for use as the
@@ -23,6 +24,8 @@ push exits successfully only when all of these hold:
   - GATE-FILE's last non-blank line exactly equals GATE-TOKEN;
   - GATE-TOKEN is unique to this run and names SHA;
   - SHA is the full commit ID currently checked out and the tree is clean;
+  - the named remote has exactly one credential-free push destination, and it
+    matches HOST and OWNER/REPO;
   - the remote branch still equals --expect and the update is fast-forward;
   - an explicit SHA refspec and lease update only the named branch.
 
@@ -154,8 +157,91 @@ case "$remote" in
 esac
 git check-ref-format "refs/heads/${branch}" >/dev/null 2>&1 ||
     die_usage "--branch is not a valid branch name"
-git remote get-url "$remote" >/dev/null 2>&1 ||
-    refuse "remote '$remote' does not exist"
+
+[ -n "$host" ] || die_usage "--host is required"
+[ -n "$repo" ] || die_usage "--repo is required"
+case "$host" in
+-* | */* | *[[:space:]]*) die_usage "--host is invalid" ;;
+esac
+case "$repo" in
+*/*)
+    owner=${repo%%/*}
+    name=${repo#*/}
+    [ -n "$owner" ] && [ -n "$name" ] || die_usage "--repo must be OWNER/REPO"
+    case "$name" in */*) die_usage "--repo must be OWNER/REPO" ;; esac
+    ;;
+*) die_usage "--repo must be OWNER/REPO" ;;
+esac
+
+push_url=
+resolve_push_url() {
+    local output rc rest authority path destination_host expected_host
+
+    push_url=
+    rc=0
+    # Deliberately omit git_args here: validate the configured destination,
+    # while transport-only -c rewrites remain available to ls-remote/push.
+    output="$(git remote get-url --push --all "$remote" 2>/dev/null)" || rc=$?
+    [ "$rc" -eq 0 ] || refuse "the named remote has no readable push destination"
+    [ -n "$output" ] || refuse "the named remote has no push destination"
+    case "$output" in
+    *$'\n'*) refuse "the named remote has more than one push destination" ;;
+    *\?* | *\#*) refuse "the push destination contains a query or fragment" ;;
+    esac
+
+    destination_host=
+    path=
+    case "$output" in
+    https://*)
+        rest=${output#https://}
+        case "$rest" in
+        */*) ;;
+        *) refuse "the HTTPS push destination has no repository path" ;;
+        esac
+        authority=${rest%%/*}
+        path=${rest#*/}
+        case "$authority" in
+        *@*) refuse "the HTTPS push destination contains userinfo" ;;
+        esac
+        destination_host=$authority
+        ;;
+    git@*:*)
+        rest=${output#git@}
+        destination_host=${rest%%:*}
+        path=${rest#*:}
+        ;;
+    ssh://git@*)
+        rest=${output#ssh://git@}
+        case "$rest" in
+        */*) ;;
+        *) refuse "the SSH push destination has no repository path" ;;
+        esac
+        authority=${rest%%/*}
+        destination_host=${authority%%:*}
+        path=${rest#*/}
+        ;;
+    *) refuse "the push destination is not a supported HTTPS or SSH URL" ;;
+    esac
+
+    path=${path%/}
+    path=${path%.git}
+    destination_host="$(printf '%s' "$destination_host" | tr '[:upper:]' '[:lower:]')"
+    expected_host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+    case "$expected_host:$destination_host" in
+    github.com:github.com | github.com:ssh.github.com) ;;
+    *)
+        [ "$destination_host" = "$expected_host" ] ||
+            refuse "the push destination host does not match --host"
+        ;;
+    esac
+    [ "$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')" = \
+        "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" ] ||
+        refuse "the push destination repository does not match --repo"
+
+    push_url=$output
+}
+
+resolve_push_url
 
 remote_head=
 remote_error=
@@ -165,7 +251,7 @@ read_remote_head() {
     remote_head=
     remote_error=
     rc=0
-    output="$(git "${git_args[@]}" ls-remote "$remote" "refs/heads/${branch}" 2>/dev/null)" || rc=$?
+    output="$(git "${git_args[@]}" ls-remote "$push_url" "refs/heads/${branch}" 2>/dev/null)" || rc=$?
     if [ "$rc" -ne 0 ]; then
         remote_error="git ls-remote failed (exit ${rc}); the remote head is unknown"
         return 1
@@ -202,22 +288,8 @@ read_remote_head() {
 }
 
 if [ "$mode" = preflight ]; then
-    [ -n "$host" ] || die_usage "preflight requires --host"
-    [ -n "$repo" ] || die_usage "preflight requires --repo"
     [ -z "$sha$expect$gate_file$gate_token" ] ||
         die_usage "push-only arguments are not valid in preflight mode"
-    case "$host" in
-    -* | */* | *[[:space:]]*) die_usage "--host is invalid" ;;
-    esac
-    case "$repo" in
-    */*)
-        owner=${repo%%/*}
-        name=${repo#*/}
-        [ -n "$owner" ] && [ -n "$name" ] || die_usage "--repo must be OWNER/REPO"
-        case "$name" in */*) die_usage "--repo must be OWNER/REPO" ;; esac
-        ;;
-    *) die_usage "--repo must be OWNER/REPO" ;;
-    esac
 
     permission_rc=0
     permission="$(gh api --hostname "$host" "repos/${repo}" --jq '.permissions.push' 2>/dev/null)" ||
@@ -235,7 +307,6 @@ fi
 [ -n "$expect" ] || die_usage "push requires --expect"
 [ -n "$gate_file" ] || die_usage "push requires --gate-file"
 [ -n "$gate_token" ] || die_usage "push requires --gate-token"
-[ -z "$host$repo" ] || die_usage "preflight-only arguments are not valid in push mode"
 
 resolved="$(git rev-parse --verify --quiet "${sha}^{commit}" || true)"
 [ -n "$resolved" ] || refuse "--sha is not a commit in this repository"
@@ -279,7 +350,7 @@ marker="$(awk '
 head_sha="$(git rev-parse HEAD)"
 [ "$head_sha" = "$resolved" ] ||
     refuse "HEAD moved after the gate; gate the current commit before pushing"
-[ -z "$(git status --porcelain)" ] ||
+[ -z "$(git status --porcelain --untracked-files=all)" ] ||
     refuse "the worktree changed during the gate; commit and re-gate before pushing"
 
 read_remote_head || refuse "$remote_error"
