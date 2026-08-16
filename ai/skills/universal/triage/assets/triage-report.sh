@@ -198,6 +198,13 @@ cmd_sync() {
             {n += length($0) + 1
              if (n > b && ($0 ~ /^### #/ || $0 ~ /^## /)) exit
              print}' "$entries")"
+        # The awk pass cuts at section boundaries; a single section larger
+        # than the whole budget would pass through intact, so hard-cap the
+        # result as a fallback.
+        if [ "${#entries_content}" -gt "$budget" ]; then
+            entries_content="$(printf '%s' "$entries_content" |
+                head -c "$budget")"
+        fi
         entries_content="$entries_content
 
 ## Report truncated

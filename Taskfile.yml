@@ -514,6 +514,10 @@ tasks:
     # terminal required — issue #455's [HUMAN] gate). The skill contract and
     # its enforcement live in ai/skills/universal/triage.
     desc: "Triage the issue backlog (dry-run; task triage -- --execute to apply, supervised)"
+    # interactive: the global `output: group` would otherwise pipe stdout, so
+    # the wrapper's supervised-terminal check would refuse --execute even
+    # from a real terminal.
+    interactive: true
     cmds:
       - ./scripts/triage.sh {{.CLI_ARGS}}
 

@@ -128,8 +128,12 @@ fi
 # e.g. Bash(task:*), which would hand a prompt-injected worker tools far
 # outside the three guarded scripts. Not exec'd: the EXIT trap above must
 # still remove the scratch directory.
+# --tools restricts which built-ins EXIST for the worker (permission rules
+# alone cannot remove default-allowed tools); the allow/disallow rules then
+# scope the three that remain.
 claude -p "$prompt" \
     --model "${TRIAGE_MODEL:-haiku}" \
     --setting-sources "" \
+    --tools "Read,Write,Bash" \
     --allowedTools "$tools" \
     --disallowedTools "Glob,Grep"

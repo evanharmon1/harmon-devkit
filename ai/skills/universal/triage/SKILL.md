@@ -189,10 +189,12 @@ Then these optional **aggregate** sections (plain `##` headings at the end of
 the entries file, no entry keys):
 
 - `## Partially classified` — one bullet `#<n> — missing: <what>` for every
-  issue flagged `partially-classified` (it carries `needs-triage` and its
-  classification is still incomplete after your label pass). Deterministic —
-  written straight from the scan, no reads. This is the contract's "a
-  partially classified issue keeps the label and appears in the report".
+  issue flagged `partially-classified`. Deterministic — written from the
+  scan, no reads — with one adjustment: the flag is pre-write state, so
+  **drop any issue your own step-2 apply call completed this run** (its
+  classification finished, or its `needs-triage` was removed). This is the
+  contract's "a partially classified issue keeps the label and appears in
+  the report".
 
 - `## Title violations` — one bullet `#<n> — <title>` per issue flagged
   `title-long` or `title-prefixed`.

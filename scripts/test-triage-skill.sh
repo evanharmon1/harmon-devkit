@@ -437,6 +437,21 @@ echo "==> report sync: an oversized entries file truncates at a section boundary
 body_len="$(sed -n '/^DRY-RUN body follows:$/,$p' "$tmp/out" | tail -n +2 | wc -c)"
 [ "$body_len" -lt 65536 ] || fail "body must stay under 65536 (got $body_len)"
 grep -q "## Report truncated" "$tmp/out" || fail "truncation must be announced"
+{
+    printf '## Giant section\n\n'
+    i=1
+    while [ "$i" -le 700 ]; do
+        printf -- '- %s\n' \
+            "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+        i=$((i + 1))
+    done
+} >"$tmp/giant.md"
+[ "$(run env TRIAGE_NOW=2026-01-01 "$report" sync --repo "$repo" \
+    --entries-file "$tmp/giant.md")" = 0 ] ||
+    fail "giant-section sync failed: $(head -3 "$tmp/out")"
+body_len="$(sed -n '/^DRY-RUN body follows:$/,$p' "$tmp/out" | tail -n +2 | wc -c)"
+[ "$body_len" -lt 65536 ] ||
+    fail "one giant section must still respect the cap (got $body_len)"
 
 echo "==> report sync: a mismatched --repo is refused when the run is bound"
 [ "$(run env TRIAGE_REPO="$repo" "$report" sync --repo other/elsewhere \
@@ -595,6 +610,8 @@ grep -q -- "Read(//" "$GH_STUB_LOG" ||
     fail "worker Read grant must be path-scoped"
 grep -qE "ARGS: .*(Glob|Grep)" "$GH_STUB_LOG" &&
     fail "worker must not be granted Glob/Grep"
+grep -q -- "--tools Read,Write,Bash" "$GH_STUB_LOG" ||
+    fail "worker must run with a restricted built-in tool set"
 
 echo "==> wrapper: --execute without a terminal is refused"
 [ "$(run "$wrapper" --execute)" = 2 ] ||
