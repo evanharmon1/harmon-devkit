@@ -150,9 +150,14 @@ assume them.
   push that touches `.github/workflows/` — the late capability failure this
   gate exists to prevent, arriving anyway. The path-scoped permission is not
   uniformly introspectable, so where the branch changes workflow files, treat
-  the probe as **indeterminate** rather than passed, and say so. Indeterminate
-  is not a stop here: §1's stop rule is about checks that fail, and this one
-  reports that it cannot answer.
+  the probe as **indeterminate** rather than passed — and indeterminate is a
+  **stop**, like every other uncertainty in this gate. Do not read "it cannot
+  answer" as weaker than "it failed"; that reading would make the stop rule
+  optional wherever a check is imprecise, which is where it matters most.
+  Two things clear it, both decisions rather than inferences: confirm the
+  credential carries the workflows scope, or take the local-rounds fallback
+  (§3, step 4) deliberately, pushing once at §10 and accepting that a
+  workflow-permission failure surfaces there.
 
   Be exact about what this proves. It establishes the **permission**, and
   nothing that evaluates only on a real ref update: branch protection,
@@ -268,8 +273,13 @@ Each round:
    per finding: five fixes are one commit, and a round adjudicated clean with
    nothing to fix commits and pushes nothing. Read step 3's exit code before
    committing — a gate verdict consumed through a pipeline a reader can mask
-   is how a failing gate reaches a push. Set the upstream on the first push
-   (`-u`), since a new branch has no upstream to infer.
+   is how a failing gate reaches a push. **Name the ref explicitly** —
+   `git push <remote> HEAD:refs/heads/<branch>` — and add `-u` on the first
+   push, since a new branch has no upstream to infer. A bare `git push` is
+   not equivalent: with no refspec on the command line, git uses
+   `remote.<name>.push`, so a configured wildcard publishes unrelated local
+   branches that no round reviewed and that the unpushed-range scan above
+   never covered.
 
    **Two preconditions, or the rounds stay local.** Branch pushes must
    trigger no workflows, and the repo's `AGENTS.md` must not order the CI
