@@ -86,10 +86,10 @@ assume them.
   each round's fixes then get their own commit and push (§3, step 4), and §10
   re-checks the tree is clean immediately before the push.
 
-- **You can push, and you know what you would be pushing into.** Rounds push
-  (§3, step 4), so both halves of "may I push, and into what?" are settled
-  here rather than discovered mid-stage. Same rule as the base checks above:
-  **every failure, error, or uncertainty is a stop, never a fallback.**
+- **The branch is pushed, and no PR is open on it.** Rounds push (§3, step 4),
+  so both halves of "may I push, and into what?" are settled here rather than
+  discovered mid-stage. Same rule as the base checks above: **every failure,
+  error, or uncertainty is a stop, never a fallback.**
 
   1. **Resolve the push remote** — the one `gh pr create` will push to.
      Under the fork topology in property 1 above, that is the fork, which is
@@ -97,26 +97,29 @@ assume them.
      remote. Resolve it explicitly rather than assuming a name, and never
      push to a raw URL: a URL push bypasses the named remote and leaves
      stale tracking refs.
-  2. **Probe it without writing:**
-     `git push --dry-run -u <remote> <branch>` — read the exit code. A
-     permission gap, an SSO-unauthorized credential, or a protected-branch
-     rule surfaces here, at round 1, instead of after a converged stage.
-     This is the failure the per-round push exists to catch early; running
-     the probe means round 1 does not have to be the thing that catches it.
-  3. **Resolve any PR already on this branch:**
-     `gh pr list --repo <repo> --state open --head <branch> --json number,isDraft`.
-     None is the ordinary case. A **draft** you own is fine to continue
-     into — the draft is the workbench, and pushes into it are its expected
-     shape. A **non-draft** is a stop: promotion means the automated
-     lifecycle is complete, and a mid-stage push would move the head out
-     from under that claim without un-notifying the reviewers it summoned.
-     One owned by another worker is a stop to reconcile, not to push into.
+  2. **Push the committed work now** — `git push -u <remote> <branch>`, and
+     read the exit code. Not a `--dry-run`: a dry run sends no ref update, so
+     server-side rules that only evaluate on a real update — rulesets,
+     pre-receive hooks — do not run, and it would certify a push that a
+     ruleset then rejects. A real push is also the only version that holds
+     when **every round is clean**: no round pushes then, and §10's push
+     would still be the first write to touch the remote, which is exactly the
+     late discovery this check exists to prevent. The tree is already
+     committed (the check above), so there is something to push and nothing
+     to lose by pushing it.
+  3. **No PR may be open on this branch** —
+     `gh pr list --repo <repo> --state open --head <branch>`. Any hit is a
+     **stop**, draft or not. This stage runs *before* a PR exists: §10 is
+     what creates one, and it refuses to create a second. A branch that
+     already has a PR is a branch whose work belongs to the shepherd stage,
+     so the answer is to go there rather than to push into it from here.
 
-  Property 3 is why this is an entry-gate check and not a §10 one. §10 step 5
-  re-checks ownership immediately before **creating** a PR, which is the right
-  moment for that write and the wrong one for this: with rounds pushing, the
-  first write into a PR that already exists lands at round 1, several rounds
-  before §10 runs.
+  Do not soften property 3 into "a draft is fine to continue into". The
+  distinction cannot be drawn from a PR listing anyway — in a fork workflow
+  an identical branch name can belong to a different head repository — and
+  `isDraft` is not a state to trust: a known external actor promotes drafts
+  asynchronously, carrying the maintainer's own login, so neither the flag
+  nor its author identifies who acted.
 
 If the implementation is not actually finished, stop: this stage reviews a
 change, and "the reviewer will tell me what to write" is how round 1 becomes
@@ -225,8 +228,10 @@ Each round:
    per finding: five fixes are one commit, and a round adjudicated clean with
    nothing to fix commits and pushes nothing. Read step 3's exit code before
    committing — a gate verdict consumed through a pipeline a reader can mask
-   is how a failing gate reaches a push. Set the upstream on the first push
-   (`-u`), since a new branch has no upstream to infer.
+   is how a failing gate reaches a push. Re-check that no PR has appeared on
+   the branch (the entry gate's property 3) immediately before pushing: that
+   check was one-time and this push is not, so a PR another worker opened
+   mid-stage would otherwise take this commit silently.
 5. **Test the exit rule (§5) and the cap on the round just adjudicated.** An
    exit condition met means the stage is over now — an empty round 1 owes no
    second run (floor permitting), and a capped final round must not launch
