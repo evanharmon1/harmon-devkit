@@ -96,16 +96,27 @@ assume them.
      destination: `remote.<name>.pushurl` overrides the fetch URL for pushes
      and **every** configured push URL receives the push. So enumerate them
      and require exactly one, matching the repository you mean on normalized
-     host and path:
+     host and path.
+
+     **Never render a push URL.** An HTTPS remote may carry userinfo — a PAT
+     embedded as `https://x-access-token:<token>@host/owner/repo` — and
+     printing it puts a live push credential into the terminal, and from
+     there into an agent transcript, before any review sees it. Count and
+     normalize without echoing the raw value, and redact userinfo from
+     anything you do display:
 
      ```sh
-     git remote get-url --push --all <remote>
+     n="$(git remote get-url --push --all <remote> | wc -l)"          # count only
+     git remote get-url --push --all <remote> \
+       | sed -E 's#^([a-z+]+://)[^/@]*@#\1#' \                        # drop userinfo
+       | sed -E 's#^(ssh://)?git@([^:/]+)[:/]#https://\2/#'           # normalize scp form
      ```
 
-     More than one destination, or one that is not the intended head
-     repository, is a **stop** — otherwise every round publishes the branch
-     somewhere you did not choose. Never push to a raw URL either: it
-     bypasses the named remote and leaves stale tracking refs.
+     Three stops, all of them before round 1: **more than one** destination,
+     one that is **not** the intended head repository, or a push URL that
+     **carries userinfo at all** — a credential in `git config` is a finding
+     in its own right, not a shape to normalize around. Never push to a raw
+     URL either: it bypasses the named remote and leaves stale tracking refs.
   2. **Probe the permission without invoking git push** — ask the forge, at
      the host the destination from step 1 actually names:
 
@@ -130,6 +141,16 @@ assume them.
      `failed to push some refs`. So the "probe" would execute
      branch-controlled code from the tree the reviewers have not yet seen,
      and misreport a hook failure as a credential failure.
+
+  **A push-permitted credential can still be refused on a path.** Forge
+  permission is repository-scoped: a token with Contents write but no
+  Workflows permission reports `push: true` and is then rejected by the first
+  push that touches `.github/workflows/` — the late capability failure this
+  gate exists to prevent, arriving anyway. The path-scoped permission is not
+  uniformly introspectable, so where the branch changes workflow files, treat
+  the probe as **indeterminate** rather than passed, and say so. Indeterminate
+  is not a stop here: §1's stop rule is about checks that fail, and this one
+  reports that it cannot answer.
 
   Be exact about what this proves. It establishes the **permission**, and
   nothing that evaluates only on a real ref update: branch protection,
@@ -532,9 +553,10 @@ why in the revert's message, exactly as damper 4 requires of a deletion.
   land, the implementation is committed locally and nowhere else — and a
   stage whose rounds are all clean pushes nothing at all before §10. "A lost
   environment costs one round" is true only after that first push; before it,
-  losing the checkout loses the whole implementation. If that matters for the
-  change in hand, push the implementation deliberately before round 1 and
-  accept what §1 says that costs.
+  losing the checkout loses the whole implementation. State that limit rather
+  than working around it: an early push to buy durability would publish the
+  implementation ahead of §9's security gate, and the secret-scan obligation
+  below is scoped to a round's commit, so nothing would have scanned it.
 - **A round's commit is secret-scanned before it is pushed.** This is an
   obligation, not a claim about any repo's setup: where a `pre-push` hook
   runs the scan it is automatic, and where none is installed — hook
