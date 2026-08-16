@@ -427,6 +427,21 @@ if [ "${PTY_OK}" = true ]; then
     [ "$(rc_pty_of classic-pat GH_HOST=github.com)" != 0 ] ||
         fail "the classic-PAT refusal must exit non-zero"
 
+    echo "==> the classic-PAT remedy names the RESOLVED host, not github.com"
+    # A GHES or ghe.com credential is re-issued on that host's own settings
+    # page. Hardcoding github.com sends the operator somewhere that cannot
+    # reissue the credential being diagnosed.
+    out="$(run_sut_pty classic-pat GH_HOST=ghe.example.com)"
+    case "$out" in
+    *"https://ghe.example.com/settings/tokens"*) ;;
+    *) fail "expected the enterprise host in the re-issue URL, got: ${out}" ;;
+    esac
+    case "$out" in
+    *"https://github.com/settings/tokens"*)
+        fail "the remedy named github.com on an enterprise host: ${out}"
+        ;;
+    esac
+
     echo "==> an unidentifiable credential fails closed"
     # A prefix GitHub adds later, or a `gh auth token` that errors. Proceeding
     # would refresh an unknown credential class — the exact broadening the

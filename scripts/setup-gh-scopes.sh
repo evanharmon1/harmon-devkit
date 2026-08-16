@@ -170,7 +170,7 @@ ghp_*)
   and store the resulting token OVER it, replacing a deliberately narrow
   credential with a broad one. Either re-issue the PAT with these scopes:
   ${REQUEST_LIST}
-  at https://github.com/settings/tokens, or switch this host to an OAuth login:
+  at https://${HOSTNAME_ARG}/settings/tokens, or switch this host to an OAuth login:
   gh auth login --hostname ${HOSTNAME_ARG} --git-protocol https --web --scopes \"${REQUEST_LIST}\""
     ;;
 github_pat_* | ghs_* | ghu_*)
