@@ -75,6 +75,28 @@ die() {
     exit "$code"
 }
 
+# In a bound run (TRIAGE_REPO set by the wrapper) the manifest is the repo's
+# own ./label-registry.json and nothing else: the worker holds a scratch
+# Write grant, so a caller-chosen manifest path would let a prompt-injected
+# run author its own allowlist.
+guard_manifest() {
+    local manifest="$1"
+    if [ -n "${TRIAGE_REPO:-}" ] && [ "$manifest" != "./label-registry.json" ]; then
+        die 4 "refused: --manifest is fixed to ./label-registry.json in a" \
+            "bound run — a worker-writable manifest would define its own allowlist"
+    fi
+}
+
+# gh issue view/edit accept URLs as well as numbers, and a URL names its own
+# repository — which would bypass the TRIAGE_REPO binding entirely. Numbers
+# only.
+guard_issue_number() {
+    local issue="$1"
+    case "$issue" in
+    '' | *[!0-9]*) die 2 "refused: --issue must be a plain issue number (got '$issue')" ;;
+    esac
+}
+
 # Print the v1 write-allowlist, one label per line.
 allowlist_compute() {
     local repo="$1" manifest="$2"
@@ -125,6 +147,7 @@ cmd_allowlist() {
         *) usage ;;
         esac
     done
+    guard_manifest "$manifest"
     allowlist_compute "$repo" "$manifest"
 }
 
@@ -169,6 +192,7 @@ cmd_native_type() {
         esac
     done
     [ -n "$repo" ] && [ -n "$issue" ] || usage
+    guard_issue_number "$issue"
     native_type_read "$repo" "$issue" ||
         die 2 "could not read the native issue Type of $repo#$issue"
 }
@@ -213,6 +237,8 @@ cmd_label() {
         esac
     done
     [ -n "$repo" ] && [ -n "$issue" ] || usage
+    guard_issue_number "$issue"
+    guard_manifest "$manifest"
     # The wrapper binds the run to one repository; a mismatched --repo here is
     # a confused (or prompt-injected) caller, not a supported use.
     if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then

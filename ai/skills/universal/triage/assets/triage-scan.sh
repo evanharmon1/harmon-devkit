@@ -101,6 +101,13 @@ if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then
         "bound repository '$TRIAGE_REPO'" >&2
     exit 4
 fi
+# Same manifest rule as triage-apply.sh: a bound run reads the repo's own
+# manifest only — a worker-writable one would define its own vocabulary.
+if [ -n "${TRIAGE_REPO:-}" ] && [ "$manifest" != "./label-registry.json" ]; then
+    echo "triage-scan: refused: --manifest is fixed to ./label-registry.json" \
+        "in a bound run" >&2
+    exit 4
+fi
 
 if [ -n "$out" ] && [ -n "${TRIAGE_SCRATCH:-}" ]; then
     out_abs="$(cd "$(dirname "$out")" 2>/dev/null && pwd)/$(basename "$out")" || {

@@ -239,11 +239,31 @@ echo "==> label: a second work-type label is refused (triage fills, never stacks
 
 echo "==> label: a mismatched --repo is refused when the run is bound"
 [ "$(run env TRIAGE_REPO="$repo" "$apply" label --repo other/elsewhere \
-    --issue 10 --add area:ci --manifest "$manifest")" = 4 ] ||
+    --issue 10 --add area:ci)" = 4 ] ||
     fail "unbound repo write must exit 4"
 [ "$(run env TRIAGE_REPO="$repo" "$apply" label --repo "$repo" --issue 10 \
-    --add area:ci --manifest "$manifest")" = 0 ] ||
-    fail "bound repo write must pass"
+    --add area:ci)" = 0 ] ||
+    fail "bound repo write must pass (fallback allowlist)"
+
+echo "==> label: a bound run refuses a caller-chosen manifest"
+[ "$(run env TRIAGE_REPO="$repo" "$apply" label --repo "$repo" --issue 10 \
+    --add area:ci --manifest "$manifest")" = 4 ] ||
+    fail "bound run with custom manifest must exit 4"
+[ "$(run env TRIAGE_REPO="$repo" "$apply" allowlist --repo "$repo" \
+    --manifest "$evil")" = 4 ] ||
+    fail "bound allowlist with custom manifest must exit 4"
+[ "$(run env TRIAGE_REPO="$repo" "$scan" --repo "$repo" \
+    --manifest "$manifest")" = 4 ] ||
+    fail "bound scan with custom manifest must exit 4"
+
+echo "==> label: --issue must be a plain number (URLs bypass the repo binding)"
+[ "$(run "$apply" label --repo "$repo" \
+    --issue "https://github.com/other/elsewhere/issues/5" \
+    --add area:ci --manifest "$manifest")" = 2 ] ||
+    fail "URL issue must exit 2"
+[ "$(run "$apply" native-type --repo "$repo" \
+    --issue "https://github.com/other/elsewhere/issues/5")" = 2 ] ||
+    fail "URL issue on native-type must exit 2"
 
 echo "==> label: exclusive axes refuse a second value"
 [ "$(run "$apply" label --repo "$repo" --issue 11 --add area:ci \
