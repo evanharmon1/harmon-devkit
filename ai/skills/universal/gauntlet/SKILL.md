@@ -253,17 +253,28 @@ Each round:
    is how a failing gate reaches a push. Set the upstream on the first push
    (`-u`), since a new branch has no upstream to infer.
 
-   **This is cheap only where branch pushes trigger nothing — check.** The
-   argument for pushing every round is that a pre-PR branch push spends no
-   CI and starts no cloud review. That is a fact about a repo's workflow
-   triggers, not a law: where workflows run on feature-branch pushes, each
-   round spends a CI run, and a round that *changed a workflow* executes it
-   with repository permissions before §9's `task ci` has run SAST over it.
-   In such a repo, run the full gate before the first round push, or keep
-   the rounds local and accept that the durability the push buys is lost.
-   Where the repo's `AGENTS.md` states an order — `task ci` before the first
-   push is a common one — it outranks this skill, and the policy is what
-   changes first.
+   **Two preconditions, and where either fails the rounds stay local.**
+   Pushing every round is cheap because a pre-PR branch push spends no CI and
+   starts no cloud review — a fact about a repo's configuration, not a law.
+   Establish both before round 1, and where either fails, keep the rounds
+   local: commit each round as damper 9 says and push once at §10, accepting
+   that the durability the push would have bought is lost. That is the
+   supported fallback, not a degraded mode.
+
+   1. **Branch pushes trigger no workflows.** Where they do, every round
+      spends a CI run — and a round that *changed a workflow* executes it
+      with repository permissions before §9's `task ci` runs SAST over it.
+      Gating only the first push does not cover this: any later round can
+      touch a workflow and reach the remote on `task verify` alone. So the
+      full gate would have to precede **every** push, which is most of what
+      keeping the rounds local costs anyway.
+   2. **The repo's own policy permits it.** `AGENTS.md` outranks this skill
+      (see the top of this file), so where its Dev Loop orders `task ci`
+      before the branch is pushed, that order governs and per-round pushing
+      is simply not in effect there yet. Nothing about that is a conflict to
+      resolve inside a round: policy changes in `AGENTS.md`, and a repo whose
+      `AGENTS.md` is rendered from a template adopts it when that template
+      update lands.
 5. **Test the exit rule (§5) and the cap on the round just adjudicated.** An
    exit condition met means the stage is over now — an empty round 1 owes no
    second run (floor permitting), and a capped final round must not launch
