@@ -185,8 +185,14 @@ budget from step 1. The rows whose flag **is** the finding are deterministic:
 write them for **every** flagged issue in the scan, budget or not — the scan
 already did the work.
 
-Then four optional **aggregate** sections (plain `##` headings at the end of
+Then these optional **aggregate** sections (plain `##` headings at the end of
 the entries file, no entry keys):
+
+- `## Partially classified` — one bullet `#<n> — missing: <what>` for every
+  issue flagged `partially-classified` (it carries `needs-triage` and its
+  classification is still incomplete after your label pass). Deterministic —
+  written straight from the scan, no reads. This is the contract's "a
+  partially classified issue keeps the label and appears in the report".
 
 - `## Title violations` — one bullet `#<n> — <title>` per issue flagged
   `title-long` or `title-prefixed`.

@@ -245,11 +245,12 @@ cmd_sync() {
             die 1 "write failed: gh issue edit $repo#$target"
         echo "APPLIED report update to $repo#$target"
     else
-        printf '%s\n' "$body" |
+        local created
+        created="$(printf '%s\n' "$body" |
             gh issue create --repo "$repo" --title "$title" \
-                --body-file - >/dev/null ||
+                --body-file -)" ||
             die 1 "write failed: gh issue create in $repo"
-        echo "APPLIED report creation in $repo"
+        echo "APPLIED report creation in $repo: $created"
     fi
 }
 

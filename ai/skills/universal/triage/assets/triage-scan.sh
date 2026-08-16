@@ -81,6 +81,14 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 [ -n "$repo" ] || usage
+# Reads are bound too: a scan of a different repository would land that
+# repo's issue data in the run's scratch dir, where the report pipeline can
+# publish it. Same rule as the write scripts.
+if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then
+    echo "triage-scan: refused: --repo '$repo' does not match this run's" \
+        "bound repository '$TRIAGE_REPO'" >&2
+    exit 4
+fi
 
 claim_stale="${TRIAGE_CLAIM_STALE_DAYS:-14}"
 needs_stale="${TRIAGE_NEEDS_STALE_DAYS:-30}"
@@ -216,6 +224,8 @@ jq -n \
                 (if $needs_triage_worthy
                     and (($ls | index("needs-triage")) == null)
                  then "missing-needs-triage" else empty end),
+                (if $incomplete and (($ls | index("needs-triage")) != null)
+                 then "partially-classified" else empty end),
                 (if (($ls | index("needs-triage")) != null)
                     and ($incomplete | not)
                  then "needs-triage-removable" else empty end),

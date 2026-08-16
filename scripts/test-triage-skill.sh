@@ -78,7 +78,11 @@ api\ repos/*)
 # Only the body-carrying writes read stdin (--body-file -): drain just there,
 # so a stubbed read call inside a caller's while-read loop cannot eat the
 # loop's remaining input or hang on a never-closing stdin.
-"issue edit" | "issue create") [ -t 0 ] || cat >/dev/null ;;
+"issue edit") [ -t 0 ] || cat >/dev/null ;;
+"issue create")
+    [ -t 0 ] || cat >/dev/null
+    printf '%s\n' "https://github.com/stub/stub/issues/321"
+    ;;
 *)
     echo "gh stub: unexpected call: $*" >&2
     exit 97
@@ -529,6 +533,18 @@ jq -e '[.open[] | select(.work_type == []) | .flags[]]
        | index("missing-needs-triage") == null' "$tmp/out" >/dev/null ||
     fail "org repo must not flag missing-needs-triage on empty work-type"
 GH_STUB_OWNER_TYPE="User"
+
+echo "==> scan: a mismatched --repo is refused when the run is bound"
+[ "$(run env TRIAGE_REPO="$repo" "$scan" --repo other/elsewhere \
+    --manifest "$manifest")" = 4 ] || fail "unbound scan must exit 4"
+
+echo "==> scan: an incomplete needs-triage issue is flagged partially-classified"
+jq -e '.open[] | select(.number == 20) | .flags | index("partially-classified")' \
+    "$scan_out" >/dev/null || fail "partially-classified flag missing on #20"
+jq -e '.open[] | select(.number == 23)
+       | .flags | index("partially-classified") == null' \
+    "$scan_out" >/dev/null ||
+    fail "an issue without needs-triage is not partially-classified"
 
 echo "==> scan: reports truncation when a page fills its window"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest" --limit 5)" = 0 ] ||
