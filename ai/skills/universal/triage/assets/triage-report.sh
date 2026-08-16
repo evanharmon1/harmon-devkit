@@ -186,8 +186,30 @@ cmd_sync() {
     fi
     validate_entries "$entries"
 
-    local now body
+    local now body entries_content
     now="${TRIAGE_NOW:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
+    # GitHub caps issue bodies at 65,536 characters, and a large backlog can
+    # legitimately produce more. Truncate at a section boundary with a loud
+    # note rather than letting the write fail after labels already applied —
+    # a stale-but-present report beats an update that errors out.
+    local budget=60000
+    if [ "$(wc -c <"$entries")" -gt "$budget" ]; then
+        entries_content="$(awk -v b="$budget" '
+            {n += length($0) + 1
+             if (n > b && ($0 ~ /^### #/ || $0 ~ /^## /)) exit
+             print}' "$entries")"
+        entries_content="$entries_content
+
+## Report truncated
+
+This run produced more findings than fit in one issue body. Everything
+below the last section above was omitted — re-run after resolving some
+entries, or triage a narrower window."
+    elif [ -s "$entries" ]; then
+        entries_content="$(cat "$entries")"
+    else
+        entries_content="No findings this run."
+    fi
     body="$(
         printf '%s\n\n' "$MARKER"
         printf '%s\n' \
@@ -198,11 +220,7 @@ cmd_sync() {
             '' \
             "_Last generated: ${now}_" \
             ''
-        if [ -s "$entries" ]; then
-            cat "$entries"
-        else
-            printf 'No findings this run.\n'
-        fi
+        printf '%s\n' "$entries_content"
     )"
 
     local target

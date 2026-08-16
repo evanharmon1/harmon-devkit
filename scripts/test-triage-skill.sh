@@ -422,6 +422,22 @@ echo "==> report sync: --execute without the env gate is refused"
 [ "$(run "$report" sync --repo "$repo" --entries-file "$entries" \
     --execute)" = 2 ] || fail "sync --execute without env must exit 2"
 
+echo "==> report sync: an oversized entries file truncates at a section boundary"
+{
+    i=1
+    while [ "$i" -le 500 ]; do
+        printf '### #%d — noise: filler entry\n<!-- triage-entry:%d -->\n- Evidence: %s\n- Suggested action: none\n\n' \
+            "$i" "$i" "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        i=$((i + 1))
+    done
+} >"$tmp/huge.md"
+[ "$(run env TRIAGE_NOW=2026-01-01 "$report" sync --repo "$repo" \
+    --entries-file "$tmp/huge.md")" = 0 ] ||
+    fail "oversized sync failed: $(head -3 "$tmp/out")"
+body_len="$(sed -n '/^DRY-RUN body follows:$/,$p' "$tmp/out" | tail -n +2 | wc -c)"
+[ "$body_len" -lt 65536 ] || fail "body must stay under 65536 (got $body_len)"
+grep -q "## Report truncated" "$tmp/out" || fail "truncation must be announced"
+
 echo "==> report sync: a mismatched --repo is refused when the run is bound"
 [ "$(run env TRIAGE_REPO="$repo" "$report" sync --repo other/elsewhere \
     --entries-file "$entries")" = 4 ] || fail "unbound repo sync must exit 4"

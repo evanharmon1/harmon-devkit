@@ -131,4 +131,5 @@ fi
 claude -p "$prompt" \
     --model "${TRIAGE_MODEL:-haiku}" \
     --setting-sources "" \
-    --allowedTools "$tools"
+    --allowedTools "$tools" \
+    --disallowedTools "Glob,Grep"
