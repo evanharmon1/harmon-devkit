@@ -307,6 +307,7 @@ tasks:
       - test:hygiene
       - test:archive-hook
       - test:track-work
+      - test:triage-skill
       - test:skill-index-lifecycle
       - test:independence
 
@@ -423,6 +424,11 @@ tasks:
     cmds:
       - ./scripts/test-track-work.sh
 
+  test:triage-skill:
+    desc: "Unit-test the triage skill's contract scripts (offline, stubbed gh/claude)"
+    cmds:
+      - ./scripts/test-triage-skill.sh
+
   test:sync-devkit-release:
     desc: "Unit-test the harmon-devkit release→sync-PR automation (offline, stubbed gh/task)"
     cmds:
@@ -519,6 +525,19 @@ tasks:
     desc: Second-model adversarial review of the current change (Codex)
     cmds:
       - task: challenge:codex
+
+  triage:
+    # Backlog triage with a cheap headless model. Dry-run by default;
+    # `task triage -- --execute` is the supervised apply mode (interactive
+    # terminal required — issue #455's [HUMAN] gate). The skill contract and
+    # its enforcement live in ai/skills/universal/triage.
+    desc: "Triage the issue backlog (dry-run; task triage -- --execute to apply, supervised)"
+    # interactive: the global `output: group` would otherwise pipe stdout, so
+    # the wrapper's supervised-terminal check would refuse --execute even
+    # from a real terminal.
+    interactive: true
+    cmds:
+      - ./scripts/triage.sh {{.CLI_ARGS}}
 
   review:codex:
     desc: "Codex verification review (usage: task review:codex -- [--base <ref>|--uncommitted] [focus text])"

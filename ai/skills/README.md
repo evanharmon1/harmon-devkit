@@ -20,6 +20,7 @@ ai/skills/
 │   ├── shepherd/SKILL.md    # /shepherd — shepherd a draft PR to ready for review
 │   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables
 │   ├── wrap/SKILL.md        # /wrap — wrap up + rename done-<name>
+│   ├── triage/SKILL.md      # /triage — manifest-governed backlog classifier
 │   └── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
 ├── backend/     # server / data / Convex
 ├── frontend/    # React / TanStack / shadcn / design
@@ -29,10 +30,11 @@ ai/skills/
     └── standardize-repo/SKILL.md
 ```
 
-`universal/` ships the dev-workflow session suite — eight user-invoked slash
+`universal/` ships the dev-workflow session suite — nine user-invoked slash
 commands (`disable-model-invocation: true`) covering the phases of a working
 session, from decomposing the work and naming the session to shepherding its
-PR to ready for review — plus `track-work`,
+PR to ready for review, plus the backlog-maintenance `/triage` (run by
+`task triage` with a cheap headless model, or interactively) — plus `track-work`,
 which is deliberately **not** slash-only. Tracking
 mistakes happen mid-flow, while a PR body is being written and nobody is typing
 a command, so it must be model-invocable to fire at all. It also bundles
