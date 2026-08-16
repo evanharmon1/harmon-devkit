@@ -483,9 +483,13 @@ improvement. Running to the cap is not the goal, and the history is what makes
 going back cheap enough to actually do.
 
 **Go back by adding, not by rewriting.** Because the rounds are pushed, the
-history is published, and rewriting published history is forbidden — no
-`reset --hard` over a pushed round, no amend, no force-push, no matter how
-much tidier the result would look. Revert the rounds you are undoing
+history is published, and **rewriting** published history is forbidden — no
+`reset --hard` over a pushed round, no amend, no rebase, no non-fast-forward
+push, no matter how much tidier the result would look. That is a prohibition
+on *discarding* published commits, not on the `--force-with-lease` a
+fast-forward push may legitimately carry as a concurrency guard: the shepherd
+binds every fix push to the head it observed, precisely so an ordinary push
+cannot resurrect commits another actor removed. Revert the rounds you are undoing
 (`git revert`, newest first) and push that; the branch then records both what
 was tried and that it was withdrawn, which is what a later round or a
 different session needs in order not to retry it. Name the reverted rounds and
@@ -494,12 +498,20 @@ why in the revert's message, exactly as damper 4 requires of a deletion.
 **Two costs the push does not cover.** It carries commits and nothing else:
 
 - The **deferred-findings sidecar and the adjudication ledger** live in the
-  git directory (§6) and are never pushed, so a lost environment costs at
-  most the current round's *code* while taking the whole adjudication record.
-  A resumed session recovers the commits and still re-runs the stage. Say
-  that plainly rather than letting "the rounds are pushed" be read as crash
-  recovery; the sidecar's transfer into the PR body in §10 is still the only
-  thing that makes those findings durable.
+  git directory (§6) and are never pushed, so what a lost environment takes
+  is the whole adjudication record either way. A resumed session recovers
+  whatever was pushed and still re-runs the stage. Say that plainly rather
+  than letting "the rounds are pushed" be read as crash recovery; the
+  sidecar's transfer into the PR body in §10 is still the only thing that
+  makes those findings durable.
+- **Durability starts at the first round that pushes, not at the entry
+  gate.** The gate probes without writing, so until a round has fixes to
+  land, the implementation is committed locally and nowhere else — and a
+  stage whose rounds are all clean pushes nothing at all before §10. "A lost
+  environment costs one round" is true only after that first push; before it,
+  losing the checkout loses the whole implementation. If that matters for the
+  change in hand, push the implementation deliberately before round 1 and
+  accept what §1 says that costs.
 - **A round's commit is secret-scanned before it is pushed.** This is an
   obligation, not a claim about any repo's setup: where a `pre-push` hook
   runs the scan it is automatic, and where none is installed — hook
@@ -666,7 +678,10 @@ In order:
 draft existing is what ends it: from this point each push spends a CI run and
 starts a fresh current-head cloud-review cycle, so the shepherd batches one
 push per its own round rather than one per fix. What does not change is that
-nothing already pushed is ever amended, rebased, or force-pushed.
+published history is never rewritten — no amend, rebase, or non-fast-forward
+push over a commit that has been pushed. The shepherd's `--force-with-lease`
+is not that: it binds a fast-forward push to the head it just observed, and
+the lease is what makes the push refuse rather than clobber.
 
 **Then enter the shepherd stage.** The verified draft existing (step 7) is
 the trigger for that stage — whichever creation path produced it — not the
