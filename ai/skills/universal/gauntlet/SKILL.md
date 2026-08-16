@@ -548,8 +548,11 @@ why in the revert's message, exactly as damper 4 requires of a deletion.
   pushes nothing, so the first round to push carries the implementation in
   its ancestry: a scan scoped to that round's own commit would let a
   credential in the implementation through, on the ordinary path rather than
-  some optional one. Scan `<remote>/<branch>..HEAD`, or the whole branch
-  where the remote has no such ref yet. This is an obligation, not a claim
+  some optional one. Scan `<remote>/<branch>..${sha}` — the **same commit
+  §3 step 4 captured and pushes**, never `HEAD`, which can move under you
+  while the gate runs and would then scan a range the push does not
+  publish — or the whole branch up to `${sha}` where the remote has no such
+  ref yet. This is an obligation, not a claim
   about any repo's setup: where a `pre-push` hook runs the scan it is
   automatic, and where none is installed — hook installation is opt-in in
   most generated repos — run the repo's secret scan yourself first. The rest
