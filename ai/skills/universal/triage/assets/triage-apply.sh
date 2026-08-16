@@ -62,6 +62,7 @@ FALLBACK_WORK_TYPES='bug feature task research documentation question'
 
 usage() {
     echo "Usage: $0 allowlist [--repo owner/repo] [--manifest PATH]" >&2
+    echo "       $0 work-types [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 label --repo owner/repo --issue N [--add LABEL]..." >&2
     echo "           [--remove needs-triage] [--inapplicable AXIS]..." >&2
     echo "           [--manifest PATH] [--execute]" >&2
@@ -128,6 +129,56 @@ allowlist_compute() {
         done
         return 0
     fi
+}
+
+# Print every RECOGNIZED work-type value — the full non-retired work-type
+# vocabulary, regardless of writers. Recognition and write permission are
+# different questions: a human-applied work-type the manifest withholds from
+# agents still classifies the issue, so the completeness checks read this
+# set while additions stay bound to the agent-writable allowlist.
+work_types_recognized() {
+    local repo="$1" manifest="$2"
+    if [ -f "$manifest" ]; then
+        jq -r '
+          [ .families[]
+            | select((.retired // false) | not)
+            | select(.axis == "work-type")
+            | .values[]?
+            | select((.retired // false) | not)
+            | .value
+          ] | unique[]' "$manifest"
+    else
+        [ -n "$repo" ] ||
+            die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
+        local live wt
+        live="$(gh label list --repo "$repo" --limit 1000 --json name \
+            -q '.[].name')"
+        for wt in $FALLBACK_WORK_TYPES; do
+            printf '%s\n' "$live" | grep -qx "$wt" && printf '%s\n' "$wt"
+        done
+        return 0
+    fi
+}
+
+cmd_work_types() {
+    local repo="" manifest="./label-registry.json"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --repo)
+            [ "$#" -ge 2 ] || usage
+            repo="$2"
+            shift 2
+            ;;
+        --manifest)
+            [ "$#" -ge 2 ] || usage
+            manifest="$2"
+            shift 2
+            ;;
+        *) usage ;;
+        esac
+    done
+    guard_manifest "$manifest"
+    work_types_recognized "$repo" "$manifest"
 }
 
 cmd_allowlist() {
@@ -262,7 +313,16 @@ cmd_label() {
         esac
     done
 
-    # Never-list first — independent of, and senior to, any manifest content.
+    # Commas first: gh's --add-label treats a comma as a list separator, so a
+    # manifest value like "task,blocked" would validate as one name and land
+    # as two labels — one of them never validated.
+    for l in "${adds[@]+"${adds[@]}"}"; do
+        case "$l" in
+        *,*) die 4 "refused: '$l' contains a comma — gh would split it" \
+            "into multiple labels" ;;
+        esac
+    done
+    # Never-list next — independent of, and senior to, any manifest content.
     for l in "${adds[@]+"${adds[@]}"}"; do
         if printf '%s' "$l" | grep -qE "$NEVER_RE"; then
             die 4 "refused: '$l' is on the triage never-list"
@@ -288,11 +348,11 @@ cmd_label() {
         -q '.labels[].name')" ||
         die 2 "could not read labels of $repo#$issue"
 
-    # Bare-named allowlist entries are the work-type vocabulary plus
-    # needs-triage; org repos classify with native issue Type instead.
+    # RECOGNIZED work-types classify an issue whoever applied them; org repos
+    # classify with native issue Type instead. (Adds are separately bound to
+    # the agent-writable allowlist above.)
     local work_types
-    work_types="$(printf '%s\n' "$allowlist" |
-        grep -v ':' | grep -vx 'needs-triage' || true)"
+    work_types="$(work_types_recognized "$repo" "$manifest")"
 
     local effective_adds=()
     for l in "${adds[@]+"${adds[@]}"}"; do
@@ -420,7 +480,7 @@ cmd_label() {
             echo "${removes[*]}"
         )")
     fi
-    gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null ||
+    gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null ||
         die 1 "write failed: gh issue edit $repo#$issue"
     for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
         echo "APPLIED add '$l' to $repo#$issue"
@@ -435,6 +495,7 @@ cmd="$1"
 shift
 case "$cmd" in
 allowlist) cmd_allowlist "$@" ;;
+work-types) cmd_work_types "$@" ;;
 native-type) cmd_native_type "$@" ;;
 label) cmd_label "$@" ;;
 *) usage ;;

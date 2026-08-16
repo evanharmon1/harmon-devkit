@@ -17,6 +17,9 @@
 # Run via `task test:triage-skill`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Deterministic stdin: a harness handing this suite a never-closing stdin
+# would hang any stubbed call that drains it.
+exec </dev/null
 
 apply="./ai/skills/universal/triage/assets/triage-apply.sh"
 scan="./ai/skills/universal/triage/assets/triage-scan.sh"
@@ -255,6 +258,29 @@ echo "==> label: a bound run refuses a caller-chosen manifest"
 [ "$(run env TRIAGE_REPO="$repo" "$scan" --repo "$repo" \
     --manifest "$manifest")" = 4 ] ||
     fail "bound scan with custom manifest must exit 4"
+
+echo "==> label: comma-bearing labels are refused (gh splits them into two)"
+jq '.families |= map(if .family == "area"
+    then .values += [{"value": "ci,blocked"}] else . end)' \
+    "$manifest" >"$tmp/comma.json"
+[ "$(run "$apply" label --repo "$repo" --issue 10 --add "area:ci,blocked" \
+    --manifest "$tmp/comma.json")" = 4 ] || fail "comma label must exit 4"
+
+echo "==> work-types: recognition is wider than writability"
+jq '.families |= map(if .family == "work-type"
+    then .writers = ["human"] else . end)' "$manifest" >"$tmp/human-wt.json"
+[ "$(run "$apply" allowlist --manifest "$tmp/human-wt.json")" = 0 ] ||
+    fail "human-wt allowlist failed"
+grep -qx "bug" "$tmp/out" && fail "human-only bug must not be writable"
+[ "$(run "$apply" work-types --manifest "$tmp/human-wt.json")" = 0 ] ||
+    fail "work-types failed"
+grep -qx "bug" "$tmp/out" || fail "human-only bug must still be recognized"
+
+echo "==> label: removal accepts a human-applied work-type as classification"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
+    --inapplicable layer --inapplicable domain \
+    --manifest "$tmp/human-wt.json")" = 0 ] ||
+    fail "human-applied bug must satisfy the removal gate: $(cat "$tmp/out")"
 
 echo "==> label: --issue must be a plain number (URLs bypass the repo binding)"
 [ "$(run "$apply" label --repo "$repo" \
@@ -537,7 +563,10 @@ cat >"$stub_dir/issues-closed.json" <<'JSON'
  {"number": 41, "title": "dup close", "stateReason": "DUPLICATE",
   "closedAt": "2026-01-01T00:00:00Z", "labels": [], "body": "closed as dup"},
  {"number": 42, "title": "clean close", "stateReason": "COMPLETED",
-  "closedAt": "2026-01-01T00:00:00Z", "labels": [], "body": "- [x] all done"}]
+  "closedAt": "2026-01-01T00:00:00Z", "labels": [], "body": "- [x] all done"},
+ {"number": 43, "title": "other GFM forms", "stateReason": "COMPLETED",
+  "closedAt": "2026-01-01T00:00:00Z", "labels": [],
+  "body": "1. [ ] ordered\n> - [ ] quoted\n-  [ ] wide gap"}]
 JSON
 
 echo "==> scan: emits facts, flags, and excludes the report issue"
@@ -560,8 +589,11 @@ jq -e '.open[] | select(.number == 21) | .flags | index("axis-conflict:domain")'
     "$scan_out" >/dev/null || fail "axis-conflict flag missing"
 jq -e '[.open[].number] | index(22) == null' "$scan_out" >/dev/null ||
     fail "quiet issue must be filtered without --all"
-jq -e '.closed_flagged | length == 2' "$scan_out" >/dev/null ||
-    fail "expected exactly two flagged closed issues"
+jq -e '.closed_flagged | length == 3' "$scan_out" >/dev/null ||
+    fail "expected exactly three flagged closed issues"
+jq -e '.closed_flagged[] | select(.number == 43) | .unticked_criteria == 3' \
+    "$scan_out" >/dev/null ||
+    fail "ordered/quoted/wide-gap GFM checkboxes must all count"
 jq -e '.closed_flagged[] | select(.number == 40) | .unticked_criteria == 2' \
     "$scan_out" >/dev/null || fail "unticked count wrong"
 jq -e '.work_type_values | sort == ["bug", "feature"]' "$scan_out" \

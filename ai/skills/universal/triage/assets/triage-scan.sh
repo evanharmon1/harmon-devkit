@@ -134,6 +134,12 @@ allowlist="$("$script_dir/triage-apply.sh" allowlist \
     --repo "$repo" --manifest "$manifest")" ||
     die "could not compute the write-allowlist"
 allow_json="$(printf '%s\n' "$allowlist" | jq -R . | jq -s 'map(select(. != ""))')"
+# Recognition is wider than writability: a human-only work-type still
+# classifies the issue (triage-apply.sh work-types is the one source).
+work_types="$("$script_dir/triage-apply.sh" work-types \
+    --repo "$repo" --manifest "$manifest")" ||
+    die "could not compute the recognized work-type vocabulary"
+wt_json="$(printf '%s\n' "$work_types" | jq -R . | jq -s 'map(select(. != ""))')"
 
 mode="fallback"
 if [ -f "$manifest" ]; then
@@ -193,9 +199,8 @@ jq -n \
     --argjson closed "$closed_json" \
     --argjson claim_stale "$claim_stale" \
     --argjson needs_stale "$needs_stale" \
-    --argjson all "$all" '
-  ($allow | map(select(contains(":") | not)) | map(select(. != "needs-triage")))
-    as $wt |
+    --argjson all "$all" \
+    --argjson wt "$wt_json" '
   def axis_labels($ls; $a): [$ls[] | select(startswith($a + ":"))];
   def axis_state($ls; $a):
     (axis_labels($ls; $a) | length) as $n
@@ -282,8 +287,12 @@ jq -n \
     closed_flagged:
       [ $closed[]
         | select(.number != $report)
+        # The same predicate the closing-keywords guard uses: unordered AND
+        # ordered markers, any indentation/whitespace, any blockquote depth.
         | ((.body // "") | split("\n")
-           | map(select(test("^[ \\t]*[-*+] \\[ \\]"))) | length)
+           | map(select(test(
+               "^[ \\t]*(>[ \\t]*)*([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\]")))
+           | length)
             as $unticked
         # gh emits GraphQL-cased reasons (COMPLETED); normalize before
         # comparing so fixtures and live data behave alike.

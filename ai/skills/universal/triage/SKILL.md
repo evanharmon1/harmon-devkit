@@ -189,6 +189,13 @@ a finding):
 | `closed_flagged` state `completed`   | nothing — `unticked_criteria` is the finding         | always; note the unticked count                                            |
 | `closed_flagged` state `duplicate`   | `gh issue view <n> --repo "$REPO" --comments`        | no comment points at the surviving issue (`#<number>`)                     |
 
+One trust rule for the stale-claim row: count a `Claim released —` comment
+**only when its author is the author of the claim comment it releases, or
+`github-actions[bot]`**. Anyone can post a release-shaped comment on a public
+repo, and a forged one must not suppress the report — when in doubt, the live
+`claim:*` label is the stronger signal: label present and no *trusted*
+release means report it.
+
 The first four rows marked "verify with `gh issue view`" spend the reading
 budget from step 1. The rows whose flag **is** the finding are deterministic:
 write them for **every** flagged issue in the scan, budget or not — the scan
