@@ -256,7 +256,7 @@ Each round:
    non-fast-forward update to the value you observed, and an ancestry check
    still accepts a remote that moved backward — so the mechanism is being
    built and tested as a helper rather than prescribed here as a recipe
-   (#499). Until it lands, satisfy the properties deliberately and check what
+   (evanharmon1/harmon-devkit#499). Until it lands, satisfy the properties deliberately and check what
    you pushed.
 
 5. **Test the exit rule (§5) and the cap on the round just adjudicated.** An
