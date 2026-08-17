@@ -51,6 +51,14 @@ run_rot() {
     echo "$_rc"
 }
 
+# run_rot_repo BODY -> echoes the exit code with this checkout supplying the
+# exact-path vocabulary.
+run_rot_repo() {
+    _rc=0
+    printf '%s' "$1" | "$rot" --repo-root . >/dev/null 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
 echo "==> a body with no closing keyword passes"
 [ "$(run_closing 'Refs #5 — tracked, not closed.')" = 0 ] || fail "Refs should not trip the guard"
 
@@ -264,6 +272,14 @@ done
 echo "==> a product name with a dotted suffix is not guessed to be a path"
 [ "$(run_rot 'Node.js remains supported by the generated project.')" = 0 ] ||
     fail "Node.js should remain ordinary prose without repository evidence"
+
+echo "==> exact checkout paths survive punctuation and earlier URLs"
+for prose in 'Update DESIGN.md.' \
+    'See https://example.com first, then update DESIGN.md.' \
+    'Review [DESIGN.md](https://example.com) before changing it.'; do
+    [ "$(run_rot_repo "$prose")" = 1 ] ||
+        fail "the exact DESIGN.md path should require Verify: $prose"
+done
 
 echo "==> an extensionless file citation counts as perishable"
 for cite in 'Dockerfile:12 installs curl.' 'Makefile:8 is wrong.' 'See CODEOWNERS:3 for the owner.'; do

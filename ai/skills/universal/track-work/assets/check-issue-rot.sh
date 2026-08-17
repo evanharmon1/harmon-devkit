@@ -137,22 +137,30 @@ if [ -n "$repo_root" ]; then
         exit 2
     }
     repository_hits="$(awk '
-      NR == FNR { if (length($0) > 1) paths[++n]=$0; next }
+      NR == FNR { if (length($0) > 1) paths[$0]=1; next }
+      function trim_candidate(value,   leading, trailing) {
+        leading="[(`\"{" sprintf("%c", 39)
+        trailing=")]}>`\",;!?" sprintf("%c", 39)
+        while (length(value) && index(leading, substr(value, 1, 1)))
+          value=substr(value, 2)
+        while (length(value) && index(trailing, substr(value, length(value), 1)))
+          value=substr(value, 1, length(value)-1)
+        # A sentence-ending period is punctuation unless the complete token is
+        # itself a repository path. This preserves real dotfiles and names
+        # ending in a period while recognizing ordinary `DESIGN.md.` prose.
+        if (!(value in paths)) sub(/\.$/, "", value)
+        # Markdown links keep their destination in the same whitespace token;
+        # only the visible label is a local-path citation.
+        if (index(value, "](") > 0) value=substr(value, 1, index(value, "](")-1)
+        return value
+      }
       {
-        line=$0
-        for (i=1; i<=n; i++) {
-          path=paths[i]; start=1
-          while ((at=index(substr(line, start), path)) > 0) {
-            at += start - 1
-            before=(at > 1 ? substr(line, at-1, 1) : "")
-            after=substr(line, at+length(path), 1)
-            prefix=substr(line, 1, at-1)
-            if (before !~ /[A-Za-z0-9_.\/-]/ && after !~ /[A-Za-z0-9_.\/-]/ &&
-                prefix !~ /https?:\/\//) {
-              printf "%d:%s\n", FNR, path
-              break
-            }
-            start=at+length(path)
+        for (i=1; i<=NF; i++) {
+          candidate=trim_candidate($i)
+          if (candidate ~ /:\/\//) continue
+          if (candidate in paths && !seen[candidate]) {
+            printf "%d:%s\n", FNR, candidate
+            seen[candidate]=1
           }
         }
       }
