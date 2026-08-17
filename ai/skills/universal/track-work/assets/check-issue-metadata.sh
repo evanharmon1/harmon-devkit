@@ -370,12 +370,23 @@ esac
     violation "--owner-type $owner_type does not match target repository owner type $actual_owner_type"
 
 # Preserve source line numbers while reducing the body to Markdown structure.
-# The shared parser blanks fenced examples, HTML comments, and raw HTML blocks,
-# so none can supply a canonical heading or acceptance item.
+# The shared parser accepts only the mechanized authoring profile: fenced
+# examples are blanked, and a draft carrying raw HTML, HTML comments, or any
+# other construct whose rendering a line-oriented parser cannot decide is a
+# contract violation, with the parser naming each offending line.
 visible_body="$tmp/visible-body"
 asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
-bash "$asset_dir/parse-issue-markdown.sh" --structure "$body_file" >"$visible_body" ||
+parse_rc=0
+bash "$asset_dir/parse-issue-markdown.sh" --structure "$body_file" >"$visible_body" 2>"$tmp/parse-err" || parse_rc=$?
+if [ "$parse_rc" -eq 3 ]; then
+    while IFS= read -r diagnostic; do
+        violation "body is outside the authoring profile: ${diagnostic#parse-issue-markdown: }"
+    done <"$tmp/parse-err"
+    exit 1
+elif [ "$parse_rc" -ne 0 ]; then
+    cat "$tmp/parse-err" >&2
     die "could not parse issue body structure"
+fi
 rendered_tasks="$tmp/rendered-tasks"
 printf '0:\n' >"$rendered_tasks"
 bash "$asset_dir/parse-issue-markdown.sh" --tasks "$body_file" >>"$rendered_tasks" ||
@@ -419,16 +430,10 @@ awk '
     if (lower == "provenance") return "provenance"
     return "unknown"
   }
-  match($0, /^ ? ? ?(`{3,}|~{3,})/) {
-    seq = substr($0, RSTART, RLENGTH); sub(/^ +/, "", seq)
-    ch = substr(seq, 1, 1); rest = substr($0, RSTART + RLENGTH)
-    if (!fence) { fence = 1; fence_ch = ch; fence_len = length(seq); next }
-    if (ch == fence_ch && length(seq) >= fence_len && rest ~ /^[[:space:]]*$/) {
-      fence = 0; fence_ch = ""; fence_len = 0
-    }
-    next
-  }
-  !fence && match($0, /^ ? ? ?##[[:space:]]+/) {
+  # No fence tracking here: the structure pass replaces every fence delimiter
+  # and interior line with a placeholder, so no heading-shaped line survives
+  # from inside one.
+  match($0, /^ ? ? ?##[[:space:]]+/) {
     text = substr($0, RSTART + RLENGTH)
     sub(/[[:space:]]*#*[[:space:]]*$/, "", text)
     printf "%d|%s|%s\n", NR, canonical(text), text

@@ -23,6 +23,10 @@
 #     this keeps it to a single command rather than pretending to close it.
 #
 # Checkboxes inside fenced code blocks are not criteria and are never touched.
+# A body carrying Markdown outside the mechanized authoring profile — raw
+# HTML, HTML comments, blockquoted or list-nested structure, non-canonical
+# task spacing (see parse-issue-markdown.awk) — is refused whole rather than
+# guessed at: tick such an issue with an ordinary, individually approved edit.
 # A failed edit is read back before it is reported, because GitHub can apply one
 # and lose the response, and a retry would then find nothing left to tick.
 #
@@ -208,55 +212,36 @@ read_body_or_die >"$before"
 
 # Enumerate the unticked items as "lineno:text", in body order.
 #
-# The item pattern is check-closing-keywords.sh's — unordered and ordered
-# markers, any indentation, any whitespace run before the box, any depth of
-# blockquote prefix — with two deliberate departures, both because this one
-# writes. Fenced blocks are skipped, where that guard scans them. And the box
-# must be followed by whitespace or the end of the line, as GFM requires to
-# render a task item at all: `- [ ]example` is literal text, and ticking it
-# would edit prose while the real criterion stayed open. The guard can safely
-# over-count there; a mutation cannot. The bias inverts with the operation: a read-only guard
-# is fail-closed, so a checkbox in an example counts as unfinished work; a
-# command that writes must not treat an example as a criterion, or `--index 1`
-# ticks a code sample and reports success while the real criterion stays open.
+# Enumeration is shared with the read-side checks through
+# `parse-issue-markdown.awk`, which no longer emulates GitHub's rendering of
+# arbitrary Markdown. It accepts a mechanically decidable authoring profile —
+# plain prose, ATX headings, column-0 fenced code blocks, canonical task items
+# (`- [ ] text` at column 0, one nesting level at exactly two spaces) — and
+# REFUSES any construct whose rendering depends on container state a
+# line-oriented parser cannot hold: raw HTML, HTML comments, blockquoted or
+# list-nested structure, non-canonical task spacing. On every accepted body
+# the enumeration provably matches what GitHub renders; on anything else this
+# command refuses to mechanize the tick rather than guessing, and the criteria
+# are ticked through an ordinary, individually approved edit instead.
 #
-# Containment is modelled once in `parse-issue-markdown.awk` rather than handed
-# to an external parser — the skill stays dependency-free and every read/write
-# consumer uses the same result. Modelled: fenced and indented code blocks,
-# blockquotes, list items, HTML comments, and HTML blocks of CommonMark type 1
-# (`pre`, `script`, `style`, `textarea`) and type 6 (the known block-tag set).
-#
-# Everywhere else this follows the CommonMark block algorithm, and a divergence
-# is a bug rather than an accepted limit. These are the KNOWN DEPARTURES, named
-# individually rather than waved at as "and other corners". State them this way
-# round on purpose: nine rounds of adversarial review, local and on the PR, each
-# produced constructs absent from an earlier attempt at an exhaustive list, so a
-# claim that the list below is complete would not survive contact with a tenth.
-# Several of those rounds found the same *class* of error one level deeper —
-# conflating "a list item is open" with "a paragraph is open", or a leaf block
-# with its inline spelling — which is the shape a residual bug here takes.
-#
-#   - HTML blocks of types 3 (`<?…?>`), 4 (`<!LETTER`) and 5 (`<![CDATA[`).
-#   - HTML block type 7 (any other complete tag alone on its line). Unlike
-#     type 6 it cannot interrupt a paragraph, and recognising it needs a full
-#     tag parse — attribute values may contain `>`.
-#   - Blockquote lazy continuation: an unquoted line directly under a quoted
-#     paragraph continues it, and is enumerated here as if it had left the
-#     quote. Lazy continuation inside a LIST item is modelled.
-#   - Setext heading underlines (`===`). ATX headings and thematic breaks are
-#     recognised as leaf blocks that close a paragraph; an `===` underline is
-#     still read as prose, so an ordered list starting above 1 directly under
-#     one does not open its container.
-#
-# The first three over-enumerate — they offer a line GitHub renders as
-# something else — so prefer `--match` over `--index` on a body carrying one.
-# The write gates downstream are what make any of this survivable: a mis-parse
-# costs a refusal or a missed tick, never a body edited beyond one marker.
+# Refusal, not skipping, is what keeps selectors honest: a task-looking line
+# silently skipped would shift every later `--index` onto the wrong criterion.
+# The bias matches the operation — a read-only guard may over-count a checkbox
+# in an example, but a command that writes must never treat an example as a
+# criterion. The write gates downstream still make any residual mis-parse cost
+# a refusal or a missed tick, never a body edited beyond one marker.
 asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
-items="$(awk -v mode=criteria -f "$asset_dir/parse-issue-markdown.awk" "$before")" || {
+parse_rc=0
+items="$(awk -v mode=criteria -f "$asset_dir/parse-issue-markdown.awk" "$before" 2>"$tmp/parse-err")" || parse_rc=$?
+if [ "$parse_rc" -eq 3 ]; then
+    echo "tick-criteria: $repo#$issue is outside the mechanized ticking profile — tick it with an ordinary approved edit instead:" >&2
+    cat "$tmp/parse-err" >&2
+    exit 1
+elif [ "$parse_rc" -ne 0 ]; then
+    cat "$tmp/parse-err" >&2
     echo "tick-criteria: could not parse issue body" >&2
     exit 2
-}
+fi
 [ -n "$items" ] || {
     echo "tick-criteria: $repo#$issue has no unticked items" >&2
     exit 1

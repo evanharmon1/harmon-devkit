@@ -147,15 +147,18 @@ box:
 ```
 
 `--index K` addresses the K-th *unticked* item instead, `--dry-run` shows what
-would change, and both selectors repeat to tick several at once. Checkboxes
-GitHub does not render as criteria are skipped — inside fenced or indented
-code, HTML comments (an issue template's commented-out sample), `<pre>`, or an
-HTML block such as `<div>` or `<table>` — because an example is not a
-criterion. A checkbox nested under a list item is still a criterion; so is one
-after the blank line that ends a `<details>` wrapper, which is where GitHub
-starts rendering Markdown again. Containment is modelled, not parsed: the
-script names the constructs it does not model in a comment above the
-enumerator, and on a body carrying one of those, prefer `--match`.
+would change, and both selectors repeat to tick several at once. The script
+mechanizes ticking only for bodies inside the authoring profile of §5 — plain
+Markdown whose rendering is mechanically decidable. Checkboxes inside fenced
+code blocks are examples, never criteria, and are skipped; a body carrying
+anything whose rendering the profile cannot decide — raw HTML or an HTML
+comment (an issue template's commented-out sample, a `<details>` wrapper),
+blockquoted or list-nested structure, non-canonical task spacing — is refused
+whole, with each offending line named, rather than parsed by guesswork. GitHub
+renders some of those constructs as criteria and hides others, and a wrong
+guess in either direction ticks the wrong line; refusal is the safe answer for
+a pre-approved write. On a refusal, tick that issue with an ordinary
+`gh issue edit`, which needs its own go-ahead like any other body edit.
 
 **Fail condition:** you are about to write a PR body for an issue whose
 criteria you satisfied and verified during this work, and its boxes are still
@@ -584,6 +587,19 @@ Every acceptance criterion is a rendered task-list item whose text begins with
 `[CI]` or `[HUMAN]`, case-insensitively. The section is nonempty. Foreman reads
 this same shape, so prose bullets, an untagged checkbox, or criteria that exist
 only in surrounding agent context are not equivalent.
+
+**Drafts stay inside the mechanized authoring profile.** The checker validates
+what it can decide the rendering of, and rejects the rest by construction:
+plain prose, ATX headings, fenced code blocks whose delimiters start at
+column 0, task items written `- [ ] text` at column 0 with single spaces (one
+nesting level at exactly two spaces under a `-` parent), and plain lists are
+in; raw HTML, HTML comments, `<details>` wrappers, blockquoted or list-nested
+structure, tab indentation, and any other task spelling are out, each named by
+line when refused. This is deliberate — an earlier revision emulated GitHub's
+rendering of arbitrary Markdown, and every adversarial review found the next
+CommonMark corner it missed. Anything you would have expressed with those
+constructs belongs in a fenced code block (examples) or in plain prose. The
+same profile bounds the mechanized ticker in §2.
 
 `Current violation` is optional, not a replacement for `Problem`. An issue that
 cites `file:line`, date-bound state, or current behaviour is a snapshot and must

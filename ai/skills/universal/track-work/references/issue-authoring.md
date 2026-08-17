@@ -57,6 +57,15 @@ criterion is a rendered task-list item whose text starts with `[CI]` or
 item without one of those tags is incomplete. This shape is also the shape
 Foreman consumes.
 
+The body stays inside the mechanized authoring profile the checker can decide:
+prose, ATX headings, fenced code blocks opened at column 0, `- [ ] text` task
+items at column 0 with single spaces (nested criteria at exactly two spaces
+under a `-` parent), and plain lists. Raw HTML, HTML comments, `<details>`
+wrappers, blockquoted or list-nested structure, tab indentation, and
+non-canonical task spellings are contract violations — the checker names each
+offending line instead of guessing what GitHub would render. Put examples,
+including HTML or checkbox samples, in fenced code blocks.
+
 Issue Form field names map to this contract, but existing forms are intake
 surfaces rather than alternate standards. Triage must normalize their rendered
 body before dispatch. Map a form's problem field to `Problem` and its

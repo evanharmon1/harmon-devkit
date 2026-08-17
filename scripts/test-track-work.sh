@@ -475,7 +475,10 @@ grep -n x foo.sh
 ~~~
 ')" = 0 ] || fail "a shell comment inside a tilde fence should not terminate the Verify section"
 
-echo "==> a shell comment inside an indented fenced code block does not end the Verify section"
+echo "==> an indented fence delimiter is outside the profile — indeterminate, not guessed"
+# CommonMark gives an indented delimiter a container-dependent meaning, so the
+# profile pins fence delimiters to column 0 and the guard reports it cannot
+# decide rather than guessing which container holds the fence.
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
 
 ## Verify
@@ -484,7 +487,7 @@ echo "==> a shell comment inside an indented fenced code block does not end the 
    # check the thing
    grep -n x foo.sh
    ```
-')" = 0 ] || fail "a shell comment inside an indented fence should not terminate the Verify section"
+')" = 2 ] || fail "an indented fence delimiter should be indeterminate (exit 2)"
 
 echo "==> a heading-like line inside a fenced script block is content, not a terminator"
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
@@ -736,7 +739,11 @@ Something is wrong.' ;;
         fail "$case_name should fail"
 done
 
-echo "==> metadata: headings and criteria hidden in HTML comments do not count"
+echo "==> metadata: the authoring profile refuses hidden or forged structure"
+# Each fixture below is a construct an adversarial review round once used to
+# hide, forge, or shift canonical structure while the checker emulated GFM
+# rendering. The profile answers the whole class at once: every one is a
+# named contract violation, never a guess about what GitHub renders.
 cat >"$tmp/metadata-commented.md" <<'BODY'
 <!--
 ## Problem
@@ -750,8 +757,11 @@ Hidden.
 BODY
 [ "$(run_personal 'Ignore hidden issue sections' "$tmp/metadata-commented.md")" = 1 ] ||
     fail "HTML-comment-hidden sections must not satisfy the body contract"
+grep -q 'outside the authoring profile' "$tmp/metadata.out" ||
+    fail "the refusal should name the authoring profile: $(cat "$tmp/metadata.out")"
+grep -q 'HTML comment' "$tmp/metadata.out" ||
+    fail "the refusal should name the offending construct"
 
-echo "==> metadata: container fences and raw HTML cannot forge headings"
 cat >"$tmp/metadata-container-fence.md" <<'BODY'
 ## Problem
 
@@ -767,9 +777,10 @@ Keep examples out of the issue skeleton.
 
 - [ ] [CI] The real criterion remains visible
 BODY
-[ "$(run_personal 'Ignore fenced example headings' \
-    "$tmp/metadata-container-fence.md")" = 0 ] ||
-    fail "a container-nested fence must hide its example heading: $(cat "$tmp/metadata.out")"
+[ "$(run_personal 'Refuse container-nested fences' \
+    "$tmp/metadata-container-fence.md")" = 1 ] ||
+    fail "a fence opened as list-item content is outside the profile: $(cat "$tmp/metadata.out")"
+
 cat >"$tmp/metadata-raw-html.md" <<'BODY'
 <pre>
 ## Problem
@@ -788,8 +799,8 @@ Ignore raw HTML examples.
 
 - [ ] [CI] The real criterion remains visible
 BODY
-[ "$(run_personal 'Ignore raw HTML headings' "$tmp/metadata-raw-html.md")" = 0 ] ||
-    fail "raw HTML blocks must hide their example headings: $(cat "$tmp/metadata.out")"
+[ "$(run_personal 'Refuse raw HTML headings' "$tmp/metadata-raw-html.md")" = 1 ] ||
+    fail "raw HTML blocks are outside the profile: $(cat "$tmp/metadata.out")"
 
 cat >"$tmp/metadata-list-fence-boundary.md" <<'BODY'
 - ```text
@@ -803,9 +814,9 @@ Hidden by the new top-level fence.
 
 - [ ] [CI] Hidden criterion
 BODY
-[ "$(run_personal 'Honor list fence boundaries' \
+[ "$(run_personal 'Refuse list fence boundaries' \
     "$tmp/metadata-list-fence-boundary.md")" = 1 ] ||
-    fail "leaving a list fence must let the delimiter open a new outer fence"
+    fail "a list-item fence whose extent depends on containers must be refused"
 
 cat >"$tmp/metadata-malformed-pre-close.md" <<'BODY'
 <pre>
@@ -819,7 +830,7 @@ Still rendered inside the preformatted block.
 
 - [ ] [CI] Hidden criterion
 BODY
-[ "$(run_personal 'Require complete raw HTML closing tags' \
+[ "$(run_personal 'Refuse malformed raw HTML' \
     "$tmp/metadata-malformed-pre-close.md")" = 1 ] ||
     fail "a malformed closing tag must not expose raw HTML contents"
 
@@ -832,9 +843,9 @@ Visible-looking prose.
 
 - [<!-- hidden --> ] [CI] Forged criterion
 BODY
-[ "$(run_personal 'Preserve comment token boundaries' \
+[ "$(run_personal 'Refuse comment token forgeries' \
     "$tmp/metadata-comment-boundary.md")" = 1 ] ||
-    fail "stripping comments must not forge headings or task syntax"
+    fail "inline comments must not forge headings or task syntax"
 
 cat >"$tmp/metadata-html-container-end.md" <<'BODY'
 ## Problem
@@ -847,9 +858,9 @@ Keep visible structure outside an HTML container.
 
 - [ ] [CI] The top-level heading remains visible
 BODY
-[ "$(run_personal 'End raw HTML with its container' \
-    "$tmp/metadata-html-container-end.md")" = 0 ] ||
-    fail "leaving a list must end its raw HTML block: $(cat "$tmp/metadata.out")"
+[ "$(run_personal 'Refuse container-scoped raw HTML' \
+    "$tmp/metadata-html-container-end.md")" = 1 ] ||
+    fail "raw HTML whose extent depends on containers must be refused: $(cat "$tmp/metadata.out")"
 
 echo "==> metadata: acceptance criteria are tagged rendered task-list items"
 for case_name in untagged non-task; do
@@ -878,7 +889,7 @@ Validate nested criteria.
 ## Acceptance criteria
 
 - [ ] [CI] Parent criterion
-    - [ ] Untagged nested criterion
+  - [ ] Untagged nested criterion
 BODY
 [ "$(run_personal 'Validate nested acceptance criteria' \
     "$tmp/metadata-nested-untagged.md")" = 1 ] ||
@@ -887,7 +898,20 @@ sed 's/\[ \] Untagged/\[ \] [HUMAN] Tagged/' "$tmp/metadata-nested-untagged.md" 
     >"$tmp/metadata-nested-tagged.md"
 [ "$(run_personal 'Validate nested acceptance criteria' \
     "$tmp/metadata-nested-tagged.md")" = 0 ] ||
-    fail "a nested tagged criterion should pass: $(cat "$tmp/metadata.out")"
+    fail "a canonical two-space nested tagged criterion should pass: $(cat "$tmp/metadata.out")"
+cat >"$tmp/metadata-deep-nested.md" <<'BODY'
+## Problem
+
+Validate nesting depth.
+
+## Acceptance criteria
+
+- [ ] [CI] Parent criterion
+    - [ ] [HUMAN] Four-space nested criterion
+BODY
+[ "$(run_personal 'Refuse non-canonical nesting depth' \
+    "$tmp/metadata-deep-nested.md")" = 1 ] ||
+    fail "nesting deeper than the canonical two spaces is outside the profile"
 cat >"$tmp/metadata-inline-raw-task.md" <<'BODY'
 ## Problem
 
@@ -897,9 +921,9 @@ Preserve inline HTML in rendered criteria.
 
 - [ ] [CI] Preserve the criterion <pre></pre>
 BODY
-[ "$(run_personal 'Preserve inline raw HTML tasks' \
-    "$tmp/metadata-inline-raw-task.md")" = 0 ] ||
-    fail "inline raw HTML must not hide a rendered task: $(cat "$tmp/metadata.out")"
+[ "$(run_personal 'Refuse inline raw HTML tasks' \
+    "$tmp/metadata-inline-raw-task.md")" = 1 ] ||
+    fail "inline raw HTML in a criterion is outside the profile: $(cat "$tmp/metadata.out")"
 for invalid_marker in '1234567890. [ ] [CI] Too many marker digits' \
     '-     [ ] [CI] Checkbox rendered as code'; do
     cat >"$tmp/metadata-nonrendered-task.md" <<BODY
@@ -1277,17 +1301,23 @@ issue_is 20 '## Acceptance
 - [x] already done
 ' || fail "only the matched criterion should have changed"
 
-echo "==> inline raw HTML does not hide a rendered criterion"
+echo "==> inline raw HTML is outside the ticking profile — refused, nothing written"
 write_issue 33 '## Acceptance criteria
 
 - [ ] criterion <pre></pre>
 '
-[ "$(run_tick 33 --match 'criterion')" = 0 ] ||
-    fail "a task containing inline raw HTML should remain tickable"
+[ "$(run_tick 33 --match 'criterion')" = 1 ] ||
+    fail "a body carrying inline raw HTML should refuse the mechanized tick"
 issue_is 33 '## Acceptance criteria
 
-- [x] criterion <pre></pre>
-' || fail "the inline-HTML criterion should be ticked in place"
+- [ ] criterion <pre></pre>
+' || fail "a profile refusal must not write"
+_out="$(env ISSUE_BODY_DIR="$ticks" GH_REPO="" \
+    "$tick" --repo "$repo" --issue 33 --match 'criterion' 2>&1 || true)"
+printf '%s\n' "$_out" | grep -q 'outside the mechanized ticking profile' ||
+    fail "the refusal should say the body is outside the profile"
+printf '%s\n' "$_out" | grep -q 'raw HTML tag' ||
+    fail "the refusal should name the offending construct and line"
 
 echo "==> --index counts unticked items, not body lines"
 write_issue 21 "$body_three"
@@ -1334,16 +1364,28 @@ write_issue 27 "$body_three"
 [ "$(run_tick 27 --match 'first' --dry-run)" = 0 ] || fail "--dry-run should succeed"
 issue_is 27 "$body_three" || fail "--dry-run must leave the body untouched"
 
-echo "==> the alternate checkbox spellings are tickable"
+echo "==> quoted criteria and loose marker spacing are outside the profile"
 write_issue 28 '> - [ ] quoted criterion
 1. [ ] ordered criterion
 *  [ ] loose marker
 '
-[ "$(run_tick 28 --index 1 --index 2 --index 3)" = 0 ] || fail "GFM spellings should tick"
-issue_is 28 '> - [x] quoted criterion
-1. [x] ordered criterion
-*  [x] loose marker
-' || fail "every GFM checkbox spelling should be ticked in place"
+[ "$(run_tick 28 --index 1 --index 2 --index 3)" = 1 ] ||
+    fail "quoted tasks and non-canonical spacing should refuse the mechanized tick"
+issue_is 28 '> - [ ] quoted criterion
+1. [ ] ordered criterion
+*  [ ] loose marker
+' || fail "a profile refusal must not write"
+
+echo "==> the canonical marker spellings are tickable"
+write_issue 30 '- [ ] dash criterion
+* [ ] star criterion
++ [ ] plus criterion
+'
+[ "$(run_tick 30 --index 1 --index 2 --index 3)" = 0 ] || fail "canonical spellings should tick"
+issue_is 30 '- [x] dash criterion
+* [x] star criterion
++ [x] plus criterion
+' || fail "every canonical marker spelling should be ticked in place"
 
 echo "==> a literal [ ] inside the criterion text is left alone"
 write_issue 29 '- [ ] the parser accepts [ ] as input
@@ -1510,7 +1552,25 @@ write_issue 36 "$body_three"
 [ "$(run_tick 36 --match "$(printf 'first\nindex:2')")" = 2 ] || fail "a multiline --match should exit 2"
 issue_is 36 "$body_three" || fail "a multiline --match must not write"
 
-echo "==> a blockquoted fence inside a fenced example does not close it"
+# --- profile refusals --------------------------------------------------------
+# Every fixture below is an attack a review round once aimed at the GFM
+# emulation this parser no longer attempts: constructs whose rendering depends
+# on container state. The profile refuses each whole body, names the offending
+# line, and writes nothing — the attack cannot tick the wrong box because
+# nothing is ticked at all.
+
+# refused_body NUM BODY — assert the mechanized tick refuses NUM's body
+# untouched, for every selector shape.
+refused_body() {
+    write_issue "$1" "$2"
+    [ "$(run_tick "$1" --index 1)" = 1 ] ||
+        fail "issue $1 is outside the profile and must refuse --index"
+    [ "$(run_tick "$1" --match 'criterion')" = 1 ] ||
+        fail "issue $1 is outside the profile and must refuse --match"
+    issue_is "$1" "$2" || fail "a profile refusal must not write (issue $1)"
+}
+
+echo "==> everything inside a column-0 fence is opaque, quoted delimiters included"
 write_issue 37 '````
 > ```
 > - [ ] quoted example inside an outer fence
@@ -1529,8 +1589,8 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
-echo "==> a sibling list-item fence both ends the previous one and opens its own"
-write_issue 61 '- ```text
+echo "==> quoted, list-nested, and indented fences are refused"
+refused_body 61 '- ```text
   content
 - ```text
   - [ ] example inside the sibling fence
@@ -1538,55 +1598,66 @@ write_issue 61 '- ```text
 
 - [ ] the real criterion
 '
-[ "$(run_tick 61 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 61 '- ```text
-  content
-- ```text
-  - [ ] example inside the sibling fence
-  ```
+refused_body 60 '- >   ```text
+  >   - [ ] example in an indented quoted fence
+  >   ```
 
-- [x] the real criterion
-' || fail "the boundary line must be reconsidered as an opener"
+- [ ] the real criterion
+'
+refused_body 54 ' ```
+    ```
+- [ ] example after the false closer
+ ```
 
-echo "==> a marker that cannot interrupt a paragraph keeps paragraph state"
-write_issue 62 'Some ordinary paragraph text.
+- [ ] the real criterion
+'
+refused_body 55 '- > ```text
+  > - [ ] example in a quoted list fence
+  > ```
+
+- [ ] the real criterion
+'
+refused_body 51 '- - ```text
+    - [ ] example in a nested list fence
+    ```
+
+- [ ] the real criterion
+'
+refused_body 50 '> ```
+- [ ] the real criterion
+> ```
+> - [ ] example inside the new quoted fence
+'
+
+echo "==> non-canonical task spacing and markers are refused"
+refused_body 62 'Some ordinary paragraph text.
 2. prose that cannot interrupt
 3. [ ] example prose
 
 - [ ] the real criterion
 '
-[ "$(run_tick 62 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 62 'Some ordinary paragraph text.
-2. prose that cannot interrupt
-3. [ ] example prose
+refused_body 58 'Some ordinary paragraph text.
+2. [ ] example prose, still in the paragraph
 
-- [x] the real criterion
-' || fail "an ordered-looking line must not fabricate list context"
+- [ ] the real criterion
+'
+refused_body 56 '-     [ ] example indented into a code block
 
-echo "==> a tabbed list prefix is measured in rendered columns"
-printf -- '-\t```text\n\t- [ ] first example\n  ```\n- [ ] example in the outer fence\n  ```\n\n- [ ] the real criterion\n' >"$ticks/${repo//\//_}__63.md"
-[ "$(run_tick 63 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-[ "$(cat "$ticks/${repo//\//_}__63.md" | tail -1)" = '- [x] the real criterion' ] || fail "a tab must advance to the next four-column stop"
+- [ ] the real criterion
+'
+refused_body 57 '-    [ ] four spaces of padding is not the canonical single space
+'
+refused_body 52 '1234567890. [ ] example prose, not a list item
 
-echo "==> task text in script, style and textarea blocks is not a criterion"
+- [ ] the real criterion
+'
+_tabbed="$(printf -- '-\t```text\n\t- [ ] first example\n  ```\n- [ ] example in the outer fence\n  ```\n\n- [ ] the real criterion\n')"
+refused_body 63 "$_tabbed"
+
+echo "==> raw script, style and textarea blocks are refused"
 for raw in script style textarea; do
-    printf '<%s>\n- [ ] example in raw html\n</%s>\n\n- [ ] the real criterion\n' "$raw" "$raw" >"$ticks/${repo//\//_}__64.md"
-    [ "$(run_tick 64 --index 1)" = 0 ] || fail "--index 1 should address the real criterion (<$raw>)"
-    [ "$(cat "$ticks/${repo//\//_}__64.md" | tail -1)" = '- [x] the real criterion' ] || fail "a checkbox inside <$raw> must be left alone"
+    refused_body 64 "$(printf '<%s>\n- [ ] example in raw html\n</%s>\n\n- [ ] the real criterion\n' "$raw" "$raw")"
 done
-
-echo "==> an ordered marker other than 1 cannot interrupt a paragraph"
-write_issue 58 'Some ordinary paragraph text.
-2. [ ] example prose, still in the paragraph
-
-- [ ] the real criterion
-'
-[ "$(run_tick 58 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 58 'Some ordinary paragraph text.
-2. [ ] example prose, still in the paragraph
-
-- [x] the real criterion
-' || fail "an ordered marker under prose must not be tickable"
 
 echo "==> an ordered marker continuing a list is still a criterion"
 write_issue 59 '1. [ ] first
@@ -1597,116 +1668,12 @@ issue_is 59 '1. [ ] first
 2. [x] second continues the list
 ' || fail "an ordered item in list context should tick"
 
-echo "==> fence indentation after a quote marker still opens the fence"
-write_issue 60 '- >   ```text
-  >   - [ ] example in an indented quoted fence
-  >   ```
-
-- [ ] the real criterion
-'
-[ "$(run_tick 60 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 60 '- >   ```text
-  >   - [ ] example in an indented quoted fence
-  >   ```
-
-- [x] the real criterion
-' || fail "permitted fence indentation after a quote must still open the fence"
-
-echo "==> an indented opener still caps its closer at three spaces"
-write_issue 54 ' ```
-    ```
-- [ ] example after the false closer
- ```
-
-- [ ] the real criterion
-'
-[ "$(run_tick 54 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 54 ' ```
-    ```
-- [ ] example after the false closer
- ```
-
-- [x] the real criterion
-' || fail "a four-space delimiter is content, not a closer"
-
-echo "==> mixed list and blockquote containers hide a fence"
-write_issue 55 '- > ```text
-  > - [ ] example in a quoted list fence
-  > ```
-
-- [ ] the real criterion
-'
-[ "$(run_tick 55 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 55 '- > ```text
-  > - [ ] example in a quoted list fence
-  > ```
-
-- [x] the real criterion
-' || fail "a fence inside a quote inside a list item must hide its contents"
-
-echo "==> a marker padded past four spaces is code, not a criterion"
-write_issue 56 '-     [ ] example indented into a code block
-
-- [ ] the real criterion
-'
-[ "$(run_tick 56 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 56 '-     [ ] example indented into a code block
-
-- [x] the real criterion
-' || fail "five spaces of padding must not be tickable"
-
-echo "==> four spaces of marker padding is still a criterion"
-write_issue 57 '-    [ ] four spaces is still a criterion
-'
-[ "$(run_tick 57 --index 1)" = 0 ] || fail "four spaces is within the limit"
-issue_is 57 '-    [x] four spaces is still a criterion
-' || fail "a four-space padded item should tick"
-
-echo "==> a fence under nested list markers hides its contents"
-write_issue 51 '- - ```text
-    - [ ] example in a nested list fence
-    ```
-
-- [ ] the real criterion
-'
-[ "$(run_tick 51 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 51 '- - ```text
-    - [ ] example in a nested list fence
-    ```
-
-- [x] the real criterion
-' || fail "nested list markers must not hide the fence"
-
-echo "==> an ordered marker over nine digits is prose, not a criterion"
-write_issue 52 '1234567890. [ ] example prose, not a list item
-
-- [ ] the real criterion
-'
-[ "$(run_tick 52 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 52 '1234567890. [ ] example prose, not a list item
-
-- [x] the real criterion
-' || fail "a ten-digit ordered marker must not be tickable"
-
 echo "==> a nine-digit ordered marker is still a criterion"
 write_issue 53 '123456789. [ ] a real ordered criterion
 '
 [ "$(run_tick 53 --index 1)" = 0 ] || fail "nine digits is within the GFM limit"
 issue_is 53 '123456789. [x] a real ordered criterion
 ' || fail "a nine-digit ordered item should tick"
-
-echo "==> leaving a blockquote ends the fence it opened"
-write_issue 50 '> ```
-- [ ] the real criterion
-> ```
-> - [ ] example inside the new quoted fence
-'
-[ "$(run_tick 50 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 50 '> ```
-- [x] the real criterion
-> ```
-> - [ ] example inside the new quoted fence
-' || fail "an unquoted line must end a fence opened inside a blockquote"
 
 echo "==> a backtick line whose info string holds backticks is not an opener"
 write_issue 47 '``` `not an opener`
@@ -1725,8 +1692,8 @@ issue_is 47 '``` `not an opener`
 - [x] the real criterion
 ' || fail "a non-opener must not shift the fence boundaries"
 
-echo "==> leaving a list container ends the fence it opened"
-write_issue 48 '- ```text
+echo "==> list-item fences and raw <pre> bodies are refused"
+refused_body 48 '- ```text
   - [ ] indented example
 ```
 - [ ] example in the new outer fence
@@ -1734,51 +1701,28 @@ write_issue 48 '- ```text
 
 - [ ] the real criterion
 '
-[ "$(run_tick 48 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 48 '- ```text
-  - [ ] indented example
-```
-- [ ] example in the new outer fence
-```
-
-- [x] the real criterion
-' || fail "an unindented delimiter opens a new fence, it is not just a closer"
-
-echo "==> a closing-tag-shaped word does not end a <pre> block"
-write_issue 49 '<pre>
+refused_body 49 '<pre>
 sample text </prevent> more
 - [ ] example inside pre
 </pre>
 
 - [ ] the real criterion
 '
-[ "$(run_tick 49 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 49 '<pre>
-sample text </prevent> more
-- [ ] example inside pre
-</pre>
-
-- [x] the real criterion
-' || fail "</prevent> must not end preformatted mode"
-
-echo "==> a fence opened as a list item hides its contents"
-write_issue 45 '- ```text
+refused_body 45 '- ```text
   - [ ] example inside a list-item fence
   ```
 
 - [ ] the real criterion
 '
-[ "$(run_tick 45 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 45 '- ```text
-  - [ ] example inside a list-item fence
-  ```
+refused_body 44 '<pre>
+- [ ] example rendered verbatim
+</pre>
 
-- [x] the real criterion
-' || fail "a checkbox inside a list-item fence must be left alone"
+- [ ] the real criterion
+'
 
 echo "==> a list marker on a later line does not close a fence"
-# A marker starts a new item; only an opener may carry one. Failing to close is
-# the safe direction — the command refuses rather than ticking a code sample.
+# Inside a column-0 fence every line is opaque, marker-bearing or not.
 write_issue 46 '```
 - ``` still inside
 - [ ] example
@@ -1794,21 +1738,6 @@ issue_is 46 '```
 
 - [x] the real criterion
 ' || fail "only the real criterion should tick"
-
-echo "==> a task item inside raw <pre> HTML is not a criterion"
-write_issue 44 '<pre>
-- [ ] example rendered verbatim
-</pre>
-
-- [ ] the real criterion
-'
-[ "$(run_tick 44 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 44 '<pre>
-- [ ] example rendered verbatim
-</pre>
-
-- [x] the real criterion
-' || fail "a task item inside <pre> must be left alone"
 
 echo "==> the closing-keyword guard points at the narrowed ticker"
 _out="$(printf '%s' 'Closes #5' |
@@ -1854,44 +1783,32 @@ issue_is 43 '```
 - [x] the real criterion
 ' || fail "an over-indented delimiter must not close the fence"
 
-echo "==> a checklist hidden in an HTML comment is not a criterion"
-write_issue 41 '<!--
+echo "==> HTML comments are refused wherever they sit — the round-13 attack included"
+# The r13 reproduction: a raw tag hidden inside a comment once made the
+# emulation suppress every later rendered criterion. Under the profile the
+# comment itself is the refusal, so the criterion can never silently vanish.
+refused_body 41 '<!-- <pre> -->
+- [ ] the real criterion
+'
+refused_body 42 '<!--
 - [ ] example from the issue template
 -->
 
 - [ ] the real criterion
 '
-[ "$(run_tick 41 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 41 '<!--
-- [ ] example from the issue template
--->
-
-- [x] the real criterion
-' || fail "a commented-out example must be left alone"
-
-echo "==> a single-line HTML comment does not hide what follows it"
-write_issue 42 '<!-- guidance --> text
+refused_body 40 '<!-- guidance --> text
 
 - [ ] the real criterion
 '
-[ "$(run_tick 42 --index 1)" = 0 ] || fail "a closed comment must not swallow the rest"
-issue_is 42 '<!-- guidance --> text
 
-- [x] the real criterion
-' || fail "only the real criterion should tick"
-
-echo "==> text GFM does not render as a task item is not a criterion"
-# `- [ ]example` has no delimiter after the box, so GitHub renders it as prose.
-write_issue 39 '- [ ]example prose, not a checkbox
+echo "==> task text GFM does not render is refused, never silently skipped"
+# `- [ ]example` has no delimiter after the box, so GitHub renders it as
+# prose. Skipping it would shift --index onto the wrong criterion; refusing
+# keeps every selector honest.
+refused_body 39 '- [ ]example prose, not a checkbox
 
 - [ ] the real criterion
 '
-[ "$(run_tick 39 --match 'example')" = 1 ] || fail "un-rendered task text should not be selectable"
-[ "$(run_tick 39 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 39 '- [ ]example prose, not a checkbox
-
-- [x] the real criterion
-' || fail "prose that looks like a task item must be left alone"
 
 echo "==> an empty criterion at end of line is still a criterion"
 write_issue 40 '- [ ]
@@ -1910,8 +1827,8 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
 [ "$_rc" = 2 ] || fail "a failed metadata lookup should exit 2 (got $_rc)"
 [ ! -f "$tmp/edited" ] || fail "a failed metadata lookup must not write"
 
-echo "==> a deeper fence inside a quoted fenced block does not close it"
-write_issue 38 '> ```
+echo "==> blockquoted fences are refused at any depth"
+refused_body 38 '> ```
 > > ```
 > > - [ ] example nested deeper
 > > ```
@@ -1919,30 +1836,12 @@ write_issue 38 '> ```
 
 - [ ] the real criterion
 '
-[ "$(run_tick 38 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 38 '> ```
-> > ```
-> > - [ ] example nested deeper
-> > ```
-> ```
-
-- [x] the real criterion
-' || fail "a deeper fence must not close a shallower one"
-
-echo "==> a checkbox inside a blockquoted fence is not a criterion"
-write_issue 33 '> ```
+refused_body 33 '> ```
 > - [ ] quoted example
 > ```
 
 - [ ] the real criterion
 '
-[ "$(run_tick 33 --index 1)" = 0 ] || fail "--index 1 should skip the quoted example"
-issue_is 33 '> ```
-> - [ ] quoted example
-> ```
-
-- [x] the real criterion
-' || fail "a checkbox inside a blockquoted fence must be left alone"
 
 echo "==> --match resolves on criterion text, never the line number"
 write_issue 34 '
@@ -2008,78 +1907,50 @@ issue_is 32 '~~~
 - [x] the real criterion
 ' || fail "checkboxes in either fence style must be left alone"
 
-echo "==> a checkbox in a four-space indented code block is not a criterion"
-write_issue 63 'Example:
+echo "==> indented task syntax is refused — code block, nesting depth, and lazy continuation alike"
+# GitHub renders `    - [ ] x` as code under prose, as a nested item under a
+# two-column parent, and as a continuation elsewhere; the profile refuses all
+# of them instead of deciding, because a wrong decision ticks the wrong line.
+refused_body 63 'Example:
 
     - [ ] example inside an indented code block
 
 - [ ] the real criterion
 '
-[ "$(run_tick 63 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 63 'Example:
+refused_body 65 '- outer item
 
-    - [ ] example inside an indented code block
+      - [ ] example indented into code inside the item
 
-- [x] the real criterion
-' || fail "an indented code block must hide its checkbox"
+- [ ] the real criterion
+'
+refused_body 66 'Example:
 
-echo "==> a checkbox nested under a list item is still a criterion"
+    - [ ] first example line
+
+    - [ ] second example line
+
+- [ ] the real criterion
+'
+refused_body 67 '> Example:
+>
+>     - [ ] example inside a quoted indented code block
+
+- [ ] the real criterion
+'
+refused_body 75 'Some prose
+    - [ ] indented under a paragraph, which GitHub renders as prose
+
+- [ ] the real criterion
+'
+
+echo "==> a checkbox nested exactly two spaces under a bullet parent is still a criterion"
 write_issue 64 '- outer item
-    - [ ] nested criterion
+  - [ ] nested criterion
 '
-[ "$(run_tick 64 --index 1)" = 0 ] || fail "a nested criterion should stay tickable"
+[ "$(run_tick 64 --index 1)" = 0 ] || fail "a canonical nested criterion should stay tickable"
 issue_is 64 '- outer item
-    - [x] nested criterion
-' || fail "four spaces under a list item is nesting, not code"
-
-echo "==> an indented code block is measured from its list container, not column 0"
-write_issue 65 '- outer item
-
-      - [ ] example indented into code inside the item
-
-- [ ] the real criterion
-'
-[ "$(run_tick 65 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 65 '- outer item
-
-      - [ ] example indented into code inside the item
-
-- [x] the real criterion
-' || fail "six columns inside a two-column item is a code block"
-
-echo "==> a blank line does not end an indented code block"
-write_issue 66 'Example:
-
-    - [ ] first example line
-
-    - [ ] second example line
-
-- [ ] the real criterion
-'
-[ "$(run_tick 66 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 66 'Example:
-
-    - [ ] first example line
-
-    - [ ] second example line
-
-- [x] the real criterion
-' || fail "an interior blank line must not reopen the block"
-
-echo "==> a quoted indented code block hides its checkbox too"
-write_issue 67 '> Example:
->
->     - [ ] example inside a quoted indented code block
-
-- [ ] the real criterion
-'
-[ "$(run_tick 67 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 67 '> Example:
->
->     - [ ] example inside a quoted indented code block
-
-- [x] the real criterion
-' || fail "indentation inside a quote is measured from the quote content column"
+  - [x] nested criterion
+' || fail "two spaces under a bullet item is canonical nesting"
 
 echo "==> a wrapped criterion is still a criterion, and its continuation is not"
 write_issue 74 '- [ ] a criterion too long for one line, wrapping onto
@@ -2092,53 +1963,21 @@ issue_is 74 '- [ ] a criterion too long for one line, wrapping onto
 - [x] the second criterion
 ' || fail "a wrapped continuation must not shift the index"
 
-echo "==> a lazy continuation under a paragraph is not a criterion"
-write_issue 75 'Some prose
-    - [ ] indented under a paragraph, which GitHub renders as prose
-
-- [ ] the real criterion
-'
-[ "$(run_tick 75 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 75 'Some prose
-    - [ ] indented under a paragraph, which GitHub renders as prose
-
-- [x] the real criterion
-' || fail "an over-indented line under prose continues the paragraph"
-
-echo "==> a bare > line is a blank line, not prose that ends a quoted fence"
-write_issue 73 '> ```text
+echo "==> quoted fences and raw HTML blocks are refused — div, table, details alike"
+refused_body 73 '> ```text
 >
 > - [ ] example inside the quoted fence
 > ```
 
 - [ ] the real criterion
 '
-[ "$(run_tick 73 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 73 '> ```text
->
-> - [ ] example inside the quoted fence
-> ```
-
-- [x] the real criterion
-' || fail "a gap inside a quote must not close the fence it holds"
-
-echo "==> a checkbox inside a type-6 HTML block is not a criterion"
-write_issue 68 '<div>
+refused_body 68 '<div>
 - [ ] example inside an html block
 </div>
 
 - [ ] the real criterion
 '
-[ "$(run_tick 68 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 68 '<div>
-- [ ] example inside an html block
-</div>
-
-- [x] the real criterion
-' || fail "a type-6 HTML block must hide its checkbox"
-
-echo "==> a table is a type-6 HTML block as much as a div"
-write_issue 69 '<table>
+refused_body 69 '<table>
 <tr><td>
 - [ ] example inside a table cell
 </td></tr>
@@ -2146,190 +1985,78 @@ write_issue 69 '<table>
 
 - [ ] the real criterion
 '
-[ "$(run_tick 69 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 69 '<table>
-<tr><td>
-- [ ] example inside a table cell
-</td></tr>
-</table>
-
-- [x] the real criterion
-' || fail "the whole known block-tag set must hide its contents"
-
-echo "==> a blank line ends a type-6 block, so a <details> checklist stays live"
-write_issue 70 '<details>
+refused_body 70 '<details>
 <summary>Acceptance criteria</summary>
 
 - [ ] the real criterion
 
 </details>
 '
-[ "$(run_tick 70 --index 1)" = 0 ] || fail "a details-wrapped criterion should stay tickable"
-issue_is 70 '<details>
-<summary>Acceptance criteria</summary>
 
-- [x] the real criterion
-
-</details>
-' || fail "the blank line after <summary> ends the HTML block"
-
-echo "==> a type-6 block opened as list-item content still hides its contents"
-write_issue 76 '- <div>
+echo "==> raw HTML in any position, bare markers, and hyphen-only lines are refused"
+refused_body 76 '- <div>
   - [ ] example rendered as raw html
 </div>
 
 - [ ] the real criterion
 '
-[ "$(run_tick 76 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 76 '- <div>
-  - [ ] example rendered as raw html
-</div>
-
-- [x] the real criterion
-' || fail "the scan must see past the list marker to the tag"
-
-echo "==> a lazy continuation that looks like a tag opens no HTML block"
-write_issue 77 'Some prose
+refused_body 77 'Some prose
     <div>
 - [ ] the real criterion
 '
-[ "$(run_tick 77 --index 1)" = 0 ] || fail "a paragraph continuation must not hide the next line"
-issue_is 77 'Some prose
-    <div>
-- [x] the real criterion
-' || fail "an HTML block needs at most three columns of indentation"
-
-echo "==> a marker padded past four spaces opens no HTML block either"
-write_issue 78 '-     <div>
+refused_body 78 '-     <div>
       - [ ] example indented into code
 
 - [ ] the real criterion
 '
-[ "$(run_tick 78 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 78 '-     <div>
-      - [ ] example indented into code
-
-- [x] the real criterion
-' || fail "content past four columns of padding is code, not a tag"
-
-echo "==> an empty list marker still opens a container for its children"
-write_issue 79 '-
+refused_body 79 '-
     - [ ] child of an empty parent marker
 '
-[ "$(run_tick 79 --index 1)" = 0 ] || fail "a child of an empty parent should stay tickable"
-issue_is 79 '-
-    - [x] child of an empty parent marker
-' || fail "a bare marker opens a list item, so its child is not code"
-
-echo "==> a thematic break is a rule, not three nested list containers"
-write_issue 80 '- - -
+refused_body 80 '- - -
 
     - [ ] example in an indented code block
 
 - [ ] the real criterion
 '
-[ "$(run_tick 80 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 80 '- - -
 
-    - [ ] example in an indented code block
-
-- [x] the real criterion
-' || fail "a thematic break must open no container"
-
-echo "==> a deeper blockquote stays inside the HTML block holding it"
-write_issue 81 '> <div>
+echo "==> quoted raw HTML, lazy nesting, and quoted list structure are all refused"
+refused_body 81 '> <div>
 > > - [ ] example inside the quoted html block
 
 - [ ] the real criterion
 '
-[ "$(run_tick 81 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 81 '> <div>
-> > - [ ] example inside the quoted html block
-
-- [x] the real criterion
-' || fail "quoting deeper must not close the block"
-
-echo "==> a sibling list item ends the HTML block inside its predecessor"
-write_issue 82 '- <div>
+refused_body 82 '- <div>
   raw content
 - [ ] the real criterion
 '
-[ "$(run_tick 82 --index 1)" = 0 ] || fail "a sibling item should be live again"
-issue_is 82 '- <div>
-  raw content
-- [x] the real criterion
-' || fail "an HTML block ends where its container ends"
-
-echo "==> a list-looking line inside raw HTML leaves no container behind"
-write_issue 83 '<div>
+refused_body 83 '<div>
 - item inside raw html
 
     - [ ] example in an indented code block
 - [ ] the real criterion
 '
-[ "$(run_tick 83 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 83 '<div>
-- item inside raw html
-
-    - [ ] example in an indented code block
-- [x] the real criterion
-' || fail "raw HTML must record no block structure"
-
-echo "==> an unindented lazy continuation keeps its list item open"
-write_issue 84 '- outer paragraph
+refused_body 84 '- outer paragraph
 continuation without indent
 
     - [ ] nested task item
 '
-[ "$(run_tick 84 --index 1)" = 0 ] || fail "the nested task item should stay tickable"
-issue_is 84 '- outer paragraph
-continuation without indent
-
-    - [x] nested task item
-' || fail "a lazy continuation closes no container"
-
-echo "==> quoting deeper nests inside a list item rather than ending it"
-write_issue 85 '- outer
+refused_body 85 '- outer
   > - quoted
 
     - [ ] live criterion
 '
-[ "$(run_tick 85 --index 1)" = 0 ] || fail "the outer item should survive the quoted sub-list"
-issue_is 85 '- outer
-  > - quoted
-
-    - [x] live criterion
-' || fail "only leaving a container closes it"
-
-echo "==> leaving a blockquote entered after a list marker ends its HTML block"
-write_issue 86 '- > <div>
+refused_body 86 '- > <div>
   - [ ] live criterion in the outer item
 '
-[ "$(run_tick 86 --index 1)" = 0 ] || fail "leaving the quote should end the block"
-issue_is 86 '- > <div>
-  - [x] live criterion in the outer item
-' || fail "the block depth is the one the markers reached, not the line prefix"
-
-echo "==> leaving a blockquote still closes the list it held"
-write_issue 87 '> - item
+refused_body 87 '> - item
 - [ ] outside the quote
 '
-[ "$(run_tick 87 --index 1)" = 0 ] || fail "an unquoted sibling should be tickable"
-issue_is 87 '> - item
-- [x] outside the quote
-' || fail "a shallower line must still pop the quoted container"
-
-echo "==> a blockquote inside a list item is the container, not indentation"
-write_issue 88 '- outer
+refused_body 88 '- outer
     > - [ ] quoted criterion nested under the item
 '
-[ "$(run_tick 88 --index 1)" = 0 ] || fail "a quoted nested criterion should be tickable"
-issue_is 88 '- outer
-    > - [x] quoted criterion nested under the item
-' || fail "the quote marker column must not count as indentation"
 
-echo "==> a top-level fence ends the list item before it"
-write_issue 89 '- item
+echo "==> indented fences, deep indentation, and quoted structure keep refusing"
+refused_body 89 '- item
 
 ```text
 x
@@ -2339,20 +2066,7 @@ x
 
 - [ ] the real criterion
 '
-[ "$(run_tick 89 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 89 '- item
-
-```text
-x
-```
-
-    - [ ] sample in an indented code block
-
-- [x] the real criterion
-' || fail "a fence delimiter closes the containers it has left"
-
-echo "==> a fence inside a list item leaves that item open"
-write_issue 90 '- item
+refused_body 90 '- item
 
   ```text
   x
@@ -2360,172 +2074,67 @@ write_issue 90 '- item
 
   - [ ] nested criterion after a fence inside the item
 '
-[ "$(run_tick 90 --index 1)" = 0 ] || fail "the item should survive its own fenced block"
-issue_is 90 '- item
-
-  ```text
-  x
-  ```
-
-  - [x] nested criterion after a fence inside the item
-' || fail "a fence at the item content column closes nothing"
-
-echo "==> an ordered marker over nine digits opens no container either"
-write_issue 91 '1234567890. text
+refused_body 91 '1234567890. text
 
             - [ ] sample
 
 - [ ] the real criterion
 '
-[ "$(run_tick 91 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 91 '1234567890. text
-
-            - [ ] sample
-
-- [x] the real criterion
-' || fail "a ten-digit marker is prose, so it seeds no container"
-
-echo "==> a heading is a leaf block, so an ordered list under it starts a list"
-write_issue 92 '# Heading
+refused_body 92 '# Heading
 2. parent
     - [ ] child
 '
-[ "$(run_tick 92 --index 1)" = 0 ] || fail "a list under a heading should open its container"
-issue_is 92 '# Heading
-2. parent
-    - [x] child
-' || fail "a heading is not a paragraph a marker has to interrupt"
-
-echo "==> under a real paragraph the non-1 marker rule still holds"
-write_issue 93 'Some prose
+refused_body 93 'Some prose
 2. not a list, the paragraph continues
     - [ ] still prose
 
 - [ ] the real criterion
 '
-[ "$(run_tick 93 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 93 'Some prose
-2. not a list, the paragraph continues
-    - [ ] still prose
-
-- [x] the real criterion
-' || fail "only an ordered marker at 1 may interrupt a paragraph"
-
-echo "==> a blockquote marker four columns in is code, not a container"
-write_issue 94 'Example:
+refused_body 94 'Example:
 
     > - [ ] example inside an indented code block
 
 - [ ] the real criterion
 '
-[ "$(run_tick 94 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 94 'Example:
-
-    > - [ ] example inside an indented code block
-
-- [x] the real criterion
-' || fail "a container marker carries at most three columns of indentation"
-
-echo "==> a quote three columns past its container is still a container"
-write_issue 95 '- item
+refused_body 95 '- item
     > - [ ] quoted at two columns past the item content
 '
-[ "$(run_tick 95 --index 1)" = 0 ] || fail "a quoted nested criterion should be tickable"
-issue_is 95 '- item
-    > - [x] quoted at two columns past the item content
-' || fail "the cap is measured against the container, not column 0"
 
-echo "==> an HTML block closes the paragraph before it"
-write_issue 96 'Some prose
+echo "==> raw HTML, comments, tabs, and item-scoped leaf blocks are refused"
+refused_body 96 'Some prose
 - <div>
   raw content
 2. [ ] real criterion
 '
-[ "$(run_tick 96 --index 1)" = 0 ] || fail "the ordered criterion after the block should be tickable"
-issue_is 96 'Some prose
-- <div>
-  raw content
-2. [x] real criterion
-' || fail "raw HTML is a leaf block, so no paragraph survives it"
-
-echo "==> marker padding is measured in rendered columns, so tabs count fully"
-write_issue 97 "$(printf -- '-\t\t[ ] example indented into code by tabs\n\n- [ ] the real criterion\n')"
-[ "$(run_tick 97 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 97 "$(printf -- '-\t\t[ ] example indented into code by tabs\n\n- [x] the real criterion\n')" ||
-    fail "two tabs expand past four columns, so that item is code"
-
-echo "==> one tab of marker padding is still within the limit"
-write_issue 98 "$(printf -- '-\t[ ] one tab is within the limit\n')"
-[ "$(run_tick 98 --index 1)" = 0 ] || fail "one tab should stay a criterion"
-issue_is 98 "$(printf -- '-\t[x] one tab is within the limit\n')" ||
-    fail "a single tab reaches column four, which is the cap and not past it"
-
-echo "==> a list item holding a leaf block grants no lazy continuation"
-write_issue 99 '- # heading
+refused_body 97 "$(printf -- '-\t\t[ ] example indented into code by tabs\n\n- [ ] the real criterion\n')"
+refused_body 98 "$(printf -- '-\t[ ] one tab instead of the canonical space\n')"
+refused_body 99 '- # heading
 following unindented prose
 
     - [ ] example
 
 - [ ] the real criterion
 '
-[ "$(run_tick 99 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 99 '- # heading
-following unindented prose
-
-    - [ ] example
-
-- [x] the real criterion
-' || fail "prose under a heading-only item closes that item"
-
-echo "==> an inline comment leaves its paragraph open across the hidden lines"
-write_issue 100 'Some prose <!--
+refused_body 100 'Some prose <!--
 hidden
 -->
 2. [ ] example
 
 - [ ] the real criterion
 '
-[ "$(run_tick 100 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 100 'Some prose <!--
-hidden
--->
-2. [ ] example
-
-- [x] the real criterion
-' || fail "a mid-paragraph comment is inline HTML and closes no paragraph"
-
-echo "==> a comment that opens its own line still closes the paragraph"
-write_issue 101 '<!--
+refused_body 101 '<!--
 - [ ] commented-out example
 -->
 2. [ ] real ordered criterion
 '
-[ "$(run_tick 101 --index 1)" = 0 ] || fail "the ordered criterion after a comment block should tick"
-issue_is 101 '<!--
-- [ ] commented-out example
--->
-2. [x] real ordered criterion
-' || fail "a type-2 comment block is a leaf block"
-
-echo "==> an inline <pre> leaves its paragraph open too"
-write_issue 102 'Some prose <pre>
+refused_body 102 'Some prose <pre>
 - [ ] inline pre content
 </pre>
 2. [ ] example
 
 - [ ] the real criterion
 '
-[ "$(run_tick 102 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 102 'Some prose <pre>
-- [ ] inline pre content
-</pre>
-2. [ ] example
-
-- [x] the real criterion
-' || fail "the block/inline distinction applies to raw tags as well"
-
-echo "==> a fence is a leaf block, so no paragraph survives it"
-write_issue 103 'Some prose
+refused_body 103 'Some prose
 - ```text
   content
   ```
@@ -2535,36 +2144,14 @@ unindented prose
 
 - [ ] the real criterion
 '
-[ "$(run_tick 103 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 103 'Some prose
-- ```text
-  content
-  ```
-unindented prose
-
-    - [ ] example
-
-- [x] the real criterion
-' || fail "an item holding only a fence grants no lazy continuation"
-
-echo "==> an unterminated fence swallows the rest of the body, and that is correct"
-write_issue 104 'Some prose
+refused_body 104 'Some prose
 - ```text
 content
 ```
 unindented prose
 
-- [ ] not a criterion, this is inside the reopened fence
+- [ ] not a criterion, this is inside a container-dependent fence
 '
-[ "$(run_tick 104 --index 1)" = 1 ] || fail "an unterminated fence should refuse, not guess"
-issue_is 104 'Some prose
-- ```text
-content
-```
-unindented prose
-
-- [ ] not a criterion, this is inside the reopened fence
-' || fail "a refusal must not write"
 
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
