@@ -25,6 +25,7 @@ ai/skills/
 ├── backend/     # server / data / Convex
 ├── frontend/    # React / TanStack / shadcn / design
 ├── infra/       # Terraform / Cloudflare / CI
+├── matt-pocock/ # attributed third-party skills by Matt Pocock
 ├── mobile/      # Expo / React Native (future)
 └── repo/        # repo standardization / conventions
     └── standardize-repo/SKILL.md
@@ -64,11 +65,29 @@ nothing is linted or counted twice.
 | `backend` | Server, data, and Convex work |
 | `frontend` | React / TanStack / shadcn UI and design skills |
 | `infra` | Terraform, Cloudflare, CI/CD |
+| `matt-pocock` | Opt-in, attributed skills originally written by Matt Pocock |
 | `mobile` | Expo / React Native (reserved for future use) |
 | `repo` | Repo standardization and conventions |
 
 Consumers request whole **categories**, so a skill can move between categories
 here without any consumer editing a per-skill list.
+
+## Third-party skills
+
+Third-party skills live in an author-named category and retain their upstream
+license and provenance inside every skill directory so those records survive
+category flattening into consumer repos. Each imported skill includes:
+
+- `LICENSE.upstream` — the upstream license and copyright notice.
+- `UPSTREAM.md` — the original author, repository, pinned import commit,
+  upstream path, and local modifications.
+- A short attribution notice in `SKILL.md`.
+
+The `matt-pocock` category currently vendors a dependency-complete selection
+from [mattpocock/skills](https://github.com/mattpocock/skills). The upstream
+`triage` skill is distributed as `matt-triage` to avoid colliding with the
+existing universal `triage` skill; its internal invocation and setup references
+are adapted accordingly.
 
 ## The unique-name rule
 
