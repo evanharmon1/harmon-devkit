@@ -14,3 +14,5 @@
   isolated parallel research guidance.
 - Made claim ownership exclusive and reordered resolution so derived map and
   dependency changes publish before a ticket exposes its dependents.
+- Simplified the concurrency model to one active map writer and made map/ticket
+  creation resumable with deterministic publication keys.

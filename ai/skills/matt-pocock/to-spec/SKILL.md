@@ -22,9 +22,13 @@ The issue tracker and triage label vocabulary should have been provided to you. 
 Check with the user that these seams match their expectations.
 
 1. Write the spec using the template below, then publish it to the project
-   issue tracker. Determine and apply exactly one category role (`bug` or
-   `enhancement`) from the problem being specified, plus the
-   `ready-for-agent` state role — no need for additional triage.
+   issue tracker. Before creating anything, derive a stable publication key
+   from the approved problem and solution, search the tracker for that key,
+   and reconcile an existing match. Record a newly returned identifier before
+   any follow-up mutation. Determine and apply exactly one category role (`bug`
+   or `enhancement`) from the problem being specified, plus the
+   `ready-for-agent` state role only after publication is reconciled — no need
+   for additional triage.
 
 <spec-template>
 

@@ -29,16 +29,12 @@ The map is an **index**, not a store. It lists the decisions made and points at 
 
 ### The map body
 
-The whole map at low resolution. Load it for orientation, then re-fetch it
-immediately before every body update. Open tickets are **not** listed — they
-are open child issues, found by query. When the tracker supports versions or
-updated timestamps, make each update conditional on the version you fetched;
-on conflict, merge the other session's decisions and fog into your proposed
-change and retry instead of replacing the body from a stale copy. On trackers
-without conditional writes, enforce the equivalent invariant with an exclusive
-writer lock plus a pre-write content-hash check and atomic replacement. If
-neither is available, serialize map changes through one designated writer;
-parallel read-modify-write updates are forbidden.
+The whole map at low resolution. A map has exactly one active wayfinder writer
+session at a time. Do not resolve its tickets or mutate its tracker artifacts
+in parallel sessions; this workflow deliberately trades parallelism for a
+simple, portable consistency rule. Research workers may run concurrently only
+as read-only helpers that return artifacts to the writer. Open tickets are
+**not** listed — they are open child issues, found by query.
 
 ```markdown
 ## Destination
@@ -76,17 +72,10 @@ Each ticket is a **child issue** of the map; the tracker's issue id is its ident
 
 Each ticket carries a `wayfinder:<type>` label — one of `research`, `prototype`, `grilling`, `task` (see [Ticket Types](#ticket-types)).
 
-A session **claims** a ticket by assigning it to the dev driving the map,
-**first**, before any work, so concurrent sessions skip it. Record a timestamped
-claim comment or equivalent tracker metadata as well as the assignee. Release
-the assignment when abandoning or failing the work. Before skipping an old
-claim, verify that its owner still has an active session; if that cannot be
-established, ask the maintainer whether to reclaim it. An assignment without
-bounded ownership evidence must not stall the map forever. Immediately after
-claiming, re-read the ticket and all claim metadata. Proceed only if this
-session is the single owner; if simultaneous claims exist, the earliest
-tracker-recorded claim wins and every loser removes its own assignment and
-stops before doing work.
+The active writer marks its selected ticket claimed before work so ownership is
+visible. Release the claim when abandoning or failing the work. If a claim from
+an earlier session remains, ask the maintainer whether to reclaim it before
+continuing; never infer that a stale-looking claim is abandoned.
 
 Blocking uses the tracker's **native** dependency relationship — essential because it renders the frontier _visually_ in the tracker's own UI, so the human sees what's takeable without opening the map. Only a tracker that lacks native blocking falls back to a body convention. A ticket is **unblocked** when every ticket blocking it is closed; the **frontier** is the open, unblocked, unclaimed children — the edge of the known.
 
@@ -132,9 +121,9 @@ User invokes with a loose idea.
 
 1. **Name the destination.** Load and follow both the `grilling` and `domain-modeling` skills to pin down what this map is finding its way to — the spec, decision, or change. The destination fixes the scope, so it's settled first.
 2. **Map the frontier.** Grill again, **breadth-first** this time: fan out across the whole space rather than deep on any one thread, surfacing the open decisions and the first steps takeable now. **If this surfaces no fog** — the way to the destination is already clear, the whole journey small enough for one session — you don't need a map. Stop and ask the user how they'd like to proceed.
-3. **Create the map** (label `wayfinder:map`): Destination and Notes filled in, Decisions-so-far empty, the fog sketched into **Not yet specified**.
-4. **Create the tickets you can specify now** as child issues of the map with the tracker's non-frontier `wayfinder:staging` state — then wire blocking edges in a **second pass** (issues need ids before they can reference each other). Only after every child link and blocking edge succeeds, remove `wayfinder:staging` from the whole batch. On partial failure, leave every affected ticket staged, record the identifiers that were created, and resume by reconciling those identifiers rather than publishing duplicates. Wiring sorts them into the frontier and the blocked; everything you can't yet specify stays in the fog — the **Not yet specified** section.
-5. **Fire the research subagents.** For each `research` ticket you just created, spin up a subagent that loads and follows the `research` skill. Parallel agents must not switch branches or write through one shared worktree: give each writer its own isolated worktree, or have agents return artifacts for the parent to commit serially. Capture findings on a throwaway `research/<name>` branch only when that branch has its own worktree, with a context pointer from the ticket.
+3. **Create the map** (label `wayfinder:map`) with a deterministic publication key derived from its destination. Search for and reconcile that key before creating anything, so an ambiguous success can be resumed without a duplicate. Fill Destination and Notes, leave Decisions-so-far empty, and sketch the fog into **Not yet specified**.
+4. **Create the tickets you can specify now** with deterministic keys derived from the map key and ticket question. Reconcile each key before creation. Create them as child issues of the map with the tracker's non-frontier `wayfinder:staging` state — then wire blocking edges in a **second pass** (issues need ids before they can reference each other). Only after every child link and blocking edge succeeds, remove `wayfinder:staging` from the whole batch. On partial failure, leave every affected ticket staged, record the identifiers that were created, and resume by key rather than publishing duplicates. Wiring sorts them into the frontier and the blocked; everything you can't yet specify stays in the fog — the **Not yet specified** section.
+5. **Fire the research subagents.** For each `research` ticket you just created, spin up a read-only subagent that loads and follows the `research` skill and returns its artifact to this single writer. Research agents never mutate the tracker, map, tickets, or the writer's checkout.
 6. Stop — charting is one session's work; it hand-resolves nothing.
 
 ### Work through the map
@@ -142,9 +131,10 @@ User invokes with a loose idea.
 User invokes with a map (URL or number). A ticket is **optional** — without one, you pick the next decision, not the user.
 
 1. Load the **map** — the low-res view, not every ticket body.
-2. Choose the ticket. If the user named one, use it. Otherwise take the first frontier ticket in order. **Claim it** using the exclusive, verify-after-write protocol above before any work.
+2. Confirm no other wayfinder writer is active for this map. Choose the ticket. If the user named one, use it. Otherwise take the first frontier ticket in order. **Claim it** before any work.
 3. Resolve it — **zoom as needed**: fetch the full body of any related or closed ticket on demand; load and follow whichever skills the `## Notes` block names. If in doubt, load and follow both the `grilling` and `domain-modeling` skills.
 4. Record the resolution answer without closing the ticket yet. Add newly-surfaced tickets (create-stage-wire-publish); graduate any fog the answer has made specifiable, clearing each graduated patch from **Not yet specified** so it lives only as its new ticket. If the answer reveals a ticket — this one or another — sits beyond the destination, **rule it out of scope** rather than resolving it on the route. If the decision invalidates other parts of the map, update or delete those tickets. Re-fetch and update the map's Decisions-so-far using the conflict-safe rule above.
 5. Verify the map, new dependency edges, invalidations, and graduated fog are all durably published. Only then **close** the resolved ticket, which exposes its dependents to the frontier. If any derived write fails, leave the ticket open and claimed so stale dependent work cannot start, then report the partial state for recovery.
 
-The user may run unblocked tickets in parallel, so expect other sessions to be editing the tracker concurrently.
+Do not run unblocked tickets from one map in parallel. Finish or explicitly
+release the active writer session before another session continues the map.

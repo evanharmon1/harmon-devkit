@@ -9,3 +9,5 @@
 ## Local modifications
 
 - Added the attribution notice in `SKILL.md`.
+- Required background agents to return artifacts for serialized writing unless
+  they own an isolated worktree.

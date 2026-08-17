@@ -11,3 +11,4 @@
 - Added the attribution notice in `SKILL.md`.
 - Adapted Markdown formatting to satisfy harmon-devkit lint rules.
 - Required published specs to carry both a category and state role.
+- Made spec publication idempotent with a stable reconciliation key.

@@ -2,11 +2,12 @@
 
 Issues and specs for this repo live as GitLab issues.
 
-**Target repository:** `<owner>/<repo>`
+**Target repository:** `<host>/<owner>/<repo>`
 
-Replace that placeholder during setup with the repository the user selected.
+Replace that placeholder during setup with the full host-qualified repository
+the user selected, including self-hosted GitLab domains.
 Use the [`glab`](https://gitlab.com/gitlab-org/cli) CLI for all operations and
-pass `--repo <owner>/<repo>` (or the command's equivalent explicit project
+pass `--repo <host>/<owner>/<repo>` (or the command's equivalent explicit project
 argument) to every operation. Never infer a mutation target from the current
 checkout or whichever remote happens to be first.
 
@@ -48,5 +49,5 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **Child ticket**: an issue carrying `Part of #<map>` at the top of its description and labels `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). During batch publication also apply `wayfinder:staging`; frontier queries must exclude it until dependency wiring succeeds. Once claimed, the ticket is assigned to the driving dev.
 - **Blocking**: GitLab's **native blocking link** — the canonical, UI-visible representation. Add it with the `/blocked_by #<n>` quick action, posted as a note (`glab issue note <child> --message "/blocked_by #<blocker>"`). Native blocking links are a Premium/Ultimate feature; on the free tier (or where unavailable) fall back to a `Blocked by: #<n>, #<n>` line at the top of the description. A ticket is unblocked when every blocker is closed.
 - **Frontier query**: `glab issue list -F json` scoped to the map's children, drop any with an open blocker — a native `blocked_by` link to an open issue (`glab api projects/:id/issues/:iid/links`), or an open issue in the `Blocked by` line — or an assignee; first in map order wins.
-- **Claim**: `glab issue update <n> --assignee @me` — the session's first write; then re-read assignees and timestamped claim records and proceed only for the single winning claim.
+- **Claim**: `glab issue update <n> --assignee @me` — the single active wayfinder writer's first write.
 - **Resolve**: `glab issue note <n> --message "<answer>"`, publish and verify every derived map/ticket/dependency change, then `glab issue close <n>` last.

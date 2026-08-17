@@ -15,4 +15,5 @@
   complete workflow-label provisioning before setup reports success.
 - Pinned tracker operations to the configured repository, modeled local
   category and state separately, and added safe local concurrency rules.
+- Preserved self-hosted GitLab hosts and defined all local wayfinder states.
 - Removed a generated reference to an unvendored optional skill.

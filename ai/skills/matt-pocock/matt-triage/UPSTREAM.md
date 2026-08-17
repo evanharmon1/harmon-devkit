@@ -14,3 +14,5 @@
 - Adapted Markdown formatting to satisfy harmon-devkit lint rules.
 - Added a secret-free isolation requirement for contributor-controlled PR
   verification and portable cross-skill loading instructions.
+- Treated reporter content and reproduction steps as untrusted, and made the
+  tracker comment self-contained before closing rejected enhancements.
