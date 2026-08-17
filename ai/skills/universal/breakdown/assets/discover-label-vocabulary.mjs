@@ -5,6 +5,7 @@
 
 import { execFileSync } from 'node:child_process'
 import process from 'node:process'
+import { validateJsonSchema } from './validate-json-schema.mjs'
 
 const usage = `Usage: discover-label-vocabulary.mjs --repo [host/]owner/repo
 
@@ -74,16 +75,15 @@ function apiJson(path, description, fields = []) {
   )
 }
 
-function fetchDefaultBranchFile(path, branch, { absentAllowed = false } = {}) {
+function fetchDefaultBranchFile(path, commit) {
   let response
   try {
     response = apiJson(
       `${apiPath}/contents/${path}`,
-      `reading ${path} from ${repo}@${branch}`,
-      [['ref', branch]]
+      `reading ${path} from ${repo}@${commit}`,
+      [['ref', commit]]
     )
   } catch (error) {
-    if (absentAllowed && /HTTP 404\b/.test(error.stderr)) return undefined
     die(error.message)
   }
   if (
@@ -93,7 +93,7 @@ function fetchDefaultBranchFile(path, branch, { absentAllowed = false } = {}) {
     response.encoding !== 'base64' ||
     typeof response.content !== 'string'
   ) {
-    die(`${path} at ${repo}@${branch} is not a base64-encoded file`)
+    die(`${path} at ${repo}@${commit} is not a base64-encoded file`)
   }
   return Buffer.from(response.content.replaceAll('\n', ''), 'base64').toString('utf8')
 }
@@ -190,6 +190,7 @@ function validateRegistry(registry) {
   }
 
   const familyIds = new Set()
+  const provisionedNames = new Map()
   for (const [familyIndex, family] of registry.families.entries()) {
     const where = `family[${familyIndex}]`
     assertObject(family, where)
@@ -228,6 +229,9 @@ function validateRegistry(registry) {
     assertBoolean(family.exclusive, `${where}.exclusive`)
     assertBoolean(family.provision, `${where}.provision`)
     for (const key of ['arming', 'retired', 'open_values']) assertOptionalBoolean(family, key, where)
+    if (family.retired !== true && family.writers.length === 0) {
+      die(`${where} live families need at least one writer`)
+    }
     if (!Array.isArray(family.values)) die(`${where}.values must be an array`)
     if (family.source === 'agent-registry') {
       if (!registrySets.has(family.registry_set)) {
@@ -242,6 +246,9 @@ function validateRegistry(registry) {
       if (family.retired !== true && family.provision !== true) {
         die(`${where} agent-registry labels must be provisioned`)
       }
+      if (family.retired !== true && typeof family.color !== 'string') {
+        die(`${where} agent-registry labels need a family color`)
+      }
     } else if (Object.hasOwn(family, 'registry_set')) {
       die(`${where}.registry_set is only valid for agent-registry sources`)
     }
@@ -253,6 +260,9 @@ function validateRegistry(registry) {
     }
     if (family.open_values === true && !family.placeholder) {
       die(`${where} open_values needs a placeholder`)
+    }
+    if (family.placeholder && family.open_values !== true && family.source !== 'agent-registry') {
+      die(`${where}.placeholder requires open_values or an agent-registry source`)
     }
     if (
       family.source === 'inline' &&
@@ -282,6 +292,9 @@ function validateRegistry(registry) {
       }
       if ([...name].length > 50) die(`${valueWhere} renders a label name over 50 characters`)
       if (Object.hasOwn(value, 'writers')) assertWriters(value.writers, `${valueWhere}.writers`)
+      if (Object.hasOwn(value, 'writers') && value.writers.length === 0) {
+        die(`${valueWhere}.writers cannot be empty`)
+      }
       if (Object.hasOwn(value, 'lifecycle') && !lifecycles.has(value.lifecycle)) {
         die(`${valueWhere}.lifecycle is unsupported: ${value.lifecycle}`)
       }
@@ -291,6 +304,23 @@ function validateRegistry(registry) {
       }
       if (Object.hasOwn(value, 'provision') && value.provision !== false) {
         die(`${valueWhere}.provision may only override to false`)
+      }
+      const provisioned =
+        family.provision === true &&
+        family.retired !== true &&
+        value.provision !== false &&
+        value.retired !== true
+      if (provisioned) {
+        if (typeof value.description !== 'string' || value.description.length === 0) {
+          die(`${valueWhere} provisioned labels need a description`)
+        }
+        if (typeof value.color !== 'string' && typeof family.color !== 'string') {
+          die(`${valueWhere} provisioned labels need a color`)
+        }
+        if (provisionedNames.has(name)) {
+          die(`${valueWhere} duplicates provisioned label ${name} from ${provisionedNames.get(name)}`)
+        }
+        provisionedNames.set(name, family.family)
       }
     }
   }
@@ -363,6 +393,38 @@ if (!repositoryMetadata.default_branch || typeof repositoryMetadata.default_bran
 }
 const defaultBranch = repositoryMetadata.default_branch
 
+let branchMetadata
+try {
+  branchMetadata = apiJson(
+    `${apiPath}/branches/${encodeURIComponent(defaultBranch)}`,
+    `resolving ${repo}'s default branch ${defaultBranch}`
+  )
+} catch (error) {
+  die(error.message)
+}
+const defaultBranchCommit = branchMetadata?.commit?.sha
+if (typeof defaultBranchCommit !== 'string' || !/^[0-9a-f]{40}$/.test(defaultBranchCommit)) {
+  die(`default branch metadata for ${repo} has no full commit SHA`)
+}
+
+let defaultTree
+try {
+  defaultTree = apiJson(
+    `${apiPath}/git/trees/${defaultBranchCommit}`,
+    `reading ${repo}'s default-branch tree`,
+    [['recursive', '1']]
+  )
+} catch (error) {
+  die(`${error.message}; registry absence cannot be established safely`)
+}
+if (defaultTree?.truncated === true) {
+  die(`${repo}'s recursive default-branch tree is truncated; registry absence is indeterminate`)
+}
+if (!Array.isArray(defaultTree?.tree) || defaultTree.tree.some((entry) => typeof entry?.path !== 'string')) {
+  die(`${repo}'s default-branch tree has an unexpected shape`)
+}
+const defaultPaths = new Set(defaultTree.tree.map((entry) => entry.path))
+
 let liveLabels
 try {
   liveLabels = parseJson(
@@ -383,10 +445,7 @@ if (
 }
 const live = new Map(liveLabels.map((label) => [label.name, label]))
 
-const registryText = fetchDefaultBranchFile('label-registry.json', defaultBranch, {
-  absentAllowed: true
-})
-if (registryText === undefined) {
+if (!defaultPaths.has('label-registry.json')) {
   const excludedPrefixes = ['claim:', 'agent:', 'foreman:']
   const labels = liveLabels
     .filter((label) => !excludedPrefixes.some((prefix) => label.name.startsWith(prefix)))
@@ -397,6 +456,7 @@ if (registryText === undefined) {
         mode: 'live-label-fallback',
         repository: repo,
         default_branch: defaultBranch,
+        default_branch_commit: defaultBranchCommit,
         verified_semantics: false,
         warning:
           'label-registry.json is absent; family, writer, lifecycle, and exclusivity semantics are unknown',
@@ -410,13 +470,46 @@ if (registryText === undefined) {
   process.exit(0)
 }
 
-const registry = parseJson(registryText, `label-registry.json from ${repo}@${defaultBranch}`)
+if (!defaultPaths.has('label-registry.schema.json')) {
+  die(`label-registry.json is present but label-registry.schema.json is absent at ${defaultBranchCommit}`)
+}
+const registryText = fetchDefaultBranchFile('label-registry.json', defaultBranchCommit)
+const registrySchemaText = fetchDefaultBranchFile('label-registry.schema.json', defaultBranchCommit)
+const registry = parseJson(registryText, `label-registry.json from ${repo}@${defaultBranchCommit}`)
+const registrySchema = parseJson(
+  registrySchemaText,
+  `label-registry.schema.json from ${repo}@${defaultBranchCommit}`
+)
+let schemaErrors
+try {
+  schemaErrors = validateJsonSchema(registry, registrySchema)
+} catch (error) {
+  die(`label-registry.schema.json cannot be interpreted safely: ${error.message}`)
+}
+if (schemaErrors.length > 0) die(`label-registry.json fails its schema: ${schemaErrors.join('; ')}`)
 validateRegistry(registry)
 
 let agentVocabulary = { families: new Map(), adapters: new Map() }
 if (registry.families.some((family) => family.source === 'agent-registry')) {
-  const agentText = fetchDefaultBranchFile('agent-registry.json', defaultBranch)
-  const agentRegistry = parseJson(agentText, `agent-registry.json from ${repo}@${defaultBranch}`)
+  for (const path of ['agent-registry.json', 'agent-registry.schema.json']) {
+    if (!defaultPaths.has(path)) die(`${path} is required by an agent-registry label source`)
+  }
+  const agentText = fetchDefaultBranchFile('agent-registry.json', defaultBranchCommit)
+  const agentSchemaText = fetchDefaultBranchFile('agent-registry.schema.json', defaultBranchCommit)
+  const agentRegistry = parseJson(
+    agentText,
+    `agent-registry.json from ${repo}@${defaultBranchCommit}`
+  )
+  const agentSchema = parseJson(
+    agentSchemaText,
+    `agent-registry.schema.json from ${repo}@${defaultBranchCommit}`
+  )
+  try {
+    schemaErrors = validateJsonSchema(agentRegistry, agentSchema)
+  } catch (error) {
+    die(`agent-registry.schema.json cannot be interpreted safely: ${error.message}`)
+  }
+  if (schemaErrors.length > 0) die(`agent-registry.json fails its schema: ${schemaErrors.join('; ')}`)
   agentVocabulary = validateAgentRegistry(agentRegistry)
 }
 
@@ -510,6 +603,7 @@ process.stdout.write(
       mode: 'registry',
       repository: repo,
       default_branch: defaultBranch,
+      default_branch_commit: defaultBranchCommit,
       verified_semantics: true,
       families: [...resultFamilies.values()]
     },

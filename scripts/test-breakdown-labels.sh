@@ -32,12 +32,34 @@ if [ "$1" = api ]; then
             exit 1
         fi
         file="$fixture/label-registry.json"
+    elif [[ "$joined" == *"/contents/label-registry.schema.json"* ]]; then
+        file="$fixture/label-registry.schema.json"
     elif [[ "$joined" == *"/contents/agent-registry.json"* ]]; then
         if [ ! -f "$fixture/agent-registry.json" ]; then
             echo "gh: Not Found (HTTP 404)" >&2
             exit 1
         fi
         file="$fixture/agent-registry.json"
+    elif [[ "$joined" == *"/contents/agent-registry.schema.json"* ]]; then
+        file="$fixture/agent-registry.schema.json"
+    elif [[ "$joined" == *"/branches/"* ]]; then
+        printf '{"commit":{"sha":"1111111111111111111111111111111111111111"}}\n'
+        exit 0
+    elif [[ "$joined" == *"/git/trees/"* ]]; then
+        if [ -f "$fixture/tree-denied" ]; then
+            echo "gh: Not Found (HTTP 404)" >&2
+            exit 1
+        fi
+        printf '{"truncated":false,"tree":['
+        comma=
+        for path in label-registry.json label-registry.schema.json \
+            agent-registry.json agent-registry.schema.json; do
+            [ -f "$fixture/$path" ] || continue
+            printf '%s{"path":"%s"}' "$comma" "$path"
+            comma=,
+        done
+        printf ']}\n'
+        exit 0
     else
         printf '{"default_branch":"trunk"}\n'
         exit 0
@@ -57,19 +79,13 @@ chmod +x "$tmproot/bin/gh"
 
 write_agent_registry() {
     local fixture="$1"
-    cat >"$fixture/agent-registry.json" <<'JSON'
-{
-  "families": [
-    {"slug":"gpt","models":[{"slug":"sol"},{"slug":"terra"}]},
-    {"slug":"claude","models":[{"slug":"opus"}]}
-  ],
-  "foreman_adapters": [{"slug":"codex","provision_label":true}]
-}
-JSON
+    cp "$repo/agent-registry.json" "$fixture/agent-registry.json"
+    cp "$repo/agent-registry.schema.json" "$fixture/agent-registry.schema.json"
 }
 
 write_registry() {
     local fixture="$1" area="$2"
+    cp "$repo/label-registry.schema.json" "$fixture/label-registry.schema.json"
     cat >"$fixture/label-registry.json" <<JSON
 {
   "\$schema": "./label-registry.schema.json",
@@ -78,14 +94,14 @@ write_registry() {
     {
       "family":"area","prefix":"area","purpose":"Repository areas","axis":"classification",
       "source":"inline","writers":["human","agent"],"readers":"humans",
-      "lifecycle":"durable","exclusive":true,"provision":true,
+      "lifecycle":"durable","exclusive":true,"provision":true,"color":"123456",
       "values":[{"value":"$area","description":"Area"},{"value":"missing","description":"Not live"}]
     },
     {
       "family":"suggest","prefix":"suggest","purpose":"Advisory family routing","axis":"model",
       "source":"agent-registry","registry_set":"suggest","writers":["human","agent"],
       "readers":"humans","lifecycle":"durable","exclusive":false,"provision":true,
-      "placeholder":"suggest:<family>","values":[]
+      "placeholder":"suggest:<family>","color":"BFD4F2","values":[]
     },
     {
       "family":"suggest-model","prefix":"suggest","purpose":"Advisory model refinement","axis":"model",
@@ -99,8 +115,8 @@ write_registry() {
       "exclusive":false,"provision":true,
       "values":[
         {"value":"agent-safe","writers":["agent"],"provision":false},
-        {"value":"transient","writers":["agent"],"lifecycle":"transient"},
-        {"value":"retired","writers":["agent"],"retired":true}
+        {"value":"transient","description":"Transient","color":"123456","writers":["agent"],"lifecycle":"transient"},
+        {"value":"retired","description":"Retired","color":"123456","writers":["agent"],"retired":true}
       ]
     },
     {
@@ -112,17 +128,17 @@ write_registry() {
       "family":"claim","prefix":"claim","purpose":"Ownership","axis":"model",
       "source":"agent-registry","registry_set":"claim","writers":["agent"],"readers":"agents",
       "lifecycle":"claim-release","exclusive":false,"provision":true,
-      "placeholder":"claim:<family>","values":[]
+      "placeholder":"claim:<family>","color":"006B75","values":[]
     },
     {
       "family":"workflow","prefix":"phase","purpose":"Transient state","axis":"workflow",
       "source":"inline","writers":["agent"],"readers":"agents","lifecycle":"transient",
-      "exclusive":false,"provision":true,"values":[{"value":"temporary","description":"Temporary"}]
+      "exclusive":false,"provision":true,"color":"123456","values":[{"value":"temporary","description":"Temporary"}]
     },
     {
       "family":"arming","prefix":"foreman","purpose":"Execution trigger","axis":"foreman",
       "source":"inline","writers":["agent"],"readers":"foreman","lifecycle":"durable",
-      "exclusive":false,"provision":true,
+      "exclusive":false,"provision":true,"color":"123456",
       "values":[{"value":"approved","description":"Arm","arming":true}]
     }
   ]
@@ -169,7 +185,11 @@ else
     output='{}'
 fi
 
-if jq -e '.mode == "registry" and .default_branch == "trunk" and .verified_semantics == true' \
+if jq -e '
+    .mode == "registry" and .default_branch == "trunk" and
+    .default_branch_commit == "1111111111111111111111111111111111111111" and
+    .verified_semantics == true
+' \
     <<<"$output" >/dev/null; then
     ok "registry result is bound to the remote default branch"
 else
@@ -255,6 +275,7 @@ fi
 
 malformed="$tmproot/malformed"
 mkdir -p "$malformed"
+cp "$repo/label-registry.schema.json" "$malformed/label-registry.schema.json"
 printf '{not json\n' >"$malformed/label-registry.json"
 printf '[]\n' >"$malformed/labels.json"
 if malformed_output="$(discover "$malformed" 2>"$malformed/error")"; then
@@ -265,8 +286,24 @@ else
     bad "present malformed registry fails closed with a diagnostic"
 fi
 
+schema_invalid="$tmproot/schema-invalid"
+mkdir -p "$schema_invalid"
+write_registry "$schema_invalid" api
+write_labels "$schema_invalid" api
+jq '.families[0].axis = 42' "$schema_invalid/label-registry.json" \
+    >"$schema_invalid/invalid.json"
+mv "$schema_invalid/invalid.json" "$schema_invalid/label-registry.json"
+if discover "$schema_invalid" >"$schema_invalid/output" 2>"$schema_invalid/error"; then
+    bad "schema-invalid registry metadata fails closed"
+elif [ ! -s "$schema_invalid/output" ] && grep -q 'fails its schema' "$schema_invalid/error"; then
+    ok "schema-invalid registry metadata fails closed with a diagnostic"
+else
+    bad "schema-invalid registry metadata fails closed with a diagnostic"
+fi
+
 ambiguous="$tmproot/ambiguous"
 mkdir -p "$ambiguous"
+cp "$repo/label-registry.schema.json" "$ambiguous/label-registry.schema.json"
 cat >"$ambiguous/label-registry.json" <<'JSON'
 {
   "$schema":"./label-registry.schema.json",
@@ -284,6 +321,19 @@ elif [ ! -s "$ambiguous/output" ] && grep -q 'ambiguous' "$ambiguous/error"; the
     ok "ambiguous registry interpretation fails closed with a diagnostic"
 else
     bad "ambiguous registry interpretation fails closed with a diagnostic"
+fi
+
+inaccessible="$tmproot/inaccessible"
+mkdir -p "$inaccessible"
+write_registry "$inaccessible" api
+write_labels "$inaccessible" api
+touch "$inaccessible/tree-denied"
+if discover "$inaccessible" >"$inaccessible/output" 2>"$inaccessible/error"; then
+    bad "inaccessible contents cannot masquerade as an absent registry"
+elif [ ! -s "$inaccessible/output" ] && grep -q 'absence cannot be established' "$inaccessible/error"; then
+    ok "inaccessible contents fail closed instead of falling back"
+else
+    bad "inaccessible contents fail closed instead of falling back"
 fi
 
 if [ "$fail" -gt 0 ]; then
