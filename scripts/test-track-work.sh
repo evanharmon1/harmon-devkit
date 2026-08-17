@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# test-track-work.sh — unit-test the track-work skill's two checks. Fully
+# test-track-work.sh — unit-test the track-work skill's checks and lifecycle
+# helpers. Fully
 # offline: issue bodies come from fixtures via $ISSUE_BODY_DIR, and the few
 # cases that must exercise the live `gh` path use a PATH-stubbed `gh`.
 #
@@ -12,6 +13,7 @@ cd "$(dirname "$0")/.."
 
 closing="./ai/skills/universal/track-work/assets/check-closing-keywords.sh"
 rot="./ai/skills/universal/track-work/assets/check-issue-rot.sh"
+metadata="$PWD/ai/skills/universal/track-work/assets/check-issue-metadata.sh"
 tick="$PWD/ai/skills/universal/track-work/assets/tick-criteria.sh"
 status_sh="./ai/skills/universal/track-work/assets/set-issue-status.sh"
 repo="evanharmon1/harmon-devkit"
@@ -523,6 +525,307 @@ echo "three backticks inside"
 ```
 ````
 ')" = 0 ] || fail "a matching-length closer should close the fence"
+
+# --- check-issue-metadata.sh ------------------------------------------------
+
+metadata_repo="$tmp/metadata-repo"
+mkdir -p "$metadata_repo"
+cp agent-registry.json "$metadata_repo/agent-registry.json"
+jq '.families |= map(if .family == "area"
+    then .values += [{"value":"fixture","description":"Fixture-only area"}]
+    else . end)' label-registry.json >"$metadata_repo/label-registry.json"
+
+valid_body="$tmp/metadata-valid.md"
+cat >"$valid_body" <<'BODY'
+## Problem
+
+Make issue metadata deterministic before creation.
+
+## Acceptance criteria
+
+- [ ] [CI] The metadata checker accepts this draft
+
+## Provenance
+
+Authored for an offline contract test.
+BODY
+
+perishable_body="$tmp/metadata-perishable.md"
+cat >"$perishable_body" <<'BODY'
+## Problem
+
+scripts/example.sh:12 currently returns the wrong result.
+
+## Acceptance criteria
+
+- [ ] [CI] The regression is covered
+BODY
+
+verified_body="$tmp/metadata-verified.md"
+cat >"$verified_body" <<'BODY'
+## Problem
+
+scripts/example.sh:12 currently returns the wrong result.
+
+## Acceptance criteria
+
+- [ ] [CI] The regression is covered
+
+## Verify
+
+Run `task test:track-work`; a failure means the violation remains.
+BODY
+
+run_metadata() {
+    _rc=0
+    "$metadata" "$@" >"$tmp/metadata.out" 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+run_personal() {
+    _title="$1"
+    _body="$2"
+    shift 2
+    run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+        --owner-type personal --title "$_title" --body-file "$_body" \
+        --agent-authored --label feature --label area:fixture \
+        --inapplicable layer --label domain:platform --label ai-generated "$@"
+}
+
+run_organization() {
+    _title="$1"
+    _body="$2"
+    shift 2
+    run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
+        --owner-type organization --issue-type Task --title "$_title" \
+        --body-file "$_body" --agent-authored --label area:fixture \
+        --inapplicable layer --label domain:platform --label ai-generated "$@"
+}
+
+echo "==> metadata: a complete personal-account draft passes from the target root manifest"
+[ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" = 0 ] ||
+    fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: an organization draft uses native Issue Type and no work-type label"
+[ "$(run_organization 'Validate organization issue metadata' "$valid_body")" = 0 ] ||
+    fail "valid organization draft should pass: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: exact title boundary is 70 Unicode code points"
+title70="$(printf 'a%.0s' {1..70})"
+title71="${title70}a"
+[ "$(run_personal "$title70" "$valid_body")" = 0 ] || fail "70 code points should pass"
+[ "$(run_personal "$title71" "$valid_body")" = 1 ] || fail "71 code points should fail"
+
+echo "==> metadata: empty and prefixed titles fail"
+[ "$(run_personal '' "$valid_body")" = 1 ] || fail "empty title should fail"
+for title in '[Bug]: metadata is missing' 'Bug: metadata is missing' \
+    'fix(track-work): add metadata' 'P1: metadata is missing'; do
+    [ "$(run_personal "$title" "$valid_body")" = 1 ] || fail "prefixed title should fail: $title"
+done
+
+echo "==> metadata: required headings must exist once, be nonempty, and stay ordered"
+for case_name in missing-problem missing-acceptance duplicate-problem empty-problem out-of-order; do
+    case "$case_name" in
+    missing-problem) body='## Acceptance criteria
+
+- [ ] [CI] Covered' ;;
+    missing-acceptance) body='## Problem
+
+Something is wrong.' ;;
+    duplicate-problem) body='## Problem
+
+One.
+
+## Problem
+
+Two.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered' ;;
+    empty-problem) body='## Problem
+
+## Acceptance criteria
+
+- [ ] [CI] Covered' ;;
+    out-of-order) body='## Acceptance criteria
+
+- [ ] [CI] Covered
+
+## Problem
+
+Something is wrong.' ;;
+    esac
+    printf '%s\n' "$body" >"$tmp/metadata-$case_name.md"
+    [ "$(run_personal 'Validate the issue skeleton' "$tmp/metadata-$case_name.md")" = 1 ] ||
+        fail "$case_name should fail"
+done
+
+echo "==> metadata: acceptance criteria are tagged rendered task-list items"
+for case_name in untagged non-task; do
+    if [ "$case_name" = untagged ]; then
+        criterion='- [ ] The checker passes'
+    else
+        criterion='[CI] The checker passes'
+    fi
+    cat >"$tmp/metadata-$case_name.md" <<BODY
+## Problem
+
+Make metadata deterministic.
+
+## Acceptance criteria
+
+$criterion
+BODY
+    [ "$(run_personal 'Validate acceptance criteria' "$tmp/metadata-$case_name.md")" = 1 ] ||
+        fail "$case_name criterion should fail"
+done
+
+echo "==> metadata: the existing perishable-fact checker is the Verify gate"
+[ "$(run_personal 'Cover perishable issue facts' "$perishable_body")" = 1 ] ||
+    fail "perishable facts without Verify should fail"
+[ "$(run_personal 'Cover perishable issue facts' "$verified_body")" = 0 ] ||
+    fail "perishable facts with Verify should pass: $(cat "$tmp/metadata.out")"
+sed 's/^## Verify$/### Verify/' "$verified_body" >"$tmp/metadata-wrong-verify-level.md"
+[ "$(run_personal 'Require the canonical Verify heading' \
+    "$tmp/metadata-wrong-verify-level.md")" = 1 ] ||
+    fail "a perishable fact with only a noncanonical Verify heading should fail"
+
+echo "==> metadata: labels must be known and exclusive families cannot conflict"
+[ "$(run_personal 'Reject unknown labels' "$valid_body" --label unknown-label)" = 1 ] ||
+    fail "unknown label should fail"
+[ "$(run_personal 'Reject conflicting axes' "$valid_body" --label area:skills)" = 1 ] ||
+    fail "two area labels should fail"
+
+echo "==> metadata: agent-authored issues require ai-generated and agent-writable labels"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Require issue provenance' --body-file "$valid_body" \
+    --agent-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:platform)" = 1 ] || fail "missing ai-generated should fail"
+[ "$(run_personal 'Respect label writers' "$valid_body" --label sec)" = 1 ] ||
+    fail "an agent must not propose a human-only concern"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Allow true concern labels' --body-file "$valid_body" \
+    --label feature --label area:fixture --inapplicable layer \
+    --label domain:platform --label sec)" = 0 ] ||
+    fail "a human-authored draft may carry a true concern: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: incomplete classification requires needs-triage and names the axis"
+_rc="$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Keep incomplete classification visible' \
+    --body-file "$valid_body" --agent-authored --label feature \
+    --label area:fixture --inapplicable layer --label ai-generated)"
+[ "$_rc" = 1 ] || fail "missing domain without needs-triage should fail"
+grep -qi 'domain' "$tmp/metadata.out" || fail "the undecided domain axis should be named"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Keep incomplete classification visible' \
+    --body-file "$valid_body" --agent-authored --label feature \
+    --label area:fixture --inapplicable layer --label ai-generated \
+    --label needs-triage)" = 0 ] ||
+    fail "needs-triage should preserve an undecided axis: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: owner type controls work classification"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Require a work type' --body-file "$valid_body" \
+    --label area:fixture --inapplicable layer --label domain:platform)" = 1 ] ||
+    fail "personal repo without a work type should fail"
+[ "$(run_personal 'Reject stacked work types' "$valid_body" --label task)" = 1 ] ||
+    fail "personal repo with two work types should fail"
+[ "$(run_organization 'Reject labels in place of Issue Type' "$valid_body" --label feature)" = 1 ] ||
+    fail "organization repo with a work-type label should fail"
+[ "$(run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
+    --owner-type organization --title 'Require native Issue Type' --body-file "$valid_body" \
+    --label area:fixture --inapplicable layer --label domain:platform)" = 1 ] ||
+    fail "organization repo without Issue Type should fail"
+
+echo "==> metadata: authoring-time strategy, routing, claim, and Foreman labels are forbidden"
+for label in rigor:deep tier:apex method:plan suggest:gpt claim:gpt foreman:approved agent:codex; do
+    [ "$(run_personal 'Reject authoring-time control labels' "$valid_body" --label "$label")" = 1 ] ||
+        fail "$label should be forbidden during authoring"
+    grep -qF "$label" "$tmp/metadata.out" || fail "the rejection should name $label"
+done
+
+metadata_stub="$tmp/metadata-bin"
+metadata_fallback="$tmp/metadata-fallback"
+mkdir -p "$metadata_stub" "$metadata_fallback"
+cat >"$metadata_stub/gh" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >>"${METADATA_GH_LOG:?}"
+if [ "${1:-} ${2:-}" = "label list" ]; then
+    printf '%s\n' feature area:fixture domain:platform ai-generated needs-triage
+    exit 0
+fi
+exit 97
+STUB
+chmod +x "$metadata_stub/gh"
+
+echo "==> metadata: an absent manifest falls back to one bounded label read"
+: >"$tmp/metadata-gh.log"
+_rc=0
+PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
+    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Validate fallback metadata' \
+    --body-file "$valid_body" --agent-authored --label feature \
+    --label area:fixture --inapplicable layer --label domain:platform \
+    --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "fallback draft should pass: $(cat "$tmp/metadata.out")"
+[ "$(wc -l <"$tmp/metadata-gh.log" | tr -d ' ')" = 1 ] || fail "fallback should make one gh read"
+grep -q 'label list.*--repo fallback/repo.*--limit 1000.*--json name' "$tmp/metadata-gh.log" ||
+    fail "fallback label read must be repo-bound and bounded"
+
+echo "==> metadata: an invalid present manifest fails closed without a gh fallback"
+printf '{not json\n' >"$metadata_fallback/label-registry.json"
+: >"$tmp/metadata-gh.log"
+_rc=0
+PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
+    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Reject an invalid manifest' \
+    --body-file "$valid_body" --label feature --inapplicable area \
+    --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "invalid present manifest should exit 2 (got $_rc)"
+[ ! -s "$tmp/metadata-gh.log" ] || fail "invalid manifest must not fall through to gh"
+
+echo "==> metadata: a structurally invalid present manifest also fails closed"
+jq '.families[0].writers = "agent"' label-registry.json >"$metadata_fallback/label-registry.json"
+: >"$tmp/metadata-gh.log"
+_rc=0
+PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
+    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Reject an invalid manifest shape' \
+    --body-file "$valid_body" --label feature --inapplicable area \
+    --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "structurally invalid manifest should exit 2 (got $_rc)"
+[ ! -s "$tmp/metadata-gh.log" ] || fail "structural failure must not fall through to gh"
+
+echo "==> metadata: help documents both owner-type examples and bad usage exits 2"
+help="$($metadata --help 2>&1 || true)"
+printf '%s\n' "$help" | grep -q 'Personal-account example' || fail "help needs a personal example"
+printf '%s\n' "$help" | grep -q 'Organization example' || fail "help needs an organization example"
+[ "$(run_metadata --repo testowner/testrepo --title x --body-file "$valid_body" \
+    --owner-type personal --label feature)" = 2 ] || fail "missing repo-root should exit 2"
+
+echo "==> metadata: delegation guidance preserves the concrete authoring contract"
+for checker_path in \
+    './ai/skills/universal/track-work/assets/check-issue-metadata.sh:*' \
+    './.agents/skills/track-work/assets/check-issue-metadata.sh:*' \
+    './.claude/skills/track-work/assets/check-issue-metadata.sh:*'; do
+    grep -qF "Bash($checker_path)" ai/skills/universal/track-work/SKILL.md ||
+        fail "skill frontmatter must allow the portable checker path $checker_path"
+done
+for doc in ai/skills/universal/track-work/SKILL.md \
+    ai/skills/universal/track-work/references/issue-authoring.md; do
+    normalized_doc="$(tr '\n' ' ' <"$doc")"
+    printf '%s\n' "$normalized_doc" | grep -qi 'target repository' ||
+        fail "$doc must carry the target repository"
+    printf '%s\n' "$normalized_doc" | grep -qi 'title and body contract' ||
+        fail "$doc must carry the title and body contract"
+    printf '%s\n' "$normalized_doc" | grep -qi 'concrete labels or explicit *inapplicability' ||
+        fail "$doc must carry concrete labels or explicit inapplicability"
+    printf '%s\n' "$normalized_doc" | grep -qi 'created issue number' ||
+        fail "$doc must require the created issue number"
+    printf '%s\n' "$normalized_doc" | grep -qi 'unable to decide.*metadata' ||
+        fail "$doc must define metadata uncertainty"
+done
 
 # --- tick-criteria.sh -------------------------------------------------------
 #
