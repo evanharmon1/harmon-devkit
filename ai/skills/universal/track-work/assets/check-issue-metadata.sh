@@ -325,7 +325,22 @@ if [ -e "$manifest" ]; then
         done <"$open_families"
         [ "$matched_count" -le 1 ] ||
             die "label '$label' matches multiple open-value families ($matched_families); the manifest gives it no unique policy"
-        [ "$matched_count" -eq 0 ] || printf '%s\n' "$matched_record" >>"$open_candidates"
+        if [ "$matched_count" -eq 1 ]; then
+            # The same ambiguity exists between an open family and a concrete
+            # record: a different family enumerating this exact name would
+            # otherwise silently supply the writers and exclusivity the open
+            # family is documented to own. The one non-ambiguous overlap is
+            # the open family enumerating some of its own members — a value
+            # record there is that family's own per-value refinement.
+            open_family="${matched_record#*|}"
+            open_family="${open_family%%|*}"
+            concrete_family="$(awk -F '|' -v wanted="$label" \
+                '$1 == wanted { print $2; exit }' "$vocab")"
+            if [ -n "$concrete_family" ] && [ "$concrete_family" != "$open_family" ]; then
+                die "label '$label' is enumerated by family '$concrete_family' and covered by open-value family '$open_family'; the manifest gives it no unique policy"
+            fi
+            printf '%s\n' "$matched_record" >>"$open_candidates"
+        fi
     done
     if [ -s "$open_candidates" ]; then
         live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||

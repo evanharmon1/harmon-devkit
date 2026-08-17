@@ -1149,6 +1149,31 @@ grep -q 'matches multiple open-value families' "$tmp/metadata.out" ||
 grep -q 'type-override' "$tmp/metadata.out" && grep -q 'type-shadow' "$tmp/metadata.out" ||
     fail "the refusal should name both families"
 
+echo "==> metadata: a concrete record shadowing an open family is ambiguous too"
+metadata_shadowed="$tmp/metadata-shadowed"
+mkdir -p "$metadata_shadowed"
+git -C "$metadata_shadowed" init -q
+git -C "$metadata_shadowed" remote add origin https://github.com/testowner/testrepo.git
+jq '.families += [{
+      "family": "type-concrete",
+      "purpose": "Fixture concrete family enumerating a name the open family covers",
+      "prefix": "type", "axis": "meta", "source": "inline", "writers": ["agent"],
+      "readers": "fixture", "lifecycle": "durable", "exclusive": false,
+      "provision": false,
+      "values": [{"value": "fix", "description": "Fixture shadowing value"}]
+    }]' "$metadata_repo/label-registry.json" >"$metadata_shadowed/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_shadowed" --owner-type personal \
+    --title 'Reject shadowed open-value labels' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:platform --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "an open label shadowed by a concrete family should be indeterminate (got $_rc): $(cat "$tmp/metadata.out")"
+grep -q 'no unique policy' "$tmp/metadata.out" ||
+    fail "the refusal should say the policy is not unique"
+grep -q 'type-concrete' "$tmp/metadata.out" && grep -q 'type-override' "$tmp/metadata.out" ||
+    fail "the refusal should name the concrete and open families"
+
 echo "==> metadata: incomplete classification requires needs-triage and names the axis"
 _rc="$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Keep incomplete classification visible' \
