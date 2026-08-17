@@ -271,27 +271,24 @@ chunks added afterward.
 
 All writes follow the approved proposal, in dependency-safe order: milestones
 first (create or reuse — an issue can only join a milestone that already
-exists, so `--milestone` at create depends on this; only *membership* is
-deferred, and only where it is the arming signal), then issues — parents
-before sub-issues, blockers before blocked, each issue's
-relationships written immediately after its create returns (creating blockers
-first is what makes that possible: every edge's far end already exists when
-its near end is created) — and **arming last**. Between an issue's create and
+exists), then issues — parents before sub-issues, blockers before blocked,
+each issue's relationships written immediately after its create returns
+(creating blockers first is what makes that possible: every edge's far end
+already exists when its near end is created). Between an issue's create and
 its edges it looks independent and ready, and no ordering of API calls makes
 create-plus-edge atomic — even create-time relationship flags apply the
 relationship in follow-up mutations after the issue exists, so `issues.opened`
-automation can observe the bare issue regardless. What actually closes the
-race is sequencing what the automation *consumes*: identify the gating input
+automation can observe the bare issue regardless. Identify the gating input
 the target's dispatcher actually reads — from its configuration in the target
-repo, never by assumption (foreman's, for one, varies by configured input
-mode, and guessing wrong either arms blocked work early or leaves every
-approved unit undispatchable) — and apply that signal last, after every
-relationship is attached. A target that dispatches unconditionally on
+repo, never by assumption — and **withhold it for the entire breakdown run**.
+Breakdown records that input in the handoff but never applies it; a human or
+trusted dispatch control performs the separate arming transition only after
+the graph is verified. A target that dispatches unconditionally on
 `issues.opened`, with nothing that can be withheld, cannot be sequenced
 safely at all: that is a §6 finding for the human to decide on (pause the
 automation, or accept the race), not something ordering can paper over.
 Where nothing automates dispatch, the window is only cosmetic — immediate
-attachment is still the rule, arming order just stops mattering.
+attachment is still the rule.
 
 **Preflight every target repo before the first write.** A cross-repo plan
 executed with credentials that can write only some of its targets mutates the
@@ -416,14 +413,16 @@ are routine and crafted shell syntax is possible; carry each value in a
 quoted variable or a file, never spliced into a single-quoted command string.
 
 - **Milestone**: `gh api repos/<owner>/<repo>/milestones -f title="$title"
-  -f description="$desc"`. Issues may take `--milestone` at create — except
-  where milestone membership is the dispatcher's gating input, in which case
-  it is the arming signal and comes last.
+  -f description="$desc"`. Issues may take `--milestone` at create only when
+  membership is not the dispatcher's gating input. Where membership arms
+  dispatch, omit it and record the intended membership for the trusted arming
+  handoff.
 - **Issues**: `gh issue create --repo <owner/repo> --title "$title"
   --body-file "$bodyfile" --label …` — where the label list **excludes the
   dispatcher's gating label**, if that is the target's arming signal: a label
   applied at create arms the issue before its relationships exist, exactly
-  the race the arming-last rule closes; add it in the arming step instead.
+  the race the withheld-input rule closes. Do not add it later in this skill;
+  record it for the trusted arming handoff.
   Write each body to a temp file — bodies
   contain backticks and `$`, and must reach the shell as data. A quoted
   heredoc is safe only when its delimiter provably does not occur as a line
@@ -475,22 +474,24 @@ quoted variable or a file, never spliced into a single-quoted command string.
 After the writes, verify the result against the **approved proposal, in
 full** — every chunk has its issue, every approved edge reads back
 (`gh issue view` / the dependencies endpoint), sub-issue counts match, and
-the non-issue writes read back too: milestone membership, the arming signal,
-types and fields, and the source issue's disposition. A completion check
-that covers only issue existence passes while units sit undispatchable or
-the source issue survives as a second claimable copy. Report the mapping,
-the ready set, and anything that fell back or failed. The ready set is
-computed from the edges **as recorded**, never from the proposal: a chunk
-whose edges did not all land is not ready, whatever the plan said.
+the non-issue writes read back too: non-arming milestone membership, types and
+fields, and the source issue's disposition. Confirm the identified arming
+input remains absent. A completion check that covers only issue existence can
+pass while the source issue survives as a second claimable copy. Report the
+mapping, the ready-to-arm set, the withheld arming input, and anything that
+fell back or failed. The ready-to-arm set is computed from the edges **as
+recorded**, never from the proposal: a chunk whose edges did not all land is
+not ready, whatever the plan said.
 
 ## 8. Hand off
 
-Report the milestone, the issue numbers in dependency order, and the ready
-set — the chunks with no unmet blockers, which is where implementation starts.
-On a foreman repo, suggest `task foreman:vet` as the independent check that
-the produced units are well-formed. Then the session suite takes over, one
-chunk at a time: `/claim` the first ready issue, `/implement`, `/shepherd`,
-`/wrap`.
+Report the milestone, the issue numbers in dependency order, and the
+ready-to-arm set — the chunks with no unmet blockers — plus the arming input
+that breakdown deliberately withheld. A human or trusted dispatch control may
+arm those units after reviewing the handoff. On a foreman repo, suggest
+`task foreman:vet` as the independent check that the produced units are
+well-formed. Then the session suite takes over, one chunk at a time: `/claim`
+the first ready issue, `/implement`, `/shepherd`, `/wrap`.
 
 ## Scope
 

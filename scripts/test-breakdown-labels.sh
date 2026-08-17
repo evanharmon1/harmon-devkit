@@ -4,6 +4,7 @@ set -euo pipefail
 
 repo="$(git rev-parse --show-toplevel)"
 asset="$repo/ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs"
+skill="$repo/ai/skills/universal/breakdown/SKILL.md"
 tmproot="$(mktemp -d)"
 trap 'rm -rf "$tmproot"' EXIT
 
@@ -449,6 +450,16 @@ elif [ ! -s "$inaccessible/output" ] && grep -q 'absence cannot be established' 
     ok "inaccessible contents fail closed instead of falling back"
 else
     bad "inaccessible contents fail closed instead of falling back"
+fi
+
+if grep -qF 'add it in the arming step instead' "$skill" ||
+    grep -qF 'and apply that signal last' "$skill"; then
+    bad "breakdown never retains a path that writes an arming signal"
+elif grep -qF 'withhold it for the entire breakdown run' "$skill" &&
+    grep -qF 'Do not add it later in this skill' "$skill"; then
+    ok "breakdown never retains a path that writes an arming signal"
+else
+    bad "breakdown documents the trusted arming handoff"
 fi
 
 if [ "$fail" -gt 0 ]; then
