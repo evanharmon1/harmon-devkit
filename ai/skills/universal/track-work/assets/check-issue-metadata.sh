@@ -607,7 +607,10 @@ EOF
         esac
     else
         case ",$writers," in
-        *,human,* | *,trusted-human,*) ;;
+        *,human,*) ;;
+        *,trusted-human,*)
+            die "label '$label' requires an actor-verifying trusted-human workflow"
+            ;;
         *) violation "label '$label' is not writable by a human author" ;;
         esac
     fi

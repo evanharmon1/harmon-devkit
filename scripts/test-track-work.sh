@@ -593,9 +593,14 @@ chmod +x "$metadata_stub/gh"
 PATH="$metadata_stub:$PATH"
 export PATH
 cp agent-registry.json "$metadata_repo/agent-registry.json"
-jq '.families |= map(if .family == "area"
-    then .values += [{"value":"fixture","description":"Fixture-only area"}]
-    else . end)' label-registry.json >"$metadata_repo/label-registry.json"
+jq '.families |= map(
+      if .family == "area" then
+        .values += [{"value":"fixture","description":"Fixture-only area"}]
+      elif .family == "concern" then
+        .values += [{"value":"trusted-review","description":"Fixture trusted concern",
+                     "writers":["trusted-human"]}]
+      else . end
+    )' label-registry.json >"$metadata_repo/label-registry.json"
 
 valid_body="$tmp/metadata-valid.md"
 cat >"$valid_body" <<'BODY'
@@ -818,6 +823,34 @@ BODY
     "$tmp/metadata-malformed-pre-close.md")" = 1 ] ||
     fail "a malformed closing tag must not expose raw HTML contents"
 
+cat >"$tmp/metadata-comment-boundary.md" <<'BODY'
+#<!-- hidden --># Problem
+
+Visible-looking prose.
+
+#<!-- hidden --># Acceptance criteria
+
+- [<!-- hidden --> ] [CI] Forged criterion
+BODY
+[ "$(run_personal 'Preserve comment token boundaries' \
+    "$tmp/metadata-comment-boundary.md")" = 1 ] ||
+    fail "stripping comments must not forge headings or task syntax"
+
+cat >"$tmp/metadata-html-container-end.md" <<'BODY'
+## Problem
+
+Keep visible structure outside an HTML container.
+
+- <div>
+  Example inside the list item.
+## Acceptance criteria
+
+- [ ] [CI] The top-level heading remains visible
+BODY
+[ "$(run_personal 'End raw HTML with its container' \
+    "$tmp/metadata-html-container-end.md")" = 0 ] ||
+    fail "leaving a list must end its raw HTML block: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: acceptance criteria are tagged rendered task-list items"
 for case_name in untagged non-task; do
     if [ "$case_name" = untagged ]; then
@@ -967,6 +1000,13 @@ echo "==> metadata: agent-authored issues require ai-generated and agent-writabl
     --body-file "$valid_body" --human-authored --label feature --label area:fixture \
     --inapplicable layer --label domain:platform --label 'autorelease: pending')" = 1 ] ||
     fail "a human author must not propose a tool-owned label"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Require attributable trusted labels' \
+    --body-file "$valid_body" --human-authored --label feature --label area:fixture \
+    --inapplicable layer --label domain:platform --label trusted-review)" = 2 ] ||
+    fail "a self-asserted human author cannot authorize a trusted-human label"
+grep -q 'actor-verifying trusted-human workflow' "$tmp/metadata.out" ||
+    fail "trusted-human refusal should name the required verification path"
 
 echo "==> metadata: manifest open-value families resolve proposed live labels"
 : >"$tmp/metadata-gh.log"
