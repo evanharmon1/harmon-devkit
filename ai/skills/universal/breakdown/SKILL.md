@@ -9,7 +9,7 @@ description: >-
   writing anything to GitHub. Invoke as /breakdown [topic, doc path, or issue
   reference].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh label list:*), Bash(gh repo view:*), Bash(task --list-all:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh label list:*), Bash(gh repo view:*), Bash(task --list-all:*), Bash(node ./ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(node ./.agents/skills/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(node ./.claude/skills/breakdown/assets/discover-label-vocabulary.mjs:*)
 ---
 
 # Breakdown
@@ -345,37 +345,64 @@ chunk exists is a report back to the human, not a license to retry.
 
 **Labels and fields come from the repo's vocabulary — never mint any**
 (`track-work` §6: vocabularies belong to the repo's own setup tasks, and
-minting per-repo is how they fork). Labels are not the whole vocabulary:
-repos on the harmon conventions treat labels and issue fields as orthogonal,
-so read every surface the target actually uses before proposing:
+minting per-repo is how they fork). Discover labels with the asset next to
+this skill, once per target repo:
 
 ```sh
-gh label list --repo <owner/repo> --limit 1000 --json name,description
+node <breakdown-skill-dir>/assets/discover-label-vocabulary.mjs \
+  --repo <host>/<owner>/<repo>
+```
+
+The asset binds discovery to the target's current default branch, reads its
+`label-registry.json` as data, and intersects every concrete candidate with
+the live GitHub label inventory. It never executes a renderer, validator, or
+other code from the target. A successful `mode: registry` result is the
+verified planning vocabulary:
+
+- Propose only labels listed under its `families`; the asset has already
+  applied effective family/per-value writers and lifecycle metadata and
+  excluded retired, arming, transient, claim-release, tool-managed, and
+  non-agent-writable entries. `provision: false` is not permission to mint:
+  a tool-owned or open value appears only when the concrete live label exists.
+- `exclusive: true` means propose at most one value from that family. This is
+  how repository-specific `area` vocabularies and their exclusivity rule are
+  consumed; never embed an `area:*` roster in this file.
+- `suggest` is advisory routing, never ownership or execution. A
+  `suggest-model` entry carries `requires`; propose that family label alongside
+  the model refinement, never the model label alone. Neither suggestion is an
+  arming signal.
+
+Only an absent registry produces `mode: live-label-fallback`. Its labels are
+bounded to the live inventory and exclude the `claim:`, legacy `agent:`, and
+`foreman:` namespaces, but their writer, lifecycle, and exclusivity semantics
+are explicitly unverified. Use that list conservatively: do not infer a family
+roster or apply anything that resembles ownership, execution, or transient
+workflow state. Any other asset failure means a present registry is malformed,
+ambiguous, unavailable, or unsafe to interpret: report the diagnostic in §6
+and treat **no label proposal as verified** for that target. Never silently
+retry it as though the registry were absent.
+
+Labels are not the whole vocabulary: repos on the harmon conventions treat
+labels and issue fields as orthogonal, so read the other surfaces the target
+actually uses before proposing:
+
+```sh
 # org-owned targets may also carry issue types (Task, Bug, Feature, …):
 gh api repos/<owner>/<repo> --jq .organization.login   # org repo?
 gh api orgs/<org>/issue-types --jq '.[].name'          # the type vocabulary
 ```
 
 Apply the families that fit: an issue **type** where the org defines them
-(`gh issue create --type`, or the issue-type edit endpoint after create),
-label families for priority and layer/domain, and **agent routing in
-whichever vocabulary the target actually has** — this one is in transition
-(evanharmon1/harmon-init#620 replaces the `Agent` planning field with
-`suggest:<family>[:<model>]` labels, "this chunk suits this model class").
-Where the target carries the `suggest:*` label family, use it. Where it still
-runs the `Agent` *field*, that field is a triage-time planning assignment —
-which is exactly what a breakdown produces, so proposing values for it in §6
-is legitimate here (unlike at claim time, where writing it destroys the plan —
-`track-work` §6); write it only where the target's tooling can (it is not
-writable via Projects V2 on org repos — there, report the proposed value
-instead). Neither vocabulary present: skip routing, noted once. Project-board
-fields (`Size`, `Status` options and the like) are Projects V2 state: propose
-them in §6, but write only what the target's own tooling exposes for the
-purpose — `track-work`'s `set-issue-status.sh` for `Status`, nothing
-hand-rolled — and report any proposed field the tooling cannot write instead
-of improvising a GraphQL mutation for it. And never set a claim marker
-(`claim:*` label, assignee, `In Progress`) — a breakdown plans work,
-`/claim` claims it.
+(`gh issue create --type`, or the issue-type edit endpoint after create) and
+the registry families that fit the chunk. Project-board fields (`Size`,
+`Status` options and the like) are Projects V2 state: propose them in §6, but
+write only what the target's own tooling exposes for the purpose —
+`track-work`'s `set-issue-status.sh` for `Status`, nothing hand-rolled — and
+report any proposed field the tooling cannot write instead of improvising a
+GraphQL mutation for it. Never write the retired `Agent` field, a claim marker
+(`claim:*` or legacy `agent:*`), an assignee, `In Progress`, a transient or
+tool-managed lifecycle label, or any arming label — a breakdown plans work;
+`/claim`, lifecycle tools, and trusted dispatch controls own those writes.
 
 **The recipes below are written for the default host.** They are the §1 host
 rule's one blind spot when copied verbatim: on any other host, every `gh api`

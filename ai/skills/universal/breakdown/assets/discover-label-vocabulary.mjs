@@ -1,0 +1,519 @@
+#!/usr/bin/env node
+// Discover the planning-safe label vocabulary for a target GitHub repository.
+// The target's registries are data: this script never checks out or executes
+// repository-owned code.
+
+import { execFileSync } from 'node:child_process'
+import process from 'node:process'
+
+const usage = `Usage: discover-label-vocabulary.mjs --repo [host/]owner/repo
+
+Reads label-registry.json from the target repository's current default branch,
+intersects planning-safe entries with the live label inventory, and writes JSON.
+If the registry is absent (HTTP 404), emits a conservative live-label fallback.`
+
+function die(message, code = 1) {
+  console.error(`breakdown-labels: ${message}`)
+  process.exit(code)
+}
+
+let repoArg
+for (let index = 2; index < process.argv.length; index += 1) {
+  const argument = process.argv[index]
+  if (argument === '--help' || argument === '-h') {
+    console.log(usage)
+    process.exit(0)
+  }
+  if (argument === '--repo' && process.argv[index + 1]) {
+    repoArg = process.argv[++index]
+    continue
+  }
+  die(`unexpected argument ${argument}`, 2)
+}
+if (!repoArg) die('--repo is required', 2)
+
+const parts = repoArg.split('/')
+if (parts.length !== 2 && parts.length !== 3) {
+  die(`--repo must be [host/]owner/repo (got ${repoArg})`, 2)
+}
+const [host, owner, repository] =
+  parts.length === 3 ? parts : ['github.com', parts[0], parts[1]]
+const repo = `${host}/${owner}/${repository}`
+const apiPath = `repos/${owner}/${repository}`
+
+function gh(args, description) {
+  try {
+    return execFileSync('gh', args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+  } catch (error) {
+    const stderr = String(error.stderr ?? '').trim()
+    const wrapped = new Error(`${description} failed${stderr ? `: ${stderr}` : ''}`)
+    wrapped.stderr = stderr
+    wrapped.status = error.status
+    throw wrapped
+  }
+}
+
+function parseJson(text, description) {
+  try {
+    return JSON.parse(text)
+  } catch (error) {
+    die(`${description} is not valid JSON: ${error.message}`)
+  }
+}
+
+function apiJson(path, description, fields = []) {
+  return parseJson(
+    gh(
+      ['api', '--hostname', host, '--method', 'GET', path, ...fields.flatMap(([key, value]) => ['-f', `${key}=${value}`])],
+      description
+    ),
+    description
+  )
+}
+
+function fetchDefaultBranchFile(path, branch, { absentAllowed = false } = {}) {
+  let response
+  try {
+    response = apiJson(
+      `${apiPath}/contents/${path}`,
+      `reading ${path} from ${repo}@${branch}`,
+      [['ref', branch]]
+    )
+  } catch (error) {
+    if (absentAllowed && /HTTP 404\b/.test(error.stderr)) return undefined
+    die(error.message)
+  }
+  if (
+    response === null ||
+    typeof response !== 'object' ||
+    response.type !== 'file' ||
+    response.encoding !== 'base64' ||
+    typeof response.content !== 'string'
+  ) {
+    die(`${path} at ${repo}@${branch} is not a base64-encoded file`)
+  }
+  return Buffer.from(response.content.replaceAll('\n', ''), 'base64').toString('utf8')
+}
+
+const slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const writerPattern = /^(human|trusted-human|agent|tool:[a-z0-9-]+)$/
+const lifecycles = new Set(['durable', 'transient', 'claim-release', 'tool-managed'])
+const sources = new Set(['inline', 'agent-registry', 'tool-owned'])
+const registrySets = new Set(['suggest', 'claim', 'foreman-adapters'])
+const registrySetPrefixes = new Map([
+  ['suggest', 'suggest'],
+  ['claim', 'claim'],
+  ['foreman-adapters', 'foreman']
+])
+const familyKeys = new Set([
+  'family',
+  'prefix',
+  'purpose',
+  'axis',
+  'source',
+  'registry_set',
+  'writers',
+  'writer_note',
+  'readers',
+  'lifecycle',
+  'lifecycle_note',
+  'trust_note',
+  'exclusive',
+  'arming',
+  'provision',
+  'gate',
+  'retired',
+  'open_values',
+  'placeholder',
+  'color',
+  'values'
+])
+const registryKeys = new Set(['$schema', 'schema_version', 'families'])
+const valueKeys = new Set([
+  'value',
+  'description',
+  'color',
+  'writers',
+  'writer_note',
+  'readers',
+  'lifecycle',
+  'lifecycle_note',
+  'trust_note',
+  'arming',
+  'provision',
+  'retired'
+])
+
+function assertObject(value, where) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    die(`${where} must be an object`)
+  }
+}
+
+function assertKeys(value, allowed, where) {
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key))
+  if (unknown.length > 0) die(`${where} has unsupported metadata: ${unknown.join(', ')}`)
+}
+
+function assertBoolean(value, where) {
+  if (typeof value !== 'boolean') die(`${where} must be boolean`)
+}
+
+function assertWriters(value, where) {
+  if (
+    !Array.isArray(value) ||
+    new Set(value).size !== value.length ||
+    value.some((writer) => typeof writer !== 'string' || !writerPattern.test(writer))
+  ) {
+    die(`${where} must be a unique writer list`)
+  }
+}
+
+function assertOptionalBoolean(value, key, where) {
+  if (Object.hasOwn(value, key)) assertBoolean(value[key], `${where}.${key}`)
+}
+
+function validateRegistry(registry) {
+  assertObject(registry, 'label-registry.json')
+  assertKeys(registry, registryKeys, 'label-registry.json')
+  if (registry.$schema !== './label-registry.schema.json') {
+    die('label-registry.json has an unsupported $schema')
+  }
+  if (registry.schema_version !== 1) {
+    die(`label-registry.json schema_version must be 1 (got ${registry.schema_version})`)
+  }
+  if (!Array.isArray(registry.families) || registry.families.length === 0) {
+    die('label-registry.json families must be a non-empty array')
+  }
+
+  const familyIds = new Set()
+  for (const [familyIndex, family] of registry.families.entries()) {
+    const where = `family[${familyIndex}]`
+    assertObject(family, where)
+    assertKeys(family, familyKeys, where)
+    for (const required of [
+      'family',
+      'prefix',
+      'purpose',
+      'axis',
+      'source',
+      'writers',
+      'readers',
+      'lifecycle',
+      'exclusive',
+      'provision',
+      'values'
+    ]) {
+      if (!Object.hasOwn(family, required)) die(`${where} is missing ${required}`)
+    }
+    if (typeof family.family !== 'string' || !slugPattern.test(family.family)) {
+      die(`${where}.family must be a lowercase slug`)
+    }
+    if (familyIds.has(family.family)) die(`duplicate family id ${family.family}`)
+    familyIds.add(family.family)
+    if (family.prefix !== null && (typeof family.prefix !== 'string' || !slugPattern.test(family.prefix))) {
+      die(`${where}.prefix must be null or a lowercase slug`)
+    }
+    if (typeof family.purpose !== 'string' || family.purpose.length === 0) {
+      die(`${where}.purpose must be a non-empty string`)
+    }
+    if (!sources.has(family.source)) die(`${where}.source is unsupported: ${family.source}`)
+    assertWriters(family.writers, `${where}.writers`)
+    if (!lifecycles.has(family.lifecycle)) {
+      die(`${where}.lifecycle is unsupported: ${family.lifecycle}`)
+    }
+    assertBoolean(family.exclusive, `${where}.exclusive`)
+    assertBoolean(family.provision, `${where}.provision`)
+    for (const key of ['arming', 'retired', 'open_values']) assertOptionalBoolean(family, key, where)
+    if (!Array.isArray(family.values)) die(`${where}.values must be an array`)
+    if (family.source === 'agent-registry') {
+      if (!registrySets.has(family.registry_set)) {
+        die(`${where} needs a supported registry_set`)
+      }
+      if (registrySetPrefixes.get(family.registry_set) !== family.prefix) {
+        die(`${where}.registry_set ${family.registry_set} does not match prefix ${family.prefix}`)
+      }
+      if (family.values.length !== 0) {
+        die(`${where} cannot mix agent-registry and inline values`)
+      }
+      if (family.retired !== true && family.provision !== true) {
+        die(`${where} agent-registry labels must be provisioned`)
+      }
+    } else if (Object.hasOwn(family, 'registry_set')) {
+      die(`${where}.registry_set is only valid for agent-registry sources`)
+    }
+    if (family.source === 'tool-owned' && family.provision !== false) {
+      die(`${where} tool-owned labels must not be provisioned`)
+    }
+    if (family.retired === true && family.provision !== false) {
+      die(`${where} retired labels must not be provisioned`)
+    }
+    if (family.open_values === true && !family.placeholder) {
+      die(`${where} open_values needs a placeholder`)
+    }
+    if (
+      family.source === 'inline' &&
+      family.open_values !== true &&
+      family.retired !== true &&
+      family.values.length === 0
+    ) {
+      die(`${where} closed inline families need at least one value`)
+    }
+    if (family.arming === true && family.prefix !== 'foreman') {
+      die(`${where} arming is only valid in the foreman namespace`)
+    }
+
+    const values = new Set()
+    for (const [valueIndex, value] of family.values.entries()) {
+      const valueWhere = `${where}.values[${valueIndex}]`
+      assertObject(value, valueWhere)
+      assertKeys(value, valueKeys, valueWhere)
+      if (typeof value.value !== 'string' || value.value.length === 0) {
+        die(`${valueWhere}.value must be a non-empty string`)
+      }
+      const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
+      if (values.has(name)) die(`${where} has duplicate label ${name}`)
+      values.add(name)
+      if (family.prefix !== null && !slugPattern.test(value.value)) {
+        die(`${valueWhere}.value must be a lowercase slug when prefixed`)
+      }
+      if ([...name].length > 50) die(`${valueWhere} renders a label name over 50 characters`)
+      if (Object.hasOwn(value, 'writers')) assertWriters(value.writers, `${valueWhere}.writers`)
+      if (Object.hasOwn(value, 'lifecycle') && !lifecycles.has(value.lifecycle)) {
+        die(`${valueWhere}.lifecycle is unsupported: ${value.lifecycle}`)
+      }
+      for (const key of ['arming', 'retired']) assertOptionalBoolean(value, key, valueWhere)
+      if ((family.arming === true || value.arming === true) && family.prefix !== 'foreman') {
+        die(`${valueWhere} arming is only valid in the foreman namespace`)
+      }
+      if (Object.hasOwn(value, 'provision') && value.provision !== false) {
+        die(`${valueWhere}.provision may only override to false`)
+      }
+    }
+  }
+}
+
+function validateAgentRegistry(registry) {
+  assertObject(registry, 'agent-registry.json')
+  if (!Array.isArray(registry.families)) die('agent-registry.json families must be an array')
+  const families = new Map()
+  for (const [index, family] of registry.families.entries()) {
+    if (!family || typeof family !== 'object' || !slugPattern.test(family.slug ?? '')) {
+      die(`agent-registry.json family[${index}] has an invalid slug`)
+    }
+    if (families.has(family.slug)) die(`agent-registry.json has duplicate family ${family.slug}`)
+    if (!Array.isArray(family.models)) die(`agent family ${family.slug} models must be an array`)
+    const models = new Set()
+    for (const model of family.models) {
+      if (!model || typeof model !== 'object' || !slugPattern.test(model.slug ?? '')) {
+        die(`agent family ${family.slug} has an invalid model slug`)
+      }
+      if (models.has(model.slug)) die(`agent family ${family.slug} has duplicate model ${model.slug}`)
+      models.add(model.slug)
+    }
+    families.set(family.slug, { models })
+  }
+  const adapters = new Map()
+  for (const [index, adapter] of (registry.foreman_adapters ?? []).entries()) {
+    if (!adapter || typeof adapter !== 'object' || !slugPattern.test(adapter.slug ?? '')) {
+      die(`agent-registry.json foreman_adapters[${index}] has an invalid slug`)
+    }
+    if (adapters.has(adapter.slug)) die(`agent-registry.json has duplicate adapter ${adapter.slug}`)
+    adapters.set(adapter.slug, adapter)
+  }
+  return { families, adapters }
+}
+
+function safe(family, value = {}) {
+  const writers = value.writers ?? family.writers
+  const lifecycle = value.lifecycle ?? family.lifecycle
+  const retired = family.retired === true || value.retired === true
+  const arming = family.arming === true || value.arming === true
+  return writers.includes('agent') && lifecycle === 'durable' && !retired && !arming
+}
+
+function outputFamily(family) {
+  return {
+    family: family.family,
+    prefix: family.prefix,
+    purpose: family.purpose,
+    source: family.source,
+    writers: family.writers,
+    lifecycle: family.lifecycle,
+    exclusive: family.exclusive,
+    arming: family.arming === true,
+    provision: family.provision,
+    retired: family.retired === true,
+    open_values: family.open_values === true,
+    labels: []
+  }
+}
+
+let repositoryMetadata
+try {
+  repositoryMetadata = apiJson(apiPath, `reading repository metadata for ${repo}`)
+} catch (error) {
+  die(error.message)
+}
+if (!repositoryMetadata.default_branch || typeof repositoryMetadata.default_branch !== 'string') {
+  die(`repository metadata for ${repo} has no default_branch`)
+}
+const defaultBranch = repositoryMetadata.default_branch
+
+let liveLabels
+try {
+  liveLabels = parseJson(
+    gh(
+      ['label', 'list', '--repo', repo, '--limit', '1000', '--json', 'name,description'],
+      `listing live labels for ${repo}`
+    ),
+    `live labels for ${repo}`
+  )
+} catch (error) {
+  die(error.message)
+}
+if (
+  !Array.isArray(liveLabels) ||
+  liveLabels.some((label) => !label || typeof label.name !== 'string')
+) {
+  die(`live labels for ${repo} have an unexpected shape`)
+}
+const live = new Map(liveLabels.map((label) => [label.name, label]))
+
+const registryText = fetchDefaultBranchFile('label-registry.json', defaultBranch, {
+  absentAllowed: true
+})
+if (registryText === undefined) {
+  const excludedPrefixes = ['claim:', 'agent:', 'foreman:']
+  const labels = liveLabels
+    .filter((label) => !excludedPrefixes.some((prefix) => label.name.startsWith(prefix)))
+    .sort((left, right) => left.name.localeCompare(right.name))
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        mode: 'live-label-fallback',
+        repository: repo,
+        default_branch: defaultBranch,
+        verified_semantics: false,
+        warning:
+          'label-registry.json is absent; family, writer, lifecycle, and exclusivity semantics are unknown',
+        excluded_prefixes: excludedPrefixes,
+        labels
+      },
+      null,
+      2
+    )}\n`
+  )
+  process.exit(0)
+}
+
+const registry = parseJson(registryText, `label-registry.json from ${repo}@${defaultBranch}`)
+validateRegistry(registry)
+
+let agentVocabulary = { families: new Map(), adapters: new Map() }
+if (registry.families.some((family) => family.source === 'agent-registry')) {
+  const agentText = fetchDefaultBranchFile('agent-registry.json', defaultBranch)
+  const agentRegistry = parseJson(agentText, `agent-registry.json from ${repo}@${defaultBranch}`)
+  agentVocabulary = validateAgentRegistry(agentRegistry)
+}
+
+const resultFamilies = new Map()
+const candidateOwners = new Map()
+const knownConcrete = new Set()
+
+function addCandidate(family, name, value = {}, extra = {}) {
+  if (!live.has(name)) return
+  const prior = candidateOwners.get(name)
+  if (prior && prior !== family.family) {
+    die(`label ${name} is ambiguous between planning-safe families ${prior} and ${family.family}`)
+  }
+  candidateOwners.set(name, family.family)
+  if (!resultFamilies.has(family.family)) resultFamilies.set(family.family, outputFamily(family))
+  resultFamilies.get(family.family).labels.push({
+    name,
+    description: live.get(name).description ?? '',
+    writers: value.writers ?? family.writers,
+    lifecycle: value.lifecycle ?? family.lifecycle,
+    arming: family.arming === true || value.arming === true,
+    provision: family.provision === true && value.provision !== false,
+    retired: family.retired === true || value.retired === true,
+    ...extra
+  })
+}
+
+for (const family of registry.families) {
+  if (family.source !== 'agent-registry') {
+    for (const value of family.values) {
+      const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
+      knownConcrete.add(name)
+      if (safe(family, value)) addCandidate(family, name, value)
+    }
+  } else if (family.source === 'agent-registry') {
+    if (!safe(family)) continue
+    let names = []
+    if (family.registry_set === 'suggest' || family.registry_set === 'claim') {
+      names = [...agentVocabulary.families.keys()].map((slug) => `${family.prefix}:${slug}`)
+    } else if (family.registry_set === 'foreman-adapters') {
+      names = [...agentVocabulary.adapters.entries()]
+        .filter(([, adapter]) => adapter.provision_label === true)
+        .map(([slug]) => `${family.prefix}:${slug}`)
+    }
+    for (const name of names) {
+      knownConcrete.add(name)
+      addCandidate(family, name)
+    }
+  }
+}
+
+for (const family of registry.families) {
+  if (!safe(family) || family.open_values !== true) continue
+  if (family.prefix === null) {
+    die(`planning-safe open family ${family.family} has no prefix and cannot be interpreted safely`)
+  }
+
+  if (family.family === 'suggest-model') {
+    const baseFamily = registry.families.find(
+      (candidate) =>
+        candidate.source === 'agent-registry' &&
+        candidate.registry_set === 'suggest' &&
+        candidate.prefix === family.prefix &&
+        safe(candidate)
+    )
+    if (!baseFamily) die('suggest-model has no planning-safe suggest family to pair with')
+    for (const [familySlug, details] of agentVocabulary.families) {
+      const base = `${family.prefix}:${familySlug}`
+      if (!live.has(base)) continue
+      for (const model of details.models) {
+        const name = `${base}:${model}`
+        if (live.has(name)) addCandidate(family, name, {}, { requires: [base] })
+      }
+    }
+    continue
+  }
+
+  for (const name of live.keys()) {
+    if (!name.startsWith(`${family.prefix}:`) || knownConcrete.has(name)) continue
+    addCandidate(family, name)
+  }
+}
+
+for (const family of resultFamilies.values()) {
+  family.labels.sort((left, right) => left.name.localeCompare(right.name))
+}
+
+process.stdout.write(
+  `${JSON.stringify(
+    {
+      mode: 'registry',
+      repository: repo,
+      default_branch: defaultBranch,
+      verified_semantics: true,
+      families: [...resultFamilies.values()]
+    },
+    null,
+    2
+  )}\n`
+)
