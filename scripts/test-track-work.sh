@@ -529,7 +529,20 @@ echo "three backticks inside"
 # --- check-issue-metadata.sh ------------------------------------------------
 
 metadata_repo="$tmp/metadata-repo"
+metadata_stub="$tmp/metadata-bin"
+metadata_fallback="$tmp/metadata-fallback"
 mkdir -p "$metadata_repo"
+mkdir -p "$metadata_stub" "$metadata_fallback"
+cat >"$metadata_stub/gh" <<'STUB'
+#!/bin/sh
+if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
+case "${1:-} ${2:-}" in
+"api orgs/testorg/issue-types") printf '%s\n' Task Bug Feature Research ;;
+"label list") printf '%s\n' enhancement area:fixture domain:platform ai-generated needs-triage ;;
+*) exit 97 ;;
+esac
+STUB
+chmod +x "$metadata_stub/gh"
 cp agent-registry.json "$metadata_repo/agent-registry.json"
 jq '.families |= map(if .family == "area"
     then .values += [{"value":"fixture","description":"Fixture-only area"}]
@@ -596,7 +609,7 @@ run_organization() {
     _title="$1"
     _body="$2"
     shift 2
-    run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
+    PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
         --owner-type organization --issue-type Task --title "$_title" \
         --body-file "$_body" --agent-authored --label area:fixture \
         --inapplicable layer --label domain:platform --label ai-generated "$@"
@@ -661,6 +674,21 @@ Something is wrong.' ;;
         fail "$case_name should fail"
 done
 
+echo "==> metadata: headings and criteria hidden in HTML comments do not count"
+cat >"$tmp/metadata-commented.md" <<'BODY'
+<!--
+## Problem
+
+Hidden.
+
+## Acceptance criteria
+
+- [ ] [CI] Hidden criterion
+-->
+BODY
+[ "$(run_personal 'Ignore hidden issue sections' "$tmp/metadata-commented.md")" = 1 ] ||
+    fail "HTML-comment-hidden sections must not satisfy the body contract"
+
 echo "==> metadata: acceptance criteria are tagged rendered task-list items"
 for case_name in untagged non-task; do
     if [ "$case_name" = untagged ]; then
@@ -690,6 +718,22 @@ sed 's/^## Verify$/### Verify/' "$verified_body" >"$tmp/metadata-wrong-verify-le
 [ "$(run_personal 'Require the canonical Verify heading' \
     "$tmp/metadata-wrong-verify-level.md")" = 1 ] ||
     fail "a perishable fact with only a noncanonical Verify heading should fail"
+cat >"$tmp/metadata-current-no-verify.md" <<'BODY'
+## Problem
+
+Preserve a durable invariant.
+
+## Current violation (observed 2026-08-17)
+
+The target is stale.
+
+## Acceptance criteria
+
+- [ ] [CI] The target is refreshed
+BODY
+[ "$(run_personal 'Require Verify for observed violations' \
+    "$tmp/metadata-current-no-verify.md")" = 1 ] ||
+    fail "Current violation must require Verify even when rot patterns do not match its prose"
 
 echo "==> metadata: labels must be known and exclusive families cannot conflict"
 [ "$(run_personal 'Reject unknown labels' "$valid_body" --label unknown-label)" = 1 ] ||
@@ -709,6 +753,11 @@ echo "==> metadata: agent-authored issues require ai-generated and agent-writabl
     --label feature --label area:fixture --inapplicable layer \
     --label domain:platform --label sec)" = 0 ] ||
     fail "a human-authored draft may carry a true concern: $(cat "$tmp/metadata.out")"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Reject tool-owned authoring state' \
+    --body-file "$valid_body" --label feature --label area:fixture \
+    --inapplicable layer --label domain:platform --label 'autorelease: pending')" = 1 ] ||
+    fail "a human author must not propose a tool-owned label"
 
 echo "==> metadata: incomplete classification requires needs-triage and names the axis"
 _rc="$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
@@ -737,6 +786,11 @@ echo "==> metadata: owner type controls work classification"
     --owner-type organization --title 'Require native Issue Type' --body-file "$valid_body" \
     --label area:fixture --inapplicable layer --label domain:platform)" = 1 ] ||
     fail "organization repo without Issue Type should fail"
+[ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo \
+    --repo-root "$metadata_repo" --owner-type organization \
+    --issue-type 'Definitely Not A Real Type' --title 'Validate native Issue Types' \
+    --body-file "$valid_body" --label area:fixture --inapplicable layer \
+    --label domain:platform)" = 1 ] || fail "unknown native Issue Type should fail"
 
 echo "==> metadata: authoring-time strategy, routing, claim, and Foreman labels are forbidden"
 for label in rigor:deep tier:apex method:plan suggest:gpt claim:gpt foreman:approved agent:codex; do
@@ -745,27 +799,13 @@ for label in rigor:deep tier:apex method:plan suggest:gpt claim:gpt foreman:appr
     grep -qF "$label" "$tmp/metadata.out" || fail "the rejection should name $label"
 done
 
-metadata_stub="$tmp/metadata-bin"
-metadata_fallback="$tmp/metadata-fallback"
-mkdir -p "$metadata_stub" "$metadata_fallback"
-cat >"$metadata_stub/gh" <<'STUB'
-#!/bin/sh
-printf '%s\n' "$*" >>"${METADATA_GH_LOG:?}"
-if [ "${1:-} ${2:-}" = "label list" ]; then
-    printf '%s\n' feature area:fixture domain:platform ai-generated needs-triage
-    exit 0
-fi
-exit 97
-STUB
-chmod +x "$metadata_stub/gh"
-
 echo "==> metadata: an absent manifest falls back to one bounded label read"
 : >"$tmp/metadata-gh.log"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title 'Validate fallback metadata' \
-    --body-file "$valid_body" --agent-authored --label feature \
+    --body-file "$valid_body" --agent-authored --work-type-label enhancement \
     --label area:fixture --inapplicable layer --label domain:platform \
     --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "fallback draft should pass: $(cat "$tmp/metadata.out")"

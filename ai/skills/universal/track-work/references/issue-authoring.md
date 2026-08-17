@@ -117,7 +117,7 @@ repository root rather than the installed skill directory:
   --owner-type personal \
   --title '<imperative title>' \
   --body-file <draft.md> \
-  --label task \
+  --work-type-label task \
   --label area:automation \
   --inapplicable layer \
   --label domain:delivery \
@@ -126,7 +126,8 @@ repository root rather than the installed skill directory:
 ```
 
 For an organization repository, use `--owner-type organization --issue-type
-'<native type>'` and omit a work-type label. Repeat `--label` and
+'<native type>'` and omit `--work-type-label`; the checker verifies the value
+against the target organization's native types. Repeat `--label` and
 `--inapplicable` as needed. `--help` contains complete personal-account and
 organization examples.
 

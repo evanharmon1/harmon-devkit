@@ -6,7 +6,6 @@
 set -euo pipefail
 
 TITLE_MAX=70
-FALLBACK_WORK_TYPES='bug feature task research documentation question'
 FORBIDDEN_RE='^(foreman:|rigor:|tier:|method:|claim:|suggest:|agent:)'
 
 help_text() {
@@ -14,6 +13,7 @@ help_text() {
 Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
           --owner-type personal|organization
           --title TITLE --body-file PATH [--label LABEL]...
+          [--work-type-label LABEL]
           [--issue-type TYPE] [--agent-authored]
           [--inapplicable area|layer|domain]...
 
@@ -24,7 +24,7 @@ one bounded `gh label list --limit 1000` read against --repo.
 Personal-account example:
   check-issue-metadata.sh --repo me/project --repo-root . --owner-type personal \\
     --title 'Reject stale cache entries' --body-file issue.md \\
-    --label bug --label area:build --inapplicable layer \\
+    --work-type-label bug --label area:build --inapplicable layer \\
     --label domain:platform --label ai-generated --agent-authored
 
 Organization example:
@@ -59,6 +59,7 @@ owner_type=""
 title=""
 body_file=""
 issue_type=""
+work_type_label=""
 agent_authored=0
 labels=()
 inapplicable=()
@@ -69,7 +70,7 @@ while [ "$#" -gt 0 ]; do
         help_text
         exit 0
         ;;
-    --repo | --repo-root | --owner-type | --title | --body-file | --issue-type | --label | --inapplicable)
+    --repo | --repo-root | --owner-type | --title | --body-file | --issue-type | --work-type-label | --label | --inapplicable)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo="$2" ;;
@@ -78,6 +79,7 @@ while [ "$#" -gt 0 ]; do
         --title) title="$2" ;;
         --body-file) body_file="$2" ;;
         --issue-type) issue_type="$2" ;;
+        --work-type-label) work_type_label="$2" ;;
         --label) labels+=("$2") ;;
         --inapplicable) inapplicable+=("$2") ;;
         esac
@@ -90,6 +92,10 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
     esac
 done
+
+if [ -n "$work_type_label" ]; then
+    labels+=("$work_type_label")
+fi
 
 [ -n "$repo" ] && [ -n "$repo_root" ] && [ -n "$owner_type" ] &&
     [ -n "$body_file" ] || usage
@@ -237,11 +243,7 @@ else
         ai-generated) printf '%s|provenance|provenance|human,agent|false\n' "$label" ;;
         needs-triage) printf '%s|workflow|workflow|human,agent|false\n' "$label" ;;
         *)
-            is_work_type=0
-            for work_type in $FALLBACK_WORK_TYPES; do
-                [ "$label" = "$work_type" ] && is_work_type=1
-            done
-            if [ "$is_work_type" -eq 1 ]; then
+            if [ -n "$work_type_label" ] && [ "$label" = "$work_type_label" ]; then
                 printf '%s|work-type|work-type|human,agent|false\n' "$label"
             else
                 printf '%s|fallback-other|meta|human|false\n' "$label"
@@ -253,6 +255,29 @@ $live
 EOF
 fi
 sort -u "$vocab" -o "$vocab"
+
+# Preserve line numbers while removing HTML comments. Headings and task items
+# hidden by a template comment are not rendered GitHub content and therefore
+# cannot satisfy the authoring contract.
+visible_body="$tmp/visible-body"
+awk '
+  {
+    line=$0; visible=""
+    while (1) {
+      if (comment) {
+        close_at=index(line, "-->")
+        if (!close_at) { line=""; break }
+        line=substr(line, close_at + 3); comment=0
+      } else {
+        open_at=index(line, "<!--")
+        if (!open_at) { visible=visible line; break }
+        visible=visible substr(line, 1, open_at - 1)
+        line=substr(line, open_at + 4); comment=1
+      }
+    }
+    print visible
+  }
+' "$body_file" >"$visible_body"
 
 # Title syntax is mechanical. Whether the words form an imperative
 # problem/outcome statement remains a semantic judgment owned by the prose.
@@ -306,7 +331,7 @@ awk '
     sub(/[[:space:]]*#*[[:space:]]*$/, "", text)
     printf "%d|%s|%s\n", NR, canonical(text), text
   }
-' "$body_file" >"$headings"
+' "$visible_body" >"$headings"
 
 if grep -q '|unknown|' "$headings"; then
     while IFS='|' read -r line kind text; do
@@ -346,7 +371,7 @@ for required in problem acceptance; do
     end="${bounds#* }"
     substantive="$(awk -v start="$start" -v end="$end" '
       NR > start && NR < end && $0 !~ /^[[:space:]]*$/ { print; exit }
-    ' "$body_file")"
+    ' "$visible_body")"
     [ -n "$substantive" ] || violation "$required section is empty"
 done
 
@@ -372,7 +397,7 @@ if [ -n "$bounds" ]; then
         non_task++
       }
       END { printf "%d %d %d\n", criteria + 0, bad_tag + 0, non_task + 0 }
-    ' "$body_file")"
+    ' "$visible_body")"
     criteria="${acceptance_result%% *}"
     rest="${acceptance_result#* }"
     bad_tag="${rest%% *}"
@@ -383,7 +408,7 @@ if [ -n "$bounds" ]; then
 fi
 
 rot_rc=0
-rot_output="$("$(cd "$(dirname "$0")" && pwd -P)/check-issue-rot.sh" "$body_file" 2>&1)" || rot_rc=$?
+rot_output="$("$(cd "$(dirname "$0")" && pwd -P)/check-issue-rot.sh" "$visible_body" 2>&1)" || rot_rc=$?
 case "$rot_rc" in
 0) ;;
 1) violation "perishable facts require a substantive Verify section: $rot_output" ;;
@@ -396,6 +421,10 @@ esac
 # existing rot checker whether the remaining draft still contains perishable
 # evidence; this reuses its definition instead of copying its pattern list.
 verify_count="$(awk -F '|' '$2 == "verify" { n++ } END { print n + 0 }' "$headings")"
+current_count="$(awk -F '|' '$2 == "current" { n++ } END { print n + 0 }' "$headings")"
+if [ "$current_count" -gt 0 ] && [ "$verify_count" -eq 0 ]; then
+    violation "Current violation requires the canonical level-two ## Verify section"
+fi
 if [ "$verify_count" -eq 0 ]; then
     masked_body="$tmp/body-without-noncanonical-verify"
     awk '
@@ -404,7 +433,7 @@ if [ "$verify_count" -eq 0 ]; then
         if (lower ~ /^ ? ? ?#+[[:space:]]+(verify|verification)[[:space:]#]*$/) print "x" $0
         else print
       }
-    ' "$body_file" >"$masked_body"
+    ' "$visible_body" >"$masked_body"
     masked_rc=0
     "$(cd "$(dirname "$0")" && pwd -P)/check-issue-rot.sh" "$masked_body" >/dev/null 2>&1 || masked_rc=$?
     case "$masked_rc" in
@@ -446,6 +475,11 @@ EOF
         *,agent,*) ;;
         *) violation "label '$label' is not writable by an agent" ;;
         esac
+    else
+        case ",$writers," in
+        *,human,* | *,trusted-human,*) ;;
+        *) violation "label '$label' is not writable by a human author" ;;
+        esac
     fi
     [ "$label" = ai-generated ] && has_ai_generated=1
     [ "$label" = needs-triage ] && has_needs_triage=1
@@ -475,10 +509,24 @@ personal)
         violation "personal-account repositories require exactly one work-type label (found $work_type_count)"
     ;;
 organization)
+    [ -z "$work_type_label" ] ||
+        violation "organization repositories use native Issue Type, not --work-type-label"
     [ "$work_type_count" -eq 0 ] ||
         violation "organization repositories use native Issue Type and no work-type label"
-    printf '%s' "$issue_type" | grep -q '[^[:space:]]' ||
+    if printf '%s' "$issue_type" | grep -q '[^[:space:]]'; then
+        repo_owner="${repo%%/*}"
+        native_types="$(gh api "orgs/$repo_owner/issue-types" --jq '.[].name')" ||
+            die "could not read native Issue Types for organization $repo_owner"
+        if ! printf '%s\n' "$native_types" | awk -v wanted="$issue_type" '
+          BEGIN { wanted=tolower(wanted) }
+          tolower($0) == wanted { found=1 }
+          END { exit(found ? 0 : 1) }
+        '; then
+            violation "native Issue Type '$issue_type' does not exist for organization $repo_owner"
+        fi
+    else
         violation "organization repositories require a native Issue Type"
+    fi
     ;;
 esac
 

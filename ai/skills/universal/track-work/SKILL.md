@@ -639,12 +639,13 @@ Run the combined gate immediately before creation:
 <skill-dir>/assets/check-issue-metadata.sh \
   --repo <owner/repo> --repo-root <target-checkout> \
   --owner-type personal --title '<title>' --body-file <draft-file> \
-  --label <work-type> --label <area:value> --inapplicable layer \
+  --work-type-label <work-type> --label <area:value> --inapplicable layer \
   --label <domain:value> --label ai-generated --agent-authored
 ```
 
-Use `--owner-type organization --issue-type <Type>` and omit the work-type
-label for an organization. Repeat `--label` and `--inapplicable` as needed.
+Use `--owner-type organization --issue-type <Type>` and omit
+`--work-type-label` for an organization; the checker verifies that native type
+against the target organization. Repeat `--label` and `--inapplicable` as needed.
 `--help` gives complete personal-account and organization examples. Exit 0 is
 verified, 1 is a contract violation, and 2 is usage or an indeterminate
 repository/vocabulary read. The checker performs no GitHub writes.
