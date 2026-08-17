@@ -77,16 +77,21 @@ if [ "$1" = api ]; then
         done
         printf ']}\n'
         exit 0
+    elif [[ "$joined" == *"/labels"* ]]; then
+        if [[ "$joined" != *"--paginate"* || "$joined" != *"--slurp"* ]]; then
+            echo "live-label API call must be exhaustively paginated" >&2
+            exit 1
+        fi
+        printf '['
+        cat "$fixture/labels.json"
+        printf ']\n'
+        exit 0
     else
         printf '{"default_branch":"trunk"}\n'
         exit 0
     fi
     content="$(base64 <"$file" | tr -d '\n')"
     printf '{"type":"file","encoding":"base64","content":"%s"}\n' "$content"
-    exit 0
-fi
-if [ "$1" = label ] && [ "$2" = list ]; then
-    cat "$fixture/labels.json"
     exit 0
 fi
 echo "unexpected fake gh call: $*" >&2
@@ -203,9 +208,9 @@ write_agent_registry "$first"
 write_registry "$first" api
 write_labels "$first" api
 if output="$(discover "$first")"; then
-    ok "valid registry is discovered"
+    ok "valid registry and complete paginated live inventory are discovered"
 else
-    bad "valid registry is discovered"
+    bad "valid registry and complete paginated live inventory are discovered"
     output='{}'
 fi
 
@@ -464,6 +469,63 @@ if suggest_output="$(discover "$suggest_concrete")" && jq -e '
     ok "suggest-model cannot reclassify an unsafe concrete declaration"
 else
     bad "suggest-model honors concrete-label reservations"
+fi
+
+agent_version="$tmproot/agent-version"
+mkdir -p "$agent_version"
+write_agent_registry "$agent_version"
+write_registry "$agent_version" api
+write_labels "$agent_version" api
+jq '.schema_version = 3' "$agent_version/agent-registry.json" >"$agent_version/agent-registry-updated.json"
+mv "$agent_version/agent-registry-updated.json" "$agent_version/agent-registry.json"
+jq '.properties.schema_version.const = 3' "$agent_version/agent-registry.schema.json" >"$agent_version/agent-schema-updated.json"
+mv "$agent_version/agent-schema-updated.json" "$agent_version/agent-registry.schema.json"
+if discover "$agent_version" >"$agent_version/output" 2>"$agent_version/error"; then
+    bad "unsupported agent-registry versions cannot be certified"
+elif [ ! -s "$agent_version/output" ] && grep -q 'schema_version must be 2' "$agent_version/error"; then
+    ok "unsupported agent-registry contracts fail closed after schema validation"
+else
+    bad "unsupported agent-registry contract fails with a semantic diagnostic"
+fi
+
+reserved_concrete="$tmproot/reserved-concrete"
+mkdir -p "$reserved_concrete"
+write_agent_registry "$reserved_concrete"
+write_registry "$reserved_concrete" api
+write_labels "$reserved_concrete" api
+jq '(.families |= map(select(.family != "claim"))) | .families += [{
+    "family":"smuggled-claim", "prefix":null, "purpose":"Unsafe ownership marker",
+    "axis":"meta", "source":"inline", "writers":["agent"], "readers":"agents",
+    "lifecycle":"durable", "exclusive":false, "provision":false,
+    "values":[{"value":"claim:gpt"}]
+}]' "$reserved_concrete/label-registry.json" >"$reserved_concrete/registry.json"
+mv "$reserved_concrete/registry.json" "$reserved_concrete/label-registry.json"
+if discover "$reserved_concrete" >"$reserved_concrete/output" 2>"$reserved_concrete/error"; then
+    bad "safe-looking concrete declarations cannot smuggle reserved labels"
+elif [ ! -s "$reserved_concrete/output" ] && grep -q 'declares reserved label claim:gpt' "$reserved_concrete/error"; then
+    ok "reserved concrete ownership namespaces fail closed"
+else
+    bad "reserved concrete namespace fails with a diagnostic"
+fi
+
+unsafe_open_overlap="$tmproot/unsafe-open-overlap"
+mkdir -p "$unsafe_open_overlap"
+write_agent_registry "$unsafe_open_overlap"
+write_registry "$unsafe_open_overlap" api
+write_labels "$unsafe_open_overlap" api
+jq '.families += [{
+    "family":"unsafe-area-open", "prefix":"area", "purpose":"Conflicting unsafe namespace",
+    "axis":"workflow", "source":"tool-owned", "writers":["agent"], "readers":"agents",
+    "lifecycle":"transient", "exclusive":false, "provision":false,
+    "open_values":true, "placeholder":"area:<value>", "values":[]
+}]' "$unsafe_open_overlap/label-registry.json" >"$unsafe_open_overlap/registry.json"
+mv "$unsafe_open_overlap/registry.json" "$unsafe_open_overlap/label-registry.json"
+if discover "$unsafe_open_overlap" >"$unsafe_open_overlap/output" 2>"$unsafe_open_overlap/error"; then
+    bad "unsafe open families cannot overlap planning-safe closed families"
+elif [ ! -s "$unsafe_open_overlap/output" ] && grep -q 'overlaps prefix area' "$unsafe_open_overlap/error"; then
+    ok "unsafe open-family prefix overlaps fail closed"
+else
+    bad "unsafe open-family overlap fails with a diagnostic"
 fi
 
 ambiguous="$tmproot/ambiguous"

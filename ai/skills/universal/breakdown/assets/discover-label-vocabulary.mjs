@@ -75,6 +75,26 @@ function apiJson(path, description, fields = []) {
   )
 }
 
+function apiJsonPages(path, description, fields = []) {
+  return parseJson(
+    gh(
+      [
+        'api',
+        '--hostname',
+        host,
+        '--method',
+        'GET',
+        '--paginate',
+        '--slurp',
+        path,
+        ...fields.flatMap(([key, value]) => ['-f', `${key}=${value}`])
+      ],
+      description
+    ),
+    description
+  )
+}
+
 function fetchDefaultBranchFile(path, commit) {
   let response
   try {
@@ -329,6 +349,27 @@ function validateRegistry(registry) {
 
 function validateAgentRegistry(registry) {
   assertObject(registry, 'agent-registry.json')
+  if (registry.$schema !== './agent-registry.schema.json') {
+    die('agent-registry.json has an unsupported $schema')
+  }
+  if (registry.schema_version !== 2) {
+    die(`agent-registry.json schema_version must be 2 (got ${registry.schema_version})`)
+  }
+  for (const namespace of ['suggest', 'claim']) {
+    const contract = registry.labels?.[namespace]
+    if (
+      !contract ||
+      contract.prefix !== namespace ||
+      contract.axis !== 'model' ||
+      contract.arming !== false ||
+      !Array.isArray(contract.scopes) ||
+      contract.scopes.length !== 2 ||
+      contract.scopes[0] !== 'family' ||
+      contract.scopes[1] !== 'model'
+    ) {
+      die(`agent-registry.json labels.${namespace} has an unsupported namespace contract`)
+    }
+  }
   if (!Array.isArray(registry.families)) die('agent-registry.json families must be an array')
   const families = new Map()
   for (const [index, family] of registry.families.entries()) {
@@ -453,18 +494,20 @@ if (branchMetadata) {
   defaultPaths = new Set(defaultTree.tree.map((entry) => entry.path))
 }
 
-let liveLabels
+let liveLabelPages
 try {
-  liveLabels = parseJson(
-    gh(
-      ['label', 'list', '--repo', repo, '--limit', '1000', '--json', 'name,description'],
-      `listing live labels for ${repo}`
-    ),
-    `live labels for ${repo}`
+  liveLabelPages = apiJsonPages(
+    `${apiPath}/labels`,
+    `listing live labels for ${repo}`,
+    [['per_page', '100']]
   )
 } catch (error) {
   die(error.message)
 }
+if (!Array.isArray(liveLabelPages) || liveLabelPages.some((page) => !Array.isArray(page))) {
+  die(`live label pages for ${repo} have an unexpected shape`)
+}
+const liveLabels = liveLabelPages.flat()
 if (
   !Array.isArray(liveLabels) ||
   liveLabels.some((label) => !label || typeof label.name !== 'string')
@@ -559,6 +602,7 @@ const resultFamilies = new Map()
 const candidateOwners = new Map()
 const declaredOwners = new Map()
 const knownConcrete = new Set()
+const reservedConcretePrefixes = ['claim:', 'agent:', 'foreman:']
 
 function reserveConcrete(family, name) {
   const normalized = normalizeLabelName(name)
@@ -572,6 +616,9 @@ function reserveConcrete(family, name) {
 
 function addCandidate(family, name, value = {}, extra = {}) {
   const normalized = normalizeLabelName(name)
+  if (reservedConcretePrefixes.some((prefix) => normalized.startsWith(prefix))) {
+    die(`planning-safe family ${family.family} declares reserved label ${name}`)
+  }
   const liveLabel = live.get(normalized)
   if (!liveLabel) return
   const prior = candidateOwners.get(normalized)
@@ -617,12 +664,8 @@ for (const family of registry.families) {
   }
 }
 
-for (const family of registry.families) {
-  if (!safe(family) || family.open_values !== true) continue
-  if (family.prefix === null) {
-    die(`planning-safe open family ${family.family} has no prefix and cannot be interpreted safely`)
-  }
-
+for (const family of registry.families.filter((candidate) => candidate.open_values === true)) {
+  if (family.prefix === null) continue
   const conflictingFamily = registry.families.find(
     (candidate) =>
       candidate.family !== family.family &&
@@ -636,8 +679,15 @@ for (const family of registry.families) {
   if (conflictingFamily) {
     die(
       `planning-safe open family ${family.family} overlaps prefix ${family.prefix} with ` +
-        `family ${conflictingFamily.family}; excluded labels cannot be reclassified safely`
+      `family ${conflictingFamily.family}; excluded labels cannot be reclassified safely`
     )
+  }
+}
+
+for (const family of registry.families) {
+  if (!safe(family) || family.open_values !== true) continue
+  if (family.prefix === null) {
+    die(`planning-safe open family ${family.family} has no prefix and cannot be interpreted safely`)
   }
 
   if (family.family === 'suggest-model') {
