@@ -235,7 +235,7 @@
         },
         {
           "value": "agent-workflow",
-          "description": "AI-delegated dev sessions: the universal skill suite (kickoff→wrap), subagents, claims"
+          "description": "AI-delegated dev sessions: the universal skill suite (kickoff→wrap) and shared subagents"
         },
         {
           "value": "standardization",

@@ -400,7 +400,7 @@ destroys every value on it, unrecoverably.
      in sync, so do not assume the label already exists just because the
      field option does.
   3. Re-point any saved view that **groups, filters, or sorts** by the
-     `Domain`/`Layer` field. A label can still filter a view (`domain:auth`,
+     `Domain`/`Layer` field. A label can still filter a view (`domain:delivery`,
      say), but — unlike a field — a project view cannot **group or sort** by a
      label, so a view built for the per-domain/per-layer rollup or ordering
      loses that; keep the grouping on `Product` (still a field) and reach for
