@@ -251,7 +251,7 @@
         },
         {
           "value": "delivery",
-          "description": "Getting assets to consumers: releases, tags, skills sync, harmon-init pickup"
+          "description": "Release transport to consumers: release-please, tags, pinned-version pickup"
         },
         {
           "value": "auth",
@@ -312,11 +312,11 @@
         },
         {
           "value": "tests",
-          "description": "The test suite and gate assertions"
+          "description": "The shared test suite and gate assertions; a skill's own tests belong to that skill's area"
         },
         {
           "value": "tasks",
-          "description": "Taskfile targets and scripts/ glue"
+          "description": "Taskfile targets and scripts/ glue without a more specific area; security targets are area:security"
         },
         {
           "value": "release",
@@ -377,6 +377,10 @@
         {
           "value": "session-flow",
           "description": "The session lifecycle skills: kickoff, breakdown, claim, implement, retro, wrap"
+        },
+        {
+          "value": "foreman",
+          "description": "Foreman config, wrapper tasks, adapters"
         }
       ]
     },
