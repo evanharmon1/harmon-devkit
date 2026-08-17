@@ -126,6 +126,7 @@ normalize_github_remote() {
     git@github.com:*) _slug="${_remote#git@github.com:}" ;;
     ssh://git@github.com/*) _slug="${_remote#ssh://git@github.com/}" ;;
     ssh://git@ssh.github.com:443/*) _slug="${_remote#ssh://git@ssh.github.com:443/}" ;;
+    ssh://git@ssh.github.com/*) _slug="${_remote#ssh://git@ssh.github.com/}" ;;
     *) return 1 ;;
     esac
     _slug="${_slug%.git}"

@@ -1261,6 +1261,21 @@ for mutation in missing-required duplicate-value; do
     [ "$_rc" = 2 ] || fail "$mutation manifest should exit 2 (got $_rc)"
 done
 
+echo "==> metadata: the portless ssh.github.com remote form binds the checkout"
+# AGENTS.md documents four GitHub SSH remote spellings; the port-443 and
+# portless ssh.github.com forms are distinct and both must normalize.
+metadata_sshport="$tmp/metadata-sshport"
+mkdir -p "$metadata_sshport"
+git -C "$metadata_sshport" init -q
+git -C "$metadata_sshport" remote add origin 'ssh://git@ssh.github.com/testowner/testrepo.git'
+cp "$metadata_repo/label-registry.json" "$metadata_sshport/label-registry.json"
+[ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testowner/testrepo \
+    --repo-root "$metadata_sshport" --owner-type personal \
+    --title 'Bind portless ssh remotes' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:platform)" = 0 ] ||
+    fail "a portless ssh.github.com remote should bind: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: the checkout remote must match the requested repository"
 _rc=0
 "$metadata" --repo another/repo --repo-root "$metadata_repo" \
