@@ -9,3 +9,4 @@
 ## Local modifications
 
 - Added the attribution notice in `SKILL.md`.
+- Rephrased cross-skill calls for harness-neutral skill loading.
