@@ -17,7 +17,7 @@ Wayfinder is **planning** by default: each ticket resolves a decision, and the m
 
 ## Refer by name
 
-Every map and ticket is an issue, so it has a **name** — its title. In everything the human reads — narration, the map's Decisions-so-far — refer to it by that name, never by a bare id, number, or slug. A wall of `#42, #43, #44` is illegible; names read at a glance. The id and URL don't vanish — a name wraps its link — but they ride _inside_ the name, never stand in for it.
+Every map and ticket is an issue, so it has a **name** — its title. In everything the human reads — narration and map events — refer to it by that name, never by a bare id, number, or slug. A wall of `#42, #43, #44` is illegible; names read at a glance. The id and URL don't vanish — a name wraps its link — but they ride _inside_ the name, never stand in for it.
 
 ## The Map
 
@@ -29,12 +29,16 @@ The map is an **index**, not a store. It lists the decisions made and points at 
 
 ### The map body
 
-The whole map at low resolution. A map has exactly one active wayfinder writer
-session at a time. Do not resolve its tickets or mutate its tracker artifacts
-in parallel sessions; this workflow deliberately trades parallelism for a
-simple, portable consistency rule. Research workers may run concurrently only
-as read-only helpers that return artifacts to the writer. Open tickets are
-**not** listed — they are open child issues, found by query.
+The map body is an immutable starting snapshot after creation. Never rewrite it
+during ticket resolution. Decisions, fog changes, and scope changes are
+append-only **map event comments** that link the affected tickets; the current
+view is derived from that event log plus child-ticket state. This avoids a
+cross-tracker locking protocol and prevents concurrent sessions from erasing
+one another's map edits. Trackers without atomic append, including the local
+Markdown format, are explicitly single-writer. Research workers may run
+concurrently only as read-only helpers that return artifacts to their ticket's
+session. Open tickets are **not** listed — they are open child issues, found by
+query.
 
 ```markdown
 ## Destination
@@ -47,9 +51,7 @@ as read-only helpers that return artifacts to the writer. Open tickets are
 
 ## Decisions so far
 
-<!-- the index — one line per closed ticket: enough to judge relevance, then zoom the link for the detail the ticket holds -->
-
-- [<closed ticket title>](link) — <one-line gist of the answer>
+<!-- immutable at creation; subsequent decisions are append-only map event comments -->
 
 ## Not yet specified
 
@@ -101,7 +103,8 @@ The map's **Not yet specified** section is where that dim view is written down: 
 - **Ticket when** the question is already sharp — even if it's blocked and you can't act on it yet.
 - **Not yet specified when** you can't yet phrase it that sharply. Don't pre-slice the fog into ticket-sized pieces: it's coarser than a ticket, and one patch may graduate into several tickets, or none, once the frontier reaches it.
 
-**Not yet specified** excludes what's already decided (Decisions so far), what's already a live ticket, and what's out of scope (the next section).
+The effective fog excludes anything a later map event marks decided,
+graduated into a live ticket, or out of scope.
 
 ## Out of scope
 
@@ -109,7 +112,7 @@ Fog only ever gathers _toward_ the destination. The destination fixes the scope,
 
 Out-of-scope work never graduates — the frontier stops at the destination — so it returns only if the destination is redrawn, and then as a fresh effort, not a resumption.
 
-Ruling something out of scope is a scoping act, not a step on the route. When a ticket that already exists turns out to sit past the destination — mis-scoped in while charting, or exposed by a resolution — **close it** (a closed ticket is unambiguously off the frontier) and leave one line in the **Out of scope** section: the gist plus why it's out of scope, linking the closed ticket. It stays out of **Decisions so far**, which records the route actually walked — a scope boundary isn't a step on it.
+Ruling something out of scope is a scoping act, not a step on the route. When a ticket that already exists turns out to sit past the destination — mis-scoped in while charting, or exposed by a resolution — **close it** (a closed ticket is unambiguously off the frontier) and append an out-of-scope map event with the gist and reason, linking the closed ticket. It is not a decision event, because a scope boundary is not a step on the route.
 
 ## Invocation
 
@@ -123,18 +126,21 @@ User invokes with a loose idea.
 2. **Map the frontier.** Grill again, **breadth-first** this time: fan out across the whole space rather than deep on any one thread, surfacing the open decisions and the first steps takeable now. **If this surfaces no fog** — the way to the destination is already clear, the whole journey small enough for one session — you don't need a map. Stop and ask the user how they'd like to proceed.
 3. **Create the map** (label `wayfinder:map`) with a deterministic publication key derived from its destination. Search for and reconcile that key before creating anything, so an ambiguous success can be resumed without a duplicate. Fill Destination and Notes, leave Decisions-so-far empty, and sketch the fog into **Not yet specified**.
 4. **Create the tickets you can specify now** with deterministic keys derived from the map key and ticket question. Reconcile each key before creation. Create them as child issues of the map with the tracker's non-frontier `wayfinder:staging` state — then wire blocking edges in a **second pass** (issues need ids before they can reference each other). Only after every child link and blocking edge succeeds, remove `wayfinder:staging` from the whole batch. On partial failure, leave every affected ticket staged, record the identifiers that were created, and resume by key rather than publishing duplicates. Wiring sorts them into the frontier and the blocked; everything you can't yet specify stays in the fog — the **Not yet specified** section.
-5. **Fire the research subagents.** For each `research` ticket you just created, spin up a read-only subagent that loads and follows the `research` skill and returns its artifact to this single writer. Research agents never mutate the tracker, map, tickets, or the writer's checkout.
-6. Stop — charting is one session's work; it hand-resolves nothing.
+5. Stop — charting is one session's work; it hand-resolves nothing. Research
+   tickets run later through the normal work-through flow, where their returned
+   artifacts can be published and linked before resolution.
 
 ### Work through the map
 
 User invokes with a map (URL or number). A ticket is **optional** — without one, you pick the next decision, not the user.
 
-1. Load the **map** — the low-res view, not every ticket body.
-2. Confirm no other wayfinder writer is active for this map. Choose the ticket. If the user named one, use it. Otherwise take the first frontier ticket in order. **Claim it** before any work.
+1. Load the **map** snapshot and its append-only event comments — the low-res
+   view, not every ticket body.
+2. Choose the ticket. If the user named one, use it. Otherwise take the first frontier ticket in order. **Claim it** before any work.
 3. Resolve it — **zoom as needed**: fetch the full body of any related or closed ticket on demand; load and follow whichever skills the `## Notes` block names. If in doubt, load and follow both the `grilling` and `domain-modeling` skills.
-4. Record the resolution answer without closing the ticket yet. Add newly-surfaced tickets (create-stage-wire-publish); graduate any fog the answer has made specifiable, clearing each graduated patch from **Not yet specified** so it lives only as its new ticket. If the answer reveals a ticket — this one or another — sits beyond the destination, **rule it out of scope** rather than resolving it on the route. If the decision invalidates other parts of the map, update or delete those tickets. Re-fetch and update the map's Decisions-so-far using the conflict-safe rule above.
+4. Record the resolution answer without closing the ticket yet. Add newly-surfaced tickets (create-stage-wire-publish); when fog becomes specifiable, create its keyed tickets and append a map event naming what graduated instead of rewriting the original fog text. If the answer reveals a ticket — this one or another — sits beyond the destination, close or cancel it with a rationale and append an out-of-scope map event. If the decision invalidates another ticket, close or cancel it with a rationale so its history remains; actual deletion requires the user's explicit confirmation. Append one decision event with the resolved ticket's link and one-line gist. Never replace the map body.
 5. Verify the map, new dependency edges, invalidations, and graduated fog are all durably published. Only then **close** the resolved ticket, which exposes its dependents to the frontier. If any derived write fails, leave the ticket open and claimed so stale dependent work cannot start, then report the partial state for recovery.
 
-Do not run unblocked tickets from one map in parallel. Finish or explicitly
-release the active writer session before another session continues the map.
+For remote trackers whose comments and issue creation are atomic appends,
+different unblocked tickets may run in parallel. The local-Markdown tracker is
+single-writer; finish one session before another continues its map.

@@ -16,3 +16,4 @@
   verification and portable cross-skill loading instructions.
 - Treated reporter content and reproduction steps as untrusted, and made the
   tracker comment self-contained before closing rejected enhancements.
+- Clarified that checkout isolation alone is not a sandbox for reporter code.

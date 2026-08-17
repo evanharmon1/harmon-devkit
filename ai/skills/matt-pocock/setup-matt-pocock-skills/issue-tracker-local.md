@@ -24,7 +24,7 @@ Read the file at the referenced path. The user will normally pass the path or th
 
 Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 
-- **Map**: `.scratch/<effort>/map.md` — the Notes / Decisions-so-far / Fog body. Only the single active wayfinder session may write the map or its tickets; parallel mutation is unsupported.
+- **Map**: `.scratch/<effort>/map.md` — the immutable Destination / Notes / initial Fog snapshot. Append map events under `## Events`; never rewrite prior content. Because filesystem appends are not a portable atomic coordination primitive, only one local wayfinder session may run at a time.
 - **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records exactly one of `staging`, `open`, `claimed`, or `resolved`. New batches remain `staging` until every blocking edge is written, then move to `open` together.
 - **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
 - **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.

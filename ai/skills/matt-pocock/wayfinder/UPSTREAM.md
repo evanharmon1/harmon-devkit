@@ -16,3 +16,6 @@
   dependency changes publish before a ticket exposes its dependents.
 - Simplified the concurrency model to one active map writer and made map/ticket
   creation resumable with deterministic publication keys.
+- Replaced shared map-body rewrites with an append-only event log, deferred
+  research execution to the normal resolution flow, and preserved invalidated
+  ticket history by default.
