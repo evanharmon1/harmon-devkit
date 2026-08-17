@@ -420,6 +420,17 @@ $live
 EOF
 fi
 sort -u "$vocab" -o "$vocab"
+if [ -n "${CHECK_ISSUE_METADATA_DEBUG:-}" ]; then
+    {
+        echo "--- vocabulary ($(wc -l <"$vocab") records) ---"
+        cat "$vocab"
+        echo "--- environment ---"
+        echo "repo_root=$repo_root"
+        jq --version
+        (awk -W version 2>&1 || awk --version 2>&1) | head -1
+        sort --version | head -1
+    } >&2
+fi
 
 # --owner-type selects the classification interface, but it is not trusted as
 # evidence about the target. Resolve the repository owner's actual account kind

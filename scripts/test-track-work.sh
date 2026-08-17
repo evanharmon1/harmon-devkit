@@ -706,8 +706,13 @@ run_organization() {
 }
 
 echo "==> metadata: a complete personal-account draft passes from the target root manifest"
-[ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" = 0 ] ||
+if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" != 0 ]; then
+    # Re-run with the checker's debug dump so a CI-only failure carries the
+    # vocabulary and toolchain it was judged against.
+    CHECK_ISSUE_METADATA_DEBUG=1 run_personal 'Validate issue metadata before creation' \
+        "$valid_body" >/dev/null
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
+fi
 
 echo "==> metadata: an organization draft uses native Issue Type and no work-type label"
 [ "$(run_organization 'Validate organization issue metadata' "$valid_body")" = 0 ] ||
