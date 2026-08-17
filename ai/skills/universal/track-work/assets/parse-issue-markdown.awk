@@ -266,6 +266,14 @@ BEGIN {
             next
         }
     }
+    if (line ~ /^ ? ? ?(\*\*\*+|___+)[ \t]*$/) {
+        # The profile's thematic-break spellings are leaf blocks: they close
+        # the paragraph, so an ordered list starting above 1 may follow one.
+        emit("prose", line)
+        context = ""
+        prev_kind = "leaf"
+        next
+    }
 
     # --- task items ----------------------------------------------------------
     if (canonical_task(line)) {

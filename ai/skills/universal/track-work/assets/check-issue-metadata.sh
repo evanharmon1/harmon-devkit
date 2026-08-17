@@ -304,13 +304,27 @@ if [ -e "$manifest" ]; then
     open_candidates="$tmp/open-candidates"
     : >"$open_candidates"
     for label in "${labels[@]+"${labels[@]}"}"; do
+        # A label matching more than one active open family has no unique
+        # authorization policy — the manifest model does not forbid two open
+        # families sharing a prefix, and picking one by manifest order would
+        # let a permissive sibling authorize a label a stricter family
+        # governs. Ambiguity fails closed as indeterminate.
+        matched_families=""
+        matched_count=0
+        matched_record=""
         while IFS='|' read -r prefix family axis writers exclusive; do
             [ -n "$prefix" ] || continue
             case "$label" in
-            "$prefix":*) printf '%s|%s|%s|%s|%s\n' \
-                "$label" "$family" "$axis" "$writers" "$exclusive" >>"$open_candidates" ;;
+            "$prefix":*)
+                matched_count=$((matched_count + 1))
+                matched_families="${matched_families}${matched_families:+, }$family"
+                matched_record="$label|$family|$axis|$writers|$exclusive"
+                ;;
             esac
         done <"$open_families"
+        [ "$matched_count" -le 1 ] ||
+            die "label '$label' matches multiple open-value families ($matched_families); the manifest gives it no unique policy"
+        [ "$matched_count" -eq 0 ] || printf '%s\n' "$matched_record" >>"$open_candidates"
     done
     if [ -s "$open_candidates" ]; then
         live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
@@ -366,8 +380,14 @@ User) actual_owner_type="personal" ;;
 Organization) actual_owner_type="organization" ;;
 *) die "target repository returned an unknown owner account type: $actual_owner_type" ;;
 esac
-[ "$owner_type" = "$actual_owner_type" ] ||
+if [ "$owner_type" != "$actual_owner_type" ]; then
+    # Stop here: every later work-classification check would run down the
+    # wrong owner branch — an Issue Type lookup against a user account fails
+    # and would turn this actionable contract violation into an indeterminate
+    # exit 2.
     violation "--owner-type $owner_type does not match target repository owner type $actual_owner_type"
+    exit 1
+fi
 
 # Preserve source line numbers while reducing the body to Markdown structure.
 # The shared parser accepts only the mechanized authoring profile: fenced
@@ -435,7 +455,10 @@ awk '
   # from inside one.
   match($0, /^ ? ? ?##[[:space:]]+/) {
     text = substr($0, RSTART + RLENGTH)
-    sub(/[[:space:]]*#*[[:space:]]*$/, "", text)
+    # A closing hash sequence counts only when whitespace precedes it —
+    # CommonMark renders `## Problem#` with the hash as heading text.
+    sub(/[[:space:]]+#+[[:space:]]*$/, "", text)
+    sub(/[[:space:]]+$/, "", text)
     printf "%d|%s|%s\n", NR, canonical(text), text
   }
 ' "$visible_body" >"$headings"
@@ -551,7 +574,7 @@ if [ "$verify_count" -eq 0 ]; then
     awk '
       {
         lower=tolower($0)
-        if (lower ~ /^ ? ? ?#+[[:space:]]+(verify|verification)[[:space:]#]*$/) print "x" $0
+        if (lower ~ /^ ? ? ?#+[[:space:]]+(verify|verification)([[:space:]]+#+)?[[:space:]]*$/) print "x" $0
         else print
       }
     ' "$body_file" >"$masked_body"

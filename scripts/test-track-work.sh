@@ -412,6 +412,16 @@ task test:hygiene
 ")" = 0 ] || fail "'${heading}' should count as a Verify section"
 done
 
+echo "==> a hash glued to the heading text is heading text, not a closing sequence"
+# CommonMark only strips closing hashes preceded by whitespace, so GitHub
+# renders '## Verify#' as the heading 'Verify#' — which is not a Verify section.
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify#
+
+task test:hygiene
+')" = 1 ] || fail "'## Verify#' must not satisfy the Verify requirement"
+
 echo "==> a Markdown-indented Verify heading counts"
 # CommonMark allows up to three spaces before an ATX heading.
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
@@ -687,6 +697,14 @@ echo "==> metadata: owner type is verified against the target repository"
     --human-authored --label feature --inapplicable area --inapplicable layer \
     --inapplicable domain)" = 1 ] ||
     fail "an organization repository declared personal should fail"
+[ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testowner/testrepo \
+    --repo-root "$metadata_repo" --owner-type organization --issue-type Task \
+    --title 'Reject mismatched owner classification' --body-file "$valid_body" \
+    --human-authored --label area:fixture --inapplicable layer \
+    --inapplicable domain)" = 1 ] ||
+    fail "a personal repository declared organization is a contract violation (1), not indeterminate"
+grep -q 'does not match target repository owner type' "$tmp/metadata.out" ||
+    fail "the owner mismatch should be the reported violation"
 
 echo "==> metadata: exact title boundary is 70 Unicode code points"
 title70="$(printf 'a%.0s' {1..70})"
@@ -738,6 +756,19 @@ Something is wrong.' ;;
     [ "$(run_personal 'Validate the issue skeleton' "$tmp/metadata-$case_name.md")" = 1 ] ||
         fail "$case_name should fail"
 done
+
+echo "==> metadata: a glued closing hash is heading text, so the heading is noncanonical"
+cat >"$tmp/metadata-glued-hash.md" <<'BODY'
+## Problem#
+
+GitHub renders the hash as part of the heading text.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+BODY
+[ "$(run_personal 'Reject glued closing hashes' "$tmp/metadata-glued-hash.md")" = 1 ] ||
+    fail "'## Problem#' renders as 'Problem#' and must not count as canonical"
 
 echo "==> metadata: the authoring profile refuses hidden or forged structure"
 # Each fixture below is a construct an adversarial review round once used to
@@ -1080,6 +1111,31 @@ grep -q 'label list.*--repo testowner/testrepo.*--limit 1000.*--json name' \
     --body-file "$valid_body" --human-authored --label feature \
     --label area:fixture --inapplicable layer --label domain:platform \
     --label type:missing)" = 1 ] || fail "an absent open-value label should remain unknown"
+
+echo "==> metadata: a label matching two open-value families is ambiguous, not first-match"
+metadata_ambiguous="$tmp/metadata-ambiguous"
+mkdir -p "$metadata_ambiguous"
+git -C "$metadata_ambiguous" init -q
+git -C "$metadata_ambiguous" remote add origin https://github.com/testowner/testrepo.git
+jq '.families += [{
+      "family": "type-shadow", "prefix": "type",
+      "purpose": "Fixture sibling family sharing the type prefix",
+      "axis": "meta", "source": "inline", "writers": ["agent"],
+      "readers": "fixture", "lifecycle": "durable", "exclusive": false,
+      "provision": false, "open_values": true, "placeholder": "type:example",
+      "values": []
+    }]' "$metadata_repo/label-registry.json" >"$metadata_ambiguous/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_ambiguous" --owner-type personal \
+    --title 'Reject ambiguous open-value prefixes' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:platform --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "an ambiguous open-value label should be indeterminate (got $_rc): $(cat "$tmp/metadata.out")"
+grep -q 'matches multiple open-value families' "$tmp/metadata.out" ||
+    fail "the refusal should name the ambiguity"
+grep -q 'type-override' "$tmp/metadata.out" && grep -q 'type-shadow' "$tmp/metadata.out" ||
+    fail "the refusal should name both families"
 
 echo "==> metadata: incomplete classification requires needs-triage and names the axis"
 _rc="$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
@@ -1674,6 +1730,17 @@ write_issue 53 '123456789. [ ] a real ordered criterion
 [ "$(run_tick 53 --index 1)" = 0 ] || fail "nine digits is within the GFM limit"
 issue_is 53 '123456789. [x] a real ordered criterion
 ' || fail "a nine-digit ordered item should tick"
+
+echo "==> a thematic break is a leaf block, so an ordered list may start above 1 after it"
+write_issue 55 'Some prose before the rule.
+***
+2. [ ] ordered criterion after a thematic break
+'
+[ "$(run_tick 55 --index 1)" = 0 ] || fail "a break closes the paragraph, so 2. starts a list"
+issue_is 55 'Some prose before the rule.
+***
+2. [x] ordered criterion after a thematic break
+' || fail "the criterion after a thematic break should tick"
 
 echo "==> a backtick line whose info string holds backticks is not an opener"
 write_issue 47 '``` `not an opener`

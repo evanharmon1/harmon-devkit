@@ -203,7 +203,7 @@ bash "$asset_dir/parse-issue-markdown.sh" --structure "$draft_path" >"$structure
 # GitHub, and a heading pattern that matched it would satisfy the gate with a
 # line readers never see as a heading.
 verify_bounds="$(awk '
-    tolower($0) ~ /^ ? ? ?#+[[:space:]]+verif(y|ication)[[:space:]]*#*[[:space:]]*$/ {
+    tolower($0) ~ /^ ? ? ?#+[[:space:]]+verif(y|ication)([[:space:]]+#+)?[[:space:]]*$/ {
         if (!start) start=NR
         next
     }
@@ -234,7 +234,7 @@ if [ -n "$substantive" ]; then
     exit 0
 fi
 
-if [ -n "$verify_content" ] || grep -qiE '^ ? ? ?#+[[:space:]]+verif(y|ication)[[:space:]]*#*[[:space:]]*$' "$structure"; then
+if [ -n "$verify_content" ] || grep -qiE '^ ? ? ?#+[[:space:]]+verif(y|ication)([[:space:]]+#+)?[[:space:]]*$' "$structure"; then
     cat >&2 <<EOF
 check-issue-rot: the Verify section is empty, so the perishable claims below are
 still unverifiable. A heading on its own re-checks nothing — put the command under it.
