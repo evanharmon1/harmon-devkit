@@ -1252,6 +1252,67 @@ echo "==> metadata: needs-triage on a fully decided classification is stale"
 grep -q 'every axis is decided' "$tmp/metadata.out" ||
     fail "the rejection should say the classification is decided"
 
+echo "==> metadata: a retired open-family member is not resurrected by its live label"
+metadata_retired="$tmp/metadata-retired"
+mkdir -p "$metadata_retired"
+git -C "$metadata_retired" init -q
+git -C "$metadata_retired" remote add origin https://github.com/testowner/testrepo.git
+jq '.families |= map(
+      if .family == "type-override" then
+        .values += [{"value": "fix", "description": "Retired fixture member",
+                     "retired": true}]
+      else . end)' "$metadata_repo/label-registry.json" \
+    >"$metadata_retired/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_retired" --owner-type personal \
+    --title 'Reject retired open members' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:platform --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] ||
+    fail "a retired open-family member should fail even with a live label (got $_rc): $(cat "$tmp/metadata.out")"
+grep -q "label 'type:fix' is retired by the manifest" "$tmp/metadata.out" ||
+    fail "the rejection should say the label is retired"
+
+echo "==> metadata: a required section holding only an empty fence is empty"
+cat >"$tmp/metadata-empty-fence-problem.md" <<'BODY'
+## Problem
+
+```sh
+```
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+BODY
+[ "$(run_personal 'Reject empty fenced sections' \
+    "$tmp/metadata-empty-fence-problem.md")" = 1 ] ||
+    fail "a Problem section holding only an empty fence should fail"
+cat >"$tmp/metadata-fenced-problem.md" <<'BODY'
+## Problem
+
+```text
+the problem, stated inside a code block
+```
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+BODY
+[ "$(run_personal 'Accept fenced problem content' \
+    "$tmp/metadata-fenced-problem.md")" = 0 ] ||
+    fail "a fence with real contents should still count as section content: $(cat "$tmp/metadata.out")"
+
+echo "==> a rot remediation template matches the canonical skeleton"
+_out="$(printf 'scripts/foo.sh:42 is stale.' | "$rot" 2>&1 || true)"
+printf '%s\n' "$_out" | grep -q '## Problem' ||
+    fail "the rot remediation should teach the canonical Problem skeleton"
+printf '%s\n' "$_out" | grep -q '## Acceptance criteria' ||
+    fail "the rot remediation should include Acceptance criteria"
+if printf '%s\n' "$_out" | grep -q '## Invariant'; then
+    fail "the rot remediation must not teach the legacy Invariant skeleton"
+fi
+
 echo "==> metadata: a concrete record shadowing an open family is ambiguous too"
 metadata_shadowed="$tmp/metadata-shadowed"
 mkdir -p "$metadata_shadowed"

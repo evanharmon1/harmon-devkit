@@ -11,10 +11,11 @@
 # that re-establishes whether the claim still holds. With one, a reader re-checks
 # in seconds. Without one, a stale citation is indistinguishable from a live one.
 #
-# See references/issue-authoring.md for the Invariant / Current violation /
-# Verify structure, and for the strongest form: where the repo has a test
-# harness, ship a failing assertion instead of a description — it closes when the
-# test passes and cannot rot, because the codebase evaluates it, not the reader.
+# See references/issue-authoring.md for the canonical Problem / Current
+# violation / Acceptance criteria / Verify skeleton, and for the strongest
+# form: where the repo has a test harness, ship a failing assertion instead of
+# a description — it closes when the test passes and cannot rot, because the
+# codebase evaluates it, not the reader.
 #
 # Usage:
 #   check-issue-rot.sh [--repo-root PATH] [DRAFT_FILE]
@@ -268,13 +269,18 @@ A reader months from now cannot tell whether these still hold:
 
 $(printf '%s\n' "$perishable" | sed 's/^\([0-9][0-9]*\):/  line \1: /')
 
-Fix: add a Verify section holding a command that re-establishes the claim.
+Fix: add a Verify section holding a command that re-establishes the claim,
+inside the canonical authoring skeleton:
 
-    ## Invariant
-    <what must be true — does not rot>
+    ## Problem
+    <the durable invariant, impact, and why the work matters>
 
     ## Current violation (observed $(date -u +%Y-%m-%d))
     <file:line, behaviour — perishable; a lead, not a fact>
+
+    ## Acceptance criteria
+
+    - [ ] [CI] <criterion proved by an automated check>
 
     ## Verify
     \`\`\`sh

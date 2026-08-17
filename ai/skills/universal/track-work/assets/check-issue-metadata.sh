@@ -296,6 +296,20 @@ if [ -e "$manifest" ]; then
       | join("|")' "$manifest" >"$vocab" ||
         die "could not render label-registry.json"
 
+    # Retired members of active families are excluded from the vocabulary,
+    # and the open-value fallback below must not resurrect one from its live
+    # label: the manifest retiring a value is an authoritative "no".
+    retired_members="$tmp/retired-members"
+    jq -r '
+      .families[]
+      | select((.retired // false) | not)
+      | . as $f
+      | ($f.values // [])[]
+      | select(.retired // false)
+      | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end)' \
+        "$manifest" >"$retired_members" ||
+        die "could not render retired manifest members"
+
     # Open-value families define policy in the manifest but not every concrete
     # label name. Resolve only proposed members against one bounded live read;
     # the manifest remains authoritative for family, axis, writers, and
@@ -333,6 +347,10 @@ if [ -e "$manifest" ]; then
         done <"$open_families"
         [ "$matched_count" -le 1 ] ||
             die "label '$label' matches multiple open-value families ($matched_families); the manifest gives it no unique policy"
+        if [ "$matched_count" -eq 1 ] && grep -qxF -- "$label" "$retired_members"; then
+            violation "label '$label' is retired by the manifest"
+            continue
+        fi
         if [ "$matched_count" -eq 1 ]; then
             # The same ambiguity exists between an open family and a concrete
             # record: a different family enumerating this exact name would
@@ -539,9 +557,14 @@ for required in problem acceptance; do
     [ -n "$bounds" ] || continue
     start="${bounds%% *}"
     end="${bounds#* }"
+    # Judged on the raw body, not the structure pass: a fence there is a
+    # nonblank placeholder, which would let a section holding only an EMPTY
+    # code block count as substantive. Delimiter-only lines are skipped, so a
+    # fence's actual contents still count while its frame does not.
     substantive="$(awk -v start="$start" -v end="$end" '
-      NR > start && NR < end && $0 !~ /^[[:space:]]*$/ { print; exit }
-    ' "$visible_body")"
+      NR > start && NR < end && $0 !~ /^[[:space:]]*$/ &&
+      $0 !~ /^[[:space:]]*(```|~~~)/ { print; exit }
+    ' "$body_file")"
     [ -n "$substantive" ] || violation "$required section is empty"
 done
 
