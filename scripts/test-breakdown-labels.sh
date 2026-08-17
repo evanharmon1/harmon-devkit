@@ -61,6 +61,10 @@ if [ "$1" = api ]; then
             echo "gh: Not Found (HTTP 404)" >&2
             exit 1
         fi
+        if [ -f "$fixture/reject-recursive-tree" ] && [[ "$joined" == *"recursive=1"* ]]; then
+            printf '{"truncated":true,"tree":[]}\n'
+            exit 0
+        fi
         printf '{"truncated":false,"tree":['
         comma=
         for path in label-registry.json label-registry.schema.json \
@@ -261,6 +265,37 @@ if jq -e '
     ok "repository-specific area vocabularies do not leak across targets"
 else
     bad "repository-specific area vocabularies do not leak across targets"
+fi
+
+large="$tmproot/large"
+mkdir -p "$large"
+write_agent_registry "$large"
+write_registry "$large" api
+write_labels "$large" api
+touch "$large/reject-recursive-tree"
+if large_output="$(discover "$large")" && jq -e '
+    .mode == "registry" and
+    [.families[] | select(.family == "area") | .labels[].name] == ["area:api"]
+' <<<"$large_output" >/dev/null; then
+    ok "registry discovery reads only the pinned root tree"
+else
+    bad "registry discovery reads only the pinned root tree"
+fi
+
+case_variant="$tmproot/case-variant"
+mkdir -p "$case_variant"
+write_agent_registry "$case_variant"
+write_registry "$case_variant" api
+write_labels "$case_variant" api
+jq 'map(if .name == "area:api" then .name = "Area:api" else . end)' \
+    "$case_variant/labels.json" >"$case_variant/labels-updated.json"
+mv "$case_variant/labels-updated.json" "$case_variant/labels.json"
+if case_output="$(discover "$case_variant")" && jq -e '
+    [.families[] | select(.family == "area") | .labels[].name] == ["Area:api"]
+' <<<"$case_output" >/dev/null; then
+    ok "registry intersection follows GitHub case semantics and preserves live spelling"
+else
+    bad "registry intersection follows GitHub case semantics and preserves live spelling"
 fi
 
 fallback="$tmproot/fallback"

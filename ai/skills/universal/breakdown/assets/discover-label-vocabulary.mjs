@@ -430,14 +430,13 @@ if (branchMetadata) {
   try {
     defaultTree = apiJson(
       `${apiPath}/git/trees/${defaultBranchCommit}`,
-      `reading ${repo}'s default-branch tree`,
-      [['recursive', '1']]
+      `reading ${repo}'s default-branch root tree`
     )
   } catch (error) {
     die(`${error.message}; registry absence cannot be established safely`)
   }
   if (defaultTree?.truncated === true) {
-    die(`${repo}'s recursive default-branch tree is truncated; registry absence is indeterminate`)
+    die(`${repo}'s default-branch root tree is truncated; registry absence is indeterminate`)
   }
   if (
     !Array.isArray(defaultTree?.tree) ||
@@ -466,13 +465,24 @@ if (
 ) {
   die(`live labels for ${repo} have an unexpected shape`)
 }
-const live = new Map(liveLabels.map((label) => [label.name, label]))
+function normalizeLabelName(name) {
+  return name.toLocaleLowerCase('en-US')
+}
+
+const live = new Map()
+for (const label of liveLabels) {
+  const normalized = normalizeLabelName(label.name)
+  if (live.has(normalized)) {
+    die(`live labels for ${repo} contain case-insensitive duplicate ${label.name}`)
+  }
+  live.set(normalized, label)
+}
 
 if (!defaultPaths.has('label-registry.json')) {
   const excludedPrefixes = ['claim:', 'agent:', 'foreman:']
   const labels = liveLabels
     .filter((label) => {
-      const normalized = label.name.toLocaleLowerCase('en-US')
+      const normalized = normalizeLabelName(label.name)
       return !excludedPrefixes.some((prefix) => normalized.startsWith(prefix))
     })
     .sort((left, right) => left.name.localeCompare(right.name))
@@ -544,16 +554,20 @@ const candidateOwners = new Map()
 const knownConcrete = new Set()
 
 function addCandidate(family, name, value = {}, extra = {}) {
-  if (!live.has(name)) return
-  const prior = candidateOwners.get(name)
+  const normalized = normalizeLabelName(name)
+  const liveLabel = live.get(normalized)
+  if (!liveLabel) return
+  const prior = candidateOwners.get(normalized)
   if (prior && prior !== family.family) {
-    die(`label ${name} is ambiguous between planning-safe families ${prior} and ${family.family}`)
+    die(
+      `label ${liveLabel.name} is ambiguous between planning-safe families ${prior} and ${family.family}`
+    )
   }
-  candidateOwners.set(name, family.family)
+  candidateOwners.set(normalized, family.family)
   if (!resultFamilies.has(family.family)) resultFamilies.set(family.family, outputFamily(family))
   resultFamilies.get(family.family).labels.push({
-    name,
-    description: live.get(name).description ?? '',
+    name: liveLabel.name,
+    description: liveLabel.description ?? '',
     writers: value.writers ?? family.writers,
     lifecycle: value.lifecycle ?? family.lifecycle,
     arming: family.arming === true || value.arming === true,
@@ -567,7 +581,7 @@ for (const family of registry.families) {
   if (family.source !== 'agent-registry') {
     for (const value of family.values) {
       const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
-      knownConcrete.add(name)
+      knownConcrete.add(normalizeLabelName(name))
       if (safe(family, value)) addCandidate(family, name, value)
     }
   } else if (family.source === 'agent-registry') {
@@ -581,7 +595,7 @@ for (const family of registry.families) {
         .map(([slug]) => `${family.prefix}:${slug}`)
     }
     for (const name of names) {
-      knownConcrete.add(name)
+      knownConcrete.add(normalizeLabelName(name))
       addCandidate(family, name)
     }
   }
@@ -604,18 +618,21 @@ for (const family of registry.families) {
     if (!baseFamily) die('suggest-model has no planning-safe suggest family to pair with')
     for (const [familySlug, details] of agentVocabulary.families) {
       const base = `${family.prefix}:${familySlug}`
-      if (!live.has(base)) continue
+      const liveBase = live.get(normalizeLabelName(base))
+      if (!liveBase) continue
       for (const model of details.models) {
         const name = `${base}:${model}`
-        if (live.has(name)) addCandidate(family, name, {}, { requires: [base] })
+        if (live.has(normalizeLabelName(name))) {
+          addCandidate(family, name, {}, { requires: [liveBase.name] })
+        }
       }
     }
     continue
   }
 
-  for (const name of live.keys()) {
-    if (!name.startsWith(`${family.prefix}:`) || knownConcrete.has(name)) continue
-    addCandidate(family, name)
+  for (const [normalized, label] of live) {
+    if (!normalized.startsWith(`${family.prefix}:`) || knownConcrete.has(normalized)) continue
+    addCandidate(family, label.name)
   }
 }
 
