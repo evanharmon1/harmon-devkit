@@ -226,16 +226,56 @@
       "color": "FBCA04",
       "values": [
         {
+          "value": "boilerplates",
+          "description": "Copy-paste starting points: docker, ansible, serverless, script and web templates"
+        },
+        {
+          "value": "scripts",
+          "description": "Ready-to-run standalone scripts and utilities consumers use as-is"
+        },
+        {
+          "value": "agent-workflow",
+          "description": "AI-delegated dev sessions: the universal skill suite (kickoff→wrap), subagents, claims"
+        },
+        {
+          "value": "standardization",
+          "description": "Keeping repos current with conventions: standardize-repo, drift audits, adoption"
+        },
+        {
+          "value": "design",
+          "description": "The design skill suite: design/UX workflow deliverables"
+        },
+        {
+          "value": "project-tracking",
+          "description": "Issues, labels, boards, and PM assets: track-work, triage, the label registry"
+        },
+        {
+          "value": "delivery",
+          "description": "Getting assets to consumers: releases, tags, skills sync, harmon-init pickup"
+        },
+        {
           "value": "auth",
-          "description": "Authentication and authorization"
+          "description": "Authentication and authorization",
+          "retired": true,
+          "writer_note": "nobody — retired",
+          "trust_note": "retired — a generic starter value this repo never needed; no longer provisioned",
+          "lifecycle_note": "no issues carry it — delete the live label"
         },
         {
           "value": "billing",
-          "description": "Billing and payments"
+          "description": "Billing and payments",
+          "retired": true,
+          "writer_note": "nobody — retired",
+          "trust_note": "retired — a generic starter value this repo never needed; no longer provisioned",
+          "lifecycle_note": "no issues carry it — delete the live label"
         },
         {
           "value": "platform",
-          "description": "CI, build, test infra, and tooling in this repo"
+          "description": "CI, build, test infra, and tooling in this repo",
+          "retired": true,
+          "writer_note": "nobody — retired",
+          "trust_note": "retired — split across this repo's own domains; no longer provisioned",
+          "lifecycle_note": "re-label its issues to the repo-specific domains, then delete the live label"
         }
       ]
     },
@@ -292,11 +332,51 @@
         },
         {
           "value": "skills",
-          "description": "Vendored/authored agent skills and the skills sync"
+          "description": "The skills sync, shared skill conventions, and skills without a dedicated area"
         },
         {
           "value": "gauntlet",
           "description": "The challenge/review second-model stage: scripts, gates, and skill wiring"
+        },
+        {
+          "value": "templates",
+          "description": "The templates/ tree: docker, ansible, serverless, script and web boilerplates"
+        },
+        {
+          "value": "agents",
+          "description": "Shared subagent definitions under ai/agents/"
+        },
+        {
+          "value": "security",
+          "description": "Semgrep, gitleaks, and the security task suite"
+        },
+        {
+          "value": "scripts",
+          "description": "Shipped standalone scripts (appleScripts, run-as-is utilities); Taskfile glue is area:tasks"
+        },
+        {
+          "value": "shepherd",
+          "description": "The shepherd skill and its checker/readiness-gate assets"
+        },
+        {
+          "value": "triage",
+          "description": "The triage skill and its scan/apply assets"
+        },
+        {
+          "value": "track-work",
+          "description": "The track-work skill: issue authoring, claims, PR/commit linkage"
+        },
+        {
+          "value": "standardize-repo",
+          "description": "The standardize-repo skill and its standards catalog"
+        },
+        {
+          "value": "design",
+          "description": "The design skill suite"
+        },
+        {
+          "value": "session-flow",
+          "description": "The session lifecycle skills: kickoff, breakdown, claim, implement, retro, wrap"
         }
       ]
     },
