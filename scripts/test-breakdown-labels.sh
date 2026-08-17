@@ -42,7 +42,18 @@ if [ "$1" = api ]; then
         file="$fixture/agent-registry.json"
     elif [[ "$joined" == *"/contents/agent-registry.schema.json"* ]]; then
         file="$fixture/agent-registry.schema.json"
+    elif [[ "$joined" == *"/git/matching-refs/heads/"* ]]; then
+        if [ -f "$fixture/empty-repository" ]; then
+            printf '[]\n'
+        else
+            printf '[{"ref":"refs/heads/trunk"}]\n'
+        fi
+        exit 0
     elif [[ "$joined" == *"/branches/"* ]]; then
+        if [ -f "$fixture/empty-repository" ]; then
+            echo "gh: Branch not found (HTTP 404)" >&2
+            exit 1
+        fi
         printf '{"commit":{"sha":"1111111111111111111111111111111111111111"}}\n'
         exit 0
     elif [[ "$joined" == *"/git/trees/"* ]]; then
@@ -259,8 +270,9 @@ cat >"$fallback/labels.json" <<'JSON'
   {"name":"feature","description":"Feature"},
   {"name":"area:api","description":"Area"},
   {"name":"claim:gpt","description":"Claim"},
+  {"name":"Claim:claude","description":"Case-varied claim"},
   {"name":"agent:codex","description":"Legacy claim"},
-  {"name":"foreman:approved","description":"Arm"}
+  {"name":"Foreman:approved","description":"Case-varied arm"}
 ]
 JSON
 fallback_output="$(discover "$fallback")"
@@ -271,6 +283,19 @@ if jq -e '
     ok "missing registry falls back to bounded non-arming live labels"
 else
     bad "missing registry falls back to bounded non-arming live labels"
+fi
+
+empty="$tmproot/empty"
+mkdir -p "$empty"
+touch "$empty/empty-repository"
+printf '[{"name":"feature","description":"Feature"}]\n' >"$empty/labels.json"
+if empty_output="$(discover "$empty")" && jq -e '
+    .mode == "live-label-fallback" and .default_branch_commit == null and
+    [.labels[].name] == ["feature"]
+' <<<"$empty_output" >/dev/null; then
+    ok "a readable repository with no branch refs uses live-label fallback"
+else
+    bad "a readable repository with no branch refs uses live-label fallback"
 fi
 
 malformed="$tmproot/malformed"
@@ -299,6 +324,21 @@ elif [ ! -s "$schema_invalid/output" ] && grep -q 'fails its schema' "$schema_in
     ok "schema-invalid registry metadata fails closed with a diagnostic"
 else
     bad "schema-invalid registry metadata fails closed with a diagnostic"
+fi
+
+unsafe_schema="$tmproot/unsafe-schema"
+mkdir -p "$unsafe_schema"
+write_registry "$unsafe_schema" api
+write_labels "$unsafe_schema" api
+jq '.["$defs"].slug.pattern = "^(a+)+$"' "$unsafe_schema/label-registry.schema.json" \
+    >"$unsafe_schema/schema.json"
+mv "$unsafe_schema/schema.json" "$unsafe_schema/label-registry.schema.json"
+if discover "$unsafe_schema" >"$unsafe_schema/output" 2>"$unsafe_schema/error"; then
+    bad "target-controlled schema regexes are never evaluated"
+elif [ ! -s "$unsafe_schema/output" ] && grep -q 'not a supported bounded registry pattern' "$unsafe_schema/error"; then
+    ok "target-controlled schema regexes are never evaluated"
+else
+    bad "target-controlled schema regexes fail closed with a diagnostic"
 fi
 
 ambiguous="$tmproot/ambiguous"

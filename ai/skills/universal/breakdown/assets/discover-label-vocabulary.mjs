@@ -394,36 +394,59 @@ if (!repositoryMetadata.default_branch || typeof repositoryMetadata.default_bran
 const defaultBranch = repositoryMetadata.default_branch
 
 let branchMetadata
+let defaultBranchCommit = null
+let defaultPaths
 try {
   branchMetadata = apiJson(
     `${apiPath}/branches/${encodeURIComponent(defaultBranch)}`,
     `resolving ${repo}'s default branch ${defaultBranch}`
   )
 } catch (error) {
-  die(error.message)
+  let branchRefs
+  try {
+    branchRefs = apiJson(
+      `${apiPath}/git/matching-refs/heads/`,
+      `checking whether ${repo} has any branch refs`
+    )
+  } catch (refsError) {
+    die(`${error.message}; ${refsError.message}; empty-repository state cannot be established safely`)
+  }
+  if (
+    !Array.isArray(branchRefs) ||
+    branchRefs.some((ref) => typeof ref?.ref !== 'string' || !ref.ref.startsWith('refs/heads/'))
+  ) {
+    die(`branch-ref metadata for ${repo} has an unexpected shape`)
+  }
+  if (branchRefs.length > 0) die(error.message)
+  defaultPaths = new Set()
 }
-const defaultBranchCommit = branchMetadata?.commit?.sha
-if (typeof defaultBranchCommit !== 'string' || !/^[0-9a-f]{40}$/.test(defaultBranchCommit)) {
-  die(`default branch metadata for ${repo} has no full commit SHA`)
-}
+if (branchMetadata) {
+  defaultBranchCommit = branchMetadata?.commit?.sha
+  if (typeof defaultBranchCommit !== 'string' || !/^[0-9a-f]{40}$/.test(defaultBranchCommit)) {
+    die(`default branch metadata for ${repo} has no full commit SHA`)
+  }
 
-let defaultTree
-try {
-  defaultTree = apiJson(
-    `${apiPath}/git/trees/${defaultBranchCommit}`,
-    `reading ${repo}'s default-branch tree`,
-    [['recursive', '1']]
-  )
-} catch (error) {
-  die(`${error.message}; registry absence cannot be established safely`)
+  let defaultTree
+  try {
+    defaultTree = apiJson(
+      `${apiPath}/git/trees/${defaultBranchCommit}`,
+      `reading ${repo}'s default-branch tree`,
+      [['recursive', '1']]
+    )
+  } catch (error) {
+    die(`${error.message}; registry absence cannot be established safely`)
+  }
+  if (defaultTree?.truncated === true) {
+    die(`${repo}'s recursive default-branch tree is truncated; registry absence is indeterminate`)
+  }
+  if (
+    !Array.isArray(defaultTree?.tree) ||
+    defaultTree.tree.some((entry) => typeof entry?.path !== 'string')
+  ) {
+    die(`${repo}'s default-branch tree has an unexpected shape`)
+  }
+  defaultPaths = new Set(defaultTree.tree.map((entry) => entry.path))
 }
-if (defaultTree?.truncated === true) {
-  die(`${repo}'s recursive default-branch tree is truncated; registry absence is indeterminate`)
-}
-if (!Array.isArray(defaultTree?.tree) || defaultTree.tree.some((entry) => typeof entry?.path !== 'string')) {
-  die(`${repo}'s default-branch tree has an unexpected shape`)
-}
-const defaultPaths = new Set(defaultTree.tree.map((entry) => entry.path))
 
 let liveLabels
 try {
@@ -448,7 +471,10 @@ const live = new Map(liveLabels.map((label) => [label.name, label]))
 if (!defaultPaths.has('label-registry.json')) {
   const excludedPrefixes = ['claim:', 'agent:', 'foreman:']
   const labels = liveLabels
-    .filter((label) => !excludedPrefixes.some((prefix) => label.name.startsWith(prefix)))
+    .filter((label) => {
+      const normalized = label.name.toLocaleLowerCase('en-US')
+      return !excludedPrefixes.some((prefix) => normalized.startsWith(prefix))
+    })
     .sort((left, right) => left.name.localeCompare(right.name))
   process.stdout.write(
     `${JSON.stringify(

@@ -32,6 +32,22 @@ const instanceTypes = new Set([
   'string'
 ])
 
+// Registry schemas come from the target repository, so their patterns are
+// data, not JavaScript to execute. Support only the bounded patterns used by
+// the version-1 Harmon schemas and implement them with fixed predicates.
+const safePatterns = new Map([
+  ['^[a-z0-9]+(?:-[a-z0-9]+)*$', (value) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)],
+  ['^[0-9A-F]{6}$', (value) => /^[0-9A-F]{6}$/.test(value)],
+  [
+    '^(human|trusted-human|agent|tool:[a-z0-9-]+)$',
+    (value) => /^(?:human|trusted-human|agent|tool:[a-z0-9-]+)$/.test(value)
+  ],
+  [
+    '^[a-z0-9]+(?:-[a-z0-9]+)*[.]sh$',
+    (value) => /^[a-z0-9]+(?:-[a-z0-9]+)*[.]sh$/.test(value)
+  ]
+])
+
 function canonical(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -119,10 +135,8 @@ export function validateJsonSchema(instance, schema) {
     }
     if (Object.hasOwn(rule, 'pattern')) {
       if (typeof rule.pattern !== 'string') throw new Error(`${where}.pattern: must be a string`)
-      try {
-        new RegExp(rule.pattern, 'u')
-      } catch {
-        throw new Error(`${where}.pattern: must be a valid regular expression`)
+      if (!safePatterns.has(rule.pattern)) {
+        throw new Error(`${where}.pattern: is not a supported bounded registry pattern`)
       }
     }
     if (Object.hasOwn(rule, 'uniqueItems') && typeof rule.uniqueItems !== 'boolean') {
@@ -182,7 +196,7 @@ export function validateJsonSchema(instance, schema) {
       if (rule.maxLength !== undefined && length > rule.maxLength) {
         errors.push(`${where}: must contain at most ${rule.maxLength} character(s)`)
       }
-      if (rule.pattern && !new RegExp(rule.pattern, 'u').test(value)) {
+      if (rule.pattern && !safePatterns.get(rule.pattern)(value)) {
         errors.push(`${where}: does not match ${rule.pattern}`)
       }
     }
