@@ -484,6 +484,8 @@ if [ -n "$bounds" ]; then
         line=$0
         if (line ~ /^ ? ? ?([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/) {
           criteria++
+          match(line, /^ ? ? ?([-*+]|[0-9]+[.)])[[:space:]]+/)
+          parent_content_col=RLENGTH
           sub(/^ ? ? ?([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/, "", line)
           lower=tolower(line)
           if (lower !~ /^\[(ci|human)\][[:space:]]+/) bad_tag++
@@ -495,8 +497,15 @@ if [ -n "$bounds" ]; then
           next
         }
         nested=line
+        leading=line
+        sub(/[^ \t].*$/, "", leading)
         sub(/^[[:space:]]+/, "", nested)
-        if (seen && nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/) {
+        # A child list marker begins at its parent content column, with at most
+        # three extra spaces. A fourth is an indented code block, not a task.
+        nested_task=(seen && leading !~ /\t/ &&
+                     length(leading) >= parent_content_col &&
+                     length(leading) <= parent_content_col + 3)
+        if (nested_task && nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/) {
           criteria++
           sub(/^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/, "", nested)
           lower=tolower(nested)
@@ -507,6 +516,7 @@ if [ -n "$bounds" ]; then
           }
           next
         }
+        if (seen && nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/) { non_task++; next }
         if (seen && nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+/) { non_task++; next }
         if (line ~ /^ ? ? ?([-*+]|[0-9]+[.)])[[:space:]]+/) { non_task++; next }
         if (seen && line ~ /^[[:space:]]+/) next

@@ -149,19 +149,27 @@ if [ -n "$repo_root" ]; then
         # itself a repository path. This preserves real dotfiles and names
         # ending in a period while recognizing ordinary `DESIGN.md.` prose.
         if (!(value in paths)) sub(/\.$/, "", value)
-        # Markdown links keep their destination in the same whitespace token;
-        # only the visible label is a local-path citation.
-        if (index(value, "](") > 0) value=substr(value, 1, index(value, "](")-1)
         return value
+      }
+      function record_candidate(value) {
+        value=trim_candidate(value)
+        if (value ~ /:\/\//) return
+        if (value in paths && !seen[value]) {
+          printf "%d:%s\n", FNR, value
+          seen[value]=1
+        }
       }
       {
         for (i=1; i<=NF; i++) {
-          candidate=trim_candidate($i)
-          if (candidate ~ /:\/\//) continue
-          if (candidate in paths && !seen[candidate]) {
-            printf "%d:%s\n", FNR, candidate
-            seen[candidate]=1
+          token=$i
+          link_at=index(token, "](")
+          if (link_at > 0) {
+            # Inspect both halves: the visible label can name a path, and the
+            # destination commonly carries the only exact checkout path.
+            record_candidate(substr(token, link_at + 2))
+            token=substr(token, 1, link_at - 1)
           }
+          record_candidate(token)
         }
       }
     ' "$paths" "$evidence")"

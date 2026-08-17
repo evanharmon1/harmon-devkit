@@ -786,6 +786,38 @@ BODY
 [ "$(run_personal 'Ignore raw HTML headings' "$tmp/metadata-raw-html.md")" = 0 ] ||
     fail "raw HTML blocks must hide their example headings: $(cat "$tmp/metadata.out")"
 
+cat >"$tmp/metadata-list-fence-boundary.md" <<'BODY'
+- ```text
+  Example inside the list item.
+```
+## Problem
+
+Hidden by the new top-level fence.
+
+## Acceptance criteria
+
+- [ ] [CI] Hidden criterion
+BODY
+[ "$(run_personal 'Honor list fence boundaries' \
+    "$tmp/metadata-list-fence-boundary.md")" = 1 ] ||
+    fail "leaving a list fence must let the delimiter open a new outer fence"
+
+cat >"$tmp/metadata-malformed-pre-close.md" <<'BODY'
+<pre>
+Example rendered verbatim.
+</pre invalid
+## Problem
+
+Still rendered inside the preformatted block.
+
+## Acceptance criteria
+
+- [ ] [CI] Hidden criterion
+BODY
+[ "$(run_personal 'Require complete raw HTML closing tags' \
+    "$tmp/metadata-malformed-pre-close.md")" = 1 ] ||
+    fail "a malformed closing tag must not expose raw HTML contents"
+
 echo "==> metadata: acceptance criteria are tagged rendered task-list items"
 for case_name in untagged non-task; do
     if [ "$case_name" = untagged ]; then
@@ -823,6 +855,19 @@ sed 's/\[ \] Untagged/\[ \] [HUMAN] Tagged/' "$tmp/metadata-nested-untagged.md" 
 [ "$(run_personal 'Validate nested acceptance criteria' \
     "$tmp/metadata-nested-tagged.md")" = 0 ] ||
     fail "a nested tagged criterion should pass: $(cat "$tmp/metadata.out")"
+cat >"$tmp/metadata-indented-code-task.md" <<'BODY'
+## Problem
+
+Reject criteria rendered as code.
+
+## Acceptance criteria
+
+- [ ] [CI] Visible criterion
+      - [ ] [CI] Hidden as indented code
+BODY
+[ "$(run_personal 'Reject indented code criteria' \
+    "$tmp/metadata-indented-code-task.md")" = 1 ] ||
+    fail "task syntax rendered as indented code must not count as a criterion"
 {
     printf '%s\n' '## Problem' '' 'Reject empty criteria.' '' '## Acceptance criteria' ''
     printf '%s \n' '- [ ] [CI]'
@@ -859,6 +904,11 @@ BODY
 [ "$(run_personal 'Resolve exact repository paths' \
     "$tmp/metadata-repository-path.md")" = 1 ] ||
     fail "an exact target-checkout path without Verify should fail"
+sed 's/component\.vue/[the component](component.vue)/' \
+    "$tmp/metadata-repository-path.md" >"$tmp/metadata-linked-repository-path.md"
+[ "$(run_personal 'Resolve linked repository paths' \
+    "$tmp/metadata-linked-repository-path.md")" = 1 ] ||
+    fail "an exact target-checkout path used as a link destination should require Verify"
 sed 's/^## Verify$/### Verify/' "$verified_body" >"$tmp/metadata-wrong-verify-level.md"
 [ "$(run_personal 'Require the canonical Verify heading' \
     "$tmp/metadata-wrong-verify-level.md")" = 1 ] ||
