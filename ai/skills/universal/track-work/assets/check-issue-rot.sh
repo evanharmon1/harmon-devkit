@@ -154,6 +154,11 @@ if [ -n "$repo_root" ]; then
         # itself a repository path. This preserves real dotfiles and names
         # ending in a period while recognizing ordinary `DESIGN.md.` prose.
         if (!(value in paths)) sub(/\.$/, "", value)
+        # A fragment on a relative link destination is a locator, not part of
+        # the path: `component.vue#L12` still cites the tracked root file.
+        # Guarded the same way as the period, so a tracked name that really
+        # contains a hash keeps matching exactly.
+        if (!(value in paths)) sub(/#.*$/, "", value)
         return value
       }
       function record_candidate(value) {

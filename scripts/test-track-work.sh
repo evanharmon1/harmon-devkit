@@ -273,10 +273,11 @@ echo "==> a product name with a dotted suffix is not guessed to be a path"
 [ "$(run_rot 'Node.js remains supported by the generated project.')" = 0 ] ||
     fail "Node.js should remain ordinary prose without repository evidence"
 
-echo "==> exact checkout paths survive punctuation and earlier URLs"
+echo "==> exact checkout paths survive punctuation, earlier URLs, and link fragments"
 for prose in 'Update DESIGN.md.' \
     'See https://example.com first, then update DESIGN.md.' \
-    'Review [DESIGN.md](https://example.com) before changing it.'; do
+    'Review [DESIGN.md](https://example.com) before changing it.' \
+    'Review [the design](DESIGN.md#goals) before changing it.'; do
     [ "$(run_rot_repo "$prose")" = 1 ] ||
         fail "the exact DESIGN.md path should require Verify: $prose"
 done
@@ -1148,6 +1149,28 @@ grep -q 'matches multiple open-value families' "$tmp/metadata.out" ||
     fail "the refusal should name the ambiguity"
 grep -q 'type-override' "$tmp/metadata.out" && grep -q 'type-shadow' "$tmp/metadata.out" ||
     fail "the refusal should name both families"
+
+echo "==> metadata: an enumerated open-value member absent from the live read fails as unknown"
+metadata_enumerated="$tmp/metadata-enumerated"
+mkdir -p "$metadata_enumerated"
+git -C "$metadata_enumerated" init -q
+git -C "$metadata_enumerated" remote add origin https://github.com/testowner/testrepo.git
+jq '.families |= map(
+      if .family == "type-override" then
+        .values += [{"value": "stale-member",
+                     "description": "Enumerated but absent from the live read"}]
+      else . end)' "$metadata_repo/label-registry.json" \
+    >"$metadata_enumerated/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_enumerated" --owner-type personal \
+    --title 'Reject absent enumerated open members' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:platform --label type:stale-member >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] ||
+    fail "an enumerated open member missing live should fail as unknown (got $_rc): $(cat "$tmp/metadata.out")"
+grep -q "label 'type:stale-member' does not exist" "$tmp/metadata.out" ||
+    fail "the absent enumerated open member should be reported as unknown"
 
 echo "==> metadata: a concrete record shadowing an open family is ambiguous too"
 metadata_shadowed="$tmp/metadata-shadowed"

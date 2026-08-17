@@ -346,8 +346,18 @@ if [ -e "$manifest" ]; then
         live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
             die "could not read open-value labels from the target repository"
         while IFS='|' read -r label family axis writers exclusive; do
-            printf '%s\n' "$live" | awk -v wanted="$label" '$0 == wanted { found=1 } END { exit(found ? 0 : 1) }' ||
+            if ! printf '%s\n' "$live" | awk -v wanted="$label" '$0 == wanted { found=1 } END { exit(found ? 0 : 1) }'; then
+                # Open families opt into live existence: a proposed member the
+                # bounded read cannot find must not validate, including one
+                # the family itself enumerates for a per-value policy — the
+                # ambiguity guard above guarantees any existing record for
+                # this name is that same family's own, so dropping it makes
+                # the absent label fail as unknown instead of passing stale.
+                awk -F '|' -v wanted="$label" '$1 != wanted' "$vocab" >"$vocab.pruned" &&
+                    mv "$vocab.pruned" "$vocab" ||
+                    die "could not prune an absent open-value label from the vocabulary"
                 continue
+            fi
             awk -F '|' -v wanted="$label" '$1 == wanted { found=1 } END { exit(found ? 0 : 1) }' "$vocab" ||
                 printf '%s|%s|%s|%s|%s\n' \
                     "$label" "$family" "$axis" "$writers" "$exclusive" >>"$vocab"
