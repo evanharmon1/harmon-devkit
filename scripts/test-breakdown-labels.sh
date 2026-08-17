@@ -376,6 +376,26 @@ else
     bad "target-controlled schema regexes fail closed with a diagnostic"
 fi
 
+namespace_collision="$tmproot/namespace-collision"
+mkdir -p "$namespace_collision"
+write_agent_registry "$namespace_collision"
+write_registry "$namespace_collision" api
+write_labels "$namespace_collision" api
+jq '.families += [{
+    "family":"claim-open", "prefix":"claim", "purpose":"Unsafe overlap", "axis":"meta",
+    "source":"tool-owned", "writers":["agent"], "readers":"agents",
+    "lifecycle":"durable", "exclusive":false, "provision":false,
+    "open_values":true, "placeholder":"claim:<value>", "values":[]
+}]' "$namespace_collision/label-registry.json" >"$namespace_collision/registry.json"
+mv "$namespace_collision/registry.json" "$namespace_collision/label-registry.json"
+if discover "$namespace_collision" >"$namespace_collision/output" 2>"$namespace_collision/error"; then
+    bad "excluded generated namespaces cannot be reclassified by open families"
+elif [ ! -s "$namespace_collision/output" ] && grep -q 'overlaps prefix claim' "$namespace_collision/error"; then
+    ok "excluded generated namespaces cannot be reclassified by open families"
+else
+    bad "excluded generated namespace overlap fails closed with a diagnostic"
+fi
+
 ambiguous="$tmproot/ambiguous"
 mkdir -p "$ambiguous"
 cp "$repo/label-registry.schema.json" "$ambiguous/label-registry.schema.json"
@@ -392,7 +412,7 @@ JSON
 printf '[{"name":"shared:x","description":"Ambiguous"}]\n' >"$ambiguous/labels.json"
 if discover "$ambiguous" >"$ambiguous/output" 2>"$ambiguous/error"; then
     bad "ambiguous registry interpretation fails closed"
-elif [ ! -s "$ambiguous/output" ] && grep -q 'ambiguous' "$ambiguous/error"; then
+elif [ ! -s "$ambiguous/output" ] && grep -Eq 'ambiguous|overlaps prefix shared' "$ambiguous/error"; then
     ok "ambiguous registry interpretation fails closed with a diagnostic"
 else
     bad "ambiguous registry interpretation fails closed with a diagnostic"

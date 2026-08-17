@@ -585,7 +585,6 @@ for (const family of registry.families) {
       if (safe(family, value)) addCandidate(family, name, value)
     }
   } else if (family.source === 'agent-registry') {
-    if (!safe(family)) continue
     let names = []
     if (family.registry_set === 'suggest' || family.registry_set === 'claim') {
       names = [...agentVocabulary.families.keys()].map((slug) => `${family.prefix}:${slug}`)
@@ -596,7 +595,7 @@ for (const family of registry.families) {
     }
     for (const name of names) {
       knownConcrete.add(normalizeLabelName(name))
-      addCandidate(family, name)
+      if (safe(family)) addCandidate(family, name)
     }
   }
 }
@@ -605,6 +604,23 @@ for (const family of registry.families) {
   if (!safe(family) || family.open_values !== true) continue
   if (family.prefix === null) {
     die(`planning-safe open family ${family.family} has no prefix and cannot be interpreted safely`)
+  }
+
+  const conflictingFamily = registry.families.find(
+    (candidate) =>
+      candidate.family !== family.family &&
+      candidate.prefix === family.prefix &&
+      !(
+        family.family === 'suggest-model' &&
+        candidate.source === 'agent-registry' &&
+        candidate.registry_set === 'suggest'
+      )
+  )
+  if (conflictingFamily) {
+    die(
+      `planning-safe open family ${family.family} overlaps prefix ${family.prefix} with ` +
+        `family ${conflictingFamily.family}; excluded labels cannot be reclassified safely`
+    )
   }
 
   if (family.family === 'suggest-model') {
