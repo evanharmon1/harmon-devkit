@@ -376,6 +376,10 @@ visible_body="$tmp/visible-body"
 asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
 bash "$asset_dir/parse-issue-markdown.sh" --structure "$body_file" >"$visible_body" ||
     die "could not parse issue body structure"
+rendered_tasks="$tmp/rendered-tasks"
+printf '0:\n' >"$rendered_tasks"
+bash "$asset_dir/parse-issue-markdown.sh" --tasks "$body_file" >>"$rendered_tasks" ||
+    die "could not parse rendered issue tasks"
 
 # Title syntax is mechanical. Whether the words form an imperative
 # problem/outcome statement remains a semantic judgment owned by the prose.
@@ -477,16 +481,16 @@ bounds="$(section_bounds acceptance || true)"
 if [ -n "$bounds" ]; then
     start="${bounds%% *}"
     end="${bounds#* }"
-    acceptance_result="$(awk -v start="$start" -v end="$end" '
-      NR <= start || NR >= end { next }
+    acceptance_result="$(awk -F ':' -v start="$start" -v end="$end" '
+      NR == FNR { rendered[$1] = 1; next }
+      FNR <= start || FNR >= end { next }
       /^[[:space:]]*$/ { next }
       {
         line=$0
-        if (line ~ /^ ? ? ?([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/) {
+        if (rendered[FNR]) {
           criteria++
-          match(line, /^ ? ? ?([-*+]|[0-9]+[.)])[[:space:]]+/)
-          parent_content_col=RLENGTH
-          sub(/^ ? ? ?([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/, "", line)
+          match(line, /\[[ xX]\][[:space:]]+/)
+          line=substr(line, RSTART + RLENGTH)
           lower=tolower(line)
           if (lower !~ /^\[(ci|human)\][[:space:]]+/) bad_tag++
           else {
@@ -497,34 +501,16 @@ if [ -n "$bounds" ]; then
           next
         }
         nested=line
-        leading=line
-        sub(/[^ \t].*$/, "", leading)
         sub(/^[[:space:]]+/, "", nested)
-        # A child list marker begins at its parent content column, with at most
-        # three extra spaces. A fourth is an indented code block, not a task.
-        nested_task=(seen && leading !~ /\t/ &&
-                     length(leading) >= parent_content_col &&
-                     length(leading) <= parent_content_col + 3)
-        if (nested_task && nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/) {
-          criteria++
-          sub(/^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/, "", nested)
-          lower=tolower(nested)
-          if (lower !~ /^\[(ci|human)\][[:space:]]+/) bad_tag++
-          else {
-            sub(/^\[(ci|human)\][[:space:]]+/, "", lower)
-            if (lower !~ /[^[:space:]]/) empty_description++
-          }
-          next
-        }
-        if (seen && nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/) { non_task++; next }
-        if (seen && nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+/) { non_task++; next }
+        if (nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/) { non_task++; next }
+        if (nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+/) { non_task++; next }
         if (line ~ /^ ? ? ?([-*+]|[0-9]+[.)])[[:space:]]+/) { non_task++; next }
         if (seen && line ~ /^[[:space:]]+/) next
         non_task++
       }
       END { printf "%d %d %d %d\n", criteria + 0, bad_tag + 0,
                    non_task + 0, empty_description + 0 }
-    ' "$visible_body")"
+    ' "$rendered_tasks" "$visible_body")"
     criteria="${acceptance_result%% *}"
     rest="${acceptance_result#* }"
     bad_tag="${rest%% *}"

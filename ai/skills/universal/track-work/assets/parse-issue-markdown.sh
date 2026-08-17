@@ -6,12 +6,12 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --structure|--evidence|--criteria DRAFT_FILE" >&2
+    echo "Usage: $0 --structure|--evidence|--tasks|--criteria DRAFT_FILE" >&2
     exit 2
 }
 
 case "${1:-}" in
---structure | --evidence | --criteria) ;;
+--structure | --evidence | --tasks | --criteria) ;;
 *) usage ;;
 esac
 [ "$#" -eq 2 ] || usage

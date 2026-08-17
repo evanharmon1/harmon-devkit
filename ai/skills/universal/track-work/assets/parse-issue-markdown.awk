@@ -121,7 +121,8 @@ function html_block_tag(s,   t, n, r) {
     return (n in htmlblock)
 }
 BEGIN {
-    if (mode != "criteria" && mode != "structure" && mode != "evidence") exit 2
+    if (mode != "criteria" && mode != "tasks" &&
+        mode != "structure" && mode != "evidence") exit 2
     infence = 0; incomment = 0; inpre = 0; fence_col = 0; fence_quoted = 0; prev_kind = "blank"; raw_tag = ""
     nlist = 0; incode = 0; code_quoted = 0; inhtml = 0; html_quoted = 0; html_base = 0
     comment_block = 0; pre_block = 0
@@ -380,6 +381,7 @@ BEGIN {
         # CommonMark block type that suppresses Markdown parsing outright.
         rest_of_line = tolower($0)
         raw_opens_seen = 0
+        pre_block = 0
         while (1) {
             if (inpre) {
                 at = index(rest_of_line, "</" raw_tag)
@@ -422,7 +424,7 @@ BEGIN {
             }
         }
     }
-    raw_line = starts_raw || raw_opens_seen > 0
+    raw_line = starts_raw || pre_block
     if (starts_hidden || raw_line) {
         # A line inside raw HTML or a comment is not Markdown, so it records NO
         # block structure. Letting it through leaves containers behind that
@@ -615,7 +617,7 @@ BEGIN {
         next
     }
 
-    if (infence == 0 && bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[[:space:]]+\[[ \t]\]([[:space:]]|$)/) {
+    if (infence == 0 && bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\]([[:space:]]|$)/) {
         # GFM caps an ordered marker at nine digits; beyond that the line is not
         # a list item at all, so `1234567890. [ ] text` is prose. Counted here
         # rather than with a bounded repeat, which not every awk supports.
@@ -649,7 +651,11 @@ BEGIN {
             sub(/^[ \t]*/, "", num)
             if (num + 0 != 1) item_ok = 0
         }
-        if (item_ok && mode == "criteria") print NR ":" $0
+        if (item_ok && mode == "tasks") print NR ":" visible_line
+        if (item_ok && mode == "criteria" &&
+            bare ~ /^[ \t]*([-*+]|[0-9]+[.)])[[:space:]]+\[[ \t]\]([[:space:]]|$)/) {
+            print NR ":" visible_line
+        }
     }
     if (mode == "structure" || mode == "evidence") print visible_line
     prev_kind = this_kind

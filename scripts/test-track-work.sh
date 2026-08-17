@@ -888,6 +888,33 @@ sed 's/\[ \] Untagged/\[ \] [HUMAN] Tagged/' "$tmp/metadata-nested-untagged.md" 
 [ "$(run_personal 'Validate nested acceptance criteria' \
     "$tmp/metadata-nested-tagged.md")" = 0 ] ||
     fail "a nested tagged criterion should pass: $(cat "$tmp/metadata.out")"
+cat >"$tmp/metadata-inline-raw-task.md" <<'BODY'
+## Problem
+
+Preserve inline HTML in rendered criteria.
+
+## Acceptance criteria
+
+- [ ] [CI] Preserve the criterion <pre></pre>
+BODY
+[ "$(run_personal 'Preserve inline raw HTML tasks' \
+    "$tmp/metadata-inline-raw-task.md")" = 0 ] ||
+    fail "inline raw HTML must not hide a rendered task: $(cat "$tmp/metadata.out")"
+for invalid_marker in '1234567890. [ ] [CI] Too many marker digits' \
+    '-     [ ] [CI] Checkbox rendered as code'; do
+    cat >"$tmp/metadata-nonrendered-task.md" <<BODY
+## Problem
+
+Reject task syntax that GFM does not render.
+
+## Acceptance criteria
+
+$invalid_marker
+BODY
+    [ "$(run_personal 'Reject non-rendered task markers' \
+        "$tmp/metadata-nonrendered-task.md")" = 1 ] ||
+        fail "a non-rendered task marker must fail: $invalid_marker"
+done
 cat >"$tmp/metadata-indented-code-task.md" <<'BODY'
 ## Problem
 
@@ -1249,6 +1276,18 @@ issue_is 20 '## Acceptance
 - [x] second criterion
 - [x] already done
 ' || fail "only the matched criterion should have changed"
+
+echo "==> inline raw HTML does not hide a rendered criterion"
+write_issue 33 '## Acceptance criteria
+
+- [ ] criterion <pre></pre>
+'
+[ "$(run_tick 33 --match 'criterion')" = 0 ] ||
+    fail "a task containing inline raw HTML should remain tickable"
+issue_is 33 '## Acceptance criteria
+
+- [x] criterion <pre></pre>
+' || fail "the inline-HTML criterion should be ticked in place"
 
 echo "==> --index counts unticked items, not body lines"
 write_issue 21 "$body_three"
