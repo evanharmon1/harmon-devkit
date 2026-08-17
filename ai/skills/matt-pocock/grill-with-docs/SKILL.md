@@ -7,7 +7,4 @@ disable-model-invocation: true
 > Originally written by Matt Pocock and redistributed under the MIT License.
 > See [UPSTREAM.md](UPSTREAM.md) for provenance and local modifications.
 
-Load and follow both the `grilling` and `domain-modeling` skills. Use the
-harness's native skill-loading mechanism; if it cannot compose skills
-programmatically, read both skills' `SKILL.md` files and apply their
-instructions together.
+Call the Skill tool twice, for "grilling" and "domain-modeling".

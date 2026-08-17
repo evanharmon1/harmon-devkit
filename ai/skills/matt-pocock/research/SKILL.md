@@ -11,9 +11,5 @@ Spin up a **background agent** to do the research, so you keep working while it 
 Its job:
 
 1. Investigate the question against **primary sources** — official docs, source code, specs, first-party APIs — not a secondary write-up of them. Follow every claim back to the source that owns it.
-2. Return the findings as one Markdown artifact, citing each claim's source.
-   Do not write into the parent's checkout from a background agent.
-3. The parent saves the returned artifact serially where the repo already keeps
-   such notes; match the existing convention, and if there is none, put it
-   somewhere sensible and say where. A writer agent may save directly only
-   when it has its own isolated worktree.
+2. Write the findings to a single Markdown file, citing each claim's source.
+3. Save it where the repo already keeps such notes; match the existing convention, and if there is none, put it somewhere sensible and say where.

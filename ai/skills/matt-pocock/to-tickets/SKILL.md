@@ -64,14 +64,8 @@ Iterate until the user approves the breakdown.
 
 Publish the approved tickets. **How** depends on the tracker `/setup-matt-pocock-skills` configured — the tickets are the same either way, only the shape of the blocking edges changes:
 
-- **Local files** → derive the same stable publication key described below,
-  inspect every existing ticket before choosing ordinals, and reconcile matches
-  without overwriting their comments or history. Write one file per new ticket
-  under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, continuing after the
-  highest existing ordinal in dependency order (blockers first). Each file's
-  "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file
-  template below — one ticket per file, never a single combined file.
-- **A real issue tracker (GitHub, Linear, …)** → before the first write, derive a stable publication key from the approved breakdown plus each ticket's ordinal and include it in hidden metadata or a machine-readable footer. Search the tracker for those keys and reconcile any existing matches before creating anything. Publish one issue per ticket in dependency order (blockers first), recording each returned identifier immediately so a timeout or partial failure can resume rather than duplicate the batch. Use the platform's native blocking / sub-issue relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking issues. Determine and apply exactly one category role (`bug` or `enhancement`) from the approved source work. Do not apply the `ready-for-agent` state role until that ticket's dependency wiring succeeds; after a failure, leave the published subset non-runnable and report the recorded identifiers. Apply `ready-for-agent` only after reconciliation confirms the ticket is complete — the tickets are agent-grabbable by construction.
+- **Local files** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below — one ticket per file, never a single combined file.
+- **A real issue tracker (GitHub, Linear, …)** → publish one issue per ticket in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Use the platform's native blocking / sub-issue relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking issues. Apply the `ready-for-agent` triage label unless instructed otherwise — the tickets are agent-grabbable by construction.
 
 Work the **frontier**: any ticket whose blockers are all done. For a purely linear chain that means top to bottom.
 
@@ -86,10 +80,6 @@ Do NOT close or modify any parent issue.
 **Blocked by:** the numbers/titles of the tickets that gate this one, or "None — can start immediately".
 
 **Status:** ready-for-agent
-
-**Category:** <bug or enhancement>
-
-**Publication key:** <stable key for this approved breakdown and ordinal>
 
 - [ ] Acceptance criterion 1
 - [ ] Acceptance criterion 2

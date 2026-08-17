@@ -9,4 +9,3 @@
 ## Local modifications
 
 - Added the attribution notice in `SKILL.md`.
-- Rephrased suggested-skill handoff guidance to be harness-neutral.

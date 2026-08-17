@@ -9,13 +9,3 @@
 ## Local modifications
 
 - Added the attribution notice in `SKILL.md`.
-- Added portable cross-skill loading, conflict-safe map updates, recoverable
-  claims, staged ticket publication, safe external-mutation confirmation, and
-  isolated parallel research guidance.
-- Made claim ownership exclusive and reordered resolution so derived map and
-  dependency changes publish before a ticket exposes its dependents.
-- Simplified the concurrency model to one active map writer and made map/ticket
-  creation resumable with deterministic publication keys.
-- Replaced shared map-body rewrites with an append-only event log, deferred
-  research execution to the normal resolution flow, and preserved invalidated
-  ticket history by default.

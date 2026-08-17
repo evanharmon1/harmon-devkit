@@ -9,6 +9,4 @@
 ## Local modifications
 
 - Added the attribution notice in `SKILL.md`.
-- Adapted Markdown formatting to satisfy harmon-devkit lint rules.
-- Disabled both prototype controls and URL-based variant dispatch in
-  production.
+- Adapted Markdown formatting to satisfy harmon-devkit lint rules without changing the skill's instructions.

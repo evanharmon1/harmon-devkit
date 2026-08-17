@@ -12,7 +12,7 @@ disable-model-invocation: true
 Scaffold the per-repo configuration that the engineering skills assume:
 
 - **Issue tracker** — where issues live (GitHub by default; local markdown is also supported out of the box)
-- **Workflow labels** — mappings and provisioning for the installed skills
+- **Triage labels** — the strings used for the five canonical triage roles
 - **Domain docs** — where `CONTEXT.md` and ADRs live, and the consumer rules for reading them
 
 This is a prompt-driven skill, not a deterministic script. Explore, present what you found, confirm with the user, then write.
@@ -57,23 +57,7 @@ If it is installed, ask exactly one question:
 
 > Do you want to keep the default triage labels? (recommended: **yes**)
 
-The defaults are the seven canonical triage roles, each label string equal to
-its name: category roles `bug` and `enhancement`, plus state roles
-`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and
-`wontfix`. On **yes**, write them as-is. Only if the user says no — usually
-because their tracker already uses other names (e.g. `bug:triage` for
-`needs-triage`) — collect the overrides so `matt-triage` applies existing
-labels instead of creating duplicates.
-
-Also inventory label requirements for every installed workflow. `wayfinder`
-requires `wayfinder:map`, `wayfinder:research`, `wayfinder:prototype`,
-`wayfinder:grilling`, `wayfinder:task`, and `wayfinder:staging`. Before writing
-or mutating the tracker, show the complete required-label plan, map roles to
-existing labels where possible, and ask for confirmation. For GitHub or
-GitLab, create confirmed missing labels before reporting setup complete; for a
-tracker where the agent cannot provision labels, stop with an explicit list of
-what the maintainer must create. A configuration file naming a nonexistent
-label is not successful setup.
+The defaults are the five canonical roles, each label string equal to its name: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. On **yes**, write them as-is. Only if the user says no — usually because their tracker already uses other names (e.g. `bug:triage` for `needs-triage`) — collect the overrides so `matt-triage` applies existing labels instead of creating duplicates.
 
 **Section C — Domain docs.** Default to **single-context** — one `CONTEXT.md` + `docs/adr/` at the repo root. This fits almost every repo; write it without asking.
 
@@ -92,16 +76,11 @@ Let them edit before writing.
 
 **Pick the file to edit:**
 
-- If `AGENTS.md` exists, edit it; it is the portable policy file used by
-  multiple harnesses.
-- Else if `CLAUDE.md` exists, edit it.
+- If `CLAUDE.md` exists, edit it.
+- Else if `AGENTS.md` exists, edit it.
 - If neither exists, ask the user which one to create — don't pick for them.
 
-Never create a second policy file merely to duplicate the block. If both files
-exist and one is a symlink to the other, edit the symlink target. If both are
-independent, put the shared block in `AGENTS.md` and tell the user that
-`CLAUDE.md` remains harness-specific rather than silently configuring only one
-harness.
+Never create `AGENTS.md` when `CLAUDE.md` already exists (or vice versa) — always edit the one that's already there.
 
 If an `## Agent skills` block already exists in the chosen file, update its contents in-place rather than appending a duplicate. Don't overwrite user edits to the surrounding sections.
 
