@@ -285,8 +285,9 @@ function validateRegistry(registry) {
         die(`${valueWhere}.value must be a non-empty string`)
       }
       const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
-      if (values.has(name)) die(`${where} has duplicate label ${name}`)
-      values.add(name)
+      const normalizedName = normalizeLabelName(name)
+      if (values.has(normalizedName)) die(`${where} has case-insensitive duplicate label ${name}`)
+      values.add(normalizedName)
       if (family.prefix !== null && !slugPattern.test(value.value)) {
         die(`${valueWhere}.value must be a lowercase slug when prefixed`)
       }
@@ -402,15 +403,19 @@ try {
     `${apiPath}/branches/${encodeURIComponent(defaultBranch)}`,
     `resolving ${repo}'s default branch ${defaultBranch}`
   )
-} catch (error) {
-  let branchRefs
-  try {
+  } catch (error) {
+    let branchRefs
+    try {
     branchRefs = apiJson(
       `${apiPath}/git/matching-refs/heads/`,
-      `checking whether ${repo} has any branch refs`
-    )
-  } catch (refsError) {
-    die(`${error.message}; ${refsError.message}; empty-repository state cannot be established safely`)
+        `checking whether ${repo} has any branch refs`
+      )
+    } catch (refsError) {
+      if (/Git Repository is empty.*HTTP 409/i.test(refsError.stderr)) {
+        branchRefs = []
+      } else {
+        die(`${error.message}; ${refsError.message}; empty-repository state cannot be established safely`)
+      }
   }
   if (
     !Array.isArray(branchRefs) ||
@@ -650,7 +655,8 @@ for (const family of registry.families) {
       if (!liveBase) continue
       for (const model of details.models) {
         const name = `${base}:${model}`
-        if (live.has(normalizeLabelName(name))) {
+        const normalized = normalizeLabelName(name)
+        if (!knownConcrete.has(normalized) && live.has(normalized)) {
           addCandidate(family, name, {}, { requires: [liveBase.name] })
         }
       }

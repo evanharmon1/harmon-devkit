@@ -45,7 +45,8 @@ if [ "$1" = api ]; then
         file="$fixture/agent-registry.schema.json"
     elif [[ "$joined" == *"/git/matching-refs/heads/"* ]]; then
         if [ -f "$fixture/empty-repository" ]; then
-            printf '[]\n'
+            echo "gh: Git Repository is empty. (HTTP 409)" >&2
+            exit 1
         else
             printf '[{"ref":"refs/heads/trunk"}]\n'
         fi
@@ -422,6 +423,47 @@ elif [ ! -s "$concrete_collision/output" ] && grep -q 'declared by both family a
     ok "safe and unsafe families cannot declare the same concrete label"
 else
     bad "cross-family concrete-label ambiguity fails closed with a diagnostic"
+fi
+
+case_duplicate="$tmproot/case-duplicate"
+mkdir -p "$case_duplicate"
+write_agent_registry "$case_duplicate"
+write_registry "$case_duplicate" api
+write_labels "$case_duplicate" api
+jq '.families += [{
+    "family":"case-duplicate", "prefix":null, "purpose":"Ambiguous case variants",
+    "axis":"meta", "source":"inline", "writers":["agent"], "readers":"agents",
+    "lifecycle":"durable", "exclusive":false, "provision":false,
+    "values":[{"value":"Ready"},{"value":"ready","lifecycle":"transient"}]
+}]' "$case_duplicate/label-registry.json" >"$case_duplicate/registry.json"
+mv "$case_duplicate/registry.json" "$case_duplicate/label-registry.json"
+if discover "$case_duplicate" >"$case_duplicate/output" 2>"$case_duplicate/error"; then
+    bad "case-insensitive duplicates within one family cannot carry conflicting semantics"
+elif [ ! -s "$case_duplicate/output" ] && grep -q 'case-insensitive duplicate label ready' "$case_duplicate/error"; then
+    ok "case-insensitive duplicates within one family fail closed"
+else
+    bad "same-family case ambiguity fails closed with a diagnostic"
+fi
+
+suggest_concrete="$tmproot/suggest-concrete"
+mkdir -p "$suggest_concrete"
+write_agent_registry "$suggest_concrete"
+write_registry "$suggest_concrete" api
+write_labels "$suggest_concrete" api
+jq '.families += [{
+    "family":"unsafe-suggest-model", "prefix":null, "purpose":"Reserved unsafe model label",
+    "axis":"workflow", "source":"inline", "writers":["agent"], "readers":"agents",
+    "lifecycle":"transient", "exclusive":false, "provision":false,
+    "values":[{"value":"suggest:gpt:sol"}]
+}]' "$suggest_concrete/label-registry.json" >"$suggest_concrete/registry.json"
+mv "$suggest_concrete/registry.json" "$suggest_concrete/label-registry.json"
+if suggest_output="$(discover "$suggest_concrete")" && jq -e '
+    any(.families[].labels[]; .name == "suggest:gpt") and
+    (any(.families[].labels[]; .name == "suggest:gpt:sol") | not)
+' <<<"$suggest_output" >/dev/null; then
+    ok "suggest-model cannot reclassify an unsafe concrete declaration"
+else
+    bad "suggest-model honors concrete-label reservations"
 fi
 
 ambiguous="$tmproot/ambiguous"
