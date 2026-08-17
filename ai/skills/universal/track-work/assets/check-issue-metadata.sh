@@ -451,6 +451,12 @@ bash "$asset_dir/parse-issue-markdown.sh" --tasks "$body_file" >>"$rendered_task
 if ! printf '%s' "$title" | grep -q '[^[:space:]]'; then
     violation "title must be nonempty"
 fi
+# The prefix checks below are anchored, so a title with leading whitespace
+# would smuggle a forbidden prefix past them; surrounding whitespace is a
+# violation of its own rather than something to silently normalize away.
+if printf '%s' "$title" | grep -qE '^[[:space:]]|[[:space:]]$'; then
+    violation "title has leading or trailing whitespace"
+fi
 title_length="$(jq -nr --arg value "$title" '$value | explode | length')" ||
     die "could not count title code points"
 if [ "$title_length" -gt "$TITLE_MAX" ]; then

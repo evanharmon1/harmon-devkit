@@ -742,6 +742,12 @@ for title in '[Bug]: metadata is missing' 'Bug: metadata is missing' \
     [ "$(run_personal "$title" "$valid_body")" = 1 ] || fail "prefixed title should fail: $title"
 done
 
+echo "==> metadata: surrounding whitespace cannot smuggle a forbidden prefix"
+for title in ' fix: repair metadata' 'Trailing space title '; do
+    [ "$(run_personal "$title" "$valid_body")" = 1 ] ||
+        fail "a title with surrounding whitespace should fail: '$title'"
+done
+
 echo "==> metadata: required headings must exist once, be nonempty, and stay ordered"
 for case_name in missing-problem missing-acceptance duplicate-problem empty-problem out-of-order; do
     case "$case_name" in
