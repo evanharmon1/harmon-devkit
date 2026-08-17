@@ -152,6 +152,12 @@ write_registry() {
       "exclusive":false,"provision":true,"color":"123456","values":[{"value":"temporary","description":"Temporary"}]
     },
     {
+      "family":"gated","prefix":"gated","purpose":"Opt-in planning state","axis":"meta",
+      "source":"inline","writers":["agent"],"readers":"agents","lifecycle":"durable",
+      "exclusive":false,"provision":true,"gate":"release-please","color":"123456",
+      "values":[{"value":"enabled","description":"Live but not proven applicable"}]
+    },
+    {
       "family":"arming","prefix":"foreman","purpose":"Execution trigger","axis":"foreman",
       "source":"inline","writers":["agent"],"readers":"foreman","lifecycle":"durable",
       "exclusive":false,"provision":true,"color":"123456",
@@ -177,6 +183,7 @@ write_labels() {
   {"name":"custom:live","description":"Created by its tool"},
   {"name":"claim:gpt","description":"Ownership"},
   {"name":"phase:temporary","description":"Transient"},
+  {"name":"gated:enabled","description":"Stale gated label"},
   {"name":"foreman:approved","description":"Arming"}
 ]
 JSON
@@ -247,11 +254,11 @@ else
     bad "model suggestions require their live family suggestion"
 fi
 
-if ! grep -qE 'area:missing|suggest:gpt:ghost|suggest:claude:opus|claim:|phase:|foreman:' \
+if ! grep -qE 'area:missing|suggest:gpt:ghost|suggest:claude:opus|claim:|phase:|gated:|foreman:' \
     <<<"$names"; then
-    ok "missing, unknown, lifecycle, ownership, and arming labels are excluded"
+    ok "missing, unknown, lifecycle, ownership, gated, and arming labels are excluded"
 else
-    bad "missing, unknown, lifecycle, ownership, and arming labels are excluded"
+    bad "missing, unknown, lifecycle, ownership, gated, and arming labels are excluded"
 fi
 
 second="$tmproot/second"

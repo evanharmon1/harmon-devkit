@@ -362,7 +362,8 @@ function safe(family, value = {}) {
   const lifecycle = value.lifecycle ?? family.lifecycle
   const retired = family.retired === true || value.retired === true
   const arming = family.arming === true || value.arming === true
-  return writers.includes('agent') && lifecycle === 'durable' && !retired && !arming
+  const gated = Object.hasOwn(family, 'gate')
+  return writers.includes('agent') && lifecycle === 'durable' && !retired && !arming && !gated
 }
 
 function outputFamily(family) {

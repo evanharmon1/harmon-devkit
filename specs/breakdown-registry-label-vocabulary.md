@@ -1,6 +1,6 @@
 # Spec: Registry-driven labels in breakdown
 
-- **Status:** Draft
+- **Status:** Implemented
 - **Owner:** evanharmon1
 - **Date:** 2026-08-17
 - **Related:** [harmon-devkit#451](https://github.com/evanharmon1/harmon-devkit/issues/451), [harmon-devkit#333](https://github.com/evanharmon1/harmon-devkit/issues/333), [harmon-init ADR 0006](https://github.com/evanharmon1/harmon-init/blob/main/docs/decisions/0006-method-and-tier-axes.md)
@@ -36,32 +36,32 @@ Repositories without a registry retain a conservative live-label fallback.
 
 ## Requirements
 
-- [ ] Read `label-registry.json` from the target repository's current default
+- [x] Read `label-registry.json` from the target repository's current default
   branch when it exists; do not substitute the working checkout's potentially
   stale or unrelated copy.
-- [ ] Treat registry metadata as the vocabulary contract, including `prefix`,
+- [x] Treat registry metadata as the vocabulary contract, including `prefix`,
   `purpose`, `writers`, `lifecycle`, `source`, `exclusive`, `arming`,
   `provision`, `retired`, `open_values`, and per-value overrides.
-- [ ] Derive planning-safe candidates from metadata rather than a hardcoded
+- [x] Derive planning-safe candidates from metadata rather than a hardcoded
   roster: the effective writer permits agents, the effective lifecycle is
   durable, and the family/value is neither retired nor arming.
-- [ ] Interpret `inline`, `agent-registry`, and `tool-owned` sources without
+- [x] Interpret `inline`, `agent-registry`, and `tool-owned` sources without
   executing target-repository code.
-- [ ] Intersect concrete proposals with the target's live GitHub label
+- [x] Intersect concrete proposals with the target's live GitHub label
   inventory. Never mint a missing label, including an open or tool-owned value.
-- [ ] Use the registry's `suggest` semantics for advisory routing and its
+- [x] Use the registry's `suggest` semantics for advisory routing and its
   `suggest-model` semantics for family-plus-model pairing. Suggestions never arm
   execution.
-- [ ] Use the registry's `area` values and exclusivity metadata rather than
+- [x] Use the registry's `area` values and exclusivity metadata rather than
   embedding values such as `area:ci` in `SKILL.md`.
-- [ ] Exclude claim ownership, transient/tool-managed lifecycle state,
+- [x] Exclude claim ownership, transient/tool-managed lifecycle state,
   assignees, `In Progress`, and arming labels from breakdown writes.
-- [ ] Fall back to `gh label list` conservatively when the target has no label
+- [x] Fall back to `gh label list` conservatively when the target has no label
   registry, preserving the never-mint and non-arming boundaries.
-- [ ] Fail with a clear diagnostic when a present registry is malformed,
+- [x] Fail with a clear diagnostic when a present registry is malformed,
   ambiguous, or cannot be interpreted safely; do not silently treat it as
   absent.
-- [ ] Prefer a small, tested script or asset for registry discovery, filtering,
+- [x] Prefer a small, tested script or asset for registry discovery, filtering,
   live-label intersection, and diagnostics whenever those operations would
   otherwise require complex Markdown instructions. Keep `SKILL.md` focused on
   policy, sequencing, and invoking the asset.
@@ -118,8 +118,10 @@ Repositories without a registry retain a conservative live-label fallback.
 
 ## Implementation plan
 
-1. Re-run `/claim` successfully, then create a feature worktree and branch from
-   current `main` with `task worktree:new`.
+1. Establish session coordination, then create a feature worktree and branch
+   from current `main` with `task worktree:new`. This implementation skipped
+   the issue claim at the maintainer's explicit direction during a GitHub
+   outage.
 2. Design a narrow `breakdown` asset interface that accepts a target repository
    and emits the verified planning vocabulary or a typed diagnostic. Reuse
    existing registry render/validation behavior where it is safely callable;
@@ -140,15 +142,17 @@ Repositories without a registry retain a conservative live-label fallback.
    shepherd lifecycle. Use a `feat:` PR title because the change touches
    release content under `ai/skills`.
 
-## Open questions
+## Implementation decisions
 
-- Should the new asset consume the raw registry plus live labels directly, or
-  should a reusable read-only registry renderer mode be added so `breakdown` and
-  future planning tools share one candidate-selection implementation?
-- For a remote target, should registry retrieval be owned by the asset or by
-  `SKILL.md`, with the asset accepting already-fetched JSON on stdin? Prefer the
-  boundary that keeps host binding explicit and makes the parser hermetic to
-  test.
+- The asset consumes registry documents and live labels directly. It validates
+  the supported schema subset as data and does not execute a target-owned
+  renderer or validator.
+- The asset owns remote retrieval so repository, default-branch, and immutable
+  commit binding stay within one fail-closed boundary. Hermetic fixtures replace
+  `gh` in tests.
+- A family carrying `gate` is excluded unless a future contract can verify the
+  corresponding target-repository opt-in. A live label alone is not proof that
+  the gate remains enabled.
 
 ## Notes
 
