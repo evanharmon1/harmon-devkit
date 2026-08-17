@@ -225,7 +225,7 @@ fi
 # Verify field skipped.
 substantive="$(printf '%s\n' "$verify_content" |
     grep -vE '^[[:space:]]*$' |
-    grep -vE '^[[:space:]]*`{3,}' |
+    grep -vE '^[[:space:]]*(`{3,}|~{3,})' |
     grep -vE '^[[:space:]]*<[^>]*>[[:space:]]*$' |
     grep -viE '^[[:space:]]*(_?no response_?|n/?a|tbd|todo|none)[[:space:]]*\.?$' || true)"
 

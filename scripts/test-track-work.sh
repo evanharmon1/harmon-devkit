@@ -342,6 +342,18 @@ echo "==> an EMPTY Verify heading does not clear the draft"
 
 ')" = 1 ] || fail "a Verify heading with nothing under it should still fail"
 
+echo "==> an EMPTY tilde-fenced Verify section does not clear the draft either"
+# Both fence delimiter spellings are in the authoring profile, so bare tilde
+# delimiters must be as non-substantive as bare backtick ones.
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+~~~
+
+~~~
+')" = 1 ] || fail "an empty tilde fence under Verify should still fail"
+
 echo "==> an unfilled <placeholder> under Verify does not count as a command"
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
 
