@@ -144,6 +144,14 @@ for remote_name in $remote_names; do
 done
 [ "$repo_bound" -eq 1 ] ||
     die "target repository root has no GitHub remote matching --repo $repo"
+# Resolve the checkout's top level: `--repo-root .` from a subdirectory binds
+# the same remotes but would look for the manifest beside the subdirectory,
+# silently bypassing an authoritative top-level label-registry.json in favor
+# of the weaker live-label fallback.
+repo_root="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null)" ||
+    die "could not resolve the target checkout's top-level directory"
+[ -n "$repo_root" ] && [ -d "$repo_root" ] ||
+    die "could not resolve the target checkout's top-level directory"
 
 for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
     case "$axis" in
@@ -640,6 +648,18 @@ for label in "${labels[@]+"${labels[@]}"}"; do
     IFS='|' read -r _name family axis writers exclusive <<EOF
 $record
 EOF
+    # The prefix regex above catches the well-known spellings, but the
+    # manifest may declare a strategy or Foreman family under any prefix, and
+    # a claim/suggest-shaped family under any axis it likes. The resolved
+    # record's axis is the semantic class, so authoring-time rejection binds
+    # to it as well: strategy, foreman, and model-routing labels are live
+    # ownership or execution controls whatever they are named.
+    case "$axis" in
+    strategy | foreman | model)
+        violation "label '$label' belongs to the authoring-forbidden '$axis' axis"
+        continue
+        ;;
+    esac
     if [ "$author_type" = agent ]; then
         case ",$writers," in
         *,agent,*) ;;
@@ -722,6 +742,9 @@ for axis in area layer domain; do
 done
 if [ -n "$undecided" ] && [ "$has_needs_triage" -ne 1 ]; then
     violation "classification axes remain undecided ($undecided); add needs-triage or classify/declare them inapplicable"
+fi
+if [ -z "$undecided" ] && [ "$has_needs_triage" -eq 1 ]; then
+    violation "needs-triage records an undecided classification, but every axis is decided; drop the label"
 fi
 
 if [ "$violations" -ne 0 ]; then

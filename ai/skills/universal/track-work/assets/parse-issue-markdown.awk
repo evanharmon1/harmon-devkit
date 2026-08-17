@@ -171,8 +171,11 @@ BEGIN {
 
     # --- fenced code ---------------------------------------------------------
     if (infence) {
+        # A closer may sit at up to three spaces of indent. Indent is tested
+        # separately and stripping is spelled `^ +` because mawk's sub is not
+        # obliged to take the longest optional-space match.
         t = line
-        sub(/^ ? ? ?/, "", t)
+        if (t !~ /^    /) sub(/^ +/, "", t)
         if (match(t, /^(`+|~+)/) &&
             substr(t, 1, 1) == fence_ch && RLENGTH >= fence_len &&
             substr(t, RLENGTH + 1) ~ /^[ \t]*$/) {
@@ -248,21 +251,28 @@ BEGIN {
     }
 
     # --- headings ------------------------------------------------------------
-    if (line ~ /^ ? ? ?#/) {
-        u = line
-        sub(/^ ? ? ?/, "", u)
-        if (atx(u)) {
-            emit("prose", line)
-            context = ""
-            prev_kind = "leaf"
-            next
-        }
+    # Canonical headings live at column 0. An indented heading still renders
+    # as a heading, but its STRUCTURAL role is container-dependent: two-space
+    # indent under an open list item nests the heading inside that item, so a
+    # skeleton wrapped in a list would satisfy section checks GitHub scopes
+    # to the item. Refusing every indented heading keeps the section model
+    # container-free. (Stripping is spelled `^ +`, not `^ ? ? ?`: mawk's sub
+    # is not obliged to take the longest optional-space match and strips one.)
+    if (line ~ /^#/ && atx(line)) {
+        emit("prose", line)
+        context = ""
+        prev_kind = "leaf"
+        next
     }
-    if (line ~ /^    /) {
+    if (line ~ /^ /) {
         u = line
         sub(/^ +/, "", u)
-        if (atx(u) || u ~ /^>/) {
-            refuse("indented structural syntax - GitHub may render it as code, a heading inside an item, or a lazy continuation; keep headings within three spaces of indent and quotes at column 0")
+        if (atx(u)) {
+            refuse("indented heading - canonical headings start at column 0; GitHub may scope an indented heading to a list item or render it as code")
+            next
+        }
+        if (line ~ /^    / && u ~ /^>/) {
+            refuse("indented structural syntax - GitHub may render it as code or a lazy continuation; keep quotes at column 0")
             next
         }
     }

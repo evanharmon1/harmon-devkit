@@ -445,16 +445,16 @@ echo "==> a hash glued to the heading text is heading text, not a closing sequen
 task test:hygiene
 ')" = 1 ] || fail "'## Verify#' must not satisfy the Verify requirement"
 
-echo "==> a Markdown-indented Verify heading counts"
-# CommonMark allows up to three spaces before an ATX heading.
+echo "==> an indented heading is outside the profile — indeterminate, not guessed"
+# An indented ATX heading renders as a heading, but its structural role is
+# container-dependent (a list item can scope it), so canonical headings are
+# pinned to column 0 and anything indented is refused.
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
 
    ## Verify
 
    task test:hygiene
-')" = 0 ] || fail "an indented Verify heading should be recognised"
-
-echo "==> an indented following heading still ends the Verify section"
+')" = 2 ] || fail "an indented Verify heading should be indeterminate (exit 2)"
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
 
 ## Verify
@@ -462,7 +462,7 @@ echo "==> an indented following heading still ends the Verify section"
   ## Notes
 
 prose
-')" = 1 ] || fail "an indented heading should terminate the Verify section"
+')" = 2 ] || fail "an indented section heading should be indeterminate (exit 2)"
 
 echo "==> a Verify section at any heading level counts"
 [ "$(run_rot 'scripts/foo.sh:42 is wrong.
@@ -779,6 +779,22 @@ Something is wrong.' ;;
     [ "$(run_personal 'Validate the issue skeleton' "$tmp/metadata-$case_name.md")" = 1 ] ||
         fail "$case_name should fail"
 done
+
+echo "==> metadata: a list-wrapped skeleton cannot satisfy the canonical sections"
+# GitHub scopes a two-space-indented heading and task to the wrapping list
+# item, so a skeleton nested under `- wrapper` is not the top-level contract;
+# the profile refuses the indented heading rather than deciding its container.
+cat >"$tmp/metadata-list-wrapped.md" <<'BODY'
+## Problem
+
+Explain it.
+
+- wrapper
+  ## Acceptance criteria
+  - [ ] [CI] This is nested under wrapper
+BODY
+[ "$(run_personal 'Reject list-wrapped skeletons' "$tmp/metadata-list-wrapped.md")" = 1 ] ||
+    fail "a list-wrapped acceptance section must not satisfy the contract"
 
 echo "==> metadata: a glued closing hash is heading text, so the heading is noncanonical"
 cat >"$tmp/metadata-glued-hash.md" <<'BODY'
@@ -1181,6 +1197,54 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     fail "an enumerated open member missing live should fail as unknown (got $_rc): $(cat "$tmp/metadata.out")"
 grep -q "label 'type:stale-member' does not exist" "$tmp/metadata.out" ||
     fail "the absent enumerated open member should be reported as unknown"
+
+echo "==> metadata: the manifest is resolved from the checkout top level, not the subdirectory"
+metadata_subdir_root="$tmp/metadata-subdir"
+mkdir -p "$metadata_subdir_root/nested/deeper"
+git -C "$metadata_subdir_root" init -q
+git -C "$metadata_subdir_root" remote add origin https://github.com/testowner/testrepo.git
+printf '{not json\n' >"$metadata_subdir_root/label-registry.json"
+: >"$tmp/metadata-gh.log"
+_rc=0
+PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
+    "$metadata" --repo testowner/testrepo --repo-root "$metadata_subdir_root/nested/deeper" \
+    --owner-type personal --title 'Resolve the top-level manifest' \
+    --body-file "$valid_body" --human-authored --label feature --inapplicable area \
+    --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] ||
+    fail "a subdirectory --repo-root must still find (and fail closed on) the top-level manifest (got $_rc)"
+[ ! -s "$tmp/metadata-gh.log" ] ||
+    fail "a bypassed top-level manifest must not fall through to gh"
+
+echo "==> metadata: a strategy-axis family is authoring-forbidden whatever its prefix"
+metadata_strategy="$tmp/metadata-strategy"
+mkdir -p "$metadata_strategy"
+git -C "$metadata_strategy" init -q
+git -C "$metadata_strategy" remote add origin https://github.com/testowner/testrepo.git
+jq '.families += [{
+      "family": "route-hint", "prefix": "route",
+      "purpose": "Fixture strategy family under an unlisted prefix",
+      "axis": "strategy", "source": "inline", "writers": ["agent"],
+      "readers": "fixture", "lifecycle": "durable", "exclusive": false,
+      "provision": false,
+      "values": [{"value": "fast", "description": "Fixture routing hint"}]
+    }]' "$metadata_repo/label-registry.json" >"$metadata_strategy/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_strategy" --owner-type personal \
+    --title 'Reject renamed strategy families' --body-file "$valid_body" \
+    --agent-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:platform --label ai-generated --label route:fast \
+    >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a strategy-axis label under a new prefix should fail (got $_rc)"
+grep -q "authoring-forbidden 'strategy' axis" "$tmp/metadata.out" ||
+    fail "the rejection should name the strategy axis"
+
+echo "==> metadata: needs-triage on a fully decided classification is stale"
+[ "$(run_personal 'Reject stale triage labels' "$valid_body" --label needs-triage)" = 1 ] ||
+    fail "needs-triage with every axis decided should fail"
+grep -q 'every axis is decided' "$tmp/metadata.out" ||
+    fail "the rejection should say the classification is decided"
 
 echo "==> metadata: a concrete record shadowing an open family is ambiguous too"
 metadata_shadowed="$tmp/metadata-shadowed"
