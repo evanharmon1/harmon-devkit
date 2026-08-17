@@ -619,7 +619,7 @@ case "${1:-} ${2:-}" in
     if [ "${METADATA_GH_LABELS+x}" = x ]; then
         printf '%s\n' "$METADATA_GH_LABELS"
     else
-        printf '%s\n' enhancement area:fixture domain:platform ai-generated needs-triage 'Rigor:deep' type:fix
+        printf '%s\n' enhancement area:fixture domain:fixture ai-generated needs-triage 'Rigor:deep' type:fix
     fi
     ;;
 *) exit 97 ;;
@@ -632,6 +632,8 @@ cp agent-registry.json "$metadata_repo/agent-registry.json"
 jq '.families |= map(
       if .family == "area" then
         .values += [{"value":"fixture","description":"Fixture-only area"}]
+      elif .family == "domain" then
+        .values += [{"value":"fixture","description":"Fixture-only domain"}]
       elif .family == "concern" then
         .values += [{"value":"trusted-review","description":"Fixture trusted concern",
                      "writers":["trusted-human"]}]
@@ -692,7 +694,7 @@ run_personal() {
     run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
         --owner-type personal --title "$_title" --body-file "$_body" \
         --agent-authored --label feature --label area:fixture \
-        --inapplicable layer --label domain:platform --label ai-generated "$@"
+        --inapplicable layer --label domain:fixture --label ai-generated "$@"
 }
 
 run_organization() {
@@ -702,7 +704,7 @@ run_organization() {
     PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
         --owner-type organization --issue-type Task --title "$_title" \
         --body-file "$_body" --agent-authored --label area:fixture \
-        --inapplicable layer --label domain:platform --label ai-generated "$@"
+        --inapplicable layer --label domain:fixture --label ai-generated "$@"
 }
 
 echo "==> metadata: a complete personal-account draft passes from the target root manifest"
@@ -1119,23 +1121,23 @@ echo "==> metadata: agent-authored issues require ai-generated and agent-writabl
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Require issue provenance' --body-file "$valid_body" \
     --agent-authored --label feature --label area:fixture --inapplicable layer \
-    --label domain:platform)" = 1 ] || fail "missing ai-generated should fail"
+    --label domain:fixture)" = 1 ] || fail "missing ai-generated should fail"
 [ "$(run_personal 'Respect label writers' "$valid_body" --label sec)" = 1 ] ||
     fail "an agent must not propose a human-only concern"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Allow true concern labels' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
-    --label domain:platform --label sec)" = 0 ] ||
+    --label domain:fixture --label sec)" = 0 ] ||
     fail "a human-authored draft may carry a true concern: $(cat "$tmp/metadata.out")"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Reject tool-owned authoring state' \
     --body-file "$valid_body" --human-authored --label feature --label area:fixture \
-    --inapplicable layer --label domain:platform --label 'autorelease: pending')" = 1 ] ||
+    --inapplicable layer --label domain:fixture --label 'autorelease: pending')" = 1 ] ||
     fail "a human author must not propose a tool-owned label"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Require attributable trusted labels' \
     --body-file "$valid_body" --human-authored --label feature --label area:fixture \
-    --inapplicable layer --label domain:platform --label trusted-review)" = 2 ] ||
+    --inapplicable layer --label domain:fixture --label trusted-review)" = 2 ] ||
     fail "a self-asserted human author cannot authorize a trusted-human label"
 grep -q 'actor-verifying trusted-human workflow' "$tmp/metadata.out" ||
     fail "trusted-human refusal should name the required verification path"
@@ -1147,7 +1149,7 @@ METADATA_GH_LOG="$tmp/metadata-gh.log" "$metadata" \
     --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Allow a live open-value label' \
     --body-file "$valid_body" --human-authored --label feature \
-    --label area:fixture --inapplicable layer --label domain:platform \
+    --label area:fixture --inapplicable layer --label domain:fixture \
     --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "a live open-value label should pass: $(cat "$tmp/metadata.out")"
 [ "$(grep -c '^label list ' "$tmp/metadata-gh.log")" = 1 ] ||
@@ -1159,7 +1161,7 @@ grep -q 'label list.*--repo testowner/testrepo.*--limit 1000.*--json name' \
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Reject an absent open-value label' \
     --body-file "$valid_body" --human-authored --label feature \
-    --label area:fixture --inapplicable layer --label domain:platform \
+    --label area:fixture --inapplicable layer --label domain:fixture \
     --label type:missing)" = 1 ] || fail "an absent open-value label should remain unknown"
 
 echo "==> metadata: a label matching two open-value families is ambiguous, not first-match"
@@ -1180,7 +1182,7 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_ambiguous" --owner-type personal \
     --title 'Reject ambiguous open-value prefixes' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
-    --label domain:platform --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+    --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "an ambiguous open-value label should be indeterminate (got $_rc): $(cat "$tmp/metadata.out")"
 grep -q 'matches multiple open-value families' "$tmp/metadata.out" ||
     fail "the refusal should name the ambiguity"
@@ -1203,7 +1205,7 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_enumerated" --owner-type personal \
     --title 'Reject absent enumerated open members' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
-    --label domain:platform --label type:stale-member >"$tmp/metadata.out" 2>&1 || _rc=$?
+    --label domain:fixture --label type:stale-member >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] ||
     fail "an enumerated open member missing live should fail as unknown (got $_rc): $(cat "$tmp/metadata.out")"
 grep -q "label 'type:stale-member' does not exist" "$tmp/metadata.out" ||
@@ -1245,7 +1247,7 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_strategy" --owner-type personal \
     --title 'Reject renamed strategy families' --body-file "$valid_body" \
     --agent-authored --label feature --label area:fixture --inapplicable layer \
-    --label domain:platform --label ai-generated --label route:fast \
+    --label domain:fixture --label ai-generated --label route:fast \
     >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] || fail "a strategy-axis label under a new prefix should fail (got $_rc)"
 grep -q "authoring-forbidden 'strategy' axis" "$tmp/metadata.out" ||
@@ -1273,7 +1275,7 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_retired" --owner-type personal \
     --title 'Reject retired open members' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
-    --label domain:platform --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+    --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] ||
     fail "a retired open-family member should fail even with a live label (got $_rc): $(cat "$tmp/metadata.out")"
 grep -q "label 'type:fix' is retired by the manifest" "$tmp/metadata.out" ||
@@ -1336,7 +1338,7 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_shadowed" --owner-type personal \
     --title 'Reject shadowed open-value labels' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
-    --label domain:platform --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+    --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "an open label shadowed by a concrete family should be indeterminate (got $_rc): $(cat "$tmp/metadata.out")"
 grep -q 'no unique policy' "$tmp/metadata.out" ||
     fail "the refusal should say the policy is not unique"
@@ -1360,7 +1362,7 @@ grep -qi 'domain' "$tmp/metadata.out" || fail "the undecided domain axis should 
 echo "==> metadata: owner type controls work classification"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Require a work type' --body-file "$valid_body" \
-    --human-authored --label area:fixture --inapplicable layer --label domain:platform)" = 1 ] ||
+    --human-authored --label area:fixture --inapplicable layer --label domain:fixture)" = 1 ] ||
     fail "personal repo without a work type should fail"
 [ "$(run_personal 'Reject stacked work types' "$valid_body" --label task)" = 1 ] ||
     fail "personal repo with two work types should fail"
@@ -1368,13 +1370,13 @@ echo "==> metadata: owner type controls work classification"
     fail "organization repo with a work-type label should fail"
 [ "$(run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
     --owner-type organization --title 'Require native Issue Type' --body-file "$valid_body" \
-    --human-authored --label area:fixture --inapplicable layer --label domain:platform)" = 1 ] ||
+    --human-authored --label area:fixture --inapplicable layer --label domain:fixture)" = 1 ] ||
     fail "organization repo without Issue Type should fail"
 [ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo \
     --repo-root "$metadata_repo" --owner-type organization \
     --issue-type 'Definitely Not A Real Type' --title 'Validate native Issue Types' \
     --body-file "$valid_body" --human-authored --label area:fixture --inapplicable layer \
-    --label domain:platform)" = 1 ] || fail "unknown native Issue Type should fail"
+    --label domain:fixture)" = 1 ] || fail "unknown native Issue Type should fail"
 
 echo "==> metadata: authoring-time strategy, routing, claim, and Foreman labels are forbidden"
 for label in rigor:deep tier:apex method:plan suggest:gpt claim:gpt foreman:approved agent:codex; do
@@ -1390,7 +1392,7 @@ PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title 'Validate fallback metadata' \
     --body-file "$valid_body" --agent-authored --work-type-label enhancement \
-    --label area:fixture --inapplicable layer --label domain:platform \
+    --label area:fixture --inapplicable layer --label domain:fixture \
     --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "fallback draft should pass: $(cat "$tmp/metadata.out")"
 [ "$(grep -c '^label list ' "$tmp/metadata-gh.log")" = 1 ] ||
@@ -1404,19 +1406,19 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo fallback/repo \
     --repo-root "$metadata_fallback" --owner-type personal \
     --title 'Reject authoring controls' --body-file "$valid_body" \
     --agent-authored --work-type-label 'Rigor:deep' --label area:fixture \
-    --inapplicable layer --label domain:platform --label ai-generated \
+    --inapplicable layer --label domain:fixture --label ai-generated \
     >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] || fail "mixed-case forbidden family should exit 1 (got $_rc)"
 grep -qF 'Rigor:deep' "$tmp/metadata.out" || fail "forbidden-family error should name the label"
 
 echo "==> metadata: pipe-bearing fallback labels cannot forge writer records"
 _rc=0
-METADATA_GH_LABELS="$(printf '%s\n' enhancement area:fixture domain:platform \
+METADATA_GH_LABELS="$(printf '%s\n' enhancement area:fixture domain:fixture \
     ai-generated sec 'sec|concern|concern|human,agent|false')" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title 'Reject forged fallback writers' \
     --body-file "$valid_body" --agent-authored --work-type-label enhancement \
-    --label area:fixture --inapplicable layer --label domain:platform \
+    --label area:fixture --inapplicable layer --label domain:fixture \
     --label ai-generated --label sec >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] || fail "a pipe-bearing live label must not forge an agent writer record"
 grep -q "label 'sec' is not writable by an agent" "$tmp/metadata.out" ||
@@ -1479,7 +1481,7 @@ cp "$metadata_repo/label-registry.json" "$metadata_sshport/label-registry.json"
     --repo-root "$metadata_sshport" --owner-type personal \
     --title 'Bind portless ssh remotes' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
-    --label domain:platform)" = 0 ] ||
+    --label domain:fixture)" = 0 ] ||
     fail "a portless ssh.github.com remote should bind: $(cat "$tmp/metadata.out")"
 
 echo "==> metadata: the checkout remote must match the requested repository"
@@ -1500,11 +1502,11 @@ printf '%s\n' "$help" | grep -q 'Organization example' || fail "help needs an or
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Require explicit authorship' --body-file "$valid_body" \
     --label feature --label area:fixture --inapplicable layer \
-    --label domain:platform)" = 2 ] || fail "omitted author type should exit 2"
+    --label domain:fixture)" = 2 ] || fail "omitted author type should exit 2"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Reject conflicting authorship' --body-file "$valid_body" \
     --agent-authored --human-authored --label feature --label area:fixture \
-    --inapplicable layer --label domain:platform --label ai-generated)" = 2 ] ||
+    --inapplicable layer --label domain:fixture --label ai-generated)" = 2 ] ||
     fail "conflicting author types should exit 2"
 
 echo "==> metadata: delegation guidance preserves the concrete authoring contract"
