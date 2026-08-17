@@ -146,6 +146,10 @@ explicitly named work type, `ai-generated`, and `needs-triage`; other live
 labels remain human-only. The checkout must have a GitHub remote matching
 `--repo`. The checker never applies labels or creates an issue.
 
+An `open_values` family is the manifest-backed case that needs a bounded live
+label read: GitHub proves the proposed concrete label exists, while the
+manifest family still supplies its writers, axis, and exclusivity.
+
 ## Delegating issue creation
 
 A delegated brief must be self-contained. Carry all of the following into the

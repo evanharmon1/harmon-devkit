@@ -640,6 +640,11 @@ fails closed. In both modes, `--repo-root` must be a Git checkout with a GitHub
 remote matching `--repo`, so a cross-repository draft cannot use the wrong
 checkout's vocabulary.
 
+For a family explicitly declaring `open_values`, the manifest family remains
+authoritative for policy while one bounded live-label read proves that the
+proposed concrete value exists. Live label text never supplies writers, axis,
+or exclusivity.
+
 Run the combined gate immediately before creation:
 
 ```sh

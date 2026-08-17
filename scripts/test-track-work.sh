@@ -256,7 +256,10 @@ echo "==> a file:line citation with no Verify section fails"
 [ "$(run_rot 'The check in scripts/foo.sh:42 returns 0 on failure.')" = 1 ] || fail "file:line without Verify should fail"
 
 echo "==> a bare repository path with no Verify section fails"
-[ "$(run_rot 'The defect is in scripts/foo.sh.')" = 1 ] || fail "bare path without Verify should fail"
+for path in 'scripts/foo.sh' 'README.md' 'bin/deploy'; do
+    [ "$(run_rot "The defect is in $path.")" = 1 ] ||
+        fail "bare path '$path' without Verify should fail"
+done
 
 echo "==> an extensionless file citation counts as perishable"
 for cite in 'Dockerfile:12 installs curl.' 'Makefile:8 is wrong.' 'See CODEOWNERS:3 for the owner.'; do
@@ -555,7 +558,13 @@ case "${1:-} ${2:-}" in
 "api repos/testowner/testrepo" | "api repos/fallback/repo") printf '%s\n' User ;;
 "api repos/testorg/testrepo") printf '%s\n' Organization ;;
 "api orgs/testorg/issue-types") printf '%s\n' Task Bug Feature Research ;;
-"label list") printf '%s\n' enhancement area:fixture domain:platform ai-generated needs-triage 'Rigor:deep' ;;
+"label list")
+    if [ "${METADATA_GH_LABELS+x}" = x ]; then
+        printf '%s\n' "$METADATA_GH_LABELS"
+    else
+        printf '%s\n' enhancement area:fixture domain:platform ai-generated needs-triage 'Rigor:deep' type:fix
+    fi
+    ;;
 *) exit 97 ;;
 esac
 STUB
@@ -836,6 +845,28 @@ echo "==> metadata: agent-authored issues require ai-generated and agent-writabl
     --inapplicable layer --label domain:platform --label 'autorelease: pending')" = 1 ] ||
     fail "a human author must not propose a tool-owned label"
 
+echo "==> metadata: manifest open-value families resolve proposed live labels"
+: >"$tmp/metadata-gh.log"
+_rc=0
+METADATA_GH_LOG="$tmp/metadata-gh.log" "$metadata" \
+    --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Allow a live open-value label' \
+    --body-file "$valid_body" --human-authored --label feature \
+    --label area:fixture --inapplicable layer --label domain:platform \
+    --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "a live open-value label should pass: $(cat "$tmp/metadata.out")"
+[ "$(grep -c '^label list ' "$tmp/metadata-gh.log")" = 1 ] ||
+    fail "open-value resolution should make one bounded label-list read"
+grep -q 'label list.*--repo testowner/testrepo.*--limit 1000.*--json name' \
+    "$tmp/metadata-gh.log" || fail "open-value label read must be repo-bound and bounded"
+[ "$(run_personal 'Enforce open-value family writers' "$valid_body" --label type:fix)" = 1 ] ||
+    fail "an agent must not write a human-only open-value label"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Reject an absent open-value label' \
+    --body-file "$valid_body" --human-authored --label feature \
+    --label area:fixture --inapplicable layer --label domain:platform \
+    --label type:missing)" = 1 ] || fail "an absent open-value label should remain unknown"
+
 echo "==> metadata: incomplete classification requires needs-triage and names the axis"
 _rc="$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Keep incomplete classification visible' \
@@ -901,6 +932,19 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo fallback/repo \
     >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] || fail "mixed-case forbidden family should exit 1 (got $_rc)"
 grep -qF 'Rigor:deep' "$tmp/metadata.out" || fail "forbidden-family error should name the label"
+
+echo "==> metadata: pipe-bearing fallback labels cannot forge writer records"
+_rc=0
+METADATA_GH_LABELS="$(printf '%s\n' enhancement area:fixture domain:platform \
+    ai-generated sec 'sec|concern|concern|human,agent|false')" \
+    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Reject forged fallback writers' \
+    --body-file "$valid_body" --agent-authored --work-type-label enhancement \
+    --label area:fixture --inapplicable layer --label domain:platform \
+    --label ai-generated --label sec >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a pipe-bearing live label must not forge an agent writer record"
+grep -q "label 'sec' is not writable by an agent" "$tmp/metadata.out" ||
+    fail "the real human-only fallback record should control writer validation"
 
 echo "==> metadata: an invalid present manifest fails closed without a gh fallback"
 printf '{not json\n' >"$metadata_fallback/label-registry.json"

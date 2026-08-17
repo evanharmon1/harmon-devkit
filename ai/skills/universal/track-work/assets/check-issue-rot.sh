@@ -64,6 +64,8 @@ fi
 # country TLDs and must keep working as files.
 HOST_TLD='(com|org|net|dev|app|edu|gov|mil|int|info|biz|xyz|cloud|tech|online|site|io|co|me)'
 BARE_FILES='(Dockerfile|Containerfile|Makefile|Taskfile|Justfile|Procfile|Gemfile|Rakefile|Brewfile|Vagrantfile|Jenkinsfile|CODEOWNERS|LICENSE|NOTICE)'
+REPO_DIRS='(ai|bin|config|docs|lib|scripts|src|specs|template|test|tests|tools|vendor|\.agents|\.claude|\.github)'
+DOTTED_FILE='[A-Za-z0-9_.-]*[A-Za-z0-9_-]\.[A-Za-z][A-Za-z0-9]{0,9}'
 # Four shapes: a path with a directory separator; a bare filename whose extension
 # is neither an internet suffix nor all-digits (which would be an IPv4 octet); a
 # dotfile (`.gitignore:3`); and the common extensionless filenames.
@@ -71,18 +73,20 @@ CITATION="((^|[^A-Za-z0-9_./:-])[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*[A-Za-z0-9_-]\\.
 |(^|[^A-Za-z0-9_./-])[A-Za-z0-9_.-]*[A-Za-z0-9_-]\\.[A-Za-z][A-Za-z0-9]{0,9}:[0-9]+\
 |(^|[^A-Za-z0-9_./-])\\.[A-Za-z][A-Za-z0-9_-]*:[0-9]+\
 |(^|[^A-Za-z0-9_-])${BARE_FILES}:[0-9]+)"
-# A path is perishable even without a line suffix. Keep this deliberately
-# narrower than "anything containing a slash": it requires either a dotfile,
-# an extension, or a conventional extensionless repository filename, and URL
-# schemes are filtered below.
-PATH_REFERENCE="(^|[^A-Za-z0-9_./:-])([A-Za-z0-9_.-]+/)+([A-Za-z0-9_.-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}|\\.[A-Za-z][A-Za-z0-9_-]*|${BARE_FILES})"
+# A path is perishable even without a line suffix. Recognize a bare dotted
+# filename, a dotted/dotfile/conventional name under any directory, and an
+# extensionless path under an explicit or conventional repository directory.
+# The leading boundary prevents matching a suffix of an HTTP(S) URL.
+PATH_REFERENCE="(^|[^A-Za-z0-9_./:-])(${DOTTED_FILE}\
+|([A-Za-z0-9_.-]+/)+(${DOTTED_FILE}|\\.[A-Za-z][A-Za-z0-9_-]*|${BARE_FILES})\
+|((\\.{1,2}|${REPO_DIRS})/)[A-Za-z0-9_./-]*[A-Za-z0-9_.-])"
 # Applied after matching, because grep -E has no negative lookahead. Two shapes
 # are dropped: anything carrying a URL scheme (the boundary above also prevents
 # matching a suffix after that scheme), and a SLASHLESS match ending in an
 # internet suffix. The slashless condition matters — `a/b/weird.xyz:3` is a
 # real path even though `xyz` is also a TLD, so a directory separator settles it.
 # Records are "<lineno>:<match>", hence the leading `[0-9]+:`.
-NOT_A_CITATION="(://|^[0-9]+:[^/]*\\.${HOST_TLD}:[0-9]+\$)"
+NOT_A_CITATION="(://|^[0-9]+:[^/]*\\.${HOST_TLD}(:[0-9]+)?\$)"
 TEMPORAL='(currently|today|as of|observed[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}|right now|at present|at the moment)'
 perishable="$(printf '%s\n' "$draft" |
     grep -noiE "(${CITATION}|${PATH_REFERENCE}|(^|[^A-Za-z0-9_-])${TEMPORAL})" |

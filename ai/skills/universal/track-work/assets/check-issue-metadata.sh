@@ -20,7 +20,9 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
 Validates a proposed issue without writing to GitHub. The target checkout's
 label-registry.json is authoritative when present; otherwise the checker makes
 one bounded `gh label list --limit 1000` read against --repo. The checkout must
-have a GitHub remote matching --repo.
+have a GitHub remote matching --repo. A proposed member of a manifest
+`open_values` family also uses one bounded label read to prove that concrete
+label exists; the manifest still supplies its policy.
 
 Personal-account example:
   check-issue-metadata.sh --repo me/project --repo-root . --owner-type personal \\
@@ -285,11 +287,54 @@ if [ -e "$manifest" ]; then
       | join("|")' "$manifest" >"$vocab" ||
         die "could not render label-registry.json"
 
+    # Open-value families define policy in the manifest but not every concrete
+    # label name. Resolve only proposed members against one bounded live read;
+    # the manifest remains authoritative for family, axis, writers, and
+    # exclusivity, while GitHub supplies existence for the specific value.
+    open_families="$tmp/open-families"
+    jq -r '
+      .families[]
+      | select((.retired // false) | not)
+      | select(.source != "agent-registry" and (.open_values // false))
+      | select(.prefix != null)
+      | [.prefix, .family, .axis, (.writers | join(",")),
+         (.exclusive | tostring)]
+      | join("|")' "$manifest" >"$open_families" ||
+        die "could not render open-value label families"
+    open_candidates="$tmp/open-candidates"
+    : >"$open_candidates"
+    for label in "${labels[@]+"${labels[@]}"}"; do
+        while IFS='|' read -r prefix family axis writers exclusive; do
+            [ -n "$prefix" ] || continue
+            case "$label" in
+            "$prefix":*) printf '%s|%s|%s|%s|%s\n' \
+                "$label" "$family" "$axis" "$writers" "$exclusive" >>"$open_candidates" ;;
+            esac
+        done <"$open_families"
+    done
+    if [ -s "$open_candidates" ]; then
+        live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
+            die "could not read open-value labels from the target repository"
+        while IFS='|' read -r label family axis writers exclusive; do
+            printf '%s\n' "$live" | awk -v wanted="$label" '$0 == wanted { found=1 } END { exit(found ? 0 : 1) }' ||
+                continue
+            awk -F '|' -v wanted="$label" '$1 == wanted { found=1 } END { exit(found ? 0 : 1) }' "$vocab" ||
+                printf '%s|%s|%s|%s|%s\n' \
+                    "$label" "$family" "$axis" "$writers" "$exclusive" >>"$vocab"
+        done <"$open_candidates"
+    fi
+
 else
     live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
         die "could not read the target repository's labels"
     while IFS= read -r label; do
         [ -n "$label" ] || continue
+        # Proposed labels reject the record delimiter, so a live label that
+        # contains it can never be selected. Ignore it instead of allowing it
+        # to forge the family/writer fields of a second record.
+        case "$label" in
+        *'|'*) continue ;;
+        esac
         case "$label" in
         area:*) printf '%s|area|classification|human,agent|true\n' "$label" ;;
         layer:*) printf '%s|layer|classification|human,agent|true\n' "$label" ;;
