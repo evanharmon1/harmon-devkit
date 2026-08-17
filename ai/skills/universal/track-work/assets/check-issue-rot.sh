@@ -2,8 +2,9 @@
 # check-issue-rot.sh — refuse an issue draft whose perishable claims cannot be
 # re-checked.
 #
-# Why: an issue that cites `file:line` or says "currently does X" is describing a
-# snapshot. The snapshot goes stale — sometimes within a day, and a merged PR
+# Why: an issue that cites a repository path or `file:line`, records an observed
+# date, or says "currently does X" is describing a snapshot. The snapshot goes
+# stale — sometimes within a day, and a merged PR
 # from the same session is enough to do it. State is not the problem; state a
 # reader cannot re-verify is. So this does not ban `file:line` (you usually need
 # it to find the thing) — it requires a `## Verify` section holding a command
@@ -70,15 +71,20 @@ CITATION="([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}:[0-
 |(^|[^A-Za-z0-9_./-])[A-Za-z0-9_.-]*[A-Za-z0-9_-]\\.[A-Za-z][A-Za-z0-9]{0,9}:[0-9]+\
 |(^|[^A-Za-z0-9_./-])\\.[A-Za-z][A-Za-z0-9_-]*:[0-9]+\
 |(^|[^A-Za-z0-9_-])${BARE_FILES}:[0-9]+)"
+# A path is perishable even without a line suffix. Keep this deliberately
+# narrower than "anything containing a slash": it requires either a dotfile,
+# an extension, or a conventional extensionless repository filename, and URL
+# schemes are filtered below.
+PATH_REFERENCE="([A-Za-z0-9_.-]+/)+([A-Za-z0-9_.-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}|\\.[A-Za-z][A-Za-z0-9_-]*|${BARE_FILES})"
 # Applied after matching, because grep -E has no negative lookahead. Two shapes
 # are dropped: anything carrying a URL scheme, and a SLASHLESS match ending in an
 # internet suffix. The slashless condition matters — `a/b/weird.xyz:3` is a real
 # path even though `xyz` is also a TLD, so a directory separator settles it.
 # Records are "<lineno>:<match>", hence the leading `[0-9]+:`.
 NOT_A_CITATION="(://|^[0-9]+:[^/]*\\.${HOST_TLD}:[0-9]+\$)"
-TEMPORAL='(currently|today|as of|right now|at present|at the moment)'
+TEMPORAL='(currently|today|as of|observed[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}|right now|at present|at the moment)'
 perishable="$(printf '%s\n' "$draft" |
-    grep -noiE "(${CITATION}|(^|[^A-Za-z0-9_-])${TEMPORAL})" |
+    grep -noiE "(${CITATION}|${PATH_REFERENCE}|(^|[^A-Za-z0-9_-])${TEMPORAL})" |
     grep -viE "${NOT_A_CITATION}" || true)"
 
 if [ -z "$perishable" ]; then

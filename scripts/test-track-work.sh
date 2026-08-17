@@ -255,6 +255,9 @@ echo "==> a draft with nothing perishable passes"
 echo "==> a file:line citation with no Verify section fails"
 [ "$(run_rot 'The check in scripts/foo.sh:42 returns 0 on failure.')" = 1 ] || fail "file:line without Verify should fail"
 
+echo "==> a bare repository path with no Verify section fails"
+[ "$(run_rot 'The defect is in scripts/foo.sh.')" = 1 ] || fail "bare path without Verify should fail"
+
 echo "==> an extensionless file citation counts as perishable"
 for cite in 'Dockerfile:12 installs curl.' 'Makefile:8 is wrong.' 'See CODEOWNERS:3 for the owner.'; do
     [ "$(run_rot "$cite")" = 1 ] || fail "'$cite' should be flagged as perishable"
@@ -288,7 +291,8 @@ echo "==> an unrecognised internet suffix is still not a citation"
 [ "$(run_rot 'Use my.site:8080 to reach it.')" = 0 ] || fail "'my.site:8080' should not be flagged"
 
 echo "==> a temporal claim with no Verify section fails"
-for phrase in 'Currently it exits 0.' 'Today it exits 0.' 'As of the last run it exits 0.' 'Right now it exits 0.'; do
+for phrase in 'Currently it exits 0.' 'Today it exits 0.' 'As of the last run it exits 0.' \
+    'Observed 2026-08-17, it exits 0.' 'Right now it exits 0.'; do
     [ "$(run_rot "$phrase")" = 1 ] || fail "'$phrase' should be flagged as perishable"
 done
 
@@ -542,12 +546,21 @@ cat >"$metadata_stub/gh" <<'STUB'
 #!/bin/sh
 if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
 case "${1:-} ${2:-}" in
+"repo view")
+    case "${3:-}" in
+    testowner/testrepo | fallback/repo) printf '%s\n' User ;;
+    testorg/testrepo) printf '%s\n' Organization ;;
+    *) exit 97 ;;
+    esac
+    ;;
 "api orgs/testorg/issue-types") printf '%s\n' Task Bug Feature Research ;;
 "label list") printf '%s\n' enhancement area:fixture domain:platform ai-generated needs-triage 'Rigor:deep' ;;
 *) exit 97 ;;
 esac
 STUB
 chmod +x "$metadata_stub/gh"
+PATH="$metadata_stub:$PATH"
+export PATH
 cp agent-registry.json "$metadata_repo/agent-registry.json"
 jq '.families |= map(if .family == "area"
     then .values += [{"value":"fixture","description":"Fixture-only area"}]
@@ -627,6 +640,14 @@ echo "==> metadata: a complete personal-account draft passes from the target roo
 echo "==> metadata: an organization draft uses native Issue Type and no work-type label"
 [ "$(run_organization 'Validate organization issue metadata' "$valid_body")" = 0 ] ||
     fail "valid organization draft should pass: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: owner type is verified against the target repository"
+[ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo \
+    --repo-root "$metadata_repo" --owner-type personal \
+    --title 'Reject mismatched owner classification' --body-file "$valid_body" \
+    --human-authored --label feature --inapplicable area --inapplicable layer \
+    --inapplicable domain)" = 1 ] ||
+    fail "an organization repository declared personal should fail"
 
 echo "==> metadata: exact title boundary is 70 Unicode code points"
 title70="$(printf 'a%.0s' {1..70})"
@@ -744,6 +765,17 @@ echo "==> metadata: the existing perishable-fact checker is the Verify gate"
     fail "perishable facts without Verify should fail"
 [ "$(run_personal 'Cover perishable issue facts' "$verified_body")" = 0 ] ||
     fail "perishable facts with Verify should pass: $(cat "$tmp/metadata.out")"
+cat >"$tmp/metadata-bare-path.md" <<'BODY'
+## Problem
+
+The defect is in scripts/example.sh, observed 2026-08-17.
+
+## Acceptance criteria
+
+- [ ] [CI] The regression is covered
+BODY
+[ "$(run_personal 'Cover bare path observations' "$tmp/metadata-bare-path.md")" = 1 ] ||
+    fail "a bare path and observed date without Verify should fail"
 sed 's/^## Verify$/### Verify/' "$verified_body" >"$tmp/metadata-wrong-verify-level.md"
 [ "$(run_personal 'Require the canonical Verify heading' \
     "$tmp/metadata-wrong-verify-level.md")" = 1 ] ||
@@ -853,7 +885,8 @@ PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     --label area:fixture --inapplicable layer --label domain:platform \
     --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "fallback draft should pass: $(cat "$tmp/metadata.out")"
-[ "$(wc -l <"$tmp/metadata-gh.log" | tr -d ' ')" = 1 ] || fail "fallback should make one gh read"
+[ "$(grep -c '^label list ' "$tmp/metadata-gh.log")" = 1 ] ||
+    fail "fallback should make one label-list read"
 grep -q 'label list.*--repo fallback/repo.*--limit 1000.*--json name' "$tmp/metadata-gh.log" ||
     fail "fallback label read must be repo-bound and bounded"
 

@@ -598,11 +598,12 @@ Exit 1 means a perishable claim has no usable re-check. The strongest `Verify`
 is a failing assertion in the repository's own test harness: it cannot rot,
 because the codebase evaluates it, and it closes when the assertion passes.
 
-GitHub Issue Forms express the same contract through fields. `Problem`,
-`Acceptance criteria` (called `Definition of done` on older forms), and
-`Verify` carry the meanings above; form-specific evidence fields such as steps,
-environment, or proposed solution enrich `Problem` and `Current violation`
-rather than weakening the acceptance-tag or perishability rules. A direct
+GitHub Issue Form field names map to this contract: `Problem`, `Acceptance
+criteria` (called `Definition of done` on older forms), and `Verify` carry the
+meanings above. Existing forms are intake surfaces, not weaker authoring
+standards; triage must normalize their rendered body to this skeleton before
+the issue is dispatchable. Form-specific evidence such as steps, environment,
+or proposed solution belongs within `Problem` or `Current violation`. A direct
 Markdown/CLI draft uses the canonical level-two skeleton exactly.
 
 ### Metadata contract
@@ -650,8 +651,8 @@ Run the combined gate immediately before creation:
 ```
 
 Use `--owner-type organization --issue-type <Type>` and omit
-`--work-type-label` for an organization; the checker verifies that native type
-against the target organization. Repeat `--label` and `--inapplicable` as needed.
+`--work-type-label` for an organization; the checker verifies both the target
+owner's account kind and the native type. Repeat `--label` and `--inapplicable` as needed.
 Authorship is explicit: pass exactly one of `--agent-authored` or
 `--human-authored`; omission never defaults to the more permissive human path.
 `--help` gives complete personal-account and organization examples. Exit 0 is

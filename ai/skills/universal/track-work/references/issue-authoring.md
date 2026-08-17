@@ -57,9 +57,11 @@ criterion is a rendered task-list item whose text starts with `[CI]` or
 item without one of those tags is incomplete. This shape is also the shape
 Foreman consumes.
 
-Issue forms must render this contract. Map a form's problem field to `Problem`
-and its acceptance-criteria field to `Acceptance criteria`; do not preserve an
-older `Definition of done` heading in a direct Markdown draft.
+Issue Form field names map to this contract, but existing forms are intake
+surfaces rather than alternate standards. Triage must normalize their rendered
+body before dispatch. Map a form's problem field to `Problem` and its
+acceptance-criteria or older `Definition of done` field to `Acceptance criteria`;
+do not preserve the older heading in a direct Markdown draft.
 
 ### Isolate facts that rot
 
@@ -129,7 +131,8 @@ For an organization repository, use `--owner-type organization --issue-type
 '<native type>'` and omit `--work-type-label`; the checker verifies the value
 against the target organization's native types. Repeat `--label` and
 `--inapplicable` as needed. `--help` contains complete personal-account and
-organization examples. Pass exactly one of `--agent-authored` or
+organization examples. The checker verifies `--owner-type` against the target
+repository owner rather than trusting the caller. Pass exactly one of `--agent-authored` or
 `--human-authored`; author identity has no permissive default.
 
 The checker is read-only. It exits 0 when verified, 1 for an authoring-contract

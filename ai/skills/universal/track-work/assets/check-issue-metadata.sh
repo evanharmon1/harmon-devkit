@@ -310,6 +310,20 @@ EOF
 fi
 sort -u "$vocab" -o "$vocab"
 
+# --owner-type selects the classification interface, but it is not trusted as
+# evidence about the target. Resolve the repository owner's actual account kind
+# so a caller cannot make an organization repository accept a work-type label
+# (or make a personal repository attempt native Issue Type validation).
+actual_owner_type="$(gh repo view "$repo" --json owner --jq '.owner.__typename' 2>/dev/null)" ||
+    die "could not read the target repository owner's account type"
+case "$actual_owner_type" in
+User) actual_owner_type="personal" ;;
+Organization) actual_owner_type="organization" ;;
+*) die "target repository returned an unknown owner account type: $actual_owner_type" ;;
+esac
+[ "$owner_type" = "$actual_owner_type" ] ||
+    violation "--owner-type $owner_type does not match target repository owner type $actual_owner_type"
+
 # Preserve line numbers while removing HTML comments outside code fences.
 # Comments hidden by a template are not rendered GitHub content; inside a code
 # fence, the same bytes are visible literals and must remain available to the
