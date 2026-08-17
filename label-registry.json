@@ -300,7 +300,7 @@
         },
         {
           "value": "docs",
-          "description": "Documentation content and structure"
+          "description": "Documentation content and structure; a subsystem's own docs belong to that subsystem's area"
         },
         {
           "value": "deps",
@@ -344,7 +344,7 @@
         },
         {
           "value": "agents",
-          "description": "Shared subagent definitions under ai/agents/"
+          "description": "Shared subagent definitions under ai/agents/ and the agent-registry manifest and renderers"
         },
         {
           "value": "security",
