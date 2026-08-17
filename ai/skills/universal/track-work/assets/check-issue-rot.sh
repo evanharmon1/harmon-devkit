@@ -128,7 +128,12 @@ PATH_REFERENCE="(^|[^A-Za-z0-9_./:-])(${BARE_FILES}|\\.[A-Za-z][A-Za-z0-9_-]*\
 # real path even though `xyz` is also a TLD, so a directory separator settles it.
 # Records are "<lineno>:<match>", hence the leading `[0-9]+:`.
 NOT_A_CITATION="(://|^[0-9]+:[^/]*\\.${HOST_TLD}(:[0-9]+)?\$)"
-TEMPORAL='(currently|today|as of|observed[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}|right now|at present|at the moment)'
+# A bounded lexicon, not a natural-language oracle: the canonical home for a
+# dated observation is the `Current violation (observed …)` section, which the
+# metadata gate ties to Verify structurally. These patterns catch the common
+# drive-by spellings — including a bare ISO date, which in an issue body is
+# nearly always an observation timestamp.
+TEMPORAL='(currently|today|as of|[0-9]{4}-[0-9]{2}-[0-9]{2}|right now|at present|at the moment|current[[:space:]]+(behaviou?r|state|implementation|version|output|result))'
 perishable="$(grep -noiE "(${CITATION}|${PATH_REFERENCE}|(^|[^A-Za-z0-9_-])${TEMPORAL})" "$evidence" |
     grep -viE "${NOT_A_CITATION}" || true)"
 
@@ -154,11 +159,13 @@ if [ -n "$repo_root" ]; then
         # itself a repository path. This preserves real dotfiles and names
         # ending in a period while recognizing ordinary `DESIGN.md.` prose.
         if (!(value in paths)) sub(/\.$/, "", value)
-        # A fragment on a relative link destination is a locator, not part of
-        # the path: `component.vue#L12` still cites the tracked root file.
-        # Guarded the same way as the period, so a tracked name that really
-        # contains a hash keeps matching exactly.
+        # A fragment or line locator is not part of the path: both
+        # `component.vue#L12` and the extensionless `BUILD:12` still cite the
+        # tracked root file. Each strip is guarded the same way as the
+        # period, so a tracked name that really contains the character keeps
+        # matching exactly.
         if (!(value in paths)) sub(/#.*$/, "", value)
+        if (!(value in paths)) sub(/:[0-9]+$/, "", value)
         return value
       }
       function record_candidate(value) {

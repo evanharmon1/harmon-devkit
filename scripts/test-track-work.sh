@@ -322,9 +322,19 @@ echo "==> an unrecognised internet suffix is still not a citation"
 
 echo "==> a temporal claim with no Verify section fails"
 for phrase in 'Currently it exits 0.' 'Today it exits 0.' 'As of the last run it exits 0.' \
-    'Observed 2026-08-17, it exits 0.' 'Right now it exits 0.'; do
+    'Observed 2026-08-17, it exits 0.' 'Right now it exits 0.' \
+    'The current behavior drops data.' 'On 2026-08-17 this failed.'; do
     [ "$(run_rot "$phrase")" = 1 ] || fail "'$phrase' should be flagged as perishable"
 done
+
+echo "==> an extensionless exact checkout path with a line locator is perishable"
+rot_build_repo="$tmp/rot-build"
+mkdir -p "$rot_build_repo"
+git -C "$rot_build_repo" init -q
+: >"$rot_build_repo/BUILD"
+_rc=0
+printf 'The defect is in BUILD:12.' | "$rot" --repo-root "$rot_build_repo" >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "'BUILD:12' should be flagged against a checkout tracking BUILD (got $_rc)"
 
 echo "==> the same citation passes once a Verify section covers it"
 [ "$(run_rot 'scripts/foo.sh:42 returns 0 on failure.
