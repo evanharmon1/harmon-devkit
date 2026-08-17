@@ -538,7 +538,7 @@ cat >"$metadata_stub/gh" <<'STUB'
 if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
 case "${1:-} ${2:-}" in
 "api orgs/testorg/issue-types") printf '%s\n' Task Bug Feature Research ;;
-"label list") printf '%s\n' enhancement area:fixture domain:platform ai-generated needs-triage ;;
+"label list") printf '%s\n' enhancement area:fixture domain:platform ai-generated needs-triage 'Rigor:deep' ;;
 *) exit 97 ;;
 esac
 STUB
@@ -708,6 +708,24 @@ BODY
     [ "$(run_personal 'Validate acceptance criteria' "$tmp/metadata-$case_name.md")" = 1 ] ||
         fail "$case_name criterion should fail"
 done
+cat >"$tmp/metadata-nested-untagged.md" <<'BODY'
+## Problem
+
+Validate nested criteria.
+
+## Acceptance criteria
+
+- [ ] [CI] Parent criterion
+    - [ ] Untagged nested criterion
+BODY
+[ "$(run_personal 'Validate nested acceptance criteria' \
+    "$tmp/metadata-nested-untagged.md")" = 1 ] ||
+    fail "a nested untagged criterion should fail"
+sed 's/\[ \] Untagged/\[ \] [HUMAN] Tagged/' "$tmp/metadata-nested-untagged.md" \
+    >"$tmp/metadata-nested-tagged.md"
+[ "$(run_personal 'Validate nested acceptance criteria' \
+    "$tmp/metadata-nested-tagged.md")" = 0 ] ||
+    fail "a nested tagged criterion should pass: $(cat "$tmp/metadata.out")"
 
 echo "==> metadata: the existing perishable-fact checker is the Verify gate"
 [ "$(run_personal 'Cover perishable issue facts' "$perishable_body")" = 1 ] ||
@@ -734,6 +752,20 @@ BODY
 [ "$(run_personal 'Require Verify for observed violations' \
     "$tmp/metadata-current-no-verify.md")" = 1 ] ||
     fail "Current violation must require Verify even when rot patterns do not match its prose"
+cat >"$tmp/metadata-fenced-comment.md" <<'BODY'
+## Problem
+
+```html
+<!-- scripts/example.sh:12 currently fails -->
+```
+
+## Acceptance criteria
+
+- [ ] [CI] Cover the visible stale citation
+BODY
+[ "$(run_personal 'Preserve fenced comment literals' \
+    "$tmp/metadata-fenced-comment.md")" = 1 ] ||
+    fail "a perishable citation inside a fenced comment literal should require Verify"
 
 echo "==> metadata: labels must be known and exclusive families cannot conflict"
 [ "$(run_personal 'Reject unknown labels' "$valid_body" --label unknown-label)" = 1 ] ||
@@ -750,12 +782,12 @@ echo "==> metadata: agent-authored issues require ai-generated and agent-writabl
     fail "an agent must not propose a human-only concern"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Allow true concern labels' --body-file "$valid_body" \
-    --label feature --label area:fixture --inapplicable layer \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:platform --label sec)" = 0 ] ||
     fail "a human-authored draft may carry a true concern: $(cat "$tmp/metadata.out")"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Reject tool-owned authoring state' \
-    --body-file "$valid_body" --label feature --label area:fixture \
+    --body-file "$valid_body" --human-authored --label feature --label area:fixture \
     --inapplicable layer --label domain:platform --label 'autorelease: pending')" = 1 ] ||
     fail "a human author must not propose a tool-owned label"
 
@@ -776,7 +808,7 @@ grep -qi 'domain' "$tmp/metadata.out" || fail "the undecided domain axis should 
 echo "==> metadata: owner type controls work classification"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Require a work type' --body-file "$valid_body" \
-    --label area:fixture --inapplicable layer --label domain:platform)" = 1 ] ||
+    --human-authored --label area:fixture --inapplicable layer --label domain:platform)" = 1 ] ||
     fail "personal repo without a work type should fail"
 [ "$(run_personal 'Reject stacked work types' "$valid_body" --label task)" = 1 ] ||
     fail "personal repo with two work types should fail"
@@ -784,12 +816,12 @@ echo "==> metadata: owner type controls work classification"
     fail "organization repo with a work-type label should fail"
 [ "$(run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
     --owner-type organization --title 'Require native Issue Type' --body-file "$valid_body" \
-    --label area:fixture --inapplicable layer --label domain:platform)" = 1 ] ||
+    --human-authored --label area:fixture --inapplicable layer --label domain:platform)" = 1 ] ||
     fail "organization repo without Issue Type should fail"
 [ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo \
     --repo-root "$metadata_repo" --owner-type organization \
     --issue-type 'Definitely Not A Real Type' --title 'Validate native Issue Types' \
-    --body-file "$valid_body" --label area:fixture --inapplicable layer \
+    --body-file "$valid_body" --human-authored --label area:fixture --inapplicable layer \
     --label domain:platform)" = 1 ] || fail "unknown native Issue Type should fail"
 
 echo "==> metadata: authoring-time strategy, routing, claim, and Foreman labels are forbidden"
@@ -813,6 +845,17 @@ PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
 grep -q 'label list.*--repo fallback/repo.*--limit 1000.*--json name' "$tmp/metadata-gh.log" ||
     fail "fallback label read must be repo-bound and bounded"
 
+echo "==> metadata: forbidden fallback families are case-insensitive"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo fallback/repo \
+    --repo-root "$metadata_fallback" --owner-type personal \
+    --title 'Reject authoring controls' --body-file "$valid_body" \
+    --agent-authored --work-type-label 'Rigor:deep' --label area:fixture \
+    --inapplicable layer --label domain:platform --label ai-generated \
+    >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "mixed-case forbidden family should exit 1 (got $_rc)"
+grep -qF 'Rigor:deep' "$tmp/metadata.out" || fail "forbidden-family error should name the label"
+
 echo "==> metadata: an invalid present manifest fails closed without a gh fallback"
 printf '{not json\n' >"$metadata_fallback/label-registry.json"
 : >"$tmp/metadata-gh.log"
@@ -820,7 +863,7 @@ _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title 'Reject an invalid manifest' \
-    --body-file "$valid_body" --label feature --inapplicable area \
+    --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "invalid present manifest should exit 2 (got $_rc)"
 [ ! -s "$tmp/metadata-gh.log" ] || fail "invalid manifest must not fall through to gh"
@@ -832,7 +875,7 @@ _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title 'Reject an invalid manifest shape' \
-    --body-file "$valid_body" --label feature --inapplicable area \
+    --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "structurally invalid manifest should exit 2 (got $_rc)"
 [ ! -s "$tmp/metadata-gh.log" ] || fail "structural failure must not fall through to gh"
@@ -842,7 +885,17 @@ help="$($metadata --help 2>&1 || true)"
 printf '%s\n' "$help" | grep -q 'Personal-account example' || fail "help needs a personal example"
 printf '%s\n' "$help" | grep -q 'Organization example' || fail "help needs an organization example"
 [ "$(run_metadata --repo testowner/testrepo --title x --body-file "$valid_body" \
-    --owner-type personal --label feature)" = 2 ] || fail "missing repo-root should exit 2"
+    --owner-type personal --human-authored --label feature)" = 2 ] ||
+    fail "missing repo-root should exit 2"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Require explicit authorship' --body-file "$valid_body" \
+    --label feature --label area:fixture --inapplicable layer \
+    --label domain:platform)" = 2 ] || fail "omitted author type should exit 2"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Reject conflicting authorship' --body-file "$valid_body" \
+    --agent-authored --human-authored --label feature --label area:fixture \
+    --inapplicable layer --label domain:platform --label ai-generated)" = 2 ] ||
+    fail "conflicting author types should exit 2"
 
 echo "==> metadata: delegation guidance preserves the concrete authoring contract"
 for checker_path in \

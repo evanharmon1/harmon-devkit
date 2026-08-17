@@ -646,6 +646,8 @@ Run the combined gate immediately before creation:
 Use `--owner-type organization --issue-type <Type>` and omit
 `--work-type-label` for an organization; the checker verifies that native type
 against the target organization. Repeat `--label` and `--inapplicable` as needed.
+Authorship is explicit: pass exactly one of `--agent-authored` or
+`--human-authored`; omission never defaults to the more permissive human path.
 `--help` gives complete personal-account and organization examples. Exit 0 is
 verified, 1 is a contract violation, and 2 is usage or an indeterminate
 repository/vocabulary read. The checker performs no GitHub writes.

@@ -14,7 +14,7 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
           --owner-type personal|organization
           --title TITLE --body-file PATH [--label LABEL]...
           [--work-type-label LABEL]
-          [--issue-type TYPE] [--agent-authored]
+          [--issue-type TYPE] (--agent-authored|--human-authored)
           [--inapplicable area|layer|domain]...
 
 Validates a proposed issue without writing to GitHub. The target checkout's
@@ -30,7 +30,7 @@ Personal-account example:
 Organization example:
   check-issue-metadata.sh --repo org/project --repo-root . --owner-type organization \\
     --issue-type Bug --title 'Reject stale cache entries' --body-file issue.md \\
-    --label area:build --inapplicable layer --label domain:platform
+    --label area:build --inapplicable layer --label domain:platform --human-authored
 
 Exit: 0 = verified, 1 = authoring-contract violation,
       2 = usage error or indeterminate repository/vocabulary read.
@@ -60,7 +60,7 @@ title=""
 body_file=""
 issue_type=""
 work_type_label=""
-agent_authored=0
+author_type=""
 labels=()
 inapplicable=()
 
@@ -86,7 +86,13 @@ while [ "$#" -gt 0 ]; do
         shift 2
         ;;
     --agent-authored)
-        agent_authored=1
+        [ -z "$author_type" ] || die "choose exactly one author type"
+        author_type="agent"
+        shift
+        ;;
+    --human-authored)
+        [ -z "$author_type" ] || die "choose exactly one author type"
+        author_type="human"
         shift
         ;;
     *) usage ;;
@@ -98,7 +104,7 @@ if [ -n "$work_type_label" ]; then
 fi
 
 [ -n "$repo" ] && [ -n "$repo_root" ] && [ -n "$owner_type" ] &&
-    [ -n "$body_file" ] || usage
+    [ -n "$body_file" ] && [ -n "$author_type" ] || usage
 printf '%s\n' "$repo" | grep -Eq '^[^/[:space:]]+/[^/[:space:]]+$' ||
     die "--repo must be OWNER/REPO (got '$repo')"
 case "$owner_type" in
@@ -256,13 +262,24 @@ EOF
 fi
 sort -u "$vocab" -o "$vocab"
 
-# Preserve line numbers while removing HTML comments. Headings and task items
-# hidden by a template comment are not rendered GitHub content and therefore
-# cannot satisfy the authoring contract.
+# Preserve line numbers while removing HTML comments outside code fences.
+# Comments hidden by a template are not rendered GitHub content; inside a code
+# fence, the same bytes are visible literals and must remain available to the
+# existing perishability checker.
 visible_body="$tmp/visible-body"
 awk '
   {
     line=$0; visible=""
+    if (!comment && match(line, /^ ? ? ?(`{3,}|~{3,})/)) {
+      seq=substr(line, RSTART, RLENGTH); sub(/^ +/, "", seq)
+      ch=substr(seq, 1, 1); rest=substr(line, RSTART + RLENGTH)
+      if (!fence) { fence=1; fence_ch=ch; fence_len=length(seq) }
+      else if (ch == fence_ch && length(seq) >= fence_len && rest ~ /^[[:space:]]*$/) {
+        fence=0; fence_ch=""; fence_len=0
+      }
+      print line; next
+    }
+    if (fence) { print line; next }
     while (1) {
       if (comment) {
         close_at=index(line, "-->")
@@ -392,6 +409,16 @@ if [ -n "$bounds" ]; then
           seen=1
           next
         }
+        nested=line
+        sub(/^[[:space:]]+/, "", nested)
+        if (seen && nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/) {
+          criteria++
+          sub(/^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/, "", nested)
+          lower=tolower(nested)
+          if (lower !~ /^\[(ci|human)\][[:space:]]+/) bad_tag++
+          next
+        }
+        if (seen && nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+/) { non_task++; next }
         if (line ~ /^ ? ? ?([-*+]|[0-9]+[.)])[[:space:]]+/) { non_task++; next }
         if (seen && line ~ /^[[:space:]]+/) next
         non_task++
@@ -458,7 +485,7 @@ for label in "${labels[@]+"${labels[@]}"}"; do
         continue
     fi
     printf '%s\n' "$label" >>"$seen_labels"
-    if printf '%s' "$label" | grep -qE "$FORBIDDEN_RE"; then
+    if printf '%s' "$label" | grep -qiE "$FORBIDDEN_RE"; then
         violation "label '$label' belongs to a forbidden authoring-time family"
         continue
     fi
@@ -470,7 +497,7 @@ for label in "${labels[@]+"${labels[@]}"}"; do
     IFS='|' read -r _name family axis writers exclusive <<EOF
 $record
 EOF
-    if [ "$agent_authored" -eq 1 ]; then
+    if [ "$author_type" = agent ]; then
         case ",$writers," in
         *,agent,*) ;;
         *) violation "label '$label' is not writable by an agent" ;;
@@ -499,7 +526,7 @@ EOF
     fi
 done
 
-if [ "$agent_authored" -eq 1 ] && [ "$has_ai_generated" -ne 1 ]; then
+if [ "$author_type" = agent ] && [ "$has_ai_generated" -ne 1 ]; then
     violation "agent-authored issues require the ai-generated label"
 fi
 case "$owner_type" in

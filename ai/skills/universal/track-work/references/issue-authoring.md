@@ -129,7 +129,8 @@ For an organization repository, use `--owner-type organization --issue-type
 '<native type>'` and omit `--work-type-label`; the checker verifies the value
 against the target organization's native types. Repeat `--label` and
 `--inapplicable` as needed. `--help` contains complete personal-account and
-organization examples.
+organization examples. Pass exactly one of `--agent-authored` or
+`--human-authored`; author identity has no permissive default.
 
 The checker is read-only. It exits 0 when verified, 1 for an authoring-contract
 violation, and 2 for a usage error or indeterminate repository/vocabulary read.
