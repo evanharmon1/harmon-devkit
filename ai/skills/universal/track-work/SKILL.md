@@ -630,8 +630,14 @@ Decide metadata before creation and pass the proposed values to the checker:
 The target checkout's `label-registry.json` is authoritative when present; its
 family/value records decide existence, writer permissions, axes, and
 exclusivity. Do not duplicate that taxonomy in prose. A repository without the
-manifest remains portable through one bounded `gh label list` fallback. A
-present but invalid manifest is indeterminate and fails closed.
+manifest remains portable through one bounded `gh label list` fallback. With no
+manifest there is no repository-declared writer policy to invent: the fallback
+accepts agent-authored proposals only for the canonical classification axes,
+the explicitly named work type, `ai-generated`, and `needs-triage`; other live
+labels remain human-only. A present but invalid manifest is indeterminate and
+fails closed. In both modes, `--repo-root` must be a Git checkout with a GitHub
+remote matching `--repo`, so a cross-repository draft cannot use the wrong
+checkout's vocabulary.
 
 Run the combined gate immediately before creation:
 

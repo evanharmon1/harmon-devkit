@@ -137,7 +137,11 @@ violation, and 2 for a usage error or indeterminate repository/vocabulary read.
 When `<target-checkout>/label-registry.json` exists, it is authoritative; an
 invalid or unreadable present manifest fails closed. When it is absent, the
 checker performs one bounded `gh label list --limit 1000` read against the
-target repository. It never applies labels or creates an issue.
+target repository. Without a manifest there is no repository-declared writer
+policy to infer, so agent proposals are limited to the canonical axes, the
+explicitly named work type, `ai-generated`, and `needs-triage`; other live
+labels remain human-only. The checkout must have a GitHub remote matching
+`--repo`. The checker never applies labels or creates an issue.
 
 ## Delegating issue creation
 

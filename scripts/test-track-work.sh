@@ -533,6 +533,11 @@ metadata_stub="$tmp/metadata-bin"
 metadata_fallback="$tmp/metadata-fallback"
 mkdir -p "$metadata_repo"
 mkdir -p "$metadata_stub" "$metadata_fallback"
+git -C "$metadata_repo" init -q
+git -C "$metadata_repo" remote add personal https://github.com/testowner/testrepo.git
+git -C "$metadata_repo" remote add organization git@github.com:testorg/testrepo.git
+git -C "$metadata_fallback" init -q
+git -C "$metadata_fallback" remote add origin https://github.com/fallback/repo.git
 cat >"$metadata_stub/gh" <<'STUB'
 #!/bin/sh
 if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
@@ -726,6 +731,13 @@ sed 's/\[ \] Untagged/\[ \] [HUMAN] Tagged/' "$tmp/metadata-nested-untagged.md" 
 [ "$(run_personal 'Validate nested acceptance criteria' \
     "$tmp/metadata-nested-tagged.md")" = 0 ] ||
     fail "a nested tagged criterion should pass: $(cat "$tmp/metadata.out")"
+{
+    printf '%s\n' '## Problem' '' 'Reject empty criteria.' '' '## Acceptance criteria' ''
+    printf '%s \n' '- [ ] [CI]'
+} >"$tmp/metadata-empty-criterion.md"
+[ "$(run_personal 'Reject empty acceptance criteria' \
+    "$tmp/metadata-empty-criterion.md")" = 1 ] ||
+    fail "a tagged criterion with no descriptive text should fail"
 
 echo "==> metadata: the existing perishable-fact checker is the Verify gate"
 [ "$(run_personal 'Cover perishable issue facts' "$perishable_body")" = 1 ] ||
@@ -879,6 +891,35 @@ PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "structurally invalid manifest should exit 2 (got $_rc)"
 [ ! -s "$tmp/metadata-gh.log" ] || fail "structural failure must not fall through to gh"
+
+echo "==> metadata: incomplete and duplicate-value manifests fail closed"
+for mutation in missing-required duplicate-value; do
+    case "$mutation" in
+    missing-required)
+        jq 'del(.families[0].readers)' label-registry.json \
+            >"$metadata_fallback/label-registry.json"
+        ;;
+    duplicate-value)
+        jq '.families[0].values += [(.families[0].values[0] | .writers = ["agent"])]' \
+            label-registry.json >"$metadata_fallback/label-registry.json"
+        ;;
+    esac
+    _rc=0
+    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+        --owner-type personal --title 'Reject invalid manifest records' \
+        --body-file "$valid_body" --human-authored --label feature \
+        --inapplicable area --inapplicable layer --inapplicable domain \
+        >"$tmp/metadata.out" 2>&1 || _rc=$?
+    [ "$_rc" = 2 ] || fail "$mutation manifest should exit 2 (got $_rc)"
+done
+
+echo "==> metadata: the checkout remote must match the requested repository"
+_rc=0
+"$metadata" --repo another/repo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Bind the target checkout' --body-file "$valid_body" \
+    --human-authored --label feature --inapplicable area --inapplicable layer \
+    --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "mismatched repo-root should exit 2 (got $_rc)"
 
 echo "==> metadata: help documents both owner-type examples and bad usage exits 2"
 help="$($metadata --help 2>&1 || true)"

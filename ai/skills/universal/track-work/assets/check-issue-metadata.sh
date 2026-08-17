@@ -19,7 +19,8 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
 
 Validates a proposed issue without writing to GitHub. The target checkout's
 label-registry.json is authoritative when present; otherwise the checker makes
-one bounded `gh label list --limit 1000` read against --repo.
+one bounded `gh label list --limit 1000` read against --repo. The checkout must
+have a GitHub remote matching --repo.
 
 Personal-account example:
   check-issue-metadata.sh --repo me/project --repo-root . --owner-type personal \\
@@ -115,6 +116,32 @@ esac
 repo_root="$(cd "$repo_root" && pwd -P)" || die "cannot resolve target repository root"
 [ -f "$body_file" ] && [ -r "$body_file" ] || die "cannot read body draft: $body_file"
 
+normalize_github_remote() {
+    _remote="$1"
+    case "$_remote" in
+    https://github.com/*) _slug="${_remote#https://github.com/}" ;;
+    http://github.com/*) _slug="${_remote#http://github.com/}" ;;
+    git@github.com:*) _slug="${_remote#git@github.com:}" ;;
+    ssh://git@github.com/*) _slug="${_remote#ssh://git@github.com/}" ;;
+    ssh://git@ssh.github.com:443/*) _slug="${_remote#ssh://git@ssh.github.com:443/}" ;;
+    *) return 1 ;;
+    esac
+    _slug="${_slug%.git}"
+    printf '%s\n' "$_slug" | tr '[:upper:]' '[:lower:]'
+}
+
+target_repo="$(printf '%s\n' "$repo" | tr '[:upper:]' '[:lower:]')"
+repo_bound=0
+remote_names="$(git -C "$repo_root" remote 2>/dev/null)" ||
+    die "target repository root is not a readable Git checkout"
+for remote_name in $remote_names; do
+    remote_url="$(git -C "$repo_root" remote get-url "$remote_name" 2>/dev/null)" || continue
+    remote_repo="$(normalize_github_remote "$remote_url" || true)"
+    [ "$remote_repo" = "$target_repo" ] && repo_bound=1
+done
+[ "$repo_bound" -eq 1 ] ||
+    die "target repository root has no GitHub remote matching --repo $repo"
+
 for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
     case "$axis" in
     area | layer | domain) ;;
@@ -143,52 +170,102 @@ manifest="$repo_root/label-registry.json"
 
 validate_manifest() {
     jq -e '
-      def nonempty: type == "string" and length > 0;
-      def slug: type == "string" and test("^[a-z0-9]+(-[a-z0-9]+)*$");
+      def keys_only($allowed): ((keys_unsorted - $allowed) | length) == 0;
+      def nonempty($max): type == "string" and length > 0 and length <= $max;
+      def slug($max): nonempty($max) and test("^[a-z0-9]+(-[a-z0-9]+)*$");
+      def color: type == "string" and test("^[0-9A-F]{6}$");
       def writer: type == "string" and test("^(human|trusted-human|agent|tool:[a-z0-9-]+)$");
-      .["$schema"] == "./label-registry.schema.json"
-      and .schema_version == 1
-      and (.families | type == "array" and length > 0)
-      and (([.families[].family] | length) == ([.families[].family] | unique | length))
-      and all(.families[];
-        (.family | slug)
-        and ((.prefix == null) or (.prefix | slug))
-        and (.purpose | nonempty)
+      def writers: type == "array" and all(.[]; writer)
+                   and (length == (unique | length));
+      def lifecycle: IN("durable", "transient", "claim-release", "tool-managed");
+      def optional_string($key; $max):
+        (has($key) | not) or (.[$key] | nonempty($max));
+      def optional_boolean($key):
+        (has($key) | not) or (.[$key] | type == "boolean");
+      def value_valid($family):
+        keys_only(["value", "description", "color", "writers", "writer_note",
+                   "readers", "lifecycle", "lifecycle_note", "trust_note",
+                   "arming", "provision", "retired"])
+        and (.value | nonempty(50) and (test("[\\r\\n|]") | not))
+        and (if $family.prefix == null then true else (.value | slug(50)) end)
+        and optional_string("description"; 100)
+        and ((has("color") | not) or (.color | color))
+        and ((has("writers") | not) or (.writers | writers and length > 0))
+        and optional_string("writer_note"; 10000)
+        and optional_string("readers"; 10000)
+        and ((has("lifecycle") | not) or (.lifecycle | lifecycle))
+        and optional_string("lifecycle_note"; 10000)
+        and optional_string("trust_note"; 10000)
+        and optional_boolean("arming")
+        and ((has("provision") | not) or .provision == false)
+        and optional_boolean("retired")
+        and (((if $family.prefix == null then .value
+               else "\($family.prefix):\(.value)" end) | length) <= 50)
+        and (if (($family.arming // false) or (.arming // false))
+             then $family.prefix == "foreman" else true end)
+        and (if ($family.provision and (.provision != false) and (.retired != true))
+             then (has("description") and (has("color") or ($family | has("color"))))
+             else true end);
+      def family_valid:
+        . as $family
+        | keys_only(["family", "prefix", "purpose", "axis", "source",
+                     "registry_set", "writers", "writer_note", "readers",
+                     "lifecycle", "lifecycle_note", "trust_note", "exclusive",
+                     "arming", "provision", "gate", "retired", "open_values",
+                     "placeholder", "color", "values"])
+        and (.family | slug(40))
+        and ((.prefix == null) or (.prefix | slug(40)))
+        and (.purpose | nonempty(200))
         and (.axis | IN("classification", "strategy", "model", "work-type",
                         "concern", "workflow", "provenance", "foreman",
                         "release", "meta"))
         and (.source | IN("inline", "agent-registry", "tool-owned"))
-        and (.writers | type == "array" and all(.[]; writer))
+        and (.writers | writers)
         and ((.retired // false) or (.writers | length > 0))
+        and optional_string("writer_note"; 10000)
+        and (.readers | nonempty(10000))
+        and (.lifecycle | lifecycle)
+        and optional_string("lifecycle_note"; 10000)
+        and optional_string("trust_note"; 10000)
         and (.exclusive | type == "boolean")
+        and optional_boolean("arming")
         and (.provision | type == "boolean")
+        and ((has("gate") | not) or (.gate | IN("foreman", "release-please")))
+        and optional_boolean("retired")
+        and optional_boolean("open_values")
+        and optional_string("placeholder"; 50)
+        and ((has("color") | not) or (.color | color))
         and (.values | type == "array")
+        and (([.values[].value] | length) == ([.values[].value] | unique | length))
+        and all(.values[]; value_valid($family))
+        and (if (.retired // false) then (.provision | not) else true end)
         and (if .source == "agent-registry" then
                (.registry_set | IN("suggest", "claim", "foreman-adapters"))
+               and (.prefix == ({suggest:"suggest", claim:"claim",
+                                 "foreman-adapters":"foreman"}[.registry_set]))
                and (.values | length == 0)
+               and ((.retired // false) or (.provision and has("color")))
+               and has("placeholder")
              else has("registry_set") | not end)
         and (if .source == "tool-owned" then (.provision | not) else true end)
-        and (if .source == "inline" and (.retired // false | not)
-             then ((.open_values // false) or (.values | length > 0)) else true end)
-        and all(.values[];
-          (.value | nonempty and test("[\\r\\n|]") | not)
-          and ((.writers // []) | type == "array" and all(.[]; writer))
-          and ((.retired // false) | type == "boolean")))' "$manifest" >/dev/null 2>&1
-}
-
-validate_agent_registry() {
-    jq -e '
-      def nonempty: type == "string" and length > 0;
-      .schema_version == 2
-      and (.labels | type == "object")
+        and (if .source == "inline" and ((.open_values // false) | not)
+                and ((.retired // false) | not)
+             then (.values | length > 0) else true end)
+        and (if (.open_values // false) then has("placeholder") else true end)
+        and (if has("placeholder") and ((.open_values // false) | not)
+                and .source != "agent-registry" then false else true end)
+        and (if (.arming // false) then .prefix == "foreman" else true end);
+      keys_only(["$schema", "schema_version", "families"])
+      and
+      .["$schema"] == "./label-registry.schema.json"
+      and .schema_version == 1
       and (.families | type == "array" and length > 0)
-      and all(.families[];
-        (.slug | nonempty)
-        and (.models | type == "array")
-        and all(.models[]; .slug | nonempty))
-      and (.foreman_adapters | type == "array")
-      and all(.foreman_adapters[];
-        (.slug | nonempty) and (.provision_label | type == "boolean"))' "$1" >/dev/null 2>&1
+      and (([.families[].family] | length) == ([.families[].family] | unique | length))
+      and all(.families[]; family_valid)
+      and ([.families[] as $f | $f.values[]
+            | select(($f.retired // false | not) and (.retired // false | not))
+            | if $f.prefix == null then .value else "\($f.prefix):\(.value)" end]
+           | length == (unique | length))' "$manifest" >/dev/null 2>&1
 }
 
 if [ -e "$manifest" ]; then
@@ -208,35 +285,6 @@ if [ -e "$manifest" ]; then
       | join("|")' "$manifest" >"$vocab" ||
         die "could not render label-registry.json"
 
-    if jq -e 'any(.families[]; .source == "agent-registry")' "$manifest" >/dev/null; then
-        agent_registry="$repo_root/agent-registry.json"
-        [ -f "$agent_registry" ] && [ -r "$agent_registry" ] ||
-            die "label-registry.json delegates values but agent-registry.json is absent or unreadable"
-        validate_agent_registry "$agent_registry" ||
-            die "agent-registry.json is present but invalid"
-        jq -nr --slurpfile m "$manifest" --slurpfile a "$agent_registry" '
-          $m[0].families[] as $f
-          | select($f.source == "agent-registry")
-          | if ($f.registry_set == "suggest" or $f.registry_set == "claim") then
-              ($a[0].labels[$f.registry_set].prefix // $f.prefix) as $prefix
-              | if ($f.family | endswith("-model")) then
-                  $a[0].families[] as $af
-                  | $af.models[]
-                  | ["\($prefix):\($af.slug):\(.slug)", $f.family, $f.axis,
-                     ($f.writers | join(",")), ($f.exclusive | tostring)]
-                else
-                  $a[0].families[]
-                  | ["\($prefix):\(.slug)", $f.family, $f.axis,
-                     ($f.writers | join(",")), ($f.exclusive | tostring)]
-                end
-            elif $f.registry_set == "foreman-adapters" then
-              $a[0].foreman_adapters[]
-              | select(.provision_label == true)
-              | ["\($f.prefix):\(.slug)", $f.family, $f.axis,
-                 ($f.writers | join(",")), ($f.exclusive | tostring)]
-            else empty end
-          | join("|")' >>"$vocab" || die "could not render delegated label vocabulary"
-    fi
 else
     live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
         die "could not read the target repository's labels"
@@ -406,6 +454,10 @@ if [ -n "$bounds" ]; then
           sub(/^ ? ? ?([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/, "", line)
           lower=tolower(line)
           if (lower !~ /^\[(ci|human)\][[:space:]]+/) bad_tag++
+          else {
+            sub(/^\[(ci|human)\][[:space:]]+/, "", lower)
+            if (lower !~ /[^[:space:]]/) empty_description++
+          }
           seen=1
           next
         }
@@ -416,6 +468,10 @@ if [ -n "$bounds" ]; then
           sub(/^([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\][[:space:]]+/, "", nested)
           lower=tolower(nested)
           if (lower !~ /^\[(ci|human)\][[:space:]]+/) bad_tag++
+          else {
+            sub(/^\[(ci|human)\][[:space:]]+/, "", lower)
+            if (lower !~ /[^[:space:]]/) empty_description++
+          }
           next
         }
         if (seen && nested ~ /^([-*+]|[0-9]+[.)])[[:space:]]+/) { non_task++; next }
@@ -423,15 +479,19 @@ if [ -n "$bounds" ]; then
         if (seen && line ~ /^[[:space:]]+/) next
         non_task++
       }
-      END { printf "%d %d %d\n", criteria + 0, bad_tag + 0, non_task + 0 }
+      END { printf "%d %d %d %d\n", criteria + 0, bad_tag + 0,
+                   non_task + 0, empty_description + 0 }
     ' "$visible_body")"
     criteria="${acceptance_result%% *}"
     rest="${acceptance_result#* }"
     bad_tag="${rest%% *}"
     non_task="${rest#* }"
+    empty_description="${non_task#* }"
+    non_task="${non_task%% *}"
     [ "$criteria" -gt 0 ] || violation "acceptance criteria section needs at least one rendered task-list item"
     [ "$bad_tag" -eq 0 ] || violation "every acceptance criterion must begin with [CI] or [HUMAN]"
     [ "$non_task" -eq 0 ] || violation "acceptance criteria must be rendered task-list items, not prose or plain lists"
+    [ "$empty_description" -eq 0 ] || violation "every acceptance criterion needs nonempty text after its [CI] or [HUMAN] tag"
 fi
 
 rot_rc=0
