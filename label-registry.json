@@ -340,11 +340,11 @@
         },
         {
           "value": "templates",
-          "description": "The templates/ tree: docker, ansible, serverless, script and web boilerplates"
+          "description": "The templates/ tree except skills-sync: docker, ansible, serverless, script and web boilerplates"
         },
         {
           "value": "agents",
-          "description": "Shared subagent definitions under ai/agents/ and the agent-registry manifest and renderers"
+          "description": "Subagent definitions in ai/agents/ and agent-registry machinery, minus foreman adapter entries"
         },
         {
           "value": "security",
