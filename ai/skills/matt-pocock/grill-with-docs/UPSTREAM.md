@@ -9,3 +9,5 @@
 ## Local modifications
 
 - Added the attribution notice in `SKILL.md`.
+- Rephrased cross-skill composition so it works in harnesses without a callable
+  `Skill` tool.

@@ -9,3 +9,6 @@
 ## Local modifications
 
 - Added the attribution notice in `SKILL.md`.
+- Added portable cross-skill loading, conflict-safe map updates, recoverable
+  claims, staged ticket publication, safe external-mutation confirmation, and
+  isolated parallel research guidance.

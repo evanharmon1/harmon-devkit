@@ -10,4 +10,6 @@
 
 - Updated triage skill discovery and invocation references for the local `matt-triage` rename.
 - Added the attribution notice in `SKILL.md`.
-- Adapted Markdown formatting to satisfy harmon-devkit lint rules without changing the skill's instructions.
+- Adapted Markdown formatting to satisfy harmon-devkit lint rules.
+- Made shared policy configuration portable across harnesses and required
+  complete workflow-label provisioning before setup reports success.
