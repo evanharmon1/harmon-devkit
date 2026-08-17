@@ -551,7 +551,18 @@ if (registry.families.some((family) => family.source === 'agent-registry')) {
 
 const resultFamilies = new Map()
 const candidateOwners = new Map()
+const declaredOwners = new Map()
 const knownConcrete = new Set()
+
+function reserveConcrete(family, name) {
+  const normalized = normalizeLabelName(name)
+  const prior = declaredOwners.get(normalized)
+  if (prior && prior !== family.family) {
+    die(`label ${name} is declared by both family ${prior} and family ${family.family}`)
+  }
+  declaredOwners.set(normalized, family.family)
+  knownConcrete.add(normalized)
+}
 
 function addCandidate(family, name, value = {}, extra = {}) {
   const normalized = normalizeLabelName(name)
@@ -581,7 +592,7 @@ for (const family of registry.families) {
   if (family.source !== 'agent-registry') {
     for (const value of family.values) {
       const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
-      knownConcrete.add(normalizeLabelName(name))
+      reserveConcrete(family, name)
       if (safe(family, value)) addCandidate(family, name, value)
     }
   } else if (family.source === 'agent-registry') {
@@ -594,7 +605,7 @@ for (const family of registry.families) {
         .map(([slug]) => `${family.prefix}:${slug}`)
     }
     for (const name of names) {
-      knownConcrete.add(normalizeLabelName(name))
+      reserveConcrete(family, name)
       if (safe(family)) addCandidate(family, name)
     }
   }

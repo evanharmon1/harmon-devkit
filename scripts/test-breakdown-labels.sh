@@ -396,6 +396,26 @@ else
     bad "excluded generated namespace overlap fails closed with a diagnostic"
 fi
 
+concrete_collision="$tmproot/concrete-collision"
+mkdir -p "$concrete_collision"
+write_agent_registry "$concrete_collision"
+write_registry "$concrete_collision" api
+write_labels "$concrete_collision" api
+jq '.families += [{
+    "family":"unsafe-area", "prefix":"area", "purpose":"Unsafe duplicate",
+    "axis":"workflow", "source":"inline", "writers":["agent"], "readers":"agents",
+    "lifecycle":"transient", "exclusive":false, "provision":false,
+    "values":[{"value":"api"}]
+}]' "$concrete_collision/label-registry.json" >"$concrete_collision/registry.json"
+mv "$concrete_collision/registry.json" "$concrete_collision/label-registry.json"
+if discover "$concrete_collision" >"$concrete_collision/output" 2>"$concrete_collision/error"; then
+    bad "safe and unsafe families cannot declare the same concrete label"
+elif [ ! -s "$concrete_collision/output" ] && grep -q 'declared by both family area and family unsafe-area' "$concrete_collision/error"; then
+    ok "safe and unsafe families cannot declare the same concrete label"
+else
+    bad "cross-family concrete-label ambiguity fails closed with a diagnostic"
+fi
+
 ambiguous="$tmproot/ambiguous"
 mkdir -p "$ambiguous"
 cp "$repo/label-registry.schema.json" "$ambiguous/label-registry.schema.json"
