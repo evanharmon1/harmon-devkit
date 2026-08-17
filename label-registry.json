@@ -226,16 +226,56 @@
       "color": "FBCA04",
       "values": [
         {
+          "value": "boilerplates",
+          "description": "Copy-paste starting points: docker, ansible, serverless, script and web templates"
+        },
+        {
+          "value": "scripts",
+          "description": "Ready-to-run standalone scripts and utilities consumers use as-is"
+        },
+        {
+          "value": "agent-workflow",
+          "description": "AI-delegated dev sessions: the universal skill suite (kickoff→wrap) and shared subagents"
+        },
+        {
+          "value": "standardization",
+          "description": "Keeping repos current with conventions: standardize-repo, drift audits, adoption"
+        },
+        {
+          "value": "design",
+          "description": "The design skill suite: design/UX workflow deliverables"
+        },
+        {
+          "value": "project-tracking",
+          "description": "Issues, labels, boards, and PM assets: track-work, triage, the label registry"
+        },
+        {
+          "value": "delivery",
+          "description": "Release transport to consumers: release-please, tags, pinned-version pickup"
+        },
+        {
           "value": "auth",
-          "description": "Authentication and authorization"
+          "description": "Authentication and authorization",
+          "retired": true,
+          "writer_note": "nobody — retired",
+          "trust_note": "retired — a generic starter value this repo never needed; no longer provisioned",
+          "lifecycle_note": "no issues carry it — delete the live label"
         },
         {
           "value": "billing",
-          "description": "Billing and payments"
+          "description": "Billing and payments",
+          "retired": true,
+          "writer_note": "nobody — retired",
+          "trust_note": "retired — a generic starter value this repo never needed; no longer provisioned",
+          "lifecycle_note": "no issues carry it — delete the live label"
         },
         {
           "value": "platform",
-          "description": "CI, build, test infra, and tooling in this repo"
+          "description": "CI, build, test infra, and tooling in this repo",
+          "retired": true,
+          "writer_note": "nobody — retired",
+          "trust_note": "retired — split across this repo's own domains; no longer provisioned",
+          "lifecycle_note": "re-label its issues to the repo-specific domains, then delete the live label"
         }
       ]
     },
@@ -260,7 +300,7 @@
         },
         {
           "value": "docs",
-          "description": "Documentation content and structure"
+          "description": "Documentation content and structure; a subsystem's own docs belong to that subsystem's area"
         },
         {
           "value": "deps",
@@ -272,11 +312,11 @@
         },
         {
           "value": "tests",
-          "description": "The test suite and gate assertions"
+          "description": "The shared test suite and gate assertions; a skill's own tests belong to that skill's area"
         },
         {
           "value": "tasks",
-          "description": "Taskfile targets and scripts/ glue"
+          "description": "Taskfile targets and scripts/ glue without a more specific area; security targets are area:security"
         },
         {
           "value": "release",
@@ -288,15 +328,59 @@
         },
         {
           "value": "pm",
-          "description": "Labels, projects, issue tooling, PM docs"
+          "description": "Label registry, project boards, PM docs — not the PM skills, which have dedicated areas"
         },
         {
           "value": "skills",
-          "description": "Vendored/authored agent skills and the skills sync"
+          "description": "The skills sync, shared skill conventions, and skills without a dedicated area"
         },
         {
           "value": "gauntlet",
           "description": "The challenge/review second-model stage: scripts, gates, and skill wiring"
+        },
+        {
+          "value": "templates",
+          "description": "The templates/ tree except skills-sync: docker, ansible, serverless, script and web boilerplates"
+        },
+        {
+          "value": "agents",
+          "description": "Subagent definitions in ai/agents/ and agent-registry machinery, minus foreman adapter entries"
+        },
+        {
+          "value": "security",
+          "description": "Semgrep, gitleaks, and the security task suite"
+        },
+        {
+          "value": "scripts",
+          "description": "Shipped standalone scripts (appleScripts, run-as-is utilities); Taskfile glue is area:tasks"
+        },
+        {
+          "value": "shepherd",
+          "description": "The shepherd skill and its checker/readiness-gate assets"
+        },
+        {
+          "value": "triage",
+          "description": "The triage skill and its scan/apply assets"
+        },
+        {
+          "value": "track-work",
+          "description": "The track-work skill: issue authoring standards and PR/commit linkage; claims are session-flow"
+        },
+        {
+          "value": "standardize-repo",
+          "description": "The standardize-repo skill and its standards catalog"
+        },
+        {
+          "value": "design",
+          "description": "The design skill suite"
+        },
+        {
+          "value": "session-flow",
+          "description": "The session lifecycle skills: kickoff, breakdown, claim, implement, retro, wrap"
+        },
+        {
+          "value": "foreman",
+          "description": "Foreman config, wrapper tasks, adapters"
         }
       ]
     },
