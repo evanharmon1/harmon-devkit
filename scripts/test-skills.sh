@@ -5117,12 +5117,18 @@ printf '%s\n' '# Changelog' 'seeded changelog' \
 printf '%s\n' '{ "folders": [] }' \
     >"$DT_TEMPLATE/template/project.code-workspace"
 git_init "$DT_TEMPLATE"
-# The .gitignore the template SHIPS also applies to the template repo itself, so
-# `git add -A` would skip the very seeds it ignores and they would never reach
-# the render. A real template has to force-add them for the same reason: it
-# tracks the seed .envrc while telling generated repos to ignore the resolved one.
-git -C "$DT_TEMPLATE" add -f -- template/.envrc template/secrets.env
+# The .gitignore the template SHIPS applies to the template repo itself, and a
+# caller's global excludes can add machine-specific rules such as ignoring
+# `.vscode/settings.json`. `git add -A` would then skip fixtures this test says
+# the template tracks, so force-add every ignore-sensitive seed explicitly.
+git -C "$DT_TEMPLATE" add -f -- \
+    template/.envrc \
+    template/secrets.env \
+    template/.vscode/settings.json
 git_commit_all "$DT_TEMPLATE" "test template"
+expect_ok "diff-template fixture tracks .vscode/settings.json" \
+    git -C "$DT_TEMPLATE" ls-files --error-unmatch \
+    template/.vscode/settings.json
 git -C "$DT_TEMPLATE" tag v1.0.0
 
 DT_TARGET="$TMPROOT/diff-template-target"
