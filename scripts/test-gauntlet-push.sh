@@ -385,6 +385,32 @@ if git -C "${root}/origin.git" rev-parse --verify --quiet refs/heads/unrelated >
     fail "wildcard push configuration leaked an unrelated branch"
 fi
 
+echo "  -> remote receive-pack overrides are refused before transport"
+root="$(new_fixture receivepack)"
+cd "${root}/work"
+sha="$(git rev-parse HEAD)"
+git config remote.origin.receivepack /bin/false
+run_push origin main "$sha" absent receivepack
+assert_rc 3
+assert_reason
+case "$err" in *receive-pack*) : ;; *) fail "receive-pack refusal should name the override: $err" ;; esac
+[ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
+    fail "receive-pack override must be refused before transport"
+
+echo "  -> push.followTags cannot publish an annotated tag"
+root="$(new_fixture follow-tags)"
+cd "${root}/work"
+sha="$(git rev-parse HEAD)"
+git tag -a v-round -m round
+git config push.followTags true
+run_push origin main "$sha" absent follow-tags
+assert_rc 0
+[ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$sha" ] ||
+    fail "follow-tags fixture did not push the gated branch"
+if git -C "${root}/origin.git" rev-parse --verify --quiet refs/tags/v-round >/dev/null; then
+    fail "push.followTags leaked an annotated tag"
+fi
+
 echo "  -> transport overrides reach both ls-remote and push"
 root="$(new_fixture transport)"
 cd "${root}/work"

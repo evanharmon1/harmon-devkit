@@ -26,8 +26,10 @@ push exits successfully only when all of these hold:
   - SHA is the full commit ID currently checked out and the tree is clean;
   - the named remote has exactly one credential-free push destination, and it
     matches HOST and OWNER/REPO;
+  - the named remote has no custom receive-pack command;
   - the remote branch still equals --expect and the update is fast-forward;
-  - an explicit SHA refspec and lease update only the named branch.
+  - an explicit SHA refspec, lease, and --no-follow-tags update only the named
+    branch.
 
 Mint the token before the gate starts and append it only after every required
 gate succeeds, following the shepherd marker contract:
@@ -182,6 +184,14 @@ case "$repo" in
     case "$name" in */*) die_usage "--repo must be OWNER/REPO" ;; esac
     ;;
 *) die_usage "--repo must be OWNER/REPO" ;;
+esac
+
+receivepack_rc=0
+git config --get-all "remote.${remote}.receivepack" >/dev/null 2>&1 || receivepack_rc=$?
+case "$receivepack_rc" in
+0) refuse "the named remote has a custom receive-pack command" ;;
+1) ;;
+*) refuse "the named remote's receive-pack configuration is unreadable" ;;
 esac
 
 push_url=
@@ -387,7 +397,8 @@ else
     lease="--force-with-lease=refs/heads/${branch}:"
 fi
 
-if ! git "${git_args[@]}" push "$remote" "${resolved}:refs/heads/${branch}" "$lease"; then
+if ! git "${git_args[@]}" push --no-follow-tags \
+    "$remote" "${resolved}:refs/heads/${branch}" "$lease"; then
     exit 4
 fi
 
