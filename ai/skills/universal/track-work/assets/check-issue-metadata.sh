@@ -314,7 +314,7 @@ sort -u "$vocab" -o "$vocab"
 # evidence about the target. Resolve the repository owner's actual account kind
 # so a caller cannot make an organization repository accept a work-type label
 # (or make a personal repository attempt native Issue Type validation).
-actual_owner_type="$(gh repo view "$repo" --json owner --jq '.owner.__typename' 2>/dev/null)" ||
+actual_owner_type="$(gh api "repos/$repo" --jq '.owner.type' 2>/dev/null)" ||
     die "could not read the target repository owner's account type"
 case "$actual_owner_type" in
 User) actual_owner_type="personal" ;;

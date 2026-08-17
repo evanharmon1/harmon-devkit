@@ -275,6 +275,12 @@ for host in 'See https://example.com:443 for docs.' 'Reach it at 192.168.1.1:808
     [ "$(run_rot "$host")" = 0 ] || fail "'$host' should not be flagged as a citation"
 done
 
+echo "==> a repository file URL is not a bare local path citation"
+for url in 'See https://github.com/org/repo/blob/main/README.md for docs.' \
+    'See https://github.com/org/repo/blob/main/scripts/foo.sh:42 for docs.'; do
+    [ "$(run_rot "$url")" = 0 ] || fail "'$url' should not be flagged as a local path"
+done
+
 echo "==> real citations still register after the host-and-port fix"
 for cite in 'scripts/foo.sh:42 is wrong.' 'The value in config.yml:8 is stale.' 'See template/x.yml.jinja:119 for it.' 'a/b/weird.xyz:3 is off.'; do
     [ "$(run_rot "$cite")" = 1 ] || fail "'$cite' should still be flagged"
@@ -546,13 +552,8 @@ cat >"$metadata_stub/gh" <<'STUB'
 #!/bin/sh
 if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
 case "${1:-} ${2:-}" in
-"repo view")
-    case "${3:-}" in
-    testowner/testrepo | fallback/repo) printf '%s\n' User ;;
-    testorg/testrepo) printf '%s\n' Organization ;;
-    *) exit 97 ;;
-    esac
-    ;;
+"api repos/testowner/testrepo" | "api repos/fallback/repo") printf '%s\n' User ;;
+"api repos/testorg/testrepo") printf '%s\n' Organization ;;
 "api orgs/testorg/issue-types") printf '%s\n' Task Bug Feature Research ;;
 "label list") printf '%s\n' enhancement area:fixture domain:platform ai-generated needs-triage 'Rigor:deep' ;;
 *) exit 97 ;;

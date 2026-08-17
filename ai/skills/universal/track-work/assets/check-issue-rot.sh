@@ -67,7 +67,7 @@ BARE_FILES='(Dockerfile|Containerfile|Makefile|Taskfile|Justfile|Procfile|Gemfil
 # Four shapes: a path with a directory separator; a bare filename whose extension
 # is neither an internet suffix nor all-digits (which would be an IPv4 octet); a
 # dotfile (`.gitignore:3`); and the common extensionless filenames.
-CITATION="([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}:[0-9]+\
+CITATION="((^|[^A-Za-z0-9_./:-])[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}:[0-9]+\
 |(^|[^A-Za-z0-9_./-])[A-Za-z0-9_.-]*[A-Za-z0-9_-]\\.[A-Za-z][A-Za-z0-9]{0,9}:[0-9]+\
 |(^|[^A-Za-z0-9_./-])\\.[A-Za-z][A-Za-z0-9_-]*:[0-9]+\
 |(^|[^A-Za-z0-9_-])${BARE_FILES}:[0-9]+)"
@@ -75,11 +75,12 @@ CITATION="([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}:[0-
 # narrower than "anything containing a slash": it requires either a dotfile,
 # an extension, or a conventional extensionless repository filename, and URL
 # schemes are filtered below.
-PATH_REFERENCE="([A-Za-z0-9_.-]+/)+([A-Za-z0-9_.-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}|\\.[A-Za-z][A-Za-z0-9_-]*|${BARE_FILES})"
+PATH_REFERENCE="(^|[^A-Za-z0-9_./:-])([A-Za-z0-9_.-]+/)+([A-Za-z0-9_.-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]{1,10}|\\.[A-Za-z][A-Za-z0-9_-]*|${BARE_FILES})"
 # Applied after matching, because grep -E has no negative lookahead. Two shapes
-# are dropped: anything carrying a URL scheme, and a SLASHLESS match ending in an
-# internet suffix. The slashless condition matters — `a/b/weird.xyz:3` is a real
-# path even though `xyz` is also a TLD, so a directory separator settles it.
+# are dropped: anything carrying a URL scheme (the boundary above also prevents
+# matching a suffix after that scheme), and a SLASHLESS match ending in an
+# internet suffix. The slashless condition matters — `a/b/weird.xyz:3` is a
+# real path even though `xyz` is also a TLD, so a directory separator settles it.
 # Records are "<lineno>:<match>", hence the leading `[0-9]+:`.
 NOT_A_CITATION="(://|^[0-9]+:[^/]*\\.${HOST_TLD}:[0-9]+\$)"
 TEMPORAL='(currently|today|as of|observed[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}|right now|at present|at the moment)'
