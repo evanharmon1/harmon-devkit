@@ -256,10 +256,14 @@ echo "==> a file:line citation with no Verify section fails"
 [ "$(run_rot 'The check in scripts/foo.sh:42 returns 0 on failure.')" = 1 ] || fail "file:line without Verify should fail"
 
 echo "==> a bare repository path with no Verify section fails"
-for path in 'scripts/foo.sh' 'README.md' 'bin/deploy'; do
+for path in 'scripts/foo.sh' 'README.md' 'bin/deploy' 'Dockerfile' '.gitignore'; do
     [ "$(run_rot "The defect is in $path.")" = 1 ] ||
         fail "bare path '$path' without Verify should fail"
 done
+
+echo "==> a product name with a dotted suffix is not guessed to be a path"
+[ "$(run_rot 'Node.js remains supported by the generated project.')" = 0 ] ||
+    fail "Node.js should remain ordinary prose without repository evidence"
 
 echo "==> an extensionless file citation counts as perishable"
 for cite in 'Dockerfile:12 installs curl.' 'Makefile:8 is wrong.' 'See CODEOWNERS:3 for the owner.'; do
@@ -549,6 +553,7 @@ mkdir -p "$metadata_stub" "$metadata_fallback"
 git -C "$metadata_repo" init -q
 git -C "$metadata_repo" remote add personal https://github.com/testowner/testrepo.git
 git -C "$metadata_repo" remote add organization git@github.com:testorg/testrepo.git
+: >"$metadata_repo/component.vue"
 git -C "$metadata_fallback" init -q
 git -C "$metadata_fallback" remote add origin https://github.com/fallback/repo.git
 cat >"$metadata_stub/gh" <<'STUB'
@@ -725,6 +730,46 @@ BODY
 [ "$(run_personal 'Ignore hidden issue sections' "$tmp/metadata-commented.md")" = 1 ] ||
     fail "HTML-comment-hidden sections must not satisfy the body contract"
 
+echo "==> metadata: container fences and raw HTML cannot forge headings"
+cat >"$tmp/metadata-container-fence.md" <<'BODY'
+## Problem
+
+Keep examples out of the issue skeleton.
+
+- ```markdown
+  ## Problem
+
+  - [ ] [CI] Example only
+  ```
+
+## Acceptance criteria
+
+- [ ] [CI] The real criterion remains visible
+BODY
+[ "$(run_personal 'Ignore fenced example headings' \
+    "$tmp/metadata-container-fence.md")" = 0 ] ||
+    fail "a container-nested fence must hide its example heading: $(cat "$tmp/metadata.out")"
+cat >"$tmp/metadata-raw-html.md" <<'BODY'
+<pre>
+## Problem
+## Acceptance criteria
+- [ ] [CI] Hidden example
+</pre>
+
+<div>
+## Problem
+
+## Problem
+
+Ignore raw HTML examples.
+
+## Acceptance criteria
+
+- [ ] [CI] The real criterion remains visible
+BODY
+[ "$(run_personal 'Ignore raw HTML headings' "$tmp/metadata-raw-html.md")" = 0 ] ||
+    fail "raw HTML blocks must hide their example headings: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: acceptance criteria are tagged rendered task-list items"
 for case_name in untagged non-task; do
     if [ "$case_name" = untagged ]; then
@@ -786,6 +831,18 @@ The defect is in scripts/example.sh, observed 2026-08-17.
 BODY
 [ "$(run_personal 'Cover bare path observations' "$tmp/metadata-bare-path.md")" = 1 ] ||
     fail "a bare path and observed date without Verify should fail"
+cat >"$tmp/metadata-repository-path.md" <<'BODY'
+## Problem
+
+component.vue contains the stale behavior.
+
+## Acceptance criteria
+
+- [ ] [CI] The stale behavior is removed
+BODY
+[ "$(run_personal 'Resolve exact repository paths' \
+    "$tmp/metadata-repository-path.md")" = 1 ] ||
+    fail "an exact target-checkout path without Verify should fail"
 sed 's/^## Verify$/### Verify/' "$verified_body" >"$tmp/metadata-wrong-verify-level.md"
 [ "$(run_personal 'Require the canonical Verify heading' \
     "$tmp/metadata-wrong-verify-level.md")" = 1 ] ||

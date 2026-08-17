@@ -17,7 +17,7 @@
 # test passes and cannot rot, because the codebase evaluates it, not the reader.
 #
 # Usage:
-#   check-issue-rot.sh [DRAFT_FILE]
+#   check-issue-rot.sh [--repo-root PATH] [DRAFT_FILE]
 #
 # Draft comes from DRAFT_FILE, else stdin.
 #
@@ -25,27 +25,63 @@
 #       1 = perishable claims with no Verify section, 2 = usage error.
 set -euo pipefail
 
-case "${1:-}" in
--h | --help)
-    echo "Usage: $0 [DRAFT_FILE]" >&2
-    exit 2
-    ;;
-esac
+repo_root=""
+draft_file=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    -h | --help)
+        echo "Usage: $0 [--repo-root PATH] [DRAFT_FILE]" >&2
+        exit 2
+        ;;
+    --repo-root)
+        [ "$#" -ge 2 ] || {
+            echo "Usage: $0 [--repo-root PATH] [DRAFT_FILE]" >&2
+            exit 2
+        }
+        repo_root="$2"
+        shift 2
+        ;;
+    *)
+        [ -z "$draft_file" ] || {
+            echo "Usage: $0 [--repo-root PATH] [DRAFT_FILE]" >&2
+            exit 2
+        }
+        draft_file="$1"
+        shift
+        ;;
+    esac
+done
 
-if [ "$#" -gt 1 ]; then
-    echo "Usage: $0 [DRAFT_FILE]" >&2
-    exit 2
-fi
-
-if [ "$#" -eq 1 ]; then
-    [ -f "$1" ] || {
-        echo "check-issue-rot: no such file: $1" >&2
+if [ -n "$repo_root" ]; then
+    [ -d "$repo_root" ] || {
+        echo "check-issue-rot: repository root is not a directory: $repo_root" >&2
         exit 2
     }
-    draft="$(cat "$1")"
-else
-    draft="$(cat)"
+    repo_root="$(cd "$repo_root" && pwd -P)" || exit 2
+    git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+        echo "check-issue-rot: repository root is not a readable Git checkout" >&2
+        exit 2
+    }
 fi
+
+tmp="$(mktemp -d)" || exit 2
+trap 'rm -rf "$tmp"' EXIT
+draft_path="$tmp/draft.md"
+if [ -n "$draft_file" ]; then
+    [ -f "$draft_file" ] && [ -r "$draft_file" ] || {
+        echo "check-issue-rot: no such file: $draft_file" >&2
+        exit 2
+    }
+    cp "$draft_file" "$draft_path"
+else
+    cat >"$draft_path"
+fi
+asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
+evidence="$tmp/evidence.md"
+bash "$asset_dir/parse-issue-markdown.sh" --evidence "$draft_path" >"$evidence" || {
+    echo "check-issue-rot: could not parse draft evidence" >&2
+    exit 2
+}
 
 # A `path.ext:123` citation, or a phrase that anchors the text to the moment it
 # was written. The leading group is a portable word boundary (BSD and GNU grep
@@ -63,7 +99,7 @@ fi
 # also a plausible extension — `.md` (Moldova), `.sh`, `.ts`, `.rs`, `.pl` are
 # country TLDs and must keep working as files.
 HOST_TLD='(com|org|net|dev|app|edu|gov|mil|int|info|biz|xyz|cloud|tech|online|site|io|co|me)'
-BARE_FILES='(Dockerfile|Containerfile|Makefile|Taskfile|Justfile|Procfile|Gemfile|Rakefile|Brewfile|Vagrantfile|Jenkinsfile|CODEOWNERS|LICENSE|NOTICE)'
+BARE_FILES='(Dockerfile|Containerfile|Makefile|Taskfile|Justfile|Procfile|Gemfile|Rakefile|Brewfile|Vagrantfile|Jenkinsfile|CODEOWNERS|LICENSE|NOTICE|README\.md|CHANGELOG\.md|CONTRIBUTING\.md|SECURITY\.md)'
 REPO_DIRS='(ai|bin|config|docs|lib|scripts|src|specs|template|test|tests|tools|vendor|\.agents|\.claude|\.github)'
 DOTTED_FILE='[A-Za-z0-9_.-]*[A-Za-z0-9_-]\.[A-Za-z][A-Za-z0-9]{0,9}'
 # Four shapes: a path with a directory separator; a bare filename whose extension
@@ -77,7 +113,7 @@ CITATION="((^|[^A-Za-z0-9_./:-])[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*[A-Za-z0-9_-]\\.
 # filename, a dotted/dotfile/conventional name under any directory, and an
 # extensionless path under an explicit or conventional repository directory.
 # The leading boundary prevents matching a suffix of an HTTP(S) URL.
-PATH_REFERENCE="(^|[^A-Za-z0-9_./:-])(${DOTTED_FILE}\
+PATH_REFERENCE="(^|[^A-Za-z0-9_./:-])(${BARE_FILES}|\\.[A-Za-z][A-Za-z0-9_-]*\
 |([A-Za-z0-9_.-]+/)+(${DOTTED_FILE}|\\.[A-Za-z][A-Za-z0-9_-]*|${BARE_FILES})\
 |((\\.{1,2}|${REPO_DIRS})/)[A-Za-z0-9_./-]*[A-Za-z0-9_.-])"
 # Applied after matching, because grep -E has no negative lookahead. Two shapes
@@ -88,9 +124,43 @@ PATH_REFERENCE="(^|[^A-Za-z0-9_./:-])(${DOTTED_FILE}\
 # Records are "<lineno>:<match>", hence the leading `[0-9]+:`.
 NOT_A_CITATION="(://|^[0-9]+:[^/]*\\.${HOST_TLD}(:[0-9]+)?\$)"
 TEMPORAL='(currently|today|as of|observed[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}|right now|at present|at the moment)'
-perishable="$(printf '%s\n' "$draft" |
-    grep -noiE "(${CITATION}|${PATH_REFERENCE}|(^|[^A-Za-z0-9_-])${TEMPORAL})" |
+perishable="$(grep -noiE "(${CITATION}|${PATH_REFERENCE}|(^|[^A-Za-z0-9_-])${TEMPORAL})" "$evidence" |
     grep -viE "${NOT_A_CITATION}" || true)"
+
+# With a target checkout, exact repository paths supplement the conservative
+# syntax rules above. This distinguishes root files such as `component.vue`
+# from prose such as `Node.js` without pretending every dotted token is a path.
+if [ -n "$repo_root" ]; then
+    paths="$tmp/repository-paths"
+    git -C "$repo_root" ls-files --cached --others --exclude-standard >"$paths" 2>/dev/null || {
+        echo "check-issue-rot: could not read repository paths" >&2
+        exit 2
+    }
+    repository_hits="$(awk '
+      NR == FNR { if (length($0) > 1) paths[++n]=$0; next }
+      {
+        line=$0
+        for (i=1; i<=n; i++) {
+          path=paths[i]; start=1
+          while ((at=index(substr(line, start), path)) > 0) {
+            at += start - 1
+            before=(at > 1 ? substr(line, at-1, 1) : "")
+            after=substr(line, at+length(path), 1)
+            prefix=substr(line, 1, at-1)
+            if (before !~ /[A-Za-z0-9_.\/-]/ && after !~ /[A-Za-z0-9_.\/-]/ &&
+                prefix !~ /https?:\/\//) {
+              printf "%d:%s\n", FNR, path
+              break
+            }
+            start=at+length(path)
+          }
+        }
+      }
+    ' "$paths" "$evidence")"
+    if [ -n "$repository_hits" ]; then
+        perishable="${perishable}${perishable:+$'\n'}${repository_hits}"
+    fi
+fi
 
 if [ -z "$perishable" ]; then
     echo "check-issue-rot: no perishable claims — ok"
@@ -103,18 +173,26 @@ fi
 # and the optional Verify field on the issue forms.
 # CommonMark allows up to three spaces of indent before an ATX heading, so the
 # `#` is not necessarily in column 1.
-verify_content="$(printf '%s\n' "$draft" | awk '
-    tolower($0) ~ /^ ? ? ?#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$/ { if (!inv) in_fence = 0; inv = 1; next }
-    inv && match($0, /^ ? ? ?(`{3,}|~{3,})/) {
-        seq = substr($0, RSTART, RLENGTH); sub(/^ +/, "", seq)
-        fc = substr(seq, 1, 1)
-        rest = substr($0, RSTART + RLENGTH)
-        if (!in_fence) { in_fence = 1; fence_char = fc; fence_len = length(seq) }
-        else if (fc == fence_char && length(seq) >= fence_len && rest ~ /^[[:space:]]*$/) { in_fence = 0; fence_char = ""; fence_len = 0 }
+structure="$tmp/structure.md"
+bash "$asset_dir/parse-issue-markdown.sh" --structure "$draft_path" >"$structure" || {
+    echo "check-issue-rot: could not parse draft structure" >&2
+    exit 2
+}
+verify_bounds="$(awk '
+    tolower($0) ~ /^ ? ? ?#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$/ {
+        if (!start) start=NR
+        next
     }
-    inv && !in_fence && /^ ? ? ?#+[[:space:]]/ { inv = 0 }
-    inv { print }
-')"
+    start && /^ ? ? ?#+[[:space:]]/ { print start, NR; done=1; exit }
+    END { if (start && !done) print start, 2147483647 }
+' "$structure")"
+verify_content=""
+if [ -n "$verify_bounds" ]; then
+    verify_start="${verify_bounds%% *}"
+    verify_end="${verify_bounds#* }"
+    verify_content="$(awk -v start="$verify_start" -v end="$verify_end" \
+        'NR > start && NR < end { print }' "$evidence")"
+fi
 
 # None of these is a command: blank lines, bare code fences, an unfilled
 # <placeholder>, or a stand-in for "nothing here". `_No response_` matters most —
@@ -132,7 +210,7 @@ if [ -n "$substantive" ]; then
     exit 0
 fi
 
-if [ -n "$verify_content" ] || printf '%s\n' "$draft" | grep -qiE '^ ? ? ?#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$'; then
+if [ -n "$verify_content" ] || grep -qiE '^ ? ? ?#+[[:space:]]*verif(y|ication)[[:space:]]*#*[[:space:]]*$' "$structure"; then
     cat >&2 <<EOF
 check-issue-rot: the Verify section is empty, so the perishable claims below are
 still unverifiable. A heading on its own re-checks nothing — put the command under it.

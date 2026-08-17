@@ -73,10 +73,12 @@ that says how to re-establish the fact and interpret the result.
 Use the existing rot checker; it owns the definition of perishability:
 
 ```sh
-<skill-dir>/assets/check-issue-rot.sh <body-file>
+<skill-dir>/assets/check-issue-rot.sh --repo-root <target-checkout> <body-file>
 ```
 
-Do not invent a parallel list of perishable patterns. A `Verify` section is
+Pass the target checkout when it is available so exact repository paths are
+recognized without treating arbitrary dotted prose as filenames. Do not invent
+a parallel list of perishable patterns. A `Verify` section is
 mandatory whenever that checker detects a perishable fact. Prefer a failing
 assertion in the repository's test harness when the invariant is mechanically
 expressible.

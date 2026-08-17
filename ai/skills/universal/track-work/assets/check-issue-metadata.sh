@@ -369,39 +369,13 @@ esac
 [ "$owner_type" = "$actual_owner_type" ] ||
     violation "--owner-type $owner_type does not match target repository owner type $actual_owner_type"
 
-# Preserve line numbers while removing HTML comments outside code fences.
-# Comments hidden by a template are not rendered GitHub content; inside a code
-# fence, the same bytes are visible literals and must remain available to the
-# existing perishability checker.
+# Preserve source line numbers while reducing the body to Markdown structure.
+# The shared parser blanks fenced examples, HTML comments, and raw HTML blocks,
+# so none can supply a canonical heading or acceptance item.
 visible_body="$tmp/visible-body"
-awk '
-  {
-    line=$0; visible=""
-    if (!comment && match(line, /^ ? ? ?(`{3,}|~{3,})/)) {
-      seq=substr(line, RSTART, RLENGTH); sub(/^ +/, "", seq)
-      ch=substr(seq, 1, 1); rest=substr(line, RSTART + RLENGTH)
-      if (!fence) { fence=1; fence_ch=ch; fence_len=length(seq) }
-      else if (ch == fence_ch && length(seq) >= fence_len && rest ~ /^[[:space:]]*$/) {
-        fence=0; fence_ch=""; fence_len=0
-      }
-      print line; next
-    }
-    if (fence) { print line; next }
-    while (1) {
-      if (comment) {
-        close_at=index(line, "-->")
-        if (!close_at) { line=""; break }
-        line=substr(line, close_at + 3); comment=0
-      } else {
-        open_at=index(line, "<!--")
-        if (!open_at) { visible=visible line; break }
-        visible=visible substr(line, 1, open_at - 1)
-        line=substr(line, open_at + 4); comment=1
-      }
-    }
-    print visible
-  }
-' "$body_file" >"$visible_body"
+asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
+bash "$asset_dir/parse-issue-markdown.sh" --structure "$body_file" >"$visible_body" ||
+    die "could not parse issue body structure"
 
 # Title syntax is mechanical. Whether the words form an imperative
 # problem/outcome statement remains a semantic judgment owned by the prose.
@@ -554,7 +528,7 @@ if [ -n "$bounds" ]; then
 fi
 
 rot_rc=0
-rot_output="$("$(cd "$(dirname "$0")" && pwd -P)/check-issue-rot.sh" "$visible_body" 2>&1)" || rot_rc=$?
+rot_output="$("$asset_dir/check-issue-rot.sh" --repo-root "$repo_root" "$body_file" 2>&1)" || rot_rc=$?
 case "$rot_rc" in
 0) ;;
 1) violation "perishable facts require a substantive Verify section: $rot_output" ;;
@@ -579,9 +553,9 @@ if [ "$verify_count" -eq 0 ]; then
         if (lower ~ /^ ? ? ?#+[[:space:]]+(verify|verification)[[:space:]#]*$/) print "x" $0
         else print
       }
-    ' "$visible_body" >"$masked_body"
+    ' "$body_file" >"$masked_body"
     masked_rc=0
-    "$(cd "$(dirname "$0")" && pwd -P)/check-issue-rot.sh" "$masked_body" >/dev/null 2>&1 || masked_rc=$?
+    "$asset_dir/check-issue-rot.sh" --repo-root "$repo_root" "$masked_body" >/dev/null 2>&1 || masked_rc=$?
     case "$masked_rc" in
     0) ;;
     1) violation "perishable facts require the canonical level-two ## Verify section" ;;

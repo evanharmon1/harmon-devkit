@@ -591,10 +591,12 @@ carry a substantive `Verify` section. Reuse the existing perishability gate —
 there is one definition, not a second list in this prose:
 
 ```sh
-<skill-dir>/assets/check-issue-rot.sh <draft-file>
+<skill-dir>/assets/check-issue-rot.sh --repo-root <target-checkout> <draft-file>
 ```
 
-Exit 1 means a perishable claim has no usable re-check. The strongest `Verify`
+`--repo-root` lets the checker recognize exact target-checkout paths without
+guessing that every dotted word is a filename; omit it only when no checkout is
+available. Exit 1 means a perishable claim has no usable re-check. The strongest `Verify`
 is a failing assertion in the repository's own test harness: it cannot rot,
 because the codebase evaluates it, and it closes when the assertion passes.
 
