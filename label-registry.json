@@ -328,7 +328,7 @@
         },
         {
           "value": "pm",
-          "description": "Labels, projects, issue tooling, PM docs"
+          "description": "Label registry, project boards, PM docs — not the PM skills, which have dedicated areas"
         },
         {
           "value": "skills",
@@ -364,7 +364,7 @@
         },
         {
           "value": "track-work",
-          "description": "The track-work skill: issue authoring, claims, PR/commit linkage"
+          "description": "The track-work skill: issue authoring standards and PR/commit linkage; claims are session-flow"
         },
         {
           "value": "standardize-repo",
