@@ -12,3 +12,5 @@
 - Added portable cross-skill loading, conflict-safe map updates, recoverable
   claims, staged ticket publication, safe external-mutation confirmation, and
   isolated parallel research guidance.
+- Made claim ownership exclusive and reordered resolution so derived map and
+  dependency changes publish before a ticket exposes its dependents.

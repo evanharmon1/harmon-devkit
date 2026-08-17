@@ -34,7 +34,11 @@ immediately before every body update. Open tickets are **not** listed — they
 are open child issues, found by query. When the tracker supports versions or
 updated timestamps, make each update conditional on the version you fetched;
 on conflict, merge the other session's decisions and fog into your proposed
-change and retry instead of replacing the body from a stale copy.
+change and retry instead of replacing the body from a stale copy. On trackers
+without conditional writes, enforce the equivalent invariant with an exclusive
+writer lock plus a pre-write content-hash check and atomic replacement. If
+neither is available, serialize map changes through one designated writer;
+parallel read-modify-write updates are forbidden.
 
 ```markdown
 ## Destination
@@ -78,7 +82,11 @@ claim comment or equivalent tracker metadata as well as the assignee. Release
 the assignment when abandoning or failing the work. Before skipping an old
 claim, verify that its owner still has an active session; if that cannot be
 established, ask the maintainer whether to reclaim it. An assignment without
-bounded ownership evidence must not stall the map forever.
+bounded ownership evidence must not stall the map forever. Immediately after
+claiming, re-read the ticket and all claim metadata. Proceed only if this
+session is the single owner; if simultaneous claims exist, the earliest
+tracker-recorded claim wins and every loser removes its own assignment and
+stops before doing work.
 
 Blocking uses the tracker's **native** dependency relationship — essential because it renders the frontier _visually_ in the tracker's own UI, so the human sees what's takeable without opening the map. Only a tracker that lacks native blocking falls back to a body convention. A ticket is **unblocked** when every ticket blocking it is closed; the **frontier** is the open, unblocked, unclaimed children — the edge of the known.
 
@@ -134,9 +142,9 @@ User invokes with a loose idea.
 User invokes with a map (URL or number). A ticket is **optional** — without one, you pick the next decision, not the user.
 
 1. Load the **map** — the low-res view, not every ticket body.
-2. Choose the ticket. If the user named one, use it. Otherwise take the first frontier ticket in order. **Claim it**: assign it to yourself before any work.
+2. Choose the ticket. If the user named one, use it. Otherwise take the first frontier ticket in order. **Claim it** using the exclusive, verify-after-write protocol above before any work.
 3. Resolve it — **zoom as needed**: fetch the full body of any related or closed ticket on demand; load and follow whichever skills the `## Notes` block names. If in doubt, load and follow both the `grilling` and `domain-modeling` skills.
-4. Record the resolution: post the answer as a **resolution comment**, **close** the issue, then re-fetch the map and **append a context pointer** to its Decisions-so-far using the conflict-safe update rule above.
-5. Add newly-surfaced tickets (create-then-wire); graduate any fog the answer has made specifiable, clearing each graduated patch from **Not yet specified** so it lives only as its new ticket. If the answer reveals a ticket — this one or another — sits beyond the destination, **rule it out of scope** rather than resolving it on the route. If the decision invalidates other parts of the map, update or delete those tickets.
+4. Record the resolution answer without closing the ticket yet. Add newly-surfaced tickets (create-stage-wire-publish); graduate any fog the answer has made specifiable, clearing each graduated patch from **Not yet specified** so it lives only as its new ticket. If the answer reveals a ticket — this one or another — sits beyond the destination, **rule it out of scope** rather than resolving it on the route. If the decision invalidates other parts of the map, update or delete those tickets. Re-fetch and update the map's Decisions-so-far using the conflict-safe rule above.
+5. Verify the map, new dependency edges, invalidations, and graduated fog are all durably published. Only then **close** the resolved ticket, which exposes its dependents to the frontier. If any derived write fails, leave the ticket open and claimed so stale dependent work cannot start, then report the partial state for recovery.
 
 The user may run unblocked tickets in parallel, so expect other sessions to be editing the tracker concurrently.

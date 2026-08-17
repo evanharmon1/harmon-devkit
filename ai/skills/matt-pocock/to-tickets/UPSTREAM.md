@@ -11,3 +11,5 @@
 - Added the attribution notice in `SKILL.md`.
 - Adapted Markdown formatting to satisfy harmon-devkit lint rules.
 - Made remote ticket publication resumable and duplicate-resistant.
+- Extended reconciliation to local tickets and required separate category and
+  state roles on published work.

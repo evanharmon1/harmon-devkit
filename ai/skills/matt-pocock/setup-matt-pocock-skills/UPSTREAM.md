@@ -13,3 +13,6 @@
 - Adapted Markdown formatting to satisfy harmon-devkit lint rules.
 - Made shared policy configuration portable across harnesses and required
   complete workflow-label provisioning before setup reports success.
+- Pinned tracker operations to the configured repository, modeled local
+  category and state separately, and added safe local concurrency rules.
+- Removed a generated reference to an unvendored optional skill.
