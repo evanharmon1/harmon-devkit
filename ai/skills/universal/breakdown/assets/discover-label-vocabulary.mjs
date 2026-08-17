@@ -357,15 +357,16 @@ function validateAgentRegistry(registry) {
   }
   for (const namespace of ['suggest', 'claim']) {
     const contract = registry.labels?.[namespace]
+    const scopes = new Set(contract?.scopes ?? [])
     if (
       !contract ||
       contract.prefix !== namespace ||
       contract.axis !== 'model' ||
       contract.arming !== false ||
       !Array.isArray(contract.scopes) ||
-      contract.scopes.length !== 2 ||
-      contract.scopes[0] !== 'family' ||
-      contract.scopes[1] !== 'model'
+      scopes.size !== 2 ||
+      !scopes.has('family') ||
+      !scopes.has('model')
     ) {
       die(`agent-registry.json labels.${namespace} has an unsupported namespace contract`)
     }
@@ -671,9 +672,9 @@ for (const family of registry.families.filter((candidate) => candidate.open_valu
       candidate.family !== family.family &&
       candidate.prefix === family.prefix &&
       !(
-        family.family === 'suggest-model' &&
+        (family.family === 'suggest-model' || family.family === 'claim-model') &&
         candidate.source === 'agent-registry' &&
-        candidate.registry_set === 'suggest'
+        candidate.registry_set === family.family.replace('-model', '')
       )
   )
   if (conflictingFamily) {

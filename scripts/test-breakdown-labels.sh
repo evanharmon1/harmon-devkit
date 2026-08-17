@@ -153,6 +153,12 @@ write_registry() {
       "placeholder":"claim:<family>","color":"006B75","values":[]
     },
     {
+      "family":"claim-model","prefix":"claim","purpose":"Model ownership refinement","axis":"model",
+      "source":"tool-owned","writers":["agent"],"readers":"agents",
+      "lifecycle":"claim-release","exclusive":false,"provision":false,
+      "open_values":true,"placeholder":"claim:<family>:<model>","values":[]
+    },
+    {
       "family":"workflow","prefix":"phase","purpose":"Transient state","axis":"workflow",
       "source":"inline","writers":["agent"],"readers":"agents","lifecycle":"transient",
       "exclusive":false,"provision":true,"color":"123456","values":[{"value":"temporary","description":"Temporary"}]
@@ -486,6 +492,21 @@ elif [ ! -s "$agent_version/output" ] && grep -q 'schema_version must be 2' "$ag
     ok "unsupported agent-registry contracts fail closed after schema validation"
 else
     bad "unsupported agent-registry contract fails with a semantic diagnostic"
+fi
+
+scope_order="$tmproot/scope-order"
+mkdir -p "$scope_order"
+write_agent_registry "$scope_order"
+write_registry "$scope_order" api
+write_labels "$scope_order" api
+jq '.labels.suggest.scopes = ["model", "family"] | .labels.claim.scopes = ["model", "family"]' \
+    "$scope_order/agent-registry.json" >"$scope_order/agent-registry-updated.json"
+mv "$scope_order/agent-registry-updated.json" "$scope_order/agent-registry.json"
+if scope_output="$(discover "$scope_order")" && jq -e '.verified_semantics == true' \
+    <<<"$scope_output" >/dev/null; then
+    ok "agent-registry namespace scopes are interpreted as an unordered set"
+else
+    bad "schema-equivalent agent-registry scope order is accepted"
 fi
 
 reserved_concrete="$tmproot/reserved-concrete"
