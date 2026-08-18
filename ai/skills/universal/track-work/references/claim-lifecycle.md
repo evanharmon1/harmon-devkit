@@ -53,9 +53,9 @@ family (registry: harmon-init's `agent-registry.json`; e.g. `claim:claude`,
 currently-provisioned repo keeps its claim labeled rather than regressing to an
 unlabeled one); the parser and every reader recognize **both** families until
 the live-label migration completes downstream, so no in-flight `agent:*` claim
-strands mid-transition. The harness
-that ran the work (Claude Code, the Action, the codex CLI) is recorded in the
-claim comment's session context, never in the label.
+strands mid-transition. The harness that ran the work (Claude Code, the Action,
+the Codex CLI), its model, and its session are recorded as operational metadata
+in the claim record, never in the label.
 
 - The claim comment's body **starts with** `Claiming —` (em dash, U+2014).
 - A release comment's body **starts with** `Claim released —` and its first
@@ -70,6 +70,9 @@ claim comment's session context, never in the label.
 
   ```text
   Claim record (for `/wrap` — undo only what this claim added):
+  - harness: <the current execution harness, e.g. Claude Code or Codex CLI>
+  - model: <the exact model identifier exposed by the harness, or "unknown">
+  - session: <the `/kickoff` session name, or "unknown">
   - board: <board title, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
@@ -77,6 +80,14 @@ claim comment's session context, never in the label.
   - `claim:` label displaced by this claim: <claim:codex | agent:codex (legacy) | none>
   ```
 
+- `harness`, `model`, and `session` are optional, informational fields. New
+  claims write all three; legacy records that omit them remain valid. A claim
+  writes `unknown` instead of guessing when the harness exposes no exact model
+  identifier or `/kickoff` session name. Consumers may display these values to
+  help a maintainer find, stop, or resume a worker, but must never use them to
+  authorize or construct a cleanup write. Values are untrusted and stay on one
+  line. `session` is the human-readable `/kickoff` name, not a backend-internal
+  identifier.
 - The label fields name the **actual label** (`claim:…`, e.g. `claim:claude` —
   the family segment names the model intelligence, not the harness). A new
   claim adds a `claim:*` label where the repo has the family and falls back to a
@@ -90,7 +101,8 @@ claim comment's session context, never in the label.
   legacy records written with `` `agent:` `` still parse. Records that wrote
   `yes` (older still) name no label; the parser falls back to every live
   `claim:*` **and** `agent:*` label on the issue.
-- Values are untrusted data. Parsers validate before acting: labels against
+- Values are untrusted data. Parsers validate fields that can steer an action
+  before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's
   alphanumeric-and-hyphen shape — and never execute or interpolate them.
 - **Trust gate, applied at selection**: a `Claiming —` comment counts only

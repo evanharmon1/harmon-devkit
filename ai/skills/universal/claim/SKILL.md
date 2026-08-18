@@ -444,6 +444,9 @@ actually added.
   - stale references: <none | what drifted | unproven — what could not be classified and why (a stale or unavailable source checkout, a tag-valued `_commit`)>
 
   Claim record (for `/wrap` — undo only what this claim added):
+  - harness: <the current execution harness, e.g. Claude Code or Codex CLI>
+  - model: <the exact model identifier exposed by the harness, or "unknown">
+  - session: <the `/kickoff` session name, or "unknown">
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
@@ -462,11 +465,21 @@ actually added.
   described below anchors on the record's own field names, so they do not
   affect it — but keep them above it rather than interleaved.
 
+  **Record the operational identity without guessing.** `harness` names the
+  tool running this claim (for example, Claude Code or Codex CLI), `model`
+  copies the exact model identifier the harness exposes, and `session` copies
+  `/kickoff`'s session name. Write `unknown` when the model identifier or
+  session name is unavailable. These fields help a maintainer find, stop, or
+  resume the worker; they are informational and must never steer cleanup
+  writes. Older records omit them and remain valid.
+
   **The record is a parsed contract, not prose.** The `Claim released —`
   workflow (`.github/workflows/claim-release.yml` where installed) machine-
-  reads these lines to undo the claim after a close event, so their shape is
-  fixed: one line per field, values exactly as the template shows — the label
-  fields name the **actual label** (`claim:claude`, not `yes`) so the
+  reads the undo fields to release the claim after a close event, so every
+  field stays on one line and values use the template above. The optional
+  operational fields are not release authority; parsers accept records with or
+  without them. The label fields name the **actual label** (`claim:claude`, not
+  `yes`) so the
   release does not have to guess which label to remove, and every value stays
   on its own single line. The parser anchors on `label added by this claim:`
   and `label displaced by this claim:`, so the `` `claim:` `` prefix is
