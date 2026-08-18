@@ -4,6 +4,7 @@ description: >-
   Internal runtime support for universal skills that validate and render
   label-registry.json. Do not invoke directly.
 disable-model-invocation: true
+user-invocable: false
 ---
 
 # Label registry support

@@ -100,6 +100,9 @@ expect_ok "portable dogfood tree exposes the implement skill" \
     test -f "$repo/.agents/skills/implement/SKILL.md"
 expect_ok "label registry support stays visible to legacy category sync" \
     test -f "$repo/ai/skills/universal/label-registry-support/SKILL.md"
+expect_ok "label registry support stays out of the slash-command menu" \
+    grep -q '^user-invocable: false$' \
+    "$repo/ai/skills/universal/label-registry-support/SKILL.md"
 expect_ok "skills-sync compatibility step recognizes its directory symlink" \
     grep -qF 'readlink .agents/skills)" = "../.claude/skills"' \
     "$repo/templates/skills-sync/README.md"
