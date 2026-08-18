@@ -232,6 +232,34 @@ printf '%s\n' area:ci area:tasks domain:auth domain:delivery layer:ui |
     sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 || fail "axis-values mismatch"
 
+echo "==> axes: an invalid registry is refused, never derived around"
+jq '.families |= map(if .family == "area"
+    then .axis = "classificaton" else . end)' "$manifest" >"$tmp/typo.json"
+[ "$(run "$apply" axes --manifest "$tmp/typo.json")" = 2 ] ||
+    fail "a mistyped axis must exit 2, not silently drop the family"
+grep -q "invalid registry" "$tmp/out" || fail "refusal must say why"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
+    --inapplicable layer --inapplicable domain \
+    --manifest "$tmp/typo.json")" = 2 ] ||
+    fail "removal under an invalid registry must exit 2"
+
+echo "==> axis-values: open-values classification members resolve live"
+jq '.families |= map(if .family == "area"
+    then .open_values = true | .values = [] else . end)' \
+    "$manifest" >"$tmp/open-area.json"
+[ "$(run "$apply" axis-values --repo "$repo" \
+    --manifest "$tmp/open-area.json")" = 0 ] ||
+    fail "open-values axis-values failed: $(cat "$tmp/out")"
+grep -qx "area:ci" "$tmp/out" ||
+    fail "live area:ci must be recognized under an open-values area family"
+[ "$(run "$apply" allowlist --repo "$repo" \
+    --manifest "$tmp/open-area.json")" = 0 ] ||
+    fail "open-values allowlist failed"
+grep -qx "area:ci" "$tmp/out" ||
+    fail "live area:ci must be writable under an agent-writable open family"
+[ "$(run "$apply" axis-values --manifest "$tmp/open-area.json")" = 2 ] ||
+    fail "open-values without --repo must exit 2"
+
 # Issue fixtures for the label subcommand.
 cat >"$stub_dir/issue-10.json" <<'JSON'
 {"labels": [{"name": "needs-triage"}], "body": "plain"}
@@ -623,6 +651,11 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "labels": [{"name": "bug"}, {"name": "area:legacy"}, {"name": "layer:ui"},
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 25, "title": "Recognized and stray area values together",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "area:legacy"},
+             {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""}]
 JSON
 cat >"$stub_dir/issues-closed.json" <<'JSON'
@@ -685,6 +718,12 @@ jq -e '.open[] | select(.number == 24) | .flags
        | index("axis-missing:area") == null' "$scan_out" >/dev/null ||
     fail "an unknown value is not a bare missing axis"
 
+echo "==> scan: an unknown value beside a recognized one still flags"
+jq -e '.open[] | select(.number == 25) | .axis_state.area == "ok"
+       and (.flags | index("axis-unknown-value:area") != null)' \
+    "$scan_out" >/dev/null ||
+    fail "area:ci beside area:legacy must read ok AND flag the stray label"
+
 echo "==> scan: a bare missing axis does not re-add needs-triage"
 jq -e '.open[] | select(.number == 23)
        | (.flags | index("axis-missing:area") != null)
@@ -710,13 +749,10 @@ jq -e '.native_type_mode == "per-issue"' "$tmp/out" >/dev/null ||
     fail "an old gh must report per-issue native-Type mode"
 
 echo "==> scan: bulk native Type quiets natively-typed org issues"
-cat >"$stub_dir/issues-open-types.json" <<'JSON'
-[{"number": 23, "issueType": {"name": "Bug"}},
- {"number": 20, "issueType": null},
- {"number": 21, "issueType": null},
- {"number": 22, "issueType": null},
- {"number": 24, "issueType": null}]
-JSON
+# The bulk read rides in the same list request as the issues (one snapshot,
+# no join), so the fixture is the open list plus issueType per issue.
+jq 'map(.issueType = (if .number == 23 then {name: "Bug"} else null end))' \
+    "$stub_dir/issues-open.json" >"$stub_dir/issues-open-types.json"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
     fail "org bulk scan failed: $(cat "$tmp/out")"
 jq -e '.native_type_mode == "bulk"' "$tmp/out" >/dev/null ||

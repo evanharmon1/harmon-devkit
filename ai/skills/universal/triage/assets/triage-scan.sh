@@ -183,23 +183,30 @@ report="$("$script_dir/triage-report.sh" find --repo "$repo")" ||
 report_json=null
 [ "$report" = "none" ] || report_json="$report"
 
-open_json="$(gh issue list --repo "$repo" --state open --limit "$limit" \
-    --json number,title,labels,createdAt,updatedAt,assignees)" ||
-    die "could not list open issues of $repo"
 # Org repos classify with native issue Type. Newer gh exposes it in bulk via
-# --json issueType; where that works, every issue carries a native_type and
-# the per-issue graphql check in SKILL.md becomes unnecessary — which also
-# stops natively-typed issues starving the reading budget. Older gh (or an
-# API refusal) falls back to the per-issue path: native_type_mode says which.
-native_types_json=null
+# --json issueType; where that works it rides in the SAME list request as the
+# issues themselves — a second snapshot could miss issues that moved between
+# the two calls and misreport a set Type as unset — so every issue carries a
+# native_type and the per-issue graphql check in SKILL.md becomes unnecessary,
+# which also stops natively-typed issues starving the reading budget. Older
+# gh (or an API refusal) falls back to the per-issue path: native_type_mode
+# says which.
+open_fields="number,title,labels,createdAt,updatedAt,assignees"
 native_type_mode="n/a"
+open_json=""
 if [ "$owner_type" = "Organization" ]; then
     native_type_mode="per-issue"
-    if nt_bulk="$(gh issue list --repo "$repo" --state open --limit "$limit" \
-        --json number,issueType 2>/dev/null)"; then
-        native_types_json="$nt_bulk"
+    if open_json="$(gh issue list --repo "$repo" --state open \
+        --limit "$limit" --json "$open_fields,issueType" 2>/dev/null)"; then
         native_type_mode="bulk"
+    else
+        open_json=""
     fi
+fi
+if [ -z "$open_json" ]; then
+    open_json="$(gh issue list --repo "$repo" --state open --limit "$limit" \
+        --json "$open_fields")" ||
+        die "could not list open issues of $repo"
 fi
 closed_json="$(gh issue list --repo "$repo" --state closed \
     --limit "$closed_limit" \
@@ -232,7 +239,6 @@ jq -n \
     --argjson all "$all" \
     --argjson axes "$axes_json" \
     --argjson known "$known_json" \
-    --argjson native "$native_types_json" \
     --arg native_type_mode "$native_type_mode" \
     --argjson wt "$wt_json" '
   def axis_labels($ls; $a): [$ls[] | select(startswith($a + ":"))];
@@ -267,7 +273,6 @@ jq -n \
     open:
       [ $open[]
         | select(.number != $report)
-        | . as $iss
         | (.labels | map(.name)) as $ls
         | (((now - (.updatedAt | fromdateiso8601)) / 86400) | floor)
             as $days
@@ -275,9 +280,8 @@ jq -n \
             as $have_wt
         # Bulk native Type where the scan could read it: the issue Type name,
         # "none" when unset, null when unavailable (personal repo, old gh).
-        | (if $native == null then null
-           else ([$native[] | select(.number == $iss.number)][0]
-                 | .issueType.name // "none") end) as $nt
+        | (if $native_type_mode == "bulk"
+           then (.issueType.name // "none") else null end) as $nt
         | ($axes | map({key: ., value: axis_state($ls; .)})
            | from_entries) as $ax
         | ($ls | map(select(startswith("needs-")))) as $needs
@@ -316,9 +320,12 @@ jq -n \
                  | select(.value == "none") | "axis-missing:\(.key)"),
                 ($ax | to_entries[]
                  | select(.value == "conflict") | "axis-conflict:\(.key)"),
-                ($ax | to_entries[]
-                 | select(.value == "unknown")
-                 | "axis-unknown-value:\(.key)"),
+                # Unknown values flag independently of the axis state: a
+                # recognized value beside a retired one still reads "ok",
+                # but the stray label must surface rather than go quiet.
+                ($axes[] | . as $a
+                 | select((axis_unknown($ls; $a) | length) > 0)
+                 | "axis-unknown-value:\($a)"),
                 (if $needs_triage_worthy
                     and (($ls | index("needs-triage")) == null)
                  then "missing-needs-triage" else empty end),

@@ -109,6 +109,31 @@ guard_issue_number() {
     esac
 }
 
+# Fail closed on an invalid registry before any derivation: a family whose
+# `axis` is outside the schema enum (a typo like "classificaton") would
+# silently vanish from the derived axis set, and the needs-triage removal
+# gate would then never demand that axis — a schema error must never weaken
+# a write gate. Same for a classification family with no prefix: it cannot
+# render labels, so deriving around it would hide it.
+validate_manifest() {
+    local manifest="$1" bad
+    bad="$(jq -r '
+      ["classification", "strategy", "model", "work-type", "concern",
+       "workflow", "provenance", "foreman", "release", "meta"] as $known_axes
+      | [ .families[]
+          | select((.retired // false) | not)
+          | . as $f
+          | select(
+              (($known_axes | index($f.axis // "")) == null)
+              or ($f.axis == "classification" and (($f.prefix // "") == "")))
+          | ($f.family // "<unnamed>")
+        ] | join(", ")' "$manifest")" ||
+        die 2 "could not parse the manifest at '$manifest'"
+    [ -z "$bad" ] ||
+        die 2 "refusing to derive from an invalid registry — families with" \
+            "an unrecognized axis or a prefix-less classification: $bad"
+}
+
 # Print the active classification axes (label prefixes), one per line —
 # derived from the manifest's classification families so a repo that
 # provisions only some axes is never asked to attest the missing ones.
@@ -116,6 +141,7 @@ guard_issue_number() {
 axes_active() {
     local manifest="$1"
     if [ -f "$manifest" ]; then
+        validate_manifest "$manifest"
         jq -r '
           [ .families[]
             | select((.retired // false) | not)
@@ -136,6 +162,7 @@ axes_active() {
 axis_values_recognized() {
     local repo="$1" manifest="$2"
     if [ -f "$manifest" ]; then
+        validate_manifest "$manifest"
         jq -r '
           [ .families[]
             | select((.retired // false) | not)
@@ -146,6 +173,26 @@ axis_values_recognized() {
             | select((.retired // false) | not)
             | "\($f.prefix):\(.value)"
           ] | unique[]' "$manifest"
+        # An open-values classification family enumerates nothing here by
+        # design — its members are live labels created on demand, so
+        # recognition must read them from the repo or every member would
+        # read as unknown and block the removal gate.
+        local open_re
+        open_re="$(jq -r '
+          [ .families[]
+            | select((.retired // false) | not)
+            | select(.axis == "classification")
+            | select(.open_values // false)
+            | select((.prefix // "") != "")
+            | .prefix
+          ] | unique | join("|")' "$manifest")"
+        if [ -n "$open_re" ]; then
+            [ -n "$repo" ] ||
+                die 2 "the manifest declares open-values classification" \
+                    "families and no --repo was given to resolve live members"
+            gh label list --repo "$repo" --limit 1000 --json name \
+                -q '.[].name' | grep -E "^($open_re):" || true
+        fi
     else
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
@@ -161,6 +208,7 @@ axis_values_recognized() {
 allowlist_compute() {
     local repo="$1" manifest="$2"
     if [ -f "$manifest" ]; then
+        validate_manifest "$manifest"
         # v1 scope: the manifest's own classification families (any axis the
         # registry declares, not a fixed three), work-type, and needs-triage.
         jq -r '
@@ -178,6 +226,26 @@ allowlist_compute() {
             | if ($f.prefix // "") == "" then .value
               else "\($f.prefix):\(.value)" end
           ] | unique[]' "$manifest"
+        # Agent-writable open-values classification families: their members
+        # exist only live, so the writable set is read from the repo. The
+        # never-list stays senior to anything this adds.
+        local open_re
+        open_re="$(jq -r '
+          [ .families[]
+            | select((.retired // false) | not)
+            | select(.axis == "classification")
+            | select(.open_values // false)
+            | select((.prefix // "") != "")
+            | select(((.writers // []) | index("agent")) != null)
+            | .prefix
+          ] | unique | join("|")' "$manifest")"
+        if [ -n "$open_re" ]; then
+            [ -n "$repo" ] ||
+                die 2 "the manifest declares agent-writable open-values" \
+                    "classification families and no --repo was given"
+            gh label list --repo "$repo" --limit 1000 --json name \
+                -q '.[].name' | grep -E "^($open_re):" || true
+        fi
     else
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
