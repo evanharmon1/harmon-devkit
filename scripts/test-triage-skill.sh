@@ -709,6 +709,11 @@ cat >"$stub_dir/issues-open.json" <<JSON
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
+ {"number": 27, "title": "Stray beside recognized, queue label lost",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "area:legacy"},
+             {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
  {"number": 26, "title": "Axes done, classified only by native Type",
   "labels": [{"name": "needs-triage"}, {"name": "area:ci"},
              {"name": "layer:ui"}, {"name": "domain:auth"}],
@@ -777,6 +782,11 @@ jq -e '.open[] | select(.number == 24) | .flags
 jq -e '.open[] | select(.number == 24) | .flags
        | index("missing-needs-triage")' "$scan_out" >/dev/null ||
     fail "an unknown value must requeue needs-triage"
+jq -e '.open[] | select(.number == 27)
+       | (.axis_state.area == "ok")
+         and (.flags | index("missing-needs-triage") != null)' \
+    "$scan_out" >/dev/null ||
+    fail "a stray label beside a recognized value must still requeue"
 
 echo "==> scan: an unknown value beside a recognized one still flags"
 jq -e '.open[] | select(.number == 25) | .axis_state.area == "ok"
