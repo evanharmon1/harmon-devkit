@@ -129,23 +129,39 @@ validate_manifest() {
     bad="$(jq -r '
       ["classification", "strategy", "model", "work-type", "concern",
        "workflow", "provenance", "foreman", "release", "meta"] as $known_axes
+      | ["foreman", "rigor", "tier", "method", "claim", "suggest", "agent"]
+          as $reserved
       | [ .families[]
-          | select((.retired // false) | not)
           | . as $f
           | select(
-              (($known_axes | index($f.axis // "")) == null)
-              or ($f.axis == "classification" and (($f.prefix // "") == ""))
-              or ($f.axis == "classification" and ($f.open_values // false))
-              or (($f.prefix // null) != null
-                  and (($f.prefix | test("^[a-z0-9]+(-[a-z0-9]+)*$")) | not))
-              # Booleans must BE booleans: a string "true"/"false" here
-              # would silently drop the family from the derived axes and
-              # weaken the removal gate — exactly what this check promises
-              # cannot happen.
-              or ([$f.retired, $f.exclusive, $f.open_values]
-                  | any(. != null and (type != "boolean")))
+              # Type errors are checked on EVERY family, retired or not —
+              # a string-typed "false" retired flag reads truthy, and it
+              # must not exempt its own family from validation. Booleans
+              # must BE booleans: a string here would silently drop the
+              # family from the derived axes and weaken the removal gate —
+              # exactly what this check promises cannot happen.
+              ([$f.retired, $f.exclusive, $f.open_values]
+               | any(. != null and (type != "boolean")))
               or ([$f.values[]?.retired]
-                  | any(. != null and (type != "boolean"))))
+                  | any(. != null and (type != "boolean")))
+              or ((($f.retired // false) | not) and (
+                  (($known_axes | index($f.axis // "")) == null)
+                  or ($f.axis == "classification"
+                      and (($f.prefix // "") == ""))
+                  or ($f.axis == "classification" and ($f.open_values // false))
+                  # A classification family must SAY whether it is
+                  # exclusive — an absent flag would silently drop it from
+                  # the derived axes rather than fail closed.
+                  or ($f.axis == "classification" and ($f.exclusive == null))
+                  # The never-list is senior to manifest policy everywhere:
+                  # a classification family on a reserved prefix could make
+                  # an existing rigor:*/claim:* label satisfy the
+                  # completeness gate even though the add path refuses it.
+                  or ($f.axis == "classification"
+                      and (($reserved | index($f.prefix // "")) != null))
+                  or (($f.prefix // null) != null
+                      and (($f.prefix
+                            | test("^[a-z0-9]+(-[a-z0-9]+)*$")) | not)))))
           | ($f.family // "<unnamed>")
         ] | join(", ")' "$manifest")" ||
         die 2 "could not parse the manifest at '$manifest'"
@@ -199,6 +215,7 @@ axis_values_recognized() {
           [ .families[]
             | select((.retired // false) | not)
             | select(.axis == "classification")
+            | select(.exclusive == true)
             | select((.prefix // "") != "")
             | . as $f
             | .values[]?

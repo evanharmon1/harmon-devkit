@@ -243,6 +243,26 @@ jq '.families |= map(if .family == "area"
     then .exclusive = "true" else . end)' "$manifest" >"$tmp/strbool.json"
 [ "$(run "$apply" axes --manifest "$tmp/strbool.json")" = 2 ] ||
     fail "a string-typed exclusive must exit 2"
+jq '.families |= map(if .family == "area"
+    then .retired = "false" else . end)' "$manifest" >"$tmp/strret.json"
+[ "$(run "$apply" axes --manifest "$tmp/strret.json")" = 2 ] ||
+    fail "a string-typed retired must exit 2, not skip its own validation"
+jq '.families |= map(if .family == "area"
+    then del(.exclusive) else . end)' "$manifest" >"$tmp/noexcl.json"
+[ "$(run "$apply" axes --manifest "$tmp/noexcl.json")" = 2 ] ||
+    fail "a classification family without exclusive must exit 2"
+
+echo "==> axes: a reserved prefix never becomes a classification axis"
+jq '.families |= map(if .family == "area"
+    then .prefix = "rigor" else . end)' "$manifest" >"$tmp/reserved.json"
+[ "$(run "$apply" axes --manifest "$tmp/reserved.json")" = 2 ] ||
+    fail "a never-list prefix on a classification family must exit 2"
+
+echo "==> axis-values: non-exclusive classification values are not recognized"
+[ "$(run "$apply" axis-values --manifest "$tmp/nonexcl.json")" = 0 ] ||
+    fail "nonexcl axis-values failed"
+grep -q "^area:" "$tmp/out" &&
+    fail "a non-axis family's values must not satisfy recognition"
 
 echo "==> axis-values: manifest mode lists the active taxonomy, retired out"
 jq '.families |= map(if .family == "area"
