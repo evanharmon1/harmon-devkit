@@ -179,7 +179,7 @@ vocab="$tmp/vocabulary"
 : >"$vocab"
 manifest="$repo_root/label-registry.json"
 asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
-registry_helper="$asset_dir/../../_shared/label-registry.sh"
+registry_helper="$asset_dir/../../label-registry-support/assets/label-registry.sh"
 [ -x "$registry_helper" ] ||
     die "shared label-registry interpreter is missing: $registry_helper"
 

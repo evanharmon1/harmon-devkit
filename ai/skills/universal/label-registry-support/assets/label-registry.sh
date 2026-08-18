@@ -37,8 +37,9 @@ validate() {
     jq -e '
       def keys_only($allowed): ((keys_unsorted - $allowed) | length) == 0;
       def nonempty($max):
-        type == "string" and length > 0 and length <= $max
-        and (test("[\\r\\n|]") | not);
+        type == "string" and length > 0 and length <= $max;
+      def transport_safe:
+        type == "string" and (test("[\\r\\n|]") | not);
       def slug($max): nonempty($max) and test("^[a-z0-9]+(-[a-z0-9]+)*$");
       def color: type == "string" and test("^[0-9A-F]{6}$");
       def writer:
@@ -51,13 +52,11 @@ validate() {
         (has($key) | not) or (.[$key] | nonempty($max));
       def optional_boolean($key):
         (has($key) | not) or (.[$key] | type == "boolean");
-      def reserved_classification_prefix:
-        IN("foreman", "rigor", "tier", "method", "claim", "suggest", "agent");
       def value_valid($family):
         keys_only(["value", "description", "color", "writers", "writer_note",
                    "readers", "lifecycle", "lifecycle_note", "trust_note",
                    "arming", "provision", "retired"])
-        and (.value | nonempty(50))
+        and (.value | nonempty(50) and transport_safe)
         and (if $family.prefix == null then true else (.value | slug(50)) end)
         and optional_string("description"; 100)
         and ((has("color") | not) or (.color | color))
@@ -109,11 +108,6 @@ validate() {
         and (.values | type == "array")
         and (([.values[].value] | length) == ([.values[].value] | unique | length))
         and all(.values[]; value_valid($family))
-        and (if (.axis == "classification") then
-               (.prefix != null)
-               and ((.open_values // false) | not)
-               and ((.prefix | reserved_classification_prefix) | not)
-             else true end)
         and (if (.retired // false) then (.provision | not) else true end)
         and (if .source == "agent-registry" then
                (.registry_set | IN("suggest", "claim", "foreman-adapters"))

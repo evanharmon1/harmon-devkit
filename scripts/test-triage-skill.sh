@@ -202,7 +202,8 @@ echo "==> allowlist: triage works from a standalone vendored support bundle"
 standalone_triage="$tmp/standalone-triage"
 mkdir -p "$standalone_triage"
 cp -R ai/skills/universal/triage "$standalone_triage/triage"
-cp -R ai/skills/universal/_shared "$standalone_triage/_shared"
+cp -R ai/skills/universal/label-registry-support \
+    "$standalone_triage/label-registry-support"
 [ ! -e "$standalone_triage/track-work" ] ||
     fail "standalone triage fixture must not contain track-work"
 [ "$(run "$standalone_triage/triage/assets/triage-apply.sh" allowlist \
@@ -287,6 +288,16 @@ jq '.families |= map(if .family == "area"
     then del(.exclusive) else . end)' "$manifest" >"$tmp/noexcl.json"
 [ "$(run "$apply" axes --manifest "$tmp/noexcl.json")" = 2 ] ||
     fail "a classification family without exclusive must exit 2"
+
+echo "==> registry: prose delimiters pass while rendered delimiters refuse"
+jq '.families[0].purpose = "Fixture | prose\nwith a second line"' \
+    "$manifest" >"$tmp/prose-delimiters.json"
+[ "$(run "$apply" axes --manifest "$tmp/prose-delimiters.json")" = 0 ] ||
+    fail "non-rendered prose delimiters should remain schema-valid"
+jq '.families[0].values[0].value = "forged|record"' \
+    "$manifest" >"$tmp/rendered-delimiter.json"
+[ "$(run "$apply" axes --manifest "$tmp/rendered-delimiter.json")" = 2 ] ||
+    fail "a rendered record delimiter must fail closed"
 
 echo "==> axes: an unsupported schema_version is refused before deriving"
 jq '.schema_version = 2' "$manifest" >"$tmp/v2.json"

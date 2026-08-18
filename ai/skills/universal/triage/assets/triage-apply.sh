@@ -88,15 +88,26 @@ die() {
 }
 
 asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
-registry_helper="$asset_dir/../../_shared/label-registry.sh"
+registry_helper="$asset_dir/../../label-registry-support/assets/label-registry.sh"
 [ -x "$registry_helper" ] ||
     die 2 "shared label-registry interpreter is missing or not executable at" \
         "'$registry_helper'"
 
 render_manifest() {
-    local manifest="$1"
-    "$registry_helper" render "$manifest" ||
+    local manifest="$1" records bad
+    records="$("$registry_helper" render "$manifest")" ||
         die 2 "refusing to derive from a registry v1 cannot govern"
+    bad="$(printf '%s\n' "$records" |
+        awk -F '|' '$1 == "family" && $4 == "classification" &&
+            $9 == "false" &&
+            ($3 == "" || $8 == "true" ||
+             $3 ~ /^(foreman|rigor|tier|method|claim|suggest|agent)$/) {
+                print $2
+            }' | paste -sd ', ' -)"
+    [ -z "$bad" ] ||
+        die 2 "refusing to derive from classification families triage cannot" \
+            "govern (prefix-less, open-values, or reserved prefix): $bad"
+    printf '%s\n' "$records"
 }
 
 # In a bound run (TRIAGE_REPO set by the wrapper) the manifest is the repo's
