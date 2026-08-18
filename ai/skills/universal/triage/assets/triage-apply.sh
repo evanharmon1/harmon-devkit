@@ -137,14 +137,22 @@ validate_manifest() {
               or ($f.axis == "classification" and (($f.prefix // "") == ""))
               or ($f.axis == "classification" and ($f.open_values // false))
               or (($f.prefix // null) != null
-                  and (($f.prefix | test("^[a-z0-9]+(-[a-z0-9]+)*$")) | not)))
+                  and (($f.prefix | test("^[a-z0-9]+(-[a-z0-9]+)*$")) | not))
+              # Booleans must BE booleans: a string "true"/"false" here
+              # would silently drop the family from the derived axes and
+              # weaken the removal gate — exactly what this check promises
+              # cannot happen.
+              or ([$f.retired, $f.exclusive, $f.open_values]
+                  | any(. != null and (type != "boolean")))
+              or ([$f.values[]?.retired]
+                  | any(. != null and (type != "boolean"))))
           | ($f.family // "<unnamed>")
         ] | join(", ")' "$manifest")" ||
         die 2 "could not parse the manifest at '$manifest'"
     [ -z "$bad" ] ||
         die 2 "refusing to derive from a registry v1 cannot govern" \
             "(unrecognized axis, prefix-less or open-values classification" \
-            "family, or non-slug prefix): $bad"
+            "family, non-slug prefix, or non-boolean flag): $bad"
 }
 
 # Print the active classification axes (label prefixes), one per line —
@@ -224,7 +232,8 @@ allowlist_compute() {
             | ((.writers // $f.writers) // []) as $w
             | select(($w | index("agent")) != null)
             | select(
-                ($f.axis == "classification" and ($f.prefix // "") != "")
+                ($f.axis == "classification" and ($f.prefix // "") != ""
+                 and $f.exclusive == true)
                 or ($f.axis == "work-type")
                 or ($f.axis == "workflow" and .value == "needs-triage"))
             | if ($f.prefix // "") == "" then .value

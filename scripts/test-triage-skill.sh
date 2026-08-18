@@ -233,6 +233,16 @@ sort "$tmp/out" >"$tmp/got"
 printf '%s\n' domain layer | sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 ||
     fail "a non-exclusive classification family must not be an axis"
+[ "$(run "$apply" allowlist --manifest "$tmp/nonexcl.json")" = 0 ] ||
+    fail "non-exclusive allowlist failed"
+grep -q "^area:" "$tmp/out" &&
+    fail "a non-axis classification family must not be writable"
+
+echo "==> axes: string-typed booleans are refused, never silently dropped"
+jq '.families |= map(if .family == "area"
+    then .exclusive = "true" else . end)' "$manifest" >"$tmp/strbool.json"
+[ "$(run "$apply" axes --manifest "$tmp/strbool.json")" = 2 ] ||
+    fail "a string-typed exclusive must exit 2"
 
 echo "==> axis-values: manifest mode lists the active taxonomy, retired out"
 jq '.families |= map(if .family == "area"
