@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# test-track-work.sh — unit-test the track-work skill's two checks. Fully
+# test-track-work.sh — unit-test the track-work skill's checks and lifecycle
+# helpers. Fully
 # offline: issue bodies come from fixtures via $ISSUE_BODY_DIR, and the few
 # cases that must exercise the live `gh` path use a PATH-stubbed `gh`.
 #
@@ -12,6 +13,7 @@ cd "$(dirname "$0")/.."
 
 closing="./ai/skills/universal/track-work/assets/check-closing-keywords.sh"
 rot="./ai/skills/universal/track-work/assets/check-issue-rot.sh"
+metadata="$PWD/ai/skills/universal/track-work/assets/check-issue-metadata.sh"
 tick="$PWD/ai/skills/universal/track-work/assets/tick-criteria.sh"
 status_sh="./ai/skills/universal/track-work/assets/set-issue-status.sh"
 repo="evanharmon1/harmon-devkit"
@@ -46,6 +48,14 @@ run_closing() {
 run_rot() {
     _rc=0
     printf '%s' "$1" | "$rot" >/dev/null 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+# run_rot_repo BODY -> echoes the exit code with this checkout supplying the
+# exact-path vocabulary.
+run_rot_repo() {
+    _rc=0
+    printf '%s' "$1" | "$rot" --repo-root . >/dev/null 2>&1 || _rc=$?
     echo "$_rc"
 }
 
@@ -253,6 +263,25 @@ echo "==> a draft with nothing perishable passes"
 echo "==> a file:line citation with no Verify section fails"
 [ "$(run_rot 'The check in scripts/foo.sh:42 returns 0 on failure.')" = 1 ] || fail "file:line without Verify should fail"
 
+echo "==> a bare repository path with no Verify section fails"
+for path in 'scripts/foo.sh' 'README.md' 'bin/deploy' 'Dockerfile' '.gitignore'; do
+    [ "$(run_rot "The defect is in $path.")" = 1 ] ||
+        fail "bare path '$path' without Verify should fail"
+done
+
+echo "==> a product name with a dotted suffix is not guessed to be a path"
+[ "$(run_rot 'Node.js remains supported by the generated project.')" = 0 ] ||
+    fail "Node.js should remain ordinary prose without repository evidence"
+
+echo "==> exact checkout paths survive punctuation, earlier URLs, and link fragments"
+for prose in 'Update DESIGN.md.' \
+    'See https://example.com first, then update DESIGN.md.' \
+    'Review [DESIGN.md](https://example.com) before changing it.' \
+    'Review [the design](DESIGN.md#goals) before changing it.'; do
+    [ "$(run_rot_repo "$prose")" = 1 ] ||
+        fail "the exact DESIGN.md path should require Verify: $prose"
+done
+
 echo "==> an extensionless file citation counts as perishable"
 for cite in 'Dockerfile:12 installs curl.' 'Makefile:8 is wrong.' 'See CODEOWNERS:3 for the owner.'; do
     [ "$(run_rot "$cite")" = 1 ] || fail "'$cite' should be flagged as perishable"
@@ -268,6 +297,12 @@ echo "==> a host or IP with a port is not a file citation"
 # so a citation now needs a real file cue.
 for host in 'See https://example.com:443 for docs.' 'Reach it at 192.168.1.1:8080 now.' 'Check example.com:443 please.' 'The registry is ghcr.io:443 for pulls.'; do
     [ "$(run_rot "$host")" = 0 ] || fail "'$host' should not be flagged as a citation"
+done
+
+echo "==> a repository file URL is not a bare local path citation"
+for url in 'See https://github.com/org/repo/blob/main/README.md for docs.' \
+    'See https://github.com/org/repo/blob/main/scripts/foo.sh:42 for docs.'; do
+    [ "$(run_rot "$url")" = 0 ] || fail "'$url' should not be flagged as a local path"
 done
 
 echo "==> real citations still register after the host-and-port fix"
@@ -286,9 +321,20 @@ echo "==> an unrecognised internet suffix is still not a citation"
 [ "$(run_rot 'Use my.site:8080 to reach it.')" = 0 ] || fail "'my.site:8080' should not be flagged"
 
 echo "==> a temporal claim with no Verify section fails"
-for phrase in 'Currently it exits 0.' 'Today it exits 0.' 'As of the last run it exits 0.' 'Right now it exits 0.'; do
+for phrase in 'Currently it exits 0.' 'Today it exits 0.' 'As of the last run it exits 0.' \
+    'Observed 2026-08-17, it exits 0.' 'Right now it exits 0.' \
+    'The current behavior drops data.' 'On 2026-08-17 this failed.'; do
     [ "$(run_rot "$phrase")" = 1 ] || fail "'$phrase' should be flagged as perishable"
 done
+
+echo "==> an extensionless exact checkout path with a line locator is perishable"
+rot_build_repo="$tmp/rot-build"
+mkdir -p "$rot_build_repo"
+git -C "$rot_build_repo" init -q
+: >"$rot_build_repo/BUILD"
+_rc=0
+printf 'The defect is in BUILD:12.' | "$rot" --repo-root "$rot_build_repo" >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "'BUILD:12' should be flagged against a checkout tracking BUILD (got $_rc)"
 
 echo "==> the same citation passes once a Verify section covers it"
 [ "$(run_rot 'scripts/foo.sh:42 returns 0 on failure.
@@ -306,6 +352,18 @@ echo "==> an EMPTY Verify heading does not clear the draft"
 ## Verify
 
 ')" = 1 ] || fail "a Verify heading with nothing under it should still fail"
+
+echo "==> an EMPTY tilde-fenced Verify section does not clear the draft either"
+# Both fence delimiter spellings are in the authoring profile, so bare tilde
+# delimiters must be as non-substantive as bare backtick ones.
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify
+
+~~~
+
+~~~
+')" = 1 ] || fail "an empty tilde fence under Verify should still fail"
 
 echo "==> an unfilled <placeholder> under Verify does not count as a command"
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
@@ -377,16 +435,26 @@ task test:hygiene
 ")" = 0 ] || fail "'${heading}' should count as a Verify section"
 done
 
-echo "==> a Markdown-indented Verify heading counts"
-# CommonMark allows up to three spaces before an ATX heading.
+echo "==> a hash glued to the heading text is heading text, not a closing sequence"
+# CommonMark only strips closing hashes preceded by whitespace, so GitHub
+# renders '## Verify#' as the heading 'Verify#' — which is not a Verify section.
+[ "$(run_rot 'scripts/foo.sh:42 is stale.
+
+## Verify#
+
+task test:hygiene
+')" = 1 ] || fail "'## Verify#' must not satisfy the Verify requirement"
+
+echo "==> an indented heading is outside the profile — indeterminate, not guessed"
+# An indented ATX heading renders as a heading, but its structural role is
+# container-dependent (a list item can scope it), so canonical headings are
+# pinned to column 0 and anything indented is refused.
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
 
    ## Verify
 
    task test:hygiene
-')" = 0 ] || fail "an indented Verify heading should be recognised"
-
-echo "==> an indented following heading still ends the Verify section"
+')" = 2 ] || fail "an indented Verify heading should be indeterminate (exit 2)"
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
 
 ## Verify
@@ -394,7 +462,7 @@ echo "==> an indented following heading still ends the Verify section"
   ## Notes
 
 prose
-')" = 1 ] || fail "an indented heading should terminate the Verify section"
+')" = 2 ] || fail "an indented section heading should be indeterminate (exit 2)"
 
 echo "==> a Verify section at any heading level counts"
 [ "$(run_rot 'scripts/foo.sh:42 is wrong.
@@ -440,7 +508,10 @@ grep -n x foo.sh
 ~~~
 ')" = 0 ] || fail "a shell comment inside a tilde fence should not terminate the Verify section"
 
-echo "==> a shell comment inside an indented fenced code block does not end the Verify section"
+echo "==> an indented fence delimiter is outside the profile — indeterminate, not guessed"
+# CommonMark gives an indented delimiter a container-dependent meaning, so the
+# profile pins fence delimiters to column 0 and the guard reports it cannot
+# decide rather than guessing which container holds the fence.
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
 
 ## Verify
@@ -449,7 +520,7 @@ echo "==> a shell comment inside an indented fenced code block does not end the 
    # check the thing
    grep -n x foo.sh
    ```
-')" = 0 ] || fail "a shell comment inside an indented fence should not terminate the Verify section"
+')" = 2 ] || fail "an indented fence delimiter should be indeterminate (exit 2)"
 
 echo "==> a heading-like line inside a fenced script block is content, not a terminator"
 [ "$(run_rot 'scripts/foo.sh:42 is stale.
@@ -524,6 +595,943 @@ echo "three backticks inside"
 ````
 ')" = 0 ] || fail "a matching-length closer should close the fence"
 
+# --- check-issue-metadata.sh ------------------------------------------------
+
+metadata_repo="$tmp/metadata-repo"
+metadata_stub="$tmp/metadata-bin"
+metadata_fallback="$tmp/metadata-fallback"
+mkdir -p "$metadata_repo"
+mkdir -p "$metadata_stub" "$metadata_fallback"
+git -C "$metadata_repo" init -q
+git -C "$metadata_repo" remote add personal https://github.com/testowner/testrepo.git
+git -C "$metadata_repo" remote add organization git@github.com:testorg/testrepo.git
+: >"$metadata_repo/component.vue"
+git -C "$metadata_fallback" init -q
+git -C "$metadata_fallback" remote add origin https://github.com/fallback/repo.git
+cat >"$metadata_stub/gh" <<'STUB'
+#!/bin/sh
+if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
+case "${1:-} ${2:-}" in
+"api repos/testowner/testrepo" | "api repos/fallback/repo") printf '%s\n' User ;;
+"api repos/testorg/testrepo") printf '%s\n' Organization ;;
+"api orgs/testorg/issue-types") printf '%s\n' Task Bug Feature Research ;;
+"label list")
+    if [ "${METADATA_GH_LABELS+x}" = x ]; then
+        printf '%s\n' "$METADATA_GH_LABELS"
+    else
+        printf '%s\n' enhancement area:fixture domain:fixture ai-generated needs-triage 'Rigor:deep' type:fix
+    fi
+    ;;
+*) exit 97 ;;
+esac
+STUB
+chmod +x "$metadata_stub/gh"
+PATH="$metadata_stub:$PATH"
+export PATH
+cp agent-registry.json "$metadata_repo/agent-registry.json"
+jq '.families |= map(
+      if .family == "area" then
+        .values += [{"value":"fixture","description":"Fixture-only area"}]
+      elif .family == "domain" then
+        .values += [{"value":"fixture","description":"Fixture-only domain"}]
+      elif .family == "concern" then
+        .values += [{"value":"trusted-review","description":"Fixture trusted concern",
+                     "writers":["trusted-human"]}]
+      else . end
+    )' label-registry.json >"$metadata_repo/label-registry.json"
+
+valid_body="$tmp/metadata-valid.md"
+cat >"$valid_body" <<'BODY'
+## Problem
+
+Make issue metadata deterministic before creation.
+
+## Acceptance criteria
+
+- [ ] [CI] The metadata checker accepts this draft
+
+## Provenance
+
+Authored for an offline contract test.
+BODY
+
+perishable_body="$tmp/metadata-perishable.md"
+cat >"$perishable_body" <<'BODY'
+## Problem
+
+scripts/example.sh:12 currently returns the wrong result.
+
+## Acceptance criteria
+
+- [ ] [CI] The regression is covered
+BODY
+
+verified_body="$tmp/metadata-verified.md"
+cat >"$verified_body" <<'BODY'
+## Problem
+
+scripts/example.sh:12 currently returns the wrong result.
+
+## Acceptance criteria
+
+- [ ] [CI] The regression is covered
+
+## Verify
+
+Run `task test:track-work`; a failure means the violation remains.
+BODY
+
+run_metadata() {
+    _rc=0
+    "$metadata" "$@" >"$tmp/metadata.out" 2>&1 || _rc=$?
+    echo "$_rc"
+}
+
+run_personal() {
+    _title="$1"
+    _body="$2"
+    shift 2
+    run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+        --owner-type personal --title "$_title" --body-file "$_body" \
+        --agent-authored --label feature --label area:fixture \
+        --inapplicable layer --label domain:fixture --label ai-generated "$@"
+}
+
+run_organization() {
+    _title="$1"
+    _body="$2"
+    shift 2
+    PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
+        --owner-type organization --issue-type Task --title "$_title" \
+        --body-file "$_body" --agent-authored --label area:fixture \
+        --inapplicable layer --label domain:fixture --label ai-generated "$@"
+}
+
+echo "==> metadata: a complete personal-account draft passes from the target root manifest"
+if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" != 0 ]; then
+    # Re-run with the checker's debug dump so a CI-only failure carries the
+    # vocabulary and toolchain it was judged against.
+    CHECK_ISSUE_METADATA_DEBUG=1 run_personal 'Validate issue metadata before creation' \
+        "$valid_body" >/dev/null
+    fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
+fi
+
+echo "==> metadata: an organization draft uses native Issue Type and no work-type label"
+[ "$(run_organization 'Validate organization issue metadata' "$valid_body")" = 0 ] ||
+    fail "valid organization draft should pass: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: owner type is verified against the target repository"
+[ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo \
+    --repo-root "$metadata_repo" --owner-type personal \
+    --title 'Reject mismatched owner classification' --body-file "$valid_body" \
+    --human-authored --label feature --inapplicable area --inapplicable layer \
+    --inapplicable domain)" = 1 ] ||
+    fail "an organization repository declared personal should fail"
+[ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testowner/testrepo \
+    --repo-root "$metadata_repo" --owner-type organization --issue-type Task \
+    --title 'Reject mismatched owner classification' --body-file "$valid_body" \
+    --human-authored --label area:fixture --inapplicable layer \
+    --inapplicable domain)" = 1 ] ||
+    fail "a personal repository declared organization is a contract violation (1), not indeterminate"
+grep -q 'does not match target repository owner type' "$tmp/metadata.out" ||
+    fail "the owner mismatch should be the reported violation"
+
+echo "==> metadata: exact title boundary is 70 Unicode code points"
+title70="$(printf 'a%.0s' {1..70})"
+title71="${title70}a"
+[ "$(run_personal "$title70" "$valid_body")" = 0 ] || fail "70 code points should pass"
+[ "$(run_personal "$title71" "$valid_body")" = 1 ] || fail "71 code points should fail"
+
+echo "==> metadata: empty and prefixed titles fail"
+[ "$(run_personal '' "$valid_body")" = 1 ] || fail "empty title should fail"
+for title in '[Bug]: metadata is missing' 'Bug: metadata is missing' \
+    'fix(track-work): add metadata' 'P1: metadata is missing'; do
+    [ "$(run_personal "$title" "$valid_body")" = 1 ] || fail "prefixed title should fail: $title"
+done
+
+echo "==> metadata: surrounding whitespace cannot smuggle a forbidden prefix"
+for title in ' fix: repair metadata' 'Trailing space title '; do
+    [ "$(run_personal "$title" "$valid_body")" = 1 ] ||
+        fail "a title with surrounding whitespace should fail: '$title'"
+done
+
+echo "==> metadata: required headings must exist once, be nonempty, and stay ordered"
+for case_name in missing-problem missing-acceptance duplicate-problem empty-problem out-of-order; do
+    case "$case_name" in
+    missing-problem) body='## Acceptance criteria
+
+- [ ] [CI] Covered' ;;
+    missing-acceptance) body='## Problem
+
+Something is wrong.' ;;
+    duplicate-problem) body='## Problem
+
+One.
+
+## Problem
+
+Two.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered' ;;
+    empty-problem) body='## Problem
+
+## Acceptance criteria
+
+- [ ] [CI] Covered' ;;
+    out-of-order) body='## Acceptance criteria
+
+- [ ] [CI] Covered
+
+## Problem
+
+Something is wrong.' ;;
+    esac
+    printf '%s\n' "$body" >"$tmp/metadata-$case_name.md"
+    [ "$(run_personal 'Validate the issue skeleton' "$tmp/metadata-$case_name.md")" = 1 ] ||
+        fail "$case_name should fail"
+done
+
+echo "==> metadata: a list-wrapped skeleton cannot satisfy the canonical sections"
+# GitHub scopes a two-space-indented heading and task to the wrapping list
+# item, so a skeleton nested under `- wrapper` is not the top-level contract;
+# the profile refuses the indented heading rather than deciding its container.
+cat >"$tmp/metadata-list-wrapped.md" <<'BODY'
+## Problem
+
+Explain it.
+
+- wrapper
+  ## Acceptance criteria
+  - [ ] [CI] This is nested under wrapper
+BODY
+[ "$(run_personal 'Reject list-wrapped skeletons' "$tmp/metadata-list-wrapped.md")" = 1 ] ||
+    fail "a list-wrapped acceptance section must not satisfy the contract"
+
+echo "==> metadata: a glued closing hash is heading text, so the heading is noncanonical"
+cat >"$tmp/metadata-glued-hash.md" <<'BODY'
+## Problem#
+
+GitHub renders the hash as part of the heading text.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+BODY
+[ "$(run_personal 'Reject glued closing hashes' "$tmp/metadata-glued-hash.md")" = 1 ] ||
+    fail "'## Problem#' renders as 'Problem#' and must not count as canonical"
+
+echo "==> metadata: the authoring profile refuses hidden or forged structure"
+# Each fixture below is a construct an adversarial review round once used to
+# hide, forge, or shift canonical structure while the checker emulated GFM
+# rendering. The profile answers the whole class at once: every one is a
+# named contract violation, never a guess about what GitHub renders.
+cat >"$tmp/metadata-commented.md" <<'BODY'
+<!--
+## Problem
+
+Hidden.
+
+## Acceptance criteria
+
+- [ ] [CI] Hidden criterion
+-->
+BODY
+[ "$(run_personal 'Ignore hidden issue sections' "$tmp/metadata-commented.md")" = 1 ] ||
+    fail "HTML-comment-hidden sections must not satisfy the body contract"
+grep -q 'outside the authoring profile' "$tmp/metadata.out" ||
+    fail "the refusal should name the authoring profile: $(cat "$tmp/metadata.out")"
+grep -q 'HTML comment' "$tmp/metadata.out" ||
+    fail "the refusal should name the offending construct"
+
+cat >"$tmp/metadata-container-fence.md" <<'BODY'
+## Problem
+
+Keep examples out of the issue skeleton.
+
+- ```markdown
+  ## Problem
+
+  - [ ] [CI] Example only
+  ```
+
+## Acceptance criteria
+
+- [ ] [CI] The real criterion remains visible
+BODY
+[ "$(run_personal 'Refuse container-nested fences' \
+    "$tmp/metadata-container-fence.md")" = 1 ] ||
+    fail "a fence opened as list-item content is outside the profile: $(cat "$tmp/metadata.out")"
+
+cat >"$tmp/metadata-raw-html.md" <<'BODY'
+<pre>
+## Problem
+## Acceptance criteria
+- [ ] [CI] Hidden example
+</pre>
+
+<div>
+## Problem
+
+## Problem
+
+Ignore raw HTML examples.
+
+## Acceptance criteria
+
+- [ ] [CI] The real criterion remains visible
+BODY
+[ "$(run_personal 'Refuse raw HTML headings' "$tmp/metadata-raw-html.md")" = 1 ] ||
+    fail "raw HTML blocks are outside the profile: $(cat "$tmp/metadata.out")"
+
+cat >"$tmp/metadata-list-fence-boundary.md" <<'BODY'
+- ```text
+  Example inside the list item.
+```
+## Problem
+
+Hidden by the new top-level fence.
+
+## Acceptance criteria
+
+- [ ] [CI] Hidden criterion
+BODY
+[ "$(run_personal 'Refuse list fence boundaries' \
+    "$tmp/metadata-list-fence-boundary.md")" = 1 ] ||
+    fail "a list-item fence whose extent depends on containers must be refused"
+
+cat >"$tmp/metadata-malformed-pre-close.md" <<'BODY'
+<pre>
+Example rendered verbatim.
+</pre invalid
+## Problem
+
+Still rendered inside the preformatted block.
+
+## Acceptance criteria
+
+- [ ] [CI] Hidden criterion
+BODY
+[ "$(run_personal 'Refuse malformed raw HTML' \
+    "$tmp/metadata-malformed-pre-close.md")" = 1 ] ||
+    fail "a malformed closing tag must not expose raw HTML contents"
+
+cat >"$tmp/metadata-comment-boundary.md" <<'BODY'
+#<!-- hidden --># Problem
+
+Visible-looking prose.
+
+#<!-- hidden --># Acceptance criteria
+
+- [<!-- hidden --> ] [CI] Forged criterion
+BODY
+[ "$(run_personal 'Refuse comment token forgeries' \
+    "$tmp/metadata-comment-boundary.md")" = 1 ] ||
+    fail "inline comments must not forge headings or task syntax"
+
+cat >"$tmp/metadata-html-container-end.md" <<'BODY'
+## Problem
+
+Keep visible structure outside an HTML container.
+
+- <div>
+  Example inside the list item.
+## Acceptance criteria
+
+- [ ] [CI] The top-level heading remains visible
+BODY
+[ "$(run_personal 'Refuse container-scoped raw HTML' \
+    "$tmp/metadata-html-container-end.md")" = 1 ] ||
+    fail "raw HTML whose extent depends on containers must be refused: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: acceptance criteria are tagged rendered task-list items"
+for case_name in untagged non-task; do
+    if [ "$case_name" = untagged ]; then
+        criterion='- [ ] The checker passes'
+    else
+        criterion='[CI] The checker passes'
+    fi
+    cat >"$tmp/metadata-$case_name.md" <<BODY
+## Problem
+
+Make metadata deterministic.
+
+## Acceptance criteria
+
+$criterion
+BODY
+    [ "$(run_personal 'Validate acceptance criteria' "$tmp/metadata-$case_name.md")" = 1 ] ||
+        fail "$case_name criterion should fail"
+done
+cat >"$tmp/metadata-nested-untagged.md" <<'BODY'
+## Problem
+
+Validate nested criteria.
+
+## Acceptance criteria
+
+- [ ] [CI] Parent criterion
+  - [ ] Untagged nested criterion
+BODY
+[ "$(run_personal 'Validate nested acceptance criteria' \
+    "$tmp/metadata-nested-untagged.md")" = 1 ] ||
+    fail "a nested untagged criterion should fail"
+sed 's/\[ \] Untagged/\[ \] [HUMAN] Tagged/' "$tmp/metadata-nested-untagged.md" \
+    >"$tmp/metadata-nested-tagged.md"
+[ "$(run_personal 'Validate nested acceptance criteria' \
+    "$tmp/metadata-nested-tagged.md")" = 0 ] ||
+    fail "a canonical two-space nested tagged criterion should pass: $(cat "$tmp/metadata.out")"
+cat >"$tmp/metadata-deep-nested.md" <<'BODY'
+## Problem
+
+Validate nesting depth.
+
+## Acceptance criteria
+
+- [ ] [CI] Parent criterion
+    - [ ] [HUMAN] Four-space nested criterion
+BODY
+[ "$(run_personal 'Refuse non-canonical nesting depth' \
+    "$tmp/metadata-deep-nested.md")" = 1 ] ||
+    fail "nesting deeper than the canonical two spaces is outside the profile"
+cat >"$tmp/metadata-inline-raw-task.md" <<'BODY'
+## Problem
+
+Preserve inline HTML in rendered criteria.
+
+## Acceptance criteria
+
+- [ ] [CI] Preserve the criterion <pre></pre>
+BODY
+[ "$(run_personal 'Refuse inline raw HTML tasks' \
+    "$tmp/metadata-inline-raw-task.md")" = 1 ] ||
+    fail "inline raw HTML in a criterion is outside the profile: $(cat "$tmp/metadata.out")"
+for invalid_marker in '1234567890. [ ] [CI] Too many marker digits' \
+    '-     [ ] [CI] Checkbox rendered as code'; do
+    cat >"$tmp/metadata-nonrendered-task.md" <<BODY
+## Problem
+
+Reject task syntax that GFM does not render.
+
+## Acceptance criteria
+
+$invalid_marker
+BODY
+    [ "$(run_personal 'Reject non-rendered task markers' \
+        "$tmp/metadata-nonrendered-task.md")" = 1 ] ||
+        fail "a non-rendered task marker must fail: $invalid_marker"
+done
+cat >"$tmp/metadata-indented-code-task.md" <<'BODY'
+## Problem
+
+Reject criteria rendered as code.
+
+## Acceptance criteria
+
+- [ ] [CI] Visible criterion
+      - [ ] [CI] Hidden as indented code
+BODY
+[ "$(run_personal 'Reject indented code criteria' \
+    "$tmp/metadata-indented-code-task.md")" = 1 ] ||
+    fail "task syntax rendered as indented code must not count as a criterion"
+{
+    printf '%s\n' '## Problem' '' 'Reject empty criteria.' '' '## Acceptance criteria' ''
+    printf '%s \n' '- [ ] [CI]'
+} >"$tmp/metadata-empty-criterion.md"
+[ "$(run_personal 'Reject empty acceptance criteria' \
+    "$tmp/metadata-empty-criterion.md")" = 1 ] ||
+    fail "a tagged criterion with no descriptive text should fail"
+
+echo "==> metadata: the existing perishable-fact checker is the Verify gate"
+[ "$(run_personal 'Cover perishable issue facts' "$perishable_body")" = 1 ] ||
+    fail "perishable facts without Verify should fail"
+[ "$(run_personal 'Cover perishable issue facts' "$verified_body")" = 0 ] ||
+    fail "perishable facts with Verify should pass: $(cat "$tmp/metadata.out")"
+cat >"$tmp/metadata-bare-path.md" <<'BODY'
+## Problem
+
+The defect is in scripts/example.sh, observed 2026-08-17.
+
+## Acceptance criteria
+
+- [ ] [CI] The regression is covered
+BODY
+[ "$(run_personal 'Cover bare path observations' "$tmp/metadata-bare-path.md")" = 1 ] ||
+    fail "a bare path and observed date without Verify should fail"
+cat >"$tmp/metadata-repository-path.md" <<'BODY'
+## Problem
+
+component.vue contains the stale behavior.
+
+## Acceptance criteria
+
+- [ ] [CI] The stale behavior is removed
+BODY
+[ "$(run_personal 'Resolve exact repository paths' \
+    "$tmp/metadata-repository-path.md")" = 1 ] ||
+    fail "an exact target-checkout path without Verify should fail"
+sed 's/component\.vue/[the component](component.vue)/' \
+    "$tmp/metadata-repository-path.md" >"$tmp/metadata-linked-repository-path.md"
+[ "$(run_personal 'Resolve linked repository paths' \
+    "$tmp/metadata-linked-repository-path.md")" = 1 ] ||
+    fail "an exact target-checkout path used as a link destination should require Verify"
+sed 's/^## Verify$/### Verify/' "$verified_body" >"$tmp/metadata-wrong-verify-level.md"
+[ "$(run_personal 'Require the canonical Verify heading' \
+    "$tmp/metadata-wrong-verify-level.md")" = 1 ] ||
+    fail "a perishable fact with only a noncanonical Verify heading should fail"
+cat >"$tmp/metadata-current-no-verify.md" <<'BODY'
+## Problem
+
+Preserve a durable invariant.
+
+## Current violation (observed 2026-08-17)
+
+The target is stale.
+
+## Acceptance criteria
+
+- [ ] [CI] The target is refreshed
+BODY
+[ "$(run_personal 'Require Verify for observed violations' \
+    "$tmp/metadata-current-no-verify.md")" = 1 ] ||
+    fail "Current violation must require Verify even when rot patterns do not match its prose"
+cat >"$tmp/metadata-fenced-comment.md" <<'BODY'
+## Problem
+
+```html
+<!-- scripts/example.sh:12 currently fails -->
+```
+
+## Acceptance criteria
+
+- [ ] [CI] Cover the visible stale citation
+BODY
+[ "$(run_personal 'Preserve fenced comment literals' \
+    "$tmp/metadata-fenced-comment.md")" = 1 ] ||
+    fail "a perishable citation inside a fenced comment literal should require Verify"
+
+echo "==> metadata: labels must be known and exclusive families cannot conflict"
+[ "$(run_personal 'Reject unknown labels' "$valid_body" --label unknown-label)" = 1 ] ||
+    fail "unknown label should fail"
+[ "$(run_personal 'Reject conflicting axes' "$valid_body" --label area:skills)" = 1 ] ||
+    fail "two area labels should fail"
+
+echo "==> metadata: agent-authored issues require ai-generated and agent-writable labels"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Require issue provenance' --body-file "$valid_body" \
+    --agent-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:fixture)" = 1 ] || fail "missing ai-generated should fail"
+[ "$(run_personal 'Respect label writers' "$valid_body" --label sec)" = 1 ] ||
+    fail "an agent must not propose a human-only concern"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Allow true concern labels' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:fixture --label sec)" = 0 ] ||
+    fail "a human-authored draft may carry a true concern: $(cat "$tmp/metadata.out")"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Reject tool-owned authoring state' \
+    --body-file "$valid_body" --human-authored --label feature --label area:fixture \
+    --inapplicable layer --label domain:fixture --label 'autorelease: pending')" = 1 ] ||
+    fail "a human author must not propose a tool-owned label"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Require attributable trusted labels' \
+    --body-file "$valid_body" --human-authored --label feature --label area:fixture \
+    --inapplicable layer --label domain:fixture --label trusted-review)" = 2 ] ||
+    fail "a self-asserted human author cannot authorize a trusted-human label"
+grep -q 'actor-verifying trusted-human workflow' "$tmp/metadata.out" ||
+    fail "trusted-human refusal should name the required verification path"
+
+echo "==> metadata: manifest open-value families resolve proposed live labels"
+: >"$tmp/metadata-gh.log"
+_rc=0
+METADATA_GH_LOG="$tmp/metadata-gh.log" "$metadata" \
+    --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Allow a live open-value label' \
+    --body-file "$valid_body" --human-authored --label feature \
+    --label area:fixture --inapplicable layer --label domain:fixture \
+    --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "a live open-value label should pass: $(cat "$tmp/metadata.out")"
+[ "$(grep -c '^label list ' "$tmp/metadata-gh.log")" = 1 ] ||
+    fail "open-value resolution should make one bounded label-list read"
+grep -q 'label list.*--repo testowner/testrepo.*--limit 1000.*--json name' \
+    "$tmp/metadata-gh.log" || fail "open-value label read must be repo-bound and bounded"
+[ "$(run_personal 'Enforce open-value family writers' "$valid_body" --label type:fix)" = 1 ] ||
+    fail "an agent must not write a human-only open-value label"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Reject an absent open-value label' \
+    --body-file "$valid_body" --human-authored --label feature \
+    --label area:fixture --inapplicable layer --label domain:fixture \
+    --label type:missing)" = 1 ] || fail "an absent open-value label should remain unknown"
+
+echo "==> metadata: a label matching two open-value families is ambiguous, not first-match"
+metadata_ambiguous="$tmp/metadata-ambiguous"
+mkdir -p "$metadata_ambiguous"
+git -C "$metadata_ambiguous" init -q
+git -C "$metadata_ambiguous" remote add origin https://github.com/testowner/testrepo.git
+jq '.families += [{
+      "family": "type-shadow", "prefix": "type",
+      "purpose": "Fixture sibling family sharing the type prefix",
+      "axis": "meta", "source": "inline", "writers": ["agent"],
+      "readers": "fixture", "lifecycle": "durable", "exclusive": false,
+      "provision": false, "open_values": true, "placeholder": "type:example",
+      "values": []
+    }]' "$metadata_repo/label-registry.json" >"$metadata_ambiguous/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_ambiguous" --owner-type personal \
+    --title 'Reject ambiguous open-value prefixes' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "an ambiguous open-value label should be indeterminate (got $_rc): $(cat "$tmp/metadata.out")"
+grep -q 'matches multiple open-value families' "$tmp/metadata.out" ||
+    fail "the refusal should name the ambiguity"
+grep -q 'type-override' "$tmp/metadata.out" && grep -q 'type-shadow' "$tmp/metadata.out" ||
+    fail "the refusal should name both families"
+
+echo "==> metadata: an enumerated open-value member absent from the live read fails as unknown"
+metadata_enumerated="$tmp/metadata-enumerated"
+mkdir -p "$metadata_enumerated"
+git -C "$metadata_enumerated" init -q
+git -C "$metadata_enumerated" remote add origin https://github.com/testowner/testrepo.git
+jq '.families |= map(
+      if .family == "type-override" then
+        .values += [{"value": "stale-member",
+                     "description": "Enumerated but absent from the live read"}]
+      else . end)' "$metadata_repo/label-registry.json" \
+    >"$metadata_enumerated/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_enumerated" --owner-type personal \
+    --title 'Reject absent enumerated open members' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:fixture --label type:stale-member >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] ||
+    fail "an enumerated open member missing live should fail as unknown (got $_rc): $(cat "$tmp/metadata.out")"
+grep -q "label 'type:stale-member' does not exist" "$tmp/metadata.out" ||
+    fail "the absent enumerated open member should be reported as unknown"
+
+echo "==> metadata: the manifest is resolved from the checkout top level, not the subdirectory"
+metadata_subdir_root="$tmp/metadata-subdir"
+mkdir -p "$metadata_subdir_root/nested/deeper"
+git -C "$metadata_subdir_root" init -q
+git -C "$metadata_subdir_root" remote add origin https://github.com/testowner/testrepo.git
+printf '{not json\n' >"$metadata_subdir_root/label-registry.json"
+: >"$tmp/metadata-gh.log"
+_rc=0
+PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
+    "$metadata" --repo testowner/testrepo --repo-root "$metadata_subdir_root/nested/deeper" \
+    --owner-type personal --title 'Resolve the top-level manifest' \
+    --body-file "$valid_body" --human-authored --label feature --inapplicable area \
+    --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] ||
+    fail "a subdirectory --repo-root must still find (and fail closed on) the top-level manifest (got $_rc)"
+[ ! -s "$tmp/metadata-gh.log" ] ||
+    fail "a bypassed top-level manifest must not fall through to gh"
+
+echo "==> metadata: a strategy-axis family is authoring-forbidden whatever its prefix"
+metadata_strategy="$tmp/metadata-strategy"
+mkdir -p "$metadata_strategy"
+git -C "$metadata_strategy" init -q
+git -C "$metadata_strategy" remote add origin https://github.com/testowner/testrepo.git
+jq '.families += [{
+      "family": "route-hint", "prefix": "route",
+      "purpose": "Fixture strategy family under an unlisted prefix",
+      "axis": "strategy", "source": "inline", "writers": ["agent"],
+      "readers": "fixture", "lifecycle": "durable", "exclusive": false,
+      "provision": false,
+      "values": [{"value": "fast", "description": "Fixture routing hint"}]
+    }]' "$metadata_repo/label-registry.json" >"$metadata_strategy/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_strategy" --owner-type personal \
+    --title 'Reject renamed strategy families' --body-file "$valid_body" \
+    --agent-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:fixture --label ai-generated --label route:fast \
+    >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a strategy-axis label under a new prefix should fail (got $_rc)"
+grep -q "authoring-forbidden 'strategy' axis" "$tmp/metadata.out" ||
+    fail "the rejection should name the strategy axis"
+
+echo "==> metadata: needs-triage on a fully decided classification is stale"
+[ "$(run_personal 'Reject stale triage labels' "$valid_body" --label needs-triage)" = 1 ] ||
+    fail "needs-triage with every axis decided should fail"
+grep -q 'every axis is decided' "$tmp/metadata.out" ||
+    fail "the rejection should say the classification is decided"
+
+echo "==> metadata: a retired open-family member is not resurrected by its live label"
+metadata_retired="$tmp/metadata-retired"
+mkdir -p "$metadata_retired"
+git -C "$metadata_retired" init -q
+git -C "$metadata_retired" remote add origin https://github.com/testowner/testrepo.git
+jq '.families |= map(
+      if .family == "type-override" then
+        .values += [{"value": "fix", "description": "Retired fixture member",
+                     "retired": true}]
+      else . end)' "$metadata_repo/label-registry.json" \
+    >"$metadata_retired/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_retired" --owner-type personal \
+    --title 'Reject retired open members' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] ||
+    fail "a retired open-family member should fail even with a live label (got $_rc): $(cat "$tmp/metadata.out")"
+grep -q "label 'type:fix' is retired by the manifest" "$tmp/metadata.out" ||
+    fail "the rejection should say the label is retired"
+
+echo "==> metadata: a required section holding only an empty fence is empty"
+cat >"$tmp/metadata-empty-fence-problem.md" <<'BODY'
+## Problem
+
+```sh
+```
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+BODY
+[ "$(run_personal 'Reject empty fenced sections' \
+    "$tmp/metadata-empty-fence-problem.md")" = 1 ] ||
+    fail "a Problem section holding only an empty fence should fail"
+cat >"$tmp/metadata-fenced-problem.md" <<'BODY'
+## Problem
+
+```text
+the problem, stated inside a code block
+```
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+BODY
+[ "$(run_personal 'Accept fenced problem content' \
+    "$tmp/metadata-fenced-problem.md")" = 0 ] ||
+    fail "a fence with real contents should still count as section content: $(cat "$tmp/metadata.out")"
+
+echo "==> a rot remediation template matches the canonical skeleton"
+_out="$(printf 'scripts/foo.sh:42 is stale.' | "$rot" 2>&1 || true)"
+printf '%s\n' "$_out" | grep -q '## Problem' ||
+    fail "the rot remediation should teach the canonical Problem skeleton"
+printf '%s\n' "$_out" | grep -q '## Acceptance criteria' ||
+    fail "the rot remediation should include Acceptance criteria"
+if printf '%s\n' "$_out" | grep -q '## Invariant'; then
+    fail "the rot remediation must not teach the legacy Invariant skeleton"
+fi
+
+echo "==> metadata: a concrete record shadowing an open family is ambiguous too"
+metadata_shadowed="$tmp/metadata-shadowed"
+mkdir -p "$metadata_shadowed"
+git -C "$metadata_shadowed" init -q
+git -C "$metadata_shadowed" remote add origin https://github.com/testowner/testrepo.git
+jq '.families += [{
+      "family": "type-concrete",
+      "purpose": "Fixture concrete family enumerating a name the open family covers",
+      "prefix": "type", "axis": "meta", "source": "inline", "writers": ["agent"],
+      "readers": "fixture", "lifecycle": "durable", "exclusive": false,
+      "provision": false,
+      "values": [{"value": "fix", "description": "Fixture shadowing value"}]
+    }]' "$metadata_repo/label-registry.json" >"$metadata_shadowed/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_shadowed" --owner-type personal \
+    --title 'Reject shadowed open-value labels' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "an open label shadowed by a concrete family should be indeterminate (got $_rc): $(cat "$tmp/metadata.out")"
+grep -q 'no unique policy' "$tmp/metadata.out" ||
+    fail "the refusal should say the policy is not unique"
+grep -q 'type-concrete' "$tmp/metadata.out" && grep -q 'type-override' "$tmp/metadata.out" ||
+    fail "the refusal should name the concrete and open families"
+
+echo "==> metadata: incomplete classification requires needs-triage and names the axis"
+_rc="$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Keep incomplete classification visible' \
+    --body-file "$valid_body" --agent-authored --label feature \
+    --label area:fixture --inapplicable layer --label ai-generated)"
+[ "$_rc" = 1 ] || fail "missing domain without needs-triage should fail"
+grep -qi 'domain' "$tmp/metadata.out" || fail "the undecided domain axis should be named"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Keep incomplete classification visible' \
+    --body-file "$valid_body" --agent-authored --label feature \
+    --label area:fixture --inapplicable layer --label ai-generated \
+    --label needs-triage)" = 0 ] ||
+    fail "needs-triage should preserve an undecided axis: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: owner type controls work classification"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Require a work type' --body-file "$valid_body" \
+    --human-authored --label area:fixture --inapplicable layer --label domain:fixture)" = 1 ] ||
+    fail "personal repo without a work type should fail"
+[ "$(run_personal 'Reject stacked work types' "$valid_body" --label task)" = 1 ] ||
+    fail "personal repo with two work types should fail"
+[ "$(run_organization 'Reject labels in place of Issue Type' "$valid_body" --label feature)" = 1 ] ||
+    fail "organization repo with a work-type label should fail"
+[ "$(run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
+    --owner-type organization --title 'Require native Issue Type' --body-file "$valid_body" \
+    --human-authored --label area:fixture --inapplicable layer --label domain:fixture)" = 1 ] ||
+    fail "organization repo without Issue Type should fail"
+[ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo \
+    --repo-root "$metadata_repo" --owner-type organization \
+    --issue-type 'Definitely Not A Real Type' --title 'Validate native Issue Types' \
+    --body-file "$valid_body" --human-authored --label area:fixture --inapplicable layer \
+    --label domain:fixture)" = 1 ] || fail "unknown native Issue Type should fail"
+
+echo "==> metadata: authoring-time strategy, routing, claim, and Foreman labels are forbidden"
+for label in rigor:deep tier:apex method:plan suggest:gpt claim:gpt foreman:approved agent:codex; do
+    [ "$(run_personal 'Reject authoring-time control labels' "$valid_body" --label "$label")" = 1 ] ||
+        fail "$label should be forbidden during authoring"
+    grep -qF "$label" "$tmp/metadata.out" || fail "the rejection should name $label"
+done
+
+echo "==> metadata: an absent manifest falls back to one bounded label read"
+: >"$tmp/metadata-gh.log"
+_rc=0
+PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
+    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Validate fallback metadata' \
+    --body-file "$valid_body" --agent-authored --work-type-label enhancement \
+    --label area:fixture --inapplicable layer --label domain:fixture \
+    --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "fallback draft should pass: $(cat "$tmp/metadata.out")"
+[ "$(grep -c '^label list ' "$tmp/metadata-gh.log")" = 1 ] ||
+    fail "fallback should make one label-list read"
+grep -q 'label list.*--repo fallback/repo.*--limit 1000.*--json name' "$tmp/metadata-gh.log" ||
+    fail "fallback label read must be repo-bound and bounded"
+
+echo "==> metadata: forbidden fallback families are case-insensitive"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo fallback/repo \
+    --repo-root "$metadata_fallback" --owner-type personal \
+    --title 'Reject authoring controls' --body-file "$valid_body" \
+    --agent-authored --work-type-label 'Rigor:deep' --label area:fixture \
+    --inapplicable layer --label domain:fixture --label ai-generated \
+    >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "mixed-case forbidden family should exit 1 (got $_rc)"
+grep -qF 'Rigor:deep' "$tmp/metadata.out" || fail "forbidden-family error should name the label"
+
+echo "==> metadata: pipe-bearing fallback labels cannot forge writer records"
+_rc=0
+METADATA_GH_LABELS="$(printf '%s\n' enhancement area:fixture domain:fixture \
+    ai-generated sec 'sec|concern|concern|human,agent|false')" \
+    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Reject forged fallback writers' \
+    --body-file "$valid_body" --agent-authored --work-type-label enhancement \
+    --label area:fixture --inapplicable layer --label domain:fixture \
+    --label ai-generated --label sec >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a pipe-bearing live label must not forge an agent writer record"
+grep -q "label 'sec' is not writable by an agent" "$tmp/metadata.out" ||
+    fail "the real human-only fallback record should control writer validation"
+
+echo "==> metadata: an invalid present manifest fails closed without a gh fallback"
+printf '{not json\n' >"$metadata_fallback/label-registry.json"
+: >"$tmp/metadata-gh.log"
+_rc=0
+PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
+    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Reject an invalid manifest' \
+    --body-file "$valid_body" --human-authored --label feature --inapplicable area \
+    --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "invalid present manifest should exit 2 (got $_rc)"
+[ ! -s "$tmp/metadata-gh.log" ] || fail "invalid manifest must not fall through to gh"
+
+echo "==> metadata: a structurally invalid present manifest also fails closed"
+jq '.families[0].writers = "agent"' label-registry.json >"$metadata_fallback/label-registry.json"
+: >"$tmp/metadata-gh.log"
+_rc=0
+PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
+    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Reject an invalid manifest shape' \
+    --body-file "$valid_body" --human-authored --label feature --inapplicable area \
+    --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "structurally invalid manifest should exit 2 (got $_rc)"
+[ ! -s "$tmp/metadata-gh.log" ] || fail "structural failure must not fall through to gh"
+
+echo "==> metadata: incomplete and duplicate-value manifests fail closed"
+for mutation in missing-required duplicate-value; do
+    case "$mutation" in
+    missing-required)
+        jq 'del(.families[0].readers)' label-registry.json \
+            >"$metadata_fallback/label-registry.json"
+        ;;
+    duplicate-value)
+        jq '.families[0].values += [(.families[0].values[0] | .writers = ["agent"])]' \
+            label-registry.json >"$metadata_fallback/label-registry.json"
+        ;;
+    esac
+    _rc=0
+    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+        --owner-type personal --title 'Reject invalid manifest records' \
+        --body-file "$valid_body" --human-authored --label feature \
+        --inapplicable area --inapplicable layer --inapplicable domain \
+        >"$tmp/metadata.out" 2>&1 || _rc=$?
+    [ "$_rc" = 2 ] || fail "$mutation manifest should exit 2 (got $_rc)"
+done
+
+echo "==> metadata: the portless ssh.github.com remote form binds the checkout"
+# AGENTS.md documents four GitHub SSH remote spellings; the port-443 and
+# portless ssh.github.com forms are distinct and both must normalize.
+metadata_sshport="$tmp/metadata-sshport"
+mkdir -p "$metadata_sshport"
+git -C "$metadata_sshport" init -q
+git -C "$metadata_sshport" remote add origin 'ssh://git@ssh.github.com/testowner/testrepo.git'
+cp "$metadata_repo/label-registry.json" "$metadata_sshport/label-registry.json"
+[ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testowner/testrepo \
+    --repo-root "$metadata_sshport" --owner-type personal \
+    --title 'Bind portless ssh remotes' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --inapplicable layer \
+    --label domain:fixture)" = 0 ] ||
+    fail "a portless ssh.github.com remote should bind: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: the checkout remote must match the requested repository"
+_rc=0
+"$metadata" --repo another/repo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Bind the target checkout' --body-file "$valid_body" \
+    --human-authored --label feature --inapplicable area --inapplicable layer \
+    --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "mismatched repo-root should exit 2 (got $_rc)"
+
+echo "==> metadata: help documents both owner-type examples and bad usage exits 2"
+help="$($metadata --help 2>&1 || true)"
+printf '%s\n' "$help" | grep -q 'Personal-account example' || fail "help needs a personal example"
+printf '%s\n' "$help" | grep -q 'Organization example' || fail "help needs an organization example"
+[ "$(run_metadata --repo testowner/testrepo --title x --body-file "$valid_body" \
+    --owner-type personal --human-authored --label feature)" = 2 ] ||
+    fail "missing repo-root should exit 2"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Require explicit authorship' --body-file "$valid_body" \
+    --label feature --label area:fixture --inapplicable layer \
+    --label domain:fixture)" = 2 ] || fail "omitted author type should exit 2"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Reject conflicting authorship' --body-file "$valid_body" \
+    --agent-authored --human-authored --label feature --label area:fixture \
+    --inapplicable layer --label domain:fixture --label ai-generated)" = 2 ] ||
+    fail "conflicting author types should exit 2"
+
+echo "==> metadata: delegation guidance preserves the concrete authoring contract"
+for checker_path in \
+    './ai/skills/universal/track-work/assets/check-issue-metadata.sh:*' \
+    './.agents/skills/track-work/assets/check-issue-metadata.sh:*' \
+    './.claude/skills/track-work/assets/check-issue-metadata.sh:*'; do
+    grep -qF "Bash($checker_path)" ai/skills/universal/track-work/SKILL.md ||
+        fail "skill frontmatter must allow the portable checker path $checker_path"
+done
+for doc in ai/skills/universal/track-work/SKILL.md \
+    ai/skills/universal/track-work/references/issue-authoring.md; do
+    normalized_doc="$(tr '\n' ' ' <"$doc")"
+    printf '%s\n' "$normalized_doc" | grep -qi 'target repository' ||
+        fail "$doc must carry the target repository"
+    printf '%s\n' "$normalized_doc" | grep -qi 'title and body contract' ||
+        fail "$doc must carry the title and body contract"
+    printf '%s\n' "$normalized_doc" | grep -qi 'concrete labels or explicit *inapplicability' ||
+        fail "$doc must carry concrete labels or explicit inapplicability"
+    printf '%s\n' "$normalized_doc" | grep -qi 'created issue number' ||
+        fail "$doc must require the created issue number"
+    printf '%s\n' "$normalized_doc" | grep -qi 'unable to decide.*metadata' ||
+        fail "$doc must define metadata uncertainty"
+done
+
 # --- tick-criteria.sh -------------------------------------------------------
 #
 # The guarantee under test is narrowness: this is the one write the skill
@@ -572,6 +1580,24 @@ issue_is 20 '## Acceptance
 - [x] already done
 ' || fail "only the matched criterion should have changed"
 
+echo "==> inline raw HTML is outside the ticking profile — refused, nothing written"
+write_issue 33 '## Acceptance criteria
+
+- [ ] criterion <pre></pre>
+'
+[ "$(run_tick 33 --match 'criterion')" = 1 ] ||
+    fail "a body carrying inline raw HTML should refuse the mechanized tick"
+issue_is 33 '## Acceptance criteria
+
+- [ ] criterion <pre></pre>
+' || fail "a profile refusal must not write"
+_out="$(env ISSUE_BODY_DIR="$ticks" GH_REPO="" \
+    "$tick" --repo "$repo" --issue 33 --match 'criterion' 2>&1 || true)"
+printf '%s\n' "$_out" | grep -q 'outside the mechanized ticking profile' ||
+    fail "the refusal should say the body is outside the profile"
+printf '%s\n' "$_out" | grep -q 'raw HTML tag' ||
+    fail "the refusal should name the offending construct and line"
+
 echo "==> --index counts unticked items, not body lines"
 write_issue 21 "$body_three"
 [ "$(run_tick 21 --index 2)" = 0 ] || fail "--index 2 should tick the second unticked item"
@@ -617,16 +1643,28 @@ write_issue 27 "$body_three"
 [ "$(run_tick 27 --match 'first' --dry-run)" = 0 ] || fail "--dry-run should succeed"
 issue_is 27 "$body_three" || fail "--dry-run must leave the body untouched"
 
-echo "==> the alternate checkbox spellings are tickable"
+echo "==> quoted criteria and loose marker spacing are outside the profile"
 write_issue 28 '> - [ ] quoted criterion
 1. [ ] ordered criterion
 *  [ ] loose marker
 '
-[ "$(run_tick 28 --index 1 --index 2 --index 3)" = 0 ] || fail "GFM spellings should tick"
-issue_is 28 '> - [x] quoted criterion
-1. [x] ordered criterion
-*  [x] loose marker
-' || fail "every GFM checkbox spelling should be ticked in place"
+[ "$(run_tick 28 --index 1 --index 2 --index 3)" = 1 ] ||
+    fail "quoted tasks and non-canonical spacing should refuse the mechanized tick"
+issue_is 28 '> - [ ] quoted criterion
+1. [ ] ordered criterion
+*  [ ] loose marker
+' || fail "a profile refusal must not write"
+
+echo "==> the canonical marker spellings are tickable"
+write_issue 30 '- [ ] dash criterion
+* [ ] star criterion
++ [ ] plus criterion
+'
+[ "$(run_tick 30 --index 1 --index 2 --index 3)" = 0 ] || fail "canonical spellings should tick"
+issue_is 30 '- [x] dash criterion
+* [x] star criterion
++ [x] plus criterion
+' || fail "every canonical marker spelling should be ticked in place"
 
 echo "==> a literal [ ] inside the criterion text is left alone"
 write_issue 29 '- [ ] the parser accepts [ ] as input
@@ -793,7 +1831,25 @@ write_issue 36 "$body_three"
 [ "$(run_tick 36 --match "$(printf 'first\nindex:2')")" = 2 ] || fail "a multiline --match should exit 2"
 issue_is 36 "$body_three" || fail "a multiline --match must not write"
 
-echo "==> a blockquoted fence inside a fenced example does not close it"
+# --- profile refusals --------------------------------------------------------
+# Every fixture below is an attack a review round once aimed at the GFM
+# emulation this parser no longer attempts: constructs whose rendering depends
+# on container state. The profile refuses each whole body, names the offending
+# line, and writes nothing — the attack cannot tick the wrong box because
+# nothing is ticked at all.
+
+# refused_body NUM BODY — assert the mechanized tick refuses NUM's body
+# untouched, for every selector shape.
+refused_body() {
+    write_issue "$1" "$2"
+    [ "$(run_tick "$1" --index 1)" = 1 ] ||
+        fail "issue $1 is outside the profile and must refuse --index"
+    [ "$(run_tick "$1" --match 'criterion')" = 1 ] ||
+        fail "issue $1 is outside the profile and must refuse --match"
+    issue_is "$1" "$2" || fail "a profile refusal must not write (issue $1)"
+}
+
+echo "==> everything inside a column-0 fence is opaque, quoted delimiters included"
 write_issue 37 '````
 > ```
 > - [ ] quoted example inside an outer fence
@@ -812,8 +1868,8 @@ issue_is 37 '````
 - [x] the real criterion
 ' || fail "an inner quoted fence must not close the outer one"
 
-echo "==> a sibling list-item fence both ends the previous one and opens its own"
-write_issue 61 '- ```text
+echo "==> quoted, list-nested, and indented fences are refused"
+refused_body 61 '- ```text
   content
 - ```text
   - [ ] example inside the sibling fence
@@ -821,55 +1877,66 @@ write_issue 61 '- ```text
 
 - [ ] the real criterion
 '
-[ "$(run_tick 61 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 61 '- ```text
-  content
-- ```text
-  - [ ] example inside the sibling fence
-  ```
+refused_body 60 '- >   ```text
+  >   - [ ] example in an indented quoted fence
+  >   ```
 
-- [x] the real criterion
-' || fail "the boundary line must be reconsidered as an opener"
+- [ ] the real criterion
+'
+refused_body 54 ' ```
+    ```
+- [ ] example after the false closer
+ ```
 
-echo "==> a marker that cannot interrupt a paragraph keeps paragraph state"
-write_issue 62 'Some ordinary paragraph text.
+- [ ] the real criterion
+'
+refused_body 55 '- > ```text
+  > - [ ] example in a quoted list fence
+  > ```
+
+- [ ] the real criterion
+'
+refused_body 51 '- - ```text
+    - [ ] example in a nested list fence
+    ```
+
+- [ ] the real criterion
+'
+refused_body 50 '> ```
+- [ ] the real criterion
+> ```
+> - [ ] example inside the new quoted fence
+'
+
+echo "==> non-canonical task spacing and markers are refused"
+refused_body 62 'Some ordinary paragraph text.
 2. prose that cannot interrupt
 3. [ ] example prose
 
 - [ ] the real criterion
 '
-[ "$(run_tick 62 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 62 'Some ordinary paragraph text.
-2. prose that cannot interrupt
-3. [ ] example prose
+refused_body 58 'Some ordinary paragraph text.
+2. [ ] example prose, still in the paragraph
 
-- [x] the real criterion
-' || fail "an ordered-looking line must not fabricate list context"
+- [ ] the real criterion
+'
+refused_body 56 '-     [ ] example indented into a code block
 
-echo "==> a tabbed list prefix is measured in rendered columns"
-printf -- '-\t```text\n\t- [ ] first example\n  ```\n- [ ] example in the outer fence\n  ```\n\n- [ ] the real criterion\n' >"$ticks/${repo//\//_}__63.md"
-[ "$(run_tick 63 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-[ "$(cat "$ticks/${repo//\//_}__63.md" | tail -1)" = '- [x] the real criterion' ] || fail "a tab must advance to the next four-column stop"
+- [ ] the real criterion
+'
+refused_body 57 '-    [ ] four spaces of padding is not the canonical single space
+'
+refused_body 52 '1234567890. [ ] example prose, not a list item
 
-echo "==> task text in script, style and textarea blocks is not a criterion"
+- [ ] the real criterion
+'
+_tabbed="$(printf -- '-\t```text\n\t- [ ] first example\n  ```\n- [ ] example in the outer fence\n  ```\n\n- [ ] the real criterion\n')"
+refused_body 63 "$_tabbed"
+
+echo "==> raw script, style and textarea blocks are refused"
 for raw in script style textarea; do
-    printf '<%s>\n- [ ] example in raw html\n</%s>\n\n- [ ] the real criterion\n' "$raw" "$raw" >"$ticks/${repo//\//_}__64.md"
-    [ "$(run_tick 64 --index 1)" = 0 ] || fail "--index 1 should address the real criterion (<$raw>)"
-    [ "$(cat "$ticks/${repo//\//_}__64.md" | tail -1)" = '- [x] the real criterion' ] || fail "a checkbox inside <$raw> must be left alone"
+    refused_body 64 "$(printf '<%s>\n- [ ] example in raw html\n</%s>\n\n- [ ] the real criterion\n' "$raw" "$raw")"
 done
-
-echo "==> an ordered marker other than 1 cannot interrupt a paragraph"
-write_issue 58 'Some ordinary paragraph text.
-2. [ ] example prose, still in the paragraph
-
-- [ ] the real criterion
-'
-[ "$(run_tick 58 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 58 'Some ordinary paragraph text.
-2. [ ] example prose, still in the paragraph
-
-- [x] the real criterion
-' || fail "an ordered marker under prose must not be tickable"
 
 echo "==> an ordered marker continuing a list is still a criterion"
 write_issue 59 '1. [ ] first
@@ -880,97 +1947,6 @@ issue_is 59 '1. [ ] first
 2. [x] second continues the list
 ' || fail "an ordered item in list context should tick"
 
-echo "==> fence indentation after a quote marker still opens the fence"
-write_issue 60 '- >   ```text
-  >   - [ ] example in an indented quoted fence
-  >   ```
-
-- [ ] the real criterion
-'
-[ "$(run_tick 60 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 60 '- >   ```text
-  >   - [ ] example in an indented quoted fence
-  >   ```
-
-- [x] the real criterion
-' || fail "permitted fence indentation after a quote must still open the fence"
-
-echo "==> an indented opener still caps its closer at three spaces"
-write_issue 54 ' ```
-    ```
-- [ ] example after the false closer
- ```
-
-- [ ] the real criterion
-'
-[ "$(run_tick 54 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 54 ' ```
-    ```
-- [ ] example after the false closer
- ```
-
-- [x] the real criterion
-' || fail "a four-space delimiter is content, not a closer"
-
-echo "==> mixed list and blockquote containers hide a fence"
-write_issue 55 '- > ```text
-  > - [ ] example in a quoted list fence
-  > ```
-
-- [ ] the real criterion
-'
-[ "$(run_tick 55 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 55 '- > ```text
-  > - [ ] example in a quoted list fence
-  > ```
-
-- [x] the real criterion
-' || fail "a fence inside a quote inside a list item must hide its contents"
-
-echo "==> a marker padded past four spaces is code, not a criterion"
-write_issue 56 '-     [ ] example indented into a code block
-
-- [ ] the real criterion
-'
-[ "$(run_tick 56 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 56 '-     [ ] example indented into a code block
-
-- [x] the real criterion
-' || fail "five spaces of padding must not be tickable"
-
-echo "==> four spaces of marker padding is still a criterion"
-write_issue 57 '-    [ ] four spaces is still a criterion
-'
-[ "$(run_tick 57 --index 1)" = 0 ] || fail "four spaces is within the limit"
-issue_is 57 '-    [x] four spaces is still a criterion
-' || fail "a four-space padded item should tick"
-
-echo "==> a fence under nested list markers hides its contents"
-write_issue 51 '- - ```text
-    - [ ] example in a nested list fence
-    ```
-
-- [ ] the real criterion
-'
-[ "$(run_tick 51 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 51 '- - ```text
-    - [ ] example in a nested list fence
-    ```
-
-- [x] the real criterion
-' || fail "nested list markers must not hide the fence"
-
-echo "==> an ordered marker over nine digits is prose, not a criterion"
-write_issue 52 '1234567890. [ ] example prose, not a list item
-
-- [ ] the real criterion
-'
-[ "$(run_tick 52 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 52 '1234567890. [ ] example prose, not a list item
-
-- [x] the real criterion
-' || fail "a ten-digit ordered marker must not be tickable"
-
 echo "==> a nine-digit ordered marker is still a criterion"
 write_issue 53 '123456789. [ ] a real ordered criterion
 '
@@ -978,18 +1954,16 @@ write_issue 53 '123456789. [ ] a real ordered criterion
 issue_is 53 '123456789. [x] a real ordered criterion
 ' || fail "a nine-digit ordered item should tick"
 
-echo "==> leaving a blockquote ends the fence it opened"
-write_issue 50 '> ```
-- [ ] the real criterion
-> ```
-> - [ ] example inside the new quoted fence
+echo "==> a thematic break is a leaf block, so an ordered list may start above 1 after it"
+write_issue 55 'Some prose before the rule.
+***
+2. [ ] ordered criterion after a thematic break
 '
-[ "$(run_tick 50 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 50 '> ```
-- [x] the real criterion
-> ```
-> - [ ] example inside the new quoted fence
-' || fail "an unquoted line must end a fence opened inside a blockquote"
+[ "$(run_tick 55 --index 1)" = 0 ] || fail "a break closes the paragraph, so 2. starts a list"
+issue_is 55 'Some prose before the rule.
+***
+2. [x] ordered criterion after a thematic break
+' || fail "the criterion after a thematic break should tick"
 
 echo "==> a backtick line whose info string holds backticks is not an opener"
 write_issue 47 '``` `not an opener`
@@ -1008,8 +1982,8 @@ issue_is 47 '``` `not an opener`
 - [x] the real criterion
 ' || fail "a non-opener must not shift the fence boundaries"
 
-echo "==> leaving a list container ends the fence it opened"
-write_issue 48 '- ```text
+echo "==> list-item fences and raw <pre> bodies are refused"
+refused_body 48 '- ```text
   - [ ] indented example
 ```
 - [ ] example in the new outer fence
@@ -1017,51 +1991,28 @@ write_issue 48 '- ```text
 
 - [ ] the real criterion
 '
-[ "$(run_tick 48 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 48 '- ```text
-  - [ ] indented example
-```
-- [ ] example in the new outer fence
-```
-
-- [x] the real criterion
-' || fail "an unindented delimiter opens a new fence, it is not just a closer"
-
-echo "==> a closing-tag-shaped word does not end a <pre> block"
-write_issue 49 '<pre>
+refused_body 49 '<pre>
 sample text </prevent> more
 - [ ] example inside pre
 </pre>
 
 - [ ] the real criterion
 '
-[ "$(run_tick 49 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 49 '<pre>
-sample text </prevent> more
-- [ ] example inside pre
-</pre>
-
-- [x] the real criterion
-' || fail "</prevent> must not end preformatted mode"
-
-echo "==> a fence opened as a list item hides its contents"
-write_issue 45 '- ```text
+refused_body 45 '- ```text
   - [ ] example inside a list-item fence
   ```
 
 - [ ] the real criterion
 '
-[ "$(run_tick 45 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 45 '- ```text
-  - [ ] example inside a list-item fence
-  ```
+refused_body 44 '<pre>
+- [ ] example rendered verbatim
+</pre>
 
-- [x] the real criterion
-' || fail "a checkbox inside a list-item fence must be left alone"
+- [ ] the real criterion
+'
 
 echo "==> a list marker on a later line does not close a fence"
-# A marker starts a new item; only an opener may carry one. Failing to close is
-# the safe direction — the command refuses rather than ticking a code sample.
+# Inside a column-0 fence every line is opaque, marker-bearing or not.
 write_issue 46 '```
 - ``` still inside
 - [ ] example
@@ -1077,21 +2028,6 @@ issue_is 46 '```
 
 - [x] the real criterion
 ' || fail "only the real criterion should tick"
-
-echo "==> a task item inside raw <pre> HTML is not a criterion"
-write_issue 44 '<pre>
-- [ ] example rendered verbatim
-</pre>
-
-- [ ] the real criterion
-'
-[ "$(run_tick 44 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 44 '<pre>
-- [ ] example rendered verbatim
-</pre>
-
-- [x] the real criterion
-' || fail "a task item inside <pre> must be left alone"
 
 echo "==> the closing-keyword guard points at the narrowed ticker"
 _out="$(printf '%s' 'Closes #5' |
@@ -1137,44 +2073,32 @@ issue_is 43 '```
 - [x] the real criterion
 ' || fail "an over-indented delimiter must not close the fence"
 
-echo "==> a checklist hidden in an HTML comment is not a criterion"
-write_issue 41 '<!--
+echo "==> HTML comments are refused wherever they sit — the round-13 attack included"
+# The r13 reproduction: a raw tag hidden inside a comment once made the
+# emulation suppress every later rendered criterion. Under the profile the
+# comment itself is the refusal, so the criterion can never silently vanish.
+refused_body 41 '<!-- <pre> -->
+- [ ] the real criterion
+'
+refused_body 42 '<!--
 - [ ] example from the issue template
 -->
 
 - [ ] the real criterion
 '
-[ "$(run_tick 41 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 41 '<!--
-- [ ] example from the issue template
--->
-
-- [x] the real criterion
-' || fail "a commented-out example must be left alone"
-
-echo "==> a single-line HTML comment does not hide what follows it"
-write_issue 42 '<!-- guidance --> text
+refused_body 40 '<!-- guidance --> text
 
 - [ ] the real criterion
 '
-[ "$(run_tick 42 --index 1)" = 0 ] || fail "a closed comment must not swallow the rest"
-issue_is 42 '<!-- guidance --> text
 
-- [x] the real criterion
-' || fail "only the real criterion should tick"
-
-echo "==> text GFM does not render as a task item is not a criterion"
-# `- [ ]example` has no delimiter after the box, so GitHub renders it as prose.
-write_issue 39 '- [ ]example prose, not a checkbox
+echo "==> task text GFM does not render is refused, never silently skipped"
+# `- [ ]example` has no delimiter after the box, so GitHub renders it as
+# prose. Skipping it would shift --index onto the wrong criterion; refusing
+# keeps every selector honest.
+refused_body 39 '- [ ]example prose, not a checkbox
 
 - [ ] the real criterion
 '
-[ "$(run_tick 39 --match 'example')" = 1 ] || fail "un-rendered task text should not be selectable"
-[ "$(run_tick 39 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 39 '- [ ]example prose, not a checkbox
-
-- [x] the real criterion
-' || fail "prose that looks like a task item must be left alone"
 
 echo "==> an empty criterion at end of line is still a criterion"
 write_issue 40 '- [ ]
@@ -1193,8 +2117,8 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
 [ "$_rc" = 2 ] || fail "a failed metadata lookup should exit 2 (got $_rc)"
 [ ! -f "$tmp/edited" ] || fail "a failed metadata lookup must not write"
 
-echo "==> a deeper fence inside a quoted fenced block does not close it"
-write_issue 38 '> ```
+echo "==> blockquoted fences are refused at any depth"
+refused_body 38 '> ```
 > > ```
 > > - [ ] example nested deeper
 > > ```
@@ -1202,30 +2126,12 @@ write_issue 38 '> ```
 
 - [ ] the real criterion
 '
-[ "$(run_tick 38 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 38 '> ```
-> > ```
-> > - [ ] example nested deeper
-> > ```
-> ```
-
-- [x] the real criterion
-' || fail "a deeper fence must not close a shallower one"
-
-echo "==> a checkbox inside a blockquoted fence is not a criterion"
-write_issue 33 '> ```
+refused_body 33 '> ```
 > - [ ] quoted example
 > ```
 
 - [ ] the real criterion
 '
-[ "$(run_tick 33 --index 1)" = 0 ] || fail "--index 1 should skip the quoted example"
-issue_is 33 '> ```
-> - [ ] quoted example
-> ```
-
-- [x] the real criterion
-' || fail "a checkbox inside a blockquoted fence must be left alone"
 
 echo "==> --match resolves on criterion text, never the line number"
 write_issue 34 '
@@ -1291,78 +2197,50 @@ issue_is 32 '~~~
 - [x] the real criterion
 ' || fail "checkboxes in either fence style must be left alone"
 
-echo "==> a checkbox in a four-space indented code block is not a criterion"
-write_issue 63 'Example:
+echo "==> indented task syntax is refused — code block, nesting depth, and lazy continuation alike"
+# GitHub renders `    - [ ] x` as code under prose, as a nested item under a
+# two-column parent, and as a continuation elsewhere; the profile refuses all
+# of them instead of deciding, because a wrong decision ticks the wrong line.
+refused_body 63 'Example:
 
     - [ ] example inside an indented code block
 
 - [ ] the real criterion
 '
-[ "$(run_tick 63 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 63 'Example:
+refused_body 65 '- outer item
 
-    - [ ] example inside an indented code block
+      - [ ] example indented into code inside the item
 
-- [x] the real criterion
-' || fail "an indented code block must hide its checkbox"
+- [ ] the real criterion
+'
+refused_body 66 'Example:
 
-echo "==> a checkbox nested under a list item is still a criterion"
+    - [ ] first example line
+
+    - [ ] second example line
+
+- [ ] the real criterion
+'
+refused_body 67 '> Example:
+>
+>     - [ ] example inside a quoted indented code block
+
+- [ ] the real criterion
+'
+refused_body 75 'Some prose
+    - [ ] indented under a paragraph, which GitHub renders as prose
+
+- [ ] the real criterion
+'
+
+echo "==> a checkbox nested exactly two spaces under a bullet parent is still a criterion"
 write_issue 64 '- outer item
-    - [ ] nested criterion
+  - [ ] nested criterion
 '
-[ "$(run_tick 64 --index 1)" = 0 ] || fail "a nested criterion should stay tickable"
+[ "$(run_tick 64 --index 1)" = 0 ] || fail "a canonical nested criterion should stay tickable"
 issue_is 64 '- outer item
-    - [x] nested criterion
-' || fail "four spaces under a list item is nesting, not code"
-
-echo "==> an indented code block is measured from its list container, not column 0"
-write_issue 65 '- outer item
-
-      - [ ] example indented into code inside the item
-
-- [ ] the real criterion
-'
-[ "$(run_tick 65 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 65 '- outer item
-
-      - [ ] example indented into code inside the item
-
-- [x] the real criterion
-' || fail "six columns inside a two-column item is a code block"
-
-echo "==> a blank line does not end an indented code block"
-write_issue 66 'Example:
-
-    - [ ] first example line
-
-    - [ ] second example line
-
-- [ ] the real criterion
-'
-[ "$(run_tick 66 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 66 'Example:
-
-    - [ ] first example line
-
-    - [ ] second example line
-
-- [x] the real criterion
-' || fail "an interior blank line must not reopen the block"
-
-echo "==> a quoted indented code block hides its checkbox too"
-write_issue 67 '> Example:
->
->     - [ ] example inside a quoted indented code block
-
-- [ ] the real criterion
-'
-[ "$(run_tick 67 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 67 '> Example:
->
->     - [ ] example inside a quoted indented code block
-
-- [x] the real criterion
-' || fail "indentation inside a quote is measured from the quote content column"
+  - [x] nested criterion
+' || fail "two spaces under a bullet item is canonical nesting"
 
 echo "==> a wrapped criterion is still a criterion, and its continuation is not"
 write_issue 74 '- [ ] a criterion too long for one line, wrapping onto
@@ -1375,53 +2253,21 @@ issue_is 74 '- [ ] a criterion too long for one line, wrapping onto
 - [x] the second criterion
 ' || fail "a wrapped continuation must not shift the index"
 
-echo "==> a lazy continuation under a paragraph is not a criterion"
-write_issue 75 'Some prose
-    - [ ] indented under a paragraph, which GitHub renders as prose
-
-- [ ] the real criterion
-'
-[ "$(run_tick 75 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 75 'Some prose
-    - [ ] indented under a paragraph, which GitHub renders as prose
-
-- [x] the real criterion
-' || fail "an over-indented line under prose continues the paragraph"
-
-echo "==> a bare > line is a blank line, not prose that ends a quoted fence"
-write_issue 73 '> ```text
+echo "==> quoted fences and raw HTML blocks are refused — div, table, details alike"
+refused_body 73 '> ```text
 >
 > - [ ] example inside the quoted fence
 > ```
 
 - [ ] the real criterion
 '
-[ "$(run_tick 73 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 73 '> ```text
->
-> - [ ] example inside the quoted fence
-> ```
-
-- [x] the real criterion
-' || fail "a gap inside a quote must not close the fence it holds"
-
-echo "==> a checkbox inside a type-6 HTML block is not a criterion"
-write_issue 68 '<div>
+refused_body 68 '<div>
 - [ ] example inside an html block
 </div>
 
 - [ ] the real criterion
 '
-[ "$(run_tick 68 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 68 '<div>
-- [ ] example inside an html block
-</div>
-
-- [x] the real criterion
-' || fail "a type-6 HTML block must hide its checkbox"
-
-echo "==> a table is a type-6 HTML block as much as a div"
-write_issue 69 '<table>
+refused_body 69 '<table>
 <tr><td>
 - [ ] example inside a table cell
 </td></tr>
@@ -1429,190 +2275,78 @@ write_issue 69 '<table>
 
 - [ ] the real criterion
 '
-[ "$(run_tick 69 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 69 '<table>
-<tr><td>
-- [ ] example inside a table cell
-</td></tr>
-</table>
-
-- [x] the real criterion
-' || fail "the whole known block-tag set must hide its contents"
-
-echo "==> a blank line ends a type-6 block, so a <details> checklist stays live"
-write_issue 70 '<details>
+refused_body 70 '<details>
 <summary>Acceptance criteria</summary>
 
 - [ ] the real criterion
 
 </details>
 '
-[ "$(run_tick 70 --index 1)" = 0 ] || fail "a details-wrapped criterion should stay tickable"
-issue_is 70 '<details>
-<summary>Acceptance criteria</summary>
 
-- [x] the real criterion
-
-</details>
-' || fail "the blank line after <summary> ends the HTML block"
-
-echo "==> a type-6 block opened as list-item content still hides its contents"
-write_issue 76 '- <div>
+echo "==> raw HTML in any position, bare markers, and hyphen-only lines are refused"
+refused_body 76 '- <div>
   - [ ] example rendered as raw html
 </div>
 
 - [ ] the real criterion
 '
-[ "$(run_tick 76 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 76 '- <div>
-  - [ ] example rendered as raw html
-</div>
-
-- [x] the real criterion
-' || fail "the scan must see past the list marker to the tag"
-
-echo "==> a lazy continuation that looks like a tag opens no HTML block"
-write_issue 77 'Some prose
+refused_body 77 'Some prose
     <div>
 - [ ] the real criterion
 '
-[ "$(run_tick 77 --index 1)" = 0 ] || fail "a paragraph continuation must not hide the next line"
-issue_is 77 'Some prose
-    <div>
-- [x] the real criterion
-' || fail "an HTML block needs at most three columns of indentation"
-
-echo "==> a marker padded past four spaces opens no HTML block either"
-write_issue 78 '-     <div>
+refused_body 78 '-     <div>
       - [ ] example indented into code
 
 - [ ] the real criterion
 '
-[ "$(run_tick 78 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 78 '-     <div>
-      - [ ] example indented into code
-
-- [x] the real criterion
-' || fail "content past four columns of padding is code, not a tag"
-
-echo "==> an empty list marker still opens a container for its children"
-write_issue 79 '-
+refused_body 79 '-
     - [ ] child of an empty parent marker
 '
-[ "$(run_tick 79 --index 1)" = 0 ] || fail "a child of an empty parent should stay tickable"
-issue_is 79 '-
-    - [x] child of an empty parent marker
-' || fail "a bare marker opens a list item, so its child is not code"
-
-echo "==> a thematic break is a rule, not three nested list containers"
-write_issue 80 '- - -
+refused_body 80 '- - -
 
     - [ ] example in an indented code block
 
 - [ ] the real criterion
 '
-[ "$(run_tick 80 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 80 '- - -
 
-    - [ ] example in an indented code block
-
-- [x] the real criterion
-' || fail "a thematic break must open no container"
-
-echo "==> a deeper blockquote stays inside the HTML block holding it"
-write_issue 81 '> <div>
+echo "==> quoted raw HTML, lazy nesting, and quoted list structure are all refused"
+refused_body 81 '> <div>
 > > - [ ] example inside the quoted html block
 
 - [ ] the real criterion
 '
-[ "$(run_tick 81 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 81 '> <div>
-> > - [ ] example inside the quoted html block
-
-- [x] the real criterion
-' || fail "quoting deeper must not close the block"
-
-echo "==> a sibling list item ends the HTML block inside its predecessor"
-write_issue 82 '- <div>
+refused_body 82 '- <div>
   raw content
 - [ ] the real criterion
 '
-[ "$(run_tick 82 --index 1)" = 0 ] || fail "a sibling item should be live again"
-issue_is 82 '- <div>
-  raw content
-- [x] the real criterion
-' || fail "an HTML block ends where its container ends"
-
-echo "==> a list-looking line inside raw HTML leaves no container behind"
-write_issue 83 '<div>
+refused_body 83 '<div>
 - item inside raw html
 
     - [ ] example in an indented code block
 - [ ] the real criterion
 '
-[ "$(run_tick 83 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 83 '<div>
-- item inside raw html
-
-    - [ ] example in an indented code block
-- [x] the real criterion
-' || fail "raw HTML must record no block structure"
-
-echo "==> an unindented lazy continuation keeps its list item open"
-write_issue 84 '- outer paragraph
+refused_body 84 '- outer paragraph
 continuation without indent
 
     - [ ] nested task item
 '
-[ "$(run_tick 84 --index 1)" = 0 ] || fail "the nested task item should stay tickable"
-issue_is 84 '- outer paragraph
-continuation without indent
-
-    - [x] nested task item
-' || fail "a lazy continuation closes no container"
-
-echo "==> quoting deeper nests inside a list item rather than ending it"
-write_issue 85 '- outer
+refused_body 85 '- outer
   > - quoted
 
     - [ ] live criterion
 '
-[ "$(run_tick 85 --index 1)" = 0 ] || fail "the outer item should survive the quoted sub-list"
-issue_is 85 '- outer
-  > - quoted
-
-    - [x] live criterion
-' || fail "only leaving a container closes it"
-
-echo "==> leaving a blockquote entered after a list marker ends its HTML block"
-write_issue 86 '- > <div>
+refused_body 86 '- > <div>
   - [ ] live criterion in the outer item
 '
-[ "$(run_tick 86 --index 1)" = 0 ] || fail "leaving the quote should end the block"
-issue_is 86 '- > <div>
-  - [x] live criterion in the outer item
-' || fail "the block depth is the one the markers reached, not the line prefix"
-
-echo "==> leaving a blockquote still closes the list it held"
-write_issue 87 '> - item
+refused_body 87 '> - item
 - [ ] outside the quote
 '
-[ "$(run_tick 87 --index 1)" = 0 ] || fail "an unquoted sibling should be tickable"
-issue_is 87 '> - item
-- [x] outside the quote
-' || fail "a shallower line must still pop the quoted container"
-
-echo "==> a blockquote inside a list item is the container, not indentation"
-write_issue 88 '- outer
+refused_body 88 '- outer
     > - [ ] quoted criterion nested under the item
 '
-[ "$(run_tick 88 --index 1)" = 0 ] || fail "a quoted nested criterion should be tickable"
-issue_is 88 '- outer
-    > - [x] quoted criterion nested under the item
-' || fail "the quote marker column must not count as indentation"
 
-echo "==> a top-level fence ends the list item before it"
-write_issue 89 '- item
+echo "==> indented fences, deep indentation, and quoted structure keep refusing"
+refused_body 89 '- item
 
 ```text
 x
@@ -1622,20 +2356,7 @@ x
 
 - [ ] the real criterion
 '
-[ "$(run_tick 89 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 89 '- item
-
-```text
-x
-```
-
-    - [ ] sample in an indented code block
-
-- [x] the real criterion
-' || fail "a fence delimiter closes the containers it has left"
-
-echo "==> a fence inside a list item leaves that item open"
-write_issue 90 '- item
+refused_body 90 '- item
 
   ```text
   x
@@ -1643,172 +2364,67 @@ write_issue 90 '- item
 
   - [ ] nested criterion after a fence inside the item
 '
-[ "$(run_tick 90 --index 1)" = 0 ] || fail "the item should survive its own fenced block"
-issue_is 90 '- item
-
-  ```text
-  x
-  ```
-
-  - [x] nested criterion after a fence inside the item
-' || fail "a fence at the item content column closes nothing"
-
-echo "==> an ordered marker over nine digits opens no container either"
-write_issue 91 '1234567890. text
+refused_body 91 '1234567890. text
 
             - [ ] sample
 
 - [ ] the real criterion
 '
-[ "$(run_tick 91 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 91 '1234567890. text
-
-            - [ ] sample
-
-- [x] the real criterion
-' || fail "a ten-digit marker is prose, so it seeds no container"
-
-echo "==> a heading is a leaf block, so an ordered list under it starts a list"
-write_issue 92 '# Heading
+refused_body 92 '# Heading
 2. parent
     - [ ] child
 '
-[ "$(run_tick 92 --index 1)" = 0 ] || fail "a list under a heading should open its container"
-issue_is 92 '# Heading
-2. parent
-    - [x] child
-' || fail "a heading is not a paragraph a marker has to interrupt"
-
-echo "==> under a real paragraph the non-1 marker rule still holds"
-write_issue 93 'Some prose
+refused_body 93 'Some prose
 2. not a list, the paragraph continues
     - [ ] still prose
 
 - [ ] the real criterion
 '
-[ "$(run_tick 93 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 93 'Some prose
-2. not a list, the paragraph continues
-    - [ ] still prose
-
-- [x] the real criterion
-' || fail "only an ordered marker at 1 may interrupt a paragraph"
-
-echo "==> a blockquote marker four columns in is code, not a container"
-write_issue 94 'Example:
+refused_body 94 'Example:
 
     > - [ ] example inside an indented code block
 
 - [ ] the real criterion
 '
-[ "$(run_tick 94 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 94 'Example:
-
-    > - [ ] example inside an indented code block
-
-- [x] the real criterion
-' || fail "a container marker carries at most three columns of indentation"
-
-echo "==> a quote three columns past its container is still a container"
-write_issue 95 '- item
+refused_body 95 '- item
     > - [ ] quoted at two columns past the item content
 '
-[ "$(run_tick 95 --index 1)" = 0 ] || fail "a quoted nested criterion should be tickable"
-issue_is 95 '- item
-    > - [x] quoted at two columns past the item content
-' || fail "the cap is measured against the container, not column 0"
 
-echo "==> an HTML block closes the paragraph before it"
-write_issue 96 'Some prose
+echo "==> raw HTML, comments, tabs, and item-scoped leaf blocks are refused"
+refused_body 96 'Some prose
 - <div>
   raw content
 2. [ ] real criterion
 '
-[ "$(run_tick 96 --index 1)" = 0 ] || fail "the ordered criterion after the block should be tickable"
-issue_is 96 'Some prose
-- <div>
-  raw content
-2. [x] real criterion
-' || fail "raw HTML is a leaf block, so no paragraph survives it"
-
-echo "==> marker padding is measured in rendered columns, so tabs count fully"
-write_issue 97 "$(printf -- '-\t\t[ ] example indented into code by tabs\n\n- [ ] the real criterion\n')"
-[ "$(run_tick 97 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 97 "$(printf -- '-\t\t[ ] example indented into code by tabs\n\n- [x] the real criterion\n')" ||
-    fail "two tabs expand past four columns, so that item is code"
-
-echo "==> one tab of marker padding is still within the limit"
-write_issue 98 "$(printf -- '-\t[ ] one tab is within the limit\n')"
-[ "$(run_tick 98 --index 1)" = 0 ] || fail "one tab should stay a criterion"
-issue_is 98 "$(printf -- '-\t[x] one tab is within the limit\n')" ||
-    fail "a single tab reaches column four, which is the cap and not past it"
-
-echo "==> a list item holding a leaf block grants no lazy continuation"
-write_issue 99 '- # heading
+refused_body 97 "$(printf -- '-\t\t[ ] example indented into code by tabs\n\n- [ ] the real criterion\n')"
+refused_body 98 "$(printf -- '-\t[ ] one tab instead of the canonical space\n')"
+refused_body 99 '- # heading
 following unindented prose
 
     - [ ] example
 
 - [ ] the real criterion
 '
-[ "$(run_tick 99 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 99 '- # heading
-following unindented prose
-
-    - [ ] example
-
-- [x] the real criterion
-' || fail "prose under a heading-only item closes that item"
-
-echo "==> an inline comment leaves its paragraph open across the hidden lines"
-write_issue 100 'Some prose <!--
+refused_body 100 'Some prose <!--
 hidden
 -->
 2. [ ] example
 
 - [ ] the real criterion
 '
-[ "$(run_tick 100 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 100 'Some prose <!--
-hidden
--->
-2. [ ] example
-
-- [x] the real criterion
-' || fail "a mid-paragraph comment is inline HTML and closes no paragraph"
-
-echo "==> a comment that opens its own line still closes the paragraph"
-write_issue 101 '<!--
+refused_body 101 '<!--
 - [ ] commented-out example
 -->
 2. [ ] real ordered criterion
 '
-[ "$(run_tick 101 --index 1)" = 0 ] || fail "the ordered criterion after a comment block should tick"
-issue_is 101 '<!--
-- [ ] commented-out example
--->
-2. [x] real ordered criterion
-' || fail "a type-2 comment block is a leaf block"
-
-echo "==> an inline <pre> leaves its paragraph open too"
-write_issue 102 'Some prose <pre>
+refused_body 102 'Some prose <pre>
 - [ ] inline pre content
 </pre>
 2. [ ] example
 
 - [ ] the real criterion
 '
-[ "$(run_tick 102 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 102 'Some prose <pre>
-- [ ] inline pre content
-</pre>
-2. [ ] example
-
-- [x] the real criterion
-' || fail "the block/inline distinction applies to raw tags as well"
-
-echo "==> a fence is a leaf block, so no paragraph survives it"
-write_issue 103 'Some prose
+refused_body 103 'Some prose
 - ```text
   content
   ```
@@ -1818,36 +2434,14 @@ unindented prose
 
 - [ ] the real criterion
 '
-[ "$(run_tick 103 --index 1)" = 0 ] || fail "--index 1 should address the real criterion"
-issue_is 103 'Some prose
-- ```text
-  content
-  ```
-unindented prose
-
-    - [ ] example
-
-- [x] the real criterion
-' || fail "an item holding only a fence grants no lazy continuation"
-
-echo "==> an unterminated fence swallows the rest of the body, and that is correct"
-write_issue 104 'Some prose
+refused_body 104 'Some prose
 - ```text
 content
 ```
 unindented prose
 
-- [ ] not a criterion, this is inside the reopened fence
+- [ ] not a criterion, this is inside a container-dependent fence
 '
-[ "$(run_tick 104 --index 1)" = 1 ] || fail "an unterminated fence should refuse, not guess"
-issue_is 104 'Some prose
-- ```text
-content
-```
-unindented prose
-
-- [ ] not a criterion, this is inside the reopened fence
-' || fail "a refusal must not write"
 
 echo "==> an autolink is not an HTML block opener"
 write_issue 71 '<https://example.com/spec>
