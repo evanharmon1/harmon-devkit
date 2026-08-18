@@ -2621,6 +2621,21 @@ chmod +x "$stub/gh"
 [ "$(run_status --issue 5 --status "Todo")" = 2 ] ||
     fail "a failed read could not verify and must exit 2"
 
+# --- claim-record contract ---------------------------------------------------
+
+echo "==> claim-record producer and consumers document operational metadata"
+claim_skill="./ai/skills/universal/claim/SKILL.md"
+claim_lifecycle="./ai/skills/universal/track-work/references/claim-lifecycle.md"
+wrap_skill="./ai/skills/universal/wrap/SKILL.md"
+for field in harness model session; do
+    grep -Fq -- "  - $field:" "$claim_skill" ||
+        fail "/claim must write the $field field"
+    grep -Fq -- "  - $field:" "$claim_lifecycle" ||
+        fail "claim-lifecycle.md must document the $field field"
+done
+grep -Fq 'optional `harness`, `model`, and `session`' "$wrap_skill" ||
+    fail "/wrap must accept the optional operational fields"
+
 # --- release-claim.sh --------------------------------------------------------
 # Fully offline: a stubbed `gh` serves comment/issue JSON from scenario files
 # and logs every write, so the claim parsing, trust gate, and provenance
@@ -2759,13 +2774,30 @@ grep -q -- '--remove-label agent:codex' "$rc_log" || fail "legacy release must r
 # fallback sweeping live `claim:*` labels alongside any legacy `agent:*` ones.
 # body_v2 rewrites body_v1's field prefix and value to the new family.
 body_v2="$(printf '%s' "$body_v1" | sed 's/`agent:` label/`claim:` label/g; s/agent:claude-code/claim:claude/')"
+body_extended="$(printf '%s' "$body_v2" | awk '
+    { print }
+    /Claim record/ {
+        print "- harness: Codex CLI"
+        print "- model: gpt-5"
+        print "- session: claim-record-fields-450"
+    }
+')"
 issue_closed_claim='{"state":"closed","labels":[{"name":"bug"},{"name":"claim:claude"}],"assignees":[{"login":"evanharmon1"}]}'
 
-echo "==> a claim:* record releases the named claim label (family level)"
+echo "==> a legacy claim:* record without operational metadata still releases"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v2")")" "$issue_closed_claim"
 [ "$(run_release --reason 'issue closed (completed)')" = 0 ] || fail "a claim:* record release should exit 0"
 grep -q -- '--remove-label claim:claude' "$rc_log" || fail "a claim:* record must remove the named claim: label"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "a claim:* record must still remove the assignment"
+
+echo "==> an extended claim record ignores operational metadata and releases"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_extended")")" "$issue_closed_claim"
+[ "$(run_release --reason 'issue closed (completed)')" = 0 ] ||
+    fail "an extended claim record release should exit 0"
+grep -q -- '--remove-label claim:claude' "$rc_log" ||
+    fail "operational metadata must not change the recorded label removal"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
+    fail "operational metadata must not change the recorded assignee removal"
 
 echo "==> a family+model claim label (claim:claude:opus) is released verbatim"
 body_model="$(printf '%s' "$body_v2" | sed 's/claim:claude/claim:claude:opus/g')"

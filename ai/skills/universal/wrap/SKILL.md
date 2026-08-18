@@ -92,6 +92,11 @@ read it in the UI) — never guess.
   unsuperseded comment. If that restore also fails, nothing was writable —
   say exactly that; the user is present on this path.
 
+  New records may also carry optional `harness`, `model`, and `session` lines.
+  Read them as operational context when present, and accept older records that
+  omit them. They are never cleanup authority: do not use their values to
+  select, construct, or suppress any write in any outcome below.
+
   Three outcomes:
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
     Nothing to do.
