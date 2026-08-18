@@ -8,7 +8,8 @@
 # What it computes:
 #   - the repo's owner type (User vs Organization — decides whether work-type
 #     labels may be written at all; org classification is native issue Type)
-#   - the v1 write-allowlist (delegated to triage-apply.sh, the enforcement
+#   - the v1 write-allowlist, the active classification axes, and their
+#     recognized values (all delegated to triage-apply.sh, the enforcement
 #     authority, so the two can never drift) plus label descriptions for
 #     classification
 #   - per open issue: work-type/axis state (none | ok | conflict), needs-*
@@ -20,10 +21,11 @@
 #   - the rolling report issue, which is EXCLUDED from both lists
 #     (self-exclusion — the report never scans itself)
 #
-# Org caveat: `gh issue list` cannot bulk-read native issue Type, so on org
-# repos an empty work-type simply means "no label"; the skill checks native
-# Type per issue (the graphql one-liner in SKILL.md) before reporting one
-# missing.
+# Org native Type: newer gh bulk-reads it (`--json issueType`), and where that
+# works every open issue carries a `native_type` ("none" when unset) and no
+# per-issue check is needed. Where it does not (older gh), `native_type` is
+# null, `native_type_mode` says "per-issue", and the skill checks native Type
+# per issue (triage-apply.sh native-type) before reporting one missing.
 #
 # By default only issues needing attention (any flag) are emitted; --all emits
 # every open issue. Thresholds (days): TRIAGE_CLAIM_STALE_DAYS (default 14),
@@ -140,6 +142,19 @@ work_types="$("$script_dir/triage-apply.sh" work-types \
     --repo "$repo" --manifest "$manifest")" ||
     die "could not compute the recognized work-type vocabulary"
 wt_json="$(printf '%s\n' "$work_types" | jq -R . | jq -s 'map(select(. != ""))')"
+# Active axes and their recognized values come from triage-apply.sh too (one
+# source, no drift): manifest-derived where a registry exists, the hard-coded
+# harmon-init template defaults otherwise. A live label with an active prefix
+# but an unrecognized value does NOT classify its axis — it is flagged.
+axes="$("$script_dir/triage-apply.sh" axes \
+    --repo "$repo" --manifest "$manifest")" ||
+    die "could not compute the active classification axes"
+axes_json="$(printf '%s\n' "$axes" | jq -R . | jq -s 'map(select(. != ""))')"
+axis_values="$("$script_dir/triage-apply.sh" axis-values \
+    --repo "$repo" --manifest "$manifest")" ||
+    die "could not compute the recognized axis values"
+known_json="$(printf '%s\n' "$axis_values" | jq -R . |
+    jq -s 'map(select(. != ""))')"
 
 mode="fallback"
 if [ -f "$manifest" ]; then
@@ -171,6 +186,21 @@ report_json=null
 open_json="$(gh issue list --repo "$repo" --state open --limit "$limit" \
     --json number,title,labels,createdAt,updatedAt,assignees)" ||
     die "could not list open issues of $repo"
+# Org repos classify with native issue Type. Newer gh exposes it in bulk via
+# --json issueType; where that works, every issue carries a native_type and
+# the per-issue graphql check in SKILL.md becomes unnecessary — which also
+# stops natively-typed issues starving the reading budget. Older gh (or an
+# API refusal) falls back to the per-issue path: native_type_mode says which.
+native_types_json=null
+native_type_mode="n/a"
+if [ "$owner_type" = "Organization" ]; then
+    native_type_mode="per-issue"
+    if nt_bulk="$(gh issue list --repo "$repo" --state open --limit "$limit" \
+        --json number,issueType 2>/dev/null)"; then
+        native_types_json="$nt_bulk"
+        native_type_mode="bulk"
+    fi
+fi
 closed_json="$(gh issue list --repo "$repo" --state closed \
     --limit "$closed_limit" \
     --json number,title,labels,stateReason,closedAt,body)" ||
@@ -200,16 +230,31 @@ jq -n \
     --argjson claim_stale "$claim_stale" \
     --argjson needs_stale "$needs_stale" \
     --argjson all "$all" \
+    --argjson axes "$axes_json" \
+    --argjson known "$known_json" \
+    --argjson native "$native_types_json" \
+    --arg native_type_mode "$native_type_mode" \
     --argjson wt "$wt_json" '
   def axis_labels($ls; $a): [$ls[] | select(startswith($a + ":"))];
+  def axis_known($ls; $a):
+    [axis_labels($ls; $a)[] | select(. as $l | $known | index($l) != null)];
+  def axis_unknown($ls; $a):
+    [axis_labels($ls; $a)[] | select(. as $l | $known | index($l) == null)];
+  # A label with an active prefix but a value outside the taxonomy does not
+  # classify the axis: state "unknown" (report it), never "ok".
   def axis_state($ls; $a):
-    (axis_labels($ls; $a) | length) as $n
-    | if $n == 0 then "none" elif $n == 1 then "ok" else "conflict" end;
+    (axis_known($ls; $a) | length) as $n
+    | if $n > 1 then "conflict"
+      elif $n == 1 then "ok"
+      elif (axis_unknown($ls; $a) | length) > 0 then "unknown"
+      else "none" end;
 
   {
     repo: $repo,
     owner_type: $owner_type,
     mode: $mode,
+    axes: $axes,
+    native_type_mode: $native_type_mode,
     thresholds: {claim_stale_days: $claim_stale,
                  needs_stale_days: $needs_stale},
     truncated_open: $truncated_open,
@@ -222,14 +267,19 @@ jq -n \
     open:
       [ $open[]
         | select(.number != $report)
+        | . as $iss
         | (.labels | map(.name)) as $ls
         | (((now - (.updatedAt | fromdateiso8601)) / 86400) | floor)
             as $days
         | ($ls | map(select(. as $l | $wt | index($l) != null)))
             as $have_wt
-        | {area: axis_state($ls; "area"),
-           layer: axis_state($ls; "layer"),
-           domain: axis_state($ls; "domain")} as $ax
+        # Bulk native Type where the scan could read it: the issue Type name,
+        # "none" when unset, null when unavailable (personal repo, old gh).
+        | (if $native == null then null
+           else ([$native[] | select(.number == $iss.number)][0]
+                 | .issueType.name // "none") end) as $nt
+        | ($axes | map({key: ., value: axis_state($ls; .)})
+           | from_entries) as $ax
         | ($ls | map(select(startswith("needs-")))) as $needs
         | ($ls | map(select(startswith("claim:") or startswith("agent:"))))
             as $claims
@@ -250,28 +300,37 @@ jq -n \
            labels: $ls,
            assignees: [.assignees[].login],
            work_type: $have_wt,
+           native_type: $nt,
            axis_state: $ax,
-           axis_labels: {area: axis_labels($ls; "area"),
-                         layer: axis_labels($ls; "layer"),
-                         domain: axis_labels($ls; "domain")},
+           axis_labels: ($axes | map({key: ., value: axis_labels($ls; .)})
+                         | from_entries),
            needs_labels: $needs,
            claim_labels: $claims,
            flags:
-             ([ (if ($have_wt | length) == 0
+             ([ # With a bulk-read native Type ($nt non-null), a typed org
+                # issue needs no work-type attention at all — the flag fires
+                # only where the Type is genuinely unset or unreadable.
+                (if ($have_wt | length) == 0 and ($nt == null or $nt == "none")
                  then "missing-work-type" else empty end),
                 ($ax | to_entries[]
                  | select(.value == "none") | "axis-missing:\(.key)"),
                 ($ax | to_entries[]
                  | select(.value == "conflict") | "axis-conflict:\(.key)"),
+                ($ax | to_entries[]
+                 | select(.value == "unknown")
+                 | "axis-unknown-value:\(.key)"),
                 (if $needs_triage_worthy
                     and (($ls | index("needs-triage")) == null)
                  then "missing-needs-triage" else empty end),
                 # Org repos classify by native Type; a work-type LABEL there
-                # is legacy and says nothing about the Type. Flag it so the
-                # skill still runs its per-issue native-Type check — without
-                # this, a bug-labeled org issue with complete axes goes quiet
-                # and its missing native Type is never noticed.
+                # is legacy and says nothing about the Type. Where the bulk
+                # read resolved the Type, flag only issues whose Type is
+                # unset; without it, flag every labeled issue so the skill
+                # still runs its per-issue native-Type check — otherwise a
+                # bug-labeled org issue with complete axes goes quiet and its
+                # missing native Type is never noticed.
                 (if $owner_type == "Organization" and ($have_wt | length) > 0
+                    and ($nt == null or $nt == "none")
                  then "legacy-work-type-label" else empty end),
                 (if $incomplete and (($ls | index("needs-triage")) != null)
                  then "partially-classified" else empty end),

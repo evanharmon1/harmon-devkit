@@ -7,7 +7,9 @@
 # (issue #455 / specs/issue-strategy.md in harmon-init) is:
 #
 #   v1 WRITES ONLY labels, and only these:
-#     - area:* / layer:* / domain:* classification labels
+#     - classification-axis labels (the manifest's `classification` families —
+#       area:*/layer:*/domain:* on a default registry; whatever axes the
+#       repo's registry declares otherwise)
 #     - a work-type label (bug/feature/task/...) on PERSONAL-account repos only
 #       (org repos use native issue Type, which v1 cannot write)
 #     - needs-triage — added freely, removed only when classification is
@@ -17,14 +19,19 @@
 #   This script contains no code path for any of those — the never-list is a
 #   regex refusal on top of the structural absence.
 #
-# The write-allowlist is read from the repo's label-registry.json manifest
-# (values whose effective `writers` include "agent", within the v1 scope
-# above), falling back to `gh label list` + a fixed v1 vocabulary where no
-# manifest exists. An "evil" manifest cannot widen the scope: the never-list
-# and the v1 scope filter are hard-coded and applied on top of it.
+# The write-allowlist, the active axes, and the recognized axis values are all
+# read from the repo's label-registry.json manifest (values whose effective
+# `writers` include "agent", within the v1 scope above), falling back to
+# `gh label list` intersected with a hard-coded copy of the harmon-init
+# template defaults where no manifest exists. An "evil" manifest cannot widen
+# the scope: the never-list and the v1 scope filter are hard-coded and applied
+# on top of it.
 #
 # Usage:
 #   triage-apply.sh allowlist [--repo owner/repo] [--manifest PATH]
+#   triage-apply.sh axes [--repo owner/repo] [--manifest PATH]
+#   triage-apply.sh axis-values [--repo owner/repo] [--manifest PATH]
+#   triage-apply.sh work-types [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh native-type --repo owner/repo --issue N
 #   triage-apply.sh label --repo owner/repo --issue N
 #                   [--add LABEL]... [--remove needs-triage]
@@ -54,14 +61,18 @@
 set -euo pipefail
 
 NEVER_RE='^(foreman:|rigor:|tier:|method:|claim:|suggest:|agent:)'
-AXES='area layer domain'
-# v1 fallback work-type vocabulary, used only when no manifest exists. The
-# manifest wins where present. `enhancement` is deliberately absent — it is the
-# retired GitHub default this vocabulary replaces with `feature`.
+# Fallback vocabulary, used only when no manifest exists — a hard-coded copy of
+# the harmon-init template's default label registry, so triage still applies
+# reasonable labels on an unregistered repo. The manifest wins where present.
+# `enhancement` is deliberately absent — it is the retired GitHub default this
+# vocabulary replaces with `feature`.
+FALLBACK_AXES='area layer domain'
 FALLBACK_WORK_TYPES='bug feature task research documentation question'
 
 usage() {
     echo "Usage: $0 allowlist [--repo owner/repo] [--manifest PATH]" >&2
+    echo "       $0 axes [--repo owner/repo] [--manifest PATH]" >&2
+    echo "       $0 axis-values [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 work-types [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 label --repo owner/repo --issue N [--add LABEL]..." >&2
     echo "           [--remove needs-triage] [--inapplicable AXIS]..." >&2
@@ -98,10 +109,60 @@ guard_issue_number() {
     esac
 }
 
+# Print the active classification axes (label prefixes), one per line —
+# derived from the manifest's classification families so a repo that
+# provisions only some axes is never asked to attest the missing ones.
+# Fallback (no manifest): the harmon-init template defaults.
+axes_active() {
+    local manifest="$1"
+    if [ -f "$manifest" ]; then
+        jq -r '
+          [ .families[]
+            | select((.retired // false) | not)
+            | select(.axis == "classification")
+            | select((.prefix // "") != "")
+            | .prefix
+          ] | unique[]' "$manifest"
+    else
+        printf '%s\n' $FALLBACK_AXES
+    fi
+}
+
+# Print every RECOGNIZED axis label (full `prefix:value` names) of the active
+# taxonomy, one per line. In manifest mode a live label outside this set
+# (retired, misspelled) does NOT classify its axis — prefix presence alone is
+# not classification. In fallback mode the live labels ARE the taxonomy, so
+# every live label with an active axis prefix is recognized.
+axis_values_recognized() {
+    local repo="$1" manifest="$2"
+    if [ -f "$manifest" ]; then
+        jq -r '
+          [ .families[]
+            | select((.retired // false) | not)
+            | select(.axis == "classification")
+            | select((.prefix // "") != "")
+            | . as $f
+            | .values[]?
+            | select((.retired // false) | not)
+            | "\($f.prefix):\(.value)"
+          ] | unique[]' "$manifest"
+    else
+        [ -n "$repo" ] ||
+            die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
+        local re
+        re="$(axes_active "$manifest" | paste -sd '|' -)"
+        [ -n "$re" ] || return 0
+        gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' |
+            grep -E "^($re):" || true
+    fi
+}
+
 # Print the v1 write-allowlist, one label per line.
 allowlist_compute() {
     local repo="$1" manifest="$2"
     if [ -f "$manifest" ]; then
+        # v1 scope: the manifest's own classification families (any axis the
+        # registry declares, not a fixed three), work-type, and needs-triage.
         jq -r '
           [ .families[]
             | select((.retired // false) | not)
@@ -111,7 +172,7 @@ allowlist_compute() {
             | ((.writers // $f.writers) // []) as $w
             | select(($w | index("agent")) != null)
             | select(
-                ((["area", "layer", "domain"] | index($f.prefix // "")) != null)
+                ($f.axis == "classification" and ($f.prefix // "") != "")
                 or ($f.axis == "work-type")
                 or ($f.axis == "workflow" and .value == "needs-triage"))
             | if ($f.prefix // "") == "" then .value
@@ -123,7 +184,7 @@ allowlist_compute() {
         local live wt
         live="$(gh label list --repo "$repo" --limit 1000 --json name \
             -q '.[].name')"
-        printf '%s\n' "$live" | grep -E '^(area|layer|domain):' || true
+        axis_values_recognized "$repo" "$manifest"
         for wt in $FALLBACK_WORK_TYPES needs-triage; do
             printf '%s\n' "$live" | grep -qx "$wt" && printf '%s\n' "$wt"
         done
@@ -179,6 +240,49 @@ cmd_work_types() {
     done
     guard_manifest "$manifest"
     work_types_recognized "$repo" "$manifest"
+}
+
+cmd_axes() {
+    local manifest="./label-registry.json"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --repo)
+            # Accepted for call-shape symmetry with allowlist/work-types;
+            # axes need no repo read in either mode.
+            [ "$#" -ge 2 ] || usage
+            shift 2
+            ;;
+        --manifest)
+            [ "$#" -ge 2 ] || usage
+            manifest="$2"
+            shift 2
+            ;;
+        *) usage ;;
+        esac
+    done
+    guard_manifest "$manifest"
+    axes_active "$manifest"
+}
+
+cmd_axis_values() {
+    local repo="" manifest="./label-registry.json"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --repo)
+            [ "$#" -ge 2 ] || usage
+            repo="$2"
+            shift 2
+            ;;
+        --manifest)
+            [ "$#" -ge 2 ] || usage
+            manifest="$2"
+            shift 2
+            ;;
+        *) usage ;;
+        esac
+    done
+    guard_manifest "$manifest"
+    axis_values_recognized "$repo" "$manifest"
 }
 
 cmd_allowlist() {
@@ -299,7 +403,8 @@ cmd_label() {
     [ "${#adds[@]}" -gt 0 ] || [ "${#removes[@]}" -gt 0 ] ||
         die 2 "nothing requested — pass --add and/or --remove"
 
-    local l axis
+    local l axis axes
+    axes="$(axes_active "$manifest")"
     # v1 removes exactly one label kind. Everything else is out of scope by
     # construction, not by validation of a wider mechanism.
     for l in "${removes[@]+"${removes[@]}"}"; do
@@ -307,10 +412,9 @@ cmd_label() {
             die 2 "--remove accepts only needs-triage (got '$l')"
     done
     for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
-        case " $AXES " in
-        *" $axis "*) ;;
-        *) die 2 "--inapplicable accepts one of: $AXES (got '$axis')" ;;
-        esac
+        in_list "$axis" "$axes" ||
+            die 2 "--inapplicable accepts an active axis" \
+                "($(printf '%s' "$axes" | tr '\n' ' ')) (got '$axis')"
     done
 
     # Commas first: gh's --add-label treats a comma as a list separator, so a
@@ -396,20 +500,33 @@ cmd_label() {
     done
     for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
         axis="${l%%:*}"
-        case " $AXES " in *" $axis "*)
+        if in_list "$axis" "$axes"; then
             count="$(printf '%s\n' "$post" | grep -c "^$axis:" || true)"
             [ "$count" -le 1 ] ||
                 die 4 "refused: adding '$l' would leave $count $axis:* labels;" \
                     "conflicted axes go to the report"
-            ;;
-        esac
+        fi
     done
 
     # needs-triage removal gate: classification must be COMPLETE — a work type
-    # in the owner-appropriate form, and each axis either applied exactly once
-    # or attested inapplicable. A conflicted axis is never "applied".
+    # in the owner-appropriate form, and each active axis either applied
+    # exactly once or attested inapplicable. A conflicted axis is never
+    # "applied", and neither is a label whose value the active taxonomy does
+    # not recognize (retired, misspelled) — prefix presence alone must not
+    # satisfy the gate.
     if [ "${#removes[@]}" -gt 0 ]; then
-        for axis in $AXES; do
+        local recognized
+        recognized="$(axis_values_recognized "$repo" "$manifest")"
+        while IFS= read -r l; do
+            [ -n "$l" ] || continue
+            axis="${l%%:*}"
+            case "$l" in *:*) ;; *) continue ;; esac
+            in_list "$axis" "$axes" || continue
+            in_list "$l" "$recognized" ||
+                die 6 "refused: '$l' is not in the active $axis taxonomy —" \
+                    "classification is incomplete; report the unknown value"
+        done <<<"$post"
+        for axis in $axes; do
             count="$(printf '%s\n' "$post" | grep -c "^$axis:" || true)"
             if [ "$count" -gt 1 ]; then
                 die 6 "refused: $axis is conflicted ($count labels) —" \
@@ -495,6 +612,8 @@ cmd="$1"
 shift
 case "$cmd" in
 allowlist) cmd_allowlist "$@" ;;
+axes) cmd_axes "$@" ;;
+axis-values) cmd_axis_values "$@" ;;
 work-types) cmd_work_types "$@" ;;
 native-type) cmd_native_type "$@" ;;
 label) cmd_label "$@" ;;

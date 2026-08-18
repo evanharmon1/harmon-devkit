@@ -75,7 +75,17 @@ api\ repos/*)
     printf '%s\n' "${GH_STUB_OWNER_TYPE:?}"
     ;;
 "label list") emit "${GH_STUB_DIR:?}/labels.json" ;;
-"issue list") emit "${GH_STUB_DIR:?}/issues-${state:?}.json" ;;
+"issue list")
+    # A --json field set naming issueType emulates the bulk native-Type read:
+    # newer gh serves it from issues-open-types.json, older gh (no fixture)
+    # rejects the field.
+    if printf '%s' "$*" | grep -q "issueType"; then
+        [ -f "${GH_STUB_DIR:?}/issues-open-types.json" ] || exit 1
+        emit "${GH_STUB_DIR:?}/issues-open-types.json"
+    else
+        emit "${GH_STUB_DIR:?}/issues-${state:?}.json"
+    fi
+    ;;
 "issue view") emit "${GH_STUB_DIR:?}/issue-${3:?}.json" ;;
 "repo view") printf '%s\n' "${GH_STUB_REPO:?}" ;;
 # Only the body-carrying writes read stdin (--body-file -): drain just there,
@@ -188,6 +198,39 @@ sort "$tmp/out" >"$tmp/got"
 printf '%s\n' area:ci bug layer:ui needs-triage | sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 ||
     fail "fallback mismatch (enhancement/rigor must be out)"
+
+echo "==> axes: derived from the manifest's classification families"
+[ "$(run "$apply" axes --manifest "$manifest")" = 0 ] || fail "axes failed"
+sort "$tmp/out" >"$tmp/got"
+printf '%s\n' area domain layer | sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 || fail "axes mismatch"
+
+echo "==> axes: a repo that provisions only some axes derives only those"
+jq '.families |= map(select(.family != "area"))' "$manifest" \
+    >"$tmp/no-area.json"
+[ "$(run "$apply" axes --manifest "$tmp/no-area.json")" = 0 ] ||
+    fail "no-area axes failed"
+sort "$tmp/out" >"$tmp/got"
+printf '%s\n' domain layer | sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 || fail "no-area axes mismatch"
+
+echo "==> axes: fallback without a manifest is the harmon-init default set"
+[ "$(run "$apply" axes --manifest "$tmp/nope.json")" = 0 ] ||
+    fail "fallback axes failed"
+sort "$tmp/out" >"$tmp/got"
+printf '%s\n' area domain layer | sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 || fail "fallback axes mismatch"
+
+echo "==> axis-values: manifest mode lists the active taxonomy, retired out"
+jq '.families |= map(if .family == "area"
+    then .values += [{"value": "old", "retired": true}] else . end)' \
+    "$manifest" >"$tmp/retired-value.json"
+[ "$(run "$apply" axis-values --manifest "$tmp/retired-value.json")" = 0 ] ||
+    fail "axis-values failed"
+sort "$tmp/out" >"$tmp/got"
+printf '%s\n' area:ci area:tasks domain:auth domain:delivery layer:ui |
+    sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 || fail "axis-values mismatch"
 
 # Issue fixtures for the label subcommand.
 cat >"$stub_dir/issue-10.json" <<'JSON'
@@ -326,6 +369,27 @@ echo "==> label: needs-triage removal passes when classification is complete"
 grep -q "DRY-RUN would remove 'needs-triage'" "$tmp/out" ||
     fail "missing WOULD remove"
 grep -q "attested inapplicable: layer" "$tmp/out" || fail "missing attestation"
+
+echo "==> label: an unknown axis value never satisfies the removal gate"
+cat >"$stub_dir/issue-14.json" <<'JSON'
+{"labels": [{"name": "needs-triage"}, {"name": "bug"},
+            {"name": "area:legacy"}], "body": "plain"}
+JSON
+[ "$(run "$apply" label --repo "$repo" --issue 14 --remove needs-triage \
+    --inapplicable layer --inapplicable domain \
+    --manifest "$manifest")" = 6 ] || fail "unknown area value must exit 6"
+grep -q "not in the active area taxonomy" "$tmp/out" ||
+    fail "refusal must name the unknown value: $(cat "$tmp/out")"
+
+echo "==> label: an unprovisioned axis is never demanded (derived axes)"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
+    --inapplicable layer --inapplicable domain \
+    --manifest "$tmp/no-area.json")" = 0 ] ||
+    fail "no-area manifest must not demand an area attestation: $(cat "$tmp/out")"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
+    --inapplicable area --inapplicable layer --inapplicable domain \
+    --manifest "$tmp/no-area.json")" = 2 ] ||
+    fail "--inapplicable for an inactive axis must exit 2"
 
 echo "==> label: org removal needs a native Type; unreadable Type refuses"
 GH_STUB_OWNER_TYPE="Organization"
@@ -554,6 +618,11 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 24, "title": "Carries a retired area value",
+  "labels": [{"name": "bug"}, {"name": "area:legacy"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""}]
 JSON
 cat >"$stub_dir/issues-closed.json" <<'JSON'
@@ -599,6 +668,23 @@ jq -e '.closed_flagged[] | select(.number == 40) | .unticked_criteria == 2' \
 jq -e '.work_type_values | sort == ["bug", "feature"]' "$scan_out" \
     >/dev/null || fail "work_type_values wrong"
 
+echo "==> scan: axes are emitted and axis maps follow them"
+jq -e '.axes | sort == ["area", "domain", "layer"]' "$scan_out" >/dev/null ||
+    fail "scan must emit the active axes"
+jq -e '.open[] | select(.number == 23) | .axis_state
+       | keys | sort == ["area", "domain", "layer"]' "$scan_out" >/dev/null ||
+    fail "axis_state must be keyed by the active axes"
+
+echo "==> scan: an unrecognized axis value reads unknown, never classified"
+jq -e '.open[] | select(.number == 24) | .axis_state.area == "unknown"' \
+    "$scan_out" >/dev/null || fail "area:legacy must read unknown"
+jq -e '.open[] | select(.number == 24) | .flags
+       | index("axis-unknown-value:area")' "$scan_out" >/dev/null ||
+    fail "axis-unknown-value flag missing"
+jq -e '.open[] | select(.number == 24) | .flags
+       | index("axis-missing:area") == null' "$scan_out" >/dev/null ||
+    fail "an unknown value is not a bare missing axis"
+
 echo "==> scan: a bare missing axis does not re-add needs-triage"
 jq -e '.open[] | select(.number == 23)
        | (.flags | index("axis-missing:area") != null)
@@ -620,6 +706,31 @@ echo "==> scan: org issues with a legacy work-type label stay visible"
 jq -e '.open[] | select(.number == 23)
        | .flags | index("legacy-work-type-label")' "$tmp/out" >/dev/null ||
     fail "org issue with a work-type label must carry legacy-work-type-label"
+jq -e '.native_type_mode == "per-issue"' "$tmp/out" >/dev/null ||
+    fail "an old gh must report per-issue native-Type mode"
+
+echo "==> scan: bulk native Type quiets natively-typed org issues"
+cat >"$stub_dir/issues-open-types.json" <<'JSON'
+[{"number": 23, "issueType": {"name": "Bug"}},
+ {"number": 20, "issueType": null},
+ {"number": 21, "issueType": null},
+ {"number": 22, "issueType": null},
+ {"number": 24, "issueType": null}]
+JSON
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
+    fail "org bulk scan failed: $(cat "$tmp/out")"
+jq -e '.native_type_mode == "bulk"' "$tmp/out" >/dev/null ||
+    fail "bulk-capable gh must report bulk mode"
+jq -e '.open[] | select(.number == 23) | .native_type == "Bug"' \
+    "$tmp/out" >/dev/null || fail "native_type must carry the bulk-read Type"
+jq -e '.open[] | select(.number == 23) | .flags
+       | index("legacy-work-type-label") == null' "$tmp/out" >/dev/null ||
+    fail "a natively-typed issue must not read as legacy-labeled"
+jq -e '.open[] | select(.number == 24) | .native_type == "none"
+       and (.flags | index("legacy-work-type-label") != null)' \
+    "$tmp/out" >/dev/null ||
+    fail "an untyped org issue with a work-type label stays flagged"
+rm "$stub_dir/issues-open-types.json"
 GH_STUB_OWNER_TYPE="User"
 
 echo "==> scan: a mismatched --repo is refused when the run is bound"
