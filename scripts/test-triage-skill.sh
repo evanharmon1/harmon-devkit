@@ -260,6 +260,32 @@ grep -qx "area:ci" "$tmp/out" ||
 [ "$(run "$apply" axis-values --manifest "$tmp/open-area.json")" = 2 ] ||
     fail "open-values without --repo must exit 2"
 
+echo "==> axis-values: an enumerated retired value never rides the live expansion"
+jq '.families |= map(if .family == "area"
+    then .open_values = true
+       | .values = [{"value": "ci", "retired": true}] else . end)' \
+    "$manifest" >"$tmp/open-retired.json"
+[ "$(run "$apply" axis-values --repo "$repo" \
+    --manifest "$tmp/open-retired.json")" = 0 ] ||
+    fail "open-retired axis-values failed: $(cat "$tmp/out")"
+grep -qx "area:ci" "$tmp/out" &&
+    fail "a live but enumerated-retired value must stay excluded"
+[ "$(run "$apply" allowlist --repo "$repo" \
+    --manifest "$tmp/open-retired.json")" = 0 ] ||
+    fail "open-retired allowlist failed"
+grep -qx "area:ci" "$tmp/out" &&
+    fail "a live but enumerated-retired value must not be writable"
+
+echo "==> axes: an ERE-metacharacter prefix is refused, never compiled"
+jq '.families |= map(if .family == "area"
+    then .prefix = "x)|(.+" | .open_values = true else . end)' \
+    "$manifest" >"$tmp/evil-prefix.json"
+[ "$(run "$apply" axes --manifest "$tmp/evil-prefix.json")" = 2 ] ||
+    fail "a non-slug prefix must exit 2"
+[ "$(run "$apply" allowlist --repo "$repo" \
+    --manifest "$tmp/evil-prefix.json")" = 2 ] ||
+    fail "allowlist under a non-slug prefix must exit 2"
+
 # Issue fixtures for the label subcommand.
 cat >"$stub_dir/issue-10.json" <<'JSON'
 {"labels": [{"name": "needs-triage"}], "body": "plain"}
@@ -656,6 +682,11 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "area:legacy"},
              {"name": "layer:ui"}, {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 26, "title": "Axes done, classified only by native Type",
+  "labels": [{"name": "needs-triage"}, {"name": "area:ci"},
+             {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""}]
 JSON
 cat >"$stub_dir/issues-closed.json" <<'JSON'
@@ -751,7 +782,8 @@ jq -e '.native_type_mode == "per-issue"' "$tmp/out" >/dev/null ||
 echo "==> scan: bulk native Type quiets natively-typed org issues"
 # The bulk read rides in the same list request as the issues (one snapshot,
 # no join), so the fixture is the open list plus issueType per issue.
-jq 'map(.issueType = (if .number == 23 then {name: "Bug"} else null end))' \
+jq 'map(.issueType = (if .number == 23 or .number == 26
+                      then {name: "Bug"} else null end))' \
     "$stub_dir/issues-open.json" >"$stub_dir/issues-open-types.json"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
     fail "org bulk scan failed: $(cat "$tmp/out")"
@@ -766,6 +798,11 @@ jq -e '.open[] | select(.number == 24) | .native_type == "none"
        and (.flags | index("legacy-work-type-label") != null)' \
     "$tmp/out" >/dev/null ||
     fail "an untyped org issue with a work-type label stays flagged"
+jq -e '.open[] | select(.number == 26)
+       | (.flags | index("needs-triage-removable") != null)
+         and (.flags | index("partially-classified") == null)' \
+    "$tmp/out" >/dev/null ||
+    fail "a natively-typed issue with finished axes must read removable"
 rm "$stub_dir/issues-open-types.json"
 GH_STUB_OWNER_TYPE="User"
 

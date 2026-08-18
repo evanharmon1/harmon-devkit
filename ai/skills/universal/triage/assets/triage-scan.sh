@@ -287,7 +287,12 @@ jq -n \
         | ($ls | map(select(startswith("needs-")))) as $needs
         | ($ls | map(select(startswith("claim:") or startswith("agent:"))))
             as $claims
-        | (($have_wt | length) == 0 or ([$ax[]] | any(. != "ok")))
+        # A bulk-read native Type classifies the issue exactly as a
+        # work-type label does — completeness must count it, or a typed org
+        # issue with finished axes reads partially-classified forever.
+        | ((($have_wt | length) > 0) or ($nt != null and $nt != "none"))
+            as $typed
+        | (($typed | not) or ([$ax[]] | any(. != "ok")))
             as $incomplete
         # needs-triage is RE-ADDED only on a missing work type (personal
         # repos, where labels are authoritative) or a conflicted axis. A bare
