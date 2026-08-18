@@ -132,6 +132,7 @@ run() {
 manifest="$tmp/label-registry.json"
 cat >"$manifest" <<'JSON'
 {
+  "$schema": "./label-registry.schema.json",
   "schema_version": 1,
   "families": [
     {"family": "workflow", "prefix": null, "axis": "workflow",
@@ -259,6 +260,12 @@ jq '.schema_version = 2' "$manifest" >"$tmp/v2.json"
 jq 'del(.schema_version)' "$manifest" >"$tmp/nover.json"
 [ "$(run "$apply" axes --manifest "$tmp/nover.json")" = 2 ] ||
     fail "an absent schema_version must exit 2"
+jq '.schema_version = "1"' "$manifest" >"$tmp/strver.json"
+[ "$(run "$apply" axes --manifest "$tmp/strver.json")" = 2 ] ||
+    fail "a string schema_version must exit 2 (typed compare, no coercion)"
+jq 'del(."$schema")' "$manifest" >"$tmp/noschema.json"
+[ "$(run "$apply" axes --manifest "$tmp/noschema.json")" = 2 ] ||
+    fail "an absent \$schema must exit 2"
 
 echo "==> axes: a reserved prefix never becomes a classification axis"
 jq '.families |= map(if .family == "area"
@@ -879,6 +886,9 @@ jq -e '.open[] | select(.number == 28)
          and (.flags | index("partially-classified") != null)' \
     "$tmp/out" >/dev/null ||
     fail "a legacy label without a native Type must not read removable on an org"
+jq -e '.open[] | select(.number == 22) | .flags
+       | index("missing-needs-triage")' "$tmp/out" >/dev/null ||
+    fail "a bulk-proven untyped org issue must requeue needs-triage"
 rm "$stub_dir/issues-open-types.json"
 GH_STUB_OWNER_TYPE="User"
 

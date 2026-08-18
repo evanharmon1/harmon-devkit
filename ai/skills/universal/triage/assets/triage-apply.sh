@@ -141,14 +141,17 @@ live_labels() {
 # Refusal, not workaround: the summary reports it and a human fixes the
 # registry or takes that axis out of triage scope.
 validate_manifest() {
-    local manifest="$1" bad ver
-    # Version first: v1 interprets schema_version 1 semantics only — a future
-    # registry format must not silently drive label writes.
-    ver="$(jq -r '.schema_version // "absent"' "$manifest")" ||
-        die 2 "could not parse the manifest at '$manifest'"
-    [ "$ver" = "1" ] ||
-        die 2 "unsupported registry schema_version '$ver' — this script" \
-            "interprets schema_version 1 only; refusing to derive"
+    local manifest="$1" bad
+    # Identity first, with TYPED predicates: v1 interprets the harmon label
+    # registry at schema_version 1 only — a future format, a foreign schema,
+    # or a string-typed "1" (which a text comparison would coerce past the
+    # pin) must not silently drive label writes.
+    jq -e '(.schema_version == 1)
+           and (."$schema" == "./label-registry.schema.json")' \
+        "$manifest" >/dev/null 2>&1 ||
+        die 2 "unsupported registry identity — this script interprets" \
+            "\$schema ./label-registry.schema.json at numeric" \
+            "schema_version 1 only; refusing to derive"
     bad="$(jq -r '
       ["classification", "strategy", "model", "work-type", "concern",
        "workflow", "provenance", "foreman", "release", "meta"] as $known_axes

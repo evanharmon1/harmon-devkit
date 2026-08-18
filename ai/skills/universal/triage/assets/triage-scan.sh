@@ -317,7 +317,10 @@ jq -n \
         # attestation.
         | (([$ax[]] | any(. == "conflict"))
            or ([$axes[] | axis_unknown($ls; .) | length] | any(. > 0))
-           or ($owner_type == "User" and ($have_wt | length) == 0))
+           or ($owner_type == "User" and ($have_wt | length) == 0)
+           # Bulk-resolved orgs requeue on a definitively unset Type too;
+           # the exemption stays only where native Type is unreadable.
+           or ($owner_type == "Organization" and $nt == "none"))
             as $needs_triage_worthy
         | {number, title, updatedAt,
            days_since_update: $days,
