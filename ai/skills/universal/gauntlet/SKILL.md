@@ -135,14 +135,14 @@ label cannot be silently skipped.
    present — and the highest `min_rounds` floor present, under the same
    principle** — labels are multi-select, so a conflict can only ever buy
    more review, never less, in caps and floor alike. A `rigor:` value naming
-   no tier in the file is ignored, not guessed at;
+   no level in the file is ignored, not guessed at;
 3. `default_rigor` in the file;
 4. the built-in fallback **4 / 4 / 4** (challenge / review / shepherd) if the
    file is absent.
 
 **When the change under review edits `.devflow.toml` itself, resolve from the
 merge-base copy**, not the branch copy — otherwise a branch can lower the very
-gate that is reviewing it, and dropping every tier together would evade the
+gate that is reviewing it, and dropping every level together would evade the
 disclosure below by leaving nothing to be below:
 
 ```sh
@@ -156,7 +156,7 @@ floor of 1, not an error and not the branch's own copy.
 
 An explicit human instruction still overrides that.
 
-**`min_rounds` — the floor.** A tier may define `min_rounds` (an integer, 1 or
+**`min_rounds` — the floor.** A level may define `min_rounds` (an integer, 1 or
 2 — the two-consecutive exit ends a stage at round 2 whatever the floor says,
 so larger values cannot bind; repos that validate the config reject them). In
 a repo where nothing validates the file, do not interpret an out-of-range or
@@ -165,8 +165,8 @@ non-integer value: clamp it **fail-safe** — every non-numeric value reads as
 always buys more review, never less; say so in the announcement, so a typo
 retunes the budget visibly rather than silently. It is the minimum
 number of rounds a stage must run before the **empty-round instant exit** in §5
-may be taken, so a deeper tier can require independent confirmation even when
-round 1 comes back clean. **Tolerate its absence: a tier that does not define
+may be taken, so a deeper level can require independent confirmation even when
+round 1 comes back clean. **Tolerate its absence: a level that does not define
 it has a floor of 1**, which is the historical behaviour. Note what follows
 from the arithmetic — the two-consecutive-clean exit and the capped-clean exit
 both consume at least two rounds, so **any floor ≤ 2 is satisfied by
@@ -179,8 +179,8 @@ shortcut.
 rigor: standard (default_rigor) → challenge ≤3, review ≤3, shepherd 4, min_rounds 1
 ```
 
-Name a **tier** only when one tier supplied every number; two retuned tiers can
-yield a combination belonging to no single tier, so what you announce is the
+Name a **level** only when one level supplied every number; two retuned levels can
+yield a combination belonging to no single level, so what you announce is the
 caps. Carry the same line into the PR body in §10, so a later round or a
 different session can see which budget it is spending instead of inferring one.
 
@@ -193,7 +193,7 @@ someone who could not edit `.devflow.toml`. **An agent never applies one to
 itself.**
 
 Caps are **ceilings, not quotas**. A stage that meets an exit condition on
-round 1 is done, whatever the tier allowed. Nothing here obliges a round to run.
+round 1 is done, whatever the level allowed. Nothing here obliges a round to run.
 
 ## 3. Challenge loop
 
@@ -267,7 +267,7 @@ consistency with the repo's conventions, error handling, test coverage. Same
 adjudication, same table, same backgrounding, same per-round commit-and-push,
 same exit rule — under its **own
 cap, counted separately**. A converged challenge says nothing about review, and
-the two are capped separately even where the tier gives them equal numbers.
+the two are capped separately even where the level gives them equal numbers.
 
 **Why serial, not interleaved.** Challenge findings are architectural: fixing
 them first avoids spending fine-grained review on code that is about to change.
@@ -322,7 +322,7 @@ how many reviewers produced it. Today that is one reviewer. A future panel
 (2–3 reviewers of different model families running the same pass in parallel,
 majority-confirmed findings gating, singletons carried as P2-class noise
 candidates, the author's own family excluded) is still **one round**, and a
-tier may then declare one clean panel pass equivalent to the two-consecutive
+level may then declare one clean panel pass equivalent to the two-consecutive
 exit — one panel provides in parallel the independent confirmation two serial
 rounds provide over time. Count rounds this way now so the accounting does not
 have to change later; do not implement panels here.
