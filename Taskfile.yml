@@ -486,9 +486,10 @@ tasks:
       - ./scripts/test-hooks.sh
 
   test:skills:
-    desc: Unit-test the skills tooling (source guard + pinned vendoring engine)
+    desc: Unit-test skills tooling and registry-driven breakdown vocabulary discovery
     cmds:
       - ./scripts/test-skills.sh
+      - ./scripts/test-breakdown-labels.sh
 
   test:agents:
     desc: Unit-test the shared-subagent source guard (offline)
