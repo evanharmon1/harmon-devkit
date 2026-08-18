@@ -257,6 +257,9 @@ function validateRegistry(registry) {
       if (!registrySets.has(family.registry_set)) {
         die(`${where} needs a supported registry_set`)
       }
+      if (!family.placeholder) {
+        die(`${where} agent-registry families need a placeholder`)
+      }
       if (registrySetPrefixes.get(family.registry_set) !== family.prefix) {
         die(`${where}.registry_set ${family.registry_set} does not match prefix ${family.prefix}`)
       }
@@ -605,6 +608,24 @@ const declaredOwners = new Map()
 const knownConcrete = new Set()
 const reservedConcretePrefixes = ['claim:', 'agent:', 'foreman:']
 
+function isModelSuggestion(name) {
+  const [prefix, family, model, ...rest] = name.split(':')
+  return (
+    rest.length === 0 &&
+    prefix === 'suggest' &&
+    slugPattern.test(family ?? '') &&
+    slugPattern.test(model ?? '')
+  )
+}
+
+function isCanonicalModelPair(openFamily, candidateFamily) {
+  return (
+    (openFamily.family === 'suggest-model' || openFamily.family === 'claim-model') &&
+    candidateFamily?.source === 'agent-registry' &&
+    candidateFamily.registry_set === openFamily.family.replace('-model', '')
+  )
+}
+
 function reserveConcrete(family, name) {
   const normalized = normalizeLabelName(name)
   const prior = declaredOwners.get(normalized)
@@ -617,6 +638,12 @@ function reserveConcrete(family, name) {
 
 function addCandidate(family, name, value = {}, extra = {}) {
   const normalized = normalizeLabelName(name)
+  if (family.prefix === null && isModelSuggestion(normalized)) {
+    die(
+      `planning-safe family ${family.family} declares model-shaped suggestion ${name} ` +
+      'outside the paired suggest-model path'
+    )
+  }
   if (reservedConcretePrefixes.some((prefix) => normalized.startsWith(prefix))) {
     die(`planning-safe family ${family.family} declares reserved label ${name}`)
   }
@@ -671,16 +698,27 @@ for (const family of registry.families.filter((candidate) => candidate.open_valu
     (candidate) =>
       candidate.family !== family.family &&
       candidate.prefix === family.prefix &&
-      !(
-        (family.family === 'suggest-model' || family.family === 'claim-model') &&
-        candidate.source === 'agent-registry' &&
-        candidate.registry_set === family.family.replace('-model', '')
-      )
+      !isCanonicalModelPair(family, candidate)
   )
   if (conflictingFamily) {
     die(
       `planning-safe open family ${family.family} overlaps prefix ${family.prefix} with ` +
       `family ${conflictingFamily.family}; excluded labels cannot be reclassified safely`
+    )
+  }
+  const conflictingConcrete = [...candidateOwners].find(([name, owner]) => {
+    const ownerFamily = registry.families.find((candidate) => candidate.family === owner)
+    return (
+      owner !== family.family &&
+      name.startsWith(`${family.prefix}:`) &&
+      !isCanonicalModelPair(family, ownerFamily)
+    )
+  })
+  if (conflictingConcrete) {
+    const [name, owner] = conflictingConcrete
+    die(
+      `planning-safe concrete label ${live.get(name)?.name ?? name} from family ${owner} overlaps ` +
+      `open family ${family.family} prefix ${family.prefix}; semantics cannot be verified safely`
     )
   }
 }

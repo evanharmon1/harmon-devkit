@@ -477,6 +477,28 @@ else
     bad "suggest-model honors concrete-label reservations"
 fi
 
+safe_suggest_concrete="$tmproot/safe-suggest-concrete"
+mkdir -p "$safe_suggest_concrete"
+write_agent_registry "$safe_suggest_concrete"
+write_registry "$safe_suggest_concrete" api
+write_labels "$safe_suggest_concrete" api
+jq '.families += [{
+    "family":"safe-suggest-model", "prefix":null, "purpose":"Unpaired model label",
+    "axis":"model", "source":"inline", "writers":["agent"], "readers":"agents",
+    "lifecycle":"durable", "exclusive":false, "provision":false,
+    "values":[{"value":"suggest:gpt:sol"}]
+}]' "$safe_suggest_concrete/label-registry.json" >"$safe_suggest_concrete/registry.json"
+mv "$safe_suggest_concrete/registry.json" "$safe_suggest_concrete/label-registry.json"
+if discover "$safe_suggest_concrete" >"$safe_suggest_concrete/output" 2>"$safe_suggest_concrete/error"; then
+    bad "planning-safe model-shaped suggestions cannot bypass family pairing"
+elif [ ! -s "$safe_suggest_concrete/output" ] &&
+    grep -q 'model-shaped suggestion suggest:gpt:sol outside the paired suggest-model path' \
+        "$safe_suggest_concrete/error"; then
+    ok "planning-safe model-shaped suggestions cannot bypass family pairing"
+else
+    bad "unpaired model-shaped suggestions fail closed with a diagnostic"
+fi
+
 agent_version="$tmproot/agent-version"
 mkdir -p "$agent_version"
 write_agent_registry "$agent_version"
@@ -507,6 +529,24 @@ if scope_output="$(discover "$scope_order")" && jq -e '.verified_semantics == tr
     ok "agent-registry namespace scopes are interpreted as an unordered set"
 else
     bad "schema-equivalent agent-registry scope order is accepted"
+fi
+
+missing_agent_placeholder="$tmproot/missing-agent-placeholder"
+mkdir -p "$missing_agent_placeholder"
+write_agent_registry "$missing_agent_placeholder"
+write_registry "$missing_agent_placeholder" api
+write_labels "$missing_agent_placeholder" api
+jq 'del(.families[] | select(.family == "suggest") | .placeholder)' \
+    "$missing_agent_placeholder/label-registry.json" >"$missing_agent_placeholder/registry.json"
+mv "$missing_agent_placeholder/registry.json" "$missing_agent_placeholder/label-registry.json"
+if discover "$missing_agent_placeholder" >"$missing_agent_placeholder/output" \
+    2>"$missing_agent_placeholder/error"; then
+    bad "agent-registry families cannot omit their canonical placeholder"
+elif [ ! -s "$missing_agent_placeholder/output" ] &&
+    grep -q 'agent-registry families need a placeholder' "$missing_agent_placeholder/error"; then
+    ok "agent-registry families require their canonical placeholder"
+else
+    bad "missing agent-registry placeholders fail closed with a diagnostic"
 fi
 
 reserved_concrete="$tmproot/reserved-concrete"
@@ -547,6 +587,32 @@ elif [ ! -s "$unsafe_open_overlap/output" ] && grep -q 'overlaps prefix area' "$
     ok "unsafe open-family prefix overlaps fail closed"
 else
     bad "unsafe open-family overlap fails with a diagnostic"
+fi
+
+prefix_null_open_overlap="$tmproot/prefix-null-open-overlap"
+mkdir -p "$prefix_null_open_overlap"
+write_agent_registry "$prefix_null_open_overlap"
+write_registry "$prefix_null_open_overlap" api
+write_labels "$prefix_null_open_overlap" api
+jq '(.families[] | select(.family == "area")) |=
+      (.prefix = null | .values[0].value = "area:api" | .values[1].value = "area:missing") |
+    .families += [{
+      "family":"unsafe-area-open", "prefix":"area", "purpose":"Conflicting unsafe namespace",
+      "axis":"workflow", "source":"tool-owned", "writers":["agent"], "readers":"agents",
+      "lifecycle":"transient", "exclusive":false, "provision":false,
+      "open_values":true, "placeholder":"area:<value>", "values":[]
+    }]' "$prefix_null_open_overlap/label-registry.json" \
+    >"$prefix_null_open_overlap/registry.json"
+mv "$prefix_null_open_overlap/registry.json" "$prefix_null_open_overlap/label-registry.json"
+if discover "$prefix_null_open_overlap" >"$prefix_null_open_overlap/output" \
+    2>"$prefix_null_open_overlap/error"; then
+    bad "prefix-null concrete labels cannot bypass unsafe open-family overlap"
+elif [ ! -s "$prefix_null_open_overlap/output" ] &&
+    grep -q 'concrete label area:api from family area overlaps open family unsafe-area-open' \
+        "$prefix_null_open_overlap/error"; then
+    ok "prefix-null concrete labels cannot bypass unsafe open-family overlap"
+else
+    bad "prefix-null concrete/open-family overlap fails closed with a diagnostic"
 fi
 
 ambiguous="$tmproot/ambiguous"
