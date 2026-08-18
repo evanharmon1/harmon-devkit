@@ -292,7 +292,11 @@ jq -n \
         # issue with finished axes reads partially-classified forever.
         | ((($have_wt | length) > 0) or ($nt != null and $nt != "none"))
             as $typed
-        | (($typed | not) or ([$ax[]] | any(. != "ok")))
+        # A stray unrecognized label also blocks completeness — the apply
+        # script refuses that removal (exit 6), so the scan must not badge
+        # the same issue needs-triage-removable.
+        | (($typed | not) or ([$ax[]] | any(. != "ok"))
+           or ([$axes[] | axis_unknown($ls; .) | length] | any(. > 0)))
             as $incomplete
         # needs-triage is RE-ADDED only on a missing work type (personal
         # repos, where labels are authoritative) or a conflicted axis. A bare

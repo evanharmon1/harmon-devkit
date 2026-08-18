@@ -109,12 +109,21 @@ guard_issue_number() {
     esac
 }
 
-# Fail closed on an invalid registry before any derivation: a family whose
-# `axis` is outside the schema enum (a typo like "classificaton") would
-# silently vanish from the derived axis set, and the needs-triage removal
-# gate would then never demand that axis — a schema error must never weaken
-# a write gate. Same for a classification family with no prefix: it cannot
-# render labels, so deriving around it would hide it.
+# Fail closed on a registry this script cannot govern, before any derivation:
+#   - a family whose `axis` is outside the schema enum (a typo like
+#     "classificaton") would silently vanish from the derived axis set, and
+#     the needs-triage removal gate would then never demand that axis — a
+#     schema error must never weaken a write gate;
+#   - a classification family with no prefix cannot render labels, so
+#     deriving around it would hide it;
+#   - a prefix outside the schema's slug pattern would later be interpolated
+#     into pattern matches;
+#   - an open-values classification family enumerates its members nowhere,
+#     so no closed vocabulary can be derived for it — v1 refuses the
+#     registry rather than approximating one (jq truthiness makes even a
+#     malformed `"open_values": "false"` refuse, which errs closed).
+# Refusal, not workaround: the summary reports it and a human fixes the
+# registry or takes that axis out of triage scope.
 validate_manifest() {
     local manifest="$1" bad
     bad="$(jq -r '
@@ -126,57 +135,16 @@ validate_manifest() {
           | select(
               (($known_axes | index($f.axis // "")) == null)
               or ($f.axis == "classification" and (($f.prefix // "") == ""))
+              or ($f.axis == "classification" and ($f.open_values // false))
               or (($f.prefix // null) != null
                   and (($f.prefix | test("^[a-z0-9]+(-[a-z0-9]+)*$")) | not)))
           | ($f.family // "<unnamed>")
         ] | join(", ")' "$manifest")" ||
         die 2 "could not parse the manifest at '$manifest'"
     [ -z "$bad" ] ||
-        die 2 "refusing to derive from an invalid registry — families with" \
-            "an unrecognized axis or a prefix-less classification: $bad"
-}
-
-# Live members of open-values classification families, one per line — minus
-# every value such a family ENUMERATES: an enumerated value (retired, or
-# per-value restricted) is governed by the enumeration's own filters, and
-# the live expansion must never re-admit what those filters excluded. With
-# require_agent=1 only agent-writable families expand (the allowlist);
-# with 0 every open family does (recognition).
-open_family_live() {
-    local repo="$1" manifest="$2" require_agent="$3"
-    local open_re enumerated
-    open_re="$(jq -r --arg req "$require_agent" '
-      [ .families[]
-        | select((.retired // false) | not)
-        | select(.axis == "classification")
-        | select(.open_values // false)
-        | select((.prefix // "") != "")
-        | select(($req != "1")
-                 or (((.writers // []) | index("agent")) != null))
-        | .prefix
-      ] | unique | join("|")' "$manifest")"
-    [ -n "$open_re" ] || return 0
-    [ -n "$repo" ] ||
-        die 2 "the manifest declares open-values classification families" \
-            "and no --repo was given to resolve live members"
-    enumerated="$(jq -r '
-      [ .families[]
-        | select(.axis == "classification")
-        | select(.open_values // false)
-        | select((.prefix // "") != "")
-        | . as $f
-        | .values[]?
-        | "\($f.prefix):\(.value)"
-      ] | unique[]' "$manifest")"
-    local live
-    live="$(gh label list --repo "$repo" --limit 1000 --json name \
-        -q '.[].name' | grep -E "^($open_re):" || true)"
-    if [ -n "$enumerated" ]; then
-        printf '%s\n' "$live" |
-            grep -vxF -f <(printf '%s\n' "$enumerated") || true
-    else
-        [ -z "$live" ] || printf '%s\n' "$live"
-    fi
+        die 2 "refusing to derive from a registry v1 cannot govern" \
+            "(unrecognized axis, prefix-less or open-values classification" \
+            "family, or non-slug prefix): $bad"
 }
 
 # Print the active classification axes (label prefixes), one per line —
@@ -218,11 +186,6 @@ axis_values_recognized() {
             | select((.retired // false) | not)
             | "\($f.prefix):\(.value)"
           ] | unique[]' "$manifest"
-        # An open-values classification family enumerates nothing by design —
-        # its members are live labels created on demand, so recognition must
-        # read them from the repo or every member would read as unknown and
-        # block the removal gate.
-        open_family_live "$repo" "$manifest" 0
     else
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
@@ -256,10 +219,6 @@ allowlist_compute() {
             | if ($f.prefix // "") == "" then .value
               else "\($f.prefix):\(.value)" end
           ] | unique[]' "$manifest"
-        # Agent-writable open-values classification families: their members
-        # exist only live, so the writable set is read from the repo. The
-        # never-list stays senior to anything this adds.
-        open_family_live "$repo" "$manifest" 1
     else
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"

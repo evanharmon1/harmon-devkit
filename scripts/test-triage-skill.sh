@@ -237,48 +237,30 @@ jq '.families |= map(if .family == "area"
     then .axis = "classificaton" else . end)' "$manifest" >"$tmp/typo.json"
 [ "$(run "$apply" axes --manifest "$tmp/typo.json")" = 2 ] ||
     fail "a mistyped axis must exit 2, not silently drop the family"
-grep -q "invalid registry" "$tmp/out" || fail "refusal must say why"
+grep -q "cannot govern" "$tmp/out" || fail "refusal must say why"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
     --inapplicable layer --inapplicable domain \
     --manifest "$tmp/typo.json")" = 2 ] ||
     fail "removal under an invalid registry must exit 2"
 
-echo "==> axis-values: open-values classification members resolve live"
+echo "==> axes: an open-values classification family is refused, not governed"
 jq '.families |= map(if .family == "area"
     then .open_values = true | .values = [] else . end)' \
     "$manifest" >"$tmp/open-area.json"
-[ "$(run "$apply" axis-values --repo "$repo" \
-    --manifest "$tmp/open-area.json")" = 0 ] ||
-    fail "open-values axis-values failed: $(cat "$tmp/out")"
-grep -qx "area:ci" "$tmp/out" ||
-    fail "live area:ci must be recognized under an open-values area family"
-[ "$(run "$apply" allowlist --repo "$repo" \
-    --manifest "$tmp/open-area.json")" = 0 ] ||
-    fail "open-values allowlist failed"
-grep -qx "area:ci" "$tmp/out" ||
-    fail "live area:ci must be writable under an agent-writable open family"
-[ "$(run "$apply" axis-values --manifest "$tmp/open-area.json")" = 2 ] ||
-    fail "open-values without --repo must exit 2"
-
-echo "==> axis-values: an enumerated retired value never rides the live expansion"
+for sub in axes axis-values allowlist; do
+    [ "$(run "$apply" "$sub" --repo "$repo" \
+        --manifest "$tmp/open-area.json")" = 2 ] ||
+        fail "$sub must refuse an open-values classification family"
+done
 jq '.families |= map(if .family == "area"
-    then .open_values = true
-       | .values = [{"value": "ci", "retired": true}] else . end)' \
-    "$manifest" >"$tmp/open-retired.json"
-[ "$(run "$apply" axis-values --repo "$repo" \
-    --manifest "$tmp/open-retired.json")" = 0 ] ||
-    fail "open-retired axis-values failed: $(cat "$tmp/out")"
-grep -qx "area:ci" "$tmp/out" &&
-    fail "a live but enumerated-retired value must stay excluded"
-[ "$(run "$apply" allowlist --repo "$repo" \
-    --manifest "$tmp/open-retired.json")" = 0 ] ||
-    fail "open-retired allowlist failed"
-grep -qx "area:ci" "$tmp/out" &&
-    fail "a live but enumerated-retired value must not be writable"
+    then .open_values = "false" else . end)' \
+    "$manifest" >"$tmp/open-str.json"
+[ "$(run "$apply" axes --manifest "$tmp/open-str.json")" = 2 ] ||
+    fail "a non-boolean open_values must refuse (errs closed)"
 
 echo "==> axes: an ERE-metacharacter prefix is refused, never compiled"
 jq '.families |= map(if .family == "area"
-    then .prefix = "x)|(.+" | .open_values = true else . end)' \
+    then .prefix = "x)|(.+" else . end)' \
     "$manifest" >"$tmp/evil-prefix.json"
 [ "$(run "$apply" axes --manifest "$tmp/evil-prefix.json")" = 2 ] ||
     fail "a non-slug prefix must exit 2"
@@ -679,8 +661,9 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
  {"number": 25, "title": "Recognized and stray area values together",
-  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "area:legacy"},
-             {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "labels": [{"name": "bug"}, {"name": "needs-triage"}, {"name": "area:ci"},
+             {"name": "area:legacy"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
  {"number": 26, "title": "Axes done, classified only by native Type",
@@ -754,6 +737,11 @@ jq -e '.open[] | select(.number == 25) | .axis_state.area == "ok"
        and (.flags | index("axis-unknown-value:area") != null)' \
     "$scan_out" >/dev/null ||
     fail "area:ci beside area:legacy must read ok AND flag the stray label"
+jq -e '.open[] | select(.number == 25)
+       | (.flags | index("needs-triage-removable") == null)
+         and (.flags | index("partially-classified") != null)' \
+    "$scan_out" >/dev/null ||
+    fail "a stray label blocks removal, so the scan must not badge removable"
 
 echo "==> scan: a bare missing axis does not re-add needs-triage"
 jq -e '.open[] | select(.number == 23)
