@@ -28,7 +28,8 @@ it in the summary; never work around it).
   `triage-report.sh sync` for the report. Never run `gh issue edit`,
   `gh issue comment`, `gh issue close`, `gh label`, or any other writing
   command yourself.
-- **You may write only:** `area:*` / `layer:*` / `domain:*` labels; a
+- **You may write only:** classification-axis labels (the axes the scan
+  lists — `area:*` / `layer:*` / `domain:*` on a default taxonomy); a
   work-type label (`bug`, `feature`, `task`, `research`, `documentation`,
   `question`) on personal-account repos only; and `needs-triage`.
 - **You may remove only:** `needs-triage`, and only when classification is
@@ -71,11 +72,16 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
 
 - `owner_type` — `User` (work-type labels allowed) or `Organization`
   (work-type labels forbidden; native issue Type owns classification there).
+- `axes` — the repo's active classification axes (e.g. `area`, `layer`,
+  `domain`). This list is the only source of axis names: never assume an
+  axis the scan does not list.
 - `allowlist` / `vocabulary` — every label you may apply, with descriptions.
 - `work_type_values` — the work-type vocabulary for this repo.
-- `open[]` — open issues that need attention, each with `axis_state`,
-  `work_type`, `needs_labels`, `claim_labels`, `days_since_update`, and
-  `flags`.
+- `open[]` — open issues that need attention, each with `axis_state` (one
+  entry per axis in `axes`), `work_type`, `native_type` (org repos on newer
+  gh: the native issue Type name, `"none"` when unset; `null` when the scan
+  could not read it), `needs_labels`, `claim_labels`, `days_since_update`,
+  and `flags`.
 - `closed_flagged[]` — closed issues for report step 3 only.
 - `report_issue` — the rolling report issue (already excluded from the lists;
   never label it, never add report entries about it).
@@ -127,26 +133,29 @@ If `work_type` is empty, read the title (and body if the title is not enough:
 
 If two rows seem possible, or none clearly fits: **add nothing**.
 
-### 2b — Axes (`area`, `layer`, `domain`)
+### 2b — Axes (the scan's `axes` list)
 
-For each axis whose `axis_state` is `none`: look through `vocabulary` for that
-axis's values. Apply one **only if** the issue's title or body explicitly names
-what that value describes (a file path, subsystem, or activity that matches
-the description). If you have to guess, or two values fit: **add nothing**.
+For each axis in `axes` whose `axis_state` is `none`: look through
+`vocabulary` for that axis's values. Apply one **only if** the issue's title
+or body explicitly names what that value describes (a file path, subsystem,
+or activity that matches the description). If you have to guess, or two
+values fit: **add nothing**.
 
-For each axis whose `axis_state` is `conflict`: **never add or remove
-anything** for that axis. It becomes a report entry in step 3.
+For each axis whose `axis_state` is `conflict` or `unknown`: **never add or
+remove anything** for that axis. It becomes a report entry in step 3
+(`unknown` means the issue carries an axis label whose value is not in the
+active taxonomy — a retired or misspelled label a human must resolve).
 
 ### 2c — needs-triage
 
 - If `flags` contains `missing-needs-triage`: add `needs-triage` (include it
   in the same apply call) — with one check first on `Organization` repos:
-  run
-  `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`,
-  and if it prints anything other than `none`, the issue is classified by its
-  native Type — do not add `needs-triage` for a missing work-type label
-  there. (The bulk scan cannot see native Types, so this per-issue check is
-  yours. It costs one read from the budget.)
+  read the issue's `native_type` from the scan, and if it is anything other
+  than `none`, the issue is classified by its native Type — do not add
+  `needs-triage` for a missing work-type label there. Only when `native_type`
+  is `null` (the scan could not bulk-read Types) run
+  `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`
+  instead — that per-issue check costs one read from the budget.
 - Do **not** re-add `needs-triage` for a merely missing axis the scan did not
   flag: an earlier run may have removed the label on an
   `--inapplicable` attestation, which no label records, and re-adding it
@@ -154,10 +163,11 @@ anything** for that axis. It becomes a report entry in step 3.
 - Remove `needs-triage` **only if**, after your adds from 2a/2b, all of this
   holds — the script re-checks every point and refuses otherwise:
   - a work type is present (personal: a work-type label; org: the native
-    Type — check with
+    Type — the scan's `native_type`, which must not be `none`; only when it
+    is `null` check with
     `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`,
     which must not print `none`), and
-  - every axis has exactly one label, **or** you attest
+  - every axis in `axes` has exactly one recognized label, **or** you attest
     `--inapplicable <axis>` for it. Attest only when no value of that axis
     could ever describe this issue (example: a pure question has no stack
     layer). When in doubt, do not attest — leave `needs-triage` in place.
@@ -185,8 +195,9 @@ a finding):
 | `blocked-candidate`                  | same                                                 | no comment states what it is blocked on                                    |
 | `aging-needs-candidate`              | nothing — the flag is the finding                    | always                                                                     |
 | `axis-conflict:*`                    | nothing — the flag is the finding                    | always; name both labels and, only if the body states one, the right one   |
-| `missing-work-type` on an org repo   | `native-type` (see 2c)                               | it prints `none` (v1 cannot write Type — a human must set it)              |
-| `legacy-work-type-label` (org only)  | `native-type` (see 2c)                               | it prints `none` — the label is legacy there and proves nothing; mention the label itself for cleanup |
+| `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
+| `missing-work-type` on an org repo   | the scan's `native_type`; `native-type` (see 2c) only when it is `null` | it is/prints `none` (v1 cannot write Type — a human must set it)           |
+| `legacy-work-type-label` (org only)  | the scan's `native_type`; `native-type` (see 2c) only when it is `null` | it is/prints `none` — the label is legacy there and proves nothing; mention the label itself for cleanup |
 | `closed_flagged` state `completed`   | nothing — `unticked_criteria` is the finding         | always; note the unticked count                                            |
 | `closed_flagged` state `duplicate`   | `gh issue view <n> --repo "$REPO" --comments`        | no comment points at the surviving issue (`#<number>`)                     |
 

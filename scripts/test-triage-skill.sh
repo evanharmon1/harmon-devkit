@@ -75,7 +75,17 @@ api\ repos/*)
     printf '%s\n' "${GH_STUB_OWNER_TYPE:?}"
     ;;
 "label list") emit "${GH_STUB_DIR:?}/labels.json" ;;
-"issue list") emit "${GH_STUB_DIR:?}/issues-${state:?}.json" ;;
+"issue list")
+    # A --json field set naming issueType emulates the bulk native-Type read:
+    # newer gh serves it from issues-open-types.json, older gh (no fixture)
+    # rejects the field.
+    if printf '%s' "$*" | grep -q "issueType"; then
+        [ -f "${GH_STUB_DIR:?}/issues-open-types.json" ] || exit 1
+        emit "${GH_STUB_DIR:?}/issues-open-types.json"
+    else
+        emit "${GH_STUB_DIR:?}/issues-${state:?}.json"
+    fi
+    ;;
 "issue view") emit "${GH_STUB_DIR:?}/issue-${3:?}.json" ;;
 "repo view") printf '%s\n' "${GH_STUB_REPO:?}" ;;
 # Only the body-carrying writes read stdin (--body-file -): drain just there,
@@ -122,6 +132,7 @@ run() {
 manifest="$tmp/label-registry.json"
 cat >"$manifest" <<'JSON'
 {
+  "$schema": "./label-registry.schema.json",
   "schema_version": 1,
   "families": [
     {"family": "workflow", "prefix": null, "axis": "workflow",
@@ -188,6 +199,135 @@ sort "$tmp/out" >"$tmp/got"
 printf '%s\n' area:ci bug layer:ui needs-triage | sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 ||
     fail "fallback mismatch (enhancement/rigor must be out)"
+
+echo "==> axes: derived from the manifest's classification families"
+[ "$(run "$apply" axes --manifest "$manifest")" = 0 ] || fail "axes failed"
+sort "$tmp/out" >"$tmp/got"
+printf '%s\n' area domain layer | sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 || fail "axes mismatch"
+
+echo "==> axes: a repo that provisions only some axes derives only those"
+jq '.families |= map(select(.family != "area"))' "$manifest" \
+    >"$tmp/no-area.json"
+[ "$(run "$apply" axes --manifest "$tmp/no-area.json")" = 0 ] ||
+    fail "no-area axes failed"
+sort "$tmp/out" >"$tmp/got"
+printf '%s\n' domain layer | sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 || fail "no-area axes mismatch"
+
+echo "==> axes: fallback derives the default prefixes present in live labels"
+[ "$(run "$apply" axes --repo "$repo" --manifest "$tmp/nope.json")" = 0 ] ||
+    fail "fallback axes failed"
+sort "$tmp/out" >"$tmp/got"
+printf '%s\n' area layer | sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 ||
+    fail "fallback axes must be defaults ∩ live prefixes (no domain here)"
+[ "$(run "$apply" axes --manifest "$tmp/nope.json")" = 2 ] ||
+    fail "fallback axes without --repo must exit 2"
+
+echo "==> axes: only exclusive classification families become axes"
+jq '.families |= map(if .family == "area"
+    then .exclusive = false else . end)' "$manifest" >"$tmp/nonexcl.json"
+[ "$(run "$apply" axes --manifest "$tmp/nonexcl.json")" = 0 ] ||
+    fail "non-exclusive axes failed"
+sort "$tmp/out" >"$tmp/got"
+printf '%s\n' domain layer | sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 ||
+    fail "a non-exclusive classification family must not be an axis"
+[ "$(run "$apply" allowlist --manifest "$tmp/nonexcl.json")" = 0 ] ||
+    fail "non-exclusive allowlist failed"
+grep -q "^area:" "$tmp/out" &&
+    fail "a non-axis classification family must not be writable"
+
+echo "==> axes: string-typed booleans are refused, never silently dropped"
+jq '.families |= map(if .family == "area"
+    then .exclusive = "true" else . end)' "$manifest" >"$tmp/strbool.json"
+[ "$(run "$apply" axes --manifest "$tmp/strbool.json")" = 2 ] ||
+    fail "a string-typed exclusive must exit 2"
+jq '.families |= map(if .family == "area"
+    then .retired = "false" else . end)' "$manifest" >"$tmp/strret.json"
+[ "$(run "$apply" axes --manifest "$tmp/strret.json")" = 2 ] ||
+    fail "a string-typed retired must exit 2, not skip its own validation"
+jq '.families |= map(if .family == "area"
+    then del(.exclusive) else . end)' "$manifest" >"$tmp/noexcl.json"
+[ "$(run "$apply" axes --manifest "$tmp/noexcl.json")" = 2 ] ||
+    fail "a classification family without exclusive must exit 2"
+
+echo "==> axes: an unsupported schema_version is refused before deriving"
+jq '.schema_version = 2' "$manifest" >"$tmp/v2.json"
+[ "$(run "$apply" axes --manifest "$tmp/v2.json")" = 2 ] ||
+    fail "schema_version 2 must exit 2"
+jq 'del(.schema_version)' "$manifest" >"$tmp/nover.json"
+[ "$(run "$apply" axes --manifest "$tmp/nover.json")" = 2 ] ||
+    fail "an absent schema_version must exit 2"
+jq '.schema_version = "1"' "$manifest" >"$tmp/strver.json"
+[ "$(run "$apply" axes --manifest "$tmp/strver.json")" = 2 ] ||
+    fail "a string schema_version must exit 2 (typed compare, no coercion)"
+jq 'del(."$schema")' "$manifest" >"$tmp/noschema.json"
+[ "$(run "$apply" axes --manifest "$tmp/noschema.json")" = 2 ] ||
+    fail "an absent \$schema must exit 2"
+jq '.families |= (map({(.family): .}) | add)' "$manifest" >"$tmp/objfam.json"
+[ "$(run "$apply" axes --manifest "$tmp/objfam.json")" = 2 ] ||
+    fail "an object families collection must exit 2"
+
+echo "==> axes: a reserved prefix never becomes a classification axis"
+jq '.families |= map(if .family == "area"
+    then .prefix = "rigor" else . end)' "$manifest" >"$tmp/reserved.json"
+[ "$(run "$apply" axes --manifest "$tmp/reserved.json")" = 2 ] ||
+    fail "a never-list prefix on a classification family must exit 2"
+
+echo "==> axis-values: non-exclusive classification values are not recognized"
+[ "$(run "$apply" axis-values --manifest "$tmp/nonexcl.json")" = 0 ] ||
+    fail "nonexcl axis-values failed"
+grep -q "^area:" "$tmp/out" &&
+    fail "a non-axis family's values must not satisfy recognition"
+
+echo "==> axis-values: manifest mode lists the active taxonomy, retired out"
+jq '.families |= map(if .family == "area"
+    then .values += [{"value": "old", "retired": true}] else . end)' \
+    "$manifest" >"$tmp/retired-value.json"
+[ "$(run "$apply" axis-values --manifest "$tmp/retired-value.json")" = 0 ] ||
+    fail "axis-values failed"
+sort "$tmp/out" >"$tmp/got"
+printf '%s\n' area:ci area:tasks domain:auth domain:delivery layer:ui |
+    sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 || fail "axis-values mismatch"
+
+echo "==> axes: an invalid registry is refused, never derived around"
+jq '.families |= map(if .family == "area"
+    then .axis = "classificaton" else . end)' "$manifest" >"$tmp/typo.json"
+[ "$(run "$apply" axes --manifest "$tmp/typo.json")" = 2 ] ||
+    fail "a mistyped axis must exit 2, not silently drop the family"
+grep -q "cannot govern" "$tmp/out" || fail "refusal must say why"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
+    --inapplicable layer --inapplicable domain \
+    --manifest "$tmp/typo.json")" = 2 ] ||
+    fail "removal under an invalid registry must exit 2"
+
+echo "==> axes: an open-values classification family is refused, not governed"
+jq '.families |= map(if .family == "area"
+    then .open_values = true | .values = [] else . end)' \
+    "$manifest" >"$tmp/open-area.json"
+for sub in axes axis-values allowlist; do
+    [ "$(run "$apply" "$sub" --repo "$repo" \
+        --manifest "$tmp/open-area.json")" = 2 ] ||
+        fail "$sub must refuse an open-values classification family"
+done
+jq '.families |= map(if .family == "area"
+    then .open_values = "false" else . end)' \
+    "$manifest" >"$tmp/open-str.json"
+[ "$(run "$apply" axes --manifest "$tmp/open-str.json")" = 2 ] ||
+    fail "a non-boolean open_values must refuse (errs closed)"
+
+echo "==> axes: an ERE-metacharacter prefix is refused, never compiled"
+jq '.families |= map(if .family == "area"
+    then .prefix = "x)|(.+" else . end)' \
+    "$manifest" >"$tmp/evil-prefix.json"
+[ "$(run "$apply" axes --manifest "$tmp/evil-prefix.json")" = 2 ] ||
+    fail "a non-slug prefix must exit 2"
+[ "$(run "$apply" allowlist --repo "$repo" \
+    --manifest "$tmp/evil-prefix.json")" = 2 ] ||
+    fail "allowlist under a non-slug prefix must exit 2"
 
 # Issue fixtures for the label subcommand.
 cat >"$stub_dir/issue-10.json" <<'JSON'
@@ -326,6 +466,27 @@ echo "==> label: needs-triage removal passes when classification is complete"
 grep -q "DRY-RUN would remove 'needs-triage'" "$tmp/out" ||
     fail "missing WOULD remove"
 grep -q "attested inapplicable: layer" "$tmp/out" || fail "missing attestation"
+
+echo "==> label: an unknown axis value never satisfies the removal gate"
+cat >"$stub_dir/issue-14.json" <<'JSON'
+{"labels": [{"name": "needs-triage"}, {"name": "bug"},
+            {"name": "area:legacy"}], "body": "plain"}
+JSON
+[ "$(run "$apply" label --repo "$repo" --issue 14 --remove needs-triage \
+    --inapplicable layer --inapplicable domain \
+    --manifest "$manifest")" = 6 ] || fail "unknown area value must exit 6"
+grep -q "not in the active area taxonomy" "$tmp/out" ||
+    fail "refusal must name the unknown value: $(cat "$tmp/out")"
+
+echo "==> label: an unprovisioned axis is never demanded (derived axes)"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
+    --inapplicable layer --inapplicable domain \
+    --manifest "$tmp/no-area.json")" = 0 ] ||
+    fail "no-area manifest must not demand an area attestation: $(cat "$tmp/out")"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
+    --inapplicable area --inapplicable layer --inapplicable domain \
+    --manifest "$tmp/no-area.json")" = 2 ] ||
+    fail "--inapplicable for an inactive axis must exit 2"
 
 echo "==> label: org removal needs a native Type; unreadable Type refuses"
 GH_STUB_OWNER_TYPE="Organization"
@@ -554,6 +715,32 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 24, "title": "Carries a retired area value",
+  "labels": [{"name": "bug"}, {"name": "area:legacy"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 25, "title": "Recognized and stray area values together",
+  "labels": [{"name": "bug"}, {"name": "needs-triage"}, {"name": "area:ci"},
+             {"name": "area:legacy"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 27, "title": "Stray beside recognized, queue label lost",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "area:legacy"},
+             {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 26, "title": "Axes done, classified only by native Type",
+  "labels": [{"name": "needs-triage"}, {"name": "area:ci"},
+             {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 28, "title": "Legacy label, no native Type, axes done",
+  "labels": [{"name": "bug"}, {"name": "needs-triage"}, {"name": "area:ci"},
+             {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""}]
 JSON
 cat >"$stub_dir/issues-closed.json" <<'JSON'
@@ -599,6 +786,56 @@ jq -e '.closed_flagged[] | select(.number == 40) | .unticked_criteria == 2' \
 jq -e '.work_type_values | sort == ["bug", "feature"]' "$scan_out" \
     >/dev/null || fail "work_type_values wrong"
 
+echo "==> scan: axes are emitted and axis maps follow them"
+jq -e '.axes | sort == ["area", "domain", "layer"]' "$scan_out" >/dev/null ||
+    fail "scan must emit the active axes"
+jq -e '.open[] | select(.number == 23) | .axis_state
+       | keys | sort == ["area", "domain", "layer"]' "$scan_out" >/dev/null ||
+    fail "axis_state must be keyed by the active axes"
+
+echo "==> scan: an unrecognized axis value reads unknown, never classified"
+jq -e '.open[] | select(.number == 24) | .axis_state.area == "unknown"' \
+    "$scan_out" >/dev/null || fail "area:legacy must read unknown"
+jq -e '.open[] | select(.number == 24) | .flags
+       | index("axis-unknown-value:area")' "$scan_out" >/dev/null ||
+    fail "axis-unknown-value flag missing"
+jq -e '.open[] | select(.number == 24) | .flags
+       | index("axis-missing:area") == null' "$scan_out" >/dev/null ||
+    fail "an unknown value is not a bare missing axis"
+jq -e '.open[] | select(.number == 24) | .flags
+       | index("missing-needs-triage")' "$scan_out" >/dev/null ||
+    fail "an unknown value must requeue needs-triage"
+jq -e '.open[] | select(.number == 24)
+       | .unknown_labels.area == ["area:legacy"]' "$scan_out" >/dev/null ||
+    fail "the scan must name the unknown label"
+jq -e '.open[] | select(.number == 23) | .unknown_labels == {}' \
+    "$scan_out" >/dev/null ||
+    fail "unknown_labels must be empty where every value is recognized"
+
+echo "==> axes: a possibly-truncated live label fetch refuses fallback"
+cp "$stub_dir/labels.json" "$tmp/labels-small.json"
+jq '[range(1000)] | map({name: ("bulk-\(.)"), description: ""})' -n \
+    >"$stub_dir/labels.json"
+[ "$(run "$apply" axes --repo "$repo" --manifest "$tmp/nope.json")" = 2 ] ||
+    fail "a 1000-label page must refuse fallback derivation"
+cp "$tmp/labels-small.json" "$stub_dir/labels.json"
+jq -e '.open[] | select(.number == 27)
+       | (.axis_state.area == "ok")
+         and (.flags | index("missing-needs-triage") != null)' \
+    "$scan_out" >/dev/null ||
+    fail "a stray label beside a recognized value must still requeue"
+
+echo "==> scan: an unknown value beside a recognized one still flags"
+jq -e '.open[] | select(.number == 25) | .axis_state.area == "ok"
+       and (.flags | index("axis-unknown-value:area") != null)' \
+    "$scan_out" >/dev/null ||
+    fail "area:ci beside area:legacy must read ok AND flag the stray label"
+jq -e '.open[] | select(.number == 25)
+       | (.flags | index("needs-triage-removable") == null)
+         and (.flags | index("partially-classified") != null)' \
+    "$scan_out" >/dev/null ||
+    fail "a stray label blocks removal, so the scan must not badge removable"
+
 echo "==> scan: a bare missing axis does not re-add needs-triage"
 jq -e '.open[] | select(.number == 23)
        | (.flags | index("axis-missing:area") != null)
@@ -620,6 +857,42 @@ echo "==> scan: org issues with a legacy work-type label stay visible"
 jq -e '.open[] | select(.number == 23)
        | .flags | index("legacy-work-type-label")' "$tmp/out" >/dev/null ||
     fail "org issue with a work-type label must carry legacy-work-type-label"
+jq -e '.native_type_mode == "per-issue"' "$tmp/out" >/dev/null ||
+    fail "an old gh must report per-issue native-Type mode"
+
+echo "==> scan: bulk native Type quiets natively-typed org issues"
+# The bulk read rides in the same list request as the issues (one snapshot,
+# no join), so the fixture is the open list plus issueType per issue.
+jq 'map(.issueType = (if .number == 23 or .number == 26
+                      then {name: "Bug"} else null end))' \
+    "$stub_dir/issues-open.json" >"$stub_dir/issues-open-types.json"
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
+    fail "org bulk scan failed: $(cat "$tmp/out")"
+jq -e '.native_type_mode == "bulk"' "$tmp/out" >/dev/null ||
+    fail "bulk-capable gh must report bulk mode"
+jq -e '.open[] | select(.number == 23) | .native_type == "Bug"' \
+    "$tmp/out" >/dev/null || fail "native_type must carry the bulk-read Type"
+jq -e '.open[] | select(.number == 23) | .flags
+       | index("legacy-work-type-label") == null' "$tmp/out" >/dev/null ||
+    fail "a natively-typed issue must not read as legacy-labeled"
+jq -e '.open[] | select(.number == 24) | .native_type == "none"
+       and (.flags | index("legacy-work-type-label") != null)' \
+    "$tmp/out" >/dev/null ||
+    fail "an untyped org issue with a work-type label stays flagged"
+jq -e '.open[] | select(.number == 26)
+       | (.flags | index("needs-triage-removable") != null)
+         and (.flags | index("partially-classified") == null)' \
+    "$tmp/out" >/dev/null ||
+    fail "a natively-typed issue with finished axes must read removable"
+jq -e '.open[] | select(.number == 28)
+       | (.flags | index("needs-triage-removable") == null)
+         and (.flags | index("partially-classified") != null)' \
+    "$tmp/out" >/dev/null ||
+    fail "a legacy label without a native Type must not read removable on an org"
+jq -e '.open[] | select(.number == 22) | .flags
+       | index("missing-needs-triage")' "$tmp/out" >/dev/null ||
+    fail "a bulk-proven untyped org issue must requeue needs-triage"
+rm "$stub_dir/issues-open-types.json"
 GH_STUB_OWNER_TYPE="User"
 
 echo "==> scan: a mismatched --repo is refused when the run is bound"
