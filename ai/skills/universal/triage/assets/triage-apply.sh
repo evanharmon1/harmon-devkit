@@ -125,7 +125,14 @@ guard_issue_number() {
 # Refusal, not workaround: the summary reports it and a human fixes the
 # registry or takes that axis out of triage scope.
 validate_manifest() {
-    local manifest="$1" bad
+    local manifest="$1" bad ver
+    # Version first: v1 interprets schema_version 1 semantics only — a future
+    # registry format must not silently drive label writes.
+    ver="$(jq -r '.schema_version // "absent"' "$manifest")" ||
+        die 2 "could not parse the manifest at '$manifest'"
+    [ "$ver" = "1" ] ||
+        die 2 "unsupported registry schema_version '$ver' — this script" \
+            "interprets schema_version 1 only; refusing to derive"
     bad="$(jq -r '
       ["classification", "strategy", "model", "work-type", "concern",
        "workflow", "provenance", "foreman", "release", "meta"] as $known_axes

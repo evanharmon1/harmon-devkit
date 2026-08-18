@@ -252,6 +252,14 @@ jq '.families |= map(if .family == "area"
 [ "$(run "$apply" axes --manifest "$tmp/noexcl.json")" = 2 ] ||
     fail "a classification family without exclusive must exit 2"
 
+echo "==> axes: an unsupported schema_version is refused before deriving"
+jq '.schema_version = 2' "$manifest" >"$tmp/v2.json"
+[ "$(run "$apply" axes --manifest "$tmp/v2.json")" = 2 ] ||
+    fail "schema_version 2 must exit 2"
+jq 'del(.schema_version)' "$manifest" >"$tmp/nover.json"
+[ "$(run "$apply" axes --manifest "$tmp/nover.json")" = 2 ] ||
+    fail "an absent schema_version must exit 2"
+
 echo "==> axes: a reserved prefix never becomes a classification axis"
 jq '.families |= map(if .family == "area"
     then .prefix = "rigor" else . end)' "$manifest" >"$tmp/reserved.json"
@@ -718,6 +726,11 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "labels": [{"name": "needs-triage"}, {"name": "area:ci"},
              {"name": "layer:ui"}, {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 28, "title": "Legacy label, no native Type, axes done",
+  "labels": [{"name": "bug"}, {"name": "needs-triage"}, {"name": "area:ci"},
+             {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""}]
 JSON
 cat >"$stub_dir/issues-closed.json" <<'JSON'
@@ -847,6 +860,11 @@ jq -e '.open[] | select(.number == 26)
          and (.flags | index("partially-classified") == null)' \
     "$tmp/out" >/dev/null ||
     fail "a natively-typed issue with finished axes must read removable"
+jq -e '.open[] | select(.number == 28)
+       | (.flags | index("needs-triage-removable") == null)
+         and (.flags | index("partially-classified") != null)' \
+    "$tmp/out" >/dev/null ||
+    fail "a legacy label without a native Type must not read removable on an org"
 rm "$stub_dir/issues-open-types.json"
 GH_STUB_OWNER_TYPE="User"
 

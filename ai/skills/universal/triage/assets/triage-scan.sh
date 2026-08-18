@@ -287,10 +287,15 @@ jq -n \
         | ($ls | map(select(startswith("needs-")))) as $needs
         | ($ls | map(select(startswith("claim:") or startswith("agent:"))))
             as $claims
-        # A bulk-read native Type classifies the issue exactly as a
-        # work-type label does — completeness must count it, or a typed org
-        # issue with finished axes reads partially-classified forever.
-        | ((($have_wt | length) > 0) or ($nt != null and $nt != "none"))
+        # Completeness reads the owner-appropriate source: on org repos a
+        # work-type LABEL proves nothing (native Type owns classification),
+        # so where the bulk read resolved the Type it alone decides — a
+        # legacy-labeled, natively-untyped issue must not read removable
+        # when the apply gate would refuse it. Personal repos, and org
+        # repos the bulk read could not cover, still read the labels.
+        | (if $owner_type == "Organization" and $nt != null
+           then ($nt != "none")
+           else (($have_wt | length) > 0) end)
             as $typed
         # A stray unrecognized label also blocks completeness — the apply
         # script refuses that removal (exit 6), so the scan must not badge
