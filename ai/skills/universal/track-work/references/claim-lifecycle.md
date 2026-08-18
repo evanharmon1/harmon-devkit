@@ -48,7 +48,7 @@ holds it to. `release-claim.sh` is the reference parser.
 **Vocabulary transition.** The live-claim label is migrating from the
 harness-named `agent:*` family to the model-centric `claim:<family>[:<model>]`
 family (registry: harmon-init's `agent-registry.json`; e.g. `claim:claude`,
-`claim:codex`). New claims **prefer `claim:*`, falling back to the legacy
+`claim:gpt`). New claims **prefer `claim:*`, falling back to the legacy
 `agent:*` label** on a repo whose label provisioning has not yet migrated (so a
 currently-provisioned repo keeps its claim labeled rather than regressing to an
 unlabeled one); the parser and every reader recognize **both** families until
@@ -77,7 +77,7 @@ in the claim record, never in the label.
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
-  - `claim:` label displaced by this claim: <claim:codex | agent:codex (legacy) | none>
+  - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
   ```
 
 - `harness`, `model`, and `session` are optional, informational fields. New
