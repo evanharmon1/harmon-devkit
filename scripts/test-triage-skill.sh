@@ -214,12 +214,25 @@ sort "$tmp/out" >"$tmp/got"
 printf '%s\n' domain layer | sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 || fail "no-area axes mismatch"
 
-echo "==> axes: fallback without a manifest is the harmon-init default set"
-[ "$(run "$apply" axes --manifest "$tmp/nope.json")" = 0 ] ||
+echo "==> axes: fallback derives the default prefixes present in live labels"
+[ "$(run "$apply" axes --repo "$repo" --manifest "$tmp/nope.json")" = 0 ] ||
     fail "fallback axes failed"
 sort "$tmp/out" >"$tmp/got"
-printf '%s\n' area domain layer | sort >"$tmp/want"
-diff -u "$tmp/want" "$tmp/got" >&2 || fail "fallback axes mismatch"
+printf '%s\n' area layer | sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 ||
+    fail "fallback axes must be defaults ∩ live prefixes (no domain here)"
+[ "$(run "$apply" axes --manifest "$tmp/nope.json")" = 2 ] ||
+    fail "fallback axes without --repo must exit 2"
+
+echo "==> axes: only exclusive classification families become axes"
+jq '.families |= map(if .family == "area"
+    then .exclusive = false else . end)' "$manifest" >"$tmp/nonexcl.json"
+[ "$(run "$apply" axes --manifest "$tmp/nonexcl.json")" = 0 ] ||
+    fail "non-exclusive axes failed"
+sort "$tmp/out" >"$tmp/got"
+printf '%s\n' domain layer | sort >"$tmp/want"
+diff -u "$tmp/want" "$tmp/got" >&2 ||
+    fail "a non-exclusive classification family must not be an axis"
 
 echo "==> axis-values: manifest mode lists the active taxonomy, retired out"
 jq '.families |= map(if .family == "area"
@@ -731,6 +744,9 @@ jq -e '.open[] | select(.number == 24) | .flags
 jq -e '.open[] | select(.number == 24) | .flags
        | index("axis-missing:area") == null' "$scan_out" >/dev/null ||
     fail "an unknown value is not a bare missing axis"
+jq -e '.open[] | select(.number == 24) | .flags
+       | index("missing-needs-triage")' "$scan_out" >/dev/null ||
+    fail "an unknown value must requeue needs-triage"
 
 echo "==> scan: an unknown value beside a recognized one still flags"
 jq -e '.open[] | select(.number == 25) | .axis_state.area == "ok"

@@ -148,22 +148,33 @@ validate_manifest() {
 }
 
 # Print the active classification axes (label prefixes), one per line —
-# derived from the manifest's classification families so a repo that
-# provisions only some axes is never asked to attest the missing ones.
-# Fallback (no manifest): the harmon-init template defaults.
+# derived from the manifest's EXCLUSIVE classification families (#485: only
+# an at-most-one family is a completeness axis) so a repo that provisions
+# only some axes is never asked to attest the missing ones. Fallback (no
+# manifest): the harmon-init default prefixes intersected with the labels
+# that actually exist live — an axis no live label carries is not demanded.
 axes_active() {
-    local manifest="$1"
+    local repo="$1" manifest="$2"
     if [ -f "$manifest" ]; then
         validate_manifest "$manifest"
         jq -r '
           [ .families[]
             | select((.retired // false) | not)
             | select(.axis == "classification")
+            | select(.exclusive == true)
             | select((.prefix // "") != "")
             | .prefix
           ] | unique[]' "$manifest"
     else
-        printf '%s\n' $FALLBACK_AXES
+        [ -n "$repo" ] ||
+            die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
+        local live a
+        live="$(gh label list --repo "$repo" --limit 1000 --json name \
+            -q '.[].name')"
+        for a in $FALLBACK_AXES; do
+            printf '%s\n' "$live" | grep -q "^$a:" && printf '%s\n' "$a"
+        done
+        return 0
     fi
 }
 
@@ -190,7 +201,7 @@ axis_values_recognized() {
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
         local re
-        re="$(axes_active "$manifest" | paste -sd '|' -)"
+        re="$(axes_active "$repo" "$manifest" | paste -sd '|' -)"
         [ -n "$re" ] || return 0
         gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' |
             grep -E "^($re):" || true
@@ -284,13 +295,12 @@ cmd_work_types() {
 }
 
 cmd_axes() {
-    local manifest="./label-registry.json"
+    local repo="" manifest="./label-registry.json"
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --repo)
-            # Accepted for call-shape symmetry with allowlist/work-types;
-            # axes need no repo read in either mode.
             [ "$#" -ge 2 ] || usage
+            repo="$2"
             shift 2
             ;;
         --manifest)
@@ -302,7 +312,7 @@ cmd_axes() {
         esac
     done
     guard_manifest "$manifest"
-    axes_active "$manifest"
+    axes_active "$repo" "$manifest"
 }
 
 cmd_axis_values() {
@@ -445,7 +455,7 @@ cmd_label() {
         die 2 "nothing requested — pass --add and/or --remove"
 
     local l axis axes
-    axes="$(axes_active "$manifest")"
+    axes="$(axes_active "$repo" "$manifest")"
     # v1 removes exactly one label kind. Everything else is out of scope by
     # construction, not by validation of a wider mechanism.
     for l in "${removes[@]+"${removes[@]}"}"; do

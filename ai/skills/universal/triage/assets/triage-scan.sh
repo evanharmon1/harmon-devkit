@@ -305,7 +305,10 @@ jq -n \
         # would churn every legitimately attested issue forever. Org repos
         # are exempt from the work-type trigger too — the bulk scan cannot
         # see native issue Type, so an empty label set proves nothing there.
-        | (([$ax[]] | any(. == "conflict"))
+        # An unknown value requeues too: it cannot stand for an
+        # inapplicability attestation, so the issue goes back to the
+        # needs-triage queue rather than living only in the report.
+        | (([$ax[]] | any(. == "conflict" or . == "unknown"))
            or ($owner_type == "User" and ($have_wt | length) == 0))
             as $needs_triage_worthy
         | {number, title, updatedAt,
