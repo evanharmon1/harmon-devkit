@@ -228,8 +228,14 @@ axis_values_recognized() {
         local re
         re="$(axes_active "$repo" "$manifest" | paste -sd '|' -)"
         [ -n "$re" ] || return 0
-        gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' |
-            grep -E "^($re):" || true
+        # gh failure must surface — an empty set born of an API error would
+        # read every live axis label as unknown. Only grep's no-match status
+        # is ignorable.
+        local live
+        live="$(gh label list --repo "$repo" --limit 1000 --json name \
+            -q '.[].name')" ||
+            die 2 "could not list the live labels of $repo"
+        printf '%s\n' "$live" | grep -E "^($re):" || true
     fi
 }
 
