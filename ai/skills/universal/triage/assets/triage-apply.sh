@@ -147,11 +147,13 @@ validate_manifest() {
     # or a string-typed "1" (which a text comparison would coerce past the
     # pin) must not silently drive label writes.
     jq -e '(.schema_version == 1)
-           and (."$schema" == "./label-registry.schema.json")' \
+           and (."$schema" == "./label-registry.schema.json")
+           and (.families | type == "array")' \
         "$manifest" >/dev/null 2>&1 ||
         die 2 "unsupported registry identity — this script interprets" \
             "\$schema ./label-registry.schema.json at numeric" \
-            "schema_version 1 only; refusing to derive"
+            "schema_version 1 with an array families collection only;" \
+            "refusing to derive"
     bad="$(jq -r '
       ["classification", "strategy", "model", "work-type", "concern",
        "workflow", "provenance", "foreman", "release", "meta"] as $known_axes

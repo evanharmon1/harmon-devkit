@@ -266,6 +266,9 @@ jq '.schema_version = "1"' "$manifest" >"$tmp/strver.json"
 jq 'del(."$schema")' "$manifest" >"$tmp/noschema.json"
 [ "$(run "$apply" axes --manifest "$tmp/noschema.json")" = 2 ] ||
     fail "an absent \$schema must exit 2"
+jq '.families |= (map({(.family): .}) | add)' "$manifest" >"$tmp/objfam.json"
+[ "$(run "$apply" axes --manifest "$tmp/objfam.json")" = 2 ] ||
+    fail "an object families collection must exit 2"
 
 echo "==> axes: a reserved prefix never becomes a classification axis"
 jq '.families |= map(if .family == "area"
