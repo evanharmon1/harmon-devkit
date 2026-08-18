@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.33.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.32.0...v0.33.0) (2026-08-18)
+
+
+### Features
+
+* **breakdown:** derive planning labels from registries ([#511](https://github.com/evanharmon1/harmon-devkit/issues/511)) ([265df9c](https://github.com/evanharmon1/harmon-devkit/commit/265df9c430819e63f39af476d18521265bc991dc))
+* **pm:** customize domain and area label taxonomy for harmon-devkit ([#505](https://github.com/evanharmon1/harmon-devkit/issues/505)) ([476cb19](https://github.com/evanharmon1/harmon-devkit/commit/476cb19fc3cdc358a189785721e35cd92d4c8ca1))
+* **skills:** add the triage skill — manifest-governed backlog classifier (v1) ([#480](https://github.com/evanharmon1/harmon-devkit/issues/480)) ([06abbca](https://github.com/evanharmon1/harmon-devkit/commit/06abbca2b16240f473a89bb284cb09eaf16f4de3))
+* **skills:** gauntlet commits, gates and pushes each adjudicated round ([#491](https://github.com/evanharmon1/harmon-devkit/issues/491)) ([2557846](https://github.com/evanharmon1/harmon-devkit/commit/255784637180d62b8069bd763b9277551110a1d0))
+* **skills:** record claim runtime identity ([#519](https://github.com/evanharmon1/harmon-devkit/issues/519)) ([b0ee811](https://github.com/evanharmon1/harmon-devkit/commit/b0ee8119813b8d884d0a022b4140d270938921b1))
+* **skills:** share label registry interpreter ([#531](https://github.com/evanharmon1/harmon-devkit/issues/531)) ([b49e866](https://github.com/evanharmon1/harmon-devkit/commit/b49e866394b7fea30fb4567813131b6b40add53e))
+* **track-work:** issue authoring standard v2 with pre-create metadata gate ([#512](https://github.com/evanharmon1/harmon-devkit/issues/512)) ([1f9e603](https://github.com/evanharmon1/harmon-devkit/commit/1f9e6037a7f20072f47cbf842a4c2dc51b940eda))
+* **triage:** derive labels from the repo label registry ([#523](https://github.com/evanharmon1/harmon-devkit/issues/523)) ([45a4a91](https://github.com/evanharmon1/harmon-devkit/commit/45a4a91a10978167060bcd24a6edb7286da66d12))
+* vendor selected Matt Pocock skills ([#507](https://github.com/evanharmon1/harmon-devkit/issues/507)) ([b2bb113](https://github.com/evanharmon1/harmon-devkit/commit/b2bb113d216e93273481d36199a80d2570157a61))
+
+
+### Bug Fixes
+
+* **skills:** rename rigor tiers to levels ([#522](https://github.com/evanharmon1/harmon-devkit/issues/522)) ([0abcace](https://github.com/evanharmon1/harmon-devkit/commit/0abcacef2068c3b2e45e65079ec49f9e3f2284e1))
+* **skills:** update claim family examples ([#521](https://github.com/evanharmon1/harmon-devkit/issues/521)) ([b2756c4](https://github.com/evanharmon1/harmon-devkit/commit/b2756c4e49be3bc962c403b8febfe0a42a5b55f6))
+* update to harmon-init v4.32.0 ([#479](https://github.com/evanharmon1/harmon-devkit/issues/479)) ([5a0188d](https://github.com/evanharmon1/harmon-devkit/commit/5a0188dfc087d43fddfd6da12a886c93145b67f8))
+* update to harmon-init v4.33.0 ([#495](https://github.com/evanharmon1/harmon-devkit/issues/495)) ([2b5e789](https://github.com/evanharmon1/harmon-devkit/commit/2b5e78936c314d737cbc4bcfb1d0cd36fa98aa22))
+
 ## [0.32.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.31.0...v0.32.0) (2026-08-15)
 
 
