@@ -716,6 +716,24 @@ if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" !
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
 fi
 
+echo "==> metadata: track-work works from a standalone vendored support bundle"
+standalone_track_work="$tmp/standalone-track-work"
+mkdir -p "$standalone_track_work"
+cp -R ai/skills/universal/track-work "$standalone_track_work/track-work"
+cp -R ai/skills/universal/_shared "$standalone_track_work/_shared"
+[ ! -e "$standalone_track_work/triage" ] ||
+    fail "standalone track-work fixture must not contain triage"
+standalone_metadata="$standalone_track_work/track-work/assets/check-issue-metadata.sh"
+_rc=0
+PATH="$metadata_stub:$PATH" "$standalone_metadata" \
+    --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Validate standalone issue metadata' \
+    --body-file "$valid_body" --agent-authored --label feature \
+    --label area:fixture --inapplicable layer --label domain:fixture \
+    --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 0 ] ||
+    fail "standalone track-work metadata should pass: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: an organization draft uses native Issue Type and no work-type label"
 [ "$(run_organization 'Validate organization issue metadata' "$valid_body")" = 0 ] ||
     fail "valid organization draft should pass: $(cat "$tmp/metadata.out")"

@@ -226,6 +226,8 @@ echo "==> sync-skills.sh"
 SRC="$TMPROOT/devkit"
 git_init "$SRC"
 mkskill "$SRC/ai/skills/universal/uni-one" uni-one
+mkdir -p "$SRC/ai/skills/universal/_shared"
+echo "echo shared" >"$SRC/ai/skills/universal/_shared/helper.sh"
 mkskill "$SRC/ai/skills/frontend/fe-one" fe-one
 # fe-one carries nested content (like the real skills' assets/ + references/).
 mkdir -p "$SRC/ai/skills/frontend/fe-one/assets" "$SRC/ai/skills/frontend/fe-one/references"
@@ -264,6 +266,7 @@ expect_ok "verify-offline skips cleanly before first sync" run_sync verify-offli
 expect_ok "sync vendors the pinned ref" run_sync sync
 prov="$CON/vendored/skills/.SKILLS_PROVENANCE"
 expect_ok "requested universal skill vendored (flattened)" test -f "$CON/vendored/skills/uni-one/SKILL.md"
+expect_ok "requested category support bundle vendored" test -f "$CON/vendored/skills/_shared/helper.sh"
 expect_ok "requested frontend skill vendored (flattened)" test -f "$CON/vendored/skills/fe-one/SKILL.md"
 expect_ok "unrequested category not vendored" test ! -e "$CON/vendored/skills/be-one"
 expect_ok "draft dir without SKILL.md skipped" test ! -e "$CON/vendored/skills/fe-draft"
@@ -272,7 +275,7 @@ expect_ok "nested skill assets/ vendored intact" test -f "$CON/vendored/skills/f
 expect_ok "nested skill references/ vendored intact" test -f "$CON/vendored/skills/fe-one/references/doc.md"
 expect_ok "provenance records the ref" grep -q "^# ref: v0.0.0-test " "$prov"
 expect_ok "provenance carries do-not-edit marker" grep -q "DO NOT EDIT" "$prov"
-expect_ok "provenance lists the managed (vendored) dirs" grep -q "^# managed: fe-one, uni-one$" "$prov"
+expect_ok "provenance lists skills and the support bundle" grep -q "^# managed: _shared, fe-one, uni-one$" "$prov"
 
 expect_ok "verify passes right after sync" run_sync verify
 expect_ok "verify-offline passes right after sync" run_sync verify-offline
@@ -364,7 +367,7 @@ mkskill "$CM/vendored/skills/local-note" local-note "LOCAL skill — the sync mu
 expect_ok "sync succeeds alongside a pre-existing local skill" run_sync_at "$CM" sync
 expect_ok "local skill survives the sync" test -f "$CM/vendored/skills/local-note/SKILL.md"
 expect_ok "managed line lists exactly the vendored dirs" \
-    grep -q "^# managed: fe-one, uni-one$" "$CM/vendored/skills/.SKILLS_PROVENANCE"
+    grep -q "^# managed: _shared, fe-one, uni-one$" "$CM/vendored/skills/.SKILLS_PROVENANCE"
 
 # (b) verify ignores local-skill edits but still catches vendored drift.
 expect_ok "verify passes with a local skill present" run_sync_at "$CM" verify
@@ -417,7 +420,7 @@ expect_ok "verify with a legacy stamp ignores post-legacy local skills" run_sync
 expect_ok "legacy stamp (same ref): sync upgrades in place" run_sync_at "$CL" sync
 expect_ok "legacy upgrade preserved the post-legacy local skill" test -f "$CL/vendored/skills/post-legacy/SKILL.md"
 expect_ok "legacy upgrade wrote the managed line" \
-    grep -q "^# managed: fe-one, uni-one$" "$CL/vendored/skills/.SKILLS_PROVENANCE"
+    grep -q "^# managed: _shared, fe-one, uni-one$" "$CL/vendored/skills/.SKILLS_PROVENANCE"
 expect_ok "verify passes after the legacy upgrade" run_sync_at "$CL" verify
 
 # (d, edge) Legacy stamp + SAME ref + categories GROWN in the manifest: the
@@ -466,7 +469,7 @@ expect_ok "pin bump vendored the newly-shipped skill" test -f "$CP/vendored/skil
 expect_ok "pin bump cleaned up the skill the pin dropped" test ! -e "$CP/vendored/skills/fe-one"
 expect_ok "pin bump preserved the post-legacy local skill" test -f "$CP/vendored/skills/post-legacy/SKILL.md"
 expect_ok "managed line reflects the new pin" \
-    grep -q "^# managed: uni-one, uni-two$" "$CP/vendored/skills/.SKILLS_PROVENANCE"
+    grep -q "^# managed: _shared, uni-one, uni-two$" "$CP/vendored/skills/.SKILLS_PROVENANCE"
 expect_ok "verify passes after the pin bump" run_sync_at "$CP" verify
 
 # (f) Empty categories are called out explicitly in the sync summary.

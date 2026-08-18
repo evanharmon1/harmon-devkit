@@ -207,7 +207,9 @@ clone_ref() {
 }
 
 # vendor_categories CLONE CATEGORIES OUTDIR — materialise the named categories
-# (newline list) from CLONE, flattened, into OUTDIR.
+# (newline list) from CLONE, flattened, into OUTDIR. A category-level `_shared`
+# support bundle is vendored beside its skills so two independently portable
+# skills can call one implementation without depending on each other.
 vendor_categories() {
     _vc_src="$1/$(manifest_get '.source.path // "ai/skills"')"
     [ -d "$_vc_src" ] || die "source path not found in the pinned clone ($_vc_src)"
@@ -216,6 +218,11 @@ vendor_categories() {
         [ -n "$_vc_cat" ] || continue
         _vc_catdir="$_vc_src/$_vc_cat"
         [ -d "$_vc_catdir" ] || die "category '$_vc_cat' missing in the pinned source"
+        if [ -d "$_vc_catdir/_shared" ]; then
+            [ ! -e "$3/_shared" ] ||
+                die "multiple requested categories ship an _shared support bundle"
+            cp -R "$_vc_catdir/_shared" "$3/_shared"
+        fi
         # A category may legitimately be empty (e.g. 'universal' before it has
         # skills) — vendor whatever SKILL.md-bearing dirs it holds, if any.
         for _vc_skilldir in "$_vc_catdir"/*/; do
@@ -654,7 +661,7 @@ EOF
     if [ "$n" -eq 0 ]; then
         echo "vendored [$cats] → $dest @ $ref (0 skills — categories are empty at this ref)"
     else
-        echo "vendored $n skill(s) [$cats] → $dest @ $ref"
+        echo "vendored $n managed skill/support dir(s) [$cats] → $dest @ $ref"
     fi
 
     if [ -n "$_cs_orphan" ]; then

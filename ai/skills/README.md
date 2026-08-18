@@ -12,6 +12,7 @@ Skills are grouped into **category subdirectories**:
 ```text
 ai/skills/
 ├── universal/   # every repo gets these
+│   ├── _shared/                 # non-skill support bundle vendored with the category
 │   ├── kickoff/SKILL.md     # /kickoff — get oriented + name the session
 │   ├── breakdown/SKILL.md   # /breakdown — decompose work into session-sized issues
 │   ├── claim/SKILL.md       # /claim — sanity-check + claim the issue
@@ -71,6 +72,11 @@ nothing is linted or counted twice.
 
 Consumers request whole **categories**, so a skill can move between categories
 here without any consumer editing a per-skill list.
+
+A category may carry one `_shared/` support bundle. It is not a skill and has
+no `SKILL.md`; the sync engine vendors it beside the flattened skill
+directories. Use it only when multiple skills need one executable
+implementation while each must remain usable without the other skill.
 
 ## Third-party skills
 

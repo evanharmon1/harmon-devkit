@@ -10,10 +10,11 @@
 #   3. Skill directory names are UNIQUE across categories (a flattened dest
 #      can't hold backend/foo and frontend/foo at once).
 #
-# Directories without a SKILL.md (drafts, placeholders, empty categories) are
-# not yet skills — they are skipped, not failed, so work-in-progress can live in
-# the tree. Runs offline with no dependency beyond coreutils + awk (no yq), so
-# it is cheap enough for `task verify` and the pre-commit hook.
+# Directories without a SKILL.md are not themselves skills. They are skipped,
+# not failed: category-level `_shared` directories are portable support bundles,
+# while drafts/placeholders may still live in the tree. Runs offline with no
+# dependency beyond coreutils + awk (no yq), so it is cheap enough for `task
+# verify` and the pre-commit hook.
 #
 # Run via `task validate:skills`.
 set -euo pipefail
@@ -147,7 +148,7 @@ done <<EOF
 $skill_mds
 EOF
 
-# Informational: category subdirectories that are not (yet) skills.
+# Informational: category subdirectories that are not skills.
 non_skill=""
 while IFS= read -r d; do
     [ -n "$d" ] || continue
@@ -165,5 +166,5 @@ fi
 
 echo "✓ $count skill(s) valid: unique names across categories, well-formed SKILL.md frontmatter"
 if [ -n "$non_skill" ]; then
-    printf 'note: skipped non-skill directories (drafts/placeholders):\n%s' "$non_skill"
+    printf 'note: skipped non-skill directories (support/drafts/placeholders):\n%s' "$non_skill"
 fi
