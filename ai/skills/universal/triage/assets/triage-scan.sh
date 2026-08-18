@@ -328,6 +328,13 @@ jq -n \
            axis_state: $ax,
            axis_labels: ($axes | map({key: ., value: axis_labels($ls; .)})
                          | from_entries),
+           # The stray labels by name, so a report entry can say which
+           # label needs cleanup — axis_labels alone cannot distinguish a
+           # recognized human-only value from an unrecognized one.
+           unknown_labels: ($axes
+                            | map({key: ., value: axis_unknown($ls; .)})
+                            | from_entries
+                            | with_entries(select(.value | length > 0))),
            needs_labels: $needs,
            claim_labels: $claims,
            flags:

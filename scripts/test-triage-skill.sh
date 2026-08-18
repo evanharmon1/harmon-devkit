@@ -795,6 +795,20 @@ jq -e '.open[] | select(.number == 24) | .flags
 jq -e '.open[] | select(.number == 24) | .flags
        | index("missing-needs-triage")' "$scan_out" >/dev/null ||
     fail "an unknown value must requeue needs-triage"
+jq -e '.open[] | select(.number == 24)
+       | .unknown_labels.area == ["area:legacy"]' "$scan_out" >/dev/null ||
+    fail "the scan must name the unknown label"
+jq -e '.open[] | select(.number == 23) | .unknown_labels == {}' \
+    "$scan_out" >/dev/null ||
+    fail "unknown_labels must be empty where every value is recognized"
+
+echo "==> axes: a possibly-truncated live label fetch refuses fallback"
+cp "$stub_dir/labels.json" "$tmp/labels-small.json"
+jq '[range(1000)] | map({name: ("bulk-\(.)"), description: ""})' -n \
+    >"$stub_dir/labels.json"
+[ "$(run "$apply" axes --repo "$repo" --manifest "$tmp/nope.json")" = 2 ] ||
+    fail "a 1000-label page must refuse fallback derivation"
+cp "$tmp/labels-small.json" "$stub_dir/labels.json"
 jq -e '.open[] | select(.number == 27)
        | (.axis_state.area == "ok")
          and (.flags | index("missing-needs-triage") != null)' \

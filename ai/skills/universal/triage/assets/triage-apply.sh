@@ -109,6 +109,22 @@ guard_issue_number() {
     esac
 }
 
+# Fetch the complete live label set, one name per line. A page equal to the
+# fetch limit may be truncated, and a hidden axis label would silently weaken
+# the removal gate — refuse rather than derive from a partial vocabulary.
+live_labels() {
+    local repo="$1" live n
+    live="$(gh label list --repo "$repo" --limit 1000 --json name \
+        -q '.[].name')" ||
+        die 2 "could not list the live labels of $repo"
+    n="$(printf '%s\n' "$live" | grep -c . || true)"
+    if [ "$n" -ge 1000 ]; then
+        die 2 "the repo reports $n labels — the fetch may be truncated;" \
+            "refusing to derive from a possibly partial label set"
+    fi
+    printf '%s\n' "$live"
+}
+
 # Fail closed on a registry this script cannot govern, before any derivation:
 #   - a family whose `axis` is outside the schema enum (a typo like
 #     "classificaton") would silently vanish from the derived axis set, and
@@ -200,8 +216,7 @@ axes_active() {
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
         local live a
-        live="$(gh label list --repo "$repo" --limit 1000 --json name \
-            -q '.[].name')"
+        live="$(live_labels "$repo")"
         for a in $FALLBACK_AXES; do
             printf '%s\n' "$live" | grep -q "^$a:" && printf '%s\n' "$a"
         done
@@ -239,9 +254,7 @@ axis_values_recognized() {
         # read every live axis label as unknown. Only grep's no-match status
         # is ignorable.
         local live
-        live="$(gh label list --repo "$repo" --limit 1000 --json name \
-            -q '.[].name')" ||
-            die 2 "could not list the live labels of $repo"
+        live="$(live_labels "$repo")"
         printf '%s\n' "$live" | grep -E "^($re):" || true
     fi
 }
@@ -273,8 +286,7 @@ allowlist_compute() {
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
         local live wt
-        live="$(gh label list --repo "$repo" --limit 1000 --json name \
-            -q '.[].name')"
+        live="$(live_labels "$repo")"
         axis_values_recognized "$repo" "$manifest"
         for wt in $FALLBACK_WORK_TYPES needs-triage; do
             printf '%s\n' "$live" | grep -qx "$wt" && printf '%s\n' "$wt"
@@ -303,8 +315,7 @@ work_types_recognized() {
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
         local live wt
-        live="$(gh label list --repo "$repo" --limit 1000 --json name \
-            -q '.[].name')"
+        live="$(live_labels "$repo")"
         for wt in $FALLBACK_WORK_TYPES; do
             printf '%s\n' "$live" | grep -qx "$wt" && printf '%s\n' "$wt"
         done

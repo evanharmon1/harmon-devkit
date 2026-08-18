@@ -195,7 +195,7 @@ a finding):
 | `blocked-candidate`                  | same                                                 | no comment states what it is blocked on                                    |
 | `aging-needs-candidate`              | nothing — the flag is the finding                    | always                                                                     |
 | `axis-conflict:*`                    | nothing — the flag is the finding                    | always; name both labels and, only if the body states one, the right one   |
-| `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label (it is not in the active taxonomy — a human must rename or delete it) |
+| `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
 | `missing-work-type` on an org repo   | the scan's `native_type`; `native-type` (see 2c) only when it is `null` | it is/prints `none` (v1 cannot write Type — a human must set it)           |
 | `legacy-work-type-label` (org only)  | the scan's `native_type`; `native-type` (see 2c) only when it is `null` | it is/prints `none` — the label is legacy there and proves nothing; mention the label itself for cleanup |
 | `closed_flagged` state `completed`   | nothing — `unticked_criteria` is the finding         | always; note the unticked count                                            |
