@@ -178,152 +178,44 @@ trap 'rm -rf "$tmp"' EXIT
 vocab="$tmp/vocabulary"
 : >"$vocab"
 manifest="$repo_root/label-registry.json"
-
-validate_manifest() {
-    jq -e '
-      def keys_only($allowed): ((keys_unsorted - $allowed) | length) == 0;
-      def nonempty($max): type == "string" and length > 0 and length <= $max;
-      def slug($max): nonempty($max) and test("^[a-z0-9]+(-[a-z0-9]+)*$");
-      def color: type == "string" and test("^[0-9A-F]{6}$");
-      def writer: type == "string" and test("^(human|trusted-human|agent|tool:[a-z0-9-]+)$");
-      def writers: type == "array" and all(.[]; writer)
-                   and (length == (unique | length));
-      def lifecycle: IN("durable", "transient", "claim-release", "tool-managed");
-      def optional_string($key; $max):
-        (has($key) | not) or (.[$key] | nonempty($max));
-      def optional_boolean($key):
-        (has($key) | not) or (.[$key] | type == "boolean");
-      def value_valid($family):
-        keys_only(["value", "description", "color", "writers", "writer_note",
-                   "readers", "lifecycle", "lifecycle_note", "trust_note",
-                   "arming", "provision", "retired"])
-        and (.value | nonempty(50) and (test("[\\r\\n|]") | not))
-        and (if $family.prefix == null then true else (.value | slug(50)) end)
-        and optional_string("description"; 100)
-        and ((has("color") | not) or (.color | color))
-        and ((has("writers") | not) or (.writers | writers and length > 0))
-        and optional_string("writer_note"; 10000)
-        and optional_string("readers"; 10000)
-        and ((has("lifecycle") | not) or (.lifecycle | lifecycle))
-        and optional_string("lifecycle_note"; 10000)
-        and optional_string("trust_note"; 10000)
-        and optional_boolean("arming")
-        and ((has("provision") | not) or .provision == false)
-        and optional_boolean("retired")
-        and (((if $family.prefix == null then .value
-               else "\($family.prefix):\(.value)" end) | length) <= 50)
-        and (if (($family.arming // false) or (.arming // false))
-             then $family.prefix == "foreman" else true end)
-        and (if ($family.provision and (.provision != false) and (.retired != true))
-             then (has("description") and (has("color") or ($family | has("color"))))
-             else true end);
-      def family_valid:
-        . as $family
-        | keys_only(["family", "prefix", "purpose", "axis", "source",
-                     "registry_set", "writers", "writer_note", "readers",
-                     "lifecycle", "lifecycle_note", "trust_note", "exclusive",
-                     "arming", "provision", "gate", "retired", "open_values",
-                     "placeholder", "color", "values"])
-        and (.family | slug(40))
-        and ((.prefix == null) or (.prefix | slug(40)))
-        and (.purpose | nonempty(200))
-        and (.axis | IN("classification", "strategy", "model", "work-type",
-                        "concern", "workflow", "provenance", "foreman",
-                        "release", "meta"))
-        and (.source | IN("inline", "agent-registry", "tool-owned"))
-        and (.writers | writers)
-        and ((.retired // false) or (.writers | length > 0))
-        and optional_string("writer_note"; 10000)
-        and (.readers | nonempty(10000))
-        and (.lifecycle | lifecycle)
-        and optional_string("lifecycle_note"; 10000)
-        and optional_string("trust_note"; 10000)
-        and (.exclusive | type == "boolean")
-        and optional_boolean("arming")
-        and (.provision | type == "boolean")
-        and ((has("gate") | not) or (.gate | IN("foreman", "release-please")))
-        and optional_boolean("retired")
-        and optional_boolean("open_values")
-        and optional_string("placeholder"; 50)
-        and ((has("color") | not) or (.color | color))
-        and (.values | type == "array")
-        and (([.values[].value] | length) == ([.values[].value] | unique | length))
-        and all(.values[]; value_valid($family))
-        and (if (.retired // false) then (.provision | not) else true end)
-        and (if .source == "agent-registry" then
-               (.registry_set | IN("suggest", "claim", "foreman-adapters"))
-               and (.prefix == ({suggest:"suggest", claim:"claim",
-                                 "foreman-adapters":"foreman"}[.registry_set]))
-               and (.values | length == 0)
-               and ((.retired // false) or (.provision and has("color")))
-               and has("placeholder")
-             else has("registry_set") | not end)
-        and (if .source == "tool-owned" then (.provision | not) else true end)
-        and (if .source == "inline" and ((.open_values // false) | not)
-                and ((.retired // false) | not)
-             then (.values | length > 0) else true end)
-        and (if (.open_values // false) then has("placeholder") else true end)
-        and (if has("placeholder") and ((.open_values // false) | not)
-                and .source != "agent-registry" then false else true end)
-        and (if (.arming // false) then .prefix == "foreman" else true end);
-      keys_only(["$schema", "schema_version", "families"])
-      and
-      .["$schema"] == "./label-registry.schema.json"
-      and .schema_version == 1
-      and (.families | type == "array" and length > 0)
-      and (([.families[].family] | length) == ([.families[].family] | unique | length))
-      and all(.families[]; family_valid)
-      and ([.families[] as $f | $f.values[]
-            | select(($f.retired // false | not) and (.retired // false | not))
-            | if $f.prefix == null then .value else "\($f.prefix):\(.value)" end]
-           | length == (unique | length))' "$manifest" >/dev/null 2>&1
-}
+asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
+registry_helper="$asset_dir/../../label-registry-support/assets/label-registry.sh"
+[ -x "$registry_helper" ] ||
+    die "shared label-registry interpreter is missing: $registry_helper"
 
 if [ -e "$manifest" ]; then
     [ -f "$manifest" ] && [ -r "$manifest" ] ||
         die "label-registry.json is present but unreadable"
-    validate_manifest || die "label-registry.json is present but invalid"
+    registry_records="$tmp/registry-records"
+    "$registry_helper" render "$manifest" >"$registry_records" ||
+        die "label-registry.json is present but invalid"
 
-    jq -r '
-      .families[] as $f
-      | select(($f.retired // false) | not)
-      | select($f.source != "agent-registry")
-      | ($f.values // [])[]
-      | select((.retired // false) | not)
-      | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end) as $name
-      | [$name, $f.family, $f.axis,
-         ((.writers // $f.writers) | join(",")), ($f.exclusive | tostring)]
-      | join("|")' "$manifest" >"$vocab" ||
-        die "could not render label-registry.json"
+    awk -F '|' '
+      $1 == "value" && $8 != "agent-registry" &&
+      $10 == "false" && $11 == "false" {
+        print $2 "|" $3 "|" $5 "|" $6 "|" $7
+      }
+    ' "$registry_records" >"$vocab"
 
     # Retired members of active families are excluded from the vocabulary,
     # and the open-value fallback below must not resurrect one from its live
     # label: the manifest retiring a value is an authoritative "no".
     retired_members="$tmp/retired-members"
-    jq -r '
-      .families[]
-      | select((.retired // false) | not)
-      | . as $f
-      | ($f.values // [])[]
-      | select(.retired // false)
-      | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end)' \
-        "$manifest" >"$retired_members" ||
-        die "could not render retired manifest members"
+    awk -F '|' '
+      $1 == "value" && $10 == "false" && $11 == "true" { print $2 }
+    ' "$registry_records" >"$retired_members"
 
     # Open-value families define policy in the manifest but not every concrete
     # label name. Resolve only proposed members against one bounded live read;
     # the manifest remains authoritative for family, axis, writers, and
     # exclusivity, while GitHub supplies existence for the specific value.
     open_families="$tmp/open-families"
-    jq -r '
-      .families[]
-      | select((.retired // false) | not)
-      | select(.source != "agent-registry" and (.open_values // false))
-      | select(.prefix != null)
-      | [.prefix, .family, .axis, (.writers | join(",")),
-         (.exclusive | tostring)]
-      | join("|")' "$manifest" >"$open_families" ||
-        die "could not render open-value label families"
+    awk -F '|' '
+      $1 == "family" && $7 != "agent-registry" && $8 == "true" &&
+      $9 == "false" && $3 != "" {
+        print $3 "|" $2 "|" $4 "|" $5 "|" $6
+      }
+    ' "$registry_records" >"$open_families"
     open_candidates="$tmp/open-candidates"
     : >"$open_candidates"
     for label in "${labels[@]+"${labels[@]}"}"; do
@@ -458,7 +350,6 @@ fi
 # other construct whose rendering a line-oriented parser cannot decide is a
 # contract violation, with the parser naming each offending line.
 visible_body="$tmp/visible-body"
-asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
 parse_rc=0
 bash "$asset_dir/parse-issue-markdown.sh" --structure "$body_file" >"$visible_body" 2>"$tmp/parse-err" || parse_rc=$?
 if [ "$parse_rc" -eq 3 ]; then

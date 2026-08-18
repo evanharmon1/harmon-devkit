@@ -716,6 +716,25 @@ if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" !
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
 fi
 
+echo "==> metadata: track-work works from a standalone vendored support bundle"
+standalone_track_work="$tmp/standalone-track-work"
+mkdir -p "$standalone_track_work"
+cp -R ai/skills/universal/track-work "$standalone_track_work/track-work"
+cp -R ai/skills/universal/label-registry-support \
+    "$standalone_track_work/label-registry-support"
+[ ! -e "$standalone_track_work/triage" ] ||
+    fail "standalone track-work fixture must not contain triage"
+standalone_metadata="$standalone_track_work/track-work/assets/check-issue-metadata.sh"
+_rc=0
+PATH="$metadata_stub:$PATH" "$standalone_metadata" \
+    --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Validate standalone issue metadata' \
+    --body-file "$valid_body" --agent-authored --label feature \
+    --label area:fixture --inapplicable layer --label domain:fixture \
+    --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 0 ] ||
+    fail "standalone track-work metadata should pass: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: an organization draft uses native Issue Type and no work-type label"
 [ "$(run_organization 'Validate organization issue metadata' "$valid_body")" = 0 ] ||
     fail "valid organization draft should pass: $(cat "$tmp/metadata.out")"
@@ -1163,6 +1182,26 @@ grep -q 'label list.*--repo testowner/testrepo.*--limit 1000.*--json name' \
     --body-file "$valid_body" --human-authored --label feature \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label type:missing)" = 1 ] || fail "an absent open-value label should remain unknown"
+
+echo "==> metadata: open classification policy remains a track-work capability"
+metadata_open_classification="$tmp/metadata-open-classification"
+mkdir -p "$metadata_open_classification"
+git -C "$metadata_open_classification" init -q
+git -C "$metadata_open_classification" remote add origin \
+    https://github.com/testowner/testrepo.git
+jq '.families |= map(
+      if .family == "area" then
+        .open_values = true | .placeholder = "area:<value>" | .values = []
+      else . end)' "$metadata_repo/label-registry.json" \
+    >"$metadata_open_classification/label-registry.json"
+_rc=0
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_open_classification" --owner-type personal \
+    --title 'Allow an open classification family' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture \
+    --inapplicable layer --label domain:fixture >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 0 ] ||
+    fail "track-work should accept a live member of an open classification family: $(cat "$tmp/metadata.out")"
 
 echo "==> metadata: a label matching two open-value families is ambiguous, not first-match"
 metadata_ambiguous="$tmp/metadata-ambiguous"

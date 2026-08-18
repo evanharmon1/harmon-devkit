@@ -21,7 +21,8 @@ ai/skills/
 │   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables
 │   ├── wrap/SKILL.md        # /wrap — wrap up + rename done-<name>
 │   ├── triage/SKILL.md      # /triage — manifest-governed backlog classifier
-│   └── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
+│   ├── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
+│   └── label-registry-support/SKILL.md  # shared runtime, not a workflow
 ├── backend/     # server / data / Convex
 ├── frontend/    # React / TanStack / shadcn / design
 ├── infra/       # Terraform / Cloudflare / CI
@@ -41,7 +42,9 @@ mistakes happen mid-flow, while a PR body is being written and nobody is typing
 a command, so it must be model-invocable to fire at all. It also bundles
 executable checks under `assets/` that harmon-devkit's own CI runs against every
 PR body (`tracking-guard.yml`), so the skill's rules and the enforced rules are
-the same code.
+the same code. `label-registry-support` is an internal runtime package rather
+than a workflow. Its `SKILL.md` ensures legacy category-sync engines vendor the
+shared interpreter that `track-work` and `triage` both call.
 
 **harmon-devkit uses the `universal/` skills itself.** Each is symlinked into
 `.agents/skills/`, with `.claude/skills` pointing at that directory for Claude

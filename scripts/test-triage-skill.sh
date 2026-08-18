@@ -135,31 +135,52 @@ cat >"$manifest" <<'JSON'
   "$schema": "./label-registry.schema.json",
   "schema_version": 1,
   "families": [
-    {"family": "workflow", "prefix": null, "axis": "workflow",
-     "writers": ["human"],
+    {"family": "workflow", "prefix": null,
+     "purpose": "Fixture workflow labels", "axis": "workflow",
+     "source": "inline", "writers": ["human"], "readers": "fixture",
+     "lifecycle": "transient", "exclusive": false, "provision": false,
      "values": [
        {"value": "needs-triage", "writers": ["human", "agent"]},
        {"value": "blocked"}]},
-    {"family": "work-type", "prefix": null, "axis": "work-type",
-     "writers": ["human", "agent"],
+    {"family": "work-type", "prefix": null,
+     "purpose": "Fixture work types", "axis": "work-type",
+     "source": "inline", "writers": ["human", "agent"],
+     "readers": "fixture", "lifecycle": "durable", "exclusive": true,
+     "provision": false,
      "values": [
        {"value": "bug"}, {"value": "feature"},
        {"value": "enhancement", "retired": true}]},
-    {"family": "area", "prefix": "area", "axis": "classification",
-     "writers": ["human", "agent"], "exclusive": true,
+    {"family": "area", "prefix": "area",
+     "purpose": "Fixture areas", "axis": "classification",
+     "source": "inline", "writers": ["human", "agent"],
+     "readers": "fixture", "lifecycle": "durable", "exclusive": true,
+     "provision": false,
      "values": [{"value": "ci"}, {"value": "tasks"}]},
-    {"family": "layer", "prefix": "layer", "axis": "classification",
-     "writers": ["human", "agent"], "exclusive": true,
+    {"family": "layer", "prefix": "layer",
+     "purpose": "Fixture layers", "axis": "classification",
+     "source": "inline", "writers": ["human", "agent"],
+     "readers": "fixture", "lifecycle": "durable", "exclusive": true,
+     "provision": false,
      "values": [{"value": "ui"}]},
-    {"family": "domain", "prefix": "domain", "axis": "classification",
-     "writers": ["human", "agent"], "exclusive": true,
+    {"family": "domain", "prefix": "domain",
+     "purpose": "Fixture domains", "axis": "classification",
+     "source": "inline", "writers": ["human", "agent"],
+     "readers": "fixture", "lifecycle": "durable", "exclusive": true,
+     "provision": false,
      "values": [{"value": "delivery"}, {"value": "auth"}]},
-    {"family": "rigor", "prefix": "rigor", "axis": "strategy",
-     "writers": ["human"], "values": [{"value": "deep"}]},
-    {"family": "provenance", "prefix": null, "axis": "provenance",
-     "writers": ["human", "agent"], "values": [{"value": "ai-generated"}]},
-    {"family": "claim", "prefix": "claim", "axis": "model",
-     "writers": ["agent"], "values": [{"value": "claude"}]}
+    {"family": "rigor", "prefix": "rigor",
+     "purpose": "Fixture rigor", "axis": "strategy", "source": "inline",
+     "writers": ["human"], "readers": "fixture", "lifecycle": "durable",
+     "exclusive": true, "provision": false, "values": [{"value": "deep"}]},
+    {"family": "provenance", "prefix": null,
+     "purpose": "Fixture provenance", "axis": "provenance",
+     "source": "inline", "writers": ["human", "agent"],
+     "readers": "fixture", "lifecycle": "durable", "exclusive": false,
+     "provision": false, "values": [{"value": "ai-generated"}]},
+    {"family": "claim", "prefix": "claim", "purpose": "Fixture claims",
+     "axis": "model", "source": "inline", "writers": ["agent"],
+     "readers": "fixture", "lifecycle": "claim-release", "exclusive": true,
+     "provision": false, "values": [{"value": "claude"}]}
   ]
 }
 JSON
@@ -176,6 +197,21 @@ sort "$tmp/out" >"$tmp/got"
 printf '%s\n' area:ci area:tasks bug domain:auth domain:delivery feature \
     layer:ui needs-triage | sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 || fail "allowlist mismatch"
+
+echo "==> allowlist: triage works from a standalone vendored support bundle"
+standalone_triage="$tmp/standalone-triage"
+mkdir -p "$standalone_triage"
+cp -R ai/skills/universal/triage "$standalone_triage/triage"
+cp -R ai/skills/universal/label-registry-support \
+    "$standalone_triage/label-registry-support"
+[ ! -e "$standalone_triage/track-work" ] ||
+    fail "standalone triage fixture must not contain track-work"
+[ "$(run "$standalone_triage/triage/assets/triage-apply.sh" allowlist \
+    --manifest "$manifest")" = 0 ] ||
+    fail "standalone triage allowlist should succeed: $(cat "$tmp/out")"
+sort "$tmp/out" >"$tmp/got"
+diff -u "$tmp/want" "$tmp/got" >&2 ||
+    fail "standalone triage allowlist mismatch"
 
 echo "==> allowlist: excludes retired, human-only, and out-of-scope values"
 for absent in enhancement rigor:deep blocked ai-generated claim:claude; do
@@ -252,6 +288,16 @@ jq '.families |= map(if .family == "area"
     then del(.exclusive) else . end)' "$manifest" >"$tmp/noexcl.json"
 [ "$(run "$apply" axes --manifest "$tmp/noexcl.json")" = 2 ] ||
     fail "a classification family without exclusive must exit 2"
+
+echo "==> registry: prose delimiters pass while rendered delimiters refuse"
+jq '.families[0].purpose = "Fixture | prose\nwith a second line"' \
+    "$manifest" >"$tmp/prose-delimiters.json"
+[ "$(run "$apply" axes --manifest "$tmp/prose-delimiters.json")" = 0 ] ||
+    fail "non-rendered prose delimiters should remain schema-valid"
+jq '.families[0].values[0].value = "forged|record"' \
+    "$manifest" >"$tmp/rendered-delimiter.json"
+[ "$(run "$apply" axes --manifest "$tmp/rendered-delimiter.json")" = 2 ] ||
+    fail "a rendered record delimiter must fail closed"
 
 echo "==> axes: an unsupported schema_version is refused before deriving"
 jq '.schema_version = 2' "$manifest" >"$tmp/v2.json"
