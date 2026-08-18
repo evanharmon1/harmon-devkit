@@ -385,7 +385,7 @@ actually added.
 
   ```sh
   gh issue edit <n> --repo "$repo" \
-    --add-label <the label the pre-check above selected> --remove-label <the ACTUAL competing label>   # e.g. add claim:claude (or agent:claude-code on a provisioned-only repo); remove claim:codex or a legacy agent:codex
+    --add-label <the label the pre-check above selected> --remove-label <the ACTUAL competing label>   # e.g. add claim:claude (or agent:claude-code on a provisioned-only repo); remove claim:gpt or a legacy agent:codex
   ```
 
   The displaced label may itself be legacy (`agent:codex`) on a not-yet-migrated
@@ -451,7 +451,7 @@ actually added.
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
-  - `claim:` label displaced by this claim: <claim:codex | agent:codex (legacy) | none>
+  - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card
