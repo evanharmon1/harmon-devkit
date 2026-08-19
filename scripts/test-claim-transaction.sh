@@ -150,7 +150,7 @@ record="$tmp/record.md"
 err="$tmp/err"
 
 scenario() {
-    printf '%s' "$1" >"$issue_file"
+    printf '%s' "$1" | jq '.state //= "OPEN"' >"$issue_file"
     printf '%s' "${2:-[]}" >"$comments_file"
     : >"$log"
     rm -f "$comments_fail_flag"
@@ -172,6 +172,7 @@ Claim record (for \`/wrap\` — undo only what this claim added):
 - session: test-session
 - board: $board
 - prior board status: $prior
+- prior board status owned by this claim chain: $prior
 - assignee added by this claim: $assignee
 - \`claim:\` label added by this claim: $label
 - \`claim:\` label displaced by this claim: $displaced
@@ -241,6 +242,27 @@ make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(cat "$log")" = 'status show' ] ||
     fail "metadata validation may read board provenance but must precede every write"
 
+echo "==> closed issues and newly competing markers fail before writes"
+scenario '{"state":"CLOSED","assignees":[],"labels":[]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "a closed issue must be rejected"
+[ ! -s "$log" ] || fail "a closed issue must trigger zero writes"
+scenario '{"assignees":[],"labels":[{"name":"claim:claude"}]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "an unapproved competing ownership label must be rejected"
+[ ! -s "$log" ] || fail "a competing marker must trigger zero writes"
+
+echo "==> inherited displacement and board status require predecessor proof"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt claim:claude
+[ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "a forged inherited displacement must be rejected"
+[ "$(cat "$log")" = 'status show' ] || fail "forged displacement must fail before writes"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+sed -i 's/prior board status owned by this claim chain: Ready/prior board status owned by this claim chain: Done/' "$record"
+[ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "a forged inherited board status must be rejected"
+[ "$(cat "$log")" = 'status show' ] || fail "forged board provenance must fail before writes"
+
 echo "==> a failed response that committed the exact record reconciles as success"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
@@ -257,11 +279,12 @@ jq -e 'any(.assignees[]; .login == "evanharmon1") and any(.labels[]; .name == "c
 if grep -q -- '--remove-' "$log"; then fail "indeterminate publication must not compensate"; fi
 
 echo "==> a newer trusted claim before publication prevents a stale record commit"
-scenario '{"assignees":[{"login":"collaborator"}],"labels":[]}'
+scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 concurrent_record="$tmp/concurrent-record.md"
 cp "$record" "$concurrent_record"
-result="$(RUN_MUTATE_COMMENTS_ON_READ=2 RUN_CONCURRENT_RECORD="$concurrent_record" \
+sed -i 's/test-session/concurrent-session/g' "$concurrent_record"
+result="$(RUN_MUTATE_COMMENTS_ON_READ=2 RUN_CONCURRENT_RECORD="$concurrent_record" RUN_CONCURRENT_LOGIN=evanharmon1 \
     run_claim --claim-label claim:gpt)"
 [ "$result" = 6 ] || fail "a changed predecessor before publication must exit 6: $(cat "$err")"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "the stale record must not be published"
@@ -269,10 +292,11 @@ result="$(RUN_MUTATE_COMMENTS_ON_READ=2 RUN_CONCURRENT_RECORD="$concurrent_recor
 grep -q 'newer trusted claim or release appeared' "$err" || fail "lineage collision must be explained"
 
 echo "==> confirmed absence never compensates markers adopted by a newer claim"
-scenario '{"assignees":[{"login":"collaborator"}],"labels":[]}'
+scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 cp "$record" "$concurrent_record"
-result="$(RUN_MUTATE_COMMENTS_ON_READ=3 RUN_CONCURRENT_RECORD="$concurrent_record" \
+sed -i 's/test-session/concurrent-session/g' "$concurrent_record"
+result="$(RUN_MUTATE_COMMENTS_ON_READ=3 RUN_CONCURRENT_RECORD="$concurrent_record" RUN_CONCURRENT_LOGIN=evanharmon1 \
     CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt)"
 [ "$result" = 6 ] || fail "a newer claim after failed publication must block compensation: $(cat "$err")"
 grep -q 'refusing compensation' "$err" || fail "adopted tentative markers must be reported"

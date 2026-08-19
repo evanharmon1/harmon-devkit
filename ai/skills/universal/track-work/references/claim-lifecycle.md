@@ -77,7 +77,10 @@ in the claim record, never in the label.
   explicit `n/a`/`none` values); neither optional integration weakens the
   durable-record requirement. Immediately before publication it re-reads the
   markers and trusted comment lineage; a newer trusted claim/release or marker
-  drift stops the stale append and leaves the visible state for recovery.
+  drift stops the stale append and leaves the visible state for recovery. The
+  transaction itself rejects a closed issue, an assignee not proven by the
+  predecessor chain, and any ownership marker outside the exact approved plan;
+  caller-side resolver checks are not authorization it inherits by assumption.
 - **A failed comment response is not evidence of absence.** The producer
   re-reads all comments and searches for a new comment by the authenticated
   login with the exact submitted body. A confirmed match commits the claim. An
@@ -187,6 +190,12 @@ in the claim record, never in the label.
   refreshed producer writes only the stronger comma-canonical form. It rejects
   partial ownership groups, contradictory scalar/set companions, and forged
   family, model, or assignee targets before its first write.
+- The chain-owned displaced label and prior board status are provenance too.
+  A fresh record initializes them from this attempt's direct displacement and
+  direct prior status; a refresh/takeover must copy the immediate predecessor's
+  proven chain values (falling back to its direct fields only for a legacy
+  predecessor). The producer rejects any other value before marker writes, so
+  cleanup cannot manufacture a label restoration or board transition.
 - Values are untrusted data. Parsers validate fields that can steer an action
   before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's

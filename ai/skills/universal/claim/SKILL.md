@@ -682,6 +682,14 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   repaired manually. A failed refresh writes no new current record, so the
   predecessor remains current and inherited markers remain untouched.
 
+  The transaction also re-enforces the live claim blockers itself: the issue
+  must remain open, every other assignee must be proven by the predecessor
+  chain, and every live `claim:*`/`agent:*` marker must be one of the exact
+  resolved family, model, or approved displacement values. Its chain-owned
+  displaced label and board status must equal this attempt's direct value or
+  the immediate predecessor's proven value; record prose cannot invent either
+  cleanup target.
+
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):
 `--add-assignee` accumulates rather than arbitrates, so if someone else

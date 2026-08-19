@@ -182,7 +182,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 issue_snapshot() {
-    gh issue view "$issue" --repo "$repo" --json assignees,labels
+    gh issue view "$issue" --repo "$repo" --json state,assignees,labels
 }
 
 comments_snapshot() {
@@ -406,6 +406,8 @@ if ! predecessor_owned_assignees "$tmp/predecessor.json" >"$tmp/predecessor-assi
 fi
 predecessor_chain_label=""
 predecessor_chain_model=""
+predecessor_chain_displaced=""
+predecessor_chain_prior=""
 if [ "$(jq -r '.found' "$tmp/predecessor.json")" = true ]; then
     jq -r '.body' "$tmp/predecessor.json" >"$tmp/predecessor-body-for-labels"
     predecessor_chain_label="$(optional_record_value '- `claim:` label owned by this claim chain: ' "$tmp/predecessor-body-for-labels")" || {
@@ -416,8 +418,53 @@ if [ "$(jq -r '.found' "$tmp/predecessor.json")" = true ]; then
         echo "claim transaction: predecessor model-label provenance is ambiguous" >&2
         exit 2
     }
+    predecessor_chain_displaced="$(optional_record_value '- `claim:` label displaced by this claim chain: ' "$tmp/predecessor-body-for-labels")" || {
+        echo "claim transaction: predecessor displaced-label provenance is ambiguous" >&2
+        exit 2
+    }
+    if [ -z "$predecessor_chain_displaced" ]; then
+        predecessor_chain_displaced="$(optional_record_value '- `claim:` label displaced by this claim: ' "$tmp/predecessor-body-for-labels")" || {
+            echo "claim transaction: predecessor direct displacement is ambiguous" >&2
+            exit 2
+        }
+    fi
+    predecessor_chain_prior="$(optional_record_value '- prior board status owned by this claim chain: ' "$tmp/predecessor-body-for-labels")" || {
+        echo "claim transaction: predecessor board-status provenance is ambiguous" >&2
+        exit 2
+    }
+    if [ -z "$predecessor_chain_prior" ]; then
+        predecessor_chain_prior="$(optional_record_value '- prior board status: ' "$tmp/predecessor-body-for-labels")" || {
+            echo "claim transaction: predecessor direct board status is ambiguous" >&2
+            exit 2
+        }
+    fi
     [ -z "$predecessor_chain_label" ] || predecessor_chain_label="$(record_token "$predecessor_chain_label")"
     [ -z "$predecessor_chain_model" ] || predecessor_chain_model="$(record_token "$predecessor_chain_model")"
+    [ -z "$predecessor_chain_displaced" ] || predecessor_chain_displaced="$(record_token "$predecessor_chain_displaced")"
+    [ -z "$predecessor_chain_prior" ] || predecessor_chain_prior="$(record_line_value "$predecessor_chain_prior")"
+fi
+
+claim_blockers_absent() {
+    local snapshot="$1" assigned live_label
+    [ "$(jq -r '.state' "$snapshot")" = OPEN ] || return 1
+    while IFS= read -r assigned; do
+        [ -n "$assigned" ] || continue
+        [ "$(printf '%s' "$assigned" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')" ] && continue
+        grep -Fxiq "$assigned" "$tmp/predecessor-assignees" || return 1
+    done < <(jq -r '.assignees[]?.login' "$snapshot")
+    while IFS= read -r live_label; do
+        case "$live_label" in
+        claim:* | agent:*)
+            [ "$live_label" = "$claim_label" ] || [ "$live_label" = "$model_label" ] ||
+                [ "$live_label" = "$displaced_label" ] || return 1
+            ;;
+        esac
+    done < <(jq -r '.labels[]?.name' "$snapshot")
+}
+
+if ! claim_blockers_absent "$tmp/issue-before.json"; then
+    echo "claim transaction: issue state, assignees, or ownership labels changed into a claim blocker" >&2
+    exit 2
 fi
 
 status_args=(--repo "$repo" --issue "$issue")
@@ -500,6 +547,7 @@ fi
 
 record_board="$(record_value '- board: ')"
 record_prior="$(record_value '- prior board status: ')"
+record_chain_prior="$(record_line_value "$(record_value '- prior board status owned by this claim chain: ')")"
 record_assignee="$(record_token "$(record_value '- assignee added by this claim: ')")"
 record_label="$(record_token "$(record_value '- `claim:` label added by this claim: ')")"
 record_model="$(optional_record_value '- `claim:` model label added by this claim: ' "$record_file")" || {
@@ -531,6 +579,12 @@ chain_displaced="$(record_token "$(record_value '- `claim:` label displaced by t
 }
 [ "$record_prior" = "$prior_status" ] || {
     echo "claim transaction: record prior status '$record_prior' does not match '$prior_status'" >&2
+    exit 2
+}
+expected_chain_prior="$prior_status"
+[ -z "$predecessor_chain_prior" ] || expected_chain_prior="$predecessor_chain_prior"
+[ "$record_chain_prior" = "$expected_chain_prior" ] || {
+    echo "claim transaction: chain board status must come from the immediate predecessor ('$expected_chain_prior')" >&2
     exit 2
 }
 [ "$record_assignee" = "$expected_assignee" ] || {
@@ -620,12 +674,13 @@ elif [ "$model_label" != none ] && [ "$model_preexisting" -eq 1 ]; then
         exit 2
     }
 fi
-if [ "$displaced_label" != none ]; then
-    [ "$chain_displaced" = "$displaced_label" ] || {
-        echo "claim transaction: a displaced label must initialize or preserve chain ownership" >&2
-        exit 2
-    }
-fi
+expected_chain_displaced=none
+[ -z "$predecessor_chain_displaced" ] || expected_chain_displaced="$predecessor_chain_displaced"
+[ "$displaced_label" = none ] || expected_chain_displaced="$displaced_label"
+[ "$chain_displaced" = "$expected_chain_displaced" ] || {
+    echo "claim transaction: displaced-label chain must come from this attempt or the immediate predecessor" >&2
+    exit 2
+}
 
 assignee_added=0
 label_added=0
@@ -737,6 +792,10 @@ if ! issue_snapshot >"$tmp/issue-before-record.json" || ! has_assignee "$tmp/iss
     result=$?
     set -e
     exit "$result"
+fi
+if ! claim_blockers_absent "$tmp/issue-before-record.json"; then
+    echo "claim transaction: a claim blocker appeared before publication; leaving visible markers for recovery" >&2
+    exit 6
 fi
 
 # A claim is deliberately not a lock, but a stale record must not be published
