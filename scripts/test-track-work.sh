@@ -3296,4 +3296,25 @@ _rcs="$(RC_COMMENTS_FILE2="$tmp/rc-comments-2.json" run_release --reason r)"
 [ "$_rcs" = 3 ] || fail "a shifted claim of record should exit 3 (got $_rcs)"
 [ ! -s "$rc_log" ] || fail "a shifted claim must trigger zero writes"
 
+echo "==> an edited predecessor cannot supply stale release provenance"
+comments_before="$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")"
+comments_after="$(rc_page "$(rc_comment collaborator "$body_noassign" 1 '2026-01-01T00:00:00Z' OWNER '2026-07-01T00:00:00Z')" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")"
+printf '%s' "$comments_after" >"$tmp/rc-comments-2.json"
+rc_scenario "$comments_before" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
+_rcs="$(RC_COMMENTS_FILE2="$tmp/rc-comments-2.json" run_release --reason r)"
+[ "$_rcs" = 3 ] || fail "an edited predecessor must abort before writes (got $_rcs)"
+[ ! -s "$rc_log" ] || fail "an edited predecessor must trigger zero writes"
+
+echo "==> an omitted predecessor owner reassigned before write aborts"
+comments_before="$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_transfer" 3)")"
+rc_scenario "$comments_before" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"},{"login":"third-owner"}]}'
+printf '%s' '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"third-owner"}]}' >"$tmp/rc-issue-2.json"
+_rcs="$(RC_ISSUE_FILE2="$tmp/rc-issue-2.json" run_release --reason r)"
+[ "$_rcs" = 3 ] || fail "a reassigned omitted owner must abort before writes (got $_rcs)"
+[ ! -s "$rc_log" ] || fail "a reassigned omitted owner must trigger zero writes"
+
 echo "✓ track-work checks behave"
