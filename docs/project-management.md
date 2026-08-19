@@ -832,6 +832,16 @@ contract it parses, and the gaps it deliberately does not cover (a merged PR
 with no closing keyword, an unmerged fork PR), are in
 `.claude/skills/track-work/references/claim-lifecycle.md`.
 
+A merged PR that deliberately uses `Refs` can leave the issue open after a
+real partial delivery. No close event exists for automation to consume, so
+`/wrap` handles that fourth outcome interactively. It streamlines release only
+when a trusted complete claim record, a same-repository merged PR attributable
+to the authenticated account, and the absence of a competing open PR or newer
+claim activity all agree. The cleanup restores the claim's prior board status
+instead of setting `Done`, restores a proven displaced claim label for the
+still-open issue, and records both what landed and what remains. Any ambiguous
+evidence requires maintainer confirmation rather than an inferred release.
+
 > **Whether this is automatic depends on the skills you have vendored.**
 > Writing and releasing these markers is implemented by harmon-devkit's
 > `claim` / `shepherd` / `wrap` skills; older releases only assign the issue,

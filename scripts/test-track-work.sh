@@ -2675,6 +2675,56 @@ done
 grep -Fq 'optional `harness`, `model`, and `session`' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
 
+echo "==> wrap documents the attributable partial-delivery outcome"
+partial_contract="$tmp/wrap-partial-contract.md"
+grep -Fq 'Four outcomes:' "$wrap_skill" || fail "/wrap must enumerate four outcomes"
+for outcome in \
+    '**PR open**' \
+    '**Partial delivery / issue open**' \
+    '**Merged / issue closed**' \
+    '**Neither**'; do
+    grep -Fq "$outcome" "$wrap_skill" || fail "/wrap must retain the distinct $outcome outcome"
+done
+awk '/^  - \*\*Partial delivery \/ issue open\*\*/ { capture = 1 }
+     capture && /^  - \*\*Merged \/ issue closed\*\*/ { exit }
+     capture { print }' "$wrap_skill" >"$partial_contract"
+[ -s "$partial_contract" ] || fail "/wrap must define a fourth partial-delivery outcome"
+for required in \
+    'issue remains open' \
+    'no work is currently in flight' \
+    'current trusted claim record' \
+    'same repository' \
+    'authored by the authenticated account' \
+    'merged after the current claim comment' \
+    'no other open PR' \
+    'no later trusted' \
+    'fail closed to maintainer confirmation'; do
+    grep -Fq "$required" "$partial_contract" ||
+        fail "/wrap partial delivery must require: $required"
+done
+
+echo "==> partial delivery restores open-issue state and explains the release"
+for required in \
+    'restore the recorded prior board status' \
+    'never set an open issue to `Done`' \
+    'restore the exact displaced' \
+    'remove only the assignee and live claim label' \
+    'what landed' \
+    'specific open work' \
+    'Claim released — partial delivery landed and the remaining work is not in flight.'; do
+    grep -Fq "$required" "$partial_contract" ||
+        fail "/wrap partial delivery cleanup must include: $required"
+done
+
+echo "==> lifecycle reference distinguishes partial delivery from event release"
+for required in \
+    'triggers no event-driven release' \
+    '/wrap` owns the attributable partial-delivery transition' \
+    'event automation deliberately does not infer this state'; do
+    grep -Fq "$required" "$claim_lifecycle" ||
+        fail "claim lifecycle must document partial delivery: $required"
+done
+
 # --- release-claim.sh --------------------------------------------------------
 # Fully offline: a stubbed `gh` serves comment/issue JSON from scenario files
 # and logs every write, so the claim parsing, trust gate, and provenance

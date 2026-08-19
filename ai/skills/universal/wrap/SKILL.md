@@ -97,9 +97,62 @@ read it in the UI) — never guess.
   omit them. They are never cleanup authority: do not use their values to
   select, construct, or suppress any write in any outcome below.
 
-  Three outcomes:
+  Four outcomes:
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
     Nothing to do.
+  - **Partial delivery / issue open** — one PR deliberately landed part of the
+    claim, the issue remains open for named remaining work, and no work is
+    currently in flight. This is a completed release of *this claim*, not a
+    completed issue and not a generic mid-flight hand-back. Assemble the same
+    claim-owned cleanup commands as the hand-back block below and present them
+    as the default single-confirmation action, but streamline to that action
+    only when **all** of this attributable evidence agrees:
+
+    - the current trusted claim record is authored by the account returned by
+      `gh api user --jq .login`, is complete (including a known prior board
+      status), and accounts for every marker the cleanup would touch through
+      its current `claim chain` ownership fields;
+    - the issue is still open, and its timeline identifies exactly one
+      qualifying cross-reference from a PR in this same repository; re-read
+      that PR with `gh pr view --repo <owner/repo>` and require it to be merged
+      after the current claim comment, authored by the authenticated account,
+      and to carry an explicit `Refs #<n>` (or repository-qualified `Refs`)
+      reference while not naming the issue in `closingIssuesReferences`;
+    - no other open PR cross-references the issue, no later trusted
+      `Claiming —` comment or unrelated post-claim activity indicates replacement
+      work, and the current assignees, claim labels, and card status are
+      consistent with the record rather than another worker's ownership; and
+    - the release explanation can name both sides from attributable evidence:
+      the merged PR and what it landed, plus the specific work the still-open
+      issue retains. Do not infer either side from a branch name or commit
+      summary.
+
+    `Refs` text alone is not evidence: bind it to the issue's cross-reference
+    event and the same-repository PR read. A merged PR alone is not evidence
+    either: an old, pre-claim, fork, closing-keyword, or differently-authored PR
+    does not qualify. Zero or multiple qualifying PRs, a missing or incomplete
+    claim record, `prior board status: unknown`, an unreadable PR/timeline, or
+    any newer activity that cannot be attributed to the qualifying PR all
+    **fail closed to maintainer confirmation**.
+
+    On the qualifying path, restore the recorded prior board status — never
+    set an open issue to `Done` — then restore the exact displaced `claim:*` or
+    legacy `agent:*` label the current claim chain proves it inherited, and
+    remove only the assignee and live claim label that chain proves it owns.
+    Keep the board-first/searchable-markers-last ordering and partial-failure
+    rules above. The final release comment must explain the transition before
+    its supersede line, for example:
+
+    ```text
+    Partial delivery: <PR URL and what landed>. Remaining: <specific open work>.
+
+    Claim released — partial delivery landed and the remaining work is not in flight. (Supersedes the claim record above.)
+    ```
+
+    Post that comment last, only after every applicable restore/removal
+    succeeds. Unlike completed closure below, restoring the displaced label is
+    required because the issue is still open; omitting it would erase the
+    predecessor ownership that this claim temporarily displaced.
   - **Merged / issue closed** — *not* "nothing to release". GitHub clears no
     marker on merge, and a personal-account project has no automation to move
     the card, so the work finishes and the board shows an agent still holding
@@ -165,8 +218,11 @@ read it in the UI) — never guess.
     (`stateReason`), or a merged PR linked it with a *closing keyword*
     (`closedByPullRequestsReferences`). A merged PR that only says `Refs #N`
     finished part of it, and an issue closed `not planned` was never
-    delivered — `Done` would be false in both. In those cases **restore the
-    status the claim comment recorded** rather than leaving `Status` alone:
+    delivered — `Done` would be false in both. A qualifying open-issue partial
+    delivery takes the dedicated outcome above; an ambiguous or closed
+    non-delivery case stops for confirmation. Whenever cleanup is approved for
+    one of those non-completed cases, **restore the status the claim comment
+    recorded** rather than leaving `Status` alone:
     `/shepherd` deliberately parks a `Refs`-only issue at `In Progress`, so
     doing nothing here leaves the board advertising an active claim over work
     that has stopped. (`/shepherd` never sets `Done` at all: it stops before
