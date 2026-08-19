@@ -118,6 +118,9 @@ expect_ok "track-work pre-approves portable asset paths" \
 expect_ok "track-work defines the canonical scoped issue-title contract" \
     grep -qF '(<scope>): <imperative problem/outcome' \
     "$repo/ai/skills/universal/track-work/SKILL.md"
+expect_ok "cross-repo filing runs the full pre-create contract" \
+    grep -qF 'check-issue-metadata.sh' \
+    "$repo/ai/skills/universal/track-work/references/cross-repo-work.md"
 expect_ok "breakdown applies scoped titles to every issue shape" \
     grep -qF 'every parent, child, and flat issue uses' \
     "$repo/ai/skills/universal/breakdown/SKILL.md"
