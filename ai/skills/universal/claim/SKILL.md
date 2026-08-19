@@ -502,9 +502,10 @@ actually added.
   chain board status (or the predecessor's direct status for a legacy record),
   rather than the current `In Progress` status that this claim sees, so a later
   hand-back restores the status the chain originally displaced. Transfer an
-  assignee or still-present claim label
+  assignee or still-present predecessor label
   only after confirming it still exists and the predecessor record proves it
-  was claim-owned; otherwise write `no`, `n/a`, or `none`, because current
+  was claim-owned. A label newly added by this takeover is directly owned and
+  initializes the chain to that label; otherwise write `no`, `n/a`, or `none`, because current
   state cannot prove a same-text marker was not independently re-added later.
   A displaced label is different: it is expected to be absent while the
   takeover is live, so carry it after proving the predecessor displaced it;

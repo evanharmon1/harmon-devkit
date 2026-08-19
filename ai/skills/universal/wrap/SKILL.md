@@ -224,8 +224,8 @@ read it in the UI) — never guess.
       --status '<the chain board status, or direct prior status for a legacy record>'
     # If the record names a displaced label, put it back — the claim removed it:
     gh issue edit <n> --repo <owner/repo> --add-label <the displaced label the record names>
-    gh issue edit <n> --repo <owner/repo> --remove-label <the exact label the record says the claim added>  # e.g. claim:claude, model-pinned claim:claude:opus, or legacy agent:claude-code
-    gh issue edit <n> --repo <owner/repo> --remove-assignee @me          # likewise
+    gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned label; use the direct added label only for a legacy record>
+    gh issue edit <n> --repo <owner/repo> --remove-assignee <each recorded direct and inherited chain-owned login>
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```
 
