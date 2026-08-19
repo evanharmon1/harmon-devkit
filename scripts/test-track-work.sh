@@ -2665,6 +2665,7 @@ chmod +x "$stub/gh"
 echo "==> claim-record producer and consumers document operational metadata"
 claim_skill="./ai/skills/universal/claim/SKILL.md"
 claim_lifecycle="./ai/skills/universal/track-work/references/claim-lifecycle.md"
+implement_skill="./ai/skills/universal/implement/SKILL.md"
 wrap_skill="./ai/skills/universal/wrap/SKILL.md"
 for field in harness model session; do
     grep -Fq -- "  - $field:" "$claim_skill" ||
@@ -2674,6 +2675,16 @@ for field in harness model session; do
 done
 grep -Fq 'optional `harness`, `model`, and `session`' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
+
+echo "==> claim takeover guidance seeds direct displacement into chain provenance"
+grep -Fq 'A label displaced by this takeover seeds the chain-displaced field directly;' "$claim_skill" ||
+    fail "/claim must seed a takeover's direct label displacement into the claim chain"
+
+echo "==> implement refresh guidance resets direct ownership while carrying chain ownership"
+grep -Fq '`added by this claim` fields describe only writes performed by the refresh' "$implement_skill" ||
+    fail "/implement must reset refresh direct-ownership fields from the refresh's own writes"
+grep -Fq '(normally `no`), while proven chain fields' "$implement_skill" ||
+    fail "/implement must carry proven chain ownership across a refresh"
 
 # --- release-claim.sh --------------------------------------------------------
 # Fully offline: a stubbed `gh` serves comment/issue JSON from scenario files
@@ -2875,6 +2886,24 @@ grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
     fail "the current chain record must remove the inherited label"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
     fail "the current chain record must remove the inherited assignee"
+
+echo "==> a takeover's direct label displacement is restored by a later open hand-back"
+body_displaced_takeover="$(printf '%s' "$body_v1" |
+    sed 's/label displaced by this claim: none/label displaced by this claim: agent:codex/')
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: evanharmon1
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: agent:codex"
+predecessor_displaced_takeover="$(printf '%s' "$body_v1" |
+    sed 's/agent:claude-code/agent:codex/g')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$predecessor_displaced_takeover" 1)" \
+    "$(rc_comment evanharmon1 "$body_displaced_takeover" 2)")" \
+    '{"state":"open","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a directly displaced takeover label should hand back"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "the takeover's chain-owned label must be removed"
+grep -q -- '--add-label agent:codex' "$rc_log" ||
+    fail "the takeover's directly displaced predecessor label must be restored"
 
 echo "==> a cross-account takeover releases the inherited assignee by recorded login"
 body_chain_cross_account="$(printf '%s' "$body_chain_takeover" |
