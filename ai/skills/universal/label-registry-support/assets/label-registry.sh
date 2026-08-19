@@ -162,9 +162,17 @@ if [ "$command" = guidance ] && [ "$manifest_present" -eq 0 ]; then
     # A repository with no manifest has no declared family or policy to infer.
     # Preserve only the bounded, human-readable GitHub label data and omit
     # execution controls by their stable namespaces.
-    gh label list --repo "$repo" --limit 1000 --json name,description \
-        -q '.[] | [.name, (.description // "")] | @tsv' |
-        while IFS=$'\t' read -r label description; do
+    # Keep the GitHub response as JSON until each field has been decoded.
+    # `@tsv` escapes backslashes, tabs, and newlines; the fallback must either
+    # preserve those descriptions exactly or reject data unsafe for its
+    # line-oriented output, never return the escaping artifact as guidance.
+    gh label list --repo "$repo" --limit 1000 --json name,description |
+        jq -c '.[] | {name, description: (.description // "")}' |
+        while IFS= read -r record; do
+            label="$(printf '%s\n' "$record" | jq -er '.name | select(type == "string")')" ||
+                die "live label data is invalid"
+            description="$(printf '%s\n' "$record" | jq -er '.description | select(type == "string")')" ||
+                die "live label data is invalid"
             normalized_label="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
             case "$normalized_label" in
             claim:* | suggest:* | agent:* | foreman:* | rigor:* | tier:* | method:*) continue ;;

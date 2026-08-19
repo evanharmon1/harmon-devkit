@@ -43,6 +43,7 @@ normalize_github_remote() {
     git@github.com:*) _slug="${_remote#git@github.com:}" ;;
     ssh://git@github.com/*) _slug="${_remote#ssh://git@github.com/}" ;;
     ssh://git@ssh.github.com:443/*) _slug="${_remote#ssh://git@ssh.github.com:443/}" ;;
+    ssh://git@ssh.github.com/*) _slug="${_remote#ssh://git@ssh.github.com/}" ;;
     https://github.com/*) _slug="${_remote#https://github.com/}" ;;
     http://github.com/*) _slug="${_remote#http://github.com/}" ;;
     *) return 1 ;;

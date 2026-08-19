@@ -1551,6 +1551,12 @@ cp "$metadata_repo/label-registry.json" "$metadata_sshport/label-registry.json"
     --label domain:fixture)" = 0 ] ||
     fail "a portless ssh.github.com remote should bind: $(cat "$tmp/metadata.out")"
 
+echo "==> guidance: the portless ssh.github.com remote form binds the checkout"
+guidance_sshport="$("$guidance" --repo testowner/testrepo --repo-root "$metadata_sshport")" ||
+    fail "guidance should bind a portless ssh.github.com remote"
+printf '%s\n' "$guidance_sshport" | grep -q '^guidance|area:fixture|' ||
+    fail "guidance should render from a portless ssh.github.com remote"
+
 echo "==> metadata: the checkout remote must match the requested repository"
 _rc=0
 "$metadata" --repo another/repo --repo-root "$metadata_repo" \

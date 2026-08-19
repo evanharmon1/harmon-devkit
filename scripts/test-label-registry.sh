@@ -71,15 +71,17 @@ cat >"$guidance_bin/gh" <<'STUB'
 #!/bin/sh
 case "${1:-} ${2:-}" in
 "label list")
-    printf '%b\n' \
-        'area:live\tLive area description' \
-        'claim:gpt\tClaimed by GPT' \
-        'suggest:gpt\tSuggested for GPT' \
-        'agent:legacy\tLegacy agent claim' \
-        'foreman:claude\tDispatch control' \
-        'Rigor:deep\tExecution budget' \
-        'tier:frontier\tModel routing' \
-        'method:plan\tExecution topology'
+    printf '%s\n' '[
+      {"name":"area:live","description":"Live area description"},
+      {"name":"area:literal","description":"Windows path C:\\temp and\ttab"},
+      {"name":"claim:gpt","description":"Claimed by GPT"},
+      {"name":"suggest:gpt","description":"Suggested for GPT"},
+      {"name":"agent:legacy","description":"Legacy agent claim"},
+      {"name":"foreman:claude","description":"Dispatch control"},
+      {"name":"Rigor:deep","description":"Execution budget"},
+      {"name":"tier:frontier","description":"Model routing"},
+      {"name":"method:plan","description":"Execution topology"}
+    ]'
     ;;
 *) exit 97 ;;
 esac
@@ -118,8 +120,10 @@ done
 echo "==> guidance: no manifest uses live names and descriptions without inferred family policy"
 fallback_guidance="$(PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/missing.json" testowner/testrepo)" ||
     fail "no-manifest guidance should use the bounded live-label fallback"
-[ "$fallback_guidance" = 'guidance|area:live|Live area description||' ] ||
-    fail "no-manifest guidance should retain only safe live label name and description, case-insensitively"
+printf '%s\n' "$fallback_guidance" | grep -Fqx 'guidance|area:live|Live area description||' ||
+    fail "no-manifest guidance should retain safe live names and descriptions, case-insensitively"
+printf '%s\n' "$fallback_guidance" | grep -Fqx $'guidance|area:literal|Windows path C:\\temp and\ttab||' ||
+    fail "no-manifest guidance should preserve literal backslashes and tabs in live descriptions"
 
 echo "==> guidance: missing command arguments keep the usage exit contract"
 _rc=0
