@@ -244,6 +244,11 @@ if [ "$command" = guidance ]; then
       | [$registry.families[]
          | . as $f
          | select(authoring_family and ($f.open_values // false) and $f.prefix != null)] as $open_families
+      | [$open_families[] as $f
+         | $f.values[]
+         | select((.retired // false) | not)
+         | {label: "\($f.prefix):\(.value)", family: $f.family,
+            description: (.description // "")} ] as $open_enumerated
       | [$registry.families[] as $f
          | select(($f.retired // false) | not)
          | $f.values[]
@@ -258,8 +263,13 @@ if [ "$command" = guidance ]; then
          | select(($retired_labels | index($live_label.label)) | not)
          | $matches[0] as $f
          | select(($live_label.label | control_namespace) | not)
+         | [$open_enumerated[]
+            | select(.family == $f.family and .label == $live_label.label)] as $enumerated_match
          | {record: "guidance", label: $live_label.label,
-            description: $live_label.description, family: $f.family, purpose: $f.purpose}] as $open
+            description: (if ($enumerated_match | length) == 1
+                          then $enumerated_match[0].description
+                          else $live_label.description end),
+            family: $f.family, purpose: $f.purpose}] as $open
       | ($enumerated + $open | unique_by(.label)[])
       end
     ' "$manifest" || die "could not render manifest guidance"
