@@ -265,7 +265,9 @@ if [ "$command" = guidance ]; then
          | {label: .name, description: live_description}
          | . as $live_label
          | [$open_families[]
-            | select(.prefix as $prefix | $live_label.label | startswith($prefix + ":"))] as $matches
+            | select(.prefix as $prefix
+                     | ($live_label.label | ascii_downcase)
+                     | startswith(($prefix + ":") | ascii_downcase))] as $matches
          | select($matches | length == 1)
          | select(($retired_label_keys | index($live_label.label | ascii_downcase)) | not)
          | $matches[0] as $f

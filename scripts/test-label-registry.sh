@@ -73,6 +73,10 @@ if [ "${GUIDANCE_RETIRED_UPPERCASE:-}" = 1 ]; then
     printf '%s\n' '[{"name":"area:OLD","description":"Still live but retired by the manifest"}]'
     exit 0
 fi
+if [ "${GUIDANCE_PREFIX_UPPERCASE:-}" = 1 ]; then
+    printf '%s\n' '[{"name":"Area:live","description":"Live area description"}]'
+    exit 0
+fi
 if [ "${GUIDANCE_LONG_LABELS:-}" = 1 ]; then
     jq -n '[range(0; 1000) | {name: ("area:long-" + tostring), description: ("x" * 3000)}]'
     exit 0
@@ -168,6 +172,13 @@ printf '%s\n' "$open_guidance" |
 printf '%s\n' "$open_guidance" |
     jq -se 'all(.[]; .family != "area" or (.label == "area:live" or .label == "area:literal" or .label == "area:old" or .label == "area:track-work"))' >/dev/null ||
     fail "open-value guidance should include only bounded live members"
+
+echo "==> guidance: open-family prefixes use GitHub case-insensitive identity"
+uppercase_prefix_guidance="$(GUIDANCE_PREFIX_UPPERCASE=1 PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/open-area.json" testowner/testrepo)" ||
+    fail "open-value guidance should render an uppercase live prefix"
+printf '%s\n' "$uppercase_prefix_guidance" |
+    jq -se 'any(.[]; .label == "Area:live" and .family == "area")' >/dev/null ||
+    fail "open-value guidance should match a live prefix case-insensitively"
 
 echo "==> guidance: enumerated open members keep manifest descriptions"
 jq '(.families[] | select(.family == "area"))
