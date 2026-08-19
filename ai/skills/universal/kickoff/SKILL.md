@@ -68,10 +68,11 @@ if ! claim_labels="$(gh label list --repo <owner/repo> --limit 1000 --json name 
     '.[].name | select(startswith("claim:") or startswith("agent:"))')"; then
   echo "warning: could not list claim labels — the marker-only sweep is INCOMPLETE; retry or check auth" >&2
 fi
-for lbl in $claim_labels; do
+while IFS= read -r lbl; do
+  [ -n "$lbl" ] || continue
   gh issue list --repo <owner/repo> --label "$lbl" --state all --limit 200 \
     --json number,title,state,assignees,url
-done
+done <<<"$claim_labels"
 ```
 
 **Query both, and union the results.** `/wrap` runs its cleanup as separate
