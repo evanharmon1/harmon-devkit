@@ -119,6 +119,8 @@ read it in the UI) — never guess.
       qualifying cross-reference from a PR in this same repository; re-read
       that PR with `gh pr view --repo <owner/repo>` and require it to be
       merged after the current claim comment, authored by the authenticated account,
+      to have a head branch exactly matching the branch recorded by the current
+      claim,
       and to carry an explicit `Refs #<n>` (or repository-qualified `Refs`)
       reference while not naming the issue in `closingIssuesReferences`;
     - no other open PR cross-references the issue, no later trusted
@@ -138,6 +140,13 @@ read it in the UI) — never guess.
     legacy record), an unreadable PR/timeline, or any newer activity that
     cannot be attributed to the qualifying PR all
     **fail closed to maintainer confirmation**.
+
+    Immediately before the first cleanup write, re-run the issue, timeline,
+    comments, card, and qualifying-PR reads used above and
+    require the same current claim record, PR attribution, marker state, and absence of competing
+    work. Any changed or unreadable evidence returns to maintainer confirmation;
+    a confirmation based on the earlier snapshot never authorizes cleanup of
+    newer state.
 
     On the qualifying path, restore the recorded chain board status (or direct
     prior status for a legacy record) — never set an open issue to `Done` —

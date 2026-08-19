@@ -2742,9 +2742,13 @@ for required in \
     'current trusted claim record' \
     'same repository' \
     'authored by the authenticated account' \
+    'head branch exactly matching the branch recorded by the current' \
     'merged after the current claim comment' \
     'no other open PR' \
     'no later trusted' \
+    'Immediately before the first cleanup write' \
+    'same current claim record' \
+    'confirmation based on the earlier snapshot never authorizes cleanup' \
     'fail closed to maintainer confirmation'; do
     grep -Fq "$required" "$partial_contract" ||
         fail "/wrap partial delivery must require: $required"

@@ -227,9 +227,11 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
   `/shepherd` deliberately parks such issues at `In Progress`.
   `/wrap` owns the attributable partial-delivery transition when the issue stays open and no
   work remains in flight: it requires a complete trusted current claim record,
-  a same-repository merged `Refs` PR authored by the authenticated account and
-  merged after that claim, no competing open PR or newer unrelated claim
-  activity, and attributable descriptions of what landed and what remains.
+  a same-repository merged `Refs` PR authored by the authenticated account,
+  whose head branch matches the current claim record and whose merge postdates
+  that claim, no competing open PR or newer unrelated claim activity, and
+  attributable descriptions of what landed and what remains. It re-reads that
+  evidence immediately before cleanup and fails closed if the ground moved.
   That interactive cleanup restores the recorded chain board status, or the
   direct prior status for a legacy record (never `Done`), restores a proven
   displaced claim label because the issue remains open, releases only markers
