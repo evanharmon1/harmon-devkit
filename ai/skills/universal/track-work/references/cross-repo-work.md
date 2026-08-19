@@ -77,25 +77,56 @@ branch of §3's table.
 
 ## Filing it
 
-Three commands, at the moment you find the work — not later. The search above is
-the first:
+Four steps, at the moment you find the work — not later. The search above is
+the first. Next, draft the same canonical body and metadata that §5 requires
+for a local issue. Resolve the target's owner type, label vocabulary, and native
+Issue Types from the target repository; do not reuse the origin repository's
+metadata.
 
 ```sh
-gh issue create --repo <target-owner/target-repo> \
-  --title "<what needs to change>" \
-  --body-file -
+title="(<free-form scope>): <imperative outcome>"
+bodyfile="$(mktemp)"
+cat >"$bodyfile" <<'EOF'
+## Problem
+
+<durable invariant, impact, and why the target repository owns it>
+
+## Acceptance criteria
+
+- [ ] [CI] <criterion proved by the target repository's automated checks>
+
+## Verify
+
+<command and expected meaning for any perishable observation>
+
+## Provenance
+
+Found while doing <origin-owner/origin-repo>#<n> — filed here because this
+repository owns <thing>.
+EOF
 ```
 
-Use a quoted heredoc so nothing in the body is re-evaluated by the shell:
+Run the full, read-only pre-create gate from §5 against the **target checkout**.
+Use exactly one owner-appropriate work classification: `--work-type-label
+<label>` for a personal repository, or `--issue-type <Type>` for an organization.
+Pass the concrete target labels or explicit axis inapplicability, including
+`ai-generated` for agent-authored work:
 
 ```sh
-gh issue create --repo evanharmon1/harmon-infra --title "…" --body-file - <<'EOF'
-<the invariant, the observed violation with a date, and a Verify command>
+<track-work-skill-dir>/assets/check-issue-metadata.sh \
+  --repo <target-owner/target-repo> --repo-root <target-checkout> \
+  --owner-type <personal|organization> --title "$title" \
+  --body-file "$bodyfile" <owner-appropriate-work-classification> \
+  <target-labels-or-axis-inapplicability> --label ai-generated \
+  --agent-authored
+```
 
----
-Found while doing evanharmon1/harmon-init#329 — filed here because this repo
-owns `.github/workflows/validate.yml`.
-EOF
+Only after that gate exits 0, create the issue with the same title, body, labels,
+and owner-appropriate work classification it verified:
+
+```sh
+gh issue create --repo <target-owner/target-repo> --title "$title" \
+  --body-file "$bodyfile" <matching-create-time-metadata>
 ```
 
 Then link back from where you found it, so the trail runs both ways:
@@ -105,7 +136,8 @@ gh issue comment <n> --repo <origin-owner/origin-repo> \
   --body "Split out: <target-owner/target-repo>#<new>"
 ```
 
-Both are writes — get the user's explicit go-ahead before running them.
+The create and link-back are writes — get the user's explicit go-ahead before
+running them. The draft and checker are read-only preparation.
 
 ## Provenance
 
