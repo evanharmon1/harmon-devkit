@@ -49,7 +49,7 @@ done
 [ -n "$harness" ] && [ -n "$runtime_family" ] && [ -r "$available_labels" ] && [ -r "$issue_labels" ] || usage
 
 case "$runtime_family" in
-*[!a-z0-9-]* | '')
+'' | *[!a-z0-9-]* | -* | *- | *--*)
     echo "claim identity: invalid runtime family '$runtime_family'" >&2
     exit 20
     ;;

@@ -90,6 +90,14 @@ if "$resolver" --harness codex-cli --available-labels "$available" --issue-label
 [ "$status" = 20 ] || fail "registry-less missing family exited $status, want 20"
 out="$("$resolver" --harness codex-cli --runtime-family gpt --available-labels "$available" --issue-labels "$issue")" || fail "registry-less trusted family failed"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "registry-less trusted family selected wrong target"
+for malformed_family in -gpt gpt- gpt--next; do
+    if "$resolver" --harness codex-cli --runtime-family "$malformed_family" --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then
+        fail "registry-less malformed family '$malformed_family' must fail"
+    else
+        status=$?
+    fi
+    [ "$status" = 20 ] || fail "registry-less malformed family '$malformed_family' exited $status, want 20"
+done
 
 jq '(.families[] | select(.slug == "gpt")).legacy_claim_labels = []' \
     agent-registry.json >"$tmp/no-legacy-registry.json"
