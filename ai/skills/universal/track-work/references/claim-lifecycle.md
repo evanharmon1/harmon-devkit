@@ -115,10 +115,12 @@ in the claim record, never in the label.
   Fresh records also record the owned assignee login (v2 records that predate
   that companion retain the author fallback). A fresh claim initializes the
   core fields from its direct `added by this claim` fields and copies its direct
-  prior board status into the chain field. A refresh
-  or a new-session takeover copies an assignee or still-present label only
-  when its predecessor chain proves ownership; it writes `no`/`n/a` for a
-  marker that predated the chain, disappeared, or was independently introduced.
+  prior board status into the chain field. A refresh or new-session takeover
+  likewise initializes an assignee or label from a marker it directly added;
+  direct ownership outranks inheritance. Only where it added no replacement
+  does it copy a still-present marker from the predecessor chain, and then only
+  when that chain proves ownership. It writes `no`/`n/a` for a marker that
+  predated the chain, disappeared, or was independently introduced.
   Its displaced label is different: it is normally absent while the takeover
   is live, so carry it when the predecessor proves it displaced the label.
   The refresh or takeover also carries the predecessor's chain board status
