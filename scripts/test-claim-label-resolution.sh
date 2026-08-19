@@ -58,4 +58,12 @@ printf '%s\n' >"$issue"
 out="$("$resolver" --registry agent-registry.json --harness codex-cli --available-labels "$tmp/legacy-available" --issue-labels "$issue")" || fail "registry-declared legacy fallback failed"
 printf '%s\n' "$out" | grep -Fx 'target_label=agent:codex' >/dev/null || fail "legacy fallback selected the wrong label"
 
+jq '(.harnesses[] | select(.slug == "codex-cli")) |= del(.legacy_claim_labels)' \
+    agent-registry.json >"$tmp/pre-migration-registry.json"
+out="$("$resolver" --registry "$tmp/pre-migration-registry.json" --harness codex-cli --available-labels "$tmp/legacy-available" --issue-labels "$issue")" || fail "pre-migration registry bridge failed"
+printf '%s\n' "$out" | grep -Fx 'target_label=agent:codex' >/dev/null || fail "pre-migration registry bridge selected the wrong label"
+
+grep -F 'if ! gh label list' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label vocabulary read must fail closed"
+grep -F 'if ! gh issue view' ai/skills/universal/claim/SKILL.md >/dev/null || fail "issue-label read must fail closed"
+
 echo 'PASS: portable claim family resolution'

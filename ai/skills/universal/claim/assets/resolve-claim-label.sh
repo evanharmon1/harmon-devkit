@@ -83,6 +83,15 @@ if [ -n "$registry" ]; then
         exit 20
     }
     legacy_labels="$(jq -r --arg harness "$harness" '.harnesses[] | select(.slug == $harness) | .legacy_claim_labels[]?' "$registry")"
+    # Rolling upgrades can install this skill before the target registry grows
+    # the explicit alias field. Keep the two historical labels as a bounded
+    # bridge; every newer alias must come from the registry.
+    if [ -z "$legacy_labels" ]; then
+        case "$harness" in
+        claude-code) legacy_labels="agent:claude-code" ;;
+        codex-cli) legacy_labels="agent:codex" ;;
+        esac
+    fi
 else
     [ -n "$runtime_family" ] || {
         echo "claim identity: no registry and no trusted runtime family" >&2

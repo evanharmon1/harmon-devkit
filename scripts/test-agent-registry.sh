@@ -47,6 +47,9 @@ switch (mutation) {
   case 'duplicate-harness':
     registry.harnesses.push(structuredClone(registry.harnesses[0]))
     break
+  case 'duplicate-legacy-claim-label':
+    harness('codex-cli').legacy_claim_labels = ['agent:claude-code']
+    break
   case 'missing-model-owner':
     delete registry.harnesses[0].model_resolution.owner
     break
@@ -209,6 +212,9 @@ rejects "duplicate family slugs" \
 rejects "duplicate harness slugs" \
     'duplicate-harness' \
     'duplicate harness slug'
+rejects "legacy claim labels shared by two harnesses" \
+    'duplicate-legacy-claim-label' \
+    'legacy claim label agent:claude-code is shared by harnesses claude-code and codex-cli'
 rejects "missing model-resolution ownership" \
     'missing-model-owner' \
     'missing required property owner'

@@ -344,6 +344,19 @@ if (errors.length === 0) {
     semanticError(`duplicate family slug: ${slug}`)
   for (const slug of duplicateSlugs(registry.harnesses))
     semanticError(`duplicate harness slug: ${slug}`)
+  const legacyClaimOwners = new Map()
+  for (const harness of registry.harnesses) {
+    for (const label of harness.legacy_claim_labels ?? []) {
+      const owner = legacyClaimOwners.get(label)
+      if (owner) {
+        semanticError(
+          `legacy claim label ${label} is shared by harnesses ${owner} and ${harness.slug}`
+        )
+      } else {
+        legacyClaimOwners.set(label, harness.slug)
+      }
+    }
+  }
   for (const slug of duplicateSlugs(registry.foreman_adapters)) {
     semanticError(`duplicate Foreman adapter slug: ${slug}`)
   }

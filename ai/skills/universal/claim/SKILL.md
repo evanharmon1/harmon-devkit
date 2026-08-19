@@ -340,9 +340,16 @@ if [ -n "$runtime_family" ]; then
   runtime_arg=(--runtime-family "$runtime_family")
 fi
 available="$(mktemp)" issue_labels="$(mktemp)"
-gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' >"$available"
-gh issue view <n> --repo "$repo" --json labels \
-  --jq '.labels[].name' >"$issue_labels"
+if ! gh label list --repo "$repo" --limit 1000 --json name \
+  -q '.[].name' >"$available"; then
+  echo "claim: could not read the target label vocabulary" >&2
+  exit 1
+fi
+if ! gh issue view <n> --repo "$repo" --json labels \
+  --jq '.labels[].name' >"$issue_labels"; then
+  echo "claim: could not read the issue's live labels" >&2
+  exit 1
+fi
 
 # Exit 0: target_label is safe to add (unless existing_label is non-empty,
 # which is idempotent). Exit 10: another family owns the issue. Exit 20:
