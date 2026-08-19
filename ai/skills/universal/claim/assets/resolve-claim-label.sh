@@ -5,16 +5,17 @@
 # never from an issue, PR, repository file, or label. The registry validates a
 # host-attested family; it never supplies one.
 #
-# Exit 0: a plan was emitted. For project_management=none|linear, a target with
-# no ownership-label vocabulary emits target_label=n/a; its authoritative claim
-# markers are the assignee and claim comment. Exit 10: one different live claim
+# Exit 0: a plan was emitted. For project_management=none|linear, or for a
+# GitHub target whose unverifiable label-less state the user explicitly approved,
+# target_label=n/a makes the assignee and claim comment authoritative. Exit 10:
+# one different live claim
 # needs explicit user approval to replace. Exit 11: several live claims block
 # takeover. Exit 20: identity, project mode, or required vocabulary could not be
 # verified.
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --harness SLUG [--registry FILE] --runtime-family SLUG [--claim-model SLUG] --project-management github|linear|none --available-labels FILE --issue-labels FILE" >&2
+    echo "Usage: $0 --harness SLUG [--registry FILE] --runtime-family SLUG [--claim-model SLUG] [--allow-unlabeled-github] --project-management github|linear|none --available-labels FILE --issue-labels FILE" >&2
     exit 20
 }
 
@@ -22,6 +23,7 @@ harness=""
 registry=""
 runtime_family=""
 claim_model=""
+allow_unlabeled_github=false
 project_management=""
 available_labels=""
 issue_labels=""
@@ -42,6 +44,10 @@ while [ "$#" -gt 0 ]; do
     --claim-model)
         claim_model="${2:-}"
         shift 2
+        ;;
+    --allow-unlabeled-github)
+        allow_unlabeled_github=true
+        shift
         ;;
     --project-management)
         project_management="${2:-}"
@@ -228,8 +234,12 @@ if [ -z "$same" ]; then
         if [ -z "$selected_legacy" ]; then
             case "$project_management" in
             github)
-                echo "claim identity: target lacks '$target' and no trusted legacy label is provisioned" >&2
-                exit 20
+                if [ "$allow_unlabeled_github" = true ]; then
+                    target="n/a"
+                else
+                    echo "claim identity: target lacks '$target' and no trusted legacy label is provisioned; explicit approval is required for an unlabeled GitHub claim" >&2
+                    exit 20
+                fi
                 ;;
             linear | none)
                 target="n/a"

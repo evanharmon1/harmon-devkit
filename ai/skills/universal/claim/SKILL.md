@@ -361,6 +361,13 @@ model_arg=()
 if [ -n "$claim_model" ]; then
   model_arg=(--claim-model "$claim_model")
 fi
+# Set this only after the user explicitly approves the §5 escalation for a
+# GitHub repository with no ownership-label vocabulary. The first resolver run
+# must omit it so an unverifiable target cannot silently opt itself out.
+unlabeled_github_arg=()
+if [ "${user_approved_unlabeled_github_claim:-no}" = yes ]; then
+  unlabeled_github_arg=(--allow-unlabeled-github)
+fi
 available="$(mktemp)" issue_labels="$(mktemp)"
 if ! gh label list --repo "$repo" --limit 1000 --json name \
   -q '.[].name' >"$available"; then
@@ -381,7 +388,7 @@ fi
 set +e
 plan="$(<claim-skill-dir>/assets/resolve-claim-label.sh \
   --harness "$harness" "${registry_arg[@]}" \
-  "${runtime_arg[@]}" "${model_arg[@]}" \
+  "${runtime_arg[@]}" "${model_arg[@]}" "${unlabeled_github_arg[@]}" \
   --project-management "$project_management" \
   --available-labels "$available" --issue-labels "$issue_labels")"
 resolver_status=$?
@@ -427,8 +434,11 @@ is not among the writes the invocation approved. A `suggest:*`
 label naming another family is **not** a blocker: it is advice, and picking up
 work suggested for another family is a legitimate, visible choice — note it in
 the findings and carry on. If the repo has no `claim:*`/`agent:*` label family
-at all, ownership is **unverifiable** in `project_management: github` — say so
-and get the user's go-ahead rather than treating silence as "unclaimed". That
+at all, ownership is **unverifiable** in `project_management: github` — the
+resolver fails closed without `--allow-unlabeled-github`; say so, get the
+user's go-ahead, and rerun with that flag rather than treating silence as
+"unclaimed". The approved plan returns `target_label=n/a`, making the assignee
+and claim comment authoritative without inventing a label. That
 is the third exempt escalation: the invocation approved claiming an issue
 *checked* to be unclaimed, not one whose ownership nothing could check. In a
 fetched `project_management: none` or `linear` profile, label absence is
@@ -464,8 +474,8 @@ actually added.
   actual family-owned `agent:*` alias, not a synthesized `claim:<family>`. A repo
   with no resolvable family marker is **unverifiable** in
   `project_management: github`, not silently unlabeled: stop and ask as
-  described above. A `none`/`linear` profile records `n/a` and performs no label
-  write, preserving its documented assignee/comment-only claim.
+  described above. Only an explicitly approved rerun may record `n/a` and use
+  the assignee/comment-only claim; a `none`/`linear` profile does so directly.
 
   **If the user approved proceeding past exactly one other owner's claim
   label**, replace that one rather than adding alongside: `--add-label` alone

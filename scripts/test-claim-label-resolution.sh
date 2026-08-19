@@ -200,6 +200,17 @@ else
     status=$?
 fi
 [ "$status" = 20 ] || fail "label-less github mode exited $status, want 20"
+: >"$issue"
+out="$("$resolver" --registry agent-registry.json --harness codex-cli \
+    --runtime-family gpt --project-management github --allow-unlabeled-github \
+    --available-labels "$available" --issue-labels "$issue")" ||
+    fail "approved label-less github fallback failed"
+printf '%s\n' "$out" | grep -Fx 'family=gpt' >/dev/null ||
+    fail "approved label-less github fallback lost the acting family"
+printf '%s\n' "$out" | grep -Fx 'target_label=n/a' >/dev/null ||
+    fail "approved label-less github fallback did not select n/a"
+printf '%s\n' "$out" | grep -Fx 'existing_label=' >/dev/null ||
+    fail "approved label-less github fallback reported an existing marker"
 if "$resolver" --registry agent-registry.json --harness codex-cli \
     --runtime-family gpt --project-management unknown \
     --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then
@@ -214,6 +225,7 @@ grep -F 'if ! gh issue view' ai/skills/universal/claim/SKILL.md >/dev/null || fa
 grep -F 'if ! registry_entry="$(git ls-tree "$default" -- agent-registry.json)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "registry existence probe must fail closed"
 grep -F 'if ! git show "$default:agent-registry.json" >"$registry"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "present registry read must fail closed"
 grep -F -- '--project-management "$project_management"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must pass the trusted project mode"
+grep -F 'unlabeled_github_arg=(--allow-unlabeled-github)' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must expose only the approved label-less GitHub continuation"
 grep -F '[ "$target" = "n/a" ]' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label-less takeover must omit the add-label operation"
 if grep -Eq 'claim:(claude|gpt)|agent:(claude-code|codex)' \
     ai/skills/universal/track-work/references/claim-lifecycle.md; then

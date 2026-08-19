@@ -504,11 +504,11 @@ runs it — Claude Code vs. the `@claude` Action vs. the codex CLI is operationa
 detail that lives in the session context, not the label. Claims and suggestions
 operate at the **family level** (`claim:claude`, `suggest:claude`): that is what
 `task setup:github-labels` provisions and what the vendored claim skill applies,
-since a claim applies an existing label rather than minting one. One unmigrated
-exception: a **provider-rewired** Claude Code session (the shipped Kimi / DeepSeek
-/ GLM wrappers) still claims `claim:claude` today, so its label names the
-wrapper's base family rather than the model actually running — deriving the
-rewired family into the claim label is future skill work. The registry vocabulary also
+since a claim applies an existing label rather than minting one. For a
+**provider-rewired** fixed harness (including the shipped Kimi, DeepSeek, and
+GLM wrappers), the target registry maps that harness to its actual provider
+family, and the claim resolver requires the host-attested runtime family to
+match before selecting the corresponding `claim:<family>` label. The registry vocabulary also
 allows an optional model segment (`claim:claude:opus`), but standard provisioning
 emits only family-level labels and does not add a model-level one — a model-pinned
 label exists only where it was created by hand. The family vocabulary is
