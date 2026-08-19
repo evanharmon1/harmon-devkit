@@ -510,6 +510,7 @@ actually added.
   - session: <the `/kickoff` session name, or "unknown">
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
+  - prior board status owned by this claim chain: <the original status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
   - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
@@ -555,18 +556,22 @@ actually added.
   (`n/a, repo has no such label`) — parsers stop at the first comma.
 
   **Initialize and transfer claim-chain ownership deliberately.** A fresh
-  claim copies its direct marker values into the chain fields and records its
-  own login when it owns the assignee. A branch/scope refresh or crash-recovery
-  takeover posts one new record; that append supersedes the earlier record
-  atomically for readers. Transfer an assignee or still-present claim label
+  claim copies its direct marker values and prior board status into the chain
+  fields and records its own login when it owns the assignee. A branch/scope
+  refresh or crash-recovery takeover posts one new record; that append
+  supersedes the earlier record atomically for readers. Carry the predecessor's
+  chain board status (or the predecessor's direct status for a legacy record),
+  rather than the current `In Progress` status that this claim sees, so a later
+  hand-back restores the status the chain originally displaced. Transfer an
+  assignee or still-present claim label
   only after confirming it still exists and the predecessor record proves it
   was claim-owned; otherwise write `no`, `n/a`, or `none`, because current
   state cannot prove a same-text marker was not independently re-added later.
   A displaced label is different: it is expected to be absent while the
   takeover is live, so carry it after proving the predecessor displaced it;
-  that preserves an open-issue hand-back. Keep the three core chain fields
-  together — a partial trio is rejected by the releaser — and write `none` for
-  the assignee login when the chain does not own an assignee.
+  that preserves an open-issue hand-back. Keep the three core marker-chain
+  fields together — a partial trio is rejected by the releaser — and write
+  `none` for the assignee login when the chain does not own an assignee.
 
   **"Unset" and "unknown" are different answers.** `--show` exiting 0 with no
   `Status=` line is a successful read of a card whose `Status` is genuinely
