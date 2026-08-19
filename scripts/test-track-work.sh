@@ -2707,10 +2707,13 @@ grep -Fq "qualifying delivery PR's own trail" "$wrap_skill" ||
 
 echo "==> partial delivery restores open-issue state and explains the release"
 for required in \
-    'restore the recorded prior board status' \
+    'restore the recorded chain board status' \
+    'direct prior status for a legacy record' \
     'never set an open issue to `Done`' \
     'restore the exact displaced' \
-    'remove only the assignee and live claim label' \
+    'Remove only claim-owned assignees' \
+    'both the inherited chain assignee' \
+    'distinct assignment' \
     'what landed' \
     'specific open work' \
     'Claim released — partial delivery landed and the remaining work is not in flight.'; do

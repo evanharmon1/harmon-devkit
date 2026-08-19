@@ -216,9 +216,11 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
   a same-repository merged `Refs` PR authored by the authenticated account and
   merged after that claim, no competing open PR or newer unrelated claim
   activity, and attributable descriptions of what landed and what remains.
-  That interactive cleanup restores the recorded prior board status (never
-  `Done`), restores a proven displaced claim label because the issue remains
-  open, releases only claim-chain-owned markers, and posts the landed/remaining
+  That interactive cleanup restores the recorded chain board status, or the
+  direct prior status for a legacy record (never `Done`), restores a proven
+  displaced claim label because the issue remains open, releases only markers
+  proven owned by the direct/current chain record (including both distinct
+  claim-owned assignees when applicable), and posts the landed/remaining
   supersede comment last. Ambiguous evidence fails closed to maintainer
   confirmation; event automation deliberately does not infer this state.
 - An unmerged **fork** PR's close releases nothing: `pull_request` runs from

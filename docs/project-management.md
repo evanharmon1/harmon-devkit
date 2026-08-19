@@ -837,10 +837,12 @@ real partial delivery. No close event exists for automation to consume, so
 `/wrap` handles that fourth outcome interactively. It streamlines release only
 when a trusted complete claim record, a same-repository merged PR attributable
 to the authenticated account, and the absence of a competing open PR or newer
-claim activity all agree. The cleanup restores the claim's prior board status
-instead of setting `Done`, restores a proven displaced claim label for the
-still-open issue, and records both what landed and what remains. Any ambiguous
-evidence requires maintainer confirmation rather than an inferred release.
+claim activity all agree. The cleanup restores the claim chain's board status
+(or a legacy record's direct prior status) instead of setting `Done`, restores
+a proven displaced claim label for the still-open issue, removes every
+distinct assignee proven claim-owned, and records both what landed and what
+remains. Any ambiguous evidence requires maintainer confirmation rather than
+an inferred release.
 
 > **Whether this is automatic depends on the skills you have vendored.**
 > Writing and releasing these markers is implemented by harmon-devkit's

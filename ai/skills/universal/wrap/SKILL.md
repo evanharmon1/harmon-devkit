@@ -110,9 +110,10 @@ read it in the UI) — never guess.
     only when **all** of this attributable evidence agrees:
 
     - the current trusted claim record is authored by the account returned by
-      `gh api user --jq .login`, is complete (including a known prior board
-      status), and accounts for every marker the cleanup would touch through
-      its current `claim chain` ownership fields;
+      `gh api user --jq .login`, is complete (including a known chain board
+      status, or direct prior status for a legacy record), and accounts for
+      every marker the cleanup would touch through its direct and current
+      `claim chain` ownership fields;
     - the issue is still open, and its timeline identifies exactly one
       qualifying cross-reference from a PR in this same repository; re-read
       that PR with `gh pr view --repo <owner/repo>` and require it to be merged
@@ -132,14 +133,18 @@ read it in the UI) — never guess.
     event and the same-repository PR read. A merged PR alone is not evidence
     either: an old, pre-claim, fork, closing-keyword, or differently-authored PR
     does not qualify. Zero or multiple qualifying PRs, a missing or incomplete
-    claim record, `prior board status: unknown`, an unreadable PR/timeline, or
-    any newer activity that cannot be attributed to the qualifying PR all
-    **fail closed to maintainer confirmation**.
+    claim record, an `unknown` chain board status (or direct prior status for a
+    legacy record), an unreadable PR/timeline, or any newer activity that
+    cannot be attributed to the qualifying PR all **fail closed to maintainer
+    confirmation**.
 
-    On the qualifying path, restore the recorded prior board status — never
-    set an open issue to `Done` — then restore the exact displaced `claim:*` or
-    legacy `agent:*` label the current claim chain proves it inherited, and
-    remove only the assignee and live claim label that chain proves it owns.
+    On the qualifying path, restore the recorded chain board status (or direct
+    prior status for a legacy record) — never set an open issue to `Done` —
+    then restore the exact displaced `claim:*` or legacy `agent:*` label the
+    current claim chain proves it inherited. Remove only claim-owned assignees
+    and the live claim label: that can mean both the inherited chain assignee
+    login and the current author when the direct record says this claim added a
+    distinct assignment. Do not collapse those two proven markers into one.
     Keep the board-first/searchable-markers-last ordering and partial-failure
     rules above. The final release comment must explain the transition before
     its supersede line, for example:
