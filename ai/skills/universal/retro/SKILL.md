@@ -47,14 +47,6 @@ in progress", then check it is still true: a claim with no open PR and no work
 in flight is a loose end for §2, not a status. `/wrap` offers the commands to
 hand it back.
 
-**Discovery trust is deliberately read-only and broader than cleanup trust.**
-For this stale sweep, accept a claim author whose comment-time association is
-`OWNER`, `MEMBER`, or `COLLABORATOR` even when that author is no longer a
-current assignee; otherwise the partial-cleanup shape above disappears with
-its assignment. This rule may surface a candidate but never authorizes a
-write. `/wrap` and `release-claim.sh` must re-read current state and apply the
-stricter cleanup trust gate before removing anything.
-
 **A claim awaiting release is not a stale claim.** Two live claims read
 identically off the markers and mean opposite things — distinguish them
 rather than reporting both as loose ends:
