@@ -725,7 +725,10 @@ if grep -qF 'On an organization-owned repository, choose exactly one valid nativ
     grep -qF 'Do not duplicate or substitute it with a registry family' "$skill" &&
     grep -qF 'On a personal-account repository' "$skill" &&
     grep -qF 'choose exactly one `work-type` label' "$skill" &&
-    grep -qF 'even when that family has `exclusive: false`' "$skill" &&
+    grep -qF 'In `mode: registry`' "$skill" &&
+    grep -qF 'In `mode: live-label-fallback`' "$skill" &&
+    grep -qF "require \`track-work\`'s canonical pre-create" "$skill" &&
+    grep -qF 'infer any other family semantics from fallback labels' "$skill" &&
     grep -qF 'Choose the single best match for the chunk' "$skill" &&
     grep -qF 'stop before approval or writes and ask the' "$skill" &&
     grep -qF 'never omit the classification or apply multiple candidates' "$skill"; then

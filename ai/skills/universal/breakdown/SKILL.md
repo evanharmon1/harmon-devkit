@@ -406,8 +406,12 @@ regardless of the registry family's `exclusive` value:
   create). Do not duplicate or substitute it with a registry family whose
   `axis` is `work-type`.
 - On a personal-account repository, where native organization issue Types are
-  unavailable, choose exactly one `work-type` label from the verified registry,
-  even when that family has `exclusive: false`.
+  unavailable, choose exactly one `work-type` label. In `mode: registry`, take
+  it from the verified `work-type` axis even when that family has
+  `exclusive: false`. In `mode: live-label-fallback`, take it only from the
+  bounded live labels and require `track-work`'s canonical pre-create metadata
+  checker to accept that exact live spelling as the work classification; do
+  not infer any other family semantics from fallback labels.
 
 Choose the single best match for the chunk. If no choice is defensible, or more
 than one remains equally defensible, stop before approval or writes and ask the

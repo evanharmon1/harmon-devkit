@@ -177,5 +177,7 @@ Repositories without a registry retain a conservative live-label fallback.
 - Native issue Types remain orthogonal to labels. Every issue gets exactly one
   work classification: organization repositories require one valid native Type
   without a duplicate `work-type` label, while personal-account repositories
-  require the single best matching registry `work-type` label even when that
-  family is nonexclusive. An absent or ambiguous match stops for clarification.
+  require the single best matching `work-type` label even when the registry
+  family is nonexclusive. Registry-less fallback may use only an exact live
+  label that the canonical pre-create metadata checker accepts as that work
+  classification. An absent or ambiguous match stops for clarification.
