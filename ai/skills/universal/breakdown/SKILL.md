@@ -361,9 +361,18 @@ verified planning vocabulary:
   excluded retired, arming, transient, claim-release, tool-managed, and
   non-agent-writable entries. `provision: false` is not permission to mint:
   a tool-owned or open value appears only when the concrete live label exists.
-- `exclusive: true` means propose at most one value from that family. This is
-  how repository-specific `area` vocabularies and their exclusivity rule are
-  consumed; never embed an `area:*` roster in this file.
+- Select candidates by matching the chunk against the family's `purpose` and
+  `axis`, then the candidate's live `description`; do not infer applicability
+  from a label name alone. Copy the candidate's `name` exactly as emitted so
+  the proposal preserves the live label's spelling.
+- `exclusive: true` means propose at most one value from that family.
+  `exclusive: false` permits multiple values only when each one is
+  independently applicable to the chunk; it is not an instruction to apply
+  the whole family, and it does not override the exactly-one `work-type` rule
+  below. This is how repository-specific `area` vocabularies and their
+  exclusivity rule are consumed; never embed an `area:*` roster here.
+- Every emitted `requires` entry is a companion label, not a hint. Include all
+  of them whenever proposing that candidate, using their exact emitted names.
 - `suggest` is advisory routing, never ownership or execution. A
   `suggest-model` entry carries `requires`; propose that family label alongside
   the model refinement, never the model label alone. Neither suggestion is an
@@ -389,9 +398,33 @@ gh api repos/<owner>/<repo> --jq .organization.login   # org repo?
 gh api orgs/<org>/issue-types --jq '.[].name'          # the type vocabulary
 ```
 
-Apply the families that fit: an issue **type** where the org defines them
-(`gh issue create --type`, or the issue-type edit endpoint after create) and
-the registry families that fit the chunk. Project-board fields (`Size`,
+Apply the families that fit. Every issue gets exactly one work classification,
+regardless of the registry family's `exclusive` value:
+
+- On an organization-owned repository, choose exactly one valid native issue
+  **Type** (`gh issue create --type`, or the issue-type edit endpoint after
+  create). Do not duplicate or substitute it with a registry family whose
+  `axis` is `work-type`.
+- On a personal-account repository, where native organization issue Types are
+  unavailable, choose exactly one `work-type` label. In `mode: registry`, take
+  it from the verified `work-type` axis even when that family has
+  `exclusive: false`; the asset marks this `work_type_selection:
+  registry-semantics`. In `mode: live-label-fallback`, the asset marks
+  `work_type_selection: human-confirmation-required` because the bounded live
+  list has no trustworthy axis semantics. Do not infer, rank, or nominate a
+  work type from that list: `priority`, `security`, and any other live label
+  are equally unclassified. Before approval or writes, ask the human to name
+  the exact live label that this repository uses as its work type. Treat only
+  that explicit response as the semantic classification, then require
+  `track-work`'s canonical pre-create metadata checker to accept the same live
+  spelling. The checker validates admissibility; it is not a work-type
+  classifier.
+
+Choose the single best match for the chunk. If no choice is defensible, or more
+than one remains equally defensible, stop before approval or writes and ask the
+human to clarify; never omit the classification or apply multiple candidates.
+In either case, also apply other registry families that fit the chunk.
+Project-board fields (`Size`,
 `Status` options and the like) are Projects V2 state: propose them in §6, but
 write only what the target's own tooling exposes for the purpose —
 `track-work`'s `set-issue-status.sh` for `Status`, nothing hand-rolled — and

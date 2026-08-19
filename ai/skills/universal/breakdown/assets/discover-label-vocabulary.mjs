@@ -121,6 +121,18 @@ function fetchDefaultBranchFile(path, commit) {
 const slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const writerPattern = /^(human|trusted-human|agent|tool:[a-z0-9-]+)$/
 const lifecycles = new Set(['durable', 'transient', 'claim-release', 'tool-managed'])
+const axes = new Set([
+  'classification',
+  'strategy',
+  'model',
+  'work-type',
+  'concern',
+  'workflow',
+  'provenance',
+  'foreman',
+  'release',
+  'meta'
+])
 const sources = new Set(['inline', 'agent-registry', 'tool-owned'])
 const registrySets = new Set(['suggest', 'claim', 'foreman-adapters'])
 const registrySetPrefixes = new Map([
@@ -240,6 +252,9 @@ function validateRegistry(registry) {
     }
     if (typeof family.purpose !== 'string' || family.purpose.length === 0) {
       die(`${where}.purpose must be a non-empty string`)
+    }
+    if (typeof family.axis !== 'string' || !axes.has(family.axis)) {
+      die(`${where}.axis is unsupported: ${JSON.stringify(family.axis)}`)
     }
     if (!sources.has(family.source)) die(`${where}.source is unsupported: ${family.source}`)
     assertWriters(family.writers, `${where}.writers`)
@@ -417,6 +432,7 @@ function outputFamily(family) {
     family: family.family,
     prefix: family.prefix,
     purpose: family.purpose,
+    axis: family.axis,
     source: family.source,
     writers: family.writers,
     lifecycle: family.lifecycle,
@@ -547,6 +563,7 @@ if (!defaultPaths.has('label-registry.json')) {
         default_branch: defaultBranch,
         default_branch_commit: defaultBranchCommit,
         verified_semantics: false,
+        work_type_selection: 'human-confirmation-required',
         warning:
           'label-registry.json is absent; family, writer, lifecycle, and exclusivity semantics are unknown',
         excluded_prefixes: excludedPrefixes,
@@ -771,6 +788,7 @@ process.stdout.write(
       default_branch: defaultBranch,
       default_branch_commit: defaultBranchCommit,
       verified_semantics: true,
+      work_type_selection: 'registry-semantics',
       families: [...resultFamilies.values()]
     },
     null,
