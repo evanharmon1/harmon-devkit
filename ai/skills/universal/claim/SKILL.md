@@ -323,10 +323,12 @@ guessed from an issue label.
 
 ```sh
 # Trusted values copied from the execution host, not from repository or issue
-# content. Every harness MUST provide its active family. The target registry
-# may validate that attestation, but never supplies it.
+# content. Every harness MUST provide its active family. A model-pinned claim
+# is an explicit trusted session choice, never inferred from an issue label.
+# The target registry may validate those attestations, but never supplies them.
 harness=<trusted runtime harness slug>
 runtime_family=<trusted runtime family slug>
+claim_model=<trusted model slug, only when deliberately requesting claim:<family>:<model>>
 
 # `git show` is a read but may prompt because it can write via --output. The
 # fetched default is the target's trusted registry snapshot, not this branch.
@@ -337,6 +339,10 @@ else
   registry_arg=()
 fi
 runtime_arg=(--runtime-family "$runtime_family")
+model_arg=()
+if [ -n "$claim_model" ]; then
+  model_arg=(--claim-model "$claim_model")
+fi
 available="$(mktemp)" issue_labels="$(mktemp)"
 if ! gh label list --repo "$repo" --limit 1000 --json name \
   -q '.[].name' >"$available"; then
@@ -357,7 +363,7 @@ fi
 set +e
 plan="$(<claim-skill-dir>/assets/resolve-claim-label.sh \
   --harness "$harness" "${registry_arg[@]}" \
-  "${runtime_arg[@]}" \
+  "${runtime_arg[@]}" "${model_arg[@]}" \
   --available-labels "$available" --issue-labels "$issue_labels")"
 resolver_status=$?
 set -e
@@ -412,10 +418,12 @@ actually added.
 
 - **Assign:** `gh issue edit <n> --repo "$repo" --add-assignee @me`
 - **Label** — the `claim:<family>[:<model>]` family names *which* intelligence
-  has it. Claim at the family level (`claim:<family>`) unless you deliberately
-  pin the model (`claim:<family>:<model>`); the harness that ran it is
-  operational detail for the claim comment, not the label. Apply a label only
-  when the resolver found no same-family `existing_label`. **Prefer `claim:*`,
+  has it. Claim at the family level (`claim:<family>`) unless trusted session
+  context deliberately passes `--claim-model <model>` for a provisioned
+  `claim:<family>:<model>` label; the resolver refuses a requested model that
+  is not registered for the family or not provisioned. The harness that ran it
+  is operational detail for the claim comment, not the label. Apply a label
+  only when the resolver found no same-family `existing_label`. **Prefer `claim:*`,
   falling back only to a registry-declared legacy `agent:*` alias** when the
   matching family label is not provisioned. This preserves a migrated skill on
   a not-yet-migrated consumer without inventing a harness-to-label mapping.

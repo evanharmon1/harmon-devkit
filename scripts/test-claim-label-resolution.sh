@@ -12,7 +12,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 available="$tmp/available"
 issue="$tmp/issue"
-printf '%s\n' claim:claude claim:gpt agent:claude-code agent:codex >"$available"
+printf '%s\n' claim:claude claim:gpt claim:gpt:terra agent:claude-code agent:codex >"$available"
 
 run() {
     "$resolver" --registry agent-registry.json --available-labels "$available" --issue-labels "$issue" "$@"
@@ -26,6 +26,16 @@ printf '%s\n' "$out" | grep -Fx 'target_label=claim:claude' >/dev/null || fail "
 out="$(run --harness codex-cli --runtime-family gpt)" || fail "Codex resolution failed"
 printf '%s\n' "$out" | grep -Fx 'family=gpt' >/dev/null || fail "Codex must resolve to GPT"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "Codex must select claim:gpt"
+
+out="$(run --harness codex-cli --runtime-family gpt --claim-model terra)" || fail "trusted model-pinned Codex claim failed"
+printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "trusted model pin was not selected"
+
+printf '%s\n' claim:gpt >"$tmp/family-only-available"
+if run --harness codex-cli --runtime-family gpt --claim-model sol --available-labels "$tmp/family-only-available" >/dev/null 2>&1; then fail "missing requested model label must fail closed"; else status=$?; fi
+[ "$status" = 20 ] || fail "missing requested model label exited $status, want 20"
+
+if run --harness codex-cli --runtime-family gpt --claim-model opus >/dev/null 2>&1; then fail "foreign trusted model must fail closed"; else status=$?; fi
+[ "$status" = 20 ] || fail "foreign trusted model exited $status, want 20"
 
 printf '%s\n' claim:gpt:terra >"$issue"
 out="$(run --harness codex-cli --runtime-family gpt)" || fail "same-family model claim must be idempotent"

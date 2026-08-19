@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Resolve the ownership label for a claim from trusted runtime identity.
 #
-# The caller obtains --harness and --runtime-family from the execution host,
+# The caller obtains --harness, --runtime-family, and any --claim-model from the execution host,
 # never from an issue, PR, repository file, or label. The registry validates a
 # host-attested family; it never supplies one.
 #
@@ -11,13 +11,14 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --harness SLUG [--registry FILE] [--runtime-family SLUG] --available-labels FILE --issue-labels FILE" >&2
+    echo "Usage: $0 --harness SLUG [--registry FILE] --runtime-family SLUG [--claim-model SLUG] --available-labels FILE --issue-labels FILE" >&2
     exit 20
 }
 
 harness=""
 registry=""
 runtime_family=""
+claim_model=""
 available_labels=""
 issue_labels=""
 while [ "$#" -gt 0 ]; do
@@ -32,6 +33,10 @@ while [ "$#" -gt 0 ]; do
         ;;
     --runtime-family)
         runtime_family="${2:-}"
+        shift 2
+        ;;
+    --claim-model)
+        claim_model="${2:-}"
         shift 2
         ;;
     --available-labels)
@@ -51,6 +56,12 @@ done
 case "$runtime_family" in
 *[!a-z0-9-]* | '')
     echo "claim identity: invalid runtime family '$runtime_family'" >&2
+    exit 20
+    ;;
+esac
+case "$claim_model" in
+*[!a-z0-9-]*)
+    echo "claim identity: invalid trusted claim model '$claim_model'" >&2
     exit 20
     ;;
 esac
@@ -109,12 +120,21 @@ if [ -n "$registry" ]; then
         echo "claim identity: unknown runtime family '$family'" >&2
         exit 20
     }
+    if [ -n "$claim_model" ]; then
+        jq -e --arg family "$family" --arg model "$claim_model" \
+            '.families[] | select(.slug == $family) | .models[]? | select(.slug == $model)' \
+            "$registry" >/dev/null || {
+            echo "claim identity: trusted model '$claim_model' is not registered for family '$family'" >&2
+            exit 20
+        }
+    fi
     legacy_labels="$(jq -r --arg family "$family" '.families[] | select(.slug == $family) | .legacy_claim_labels[]?' "$registry")"
 else
     family="$runtime_family"
 fi
 
 target="claim:$family"
+[ -z "$claim_model" ] || target="${target}:$claim_model"
 same=""
 conflicts=""
 while IFS= read -r label; do
@@ -137,6 +157,10 @@ fi
 
 if [ -z "$same" ]; then
     if ! grep -Fqx "$target" "$available_labels"; then
+        if [ -n "$claim_model" ]; then
+            echo "claim identity: target lacks requested model claim '$target'" >&2
+            exit 20
+        fi
         selected_legacy=""
         while IFS= read -r candidate; do
             [ -n "$candidate" ] || continue
