@@ -127,6 +127,12 @@
         "product": { "type": "string", "minLength": 1 },
         "family_constraint": { "$ref": "#/$defs/familyConstraint" },
         "model_resolution": { "$ref": "#/$defs/modelResolution" },
+        "legacy_claim_labels": {
+          "description": "Retired agent:* labels that unambiguously identify this harness. Claim resolution uses these only when the matching claim:<family> label is not provisioned.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^agent:[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$" }
+        },
         "provider_rewired": { "type": "boolean" }
       }
     },

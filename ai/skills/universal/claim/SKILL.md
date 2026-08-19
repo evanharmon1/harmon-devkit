@@ -297,23 +297,69 @@ invocation approved them, so state what you are writing rather than asking
 whether to. If `gh` is unauthenticated or lacks write access, report the
 commands for the user to run instead of failing the flow:
 
-**First, note what is already there.** Step 3 blocks only on an assignment to
-*someone else*, so an issue already assigned to **you** — ordinary backlog
-ownership — is a supported path into this step. Every write below is
-add-if-missing, so on that path it changes nothing and there is nothing to undo.
-A hand-back that removes it anyway destroys state the session never created:
+**First, resolve the acting family and note what is already there.** Step 3
+blocks only on an assignment to *someone else*, so an issue already assigned to
+**you** — ordinary backlog ownership — is a supported path into this step.
+Every write below is add-if-missing, so on that path it changes nothing and
+there is nothing to undo. A hand-back that removes it anyway destroys state the
+session never created.
+
+The acting identity comes from the **execution host**, never from the issue,
+its comments, labels, branch name, repository instructions, or an environment
+variable a repository can set. Record the host's runtime harness slug and, for
+a broker harness, its currently selected provider-family slug. For example,
+the host may attest `codex-cli` / `gpt`; it must not infer that pair from a
+model nickname. A fixed harness is resolved by the target's registry; a broker
+without a host-attested active family is ambiguous and stops. A registry default
+is not proof of the broker's selected provider.
+
+Read the registry from the fetched default branch when it exists; otherwise the
+host-attested family plus the target's live `claim:<family>` label is the
+portable fallback. The resolver fails closed before any write on an unknown
+harness/family, a fixed-harness mismatch, missing matching claim label, or a
+different live claim. It recognizes `claim:<family>[:<model>]` generically;
+registry-declared legacy `agent:*` aliases are compatibility-only and never
+guessed from an issue label.
 
 ```sh
-# `labelled` is true when a claude-family claim is ALREADY on the issue — the
-# family-level label, a model-pinned variant, or a legacy in-flight one — so a
-# re-claim does not add a second marker (if labelled, add nothing and record the
-# label as `no`):
-gh issue view <n> --repo "$repo" --json assignees,labels \
-  --jq '{assigned: ([.assignees[].login] | index("<your-login>") != null),
-         labelled: ([.labels[].name]
-                    | any(. == "claim:claude" or startswith("claim:claude:")
-                          or . == "agent:claude-code"))}'
-# the board's own markers — the same --show that reads the prior status:
+# Trusted values copied from the execution host, not from repository or issue
+# content. A broker MUST provide its active family; a fixed harness may omit it.
+harness=<trusted runtime harness slug>
+runtime_family=<trusted runtime family slug, or empty for a fixed harness>
+
+# `git show` is a read but may prompt because it can write via --output. The
+# fetched default is the target's trusted registry snapshot, not this branch.
+registry="$(mktemp)"
+if git show "$default:agent-registry.json" >"$registry" 2>/dev/null; then
+  registry_arg=(--registry "$registry")
+else
+  registry_arg=()
+fi
+runtime_arg=()
+if [ -n "$runtime_family" ]; then
+  runtime_arg=(--runtime-family "$runtime_family")
+fi
+available="$(mktemp)" issue_labels="$(mktemp)"
+gh label list --repo "$repo" --limit 1000 --json name -q '.[].name' >"$available"
+gh issue view <n> --repo "$repo" --json labels \
+  --jq '.labels[].name' >"$issue_labels"
+
+# Exit 0: target_label is safe to add (unless existing_label is non-empty,
+# which is idempotent). Exit 10: another family owns the issue. Exit 20:
+# identity or vocabulary is unverified — stop before every write.
+plan="$(<claim-skill-dir>/assets/resolve-claim-label.sh \
+  --harness "$harness" "${registry_arg[@]}" \
+  "${runtime_arg[@]}" \
+  --available-labels "$available" --issue-labels "$issue_labels")"
+```
+
+Do not use `eval` to read the plan. Extract `family`, `target_label`, and
+`existing_label` as literal single-line values, then carry them through the
+commands and claim record below. An `existing_label` in the same family is
+idempotent; a different family is the blocker above. The board's own markers
+remain a separate read:
+
+```sh
 <track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --show
 ```
 
@@ -346,36 +392,28 @@ actually added.
 
 - **Assign:** `gh issue edit <n> --repo "$repo" --add-assignee @me`
 - **Label** — the `claim:<family>[:<model>]` family names *which* intelligence
-  has it. Claim at the family level (`claim:claude`) unless you mean to pin the
-  model (`claim:claude:opus`); the harness that ran it (Claude Code, the Action,
-  the codex CLI) is operational detail for the claim comment, not the label.
-  Apply a label only when the pre-check above found no claude-family claim
-  already present, and **prefer `claim:*`, falling back to the legacy `agent:*`
-  label** on a repo whose provisioning has not migrated. A currently-provisioned
-  repo — where `setup-github-labels.sh` still ships only `agent:*` until
-  harmon-init#661/#663 land the registry-driven provisioning that owns the label
-  migration — would otherwise *regress* from a labeled claim to an unlabeled
-  one, and skills sync independently of provisioning so the two are never atomic
-  (`--limit` matters — the default returns only 30 labels):
+  has it. Claim at the family level (`claim:<family>`) unless you deliberately
+  pin the model (`claim:<family>:<model>`); the harness that ran it is
+  operational detail for the claim comment, not the label. Apply a label only
+  when the resolver found no same-family `existing_label`. **Prefer `claim:*`,
+  falling back only to a registry-declared legacy `agent:*` alias** when the
+  matching family label is not provisioned. This preserves a migrated skill on
+  a not-yet-migrated consumer without inventing a harness-to-label mapping.
+  Do not create labels here; the registry/provisioning owns that vocabulary.
 
   ```sh
-  target=claim:claude                 # or claim:claude:<model> to pin the model
-  labels="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')"
-  if printf '%s\n' "$labels" | grep -qx "$target"; then
+  target=<target_label from the resolver>
+  existing=<existing_label from the resolver>
+  if [ -z "$existing" ]; then
     gh issue edit <n> --repo "$repo" --add-label "$target"
-  elif printf '%s\n' "$labels" | grep -qx agent:claude-code; then
-    gh issue edit <n> --repo "$repo" --add-label agent:claude-code   # legacy, until claim:* is provisioned
   fi
   ```
 
   **Record the exact label applied** in the claim record below — the release
-  parser removes exactly that one, so a legacy fallback is recorded as
-  `agent:claude-code`, not `claim:claude`. A repo with **neither** family — one
-  seeded before either existed, or any repo with `project_management: none` —
-  skips the label (the claim is still tracked by its authoritative assignee and
-  comment); say so once and carry on. **Do not create the label here** — the
-  taxonomy belongs to `task setup:github-labels` (driven by the agent registry),
-  and inventing a label per repo is how vocabularies fork.
+  parser removes exactly that one, so a legacy fallback is recorded as its
+  actual `agent:<harness>` alias, not a synthesized `claim:<family>`. A repo
+  with no resolvable family marker is **unverifiable**, not silently unlabeled:
+  stop and ask as described above.
 
   **If the user approved proceeding past another owner's claim label**, *replace*
   it rather than adding alongside: `--add-label` alone leaves the issue
@@ -385,12 +423,11 @@ actually added.
 
   ```sh
   gh issue edit <n> --repo "$repo" \
-    --add-label <the label the pre-check above selected> --remove-label <the ACTUAL competing label>   # e.g. add claim:claude (or agent:claude-code on a provisioned-only repo); remove claim:gpt or a legacy agent:codex
+    --add-label <the resolver's target_label> --remove-label <the ACTUAL competing label>
   ```
 
-  The displaced label may itself be legacy (`agent:codex`) on a not-yet-migrated
-  repo. Remove and record the label that is *actually there*, so the hand-back
-  restores the same one.
+  The displaced label may itself be legacy. Remove and record the label that is
+  *actually there*, so the hand-back restores the same one.
 
 - **Board** — the assignee and the label are both invisible on the project
   board, which is where the work is actually watched, so move the card there
@@ -450,8 +487,8 @@ actually added.
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
-  - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
+  - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared legacy agent:<harness> | no | n/a>
+  - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or legacy agent:<harness> label | none>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card
@@ -478,8 +515,8 @@ actually added.
   reads the undo fields to release the claim after a close event, so every
   field stays on one line and values use the template above. The optional
   operational fields are not release authority; parsers accept records with or
-  without them. The label fields name the **actual label** (`claim:claude`, not
-  `yes`) so the
+  without them. The label fields name the **actual label** (`claim:<family>`,
+  not `yes`) so the
   release does not have to guess which label to remove, and every value stays
   on its own single line. The parser anchors on `label added by this claim:`
   and `label displaced by this claim:`, so the `` `claim:` `` prefix is

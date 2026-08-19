@@ -105,6 +105,7 @@
         "owner": "runner-config",
         "details": "The runner or repository configuration selects the Claude model; labels do not."
       },
+      "legacy_claim_labels": ["agent:claude-code"],
       "provider_rewired": false
     },
     {
@@ -193,6 +194,7 @@
         "owner": "runner-config",
         "details": "The runner or CLI invocation selects the GPT model."
       },
+      "legacy_claim_labels": ["agent:codex"],
       "provider_rewired": false
     },
     {

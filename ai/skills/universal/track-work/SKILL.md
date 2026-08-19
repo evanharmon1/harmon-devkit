@@ -719,7 +719,7 @@ blind where the others see:
 | Marker | Says | Visible in |
 | --- | --- | --- |
 | `Status` = `In Progress` | where it is in delivery | the board |
-| `claim:claude` label | *which* intelligence is working it right now | `gh issue list --label`, the issue page, and every owner type |
+| `claim:<family>` label | *which* intelligence is working it right now | `gh issue list --label`, the issue page, and every owner type |
 | assignee | a human-shaped "taken" | notifications, `gh issue list --assignee` |
 
 **The retired `Agent` field is not one of them, and a claim must never write
