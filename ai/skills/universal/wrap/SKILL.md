@@ -176,15 +176,18 @@ read it in the UI) — never guess.
     leaves the issue still advertising itself as held — the exact failure this
     step exists to prevent:
 
-    **Undo only what the claim added.** The claim comment carries a "Claim
-    record" listing which markers `/claim` actually created. An issue can
+    **Undo only what the current claim chain owns.** The current claim comment
+    carries a "Claim record" listing which markers `/claim` actually created
+    and, in v2, which predecessor ownership it inherited. An issue can
     be assigned to you, or carry the label, *before* the claim — ordinary
     backlog ownership, which `/claim` explicitly allows — and the writes
     are all add-if-missing, so on that path they changed nothing. Removing
     them anyway destroys state the session never created, and no amount of
     user approval recovers it, because by then nobody can tell which it was.
-    Skip any line the record marks `no`; if no record survives, ask rather
-    than assume the claim created everything.
+    Use the three `claim chain` fields when present; they are authoritative
+    current ownership after a refresh or takeover. Skip any line the record
+    marks `no`; if no record survives, ask rather than assume the claim
+    created everything.
 
     ```sh
     # Separate commands on purpose: the label is optional (/claim skips it

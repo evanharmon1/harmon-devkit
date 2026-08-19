@@ -452,6 +452,9 @@ actually added.
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
   - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
+  - assignee owned by this claim chain: <yes|no>
+  - `claim:` label owned by this claim chain: <the exact still-present label | no | n/a>
+  - `claim:` label displaced by this claim chain: <claim:gpt | agent:codex (legacy) | none>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card
@@ -488,6 +491,17 @@ actually added.
   live in `track-work/references/claim-lifecycle.md` and
   `track-work/assets/release-claim.sh`. Explanatory clauses go after a comma
   (`n/a, repo has no such label`) — parsers stop at the first comma.
+
+  **Initialize and transfer claim-chain ownership deliberately.** A fresh
+  claim copies its three direct marker values into the three `claim chain`
+  fields. A branch/scope refresh or crash-recovery takeover posts one new
+  record; that append supersedes the earlier record atomically for readers.
+  Copy a chain value only after confirming the corresponding marker still
+  exists and the predecessor record proves it was claim-owned. Otherwise write
+  `no`, `n/a`, or `none`: current state alone cannot prove that a marker with
+  the same text was not independently re-added later, and release must leave
+  unproven ownership untouched. Keep all three chain fields together — a
+  partial trio is rejected by the releaser.
 
   **"Unset" and "unknown" are different answers.** `--show` exiting 0 with no
   `Status=` line is a successful read of a card whose `Status` is genuinely

@@ -29,9 +29,10 @@ remembered status — re-verify each one live:
 - `gh issue view <n> --json state,stateReason,assignees,labels,url,title`
 
 **Read the claim off the markers, not off the issue.** A live claim is an
-`claim:*` (or legacy `agent:*`) label, a card at `In Progress`, or a claim comment **not superseded by
-a later `Claim released —` comment** (the claim comment outlives its own
-release, so on its own it proves nothing about now).
+`claim:*` (or legacy `agent:*`) label, a card at `In Progress`, or the
+**latest trusted `Claiming —` comment after the latest trusted `Claim released —` comment**.
+A newer trusted claim supersedes an earlier refresh record without releasing
+the active claim; an older comment alone proves nothing about now.
 
 Neither `state` nor `assignees` may gate that check. Both exclude real stale
 claims: a closing PR auto-closes the issue while the label and card stay set,

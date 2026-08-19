@@ -2859,6 +2859,48 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_noassign")")" "$issue_cl
 [ "$(run_release --reason r)" = 0 ] || fail "no-assignee release should exit 0"
 if grep -q -- '--remove-assignee' "$rc_log"; then fail "an assignee the claim did not add must stay"; fi
 
+# A v2 leaf carries ownership across a refresh or crash-recovery takeover. Its
+# direct fields deliberately say it added nothing: releasing it must use the
+# claim-chain fields rather than strand the predecessor's markers (#533/#537).
+body_chain_takeover="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+echo "==> a refreshed current record releases inherited predecessor ownership"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_takeover" 2)")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "a chain-owned refreshed claim should release"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "the current chain record must remove the inherited label"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
+    fail "the current chain record must remove the inherited assignee"
+
+echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] ||
+    fail "without a published replacement, the predecessor must remain releasable"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "a failed refresh must not lose the predecessor's label ownership"
+
+echo "==> independently owned later markers stay protected by an unowned current chain"
+body_chain_unowned="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: no
+- agent: label owned by this claim chain: no
+- agent: label displaced by this claim chain: none"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_unowned" 2)")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "an unowned current chain should still release its comment"
+if grep -q -- '--remove-label\|--remove-assignee' "$rc_log"; then
+    fail "markers no longer proven claim-owned must remain protected"
+fi
+
+echo "==> a partially written v2 ownership trio fails closed"
+body_chain_partial="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_chain_partial")")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 2 ] || fail "a partial chain-ownership record must fail closed"
+[ ! -s "$rc_log" ] || fail "a partial chain-ownership record must trigger zero writes"
+
 echo "==> 'label added: n/a' touches no label"
 body_nolabel="$(printf '%s' "$body_v1" | sed 's/^- `agent:` label added by this claim: agent:claude-code/- `agent:` label added by this claim: n\/a, repo has no such label/')"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_nolabel")")" "$issue_closed_full"

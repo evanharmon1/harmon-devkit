@@ -285,11 +285,27 @@ record_present=0
 saw_assignee=0
 saw_label=0
 saw_displaced=0
+saw_chain_assignee=0
+saw_chain_label=0
+saw_chain_displaced=0
 assignee_added=""
 label_added=""
 label_displaced=""
+chain_assignee_owned=""
+chain_label_owned=""
+chain_label_displaced=""
 extract_value() {
     v="${1#*by this claim:}"
+    v="${v%%,*}"
+    v="${v//\`/}"
+    v="${v//\"/}"
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+    v="${v%% *}"
+    printf '%s' "$v"
+}
+extract_chain_value() {
+    v="${1#*claim chain:}"
     v="${v%%,*}"
     v="${v//\`/}"
     v="${v//\"/}"
@@ -316,6 +332,18 @@ while IFS= read -r line; do
     *"label displaced by this claim:"*)
         saw_displaced=1
         label_displaced="$(extract_value "$line")"
+        ;;
+    *"assignee owned by this claim chain:"*)
+        saw_chain_assignee=1
+        chain_assignee_owned="$(lower "$(extract_chain_value "$line")")"
+        ;;
+    *"label owned by this claim chain:"*)
+        saw_chain_label=1
+        chain_label_owned="$(extract_chain_value "$line")"
+        ;;
+    *"label displaced by this claim chain:"*)
+        saw_chain_displaced=1
+        chain_label_displaced="$(extract_chain_value "$line")"
         ;;
     esac
 done <<<"$(jq -r '.body' <<<"$claim_json")"
@@ -357,6 +385,46 @@ if [ "$record_present" -eq 1 ]; then
         fi
         ;;
     esac
+    # v2 makes current ownership explicit.  The three fields are one unit:
+    # accepting a partial lineage would be worse than the v1 fallback because
+    # it could clear only one inherited marker and then publish a release.
+    if [ "$saw_chain_assignee" -ne 0 ] || [ "$saw_chain_label" -ne 0 ] || [ "$saw_chain_displaced" -ne 0 ]; then
+        if [ "$saw_chain_assignee" -ne 1 ] || [ "$saw_chain_label" -ne 1 ] || [ "$saw_chain_displaced" -ne 1 ] ||
+            [ -z "$chain_assignee_owned" ] || [ -z "$chain_label_owned" ] || [ -z "$chain_label_displaced" ]; then
+            echo "$repo#$issue: claim record has incomplete claim-chain ownership — fail closed" >&2
+            exit 2
+        fi
+        case "$chain_assignee_owned" in
+        yes | no) ;;
+        *)
+            echo "$repo#$issue: claim-chain assignee ownership is unreadable ('$chain_assignee_owned') — fail closed" >&2
+            exit 2
+            ;;
+        esac
+        case "$(lower "$chain_label_owned")" in
+        no | n/a | none) ;;
+        *)
+            if ! valid_label "$chain_label_owned"; then
+                echo "$repo#$issue: claim-chain ownership names an implausible label ('$chain_label_owned') — fail closed" >&2
+                exit 2
+            fi
+            ;;
+        esac
+        case "$(lower "$chain_label_displaced")" in
+        none) chain_label_displaced="" ;;
+        *)
+            if ! valid_label "$chain_label_displaced"; then
+                echo "$repo#$issue: claim-chain displaced label is implausible ('$chain_label_displaced') — fail closed" >&2
+                exit 2
+            fi
+            ;;
+        esac
+        # The current leaf, not its author, owns inherited provenance. This is
+        # what makes a crashed-session takeover release predecessor markers.
+        assignee_added="$chain_assignee_owned"
+        label_added="$chain_label_owned"
+        label_displaced="$chain_label_displaced"
+    fi
 fi
 
 # ── Decide the marker writes ─────────────────────────────────────────────────
