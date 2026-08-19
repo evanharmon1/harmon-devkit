@@ -3125,6 +3125,15 @@ rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
 [ "$(run_release --reason r)" = 2 ] || fail "a partial predecessor chain must fail closed"
 [ ! -s "$rc_log" ] || fail "a partial predecessor chain must trigger zero writes"
 
+echo "==> model fields cannot stand in for predecessor base-label provenance"
+body_chain_predecessor_model_only="$(printf '%s' "$body_chain_plural_second" |
+    sed 's/label added by this claim:/model label added by this claim:/; s/label owned by this claim chain:/model label owned by this claim chain:/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_predecessor_model_only" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "model-only predecessor provenance must fail closed"
+[ ! -s "$rc_log" ] || fail "model-only predecessor provenance must trigger zero writes"
+
 echo "==> a claim-chain assignee list is bounded at ten logins"
 body_chain_plural_too_many="$(printf '%s' "$body_chain_plural_third" |
     sed 's/collaborator evanharmon1 third-owner/a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11/')"

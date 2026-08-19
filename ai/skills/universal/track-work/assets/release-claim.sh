@@ -469,6 +469,10 @@ if [ "$record_present" -eq 1 ]; then
         fi
         ;;
     esac
+    if [ "$saw_model_label" -ne "$saw_chain_model_label" ]; then
+        echo "$repo#$issue: claim record has incomplete model-label ownership — fail closed" >&2
+        exit 2
+    fi
     # v2 makes current ownership explicit.  The three fields are one unit:
     # accepting a partial lineage would be worse than the v1 fallback because
     # it could clear only one inherited marker and then publish a release.
@@ -478,10 +482,6 @@ if [ "$record_present" -eq 1 ]; then
         if [ "$saw_chain_assignee" -ne 1 ] || [ "$saw_chain_label" -ne 1 ] || [ "$saw_chain_displaced" -ne 1 ] ||
             [ -z "$chain_assignee_owned" ] || [ -z "$chain_label_owned" ] || [ -z "$chain_label_displaced" ]; then
             echo "$repo#$issue: claim record has incomplete claim-chain ownership — fail closed" >&2
-            exit 2
-        fi
-        if [ "$saw_model_label" -ne "$saw_chain_model_label" ]; then
-            echo "$repo#$issue: claim record has incomplete model-label ownership — fail closed" >&2
             exit 2
         fi
         case "$chain_assignee_owned" in
@@ -569,6 +569,8 @@ predecessor_owned_assignees() {
     p_direct=""
     p_saw_label=0
     p_label=""
+    p_saw_model_label=0
+    p_model_label=""
     p_saw_displaced=0
     p_displaced=""
     p_saw_owned=0
@@ -577,6 +579,8 @@ predecessor_owned_assignees() {
     p_login=""
     p_saw_logins=0
     p_logins=""
+    p_saw_chain_model_label=0
+    p_chain_model_label=""
 
     while IFS= read -r line; do
         case "$line" in
@@ -584,6 +588,10 @@ predecessor_owned_assignees() {
         *"assignee added by this claim:"*)
             p_saw_direct=1
             p_direct="$(lower "$(extract_value "$line")")"
+            ;;
+        *"model label added by this claim:"*)
+            p_saw_model_label=1
+            p_model_label="$(extract_value "$line")"
             ;;
         *"label added by this claim:"*)
             p_saw_label=1
@@ -605,6 +613,10 @@ predecessor_owned_assignees() {
             p_saw_logins=1
             p_logins="$(extract_chain_list "$line")"
             ;;
+        *"model label owned by this claim chain:"*)
+            p_saw_chain_model_label=1
+            p_chain_model_label="$(extract_chain_value "$line")"
+            ;;
         *"label owned by this claim chain:"*) p_saw_chain_label=1 ;;
         *"label displaced by this claim chain:"*) p_saw_chain_displaced=1 ;;
         esac
@@ -614,6 +626,13 @@ predecessor_owned_assignees() {
         [ "$p_saw_label" -eq 1 ] && [ "$p_saw_displaced" -eq 1 ] || return 1
     case "$p_direct" in yes | no) ;; *) return 1 ;; esac
     [ -n "$p_label" ] && [ -n "$p_displaced" ] || return 1
+    [ "$p_saw_model_label" -eq "$p_saw_chain_model_label" ] || return 1
+    for predecessor_model_label in "$p_model_label" "$p_chain_model_label"; do
+        case "$(lower "$predecessor_model_label")" in
+        no | n/a | none | '') ;;
+        *) valid_label "$predecessor_model_label" || return 1 ;;
+        esac
+    done
     valid_login "$predecessor_author" || return 1
     [ "$p_saw_login" -eq 0 ] || [ "$p_saw_logins" -eq 0 ] || return 1
 
@@ -622,6 +641,7 @@ predecessor_owned_assignees() {
     # is present, as the current-record parser already requires.
     if [ "$p_saw_owned" -ne 0 ] || [ "$p_saw_login" -ne 0 ] ||
         [ "$p_saw_logins" -ne 0 ] || [ "${p_saw_chain_label:-0}" -ne 0 ] ||
+        [ "$p_saw_chain_model_label" -ne 0 ] ||
         [ "${p_saw_chain_displaced:-0}" -ne 0 ]; then
         [ "$p_saw_owned" -eq 1 ] && [ "${p_saw_chain_label:-0}" -eq 1 ] &&
             [ "${p_saw_chain_displaced:-0}" -eq 1 ] || return 1

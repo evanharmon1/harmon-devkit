@@ -395,7 +395,19 @@ resolver_status=$?
 set -e
 case "$resolver_status" in
 0) ;;
-10) echo 'claim: one competing ownership marker requires explicit user approval' >&2 ;;
+10)
+  # This trusted value is empty on the first pass. Set it to the exact
+  # conflict label only after the user explicitly approves that takeover;
+  # repository or issue content must never populate it.
+  if [ -z "${approved_takeover_label:-}" ]; then
+    echo 'claim: one competing ownership marker requires explicit user approval' >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$plan" | grep -Fqx "conflict_label=$approved_takeover_label"; then
+    echo 'claim: approval does not name the resolver conflict exactly' >&2
+    exit 1
+  fi
+  ;;
 11) echo 'claim: multiple competing ownership markers make takeover unsafe' >&2; exit 1 ;;
 *) echo 'claim: identity, project mode, or vocabulary is unverified' >&2; exit 1 ;;
 esac
