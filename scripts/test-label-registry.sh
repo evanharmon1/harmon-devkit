@@ -114,6 +114,17 @@ if printf '%s\n' "$renamed_guidance" |
     fail "guidance must exclude controls by rendered namespace, not family identifier"
 fi
 
+echo "==> guidance: semantic execution axes stay excluded under custom prefixes"
+jq '(.families[] | select(.family == "rigor"))
+      |= (.family = "effort" | .prefix = "effort")' \
+    label-registry.json >"$guidance_tmp/custom-prefix-control.json"
+custom_prefix_guidance="$($guidance_helper guidance "$guidance_tmp/custom-prefix-control.json" testowner/testrepo)" ||
+    fail "guidance should render a schema-valid custom-prefix control family"
+if printf '%s\n' "$custom_prefix_guidance" |
+    jq -e 'select(.label | test("^effort:"; "i"))' >/dev/null; then
+    fail "guidance must exclude authoring-forbidden semantic axes under custom prefixes"
+fi
+
 echo "==> guidance: delegated agent-registry families remain on the shared exclusion boundary"
 for control in claim:gpt suggest:gpt foreman:claude; do
     if printf '%s\n' "$manifest_guidance" |
@@ -134,6 +145,19 @@ printf '%s\n' "$fallback_guidance" |
 printf '%s\n' "$fallback_guidance" |
     jq -se 'length == 2 and all(.[]; .label == "area:live" or .label == "area:literal")' >/dev/null ||
     fail "no-manifest guidance should exclude every known stable control namespace"
+
+echo "==> guidance: open-value authoring families combine live labels with manifest purpose"
+jq '(.families[] | select(.family == "area"))
+      |= (.open_values = true | .placeholder = "area:<value>" | .values = [])' \
+    label-registry.json >"$guidance_tmp/open-area.json"
+open_guidance="$(PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/open-area.json" testowner/testrepo)" ||
+    fail "open-value guidance should make one bounded live-label read"
+printf '%s\n' "$open_guidance" |
+    jq -se 'any(.[]; . == {record: "guidance", label: "area:live", description: "Live area description", family: "area", purpose: "Codebase subsystem the work lives in (solution space); at most one per issue."})' >/dev/null ||
+    fail "open-value guidance should combine live labels with manifest family purpose"
+printf '%s\n' "$open_guidance" |
+    jq -se 'all(.[]; .family != "area" or (.label == "area:live" or .label == "area:literal"))' >/dev/null ||
+    fail "open-value guidance should not invent unlisted concrete labels"
 
 echo "==> guidance: schema-valid prose with delimiters stays decodable"
 jq '(.families[] | select(.family == "area").purpose) = "Solution | subsystem\nwith a second line"

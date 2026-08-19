@@ -192,20 +192,69 @@ if [ "$command" = guidance ]; then
     # whose namespaces are workflow controls, including delegated
     # agent-registry families; this is discovery for issue authoring, not a
     # route into claims, suggestions, Foreman, or execution-budget controls.
-    jq -c '
+    # Active author-selectable open families need one bounded live-label read:
+    # the live record supplies the concrete label and description, while the
+    # manifest still supplies the family and purpose. Do not read live labels
+    # for a manifest that has no such family, so a normal manifest remains
+    # self-contained.
+    open_family_count="$(jq -r '
+      [.families[]
+       | select((.retired // false) | not)
+       | select(.source != "agent-registry" and .source != "tool-owned")
+       | select((.arming // false) | not)
+       | select((.gate // "") == "")
+       | select(.axis != "strategy" and .axis != "model" and .axis != "foreman")
+       | select((.open_values // false) and .prefix != null)]
+      | length
+    ' "$manifest")" || die "could not inspect manifest open-value families"
+    live_labels='[]'
+    if [ "$open_family_count" -gt 0 ]; then
+        live_labels="$(gh label list --repo "$repo" --limit 1000 --json name,description)" ||
+            die "could not read live labels for manifest guidance"
+    fi
+    jq -c --argjson live "$live_labels" '
       def control_namespace:
         ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
-      .families[] as $f
-      | select(($f.retired // false) | not)
-      | select($f.source != "agent-registry" and $f.source != "tool-owned")
-      | select(($f.arming // false) | not)
-      | select(($f.gate // "") == "")
-      | $f.values[]
-      | select((.retired // false) | not)
-      | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end) as $label
-      | select(($label | control_namespace) | not)
-      | {record: "guidance", label: $label, description: (.description // ""),
-         family: $f.family, purpose: $f.purpose}
+      def authoring_family:
+        ((.retired // false) | not)
+        and (.source != "agent-registry" and .source != "tool-owned")
+        and ((.arming // false) | not)
+        and ((.gate // "") == "")
+        and (.axis != "strategy" and .axis != "model" and .axis != "foreman");
+      def live_description:
+        if (.description? == null) then "" else .description end;
+      if ($live | type) != "array"
+         or any($live[]; (.name | type) != "string" or (live_description | type) != "string")
+      then error("live label data is invalid")
+      else . as $registry
+      | [$registry.families[]
+         | . as $f
+         | select(authoring_family)
+         # Open families deliberately get their concrete members from the
+         # bounded live read below, so a stale enumerated member is never
+         # recommended as a selectable label.
+         | select((.open_values // false) | not)
+         | .values[]
+         | select((.retired // false) | not)
+         | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end) as $label
+         | select(($label | control_namespace) | not)
+         | {record: "guidance", label: $label, description: (.description // ""),
+            family: $f.family, purpose: $f.purpose}] as $enumerated
+      | [$registry.families[]
+         | . as $f
+         | select(authoring_family and ($f.open_values // false) and $f.prefix != null)] as $open_families
+      | [$live[]
+         | {label: .name, description: live_description}
+         | . as $live_label
+         | [$open_families[]
+            | select(.prefix as $prefix | $live_label.label | startswith($prefix + ":"))] as $matches
+         | select($matches | length == 1)
+         | $matches[0] as $f
+         | select(($live_label.label | control_namespace) | not)
+         | {record: "guidance", label: $live_label.label,
+            description: $live_label.description, family: $f.family, purpose: $f.purpose}] as $open
+      | ($enumerated + $open | unique_by(.label)[])
+      end
     ' "$manifest" || die "could not render manifest guidance"
     exit 0
 fi
