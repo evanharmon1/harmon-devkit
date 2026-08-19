@@ -178,6 +178,7 @@ fi
 target="claim:$family"
 [ -z "$claim_model" ] || target="${target}:$claim_model"
 same=""
+family_marker=""
 conflicts=""
 while IFS= read -r label; do
     case "$label" in
@@ -190,8 +191,14 @@ while IFS= read -r label; do
         label_family="${label_family%%:*}"
         if [ "$label_family" != "$family" ]; then
             conflicts="${conflicts}${label}"$'\n'
-        elif [ -n "$claim_model" ] && [ "$label" != "claim:$family:$claim_model" ]; then
-            conflicts="${conflicts}${label}"$'\n'
+        elif [ -n "$claim_model" ]; then
+            if [ "$label" = "claim:$family" ]; then
+                family_marker="$label"
+            elif [ "$label" = "claim:$family:$claim_model" ]; then
+                same="$label"
+            else
+                conflicts="${conflicts}${label}"$'\n'
+            fi
         else
             same="$label"
         fi
@@ -201,16 +208,23 @@ while IFS= read -r label; do
             echo "claim identity: malformed ownership label '$label'" >&2
             exit 20
         fi
-        if [ -n "$claim_model" ]; then
+        if printf '%s\n' "$legacy_labels" | grep -Fqx "$label"; then
+            if [ -z "$claim_model" ]; then
+                same="$label"
+            fi
+        elif [ -n "$claim_model" ]; then
             conflicts="${conflicts}${label}"$'\n'
-        elif printf '%s\n' "$legacy_labels" | grep -Fqx "$label"; then
-            same="$label"
         else
             conflicts="${conflicts}${label}"$'\n'
         fi
         ;;
     esac
 done <"$issue_labels"
+
+if [ -n "$claim_model" ] && [ -z "$family_marker" ]; then
+    echo "claim identity: model claim '$target' requires the existing family marker 'claim:$family'" >&2
+    exit 20
+fi
 
 if [ -n "$same" ] && [ -z "$conflicts" ]; then
     printf 'family=%s\ntarget_label=%s\nexisting_label=%s\n' "$family" "$same" "$same"

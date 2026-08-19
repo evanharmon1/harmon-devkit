@@ -27,13 +27,20 @@ out="$(run --harness codex-cli --runtime-family gpt)" || fail "Codex resolution 
 printf '%s\n' "$out" | grep -Fx 'family=gpt' >/dev/null || fail "Codex must resolve to GPT"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "Codex must select claim:gpt"
 
+printf '%s\n' claim:gpt >"$issue"
 out="$(run --harness codex-cli --runtime-family gpt --claim-model terra)" || fail "trusted model-pinned Codex claim failed"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "trusted model pin was not selected"
+printf '%s\n' "$out" | grep -Fx 'existing_label=' >/dev/null || fail "family marker must not suppress the model-label write"
 
-printf '%s\n' claim:gpt:terra >"$issue"
+: >"$issue"
+if run --harness codex-cli --runtime-family gpt --claim-model terra >/dev/null 2>&1; then fail "model pin without its family marker must fail closed"; else status=$?; fi
+[ "$status" = 20 ] || fail "model pin without family marker exited $status, want 20"
+
+printf '%s\n' claim:gpt claim:gpt:terra >"$issue"
 if run --harness codex-cli --runtime-family gpt --claim-model sol >"$tmp/out" 2>&1; then fail "different model claim must not be idempotent"; else status=$?; fi
 [ "$status" = 10 ] || fail "different model claim exited $status, want 10"
 grep -Fx 'conflict_label=claim:gpt:terra' "$tmp/out" >/dev/null || fail "different model claim was not reported as a conflict"
+if grep -Fx 'conflict_label=claim:gpt' "$tmp/out" >/dev/null; then fail "required family marker must not become a takeover conflict"; fi
 
 printf '%s\n' claim:gpt >"$tmp/family-only-available"
 if run --harness codex-cli --runtime-family gpt --claim-model sol --available-labels "$tmp/family-only-available" >/dev/null 2>&1; then fail "missing requested model label must fail closed"; else status=$?; fi
@@ -42,7 +49,7 @@ if run --harness codex-cli --runtime-family gpt --claim-model sol --available-la
 if run --harness codex-cli --runtime-family gpt --claim-model opus >/dev/null 2>&1; then fail "foreign trusted model must fail closed"; else status=$?; fi
 [ "$status" = 20 ] || fail "foreign trusted model exited $status, want 20"
 
-printf '%s\n' claim:gpt:terra >"$issue"
+printf '%s\n' claim:gpt claim:gpt:terra >"$issue"
 out="$(run --harness codex-cli --runtime-family gpt)" || fail "same-family model claim must be idempotent"
 printf '%s\n' "$out" | grep -Fx 'existing_label=claim:gpt:terra' >/dev/null || fail "same-family claim was not recognized"
 

@@ -450,9 +450,11 @@ actually added.
 
 - **Assign:** `gh issue edit <n> --repo "$repo" --add-assignee @me`
 - **Label** — the `claim:<family>[:<model>]` family names *which* intelligence
-  has it. Claim at the family level (`claim:<family>`) unless trusted session
-  context deliberately passes `--claim-model <model>` for a provisioned
-  `claim:<family>:<model>` label. With a target registry, the resolver refuses
+  has it. Claim at the family level (`claim:<family>`). A trusted session may
+  deliberately pass `--claim-model <model>` to refine an **existing** family
+  claim with a provisioned `claim:<family>:<model>` label; the resolver requires
+  the family marker to coexist and never treats it as a takeover conflict. With
+  a target registry, the resolver refuses
   a requested model that is not registered for the family; the registry-less
   compatibility path can verify only that the constructed model label is
   provisioned. The harness that ran it is operational detail for the claim
