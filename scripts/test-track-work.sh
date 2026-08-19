@@ -2908,6 +2908,71 @@ grep -q -- '--add-assignee collaborator' "$rc_log" || fail "inherited assignee m
 grep -q -- '--add-assignee evanharmon1' "$rc_log" || fail "direct assignee must be restored"
 if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "unrelated assignee must not be restored"; fi
 
+# The plural v3 companion carries the complete bounded ownership set through
+# every takeover. Each leaf adds its own direct assignment to the inherited
+# set, so the third leaf can release all three without touching a fourth,
+# unrelated assignee.
+body_chain_plural_second="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: collaborator evanharmon1
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+body_chain_plural_third="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: collaborator evanharmon1 third-owner
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+issue_repeated_takeover='{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"third-owner"},{"login":"unrelated"}]}'
+
+echo "==> repeated takeovers release every proven chain-owned assignee and preserve unrelated assignees"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 0 ] || fail "a repeated takeover should release"
+for login in collaborator evanharmon1 third-owner; do
+    grep -q -- "--remove-assignee $login" "$rc_log" ||
+        fail "repeated takeover must remove proven assignee $login"
+done
+if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "repeated takeover must preserve unrelated assignees"; fi
+
+echo "==> a forged inherited login absent from the trusted predecessor record fails closed"
+body_chain_plural_forged="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/collaborator evanharmon1 mallory third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_forged" 3)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"mallory"},{"login":"third-owner"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "an unproven inherited login must fail closed"
+[ ! -s "$rc_log" ] || fail "an unproven inherited login must trigger zero writes"
+
+echo "==> a takeover that drops a live predecessor-owned login fails closed"
+body_chain_plural_missing="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/evanharmon1 third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_missing" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "dropping proven live ownership must fail closed"
+[ ! -s "$rc_log" ] || fail "a dropped predecessor-owned login must trigger zero writes"
+
+echo "==> a claim-chain assignee list is bounded at ten logins"
+body_chain_plural_too_many="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11/')"
+rc_scenario "$(rc_page "$(rc_comment third-owner "$body_chain_plural_too_many" 1)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "an oversized claim-chain assignee list must fail closed"
+[ ! -s "$rc_log" ] || fail "an oversized claim-chain assignee list must trigger zero writes"
+
+echo "==> failed repeated-takeover release restores every removed chain-owned assignee"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] ||
+    fail "failed repeated-takeover comment should exit 1"
+for login in collaborator evanharmon1 third-owner; do
+    grep -q -- "--add-assignee $login" "$rc_log" ||
+        fail "comment-failure compensation must restore $login"
+done
+if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "compensation must not add unrelated assignees"; fi
+
 echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"
 [ "$(run_release --reason r)" = 0 ] ||
