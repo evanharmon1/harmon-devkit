@@ -241,11 +241,22 @@ fi
 
 if jq -e '
     .families[] | select(.family == "area") |
-    .exclusive == true and .labels[0].provision == true
+    .purpose == "Repository areas" and .axis == "classification" and
+    .exclusive == true and .labels[0].name == "area:api" and
+    .labels[0].description == "Live area" and .labels[0].provision == true
 ' <<<"$output" >/dev/null; then
-    ok "family exclusivity and provision metadata are preserved"
+    ok "family purpose, axis, exclusivity, and live label metadata are preserved"
 else
-    bad "family exclusivity and provision metadata are preserved"
+    bad "family purpose, axis, exclusivity, and live label metadata are preserved"
+fi
+
+if jq -e '
+    .families[] | select(.family == "custom") |
+    .exclusive == false and .labels[0].description == "Created by its tool"
+' <<<"$output" >/dev/null; then
+    ok "nonexclusive families retain independently selectable live descriptions"
+else
+    bad "nonexclusive families retain independently selectable live descriptions"
 fi
 
 if jq -e '
@@ -658,6 +669,25 @@ elif grep -qF 'withhold it for the entire breakdown run' "$skill" &&
     ok "breakdown never retains a path that writes an arming signal"
 else
     bad "breakdown documents the trusted arming handoff"
+fi
+
+if grep -qF "family's \`purpose\` and" "$skill" &&
+    grep -qF "candidate's live \`description\`" "$skill" &&
+    grep -qF 'Copy the candidate' "$skill" &&
+    grep -qF 'independently applicable to the chunk' "$skill" &&
+    grep -qF 'Every emitted `requires` entry is a companion label' "$skill"; then
+    ok "breakdown selects labels from emitted semantics and honors family constraints"
+else
+    bad "breakdown selects labels from emitted semantics and honors family constraints"
+fi
+
+if grep -qF 'On an organization-owned repository' "$skill" &&
+    grep -qF 'do not duplicate or substitute it with a registry' "$skill" &&
+    grep -qF 'personal-account repository' "$skill" &&
+    grep -qF 'use an independently' "$skill"; then
+    ok "breakdown distinguishes organization issue types from personal work-type labels"
+else
+    bad "breakdown distinguishes organization issue types from personal work-type labels"
 fi
 
 if [ "$fail" -gt 0 ]; then

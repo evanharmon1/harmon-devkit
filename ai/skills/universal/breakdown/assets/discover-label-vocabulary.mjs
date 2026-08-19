@@ -417,6 +417,7 @@ function outputFamily(family) {
     family: family.family,
     prefix: family.prefix,
     purpose: family.purpose,
+    axis: family.axis,
     source: family.source,
     writers: family.writers,
     lifecycle: family.lifecycle,

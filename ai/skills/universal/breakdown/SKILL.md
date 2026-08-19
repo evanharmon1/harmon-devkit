@@ -361,9 +361,17 @@ verified planning vocabulary:
   excluded retired, arming, transient, claim-release, tool-managed, and
   non-agent-writable entries. `provision: false` is not permission to mint:
   a tool-owned or open value appears only when the concrete live label exists.
-- `exclusive: true` means propose at most one value from that family. This is
-  how repository-specific `area` vocabularies and their exclusivity rule are
-  consumed; never embed an `area:*` roster in this file.
+- Select candidates by matching the chunk against the family's `purpose` and
+  `axis`, then the candidate's live `description`; do not infer applicability
+  from a label name alone. Copy the candidate's `name` exactly as emitted so
+  the proposal preserves the live label's spelling.
+- `exclusive: true` means propose at most one value from that family.
+  `exclusive: false` permits multiple values only when each one is
+  independently applicable to the chunk; it is not an instruction to apply
+  the whole family. This is how repository-specific `area` vocabularies and
+  their exclusivity rule are consumed; never embed an `area:*` roster here.
+- Every emitted `requires` entry is a companion label, not a hint. Include all
+  of them whenever proposing that candidate, using their exact emitted names.
 - `suggest` is advisory routing, never ownership or execution. A
   `suggest-model` entry carries `requires`; propose that family label alongside
   the model refinement, never the model label alone. Neither suggestion is an
@@ -389,9 +397,14 @@ gh api repos/<owner>/<repo> --jq .organization.login   # org repo?
 gh api orgs/<org>/issue-types --jq '.[].name'          # the type vocabulary
 ```
 
-Apply the families that fit: an issue **type** where the org defines them
-(`gh issue create --type`, or the issue-type edit endpoint after create) and
-the registry families that fit the chunk. Project-board fields (`Size`,
+Apply the families that fit. On an organization-owned repository, use a
+matching native issue **type** (`gh issue create --type`, or the issue-type
+edit endpoint after create); do not duplicate or substitute it with a registry
+family whose `axis` is `work-type`, and omit the type when no native value
+fits. On a personal-account repository, where native organization issue types
+are unavailable, use an independently applicable `work-type` family from the
+verified registry instead. In either case, also apply other registry families
+that fit the chunk. Project-board fields (`Size`,
 `Status` options and the like) are Projects V2 state: propose them in §6, but
 write only what the target's own tooling exposes for the purpose —
 `track-work`'s `set-issue-status.sh` for `Status`, nothing hand-rolled — and
