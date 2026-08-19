@@ -102,8 +102,9 @@ read it in the UI) — never guess.
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
     Nothing to do.
   - **Partial delivery / issue open** — one PR deliberately landed part of the
-    claim, the issue remains open for named remaining work, and no work is currently
-    in flight. This is a completed release of *this claim*, not a
+    claim, and the issue remains open for named remaining work.
+    Confirm no work is currently in flight. This is a completed release of
+    *this claim*, not a
     completed issue and not a generic mid-flight hand-back. Assemble the same
     claim-owned cleanup commands as the hand-back block below and present them
     as the default single-confirmation action, but streamline to that action
