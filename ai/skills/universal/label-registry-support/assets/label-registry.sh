@@ -201,13 +201,16 @@ if [ "$command" = guidance ]; then
     # for a manifest that has no such family, so a normal manifest remains
     # self-contained.
     open_family_count="$(jq -r '
+      def control_namespace:
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
       [.families[]
        | select((.retired // false) | not)
        | select(.source != "agent-registry" and .source != "tool-owned")
        | select((.arming // false) | not)
        | select((.gate // "") == "")
        | select(.axis != "strategy" and .axis != "model" and .axis != "foreman")
-       | select((.open_values // false) and .prefix != null)]
+       | select((.open_values // false) and .prefix != null)
+       | select((((.prefix + ":") | control_namespace) | not))]
       | length
     ' "$manifest")" || die "could not inspect manifest open-value families"
     # Keep the bounded GitHub response out of argv: 1,000 labels with rich

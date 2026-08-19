@@ -574,7 +574,8 @@ for label in "${labels[@]+"${labels[@]}"}"; do
         violation "label '$label' belongs to a forbidden authoring-time family"
         continue
     fi
-    record="$(awk -F '|' -v wanted="$label" '$1 == wanted { print; exit }' "$vocab")"
+    label_key="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
+    record="$(awk -F '|' -v wanted="$label_key" 'tolower($1) == wanted { print; exit }' "$vocab")"
     if [ -z "$record" ]; then
         violation "label '$label' does not exist in the target vocabulary"
         continue

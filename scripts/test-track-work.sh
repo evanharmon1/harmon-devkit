@@ -1233,6 +1233,27 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
 [ "$_rc" = 0 ] ||
     fail "track-work should accept a live member of an open classification family: $(cat "$tmp/metadata.out")"
 
+echo "==> metadata: enumerated open members use case-insensitive vocabulary lookup"
+metadata_open_enumerated="$tmp/metadata-open-enumerated"
+mkdir -p "$metadata_open_enumerated"
+git -C "$metadata_open_enumerated" init -q
+git -C "$metadata_open_enumerated" remote add origin \
+    https://github.com/testowner/testrepo.git
+jq '.families |= map(
+      if .family == "area" then
+        .open_values = true | .placeholder = "area:<value>"
+      else . end)' "$metadata_repo/label-registry.json" \
+    >"$metadata_open_enumerated/label-registry.json"
+_rc=0
+METADATA_GH_LABELS="$(printf '%s\n' enhancement 'Area:track-work' domain:fixture)" \
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_open_enumerated" --owner-type personal \
+    --title 'Allow a case-insensitive open member' --body-file "$valid_body" \
+    --human-authored --label feature --label 'Area:track-work' \
+    --inapplicable layer --label domain:fixture >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 0 ] ||
+    fail "an enumerated open member should validate with live casing: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: a label matching two open-value families is ambiguous, not first-match"
 metadata_ambiguous="$tmp/metadata-ambiguous"
 mkdir -p "$metadata_ambiguous"

@@ -69,6 +69,9 @@ guidance_bin="$guidance_tmp/bin"
 mkdir -p "$guidance_bin"
 cat >"$guidance_bin/gh" <<'STUB'
 #!/bin/sh
+if [ "${GUIDANCE_FAIL_ON_CALL:-}" = 1 ]; then
+    exit 97
+fi
 if [ "${GUIDANCE_RETIRED_UPPERCASE:-}" = 1 ]; then
     printf '%s\n' '[{"name":"area:OLD","description":"Still live but retired by the manifest"}]'
     exit 0
@@ -140,6 +143,16 @@ if printf '%s\n' "$custom_prefix_guidance" |
     jq -e 'select(.label | test("^effort:"; "i"))' >/dev/null; then
     fail "guidance must exclude authoring-forbidden semantic axes under custom prefixes"
 fi
+
+echo "==> guidance: control-only open families do not require a live-label read"
+jq '(.families[] | select(.family == "concern"))
+      |= (.prefix = "rigor" | .open_values = true | .placeholder = "rigor:<value>" | .values = [])' \
+    label-registry.json >"$guidance_tmp/control-open-family.json"
+control_open_guidance="$(GUIDANCE_FAIL_ON_CALL=1 PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/control-open-family.json" testowner/testrepo)" ||
+    fail "a control-only open family must not require a live-label read"
+printf '%s\n' "$control_open_guidance" |
+    jq -se 'any(.[]; .label == "area:track-work")' >/dev/null ||
+    fail "a control-only open family should retain self-contained manifest guidance"
 
 echo "==> guidance: delegated agent-registry families remain on the shared exclusion boundary"
 for control in claim:gpt suggest:gpt foreman:claude; do
