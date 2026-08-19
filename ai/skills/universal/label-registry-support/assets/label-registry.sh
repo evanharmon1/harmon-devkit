@@ -171,7 +171,7 @@ if [ "$command" = guidance ] && [ "$manifest_present" -eq 0 ]; then
           def description:
             if (.description? == null) then "" else .description end;
           def control_namespace:
-            ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method):");
+            ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
           if type != "array"
              or any(.[]; (.name | type) != "string" or (description | type) != "string")
           then error("live label data is invalid")
@@ -194,7 +194,7 @@ if [ "$command" = guidance ]; then
     # route into claims, suggestions, Foreman, or execution-budget controls.
     jq -c '
       def control_namespace:
-        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method):");
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
       .families[] as $f
       | select(($f.retired // false) | not)
       | select($f.source != "agent-registry" and $f.source != "tool-owned")

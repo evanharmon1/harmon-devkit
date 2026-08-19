@@ -80,7 +80,9 @@ case "${1:-} ${2:-}" in
       {"name":"foreman:claude","description":"Dispatch control"},
       {"name":"Rigor:deep","description":"Execution budget"},
       {"name":"tier:frontier","description":"Model routing"},
-      {"name":"method:plan","description":"Execution topology"}
+      {"name":"method:plan","description":"Execution topology"},
+      {"name":"type:patch","description":"Foreman override"},
+      {"name":"autorelease: pending","description":"Release automation state"}
     ]'
     ;;
 *) exit 97 ;;
@@ -129,6 +131,9 @@ printf '%s\n' "$fallback_guidance" |
 printf '%s\n' "$fallback_guidance" |
     jq -se 'any(.[]; . == {record: "guidance", label: "area:literal", description: "Windows path C:\\temp and\ttab", family: null, purpose: null})' >/dev/null ||
     fail "no-manifest guidance should preserve literal backslashes and tabs in live descriptions"
+printf '%s\n' "$fallback_guidance" |
+    jq -se 'length == 2 and all(.[]; .label == "area:live" or .label == "area:literal")' >/dev/null ||
+    fail "no-manifest guidance should exclude every known stable control namespace"
 
 echo "==> guidance: schema-valid prose with delimiters stays decodable"
 jq '(.families[] | select(.family == "area").purpose) = "Solution | subsystem\nwith a second line"
