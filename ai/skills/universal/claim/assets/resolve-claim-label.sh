@@ -5,13 +5,16 @@
 # never from an issue, PR, repository file, or label. The registry validates a
 # host-attested family; it never supplies one.
 #
-# Exit 0: a plan was emitted. Exit 10: one different live claim needs explicit
-# user approval to replace. Exit 11: several live claims block takeover. Exit
-# 20: identity or the target vocabulary could not be verified.
+# Exit 0: a plan was emitted. For project_management=none|linear, a target with
+# no ownership-label vocabulary emits target_label=n/a; its authoritative claim
+# markers are the assignee and claim comment. Exit 10: one different live claim
+# needs explicit user approval to replace. Exit 11: several live claims block
+# takeover. Exit 20: identity, project mode, or required vocabulary could not be
+# verified.
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --harness SLUG [--registry FILE] --runtime-family SLUG [--claim-model SLUG] --available-labels FILE --issue-labels FILE" >&2
+    echo "Usage: $0 --harness SLUG [--registry FILE] --runtime-family SLUG [--claim-model SLUG] --project-management github|linear|none --available-labels FILE --issue-labels FILE" >&2
     exit 20
 }
 
@@ -19,6 +22,7 @@ harness=""
 registry=""
 runtime_family=""
 claim_model=""
+project_management=""
 available_labels=""
 issue_labels=""
 while [ "$#" -gt 0 ]; do
@@ -39,6 +43,10 @@ while [ "$#" -gt 0 ]; do
         claim_model="${2:-}"
         shift 2
         ;;
+    --project-management)
+        project_management="${2:-}"
+        shift 2
+        ;;
     --available-labels)
         available_labels="${2:-}"
         shift 2
@@ -51,7 +59,15 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ -n "$harness" ] && [ -n "$runtime_family" ] && [ -r "$available_labels" ] && [ -r "$issue_labels" ] || usage
+[ -n "$harness" ] && [ -n "$runtime_family" ] && [ -n "$project_management" ] && [ -r "$available_labels" ] && [ -r "$issue_labels" ] || usage
+
+case "$project_management" in
+github | linear | none) ;;
+*)
+    echo "claim identity: invalid or unverified project_management '$project_management'" >&2
+    exit 20
+    ;;
+esac
 
 case "$runtime_family" in
 *[!a-z0-9-]* | '')
@@ -182,10 +198,18 @@ if [ -z "$same" ]; then
             fi
         done <<<"$legacy_labels"
         if [ -z "$selected_legacy" ]; then
-            echo "claim identity: target lacks '$target' and no trusted legacy label is provisioned" >&2
-            exit 20
+            case "$project_management" in
+            github)
+                echo "claim identity: target lacks '$target' and no trusted legacy label is provisioned" >&2
+                exit 20
+                ;;
+            linear | none)
+                target="n/a"
+                ;;
+            esac
+        else
+            target="$selected_legacy"
         fi
-        target="$selected_legacy"
     fi
 else
     target="$same"
