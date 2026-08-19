@@ -2941,6 +2941,25 @@ if grep -q -- '--remove-assignee evanharmon1' "$rc_log"; then
     fail "the replacement author must not replace the inherited assignee target"
 fi
 
+echo "==> a cross-account takeover releases both directly and inherited owned assignees"
+body_chain_cross_both="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- assignee login owned by this claim chain: collaborator
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" "$(rc_comment evanharmon1 "$body_chain_cross_both" 2)")" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"unrelated"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "both owned assignees should release"
+grep -q -- '--remove-assignee collaborator' "$rc_log" || fail "inherited assignee must be removed"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "direct assignee must be removed"
+if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "unrelated assignee must remain"; fi
+
+echo "==> failed dual-assignee release restores both owned assignees"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" "$(rc_comment evanharmon1 "$body_chain_cross_both" 2)")" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"unrelated"}]}'
+[ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] || fail "failed dual-assignee comment should exit 1"
+grep -q -- '--add-assignee collaborator' "$rc_log" || fail "inherited assignee must be restored"
+grep -q -- '--add-assignee evanharmon1' "$rc_log" || fail "direct assignee must be restored"
+if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "unrelated assignee must not be restored"; fi
+
 echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"
 [ "$(run_release --reason r)" = 0 ] ||
@@ -2967,6 +2986,13 @@ body_chain_partial="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/n
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_chain_partial")")" "$issue_closed_full"
 [ "$(run_release --reason r)" = 2 ] || fail "a partial chain-ownership record must fail closed"
 [ ! -s "$rc_log" ] || fail "a partial chain-ownership record must trigger zero writes"
+
+echo "==> a lone v2 assignee-login field fails closed"
+body_chain_login_only="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/no/')
+- assignee login owned by this claim chain: collaborator"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_chain_login_only")")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 2 ] || fail "a lone chain-login field must fail closed"
+[ ! -s "$rc_log" ] || fail "a lone chain-login field must trigger zero writes"
 
 echo "==> 'label added: n/a' touches no label"
 body_nolabel="$(printf '%s' "$body_v1" | sed 's/^- `agent:` label added by this claim: agent:claude-code/- `agent:` label added by this claim: n\/a, repo has no such label/')"
@@ -3056,6 +3082,18 @@ _rc1="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
 [ "$_rc1" = 1 ] || fail "a failed supersede post should exit 1 (got $_rc1)"
 grep -q -- '--add-assignee evanharmon1' "$rc_log" ||
     fail "the compensation must re-add the removed assignee so the retry stays trusted"
+
+echo "==> failed comment compensation restores the inherited assignee, not the takeover author"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_cross_account" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"}]}'
+_rc_cross_comment="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
+[ "$_rc_cross_comment" = 1 ] || fail "a failed cross-account supersede post should exit 1 (got $_rc_cross_comment)"
+grep -q -- '--add-assignee collaborator' "$rc_log" ||
+    fail "cross-account compensation must restore the inherited assignee"
+if grep -q -- '--add-assignee evanharmon1' "$rc_log"; then
+    fail "cross-account compensation must not add the takeover author"
+fi
 
 echo "==> a claim EDITED between read and write aborts with exit 3 (same id, new updated_at)"
 comments_orig="$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")"
