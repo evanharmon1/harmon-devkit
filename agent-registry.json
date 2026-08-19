@@ -19,6 +19,7 @@
     {
       "slug": "claude",
       "display_name": "Claude",
+      "legacy_claim_labels": ["agent:claude-code"],
       "models": [
         { "slug": "fable", "display_name": "Fable" },
         { "slug": "opus", "display_name": "Opus" },
@@ -29,6 +30,7 @@
     {
       "slug": "gpt",
       "display_name": "GPT",
+      "legacy_claim_labels": ["agent:codex"],
       "models": [
         { "slug": "sol", "display_name": "Sol" },
         { "slug": "terra", "display_name": "Terra" },
@@ -105,7 +107,6 @@
         "owner": "runner-config",
         "details": "The runner or repository configuration selects the Claude model; labels do not."
       },
-      "legacy_claim_labels": ["agent:claude-code"],
       "provider_rewired": false
     },
     {
@@ -194,7 +195,6 @@
         "owner": "runner-config",
         "details": "The runner or CLI invocation selects the GPT model."
       },
-      "legacy_claim_labels": ["agent:codex"],
       "provider_rewired": false
     },
     {

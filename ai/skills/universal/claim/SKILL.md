@@ -323,8 +323,8 @@ guessed from an issue label.
 
 ```sh
 # Trusted values copied from the execution host, not from repository or issue
-# content. A broker MUST provide its active family. A fixed harness may omit it
-# only when the fetched target registry resolves that harness.
+# content. Every harness MUST provide its active family. The target registry
+# may validate that attestation, but never supplies it.
 harness=<trusted runtime harness slug>
 runtime_family=<trusted runtime family slug>
 
@@ -336,10 +336,7 @@ if git show "$default:agent-registry.json" >"$registry" 2>/dev/null; then
 else
   registry_arg=()
 fi
-runtime_arg=()
-if [ -n "$runtime_family" ]; then
-  runtime_arg=(--runtime-family "$runtime_family")
-fi
+runtime_arg=(--runtime-family "$runtime_family")
 available="$(mktemp)" issue_labels="$(mktemp)"
 if ! gh label list --repo "$repo" --limit 1000 --json name \
   -q '.[].name' >"$available"; then
@@ -353,8 +350,10 @@ if ! gh issue view <n> --repo "$repo" --json labels \
 fi
 
 # Exit 0: target_label is safe to add (unless existing_label is non-empty,
-# which is idempotent). Exit 10: another family owns the issue. Exit 20:
-# identity or vocabulary is unverified — stop before every write.
+# which is idempotent). Exit 10: exactly one other family owns the issue and
+# needs explicit user approval to replace. Exit 11: multiple foreign ownership
+# markers make takeover unsafe. Exit 20: identity or vocabulary is unverified
+# — stop before every write.
 plan="$(<claim-skill-dir>/assets/resolve-claim-label.sh \
   --harness "$harness" "${registry_arg[@]}" \
   "${runtime_arg[@]}" \
@@ -364,9 +363,11 @@ plan="$(<claim-skill-dir>/assets/resolve-claim-label.sh \
 Do not use `eval` to read the plan. Extract `family`, `target_label`, and
 `existing_label` as literal single-line values, then carry them through the
 commands and claim record below. Exit 10 may emit more than one
-`conflict_label`; preserve every literal line. An `existing_label` in the same
-family is idempotent; a different family is the blocker above. When the target
-registry is absent, even a fixed harness must pass its host-attested family.
+`conflict_label`; preserve the literal line. An `existing_label` in the same
+family is idempotent; a different family is the blocker above. A registry is
+also structural input: the resolver validates its selected family and every
+legacy alias before using either. When the target registry is absent, every
+harness still must pass its host-attested family.
 The board's own markers remain a separate read:
 
 ```sh
@@ -421,24 +422,27 @@ actually added.
 
   **Record the exact label applied** in the claim record below — the release
   parser removes exactly that one, so a legacy fallback is recorded as its
-  actual `agent:<harness>` alias, not a synthesized `claim:<family>`. A repo
+  actual family-owned `agent:*` alias, not a synthesized `claim:<family>`. A repo
   with no resolvable family marker is **unverifiable**, not silently unlabeled:
   stop and ask as described above.
 
-  **If the user approved proceeding past another owner's claim label**, *replace*
-  all of them rather than adding alongside: `--add-label` alone leaves the issue
-  advertising two owners, which is worse than the conflict it was meant to
-  resolve. Remove the other one in the same edit and record it, so the hand-back
-  can put it back:
+  **If the user approved proceeding past exactly one other owner's claim
+  label**, replace that one rather than adding alongside: `--add-label` alone
+  leaves the issue advertising two owners, which is worse than the conflict it
+  was meant to resolve. Exit 11 (`takeover=refused`) means there are multiple
+  competing labels; stop even with a general takeover request. The claim record
+  and release grammar preserve one exact displaced label, not an arbitrary set.
+  For the single approved conflict, remove the actual label in the same edit and
+  record it so the hand-back can restore it:
 
   ```sh
   gh issue edit <n> --repo "$repo" \
     --add-label <the resolver's target_label> \
-    --remove-label <every ACTUAL competing label>
+    --remove-label <the one ACTUAL competing label>
   ```
 
-  A displaced label may itself be legacy. Remove and record every label that is
-  *actually there*, so the hand-back restores the same set.
+  A displaced label may itself be legacy. Remove and record that exact label so
+  the hand-back restores it.
 
 - **Board** — the assignee and the label are both invisible on the project
   board, which is where the work is actually watched, so move the card there
@@ -498,8 +502,8 @@ actually added.
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared legacy agent:<harness> | no | n/a>
-  - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or legacy agent:<harness> label | none>
+  - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
+  - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card

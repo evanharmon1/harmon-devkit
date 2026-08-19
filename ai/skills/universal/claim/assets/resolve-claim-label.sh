@@ -2,11 +2,12 @@
 # Resolve the ownership label for a claim from trusted runtime identity.
 #
 # The caller obtains --harness and --runtime-family from the execution host,
-# never from an issue, PR, repository file, or label. A fixed harness gets its
-# family from the target registry; a broker must report its active family.
+# never from an issue, PR, repository file, or label. The registry validates a
+# host-attested family; it never supplies one.
 #
-# Exit 0: a plan was emitted. Exit 10: a different live claim blocks work.
-# Exit 20: identity or the target vocabulary could not be verified.
+# Exit 0: a plan was emitted. Exit 10: one different live claim needs explicit
+# user approval to replace. Exit 11: several live claims block takeover. Exit
+# 20: identity or the target vocabulary could not be verified.
 set -euo pipefail
 
 usage() {
@@ -45,14 +46,39 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ -n "$harness" ] && [ -r "$available_labels" ] && [ -r "$issue_labels" ] || usage
+[ -n "$harness" ] && [ -n "$runtime_family" ] && [ -r "$available_labels" ] && [ -r "$issue_labels" ] || usage
+
+case "$runtime_family" in
+*[!a-z0-9-]* | '')
+    echo "claim identity: invalid runtime family '$runtime_family'" >&2
+    exit 20
+    ;;
+esac
 
 family=""
 legacy_labels=""
-legacy_aliases_declared=false
 if [ -n "$registry" ]; then
     [ -r "$registry" ] || {
         echo "claim identity: registry is unreadable" >&2
+        exit 20
+    }
+    jq -e '
+      def slug: type == "string" and test("^[a-z0-9]+(?:-[a-z0-9]+)*$");
+      def alias: type == "string" and test("^agent:[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$");
+      type == "object"
+      and (.families | type == "array")
+      and (.harnesses | type == "array")
+      and ([.families[].slug] | all(slug) and length == (unique | length))
+      and ([.harnesses[].slug] | all(slug) and length == (unique | length))
+      and all(.families[];
+        type == "object" and (.slug | slug)
+        and ((.legacy_claim_labels? // []) | type == "array" and all(.[]; alias)))
+      and all(.harnesses[];
+        type == "object" and (.slug | slug)
+        and (.family_constraint | type == "object")
+        and (.family_constraint.kind | . == "fixed" or . == "broker"))
+    ' "$registry" >/dev/null || {
+        echo "claim identity: registry or legacy alias grammar is invalid" >&2
         exit 20
     }
     constraint="$(jq -cer --arg harness "$harness" '.harnesses[] | select(.slug == $harness) | .family_constraint' "$registry")" || {
@@ -61,17 +87,16 @@ if [ -n "$registry" ]; then
     }
     case "$(jq -r .kind <<<"$constraint")" in
     fixed)
-        family="$(jq -r .family <<<"$constraint")"
-        if [ -n "$runtime_family" ] && [ "$runtime_family" != "$family" ]; then
+        family="$(jq -er .family <<<"$constraint")" || {
+            echo "claim identity: fixed harness '$harness' has no valid family" >&2
+            exit 20
+        }
+        if [ "$runtime_family" != "$family" ]; then
             echo "claim identity: runtime family '$runtime_family' conflicts with fixed harness '$harness' ($family)" >&2
             exit 20
         fi
         ;;
     broker)
-        [ -n "$runtime_family" ] || {
-            echo "claim identity: broker harness '$harness' did not expose its active family" >&2
-            exit 20
-        }
         family="$runtime_family"
         ;;
     *)
@@ -83,31 +108,10 @@ if [ -n "$registry" ]; then
         echo "claim identity: unknown runtime family '$family'" >&2
         exit 20
     }
-    legacy_aliases_declared="$(jq -r --arg harness "$harness" '.harnesses[] | select(.slug == $harness) | has("legacy_claim_labels")' "$registry")"
-    legacy_labels="$(jq -r --arg harness "$harness" '.harnesses[] | select(.slug == $harness) | .legacy_claim_labels[]?' "$registry")"
-    # Rolling upgrades can install this skill before the target registry grows
-    # the explicit alias field. Keep the two historical labels as a bounded
-    # bridge; every newer alias must come from the registry.
-    if [ "$legacy_aliases_declared" = false ]; then
-        case "$harness" in
-        claude-code) legacy_labels="agent:claude-code" ;;
-        codex-cli) legacy_labels="agent:codex" ;;
-        esac
-    fi
+    legacy_labels="$(jq -r --arg family "$family" '.families[] | select(.slug == $family) | .legacy_claim_labels[]?' "$registry")"
 else
-    [ -n "$runtime_family" ] || {
-        echo "claim identity: no registry and no trusted runtime family" >&2
-        exit 20
-    }
     family="$runtime_family"
 fi
-
-case "$family" in
-*[!a-z0-9-]* | '')
-    echo "claim identity: invalid runtime family '$family'" >&2
-    exit 20
-    ;;
-esac
 
 target="claim:$family"
 same=""
@@ -125,33 +129,44 @@ while IFS= read -r label; do
     esac
 done <"$issue_labels"
 
-if [ -n "$conflicts" ]; then
-    printf 'family=%s\n' "$family"
-    while IFS= read -r conflict; do
-        [ -n "$conflict" ] && printf 'conflict_label=%s\n' "$conflict"
-    done <<<"$conflicts"
-    exit 10
-fi
-
-if [ -n "$same" ]; then
+if [ -n "$same" ] && [ -z "$conflicts" ]; then
     printf 'family=%s\ntarget_label=%s\nexisting_label=%s\n' "$family" "$same" "$same"
     exit 0
 fi
 
-if ! grep -Fqx "$target" "$available_labels"; then
-    selected_legacy=""
-    while IFS= read -r candidate; do
-        [ -n "$candidate" ] || continue
-        if grep -Fqx "$candidate" "$available_labels"; then
-            selected_legacy="$candidate"
-            break
+if [ -z "$same" ]; then
+    if ! grep -Fqx "$target" "$available_labels"; then
+        selected_legacy=""
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            if grep -Fqx "$candidate" "$available_labels"; then
+                selected_legacy="$candidate"
+                break
+            fi
+        done <<<"$legacy_labels"
+        if [ -z "$selected_legacy" ]; then
+            echo "claim identity: target lacks '$target' and no trusted legacy label is provisioned" >&2
+            exit 20
         fi
-    done <<<"$legacy_labels"
-    if [ -z "$selected_legacy" ]; then
-        echo "claim identity: target lacks '$target' and no trusted legacy label is provisioned" >&2
-        exit 20
+        target="$selected_legacy"
     fi
-    target="$selected_legacy"
+else
+    target="$same"
+fi
+
+conflict_count="$(printf '%s' "$conflicts" | sed '/^$/d' | wc -l | tr -d ' ')"
+if [ "$conflict_count" -gt 0 ]; then
+    printf 'family=%s\n' "$family"
+    printf 'target_label=%s\nconflict_count=%s\n' "$target" "$conflict_count"
+    while IFS= read -r conflict; do
+        [ -n "$conflict" ] && printf 'conflict_label=%s\n' "$conflict"
+    done <<<"$conflicts"
+    if [ "$conflict_count" -gt 1 ]; then
+        printf 'takeover=refused\n'
+        exit 11
+    fi
+    printf 'takeover=requires-explicit-user-approval\n'
+    exit 10
 fi
 
 printf 'family=%s\ntarget_label=%s\nexisting_label=%s\n' "$family" "$target" "$same"

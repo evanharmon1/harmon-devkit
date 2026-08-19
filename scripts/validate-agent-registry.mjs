@@ -345,15 +345,15 @@ if (errors.length === 0) {
   for (const slug of duplicateSlugs(registry.harnesses))
     semanticError(`duplicate harness slug: ${slug}`)
   const legacyClaimOwners = new Map()
-  for (const harness of registry.harnesses) {
-    for (const label of harness.legacy_claim_labels ?? []) {
+  for (const family of registry.families) {
+    for (const label of family.legacy_claim_labels ?? []) {
       const owner = legacyClaimOwners.get(label)
       if (owner) {
         semanticError(
-          `legacy claim label ${label} is shared by harnesses ${owner} and ${harness.slug}`
+          `legacy claim label ${label} is shared by families ${owner} and ${family.slug}`
         )
       } else {
-        legacyClaimOwners.set(label, harness.slug)
+        legacyClaimOwners.set(label, family.slug)
       }
     }
   }

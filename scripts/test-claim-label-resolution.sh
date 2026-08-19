@@ -19,27 +19,28 @@ run() {
 }
 
 printf '%s\n' >"$issue"
-out="$(run --harness claude-code)" || fail "Claude resolution failed"
+out="$(run --harness claude-code --runtime-family claude)" || fail "Claude resolution failed"
 printf '%s\n' "$out" | grep -Fx 'family=claude' >/dev/null || fail "Claude family was not selected"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:claude' >/dev/null || fail "Claude claim label was not selected"
 
-out="$(run --harness codex-cli)" || fail "Codex resolution failed"
+out="$(run --harness codex-cli --runtime-family gpt)" || fail "Codex resolution failed"
 printf '%s\n' "$out" | grep -Fx 'family=gpt' >/dev/null || fail "Codex must resolve to GPT"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "Codex must select claim:gpt"
 
 printf '%s\n' claim:gpt:terra >"$issue"
-out="$(run --harness codex-cli)" || fail "same-family model claim must be idempotent"
+out="$(run --harness codex-cli --runtime-family gpt)" || fail "same-family model claim must be idempotent"
 printf '%s\n' "$out" | grep -Fx 'existing_label=claim:gpt:terra' >/dev/null || fail "same-family claim was not recognized"
 
 printf '%s\n' claim:claude >"$issue"
-if run --harness codex-cli >"$tmp/out" 2>&1; then fail "different-family claim must block"; else status=$?; fi
+if run --harness codex-cli --runtime-family gpt >"$tmp/out" 2>&1; then fail "different-family claim must block"; else status=$?; fi
 [ "$status" = 10 ] || fail "different-family claim exited $status, want 10"
 grep -Fx 'conflict_label=claim:claude' "$tmp/out" >/dev/null || fail "conflict label was not reported"
 
 printf '%s\n' claim:claude agent:claude-code >"$issue"
-if run --harness codex-cli >"$tmp/out" 2>&1; then fail "all foreign markers must block"; else status=$?; fi
-[ "$status" = 10 ] || fail "multiple foreign markers exited $status, want 10"
+if run --harness codex-cli --runtime-family gpt >"$tmp/out" 2>&1; then fail "all foreign markers must block"; else status=$?; fi
+[ "$status" = 11 ] || fail "multiple foreign markers exited $status, want 11"
 [ "$(grep -c '^conflict_label=' "$tmp/out")" = 2 ] || fail "resolver did not report every foreign marker"
+grep -Fx 'takeover=refused' "$tmp/out" >/dev/null || fail "multi-marker takeover was not refused"
 grep -Fx 'conflict_label=claim:claude' "$tmp/out" >/dev/null || fail "modern conflict was lost"
 grep -Fx 'conflict_label=agent:claude-code' "$tmp/out" >/dev/null || fail "legacy conflict was lost"
 
@@ -47,32 +48,35 @@ printf '%s\n' >"$issue"
 if run --harness claude-code --runtime-family gpt >/dev/null 2>&1; then fail "fixed harness mismatch must fail closed"; else status=$?; fi
 [ "$status" = 20 ] || fail "fixed harness mismatch exited $status, want 20"
 
+if run --harness codex-cli >/dev/null 2>&1; then fail "fixed harness without host-attested family must fail closed"; else status=$?; fi
+[ "$status" = 20 ] || fail "fixed harness missing family exited $status, want 20"
+
 if run --harness opencode >/dev/null 2>&1; then fail "broker without runtime family must fail closed"; else status=$?; fi
 [ "$status" = 20 ] || fail "broker ambiguity exited $status, want 20"
 out="$(run --harness opencode --runtime-family gpt)" || fail "broker with trusted runtime family failed"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "broker selected wrong target"
 
 printf '%s\n' agent:codex >"$issue"
-out="$(run --harness codex-cli)" || fail "registry-declared Codex legacy marker must be idempotent"
+out="$(run --harness codex-cli --runtime-family gpt)" || fail "registry-declared Codex legacy marker must be idempotent"
 printf '%s\n' "$out" | grep -Fx 'existing_label=agent:codex' >/dev/null || fail "Codex legacy marker was not recognized"
 
 printf '%s\n' agent:claude-code >"$issue"
-if run --harness codex-cli >/dev/null 2>&1; then fail "foreign legacy marker must block"; else status=$?; fi
+if run --harness codex-cli --runtime-family gpt >/dev/null 2>&1; then fail "foreign legacy marker must block"; else status=$?; fi
 [ "$status" = 10 ] || fail "foreign legacy marker exited $status, want 10"
 
 printf '%s\n' agent:codex >"$tmp/legacy-available"
 printf '%s\n' >"$issue"
-out="$("$resolver" --registry agent-registry.json --harness codex-cli --available-labels "$tmp/legacy-available" --issue-labels "$issue")" || fail "registry-declared legacy fallback failed"
+out="$("$resolver" --registry agent-registry.json --harness codex-cli --runtime-family gpt --available-labels "$tmp/legacy-available" --issue-labels "$issue")" || fail "registry-declared legacy fallback failed"
 printf '%s\n' "$out" | grep -Fx 'target_label=agent:codex' >/dev/null || fail "legacy fallback selected the wrong label"
 
-jq '(.harnesses[] | select(.slug == "codex-cli")) |= del(.legacy_claim_labels)' \
+jq '(.families[] | select(.slug == "gpt")) |= del(.legacy_claim_labels)' \
     agent-registry.json >"$tmp/pre-migration-registry.json"
-out="$("$resolver" --registry "$tmp/pre-migration-registry.json" --harness codex-cli --available-labels "$tmp/legacy-available" --issue-labels "$issue")" || fail "pre-migration registry bridge failed"
-printf '%s\n' "$out" | grep -Fx 'target_label=agent:codex' >/dev/null || fail "pre-migration registry bridge selected the wrong label"
+if "$resolver" --registry "$tmp/pre-migration-registry.json" --harness codex-cli --runtime-family gpt --available-labels "$tmp/legacy-available" --issue-labels "$issue" >/dev/null 2>&1; then fail "undeclared legacy aliases must fail closed"; else status=$?; fi
+[ "$status" = 20 ] || fail "undeclared legacy aliases exited $status, want 20"
 
 printf '%s\n' claim:gpt:terra >"$tmp/model-only-available"
 printf '%s\n' claim:gpt:terra >"$issue"
-out="$("$resolver" --registry agent-registry.json --harness codex-cli --available-labels "$tmp/model-only-available" --issue-labels "$issue")" || fail "existing model claim must not require a family label"
+out="$("$resolver" --registry agent-registry.json --harness codex-cli --runtime-family gpt --available-labels "$tmp/model-only-available" --issue-labels "$issue")" || fail "existing model claim must not require a family label"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "existing model claim was not retained"
 
 : >"$issue"
@@ -81,10 +85,19 @@ if "$resolver" --harness codex-cli --available-labels "$available" --issue-label
 out="$("$resolver" --harness codex-cli --runtime-family gpt --available-labels "$available" --issue-labels "$issue")" || fail "registry-less trusted family failed"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "registry-less trusted family selected wrong target"
 
-jq '(.harnesses[] | select(.slug == "codex-cli")).legacy_claim_labels = []' \
+jq '(.families[] | select(.slug == "gpt")).legacy_claim_labels = []' \
     agent-registry.json >"$tmp/no-legacy-registry.json"
-if "$resolver" --registry "$tmp/no-legacy-registry.json" --harness codex-cli --available-labels "$tmp/legacy-available" --issue-labels "$issue" >/dev/null 2>&1; then fail "explicit empty aliases must disable the bridge"; else status=$?; fi
+if "$resolver" --registry "$tmp/no-legacy-registry.json" --harness codex-cli --runtime-family gpt --available-labels "$tmp/legacy-available" --issue-labels "$issue" >/dev/null 2>&1; then fail "explicit empty aliases must disable fallback"; else status=$?; fi
 [ "$status" = 20 ] || fail "explicit empty aliases exited $status, want 20"
+
+printf '%s\n' agent:codex >"$issue"
+out="$(run --harness opencode --runtime-family gpt)" || fail "same-family broker must recognize family-owned legacy alias"
+printf '%s\n' "$out" | grep -Fx 'existing_label=agent:codex' >/dev/null || fail "broker misclassified its family legacy alias"
+
+jq '(.families[] | select(.slug == "gpt")).legacy_claim_labels = ["not-a-label"]' \
+    agent-registry.json >"$tmp/malformed-alias-registry.json"
+if "$resolver" --registry "$tmp/malformed-alias-registry.json" --harness codex-cli --runtime-family gpt --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then fail "malformed registry alias must fail closed"; else status=$?; fi
+[ "$status" = 20 ] || fail "malformed registry alias exited $status, want 20"
 
 grep -F 'if ! gh label list' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label vocabulary read must fail closed"
 grep -F 'if ! gh issue view' ai/skills/universal/claim/SKILL.md >/dev/null || fail "issue-label read must fail closed"
