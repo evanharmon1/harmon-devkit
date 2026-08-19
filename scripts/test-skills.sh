@@ -115,6 +115,18 @@ expect_ok "skills-sync compatibility step skips an unmatched skill glob" \
 expect_ok "track-work pre-approves portable asset paths" \
     grep -qF 'Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*)' \
     "$repo/ai/skills/universal/track-work/SKILL.md"
+expect_ok "track-work defines the canonical scoped issue-title contract" \
+    grep -qF '(<scope>): <imperative problem/outcome' \
+    "$repo/ai/skills/universal/track-work/SKILL.md"
+expect_ok "breakdown applies scoped titles to every issue shape" \
+    grep -qF 'every parent, child, and flat issue uses' \
+    "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "triage owns a canonical scoped rolling-report title" \
+    grep -qF "DEFAULT_TITLE='(triage): Track backlog findings'" \
+    "$repo/ai/skills/universal/triage/assets/triage-report.sh"
+expect_ok "the configured GitHub tracker requires scoped issue titles" \
+    grep -qF '(<free-form scope>): <imperative outcome>' \
+    "$repo/ai/skills/matt-pocock/setup-matt-pocock-skills/issue-tracker-github.md"
 
 git_commit_all() {
     git -C "$1" add -A

@@ -640,6 +640,8 @@ JSON
 [ "$(run env TRIAGE_NOW=2026-01-01 "$report" sync --repo "$repo" \
     --entries-file "$entries")" = 0 ] || fail "sync dry-run: $(cat "$tmp/out")"
 grep -q "DRY-RUN would create" "$tmp/out" || fail "expected create path"
+grep -q "(triage): Track backlog findings" "$tmp/out" ||
+    fail "report creation must use the canonical scoped title"
 grep -qF "$marker" "$tmp/out" || fail "body must carry the marker"
 grep -q "triage-entry:12" "$tmp/out" || fail "body must carry the entry key"
 grep -qE "issue (edit|create)" "$GH_STUB_LOG" && fail "dry-run must not write"
@@ -663,13 +665,23 @@ JSON
     --entries-file "$entries" --execute)" = 4 ] ||
     fail "marker-less live body must exit 4"
 cat >"$stub_dir/issue-99.json" <<JSON
-{"labels": [], "body": "$marker\nold body"}
+{"labels": [], "title": "Triage report", "body": "$marker\nold body"}
 JSON
 : >"$GH_STUB_LOG"
 [ "$(run env TRIAGE_EXECUTE=1 "$report" sync --repo "$repo" \
     --entries-file "$entries" --execute)" = 0 ] ||
     fail "marker-carrying update failed: $(cat "$tmp/out")"
 grep -q "issue edit 99" "$GH_STUB_LOG" || fail "edit of #99 not issued"
+grep -q -- "--title (triage): Track backlog findings" "$GH_STUB_LOG" ||
+    fail "the marker-owned report must be retitled to the canonical format"
+
+echo "==> report sync: a malformed requested report title is refused"
+: >"$GH_STUB_LOG"
+[ "$(run "$report" sync --repo "$repo" --entries-file "$entries" \
+    --title 'Legacy triage report')" = 2 ] ||
+    fail "a legacy unscoped report title must be refused"
+grep -qE "issue (edit|create)" "$GH_STUB_LOG" &&
+    fail "invalid report title must not write"
 
 echo "==> report sync: --execute without the env gate is refused"
 [ "$(run "$report" sync --repo "$repo" --entries-file "$entries" \
@@ -727,7 +739,8 @@ JSON
 run env TRIAGE_NOW=2026-01-01 "$report" sync --repo "$repo" \
     --entries-file "$entries" >/dev/null
 sed -n '/^DRY-RUN body follows:$/,$p' "$tmp/out" | tail -n +2 >"$tmp/livebody"
-jq -n --rawfile b "$tmp/livebody" '{"labels": [], "body": $b}' \
+jq -n --rawfile b "$tmp/livebody" \
+    '{"labels": [], "title": "(triage): Track backlog findings", "body": $b}' \
     >"$stub_dir/issue-99.json"
 : >"$GH_STUB_LOG"
 [ "$(run env TRIAGE_EXECUTE=1 TRIAGE_NOW=2026-02-02 "$report" sync \
@@ -742,7 +755,7 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "author": {"login": "testowner"},
   "labels": [], "createdAt": "2026-01-01T00:00:00Z",
   "updatedAt": "2026-01-01T00:00:00Z", "assignees": []},
- {"number": 23, "title": "Typed but one axis missing",
+ {"number": 23, "title": "(classification): Resolve one missing axis",
   "author": {"login": "testowner"},
   "labels": [{"name": "bug"}, {"name": "layer:ui"}, {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
@@ -751,39 +764,44 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "labels": [{"name": "claim:claude"}, {"name": "needs-triage"}],
   "createdAt": "2020-01-01T00:00:00Z", "updatedAt": "2020-01-02T00:00:00Z",
   "assignees": [{"login": "someone"}], "body": ""},
- {"number": 21, "title": "Short title",
+ {"number": 21, "title": "(classification): Resolve conflicting domains",
   "labels": [{"name": "bug"}, {"name": "domain:auth"},
              {"name": "domain:delivery"}, {"name": "area:ci"},
              {"name": "layer:ui"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
- {"number": 22, "title": "Fully classified and quiet",
+ {"number": 22, "title": "(classification): Keep the backlog quiet",
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
- {"number": 24, "title": "Carries a retired area value",
+ {"number": 29, "title": "(classification):Missing exact separator",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 24, "title": "(classification): Remove a retired area value",
   "labels": [{"name": "bug"}, {"name": "area:legacy"}, {"name": "layer:ui"},
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
- {"number": 25, "title": "Recognized and stray area values together",
+ {"number": 25, "title": "(classification): Resolve a stray area value",
   "labels": [{"name": "bug"}, {"name": "needs-triage"}, {"name": "area:ci"},
              {"name": "area:legacy"}, {"name": "layer:ui"},
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
- {"number": 27, "title": "Stray beside recognized, queue label lost",
+ {"number": 27, "title": "(classification): Requeue a stray area value",
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "area:legacy"},
              {"name": "layer:ui"}, {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
- {"number": 26, "title": "Axes done, classified only by native Type",
+ {"number": 26, "title": "(classification): Use the native issue type",
   "labels": [{"name": "needs-triage"}, {"name": "area:ci"},
              {"name": "layer:ui"}, {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
- {"number": 28, "title": "Legacy label, no native Type, axes done",
+ {"number": 28, "title": "(classification): Replace a legacy work label",
   "labels": [{"name": "bug"}, {"name": "needs-triage"}, {"name": "area:ci"},
              {"name": "layer:ui"}, {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
@@ -814,8 +832,13 @@ jq -e '[.closed_flagged[].number] | index(99) == null' "$scan_out" \
     >/dev/null || fail "report issue must be excluded from closed"
 jq -e '.open[] | select(.number == 20) | .flags | index("stale-claim-candidate")' \
     "$scan_out" >/dev/null || fail "stale claim flag missing"
-jq -e '.open[] | select(.number == 20) | .flags | index("title-prefixed")' \
-    "$scan_out" >/dev/null || fail "title-prefixed flag missing"
+jq -e '.open[] | select(.number == 20) | .flags | index("title-malformed")' \
+    "$scan_out" >/dev/null || fail "title-malformed flag missing"
+jq -e '.open[] | select(.number == 23) | .flags
+       | index("title-malformed") == null' "$scan_out" >/dev/null ||
+    fail "a canonical scoped title must not be flagged"
+jq -e '.open[] | select(.number == 29) | .flags | index("title-malformed")' \
+    "$scan_out" >/dev/null || fail "a malformed scoped separator must be flagged"
 jq -e '.open[] | select(.number == 21) | .axis_state.domain == "conflict"' \
     "$scan_out" >/dev/null || fail "domain conflict missing"
 jq -e '.open[] | select(.number == 21) | .flags | index("axis-conflict:domain")' \

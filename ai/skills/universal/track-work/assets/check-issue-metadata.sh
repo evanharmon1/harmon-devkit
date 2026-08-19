@@ -17,6 +17,8 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
           [--issue-type TYPE] (--agent-authored|--human-authored)
           [--inapplicable area|layer|domain]...
 
+       check-issue-metadata.sh --title-only --title TITLE
+
 Validates a proposed issue without writing to GitHub. The target checkout's
 label-registry.json is authoritative when present; otherwise the checker makes
 one bounded `gh label list --limit 1000` read against --repo. The checkout must
@@ -26,14 +28,17 @@ label exists; the manifest still supplies its policy.
 
 Personal-account example:
   check-issue-metadata.sh --repo me/project --repo-root . --owner-type personal \\
-    --title 'Reject stale cache entries' --body-file issue.md \\
+    --title '(cache): Reject stale entries' --body-file issue.md \\
     --work-type-label bug --label area:build --inapplicable layer \\
     --label domain:platform --label ai-generated --agent-authored
 
 Organization example:
   check-issue-metadata.sh --repo org/project --repo-root . --owner-type organization \\
-    --issue-type Bug --title 'Reject stale cache entries' --body-file issue.md \\
+    --issue-type Bug --title '(cache): Reject stale entries' --body-file issue.md \\
     --label area:build --inapplicable layer --label domain:platform --human-authored
+
+Title-only example (for a proposed retitle):
+  check-issue-metadata.sh --title-only --title '(cache): Reject stale entries'
 
 Exit: 0 = verified, 1 = authoring-contract violation,
       2 = usage error or indeterminate repository/vocabulary read.
@@ -60,6 +65,8 @@ repo=""
 repo_root=""
 owner_type=""
 title=""
+title_set=0
+title_only=0
 body_file=""
 issue_type=""
 work_type_label=""
@@ -79,7 +86,10 @@ while [ "$#" -gt 0 ]; do
         --repo) repo="$2" ;;
         --repo-root) repo_root="$2" ;;
         --owner-type) owner_type="$2" ;;
-        --title) title="$2" ;;
+        --title)
+            title="$2"
+            title_set=1
+            ;;
         --body-file) body_file="$2" ;;
         --issue-type) issue_type="$2" ;;
         --work-type-label) work_type_label="$2" ;;
@@ -98,15 +108,91 @@ while [ "$#" -gt 0 ]; do
         author_type="human"
         shift
         ;;
+    --title-only)
+        title_only=1
+        shift
+        ;;
     *) usage ;;
     esac
 done
+
+validate_title() {
+    local scope statement title_length
+
+    if ! printf '%s' "$title" | grep -q '[^[:space:]]'; then
+        violation "title must be nonempty"
+    fi
+    if printf '%s' "$title" | grep -qE '^[[:space:]]|[[:space:]]$'; then
+        violation "title has leading or trailing whitespace"
+    fi
+    title_length="$(jq -nr --arg value "$title" '$value | explode | length')" ||
+        die "could not count title code points"
+    if [ "$title_length" -gt "$TITLE_MAX" ]; then
+        violation "title is $title_length Unicode code points; maximum is $TITLE_MAX"
+    fi
+    if jq -en --arg value "$title" \
+        '$value | explode | any(. < 32 or (. >= 127 and . <= 159))' >/dev/null; then
+        violation "title contains a control character"
+    fi
+
+    case "$title" in
+    \(*'): '*) ;;
+    *)
+        violation "title must match '(scope): imperative outcome' with the exact '): ' separator"
+        return
+        ;;
+    esac
+    scope="${title#\(}"
+    scope="${scope%%\): *}"
+    statement="${title#*\): }"
+
+    if [ -z "$scope" ] || ! printf '%s' "$scope" | grep -q '[^[:space:]]'; then
+        violation "title scope must be nonempty"
+    fi
+    if printf '%s' "$scope" | grep -qE '^[[:space:]]|[[:space:]]$'; then
+        violation "title scope has leading or trailing whitespace"
+    fi
+    if printf '%s' "$scope" | grep -q '[()]'; then
+        violation "title scope cannot contain parentheses"
+    fi
+    if [ -z "$statement" ] || ! printf '%s' "$statement" | grep -q '[^[:space:]]'; then
+        violation "title outcome must be nonempty"
+    fi
+    if printf '%s' "$statement" | grep -qE '^[[:space:]]|[[:space:]]$'; then
+        violation "title outcome has leading or trailing whitespace"
+    fi
+    if printf '%s' "$statement" | grep -qiE '^\[[^]]+\][[:space:]]*:?[[:space:]]*'; then
+        violation "title outcome has a forbidden bracket or issue-form prefix"
+    fi
+    if printf '%s' "$statement" | grep -qiE '^(bug|feature|task|research|documentation|question|enhancement):[[:space:]]*'; then
+        violation "title outcome has a forbidden issue-form prefix"
+    fi
+    if printf '%s' "$statement" | grep -qiE '^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]*\))?!?:[[:space:]]*'; then
+        violation "title outcome has a forbidden Conventional Commit prefix"
+    fi
+    if printf '%s' "$statement" | grep -qiE '^P[0-9]+:[[:space:]]*'; then
+        violation "title outcome has a forbidden priority prefix"
+    fi
+}
+
+if [ "$title_only" -eq 1 ]; then
+    [ "$title_set" -eq 1 ] || usage
+    [ -z "$repo$repo_root$owner_type$body_file$issue_type$work_type_label$author_type" ] ||
+        die "--title-only accepts only --title"
+    [ "${#labels[@]}" -eq 0 ] && [ "${#inapplicable[@]}" -eq 0 ] ||
+        die "--title-only accepts only --title"
+    validate_title
+    [ "$violations" -eq 0 ] || exit 1
+    echo "check-issue-metadata: issue title verified"
+    exit 0
+fi
 
 if [ -n "$work_type_label" ]; then
     labels+=("$work_type_label")
 fi
 
 [ -n "$repo" ] && [ -n "$repo_root" ] && [ -n "$owner_type" ] &&
+    [ "$title_set" -eq 1 ] &&
     [ -n "$body_file" ] && [ -n "$author_type" ] || usage
 printf '%s\n' "$repo" | grep -Eq '^[^/[:space:]]+/[^/[:space:]]+$' ||
     die "--repo must be OWNER/REPO (got '$repo')"
@@ -368,32 +454,7 @@ bash "$asset_dir/parse-issue-markdown.sh" --tasks "$body_file" >>"$rendered_task
 
 # Title syntax is mechanical. Whether the words form an imperative
 # problem/outcome statement remains a semantic judgment owned by the prose.
-if ! printf '%s' "$title" | grep -q '[^[:space:]]'; then
-    violation "title must be nonempty"
-fi
-# The prefix checks below are anchored, so a title with leading whitespace
-# would smuggle a forbidden prefix past them; surrounding whitespace is a
-# violation of its own rather than something to silently normalize away.
-if printf '%s' "$title" | grep -qE '^[[:space:]]|[[:space:]]$'; then
-    violation "title has leading or trailing whitespace"
-fi
-title_length="$(jq -nr --arg value "$title" '$value | explode | length')" ||
-    die "could not count title code points"
-if [ "$title_length" -gt "$TITLE_MAX" ]; then
-    violation "title is $title_length Unicode code points; maximum is $TITLE_MAX"
-fi
-if printf '%s' "$title" | grep -qiE '^\[[^]]+\][[:space:]]*:?[[:space:]]*'; then
-    violation "title has a forbidden bracket or issue-form prefix"
-fi
-if printf '%s' "$title" | grep -qiE '^(bug|feature|task|research|documentation|question|enhancement):[[:space:]]*'; then
-    violation "title has a forbidden issue-form prefix"
-fi
-if printf '%s' "$title" | grep -qiE '^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]*\))?!?:[[:space:]]*'; then
-    violation "title has a forbidden Conventional Commit prefix"
-fi
-if printf '%s' "$title" | grep -qiE '^P[0-9]+:[[:space:]]*'; then
-    violation "title has a forbidden priority prefix"
-fi
+validate_title
 
 # Enumerate level-two headings outside fenced code blocks. Unknown level-two
 # headings are rejected: the contract is a skeleton, not a partial ordering

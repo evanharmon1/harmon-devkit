@@ -254,6 +254,13 @@ jq -n \
       elif $n == 1 then "ok"
       elif (axis_unknown($ls; $a) | length) > 0 then "unknown"
       else "none" end;
+  def title_outcome: sub("^\\([^()]+\\): "; "");
+  def scoped_title:
+    (length <= 70)
+    and test("^\\([^()\\p{Cc}\\s](?:[^()\\p{Cc}]*[^()\\p{Cc}\\s])?\\): \\S(?:.*\\S)?$")
+    and ((title_outcome | test(
+      "^(\\[[^]]+\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)";
+      "i")) | not);
 
   {
     repo: $repo,
@@ -382,8 +389,8 @@ jq -n \
                  then "aging-needs-candidate" else empty end),
                 (if (.title | length) > 70
                  then "title-long" else empty end),
-                (if (.title | test("^\\S+:"))
-                 then "title-prefixed" else empty end)
+                (if (.title | scoped_title | not)
+                 then "title-malformed" else empty end)
               ])}
         | select(($all == 1) or ((.flags | length) > 0))
       ],

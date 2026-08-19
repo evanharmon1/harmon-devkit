@@ -46,7 +46,7 @@
 set -euo pipefail
 
 MARKER='<!-- harmon-triage-report -->'
-DEFAULT_TITLE='Triage report'
+DEFAULT_TITLE='(triage): Track backlog findings'
 
 usage() {
     echo "Usage: $0 find --repo owner/repo [--title TITLE]" >&2
@@ -60,6 +60,31 @@ die() {
     shift
     echo "triage-report: $*" >&2
     exit "$code"
+}
+
+validate_title() {
+    local title="$1" scope statement length
+    case "$title" in
+    \(*'): '*) ;;
+    *) die 2 "report title must match '(scope): imperative outcome'" ;;
+    esac
+    scope="${title#\(}"
+    scope="${scope%%\): *}"
+    statement="${title#*\): }"
+    [ -n "$scope" ] && [ -n "$statement" ] ||
+        die 2 "report title requires a nonempty scope and outcome"
+    ! jq -en --arg value "$title" \
+        '$value | explode | any(. < 32 or (. >= 127 and . <= 159))' >/dev/null ||
+        die 2 "report title contains a control character"
+    ! printf '%s' "$scope" | grep -qE '^[[:space:]]|[[:space:]]$|[()]|[[:cntrl:]]' ||
+        die 2 "report title has an invalid scope"
+    ! printf '%s' "$statement" | grep -qE '^[[:space:]]|[[:space:]]$|[[:cntrl:]]' ||
+        die 2 "report title has an invalid outcome"
+    ! printf '%s' "$statement" | grep -qiE '^\[[^]]+\][[:space:]]*:?[[:space:]]*|^(bug|feature|task|research|documentation|question|enhancement):[[:space:]]*|^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]*\))?!?:[[:space:]]*|^P[0-9]+:[[:space:]]*' ||
+        die 2 "report title has a forbidden nested prefix"
+    length="$(jq -nr --arg value "$title" '$value | explode | length')" ||
+        die 2 "could not count report title code points"
+    [ "$length" -le 70 ] || die 2 "report title exceeds 70 Unicode code points"
 }
 
 # Print the open report issue's number, or nothing. Dies on ambiguity.
@@ -164,6 +189,7 @@ cmd_sync() {
         esac
     done
     [ -n "$repo" ] && [ -n "$entries" ] || usage
+    validate_title "$title"
     # Same run-binding as triage-apply.sh: a mismatched --repo is refused.
     if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then
         die 4 "refused: --repo '$repo' does not match this run's bound" \
@@ -235,7 +261,7 @@ entries, or triage a narrower window."
 
     if [ "$execute" -eq 0 ]; then
         if [ -n "$target" ]; then
-            echo "DRY-RUN would edit the body of $repo#$target"
+            echo "DRY-RUN would normalize the title and edit the body of $repo#$target"
         else
             echo "DRY-RUN would create '$title' in $repo"
         fi
@@ -252,21 +278,27 @@ entries, or triage a narrower window."
         # Re-verify the marker on the LIVE body immediately before the edit —
         # the one write this script makes must be provably aimed at its own
         # artifact, whatever changed since `find`.
-        local live
-        live="$(gh issue view "$target" --repo "$repo" --json body -q .body)" ||
+        local live_json live live_title
+        live_json="$(gh issue view "$target" --repo "$repo" --json body,title)" ||
             die 2 "could not re-read $repo#$target before editing"
+        live="$(printf '%s' "$live_json" | jq -r '.body // ""')" ||
+            die 2 "could not parse the live report body"
+        live_title="$(printf '%s' "$live_json" | jq -r '.title // ""')" ||
+            die 2 "could not parse the live report title"
         printf '%s' "$live" | grep -qF "$MARKER" ||
             die 4 "refused: $repo#$target no longer carries the report marker"
         # Idempotency: identical findings must not churn the issue. The
         # timestamp line is generation metadata, so compare without it and
         # skip the edit when nothing else changed.
-        if [ "$(printf '%s\n' "$body" | grep -v '^_Last generated: ')" = \
-            "$(printf '%s\n' "$live" | grep -v '^_Last generated: ')" ]; then
+        if [ "$live_title" = "$title" ] &&
+            [ "$(printf '%s\n' "$body" | grep -v '^_Last generated: ')" = \
+                "$(printf '%s\n' "$live" | grep -v '^_Last generated: ')" ]; then
             echo "no content change — skipping edit of $repo#$target"
             return 0
         fi
         printf '%s\n' "$body" |
-            gh issue edit "$target" --repo "$repo" --body-file - >/dev/null ||
+            gh issue edit "$target" --repo "$repo" --title "$title" \
+                --body-file - >/dev/null ||
             die 1 "write failed: gh issue edit $repo#$target"
         echo "APPLIED report update to $repo#$target"
     else

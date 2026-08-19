@@ -683,7 +683,17 @@ BODY
 
 run_metadata() {
     _rc=0
-    "$metadata" "$@" >"$tmp/metadata.out" 2>&1 || _rc=$?
+    _metadata_args=()
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = --title ] && [ "${METADATA_RAW_TITLE:-0}" != 1 ]; then
+            _metadata_args+=(--title "(tests): $2")
+            shift 2
+        else
+            _metadata_args+=("$1")
+            shift
+        fi
+    done
+    "$metadata" "${_metadata_args[@]}" >"$tmp/metadata.out" 2>&1 || _rc=$?
     echo "$_rc"
 }
 
@@ -728,7 +738,7 @@ standalone_metadata="$standalone_track_work/track-work/assets/check-issue-metada
 _rc=0
 PATH="$metadata_stub:$PATH" "$standalone_metadata" \
     --repo testowner/testrepo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Validate standalone issue metadata' \
+    --owner-type personal --title '(tests): Validate standalone metadata' \
     --body-file "$valid_body" --agent-authored --label feature \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -756,23 +766,45 @@ grep -q 'does not match target repository owner type' "$tmp/metadata.out" ||
     fail "the owner mismatch should be the reported violation"
 
 echo "==> metadata: exact title boundary is 70 Unicode code points"
-title70="$(printf 'a%.0s' {1..70})"
+title70="(scope): $(printf 'a%.0s' {1..61})"
 title71="${title70}a"
-[ "$(run_personal "$title70" "$valid_body")" = 0 ] || fail "70 code points should pass"
-[ "$(run_personal "$title71" "$valid_body")" = 1 ] || fail "71 code points should fail"
+[ "$(METADATA_RAW_TITLE=1 run_personal "$title70" "$valid_body")" = 0 ] ||
+    fail "70 code points should pass"
+[ "$(METADATA_RAW_TITLE=1 run_personal "$title71" "$valid_body")" = 1 ] ||
+    fail "71 code points should fail"
 
-echo "==> metadata: empty and prefixed titles fail"
-[ "$(run_personal '' "$valid_body")" = 1 ] || fail "empty title should fail"
-for title in '[Bug]: metadata is missing' 'Bug: metadata is missing' \
-    'fix(track-work): add metadata' 'P1: metadata is missing'; do
-    [ "$(run_personal "$title" "$valid_body")" = 1 ] || fail "prefixed title should fail: $title"
+echo "==> metadata: free-form Unicode, spaced, and punctuated scopes pass"
+for title in '(CI/CD): Reject stale runs' '(Build Tools): Repair cache keys' \
+    '(déploiement 🚀): Verify rollback'; do
+    [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 0 ] ||
+        fail "valid scoped title should pass: $title ($(cat "$tmp/metadata.out"))"
 done
 
-echo "==> metadata: surrounding whitespace cannot smuggle a forbidden prefix"
-for title in ' fix: repair metadata' 'Trailing space title '; do
-    [ "$(run_personal "$title" "$valid_body")" = 1 ] ||
+echo "==> metadata: empty, unscoped, malformed, and nested-prefix titles fail"
+for title in '' 'Metadata is missing' '(): Repair metadata' '( scope): Repair metadata' \
+    '(scope ): Repair metadata' '(nested(scope)): Repair metadata' \
+    '(scope):Repair metadata' '(scope) : Repair metadata' '(scope): ' \
+    '(scope): [Bug]: Metadata is missing' '(scope): Bug: Metadata is missing' \
+    '(scope): fix: Add metadata' '(scope): fix(track-work): Add metadata' \
+    '(scope): P1: Repair metadata'; do
+    [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 1 ] ||
+        fail "malformed or nested-prefix title should fail: $title"
+done
+
+echo "==> metadata: surrounding whitespace and controls fail"
+for title in ' (scope): Repair metadata' '(scope): Repair metadata ' \
+    "(scope): Repair"$'\n'"metadata"; do
+    [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 1 ] ||
         fail "a title with surrounding whitespace should fail: '$title'"
 done
+
+echo "==> metadata: title-only mode validates retitles without draft metadata"
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+    --title '(delivery queue): Reject stale dispatches')" = 0 ] ||
+    fail "valid title-only retitle should pass: $(cat "$tmp/metadata.out")"
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+    --title 'Reject stale dispatches')" = 1 ] ||
+    fail "legacy unscoped title-only retitle should fail"
 
 echo "==> metadata: required headings must exist once, be nonempty, and stay ordered"
 for case_name in missing-problem missing-acceptance duplicate-problem empty-problem out-of-order; do
@@ -1166,7 +1198,7 @@ echo "==> metadata: manifest open-value families resolve proposed live labels"
 _rc=0
 METADATA_GH_LOG="$tmp/metadata-gh.log" "$metadata" \
     --repo testowner/testrepo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Allow a live open-value label' \
+    --owner-type personal --title '(tests): Allow a live open-value label' \
     --body-file "$valid_body" --human-authored --label feature \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1197,7 +1229,7 @@ jq '.families |= map(
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_open_classification" --owner-type personal \
-    --title 'Allow an open classification family' --body-file "$valid_body" \
+    --title '(tests): Allow an open classification family' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture \
     --inapplicable layer --label domain:fixture >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] ||
@@ -1219,7 +1251,7 @@ jq '.families += [{
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_ambiguous" --owner-type personal \
-    --title 'Reject ambiguous open-value prefixes' --body-file "$valid_body" \
+    --title '(tests): Reject ambiguous open-value prefixes' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "an ambiguous open-value label should be indeterminate (got $_rc): $(cat "$tmp/metadata.out")"
@@ -1242,7 +1274,7 @@ jq '.families |= map(
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_enumerated" --owner-type personal \
-    --title 'Reject absent enumerated open members' --body-file "$valid_body" \
+    --title '(tests): Reject absent enumerated open members' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture --label type:stale-member >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] ||
@@ -1260,7 +1292,7 @@ printf '{not json\n' >"$metadata_subdir_root/label-registry.json"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo testowner/testrepo --repo-root "$metadata_subdir_root/nested/deeper" \
-    --owner-type personal --title 'Resolve the top-level manifest' \
+    --owner-type personal --title '(tests): Resolve the top-level manifest' \
     --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] ||
@@ -1284,7 +1316,7 @@ jq '.families += [{
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_strategy" --owner-type personal \
-    --title 'Reject renamed strategy families' --body-file "$valid_body" \
+    --title '(tests): Reject renamed strategy families' --body-file "$valid_body" \
     --agent-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture --label ai-generated --label route:fast \
     >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1312,7 +1344,7 @@ jq '.families |= map(
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_retired" --owner-type personal \
-    --title 'Reject retired open members' --body-file "$valid_body" \
+    --title '(tests): Reject retired open members' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] ||
@@ -1375,7 +1407,7 @@ jq '.families += [{
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_shadowed" --owner-type personal \
-    --title 'Reject shadowed open-value labels' --body-file "$valid_body" \
+    --title '(tests): Reject shadowed open-value labels' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "an open label shadowed by a concrete family should be indeterminate (got $_rc): $(cat "$tmp/metadata.out")"
@@ -1386,13 +1418,13 @@ grep -q 'type-concrete' "$tmp/metadata.out" && grep -q 'type-override' "$tmp/met
 
 echo "==> metadata: incomplete classification requires needs-triage and names the axis"
 _rc="$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Keep incomplete classification visible' \
+    --owner-type personal --title '(tests): Keep incomplete classification visible' \
     --body-file "$valid_body" --agent-authored --label feature \
     --label area:fixture --inapplicable layer --label ai-generated)"
 [ "$_rc" = 1 ] || fail "missing domain without needs-triage should fail"
 grep -qi 'domain' "$tmp/metadata.out" || fail "the undecided domain axis should be named"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Keep incomplete classification visible' \
+    --owner-type personal --title '(tests): Keep incomplete classification visible' \
     --body-file "$valid_body" --agent-authored --label feature \
     --label area:fixture --inapplicable layer --label ai-generated \
     --label needs-triage)" = 0 ] ||
@@ -1400,7 +1432,7 @@ grep -qi 'domain' "$tmp/metadata.out" || fail "the undecided domain axis should 
 
 echo "==> metadata: owner type controls work classification"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Require a work type' --body-file "$valid_body" \
+    --owner-type personal --title '(tests): Require a work type' --body-file "$valid_body" \
     --human-authored --label area:fixture --inapplicable layer --label domain:fixture)" = 1 ] ||
     fail "personal repo without a work type should fail"
 [ "$(run_personal 'Reject stacked work types' "$valid_body" --label task)" = 1 ] ||
@@ -1408,12 +1440,12 @@ echo "==> metadata: owner type controls work classification"
 [ "$(run_organization 'Reject labels in place of Issue Type' "$valid_body" --label feature)" = 1 ] ||
     fail "organization repo with a work-type label should fail"
 [ "$(run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
-    --owner-type organization --title 'Require native Issue Type' --body-file "$valid_body" \
+    --owner-type organization --title '(tests): Require native Issue Type' --body-file "$valid_body" \
     --human-authored --label area:fixture --inapplicable layer --label domain:fixture)" = 1 ] ||
     fail "organization repo without Issue Type should fail"
 [ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo \
     --repo-root "$metadata_repo" --owner-type organization \
-    --issue-type 'Definitely Not A Real Type' --title 'Validate native Issue Types' \
+    --issue-type 'Definitely Not A Real Type' --title '(tests): Validate native Issue Types' \
     --body-file "$valid_body" --human-authored --label area:fixture --inapplicable layer \
     --label domain:fixture)" = 1 ] || fail "unknown native Issue Type should fail"
 
@@ -1429,7 +1461,7 @@ echo "==> metadata: an absent manifest falls back to one bounded label read"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-    --owner-type personal --title 'Validate fallback metadata' \
+    --owner-type personal --title '(tests): Validate fallback metadata' \
     --body-file "$valid_body" --agent-authored --work-type-label enhancement \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1443,7 +1475,7 @@ echo "==> metadata: forbidden fallback families are case-insensitive"
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo fallback/repo \
     --repo-root "$metadata_fallback" --owner-type personal \
-    --title 'Reject authoring controls' --body-file "$valid_body" \
+    --title '(tests): Reject authoring controls' --body-file "$valid_body" \
     --agent-authored --work-type-label 'Rigor:deep' --label area:fixture \
     --inapplicable layer --label domain:fixture --label ai-generated \
     >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1455,7 +1487,7 @@ _rc=0
 METADATA_GH_LABELS="$(printf '%s\n' enhancement area:fixture domain:fixture \
     ai-generated sec 'sec|concern|concern|human,agent|false')" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-    --owner-type personal --title 'Reject forged fallback writers' \
+    --owner-type personal --title '(tests): Reject forged fallback writers' \
     --body-file "$valid_body" --agent-authored --work-type-label enhancement \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label ai-generated --label sec >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1469,7 +1501,7 @@ printf '{not json\n' >"$metadata_fallback/label-registry.json"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-    --owner-type personal --title 'Reject an invalid manifest' \
+    --owner-type personal --title '(tests): Reject an invalid manifest' \
     --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "invalid present manifest should exit 2 (got $_rc)"
@@ -1481,7 +1513,7 @@ jq '.families[0].writers = "agent"' label-registry.json >"$metadata_fallback/lab
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-    --owner-type personal --title 'Reject an invalid manifest shape' \
+    --owner-type personal --title '(tests): Reject an invalid manifest shape' \
     --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "structurally invalid manifest should exit 2 (got $_rc)"
@@ -1501,7 +1533,7 @@ for mutation in missing-required duplicate-value; do
     esac
     _rc=0
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-        --owner-type personal --title 'Reject invalid manifest records' \
+        --owner-type personal --title '(tests): Reject invalid manifest records' \
         --body-file "$valid_body" --human-authored --label feature \
         --inapplicable area --inapplicable layer --inapplicable domain \
         >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1518,7 +1550,7 @@ git -C "$metadata_sshport" remote add origin 'ssh://git@ssh.github.com/testowner
 cp "$metadata_repo/label-registry.json" "$metadata_sshport/label-registry.json"
 [ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testowner/testrepo \
     --repo-root "$metadata_sshport" --owner-type personal \
-    --title 'Bind portless ssh remotes' --body-file "$valid_body" \
+    --title '(tests): Bind portless ssh remotes' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture)" = 0 ] ||
     fail "a portless ssh.github.com remote should bind: $(cat "$tmp/metadata.out")"
@@ -1526,7 +1558,7 @@ cp "$metadata_repo/label-registry.json" "$metadata_sshport/label-registry.json"
 echo "==> metadata: the checkout remote must match the requested repository"
 _rc=0
 "$metadata" --repo another/repo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Bind the target checkout' --body-file "$valid_body" \
+    --owner-type personal --title '(tests): Bind the target checkout' --body-file "$valid_body" \
     --human-authored --label feature --inapplicable area --inapplicable layer \
     --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "mismatched repo-root should exit 2 (got $_rc)"

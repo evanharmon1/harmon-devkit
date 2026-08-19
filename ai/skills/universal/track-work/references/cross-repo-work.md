@@ -82,14 +82,16 @@ the first:
 
 ```sh
 gh issue create --repo <target-owner/target-repo> \
-  --title "<what needs to change>" \
+  --title "(<free-form scope>): <imperative outcome>" \
   --body-file -
 ```
 
 Use a quoted heredoc so nothing in the body is re-evaluated by the shell:
 
 ```sh
-gh issue create --repo evanharmon1/harmon-infra --title "…" --body-file - <<'EOF'
+gh issue create --repo evanharmon1/harmon-infra \
+  --title "(backup restore): Verify recovery without production access" \
+  --body-file - <<'EOF'
 <the invariant, the observed violation with a date, and a Verify command>
 
 ---
