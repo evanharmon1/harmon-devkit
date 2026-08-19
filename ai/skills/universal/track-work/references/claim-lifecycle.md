@@ -137,9 +137,13 @@ in the claim record, never in the label.
   GitHub's current marker state cannot distinguish a pre-existing label from a
   later independent re-add of the same text. When that provenance cannot be
   proven, record it as unowned and leave it in place. At release, every inherited
-  login must match the immediately preceding trusted claim record's live owned
-  set exactly; an extra login is forged provenance and a missing login would
-  strand claim-owned state, so either mismatch fails closed before writes. The
+  login must be proven by the immediately preceding trusted claim record. An
+  extra login is forged provenance and fails closed. A refresh may omit a
+  predecessor login only when it is absent from the fresh live issue state;
+  that subset rule covers a completed partial cleanup without permitting a
+  still-live owner to be silently dropped. The parser binds both current and
+  predecessor comment identity/version and rechecks that absence before writes.
+  The
   parser accepts v1 records without these fields and legacy singular login
   companions, but rejects a partially written v2 trio or a record carrying
   both singular and plural companions.

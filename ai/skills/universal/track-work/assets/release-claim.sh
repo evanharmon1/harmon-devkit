@@ -236,6 +236,8 @@ fetch_claim() {
                                        then $predecessor.body else "" end),
                     predecessor_author: (if ($predecessor.body // "") | startswith("Claiming —")
                                          then $predecessor.user.login else "" end),
+                    predecessor_id: ($predecessor.id // ""),
+                    predecessor_updated: ($predecessor.updated_at // ""),
                     too_new: ($cutoff != "" and .[$ci].created_at >= $cutoff),
                     superseded: ([.[($ci + 1):][]
                                   | select(.body
@@ -624,6 +626,7 @@ predecessor_owned_assignees() {
 # prove the entire inherited set. A fresh record needs no predecessor because
 # its only chain-owned login is also directly owned by the current leaf.
 chain_assignees=""
+omitted_predecessor_assignees=""
 if [ "$record_present" -eq 1 ] && [ "$chain_assignee_owned" = "yes" ]; then
     if [ "$saw_chain_assignee_logins" -eq 1 ]; then
         chain_assignees="$chain_assignee_logins"
@@ -658,6 +661,7 @@ if [ "$record_present" -eq 1 ] && [ "$chain_assignee_owned" = "yes" ]; then
         fi
         while IFS= read -r missing_login; do
             [ -n "$missing_login" ] || continue
+            omitted_predecessor_assignees="$omitted_predecessor_assignees"$'\n'"$missing_login"
             if jq -e --arg a "$missing_login" '.assignees[] | select(.login == $a)' <<<"$issue_json" >/dev/null; then
                 echo "$repo#$issue: current claim omits a still-live trusted predecessor assignee — fail closed" >&2
                 exit 2
@@ -760,12 +764,25 @@ fi
 recheck_id="$(jq -r 'if .found then (.id | tostring) else "" end' <<<"$recheck_json")"
 recheck_updated="$(jq -r '.updated // ""' <<<"$recheck_json")"
 claim_updated="$(jq -r '.updated // ""' <<<"$claim_json")"
+predecessor_id="$(jq -r '.predecessor_id // ""' <<<"$claim_json")"
+predecessor_updated="$(jq -r '.predecessor_updated // ""' <<<"$claim_json")"
 if [ "$recheck_id" != "$claim_id" ] ||
     [ "$recheck_updated" != "$claim_updated" ] ||
+    [ "$(jq -r '.predecessor_id // ""' <<<"$recheck_json")" != "$predecessor_id" ] ||
+    [ "$(jq -r '.predecessor_updated // ""' <<<"$recheck_json")" != "$predecessor_updated" ] ||
     [ "$(jq -r '.superseded' <<<"$recheck_json")" = "true" ]; then
     echo "$repo#$issue: the claim of record changed between read and write — leaving it for the next event" >&2
     exit 3
 fi
+# Recheck the live-absence half of transferred provenance on the same fresh
+# issue snapshot that just re-bound the current and predecessor comments.
+while IFS= read -r missing_login; do
+    [ -n "$missing_login" ] || continue
+    if jq -e --arg a "$missing_login" '.assignees[] | select(.login == $a)' <<<"$recheck_issue" >/dev/null; then
+        echo "$repo#$issue: an omitted predecessor assignee became live before write — leaving it for the next event" >&2
+        exit 3
+    fi
+done <<<"$omitted_predecessor_assignees"
 
 # ── Execute ──────────────────────────────────────────────────────────────────
 run_write() {
