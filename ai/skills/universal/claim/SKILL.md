@@ -513,6 +513,10 @@ actually added.
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
   - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
+  - assignee owned by this claim chain: <yes|no>
+  - assignee login owned by this claim chain: <the exact assignee login | none>
+  - `claim:` label owned by this claim chain: <the exact still-present claim:<family>[:<model>] or family-owned legacy agent:* label | no | n/a>
+  - `claim:` label displaced by this claim chain: <the exact displaced claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card
@@ -549,6 +553,20 @@ actually added.
   live in `track-work/references/claim-lifecycle.md` and
   `track-work/assets/release-claim.sh`. Explanatory clauses go after a comma
   (`n/a, repo has no such label`) — parsers stop at the first comma.
+
+  **Initialize and transfer claim-chain ownership deliberately.** A fresh
+  claim copies its direct marker values into the chain fields and records its
+  own login when it owns the assignee. A branch/scope refresh or crash-recovery
+  takeover posts one new record; that append supersedes the earlier record
+  atomically for readers. Transfer an assignee or still-present claim label
+  only after confirming it still exists and the predecessor record proves it
+  was claim-owned; otherwise write `no`, `n/a`, or `none`, because current
+  state cannot prove a same-text marker was not independently re-added later.
+  A displaced label is different: it is expected to be absent while the
+  takeover is live, so carry it after proving the predecessor displaced it;
+  that preserves an open-issue hand-back. Keep the three core chain fields
+  together — a partial trio is rejected by the releaser — and write `none` for
+  the assignee login when the chain does not own an assignee.
 
   **"Unset" and "unknown" are different answers.** `--show` exiting 0 with no
   `Status=` line is a successful read of a card whose `Status` is genuinely

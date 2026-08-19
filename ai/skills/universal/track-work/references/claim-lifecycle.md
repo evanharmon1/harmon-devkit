@@ -61,9 +61,13 @@ in the claim record, never in the label.
 - A release comment's body **starts with** `Claim released —` and its first
   line is, verbatim:
   `Claim released — <why>. (Supersedes the claim record above.)`
-- A claim is **live** when no *later* comment starts with `Claim released —`.
-  All readers (`kickoff`, `retro`, `implement`, the workflow) share this
-  predicate; the latest `Claiming —` comment is the claim of record.
+- A claim is **current** when it is the latest trusted `Claiming —` comment
+  after the latest trusted `Claim released —` comment. A newer trusted claim
+  atomically supersedes every earlier claim record in that unreleased run: its
+  successful append is the reader-visible transition, while a failed append
+  leaves the predecessor current. Earlier comments remain audit history, never
+  a second live claim. All readers (`kickoff`, `retro`, `implement`, and the
+  workflow) use this one-current-record predicate.
 - The body carries a `Claim record` block whose fields are **one line each**,
   anchored on the literal `by this claim:` (the keys contain backticks and
   their own colons — parsers must never split on a colon):
@@ -78,6 +82,10 @@ in the claim record, never in the label.
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
   - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
+  - assignee owned by this claim chain: <yes|no>
+  - assignee login owned by this claim chain: <the exact assignee login | none>
+  - `claim:` label owned by this claim chain: <the exact still-present label | no | n/a>
+  - `claim:` label displaced by this claim chain: <claim:gpt | agent:codex (legacy) | none>
   ```
 
 - `harness`, `model`, and `session` are optional, informational fields. New
@@ -101,6 +109,24 @@ in the claim record, never in the label.
   legacy records written with `` `agent:` `` still parse. Records that wrote
   `yes` (older still) name no label; the parser falls back to every live
   `claim:*` **and** `agent:*` label on the issue.
+- **Current ownership is explicit (v2).** New records carry the final three
+  core `claim chain` fields. Fresh records also record the owned assignee login
+  (v2 records that predate that companion retain the author fallback). A fresh
+  claim initializes the core fields from its direct `added by this claim`
+  fields. A refresh
+  or a new-session takeover copies an assignee or still-present label only
+  when its predecessor chain proves ownership; it writes `no`/`n/a` for a
+  marker that predated the chain, disappeared, or was independently introduced.
+  Its displaced label is different: it is normally absent while the takeover
+  is live, so carry it when the predecessor proves it displaced the label.
+  The current record is then sufficient for release: it removes the inherited
+  assignee by login and restores a proven displaced label without relying on
+  the replacement author having added them. This is intentionally an explicit
+  transfer rather than a best-effort union of historical comments:
+  GitHub's current marker state cannot distinguish a pre-existing label from a
+  later independent re-add of the same text. When that provenance cannot be
+  proven, record it as unowned and leave it in place. The parser accepts v1
+  records without these fields, but rejects a partially written v2 trio.
 - Values are untrusted data. Parsers validate fields that can steer an action
   before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's
@@ -130,7 +156,8 @@ in the claim record, never in the label.
   that PR's; worst case it releases when the issue closes (no `--branch`
   there).
 - **An incomplete record fails closed**: `Claim record` present but any of
-  the three `by this claim:` lines missing or valueless is unreadable
+  the three `by this claim:` lines missing or valueless — or any incomplete
+  v2 chain-ownership trio — is unreadable
   provenance (exit 2), never a no-op — releasing around it would clear some
   markers and then block retries with the supersede comment.
 - **An event releases only claims it covers**: the workflow passes the
