@@ -720,13 +720,18 @@ else
     bad "breakdown selects labels from emitted semantics and honors family constraints"
 fi
 
-if grep -qF 'On an organization-owned repository' "$skill" &&
-    grep -qF 'do not duplicate or substitute it with a registry' "$skill" &&
-    grep -qF 'personal-account repository' "$skill" &&
-    grep -qF 'use an independently' "$skill"; then
-    ok "breakdown distinguishes organization issue types from personal work-type labels"
+if grep -qF 'On an organization-owned repository, choose exactly one valid native issue' \
+    "$skill" &&
+    grep -qF 'Do not duplicate or substitute it with a registry family' "$skill" &&
+    grep -qF 'On a personal-account repository' "$skill" &&
+    grep -qF 'choose exactly one `work-type` label' "$skill" &&
+    grep -qF 'even when that family has `exclusive: false`' "$skill" &&
+    grep -qF 'Choose the single best match for the chunk' "$skill" &&
+    grep -qF 'stop before approval or writes and ask the' "$skill" &&
+    grep -qF 'never omit the classification or apply multiple candidates' "$skill"; then
+    ok "breakdown enforces exactly one repository-appropriate work classification"
 else
-    bad "breakdown distinguishes organization issue types from personal work-type labels"
+    bad "breakdown enforces exactly one repository-appropriate work classification"
 fi
 
 if [ "$fail" -gt 0 ]; then

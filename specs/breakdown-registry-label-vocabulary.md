@@ -174,6 +174,8 @@ Repositories without a registry retain a conservative live-label fallback.
 - Family constraints are selection rules: exclusive families contribute at
   most one candidate, nonexclusive candidates must each independently fit the
   chunk, and every emitted `requires` companion travels with its candidate.
-- Native issue Types remain orthogonal to labels. Organization repositories use
-  their native Type without a duplicate `work-type` label; personal-account
-  repositories may use the registry's `work-type` family instead.
+- Native issue Types remain orthogonal to labels. Every issue gets exactly one
+  work classification: organization repositories require one valid native Type
+  without a duplicate `work-type` label, while personal-account repositories
+  require the single best matching registry `work-type` label even when that
+  family is nonexclusive. An absent or ambiguous match stops for clarification.

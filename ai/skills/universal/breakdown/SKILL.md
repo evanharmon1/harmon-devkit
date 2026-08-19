@@ -368,8 +368,9 @@ verified planning vocabulary:
 - `exclusive: true` means propose at most one value from that family.
   `exclusive: false` permits multiple values only when each one is
   independently applicable to the chunk; it is not an instruction to apply
-  the whole family. This is how repository-specific `area` vocabularies and
-  their exclusivity rule are consumed; never embed an `area:*` roster here.
+  the whole family, and it does not override the exactly-one `work-type` rule
+  below. This is how repository-specific `area` vocabularies and their
+  exclusivity rule are consumed; never embed an `area:*` roster here.
 - Every emitted `requires` entry is a companion label, not a hint. Include all
   of them whenever proposing that candidate, using their exact emitted names.
 - `suggest` is advisory routing, never ownership or execution. A
@@ -397,14 +398,22 @@ gh api repos/<owner>/<repo> --jq .organization.login   # org repo?
 gh api orgs/<org>/issue-types --jq '.[].name'          # the type vocabulary
 ```
 
-Apply the families that fit. On an organization-owned repository, use a
-matching native issue **type** (`gh issue create --type`, or the issue-type
-edit endpoint after create); do not duplicate or substitute it with a registry
-family whose `axis` is `work-type`, and omit the type when no native value
-fits. On a personal-account repository, where native organization issue types
-are unavailable, use an independently applicable `work-type` family from the
-verified registry instead. In either case, also apply other registry families
-that fit the chunk. Project-board fields (`Size`,
+Apply the families that fit. Every issue gets exactly one work classification,
+regardless of the registry family's `exclusive` value:
+
+- On an organization-owned repository, choose exactly one valid native issue
+  **Type** (`gh issue create --type`, or the issue-type edit endpoint after
+  create). Do not duplicate or substitute it with a registry family whose
+  `axis` is `work-type`.
+- On a personal-account repository, where native organization issue Types are
+  unavailable, choose exactly one `work-type` label from the verified registry,
+  even when that family has `exclusive: false`.
+
+Choose the single best match for the chunk. If no choice is defensible, or more
+than one remains equally defensible, stop before approval or writes and ask the
+human to clarify; never omit the classification or apply multiple candidates.
+In either case, also apply other registry families that fit the chunk.
+Project-board fields (`Size`,
 `Status` options and the like) are Projects V2 state: propose them in §6, but
 write only what the target's own tooling exposes for the purpose —
 `track-work`'s `set-issue-status.sh` for `Status`, nothing hand-rolled — and
