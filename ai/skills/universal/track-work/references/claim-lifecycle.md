@@ -102,6 +102,7 @@ in the claim record, never in the label.
   - session: <the `/kickoff` session name, or "unknown">
   - board: <board title, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
+  - prior board status owned by this claim chain: <the original status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
   - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
@@ -133,18 +134,25 @@ in the claim record, never in the label.
   `yes` (older still) name no label; the parser falls back to every live
   `claim:*` **and** `agent:*` label on the issue.
 - **Current ownership is explicit (v2).** New records carry the final three
-  core `claim chain` fields. Fresh records also record the owned assignee login
-  (v2 records that predate that companion retain the author fallback). A fresh
-  claim initializes the core fields from its direct `added by this claim`
-  fields. A refresh
-  or a new-session takeover copies an assignee or still-present label only
-  when its predecessor chain proves ownership; it writes `no`/`n/a` for a
-  marker that predated the chain, disappeared, or was independently introduced.
+  core marker `claim chain` fields and the prior board status the chain owns.
+  Fresh records also record the owned assignee login (v2 records that predate
+  that companion retain the author fallback). A fresh claim initializes the
+  core fields from its direct `added by this claim` fields and copies its direct
+  prior board status into the chain field. A refresh or new-session takeover
+  likewise initializes an assignee or label from a marker it directly added;
+  direct ownership outranks inheritance. Only where it added no replacement
+  does it copy a still-present marker from the predecessor chain, and then only
+  when that chain proves ownership. It writes `no`/`n/a` for a marker that
+  predated the chain, disappeared, or was independently introduced.
   Its displaced label is different: it is normally absent while the takeover
   is live, so carry it when the predecessor proves it displaced the label.
-  The current record is then sufficient for release: it removes the inherited
-  assignee by login and restores a proven displaced label without relying on
-  the replacement author having added them. This is intentionally an explicit
+  The refresh or takeover also carries the predecessor's chain board status
+  (or its direct status for a legacy predecessor), rather than treating the
+  predecessor's `In Progress` card as its own prior state; `/wrap` can then
+  restore the original status after an abandoned hand-back. The current record
+  is then sufficient for release: it removes the
+  inherited assignee by login and restores a proven displaced label without
+  relying on the replacement author having added them. This is intentionally an explicit
   transfer rather than a best-effort union of historical comments:
   GitHub's current marker state cannot distinguish a pre-existing label from a
   later independent re-add of the same text. When that provenance cannot be
