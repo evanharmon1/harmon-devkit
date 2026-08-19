@@ -2983,6 +2983,28 @@ rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
 [ "$(run_release --reason r)" = 2 ] || fail "dropping proven live ownership must fail closed"
 [ ! -s "$rc_log" ] || fail "a dropped predecessor-owned login must trigger zero writes"
 
+echo "==> a refresh may omit a predecessor owner already absent before transfer"
+body_chain_plural_transfer="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/evanharmon1 third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_transfer" 3)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"},{"login":"third-owner"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a transfer must accept an already-absent predecessor owner"
+for login in evanharmon1 third-owner; do
+    grep -q -- "--remove-assignee $login" "$rc_log" ||
+        fail "the transferred claim must release remaining owner $login"
+done
+
+echo "==> a partial predecessor v2 chain cannot prove inherited ownership"
+body_chain_predecessor_partial="$(printf '%s' "$body_chain_plural_second" |
+    sed '/agent: label owned by this claim chain:/d; /agent: label displaced by this claim chain:/d')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_predecessor_partial" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "a partial predecessor chain must fail closed"
+[ ! -s "$rc_log" ] || fail "a partial predecessor chain must trigger zero writes"
+
 echo "==> a claim-chain assignee list is bounded at ten logins"
 body_chain_plural_too_many="$(printf '%s' "$body_chain_plural_third" |
     sed 's/collaborator evanharmon1 third-owner/a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11/')"

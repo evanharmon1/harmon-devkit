@@ -528,6 +528,10 @@ predecessor_owned_assignees() {
     p_record=0
     p_saw_direct=0
     p_direct=""
+    p_saw_label=0
+    p_label=""
+    p_saw_displaced=0
+    p_displaced=""
     p_saw_owned=0
     p_owned=""
     p_saw_login=0
@@ -542,6 +546,14 @@ predecessor_owned_assignees() {
             p_saw_direct=1
             p_direct="$(lower "$(extract_value "$line")")"
             ;;
+        *"label added by this claim:"*)
+            p_saw_label=1
+            p_label="$(extract_value "$line")"
+            ;;
+        *"label displaced by this claim:"*)
+            p_saw_displaced=1
+            p_displaced="$(extract_value "$line")"
+            ;;
         *"assignee owned by this claim chain:"*)
             p_saw_owned=1
             p_owned="$(lower "$(extract_chain_value "$line")")"
@@ -554,13 +566,27 @@ predecessor_owned_assignees() {
             p_saw_logins=1
             p_logins="$(extract_chain_list "$line")"
             ;;
+        *"label owned by this claim chain:"*) p_saw_chain_label=1 ;;
+        *"label displaced by this claim chain:"*) p_saw_chain_displaced=1 ;;
         esac
     done <<<"$predecessor"
 
-    [ "$p_record" -eq 1 ] && [ "$p_saw_direct" -eq 1 ] || return 1
+    [ "$p_record" -eq 1 ] && [ "$p_saw_direct" -eq 1 ] &&
+        [ "$p_saw_label" -eq 1 ] && [ "$p_saw_displaced" -eq 1 ] || return 1
     case "$p_direct" in yes | no) ;; *) return 1 ;; esac
+    [ -n "$p_label" ] && [ -n "$p_displaced" ] || return 1
     valid_login "$predecessor_author" || return 1
     [ "$p_saw_login" -eq 0 ] || [ "$p_saw_logins" -eq 0 ] || return 1
+
+    # v2 chain fields are one contract. A predecessor that declares any of
+    # them cannot prove inherited assignee ownership unless the complete trio
+    # is present, as the current-record parser already requires.
+    if [ "$p_saw_owned" -ne 0 ] || [ "$p_saw_login" -ne 0 ] ||
+        [ "$p_saw_logins" -ne 0 ] || [ "${p_saw_chain_label:-0}" -ne 0 ] ||
+        [ "${p_saw_chain_displaced:-0}" -ne 0 ]; then
+        [ "$p_saw_owned" -eq 1 ] && [ "${p_saw_chain_label:-0}" -eq 1 ] &&
+            [ "${p_saw_chain_displaced:-0}" -eq 1 ] || return 1
+    fi
 
     result=""
     if [ "$p_saw_owned" -eq 1 ]; then
@@ -613,22 +639,32 @@ if [ "$record_present" -eq 1 ] && [ "$chain_assignee_owned" = "yes" ]; then
         sort -u)"
     predecessor_body="$(jq -r '.predecessor_body // ""' <<<"$claim_json")"
     predecessor_author="$(jq -r '.predecessor_author // ""' <<<"$claim_json")"
-    # A direct takeover owns only the current claimant's assignment, so it has
-    # no inherited login to prove. Its predecessor is still used elsewhere for
-    # label hand-back, but must not make this empty assignee set fail closed.
-    if [ -n "$inherited_assignees" ] && [ -n "$predecessor_body" ]; then
+    if [ -n "$predecessor_body" ]; then
         if ! predecessor_assignees="$(predecessor_owned_assignees "$predecessor_body" "$predecessor_author")"; then
             echo "$repo#$issue: inherited assignee provenance has no readable trusted predecessor claim record — fail closed" >&2
             exit 2
         fi
-        # A prior exit-4 may already have removed some proven owners before a
-        # later write failed. Compare against durable predecessor provenance,
-        # not today's live subset, so that retry remains possible; exact set
-        # equality still rejects a forged or dropped login.
-        if [ "$inherited_assignees" != "$predecessor_assignees" ]; then
-            echo "$repo#$issue: inherited assignee logins do not exactly match trusted predecessor ownership — fail closed" >&2
+        # A refreshed/takeover leaf may omit an owner that was already removed
+        # before it published; a retry may likewise observe an owner removed
+        # by an earlier successful release write. Both are safe only when the
+        # omitted predecessor owner is absent live. The current set must still
+        # be a subset of durable predecessor provenance, so no login is forged.
+        unproven_assignees="$(comm -23 \
+            <(printf '%s\n' "$inherited_assignees") \
+            <(printf '%s\n' "$predecessor_assignees"))"
+        if [ -n "$unproven_assignees" ]; then
+            echo "$repo#$issue: inherited assignee logins are not proven by the trusted predecessor — fail closed" >&2
             exit 2
         fi
+        while IFS= read -r missing_login; do
+            [ -n "$missing_login" ] || continue
+            if jq -e --arg a "$missing_login" '.assignees[] | select(.login == $a)' <<<"$issue_json" >/dev/null; then
+                echo "$repo#$issue: current claim omits a still-live trusted predecessor assignee — fail closed" >&2
+                exit 2
+            fi
+        done < <(comm -13 \
+            <(printf '%s\n' "$inherited_assignees") \
+            <(printf '%s\n' "$predecessor_assignees"))
     elif [ -n "$inherited_assignees" ]; then
         echo "$repo#$issue: inherited assignee provenance has no trusted predecessor claim record — fail closed" >&2
         exit 2

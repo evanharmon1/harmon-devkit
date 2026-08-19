@@ -507,7 +507,10 @@ actually added.
   assignee or still-present predecessor label only after confirming it still
   exists and the immediately preceding trusted claim record proves it was
   claim-owned. Copy every still-present, proven predecessor login into the new
-  set and add the current login when this leaf directly added it; never accept a
+  set and add the current login when this leaf directly added it; an omitted
+  predecessor login is valid only when it is already absent live, so release
+  can distinguish a completed partial cleanup from silently dropping a marker.
+  Never accept a
   login merely because it is currently assigned. A label newly added by this takeover is directly owned and
   initializes the chain to that label; otherwise write `no`, `n/a`, or `none`, because current
   state cannot prove a same-text marker was not independently re-added later.
