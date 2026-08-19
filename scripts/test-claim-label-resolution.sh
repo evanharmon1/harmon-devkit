@@ -211,6 +211,8 @@ fi
 
 grep -F 'if ! gh label list' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label vocabulary read must fail closed"
 grep -F 'if ! gh issue view' ai/skills/universal/claim/SKILL.md >/dev/null || fail "issue-label read must fail closed"
+grep -F 'if ! registry_entry="$(git ls-tree "$default" -- agent-registry.json)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "registry existence probe must fail closed"
+grep -F 'if ! git show "$default:agent-registry.json" >"$registry"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "present registry read must fail closed"
 grep -F -- '--project-management "$project_management"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must pass the trusted project mode"
 grep -F '[ "$target" = "n/a" ]' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label-less takeover must omit the add-label operation"
 if grep -Eq 'claim:(claude|gpt)|agent:(claude-code|codex)' \
