@@ -392,6 +392,45 @@ else
     bad "schema-invalid registry metadata fails closed with a diagnostic"
 fi
 
+semantic_axis_type="$tmproot/semantic-axis-type"
+mkdir -p "$semantic_axis_type"
+write_registry "$semantic_axis_type" api
+write_labels "$semantic_axis_type" api
+jq '.families[0].axis = 42' "$semantic_axis_type/label-registry.json" \
+    >"$semantic_axis_type/registry.json"
+mv "$semantic_axis_type/registry.json" "$semantic_axis_type/label-registry.json"
+jq '.["$defs"].family.properties.axis = {}' "$semantic_axis_type/label-registry.schema.json" \
+    >"$semantic_axis_type/schema.json"
+mv "$semantic_axis_type/schema.json" "$semantic_axis_type/label-registry.schema.json"
+if discover "$semantic_axis_type" >"$semantic_axis_type/output" 2>"$semantic_axis_type/error"; then
+    bad "a target schema cannot certify a non-string axis"
+elif [ ! -s "$semantic_axis_type/output" ] &&
+    grep -q 'family\[0\]\.axis is unsupported: 42' "$semantic_axis_type/error"; then
+    ok "non-string axes fail the asset's semantic validation"
+else
+    bad "non-string axes fail closed with a semantic diagnostic"
+fi
+
+semantic_axis_value="$tmproot/semantic-axis-value"
+mkdir -p "$semantic_axis_value"
+write_registry "$semantic_axis_value" api
+write_labels "$semantic_axis_value" api
+jq '.families[0].axis = "target-defined"' "$semantic_axis_value/label-registry.json" \
+    >"$semantic_axis_value/registry.json"
+mv "$semantic_axis_value/registry.json" "$semantic_axis_value/label-registry.json"
+jq '.["$defs"].family.properties.axis = {}' "$semantic_axis_value/label-registry.schema.json" \
+    >"$semantic_axis_value/schema.json"
+mv "$semantic_axis_value/schema.json" "$semantic_axis_value/label-registry.schema.json"
+if discover "$semantic_axis_value" >"$semantic_axis_value/output" 2>"$semantic_axis_value/error"; then
+    bad "a target schema cannot extend the supported axis vocabulary"
+elif [ ! -s "$semantic_axis_value/output" ] &&
+    grep -q 'family\[0\]\.axis is unsupported: "target-defined"' \
+        "$semantic_axis_value/error"; then
+    ok "unknown axes fail the asset's semantic validation"
+else
+    bad "unknown axes fail closed with a semantic diagnostic"
+fi
+
 unsafe_schema="$tmproot/unsafe-schema"
 mkdir -p "$unsafe_schema"
 write_registry "$unsafe_schema" api
