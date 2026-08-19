@@ -83,6 +83,7 @@ in the claim record, never in the label.
   - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
   - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
   - assignee owned by this claim chain: <yes|no>
+  - assignee login owned by this claim chain: <the exact assignee login | none>
   - `claim:` label owned by this claim chain: <the exact still-present label | no | n/a>
   - `claim:` label displaced by this claim chain: <claim:gpt | agent:codex (legacy) | none>
   ```
@@ -109,14 +110,19 @@ in the claim record, never in the label.
   `yes` (older still) name no label; the parser falls back to every live
   `claim:*` **and** `agent:*` label on the issue.
 - **Current ownership is explicit (v2).** New records carry the final three
-  `claim chain` fields. A fresh claim initializes them from its direct
-  `added by this claim` fields. A refresh or a new-session takeover copies
-  them only for markers that are still present and whose predecessor chain
-  proves ownership; it writes `no`/`n/a` for a marker that predated the chain,
-  disappeared, or was independently introduced. The current record is then
-  sufficient for release: it removes inherited labels and assignees without
-  relying on the replacement author having added them. This is intentionally
-  an explicit transfer rather than a best-effort union of historical comments:
+  core `claim chain` fields. Fresh records also record the owned assignee login
+  (v2 records that predate that companion retain the author fallback). A fresh
+  claim initializes the core fields from its direct `added by this claim`
+  fields. A refresh
+  or a new-session takeover copies an assignee or still-present label only
+  when its predecessor chain proves ownership; it writes `no`/`n/a` for a
+  marker that predated the chain, disappeared, or was independently introduced.
+  Its displaced label is different: it is normally absent while the takeover
+  is live, so carry it when the predecessor proves it displaced the label.
+  The current record is then sufficient for release: it removes the inherited
+  assignee by login and restores a proven displaced label without relying on
+  the replacement author having added them. This is intentionally an explicit
+  transfer rather than a best-effort union of historical comments:
   GitHub's current marker state cannot distinguish a pre-existing label from a
   later independent re-add of the same text. When that provenance cannot be
   proven, record it as unowned and leave it in place. The parser accepts v1

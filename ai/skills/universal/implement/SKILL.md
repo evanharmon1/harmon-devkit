@@ -90,9 +90,10 @@ issue, and two agents start implementing.
 3. **Claimed by you** — and the markers are **not equally good evidence of
    who**, so rank them rather than accepting any one:
    - **Strong** — a claim comment naming *this session*, **authored by you**,
-     not superseded by a later `Claim released —`. `/claim` writes exactly
-     that record, which is why it is the one marker that answers "who", not
-     merely "someone". The session name alone; the branch it records is **not**
+     the latest trusted `Claiming —` comment after the latest trusted `Claim
+     released —` comment. `/claim` writes exactly that record, which is why it
+     is the one marker that answers "who", not merely "someone". The session
+     name alone; the branch it records is **not**
      identity evidence, for the reason below.
 
      **Check the author, not just the text.** A claim comment is ordinary issue
@@ -213,9 +214,12 @@ unmerged PR's claim only when the PR's head matches it
 (`track-work/references/claim-lifecycle.md`). Post a new `Claiming —` comment
 with the real branch and the same record values. Its one successful append
 supersedes the predecessor for readers; if it fails, the predecessor remains
-the sole current record. Carry the three `claim chain` ownership fields over
-verbatim as well: direct `added by this claim` fields describe the refresh,
-while chain fields preserve the original marker ownership for release.
+the sole current record. Re-prove each chain field before carrying it: a
+same-text marker independently re-added after the first claim is not owned by
+the refresh. The displaced-label chain value is the exception to presence — it
+is expected to be absent while the takeover is live, so carry it only from
+proven predecessor displacement. Direct `added by this claim` fields describe
+the refresh, while proven chain fields preserve original ownership for release.
 **Copy the `Preflight (§3):` block over verbatim
 too**, where the claim comment carries one: it is the durable record of the
 credential gaps and human-only steps that claim found, and the refreshed

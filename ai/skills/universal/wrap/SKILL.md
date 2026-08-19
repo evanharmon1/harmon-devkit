@@ -184,7 +184,9 @@ read it in the UI) — never guess.
     are all add-if-missing, so on that path they changed nothing. Removing
     them anyway destroys state the session never created, and no amount of
     user approval recovers it, because by then nobody can tell which it was.
-    Use the three `claim chain` fields when present; they are authoritative
+    Use the three core `claim chain` fields when present; their optional
+    assignee-login companion identifies an inherited assignment's owner.
+    They are authoritative
     current ownership after a refresh or takeover. Skip any line the record
     marks `no`; if no record survives, ask rather than assume the claim
     created everything.

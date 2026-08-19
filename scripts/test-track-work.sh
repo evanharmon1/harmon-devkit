@@ -2864,6 +2864,7 @@ if grep -q -- '--remove-assignee' "$rc_log"; then fail "an assignee the claim di
 # claim-chain fields rather than strand the predecessor's markers (#533/#537).
 body_chain_takeover="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/no/')
 - assignee owned by this claim chain: yes
+- assignee login owned by this claim chain: evanharmon1
 - agent: label owned by this claim chain: agent:claude-code
 - agent: label displaced by this claim chain: none"
 echo "==> a refreshed current record releases inherited predecessor ownership"
@@ -2875,6 +2876,19 @@ grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
     fail "the current chain record must remove the inherited assignee"
 
+echo "==> a cross-account takeover releases the inherited assignee by recorded login"
+body_chain_cross_account="$(printf '%s' "$body_chain_takeover" |
+    sed 's/assignee login owned by this claim chain: evanharmon1/assignee login owned by this claim chain: collaborator/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_cross_account" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a cross-account chain claim should release"
+grep -q -- '--remove-assignee collaborator' "$rc_log" ||
+    fail "the recorded inherited assignee must be removed"
+if grep -q -- '--remove-assignee evanharmon1' "$rc_log"; then
+    fail "the replacement author must not replace the inherited assignee target"
+fi
+
 echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"
 [ "$(run_release --reason r)" = 0 ] ||
@@ -2885,6 +2899,7 @@ grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
 echo "==> independently owned later markers stay protected by an unowned current chain"
 body_chain_unowned="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/no/')
 - assignee owned by this claim chain: no
+- assignee login owned by this claim chain: none
 - agent: label owned by this claim chain: no
 - agent: label displaced by this claim chain: none"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \

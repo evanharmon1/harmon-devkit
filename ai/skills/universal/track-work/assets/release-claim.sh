@@ -286,12 +286,14 @@ saw_assignee=0
 saw_label=0
 saw_displaced=0
 saw_chain_assignee=0
+saw_chain_assignee_login=0
 saw_chain_label=0
 saw_chain_displaced=0
 assignee_added=""
 label_added=""
 label_displaced=""
 chain_assignee_owned=""
+chain_assignee_login=""
 chain_label_owned=""
 chain_label_displaced=""
 extract_value() {
@@ -336,6 +338,10 @@ while IFS= read -r line; do
     *"assignee owned by this claim chain:"*)
         saw_chain_assignee=1
         chain_assignee_owned="$(lower "$(extract_chain_value "$line")")"
+        ;;
+    *"assignee login owned by this claim chain:"*)
+        saw_chain_assignee_login=1
+        chain_assignee_login="$(extract_chain_value "$line")"
         ;;
     *"label owned by this claim chain:"*)
         saw_chain_label=1
@@ -401,6 +407,18 @@ if [ "$record_present" -eq 1 ]; then
             exit 2
             ;;
         esac
+        # v2 records did not carry the inherited assignee's login, so retain
+        # their legacy author fallback.  New takeover records supply it: the
+        # current record can then release the predecessor's assignment rather
+        # than removing the replacement author and leaving the old marker.
+        if [ "$saw_chain_assignee_login" -ne 0 ]; then
+            if [ "$saw_chain_assignee_login" -ne 1 ] || [ -z "$chain_assignee_login" ] ||
+                { [ "$chain_assignee_owned" = "yes" ] && { [ "$chain_assignee_login" = "none" ] || ! valid_login "$chain_assignee_login"; }; } ||
+                { [ "$chain_assignee_owned" = "no" ] && [ "$chain_assignee_login" != "none" ]; }; then
+                echo "$repo#$issue: claim-chain assignee login is unreadable ('$chain_assignee_login') — fail closed" >&2
+                exit 2
+            fi
+        fi
         case "$(lower "$chain_label_owned")" in
         no | n/a | none) ;;
         *)
@@ -458,8 +476,12 @@ if [ "$record_present" -eq 1 ]; then
 fi
 
 remove_assignee=0
+assignee_to_remove="$claim_author"
+if [ "$chain_assignee_login" != "none" ] && [ -n "$chain_assignee_login" ]; then
+    assignee_to_remove="$chain_assignee_login"
+fi
 if [ "$record_present" -eq 1 ] && [ "$assignee_added" = "yes" ]; then
-    if jq -e --arg a "$claim_author" \
+    if jq -e --arg a "$assignee_to_remove" \
         '.assignees[] | select(.login == $a)' <<<"$issue_json" >/dev/null; then
         remove_assignee=1
     fi
@@ -560,13 +582,13 @@ fi
 assignee_removed=0
 if [ "$remove_assignee" -eq 1 ]; then
     if [ "$marker_failed" -eq 1 ]; then
-        note "assignee \`$claim_author\`: left in place — an earlier write failed and the assignment keeps the retry trusted"
-    elif run_write gh issue edit "$issue" --repo "$repo" --remove-assignee "$claim_author" >/dev/null; then
+        note "assignee \`$assignee_to_remove\`: left in place — an earlier write failed and the assignment keeps the retry trusted"
+    elif run_write gh issue edit "$issue" --repo "$repo" --remove-assignee "$assignee_to_remove" >/dev/null; then
         assignee_removed=1
-        note "assignee \`$claim_author\`: removed"
+        note "assignee \`$assignee_to_remove\`: removed"
     else
         marker_failed=1
-        echo "$repo#$issue: failed to remove assignee '$claim_author'" >&2
+        echo "$repo#$issue: failed to remove assignee '$assignee_to_remove'" >&2
     fi
 elif [ "$record_present" -eq 1 ]; then
     note "assignee: left in place (the claim record says the claim did not add it, or it is already gone)"
