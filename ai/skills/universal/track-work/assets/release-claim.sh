@@ -146,6 +146,9 @@ for tool in gh jq; do
     }
 done
 
+lineage_tmp="$(mktemp -d)"
+trap 'rm -rf "$lineage_tmp"' EXIT
+
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # Accepts both the legacy harness-named family (`agent:*`) and the
@@ -215,17 +218,42 @@ fetch_claim() {
                 and (trusted_claimant or dl == "github-actions[bot]");
             add // []
             | map(select(.body != null))
-            | map(select(trusted_claimant or trusted_release))
-            | (map((.body | startswith("Claiming —")) and trusted_claimant)
+            | map(select(trusted_claimant or trusted_release)) as $events
+            | ($events
+               | map((.body | startswith("Claiming —")) and trusted_claimant)
                | rindex(true)) as $ci
             | if $ci == null then {found: false}
-              else {found: true,
-                    id: .[$ci].id,
-                    updated: (.[$ci].updated_at // ""),
-                    author: .[$ci].user.login,
-                    body: .[$ci].body,
-                    too_new: ($cutoff != "" and .[$ci].created_at >= $cutoff),
-                    superseded: ([.[($ci + 1):][]
+              else ([range(0; $ci) as $i
+                     | select($events[$i] | trusted_release)
+                     | $i] | last // -1) as $release_before
+              | ([range($release_before + 1; $ci) as $i
+                  | select($events[$i]
+                           | ((.body | startswith("Claiming —"))
+                              and trusted_claimant))
+                  | $i] | last // null) as $pi
+              | {found: true,
+                    id: $events[$ci].id,
+                    updated: ($events[$ci].updated_at // ""),
+                    author: $events[$ci].user.login,
+                    body: $events[$ci].body,
+                    predecessor:
+                        (if $pi == null then null
+                         else {id: $events[$pi].id,
+                               updated: ($events[$pi].updated_at // ""),
+                               author: $events[$pi].user.login,
+                               body: $events[$pi].body}
+                         end),
+                    lineage:
+                        ([range($release_before + 1; $ci + 1) as $i
+                          | select($events[$i]
+                                   | ((.body | startswith("Claiming —"))
+                                      and trusted_claimant))
+                          | {id: $events[$i].id,
+                             updated: ($events[$i].updated_at // ""),
+                             author: $events[$i].user.login,
+                             body: $events[$i].body}]),
+                    too_new: ($cutoff != "" and $events[$ci].created_at >= $cutoff),
+                    superseded: ([$events[($ci + 1):][]
                                   | select(.body
                                            | startswith("Claim released —"))]
                                  | length > 0)}
@@ -251,6 +279,7 @@ if [ "$(jq -r '.too_new' <<<"$claim_json")" = "true" ]; then
 fi
 claim_id="$(jq -r '.id' <<<"$claim_json")"
 claim_author="$(jq -r '.author // empty' <<<"$claim_json")"
+claim_lineage_fingerprint="$(jq -c '[.lineage[] | {id, updated}]' <<<"$claim_json")"
 
 # With --branch (the unmerged-PR path), release only the claim that PR owns:
 # the claim's first line names its branch, and a claim for a different
@@ -285,6 +314,7 @@ record_present=0
 saw_assignee=0
 saw_label=0
 saw_displaced=0
+saw_chain_assignee_set=0
 saw_chain_assignee=0
 saw_chain_assignee_login=0
 saw_chain_label=0
@@ -292,11 +322,14 @@ saw_chain_displaced=0
 assignee_added=""
 label_added=""
 label_displaced=""
+chain_assignee_set=""
 chain_assignee_owned=""
 chain_assignee_login=""
 chain_label_owned=""
 chain_label_displaced=""
 direct_assignee_added="no"
+owned_assignees_file="$lineage_tmp/owned-assignees"
+: >"$owned_assignees_file"
 extract_value() {
     v="${1#*by this claim:}"
     v="${v%%,*}"
@@ -318,6 +351,117 @@ extract_chain_value() {
     printf '%s' "$v"
 }
 
+line_value() {
+    v="${1#*claim chain:}"
+    v="${v#*by this claim:}"
+    v="${v//\`/}"
+    v="${v//\"/}"
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+    printf '%s' "$v"
+}
+
+optional_body_value() {
+    local prefix="$1" body="$2"
+    awk -v prefix="$prefix" '
+        index($0, prefix) == 1 { count++; value = substr($0, length(prefix) + 1) }
+        END {
+            if (count > 1 || (count == 1 && value == "")) exit 2
+            if (count == 1) print value
+        }
+    ' <<<"$body"
+}
+
+canonical_login_set() {
+    local value="$1"
+    [ "$value" != none ] || return 0
+    jq -er --arg value "$value" '
+        ($value | split(",")) as $items
+        | select(($items | length) > 0)
+        | select(all($items[];
+            test("^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$")
+            and . == ascii_downcase))
+        | select(($items | sort | unique | join(",")) == $value)
+        | $items[]
+    ' <<<'null'
+}
+
+set_has() {
+    grep -Fxq "$2" "$1"
+}
+
+# Validate the complete trusted claim run, oldest to newest. A v3 leaf may
+# retain only targets proven by its immediate predecessor and may add only its
+# own direct assignment. Older scalar records are accepted, but their target
+# must pass the same proof; their predecessor set is retained instead of being
+# discarded by the retired direct-ownership-outranks-inheritance rule.
+prove_assignee_lineage() {
+    local lineage_json="$1" count i body author direct set_value old_owned old_login target
+    local proven="$lineage_tmp/proven" next="$lineage_tmp/next" candidate="$lineage_tmp/candidate"
+    : >"$proven"
+    count="$(jq '.lineage | length' <<<"$lineage_json")"
+    i=0
+    while [ "$i" -lt "$count" ]; do
+        body="$(jq -r --argjson i "$i" '.lineage[$i].body' <<<"$lineage_json")"
+        author="$(jq -r --argjson i "$i" '.lineage[$i].author | ascii_downcase' <<<"$lineage_json")"
+        valid_login "$author" || return 1
+        if ! direct="$(optional_body_value '- assignee added by this claim: ' "$body")"; then
+            return 1
+        fi
+        direct="$(lower "$(line_value "$direct")")"
+        case "$direct" in yes | no) ;; *) return 1 ;; esac
+
+        if ! set_value="$(optional_body_value '- assignee logins owned by this claim chain: ' "$body")"; then
+            return 1
+        fi
+        if [ -n "$set_value" ]; then
+            set_value="$(line_value "$set_value")"
+            if ! canonical_login_set "$set_value" >"$candidate"; then
+                return 1
+            fi
+            while IFS= read -r target; do
+                [ -n "$target" ] || continue
+                set_has "$proven" "$target" || { [ "$direct" = yes ] && [ "$target" = "$author" ]; } || return 1
+            done <"$candidate"
+            if [ "$direct" = yes ] && ! set_has "$candidate" "$author"; then
+                return 1
+            fi
+            sort -u "$candidate" >"$next"
+            mv "$next" "$proven"
+            i=$((i + 1))
+            continue
+        fi
+
+        if ! old_owned="$(optional_body_value '- assignee owned by this claim chain: ' "$body")" ||
+            ! old_login="$(optional_body_value '- assignee login owned by this claim chain: ' "$body")"; then
+            return 1
+        fi
+        : >"$next"
+        if [ -n "$old_owned" ] || [ -n "$old_login" ]; then
+            old_owned="$(lower "$(line_value "$old_owned")")"
+            old_login="$(lower "$(line_value "$old_login")")"
+            case "$old_owned" in
+            yes)
+                [ -n "$old_login" ] || old_login="$author"
+                [ "$old_login" != none ] && valid_login "$old_login" || return 1
+                if ! set_has "$proven" "$old_login"; then
+                    [ "$direct" = yes ] && [ "$old_login" = "$author" ] || return 1
+                fi
+                cat "$proven" >"$next"
+                ;;
+            no)
+                [ -z "$old_login" ] || [ "$old_login" = none ] || return 1
+                ;;
+            *) return 1 ;;
+            esac
+        fi
+        [ "$direct" = yes ] && printf '%s\n' "$author" >>"$next"
+        sort -u "$next" >"$proven"
+        i=$((i + 1))
+    done
+    cat "$proven"
+}
+
 # Optional harness/model/family/runtime-environment/session lines are
 # operational metadata only. They are deliberately ignored here: release
 # authority comes solely from the required "by this claim" fields below, and
@@ -336,6 +480,10 @@ while IFS= read -r line; do
     *"label displaced by this claim:"*)
         saw_displaced=1
         label_displaced="$(extract_value "$line")"
+        ;;
+    *"assignee logins owned by this claim chain:"*)
+        saw_chain_assignee_set=1
+        chain_assignee_set="$(line_value "$line")"
         ;;
     *"assignee owned by this claim chain:"*)
         saw_chain_assignee=1
@@ -396,35 +544,42 @@ if [ "$record_present" -eq 1 ]; then
         fi
         ;;
     esac
-    # v2 makes current ownership explicit.  The three fields are one unit:
-    # accepting a partial lineage would be worse than the v1 fallback because
-    # it could clear only one inherited marker and then publish a release.
-    if [ "$saw_chain_assignee" -ne 0 ] || [ "$saw_chain_assignee_login" -ne 0 ] ||
+    chain_record=0
+    if [ "$saw_chain_assignee_set" -ne 0 ]; then
+        chain_record=1
+        if [ "$saw_chain_assignee_set" -ne 1 ] || [ -z "$chain_assignee_set" ] ||
+            [ "$saw_chain_assignee" -ne 0 ] || [ "$saw_chain_assignee_login" -ne 0 ] ||
+            [ "$saw_chain_label" -ne 1 ] || [ "$saw_chain_displaced" -ne 1 ]; then
+            echo "$repo#$issue: claim record has incomplete or mixed claim-chain ownership — fail closed" >&2
+            exit 2
+        fi
+        if ! canonical_login_set "$chain_assignee_set" >/dev/null; then
+            echo "$repo#$issue: claim-chain assignee set is noncanonical ('$chain_assignee_set') — fail closed" >&2
+            exit 2
+        fi
+    elif [ "$saw_chain_assignee" -ne 0 ] || [ "$saw_chain_assignee_login" -ne 0 ] ||
         [ "$saw_chain_label" -ne 0 ] || [ "$saw_chain_displaced" -ne 0 ]; then
+        chain_record=1
         if [ "$saw_chain_assignee" -ne 1 ] || [ "$saw_chain_label" -ne 1 ] || [ "$saw_chain_displaced" -ne 1 ] ||
             [ -z "$chain_assignee_owned" ] || [ -z "$chain_label_owned" ] || [ -z "$chain_label_displaced" ]; then
             echo "$repo#$issue: claim record has incomplete claim-chain ownership — fail closed" >&2
             exit 2
         fi
-        case "$chain_assignee_owned" in
-        yes | no) ;;
-        *)
+        case "$chain_assignee_owned" in yes | no) ;; *)
             echo "$repo#$issue: claim-chain assignee ownership is unreadable ('$chain_assignee_owned') — fail closed" >&2
             exit 2
             ;;
         esac
-        # v2 records did not carry the inherited assignee's login, so retain
-        # their legacy author fallback.  New takeover records supply it: the
-        # current record can then release the predecessor's assignment rather
-        # than removing the replacement author and leaving the old marker.
         if [ "$saw_chain_assignee_login" -ne 0 ]; then
             if [ "$saw_chain_assignee_login" -ne 1 ] || [ -z "$chain_assignee_login" ] ||
-                { [ "$chain_assignee_owned" = "yes" ] && { [ "$chain_assignee_login" = "none" ] || ! valid_login "$chain_assignee_login"; }; } ||
-                { [ "$chain_assignee_owned" = "no" ] && [ "$chain_assignee_login" != "none" ]; }; then
+                { [ "$chain_assignee_owned" = yes ] && { [ "$chain_assignee_login" = none ] || ! valid_login "$chain_assignee_login"; }; } ||
+                { [ "$chain_assignee_owned" = no ] && [ "$chain_assignee_login" != none ]; }; then
                 echo "$repo#$issue: claim-chain assignee login is unreadable ('$chain_assignee_login') — fail closed" >&2
                 exit 2
             fi
         fi
+    fi
+    if [ "$chain_record" -eq 1 ]; then
         case "$(lower "$chain_label_owned")" in
         no | n/a | none) ;;
         *)
@@ -445,9 +600,17 @@ if [ "$record_present" -eq 1 ]; then
         esac
         # The current leaf, not its author, owns inherited provenance. This is
         # what makes a crashed-session takeover release predecessor markers.
-        assignee_added="$chain_assignee_owned"
         label_added="$chain_label_owned"
         label_displaced="$chain_label_displaced"
+    fi
+
+    if [ "$chain_record" -eq 1 ]; then
+        if ! prove_assignee_lineage "$claim_json" >"$owned_assignees_file"; then
+            echo "$repo#$issue: inherited assignee targets lack unambiguous predecessor provenance — fail closed" >&2
+            exit 2
+        fi
+    elif [ "$direct_assignee_added" = yes ]; then
+        printf '%s\n' "$(lower "$claim_author")" >"$owned_assignees_file"
     fi
 fi
 
@@ -481,17 +644,15 @@ if [ "$record_present" -eq 1 ]; then
     esac
 fi
 
-remove_assignee=0
-assignee_to_remove="$claim_author"
-if [ "$chain_assignee_login" != "none" ] && [ -n "$chain_assignee_login" ]; then
-    assignee_to_remove="$chain_assignee_login"
-fi
-if [ "$record_present" -eq 1 ] && [ "$assignee_added" = "yes" ]; then
-    if jq -e --arg a "$assignee_to_remove" \
-        '.assignees[] | select(.login == $a)' <<<"$issue_json" >/dev/null; then
-        remove_assignee=1
+assignees_to_remove="$lineage_tmp/assignees-to-remove"
+: >"$assignees_to_remove"
+while IFS= read -r owned; do
+    [ -n "$owned" ] || continue
+    if jq -e --arg a "$owned" 'any(.assignees[]?; (.login | ascii_downcase) == $a)' \
+        <<<"$issue_json" >/dev/null; then
+        printf '%s\n' "$owned" >>"$assignees_to_remove"
     fi
-fi
+done <"$owned_assignees_file"
 
 restore_displaced=""
 displaced_note=""
@@ -534,6 +695,7 @@ recheck_updated="$(jq -r '.updated // ""' <<<"$recheck_json")"
 claim_updated="$(jq -r '.updated // ""' <<<"$claim_json")"
 if [ "$recheck_id" != "$claim_id" ] ||
     [ "$recheck_updated" != "$claim_updated" ] ||
+    [ "$(jq -c '[.lineage[] | {id, updated}]' <<<"$recheck_json")" != "$claim_lineage_fingerprint" ] ||
     [ "$(jq -r '.superseded' <<<"$recheck_json")" = "true" ]; then
     echo "$repo#$issue: the claim of record changed between read and write — leaving it for the next event" >&2
     exit 3
@@ -585,34 +747,29 @@ fi
 # it only once everything else has succeeded, so a failed earlier write stays
 # retryable (see claim-lifecycle.md's residual-gap note for the one write
 # this cannot protect).
-assignee_removed=0
-direct_assignee_removed=0
-if [ "$remove_assignee" -eq 1 ]; then
-    if [ "$marker_failed" -eq 1 ]; then
-        note "assignee \`$assignee_to_remove\`: left in place — an earlier write failed and the assignment keeps the retry trusted"
-    elif run_write gh issue edit "$issue" --repo "$repo" --remove-assignee "$assignee_to_remove" >/dev/null; then
-        assignee_removed=1
-        note "assignee \`$assignee_to_remove\`: removed"
-    else
-        marker_failed=1
-        echo "$repo#$issue: failed to remove assignee '$assignee_to_remove'" >&2
-    fi
-elif [ "$record_present" -eq 1 ]; then
-    note "assignee: left in place (the claim record says the claim did not add it, or it is already gone)"
-fi
-
-if [ "$record_present" -eq 1 ] && [ "$direct_assignee_added" = "yes" ] && [ "$claim_author" != "$assignee_to_remove" ]; then
-    if [ "$marker_failed" -eq 1 ]; then
-        note "assignee \`$claim_author\`: left in place — an earlier write failed and the assignment keeps the retry trusted"
-    elif jq -e --arg a "$claim_author" '.assignees[] | select(.login == $a)' <<<"$issue_json" >/dev/null; then
-        if run_write gh issue edit "$issue" --repo "$repo" --remove-assignee "$claim_author" >/dev/null; then
-            direct_assignee_removed=1
-            note "assignee \`$claim_author\`: removed"
+assignees_removed="$lineage_tmp/assignees-removed"
+assignee_order="$lineage_tmp/assignee-order"
+: >"$assignees_removed"
+claim_author_lower="$(lower "$claim_author")"
+{
+    grep -Fvx "$claim_author_lower" "$assignees_to_remove" || true
+    grep -Fx "$claim_author_lower" "$assignees_to_remove" || true
+} >"$assignee_order"
+if [ -s "$assignee_order" ]; then
+    while IFS= read -r assignee_to_remove; do
+        [ -n "$assignee_to_remove" ] || continue
+        if [ "$marker_failed" -eq 1 ]; then
+            note "assignee \`$assignee_to_remove\`: left in place — an earlier write failed and an assignment keeps the retry trusted"
+        elif run_write gh issue edit "$issue" --repo "$repo" --remove-assignee "$assignee_to_remove" >/dev/null; then
+            printf '%s\n' "$assignee_to_remove" >>"$assignees_removed"
+            note "assignee \`$assignee_to_remove\`: removed"
         else
             marker_failed=1
-            echo "$repo#$issue: failed to remove assignee '$claim_author'" >&2
+            echo "$repo#$issue: failed to remove assignee '$assignee_to_remove'" >&2
         fi
-    fi
+    done <"$assignee_order"
+elif [ "$record_present" -eq 1 ]; then
+    note "assignee: left in place (the proven ownership set is empty or its members are already gone)"
 fi
 
 if [ "$record_present" -eq 0 ]; then
@@ -645,20 +802,17 @@ elif ! printf '%s\n' "$body" | gh issue comment "$issue" --repo "$repo" --body-f
     # only while the claim is still live: a concurrent run may have posted
     # the release between our recheck and this failure, and re-adding the
     # assignee over a completed release would strand a stale assignment.
-    if [ "$assignee_removed" -eq 1 ] &&
+    if [ -s "$assignees_removed" ] &&
         post_fail_json="$(fetch_claim)" &&
-        [ "$(jq -r '.superseded' <<<"$post_fail_json")" != "true" ]; then
-        if gh issue edit "$issue" --repo "$repo" --add-assignee "$assignee_to_remove" >/dev/null; then
-            echo "$repo#$issue: re-added assignee '$assignee_to_remove' so the retry stays trusted and the claim stays findable" >&2
-        else
-            echo "$repo#$issue: could not re-add assignee '$assignee_to_remove' — a retry may need the owner's hand" >&2
-        fi
-    fi
-    if [ "$direct_assignee_removed" -eq 1 ] &&
-        post_fail_json="$(fetch_claim)" &&
-        [ "$(jq -r '.superseded' <<<"$post_fail_json")" != "true" ]; then
-        gh issue edit "$issue" --repo "$repo" --add-assignee "$claim_author" >/dev/null ||
-            echo "$repo#$issue: could not re-add assignee '$claim_author' — a retry may need the owner's hand" >&2
+        [ "$(jq -r '.superseded' <<<"$post_fail_json")" != true ]; then
+        while IFS= read -r removed_assignee; do
+            [ -n "$removed_assignee" ] || continue
+            if gh issue edit "$issue" --repo "$repo" --add-assignee "$removed_assignee" >/dev/null; then
+                echo "$repo#$issue: re-added assignee '$removed_assignee' so the retry stays trusted and the claim stays findable" >&2
+            else
+                echo "$repo#$issue: could not re-add assignee '$removed_assignee' — a retry may need the owner's hand" >&2
+            fi
+        done <"$assignees_removed"
     fi
     exit 1
 fi
