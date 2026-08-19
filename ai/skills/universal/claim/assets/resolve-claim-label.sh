@@ -84,6 +84,15 @@ esac
 
 family=""
 legacy_labels=""
+legacy_labels_for_pre_field_registry() {
+    case "$1" in
+    claude) printf '%s\n' agent:claude-code ;;
+    gpt) printf '%s\n' agent:codex ;;
+    gemini) printf '%s\n' agent:gemini-cli ;;
+    kimi) printf '%s\n' agent:kimi-k2 ;;
+    qwen) printf '%s\n' agent:qwen-code ;;
+    esac
+}
 if [ -n "$registry" ]; then
     [ -r "$registry" ] || {
         echo "claim identity: registry is unreadable" >&2
@@ -144,7 +153,14 @@ if [ -n "$registry" ]; then
             exit 20
         }
     fi
-    legacy_labels="$(jq -r --arg family "$family" '.families[] | select(.slug == $family) | .legacy_claim_labels[]?' "$registry")"
+    if [ "$(jq -r --arg family "$family" '.families[] | select(.slug == $family) | has("legacy_claim_labels")' "$registry")" = true ]; then
+        legacy_labels="$(jq -r --arg family "$family" '.families[] | select(.slug == $family) | .legacy_claim_labels[]' "$registry")"
+    else
+        # The claim skill is deliberately released before registry/provisioning
+        # migrations. Keep the finite pre-field aliases with the skill so that
+        # a freshly synced resolver can still claim a legacy-only repository.
+        legacy_labels="$(legacy_labels_for_pre_field_registry "$family")"
+    fi
 else
     family="$runtime_family"
 fi
@@ -156,6 +172,10 @@ conflicts=""
 while IFS= read -r label; do
     case "$label" in
     claim:*)
+        if [[ ! "$label" =~ ^claim:[a-z0-9]+(-[a-z0-9]+)*(:[a-z0-9]+(-[a-z0-9]+)*)?$ ]]; then
+            echo "claim identity: malformed ownership label '$label'" >&2
+            exit 20
+        fi
         label_family="${label#claim:}"
         label_family="${label_family%%:*}"
         if [ "$label_family" != "$family" ]; then

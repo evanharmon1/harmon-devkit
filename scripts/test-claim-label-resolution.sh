@@ -104,8 +104,8 @@ printf '%s\n' "$out" | grep -Fx 'target_label=agent:codex' >/dev/null || fail "l
 
 jq '(.families[] | select(.slug == "gpt")) |= del(.legacy_claim_labels)' \
     agent-registry.json >"$tmp/pre-migration-registry.json"
-if "$resolver" --registry "$tmp/pre-migration-registry.json" --harness codex-cli --runtime-family gpt --project-management github --available-labels "$tmp/legacy-available" --issue-labels "$issue" >/dev/null 2>&1; then fail "undeclared legacy aliases must fail closed"; else status=$?; fi
-[ "$status" = 20 ] || fail "undeclared legacy aliases exited $status, want 20"
+out="$("$resolver" --registry "$tmp/pre-migration-registry.json" --harness codex-cli --runtime-family gpt --project-management github --available-labels "$tmp/legacy-available" --issue-labels "$issue")" || fail "pre-field registry legacy fallback failed"
+printf '%s\n' "$out" | grep -Fx 'target_label=agent:codex' >/dev/null || fail "pre-field registry selected the wrong legacy fallback"
 
 printf '%s\n' claim:gpt:terra >"$tmp/model-only-available"
 printf '%s\n' claim:gpt:terra >"$issue"
@@ -137,6 +137,10 @@ jq '(.families[] | select(.slug == "claude")).legacy_claim_labels = ["agent:shar
 if "$resolver" --registry "$tmp/ambiguous-alias-registry.json" --harness codex-cli --runtime-family gpt --project-management github --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then fail "duplicate legacy aliases must fail closed"; else status=$?; fi
 [ "$status" = 20 ] || fail "duplicate legacy aliases exited $status, want 20"
 
+printf '%s\n' claim:gpt:model:extra >"$issue"
+if run --harness codex-cli --runtime-family gpt >/dev/null 2>&1; then fail "malformed same-family claim marker must fail closed"; else status=$?; fi
+[ "$status" = 20 ] || fail "malformed same-family claim marker exited $status, want 20"
+
 echo "==> label-less project modes retain the assignee/comment fallback"
 : >"$available"
 : >"$issue"
@@ -152,6 +156,16 @@ for project_management in none linear; do
     printf '%s\n' "$out" | grep -Fx 'existing_label=' >/dev/null ||
         fail "project_management=$project_management reported an existing marker"
 done
+printf '%s\n' claim:claude >"$issue"
+if "$resolver" --registry agent-registry.json --harness codex-cli \
+    --runtime-family gpt --project-management none \
+    --available-labels "$available" --issue-labels "$issue" >"$tmp/out" 2>&1; then
+    fail "label-less takeover should require approval"
+else
+    status=$?
+fi
+[ "$status" = 10 ] || fail "label-less takeover exited $status, want 10"
+grep -Fx 'target_label=n/a' "$tmp/out" >/dev/null || fail "label-less takeover did not preserve the n/a target"
 if "$resolver" --registry agent-registry.json --harness codex-cli \
     --runtime-family gpt --project-management github \
     --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then
@@ -172,6 +186,7 @@ fi
 grep -F 'if ! gh label list' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label vocabulary read must fail closed"
 grep -F 'if ! gh issue view' ai/skills/universal/claim/SKILL.md >/dev/null || fail "issue-label read must fail closed"
 grep -F -- '--project-management "$project_management"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must pass the trusted project mode"
+grep -F '[ "$target" = "n/a" ]' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label-less takeover must omit the add-label operation"
 if grep -Eq 'claim:(claude|gpt)|agent:(claude-code|codex)' \
     ai/skills/universal/track-work/references/claim-lifecycle.md; then
     fail "canonical claim lifecycle examples must use portable family placeholders"

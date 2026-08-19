@@ -321,8 +321,13 @@ harness/family, a fixed-harness mismatch, a missing matching claim label in a
 `project_management: none` or `linear` answer explicitly selects the documented
 assignee/comment-only fallback when no ownership label is provisioned; an
 unknown or unreadable answer fails closed rather than guessing that exception.
-It recognizes `claim:<family>[:<model>]` generically; registry-declared legacy
-`agent:*` aliases are compatibility-only and never guessed from an issue label.
+It recognizes `claim:<family>[:<model>]` generically and rejects malformed
+ownership markers rather than treating their prefix as identity.
+Registry-declared legacy `agent:*` aliases are compatibility-only and never
+guessed from an issue label. For the skills-first migration window, the resolver
+carries the finite aliases that predate the registry field; once a family record
+declares `legacy_claim_labels` — including an explicit empty array — that fetched
+value is authoritative.
 
 ```sh
 # Trusted values copied from the execution host, not from repository or issue
@@ -465,9 +470,14 @@ actually added.
   record it so the hand-back can restore it:
 
   ```sh
-  gh issue edit <n> --repo "$repo" \
-    --add-label <the resolver's target_label> \
-    --remove-label <the one ACTUAL competing label>
+  target=<target_label from the resolver>
+  conflict=<the one ACTUAL competing label>
+  if [ "$target" = "n/a" ]; then
+    gh issue edit <n> --repo "$repo" --remove-label "$conflict"
+  else
+    gh issue edit <n> --repo "$repo" \
+      --add-label "$target" --remove-label "$conflict"
+  fi
   ```
 
   A displaced label may itself be legacy. Remove and record that exact label so
