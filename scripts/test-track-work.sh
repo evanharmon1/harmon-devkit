@@ -14,6 +14,7 @@ cd "$(dirname "$0")/.."
 closing="./ai/skills/universal/track-work/assets/check-closing-keywords.sh"
 rot="./ai/skills/universal/track-work/assets/check-issue-rot.sh"
 metadata="$PWD/ai/skills/universal/track-work/assets/check-issue-metadata.sh"
+guidance="$PWD/ai/skills/universal/track-work/assets/discover-label-guidance.sh"
 tick="$PWD/ai/skills/universal/track-work/assets/tick-criteria.sh"
 status_sh="./ai/skills/universal/track-work/assets/set-issue-status.sh"
 repo="evanharmon1/harmon-devkit"
@@ -716,6 +717,16 @@ if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" !
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
 fi
 
+echo "==> guidance: Track Work exposes read-only descriptions and family purpose"
+guidance_output="$("$guidance" --repo testowner/testrepo --repo-root "$metadata_repo")" ||
+    fail "track-work guidance should render from the target manifest"
+printf '%s\n' "$guidance_output" |
+    grep -q '^guidance|area:fixture|Fixture-only area|area|Codebase subsystem the work lives in (solution space); at most one per issue.$' ||
+    fail "track-work guidance should expose the shared label description and family purpose"
+if printf '%s\n' "$guidance_output" | grep -Eq '^guidance\\|(claim:|suggest:|agent:|foreman:)'; then
+    fail "track-work guidance must not surface execution controls"
+fi
+
 echo "==> metadata: track-work works from a standalone vendored support bundle"
 standalone_track_work="$tmp/standalone-track-work"
 mkdir -p "$standalone_track_work"
@@ -725,6 +736,7 @@ cp -R ai/skills/universal/label-registry-support \
 [ ! -e "$standalone_track_work/triage" ] ||
     fail "standalone track-work fixture must not contain triage"
 standalone_metadata="$standalone_track_work/track-work/assets/check-issue-metadata.sh"
+standalone_guidance="$standalone_track_work/track-work/assets/discover-label-guidance.sh"
 _rc=0
 PATH="$metadata_stub:$PATH" "$standalone_metadata" \
     --repo testowner/testrepo --repo-root "$metadata_repo" \
@@ -734,6 +746,11 @@ PATH="$metadata_stub:$PATH" "$standalone_metadata" \
     --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] ||
     fail "standalone track-work metadata should pass: $(cat "$tmp/metadata.out")"
+
+standalone_guidance_output="$("$standalone_guidance" --repo testowner/testrepo --repo-root "$metadata_repo")" ||
+    fail "standalone track-work guidance should find its vendored support bundle"
+printf '%s\n' "$standalone_guidance_output" | grep -q '^guidance|area:fixture|' ||
+    fail "standalone track-work guidance should render fixture labels"
 
 echo "==> metadata: an organization draft uses native Issue Type and no work-type label"
 [ "$(run_organization 'Validate organization issue metadata' "$valid_body")" = 0 ] ||

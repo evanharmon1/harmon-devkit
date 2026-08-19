@@ -55,6 +55,79 @@ for tool in node jq python3; do
     }
 done
 
+# ── 0. read-only authoring guidance ─────────────────────────────────────────
+# The support interpreter is the single discovery surface used by Track Work.
+# Exercise both manifest and no-manifest modes here, where the registry fixtures
+# already live, rather than duplicating a second label parser in its consumer.
+guidance_helper="ai/skills/universal/label-registry-support/assets/label-registry.sh"
+[ -x "$guidance_helper" ] || {
+    echo "TEST FAIL: missing executable label guidance helper: $guidance_helper" >&2
+    exit 1
+}
+guidance_tmp="$(mktemp -d)"
+guidance_bin="$guidance_tmp/bin"
+mkdir -p "$guidance_bin"
+cat >"$guidance_bin/gh" <<'STUB'
+#!/bin/sh
+case "${1:-} ${2:-}" in
+"label list")
+    printf '%b\n' \
+        'area:live\tLive area description' \
+        'claim:gpt\tClaimed by GPT' \
+        'suggest:gpt\tSuggested for GPT' \
+        'agent:legacy\tLegacy agent claim' \
+        'foreman:claude\tDispatch control' \
+        'rigor:deep\tExecution budget' \
+        'tier:frontier\tModel routing' \
+        'method:plan\tExecution topology'
+    ;;
+*) exit 97 ;;
+esac
+STUB
+chmod +x "$guidance_bin/gh"
+
+echo "==> guidance: manifest records include descriptions and compact family purpose only"
+manifest_guidance="$("$guidance_helper" guidance label-registry.json testowner/testrepo)" ||
+    fail "manifest-backed guidance should render"
+printf '%s\n' "$manifest_guidance" |
+    grep -q '^guidance|area:track-work|The track-work skill: issue authoring standards and PR/commit linkage; claims are session-flow|area|Codebase subsystem the work lives in (solution space); at most one per issue.$' ||
+    fail "manifest-backed guidance should include value description and family purpose"
+if printf '%s\n' "$manifest_guidance" |
+    grep -Eq '^guidance\\|(claim:|suggest:|agent:|foreman:|rigor:|tier:|method:)'; then
+    fail "guidance must exclude claim, suggestion, legacy-agent, Foreman, and execution controls"
+fi
+printf '%s\n' "$manifest_guidance" | awk -F '|' 'NF != 5 { exit 1 }' ||
+    fail "guidance records must contain only label, description, family, and purpose"
+
+echo "==> guidance: delegated agent-registry families remain on the shared exclusion boundary"
+for control in claim:gpt suggest:gpt foreman:claude; do
+    if printf '%s\n' "$manifest_guidance" | grep -q "^guidance|$control|"; then
+        fail "guidance must not surface delegated control $control"
+    fi
+done
+
+echo "==> guidance: no manifest uses live names and descriptions without inferred family policy"
+fallback_guidance="$(PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/missing.json" testowner/testrepo)" ||
+    fail "no-manifest guidance should use the bounded live-label fallback"
+[ "$fallback_guidance" = 'guidance|area:live|Live area description||' ] ||
+    fail "no-manifest guidance should retain only safe live label name and description"
+
+echo "==> guidance: a malformed manifest is indeterminate, not a live fallback"
+printf '%s\n' '{"schema_version":999}' >"$guidance_tmp/malformed.json"
+if "$guidance_helper" guidance "$guidance_tmp/malformed.json" testowner/testrepo >"$guidance_tmp/out" 2>&1; then
+    fail "malformed manifest guidance should fail closed"
+fi
+grep -q 'manifest is invalid or unsupported' "$guidance_tmp/out" ||
+    fail "malformed manifest guidance should name the indeterminate manifest"
+
+echo "==> guidance: an unavailable manifest is indeterminate, not a live fallback"
+ln -s "$guidance_tmp/no-target.json" "$guidance_tmp/unavailable.json"
+if PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/unavailable.json" testowner/testrepo >"$guidance_tmp/out" 2>&1; then
+    fail "unavailable manifest guidance should fail closed"
+fi
+grep -q 'manifest is not a readable regular file' "$guidance_tmp/out" ||
+    fail "unavailable manifest guidance should name the indeterminate manifest"
+
 template_mode=0
 [ -f template/label-registry.json ] && template_mode=1
 
@@ -72,7 +145,7 @@ fi
 # regression that silently accepts a broken manifest must fail here, not at
 # provisioning time.
 mutation_tmp="$(mktemp -d)"
-trap 'rm -rf "$mutation_tmp"' EXIT
+trap 'rm -rf "$mutation_tmp" "$guidance_tmp"' EXIT
 mutated_manifest="$mutation_tmp/label-registry.json"
 cp label-registry.schema.json "$mutation_tmp/label-registry.schema.json"
 

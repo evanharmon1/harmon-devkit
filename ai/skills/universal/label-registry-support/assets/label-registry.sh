@@ -8,12 +8,16 @@
 #
 #   family|family|prefix|axis|writers|exclusive|source|open_values|retired
 #   value|label|family|prefix|axis|writers|exclusive|source|open_values|family_retired|value_retired
+#   guidance|label|description|family|purpose
 #
 # `writers` is effective: a value override wins over its family writers.
+# `guidance` deliberately has no policy fields: it is the read-only, pre-
+# authoring discovery view, not a second validation interface.
 set -euo pipefail
 
 usage() {
     echo "Usage: $0 {validate|render} MANIFEST" >&2
+    echo "       $0 guidance MANIFEST REPOSITORY" >&2
     exit 2
 }
 
@@ -22,16 +26,28 @@ die() {
     exit 1
 }
 
-[ "$#" -eq 2 ] || usage
 command="$1"
-manifest="$2"
 case "$command" in
-validate | render) ;;
+validate | render)
+    [ "$#" -eq 2 ] || usage
+    manifest="$2"
+    ;;
+guidance)
+    [ "$#" -eq 3 ] || usage
+    manifest="$2"
+    repo="$3"
+    ;;
 *) usage ;;
 esac
 
-[ -f "$manifest" ] && [ -r "$manifest" ] ||
-    die "manifest is not a readable regular file: $manifest"
+manifest_present=0
+if [ -e "$manifest" ] || [ -L "$manifest" ]; then
+    manifest_present=1
+fi
+if [ "$command" != guidance ] || [ "$manifest_present" -eq 1 ]; then
+    [ -f "$manifest" ] && [ -r "$manifest" ] ||
+        die "manifest is not a readable regular file: $manifest"
+fi
 
 validate() {
     jq -e '
@@ -141,8 +157,52 @@ validate() {
     ' "$manifest" >/dev/null 2>&1
 }
 
+if [ "$command" = guidance ] && [ "$manifest_present" -eq 0 ]; then
+    # A repository with no manifest has no declared family or policy to infer.
+    # Preserve only the bounded, human-readable GitHub label data and omit
+    # execution controls by their stable namespaces.
+    gh label list --repo "$repo" --limit 1000 --json name,description \
+        -q '.[] | [.name, (.description // "")] | @tsv' |
+        while IFS=$'\t' read -r label description; do
+            case "$label" in
+            claim:* | suggest:* | agent:* | foreman:* | rigor:* | tier:* | method:*) continue ;;
+            esac
+            case "$label$description" in
+            *'|'* | *$'\n'* | *$'\r'*) die "live label data is not safe to render" ;;
+            esac
+            printf 'guidance|%s|%s||\n' "$label" "$description"
+        done || die "could not read live labels from $repo"
+    exit 0
+fi
+
 validate || die "manifest is invalid or unsupported"
 [ "$command" = validate ] && exit 0
+
+if [ "$command" = guidance ]; then
+    # The manifest owns label descriptions and family purpose. Omit values
+    # whose namespaces are workflow controls, including delegated
+    # agent-registry families; this is discovery for issue authoring, not a
+    # route into claims, suggestions, Foreman, or execution-budget controls.
+    jq -e '
+      all(.families[];
+        (.purpose | test("[\\r\\n|]") | not)
+        and all(.values[]; ((.description // "") | test("[\\r\\n|]") | not)))
+    ' "$manifest" >/dev/null ||
+        die "manifest guidance fields are not safe to render"
+    jq -r '
+      .families[] as $f
+      | select(($f.retired // false) | not)
+      | select(($f.family | IN("claim", "suggest", "claim-model", "suggest-model",
+                               "agent-legacy", "foreman-arming", "foreman-protocol",
+                               "foreman-lifecycle", "rigor", "tier", "method")) | not)
+      | $f.values[]
+      | select((.retired // false) | not)
+      | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end) as $label
+      | ["guidance", $label, (.description // ""), $f.family, $f.purpose]
+      | join("|")
+    ' "$manifest" || die "could not render manifest guidance"
+    exit 0
+fi
 
 jq -r '
   .families[] as $f
