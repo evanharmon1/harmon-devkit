@@ -74,6 +74,7 @@ case "${1:-} ${2:-}" in
     printf '%s\n' '[
       {"name":"area:live","description":"Live area description"},
       {"name":"area:literal","description":"Windows path C:\\temp and\ttab"},
+      {"name":"area:old","description":"Still live but retired by the manifest"},
       {"name":"claim:gpt","description":"Claimed by GPT"},
       {"name":"suggest:gpt","description":"Suggested for GPT"},
       {"name":"agent:legacy","description":"Legacy agent claim"},
@@ -143,7 +144,7 @@ printf '%s\n' "$fallback_guidance" |
     jq -se 'any(.[]; . == {record: "guidance", label: "area:literal", description: "Windows path C:\\temp and\ttab", family: null, purpose: null})' >/dev/null ||
     fail "no-manifest guidance should preserve literal backslashes and tabs in live descriptions"
 printf '%s\n' "$fallback_guidance" |
-    jq -se 'length == 2 and all(.[]; .label == "area:live" or .label == "area:literal")' >/dev/null ||
+    jq -se 'length == 3 and all(.[]; .label == "area:live" or .label == "area:literal" or .label == "area:old")' >/dev/null ||
     fail "no-manifest guidance should exclude every known stable control namespace"
 
 echo "==> guidance: open-value authoring families combine live labels with manifest purpose"
@@ -156,8 +157,30 @@ printf '%s\n' "$open_guidance" |
     jq -se 'any(.[]; . == {record: "guidance", label: "area:live", description: "Live area description", family: "area", purpose: "Codebase subsystem the work lives in (solution space); at most one per issue."})' >/dev/null ||
     fail "open-value guidance should combine live labels with manifest family purpose"
 printf '%s\n' "$open_guidance" |
-    jq -se 'all(.[]; .family != "area" or (.label == "area:live" or .label == "area:literal"))' >/dev/null ||
-    fail "open-value guidance should not invent unlisted concrete labels"
+    jq -se 'all(.[]; .family != "area" or (.label == "area:live" or .label == "area:literal" or .label == "area:old"))' >/dev/null ||
+    fail "open-value guidance should include only bounded live members"
+
+echo "==> guidance: retired open-family members are never reintroduced from live labels"
+jq '(.families[] | select(.family == "area"))
+      |= (.open_values = true | .placeholder = "area:<value>"
+          | .values = [{"value": "old", "description": "Retired area", "retired": true}])' \
+    label-registry.json >"$guidance_tmp/retired-open-area.json"
+retired_open_guidance="$(PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/retired-open-area.json" testowner/testrepo)" ||
+    fail "retired open-family guidance should render remaining live members"
+if printf '%s\n' "$retired_open_guidance" |
+    jq -e 'select(.label == "area:old")' >/dev/null; then
+    fail "retired manifest members must not return through open-family live guidance"
+fi
+
+echo "==> guidance: prefixless open families retain active manifest members"
+jq '(.families[] | select(.family == "concern"))
+      |= (.open_values = true | .placeholder = "<value>")' \
+    label-registry.json >"$guidance_tmp/prefixless-open-concern.json"
+prefixless_open_guidance="$($guidance_helper guidance "$guidance_tmp/prefixless-open-concern.json" testowner/testrepo)" ||
+    fail "prefixless open-family guidance should render"
+printf '%s\n' "$prefixless_open_guidance" |
+    jq -se 'any(.[]; . == {record: "guidance", label: "sec", description: "Security concern", family: "concern", purpose: "Cross-cutting concerns worth filtering on, color-coded as one family."})' >/dev/null ||
+    fail "prefixless open-family guidance should retain active enumerated members"
 
 echo "==> guidance: schema-valid prose with delimiters stays decodable"
 jq '(.families[] | select(.family == "area").purpose) = "Solution | subsystem\nwith a second line"

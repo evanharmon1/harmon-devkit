@@ -231,9 +231,10 @@ if [ "$command" = guidance ]; then
          | . as $f
          | select(authoring_family)
          # Open families deliberately get their concrete members from the
-         # bounded live read below, so a stale enumerated member is never
-         # recommended as a selectable label.
-         | select((.open_values // false) | not)
+         # bounded live read below when their prefix makes that match
+         # unambiguous. Prefixless open families have no such live namespace,
+         # so their active manifest enumeration remains the selectable set.
+         | select(((.open_values // false) | not) or .prefix == null)
          | .values[]
          | select((.retired // false) | not)
          | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end) as $label
@@ -243,12 +244,18 @@ if [ "$command" = guidance ]; then
       | [$registry.families[]
          | . as $f
          | select(authoring_family and ($f.open_values // false) and $f.prefix != null)] as $open_families
+      | [$registry.families[] as $f
+         | select(($f.retired // false) | not)
+         | $f.values[]
+         | select(.retired // false)
+         | if $f.prefix == null then .value else "\($f.prefix):\(.value)" end] as $retired_labels
       | [$live[]
          | {label: .name, description: live_description}
          | . as $live_label
          | [$open_families[]
             | select(.prefix as $prefix | $live_label.label | startswith($prefix + ":"))] as $matches
          | select($matches | length == 1)
+         | select(($retired_labels | index($live_label.label)) | not)
          | $matches[0] as $f
          | select(($live_label.label | control_namespace) | not)
          | {record: "guidance", label: $live_label.label,
