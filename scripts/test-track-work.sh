@@ -2675,6 +2675,17 @@ done
 grep -Fq 'optional `harness`, `model`, and `session`' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
 
+echo "==> claim lifecycle consumers preserve chain-owned cleanup targets"
+retro_skill="./ai/skills/universal/retro/SKILL.md"
+grep -Fq 'direct ownership outranks inheritance' "$claim_lifecycle" ||
+    fail "claim lifecycle must prefer a newly added marker over predecessor inheritance"
+grep -Fq -- '--remove-label <the chain-owned label' "$wrap_skill" ||
+    fail "/wrap manual hand-back must remove the chain-owned label"
+grep -Fq -- '--remove-assignee <the chain-owned assignee login>' "$wrap_skill" ||
+    fail "/wrap manual hand-back must remove an inherited assignee"
+grep -Fq 'Discovery trust is deliberately read-only' "$retro_skill" ||
+    fail "/retro must keep stale-claim discovery separate from cleanup trust"
+
 # --- release-claim.sh --------------------------------------------------------
 # Fully offline: a stubbed `gh` serves comment/issue JSON from scenario files
 # and logs every write, so the claim parsing, trust gate, and provenance
