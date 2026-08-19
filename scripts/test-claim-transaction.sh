@@ -34,6 +34,19 @@ api)
     if [ -e "${CLAIM_COMMENTS_FAIL_FLAG:-/nonexistent}" ]; then
         exit 1
     fi
+    if [ -n "${CLAIM_MUTATE_COMMENTS_ON_READ:-}" ]; then
+        count=0
+        [ ! -f "$CLAIM_COMMENTS_READ_COUNT" ] || count="$(cat "$CLAIM_COMMENTS_READ_COUNT")"
+        count=$((count + 1))
+        printf '%s\n' "$count" >"$CLAIM_COMMENTS_READ_COUNT"
+        if [ "$count" -eq "$CLAIM_MUTATE_COMMENTS_ON_READ" ]; then
+            next="${CLAIM_COMMENTS_FILE}.next"
+            jq --rawfile body "$CLAIM_CONCURRENT_RECORD" --arg login "${CLAIM_CONCURRENT_LOGIN:-collaborator}" \
+                '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"COLLABORATOR", body:($body | sub("\\n+$"; ""))}]' \
+                "$CLAIM_COMMENTS_FILE" >"$next"
+            mv "$next" "$CLAIM_COMMENTS_FILE"
+        fi
+    fi
     # The helper asks gh for --slurp output, so return one page.
     printf '[%s]\n' "$(cat "$CLAIM_COMMENTS_FILE")"
     ;;
@@ -131,6 +144,7 @@ chmod +x "$stub/status-helper"
 issue_file="$tmp/issue.json"
 comments_file="$tmp/comments.json"
 comments_fail_flag="$tmp/comments.fail"
+comments_read_count="$tmp/comments.read-count"
 log="$tmp/actions.log"
 record="$tmp/record.md"
 err="$tmp/err"
@@ -140,6 +154,7 @@ scenario() {
     printf '%s' "${2:-[]}" >"$comments_file"
     : >"$log"
     rm -f "$comments_fail_flag"
+    rm -f "$comments_read_count"
 }
 
 make_record() {
@@ -185,6 +200,10 @@ run_claim() {
     env PATH="$stub:$PATH" \
         CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
         CLAIM_COMMENTS_FAIL_FLAG="$comments_fail_flag" CLAIM_LOG="$log" \
+        CLAIM_COMMENTS_READ_COUNT="$comments_read_count" \
+        CLAIM_MUTATE_COMMENTS_ON_READ="${RUN_MUTATE_COMMENTS_ON_READ:-}" \
+        CLAIM_CONCURRENT_RECORD="${RUN_CONCURRENT_RECORD:-$record}" \
+        CLAIM_CONCURRENT_LOGIN="${RUN_CONCURRENT_LOGIN:-collaborator}" \
         CLAIM_LOGIN="${RUN_LOGIN:-evanharmon1}" \
         "$helper" --repo evanharmon1/harmon-devkit --issue 543 \
         --record-file "$record" --status-helper "$stub/status-helper" "$@" \
@@ -236,6 +255,28 @@ make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 jq -e 'any(.assignees[]; .login == "evanharmon1") and any(.labels[]; .name == "claim:gpt")' "$issue_file" >/dev/null ||
     fail "indeterminate publication must leave markers visible"
 if grep -q -- '--remove-' "$log"; then fail "indeterminate publication must not compensate"; fi
+
+echo "==> a newer trusted claim before publication prevents a stale record commit"
+scenario '{"assignees":[{"login":"collaborator"}],"labels":[]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+concurrent_record="$tmp/concurrent-record.md"
+cp "$record" "$concurrent_record"
+result="$(RUN_MUTATE_COMMENTS_ON_READ=2 RUN_CONCURRENT_RECORD="$concurrent_record" \
+    run_claim --claim-label claim:gpt)"
+[ "$result" = 6 ] || fail "a changed predecessor before publication must exit 6: $(cat "$err")"
+[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "the stale record must not be published"
+[ "$(grep -c '^comment$' "$log" || true)" -eq 0 ] || fail "pre-publication lineage drift must stop before the comment write"
+grep -q 'newer trusted claim or release appeared' "$err" || fail "lineage collision must be explained"
+
+echo "==> confirmed absence never compensates markers adopted by a newer claim"
+scenario '{"assignees":[{"login":"collaborator"}],"labels":[]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+cp "$record" "$concurrent_record"
+result="$(RUN_MUTATE_COMMENTS_ON_READ=3 RUN_CONCURRENT_RECORD="$concurrent_record" \
+    CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt)"
+[ "$result" = 6 ] || fail "a newer claim after failed publication must block compensation: $(cat "$err")"
+grep -q 'refusing compensation' "$err" || fail "adopted tentative markers must be reported"
+if grep -q -- '--remove-' "$log"; then fail "a newer committed claim must protect tentative markers from compensation"; fi
 
 echo "==> confirmed record absence compensates only this attempt and restores displacement"
 scenario '{"assignees":[],"labels":[{"name":"claim:claude"}]}'

@@ -168,12 +168,20 @@ valid_model_label() {
 }
 
 model_matches_family_label() {
+    model_family="${1%:*}"
     case "$2" in
-    claim:*) [ "${1%:*}" = "$2" ] ;;
+    claim:*) [ "$model_family" = "$2" ] ;;
     # A legacy alias may be the family marker during migration. The model's
     # trusted family is validated by the producer; the releaser only requires
     # that an actual family marker accompanies it.
     agent:*) return 0 ;;
+    no | n/a | none | '')
+        # A claim may own a model refinement while its required family marker
+        # predates the chain. The family is then validation context, not a
+        # cleanup target: require that exact marker to remain live.
+        jq -e --arg family "$model_family" \
+            'any(.labels[]?; .name == $family)' <<<"$issue_json" >/dev/null
+        ;;
     *) return 1 ;;
     esac
 }

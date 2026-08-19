@@ -75,14 +75,18 @@ in the claim record, never in the label.
   only then moves the board to `In Progress`. Repositories without a
   claim-label family or board still commit an assignee-backed record (with
   explicit `n/a`/`none` values); neither optional integration weakens the
-  durable-record requirement.
+  durable-record requirement. Immediately before publication it re-reads the
+  markers and trusted comment lineage; a newer trusted claim/release or marker
+  drift stops the stale append and leaves the visible state for recovery.
 - **A failed comment response is not evidence of absence.** The producer
   re-reads all comments and searches for a new comment by the authenticated
   login with the exact submitted body. A confirmed match commits the claim. An
   unreadable re-fetch is indeterminate and leaves tentative markers visible so
   a recovery can see them. Only a successful re-fetch confirming the record
-  absent permits compensation, and compensation first re-reads current marker
-  state, removes only markers this attempt added, and restores its one proven
+  absent permits compensation only when the trusted predecessor is still the
+  one the attempt started from. A newer trusted claim may have adopted the
+  tentative markers, so lineage drift refuses compensation. Otherwise the
+  producer removes only markers this attempt added and restores its one proven
   displaced label. Failure to compensate is a loud partial recordless claim;
   it must never be reported as rolled back.
 - **Board failure is after commit and never rolls a claim back.** Once the

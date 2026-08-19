@@ -190,6 +190,42 @@ comments_snapshot() {
     gh api --paginate --slurp "repos/$owner/$name/issues/$issue/comments" | jq 'add // []'
 }
 
+select_predecessor() {
+    local issue_file="$1" comments_file="$2" output_file="$3"
+    jq --arg owner "${repo%%/*}" --slurpfile issue "$issue_file" '
+        def dl: (.user.login | ascii_downcase);
+        def writeauth:
+            (.author_association // "") as $a
+            | (["OWNER", "MEMBER", "COLLABORATOR"] | index($a)) != null;
+        def trusted_claimant:
+            dl as $login
+            | (($login == ($owner | ascii_downcase))
+             or ([ $issue[0].assignees[].login | ascii_downcase ] | index($login) != null))
+            and writeauth;
+        def trusted_release:
+            (.body | startswith("Claim released —"))
+            and (trusted_claimant or dl == "github-actions[bot]");
+        [ .[]
+          | select(.body != null)
+          | select(trusted_claimant or trusted_release) ] as $events
+        | ([range(0; $events | length) as $i
+            | select($events[$i] | trusted_release)
+            | $i] | last // -1) as $release
+        | ([range($release + 1; $events | length) as $i
+            | select($events[$i]
+                     | ((.body | startswith("Claiming —")) and trusted_claimant))
+            | $events[$i]] | last // null) as $predecessor
+        | if $predecessor == null then {found:false}
+          else {found:true, id:$predecessor.id, author:$predecessor.user.login,
+                body:$predecessor.body}
+          end
+    ' "$comments_file" >"$output_file"
+}
+
+same_predecessor() {
+    [ "$(jq -Sc . "$1")" = "$(jq -Sc . "$2")" ]
+}
+
 has_assignee() {
     jq -e --arg login "$2" 'any(.assignees[]?; .login == $login)' "$1" >/dev/null
 }
@@ -360,34 +396,7 @@ fi
 # The immediate latest trusted predecessor is the only source of inherited
 # assignee ownership. A release comment resets the chain. Trust is the same as
 # the lifecycle reader: repository owner or a current write-associated assignee.
-if ! jq --arg owner "${repo%%/*}" --slurpfile issue "$tmp/issue-before.json" '
-    def dl: (.user.login | ascii_downcase);
-    def writeauth:
-        (.author_association // "") as $a
-        | (["OWNER", "MEMBER", "COLLABORATOR"] | index($a)) != null;
-    def trusted_claimant:
-        dl as $login
-        | (($login == ($owner | ascii_downcase))
-         or ([ $issue[0].assignees[].login | ascii_downcase ] | index($login) != null))
-        and writeauth;
-    def trusted_release:
-        (.body | startswith("Claim released —"))
-        and (trusted_claimant or dl == "github-actions[bot]");
-    [ .[]
-      | select(.body != null)
-      | select(trusted_claimant or trusted_release) ] as $events
-    | ([range(0; $events | length) as $i
-        | select($events[$i] | trusted_release)
-        | $i] | last // -1) as $release
-    | ([range($release + 1; $events | length) as $i
-        | select($events[$i]
-                 | ((.body | startswith("Claiming —")) and trusted_claimant))
-        | $events[$i]] | last // null) as $predecessor
-    | if $predecessor == null then {found:false}
-      else {found:true, id:$predecessor.id, author:$predecessor.user.login,
-            body:$predecessor.body}
-      end
-' "$tmp/comments-before.json" >"$tmp/predecessor.json"; then
+if ! select_predecessor "$tmp/issue-before.json" "$tmp/comments-before.json" "$tmp/predecessor.json"; then
     echo "claim transaction: could not select the immediate trusted predecessor" >&2
     exit 2
 fi
@@ -730,6 +739,28 @@ if ! issue_snapshot >"$tmp/issue-before-record.json" || ! has_assignee "$tmp/iss
     exit "$result"
 fi
 
+# A claim is deliberately not a lock, but a stale record must not be published
+# after another trusted claim or release has already changed the lineage this
+# record was derived from. This narrows the unavoidable API race to the comment
+# write itself and, critically, prevents a known-new predecessor from being
+# omitted. Marker drift is likewise left visible rather than guessed around.
+if ! comments_snapshot >"$tmp/comments-before-record.json" ||
+    ! select_predecessor "$tmp/issue-before-record.json" "$tmp/comments-before-record.json" \
+        "$tmp/predecessor-before-record.json"; then
+    echo "claim transaction: pre-publication lineage is indeterminate; leaving visible markers for recovery" >&2
+    exit 6
+fi
+if ! same_predecessor "$tmp/predecessor.json" "$tmp/predecessor-before-record.json"; then
+    echo "claim transaction: a newer trusted claim or release appeared before publication; leaving visible markers for recovery" >&2
+    exit 6
+fi
+if { [ "$claim_label" != none ] && ! has_label "$tmp/issue-before-record.json" "$claim_label"; } ||
+    { [ "$model_label" != none ] && ! has_label "$tmp/issue-before-record.json" "$model_label"; } ||
+    { [ "$displaced_label" != none ] && has_label "$tmp/issue-before-record.json" "$displaced_label"; }; then
+    echo "claim transaction: claim markers changed before publication; leaving visible markers for recovery" >&2
+    exit 6
+fi
+
 record_committed=0
 if gh issue comment "$issue" --repo "$repo" --body-file "$record_file"; then
     record_committed=1
@@ -750,12 +781,26 @@ else
         record_committed=1
         echo "claim transaction: comment command failed but reconciliation confirmed the exact record committed" >&2
     else
+        if ! issue_snapshot >"$tmp/issue-after-publication.json" ||
+            ! select_predecessor "$tmp/issue-after-publication.json" "$tmp/comments-after.json" \
+                "$tmp/predecessor-after-publication.json"; then
+            echo "claim transaction: record absence is known but current lineage is indeterminate; leaving visible markers for recovery" >&2
+            exit 6
+        fi
+        if ! same_predecessor "$tmp/predecessor.json" "$tmp/predecessor-after-publication.json"; then
+            echo "claim transaction: a newer trusted claim or release adopted the tentative state; refusing compensation" >&2
+            exit 6
+        fi
         echo "claim transaction: record publication is confirmed absent; compensating this attempt" >&2
         set +e
-        compensate_after_read
-        result=$?
+        compensate "$tmp/issue-after-publication.json"
+        compensation_failed=$?
         set -e
-        exit "$result"
+        if [ "$compensation_failed" -eq 0 ]; then
+            exit 4
+        fi
+        echo "claim transaction: partial recordless claim remains after failed compensation" >&2
+        exit 7
     fi
 fi
 

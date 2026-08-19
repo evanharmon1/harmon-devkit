@@ -2991,6 +2991,17 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v2" 1)" \
 grep -q -- '--remove-label claim:claude' "$rc_log" || fail "the chain-owned family label must be removed"
 grep -q -- '--remove-label claim:claude:opus' "$rc_log" || fail "the chain-owned model refinement must be removed"
 
+echo "==> an owned model refinement may coexist with an unowned live family marker"
+body_model_only_owned="$(printf '%s' "$body_model_refinement" |
+    sed 's/^- claim: label owned by this claim chain: claim:claude$/- claim: label owned by this claim chain: no/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_model_only_owned")")" \
+    '{"state":"closed","labels":[{"name":"claim:claude"},{"name":"claim:claude:opus"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "an owned model over an unowned family should release: $(cat "$tmp/release.err")"
+grep -q -- '--remove-label claim:claude:opus' "$rc_log" || fail "the owned model refinement must be removed"
+if grep -q -- '--remove-label claim:claude\($\| \)' "$rc_log"; then
+    fail "the unowned family marker must remain"
+fi
+
 echo "==> model ownership fields accept only a matching model refinement"
 for invalid_model_label in claim:claude agent:claude-code claim:gpt:opus; do
     invalid_model_body="$(printf '%s' "$body_model_refinement" |

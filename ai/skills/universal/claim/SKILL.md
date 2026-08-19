@@ -671,9 +671,12 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   login whose body exactly matches the submitted record. A confirmed match is
   committed and proceeds to the board; an unreadable re-fetch is indeterminate
   (exit 6) and leaves the visible markers in place for recovery. Only a
-  successful re-fetch that confirms the exact record absent may compensate.
-  Compensation re-reads the current markers, removes only the assignee and
-  label this attempt added, and restores the one displaced label. Exit 4 means
+  successful re-fetch that confirms the exact record absent may compensate,
+  and only when the latest trusted claim/release still matches the attempt's
+  starting lineage. The helper also performs that lineage and marker recheck
+  immediately before publication; drift stops without appending a stale
+  record. Compensation removes only the assignee and label this attempt added,
+  and restores the one displaced label. Exit 4 means
   that compensation completed and no claim committed. Exit 7 means
   compensation failed: a loud partial recordless claim remains and must be
   repaired manually. A failed refresh writes no new current record, so the
