@@ -204,6 +204,8 @@ mkdir -p "$standalone_triage"
 cp -R ai/skills/universal/triage "$standalone_triage/triage"
 cp -R ai/skills/universal/label-registry-support \
     "$standalone_triage/label-registry-support"
+cp -R ai/skills/universal/issue-title-support \
+    "$standalone_triage/issue-title-support"
 [ ! -e "$standalone_triage/track-work" ] ||
     fail "standalone triage fixture must not contain track-work"
 [ "$(run "$standalone_triage/triage/assets/triage-apply.sh" allowlist \
@@ -677,11 +679,31 @@ grep -q -- "--title (triage): Track backlog findings" "$GH_STUB_LOG" ||
 
 echo "==> report sync: a malformed requested report title is refused"
 : >"$GH_STUB_LOG"
-[ "$(run "$report" sync --repo "$repo" --entries-file "$entries" \
-    --title 'Legacy triage report')" = 2 ] ||
-    fail "a legacy unscoped report title must be refused"
+invalid_report_titles=(
+    'Legacy triage report'
+    $'(\u00a0scope): Repair metadata'
+    $'(scope\u00a0): Repair metadata'
+    $'(scope): \u00a0Repair metadata'
+    $'(scope): Repair metadata\u00a0'
+    $'(scope): Repair\tmetadata'
+    $'(scope): Repair\001metadata'
+)
+for title in "${invalid_report_titles[@]}"; do
+    [ "$(run "$report" sync --repo "$repo" --entries-file "$entries" \
+        --title "$title")" = 2 ] ||
+        fail "report must reject Unicode boundary whitespace and controls: '$title'"
+done
 grep -qE "issue (edit|create)" "$GH_STUB_LOG" &&
     fail "invalid report title must not write"
+
+echo "==> report sync: standalone triage carries the shared title predicate"
+standalone_report="$standalone_triage/triage/assets/triage-report.sh"
+[ "$(run "$standalone_report" sync --repo "$repo" \
+    --entries-file "$entries")" = 0 ] ||
+    fail "standalone report should resolve its shared title module"
+[ "$(run "$standalone_report" sync --repo "$repo" \
+    --entries-file "$entries" --title $'(scope):\u00a0Repair metadata')" = 2 ] ||
+    fail "standalone report must enforce Unicode boundary whitespace"
 
 echo "==> report sync: --execute without the env gate is refused"
 [ "$(run "$report" sync --repo "$repo" --entries-file "$entries" \
@@ -780,6 +802,24 @@ cat >"$stub_dir/issues-open.json" <<JSON
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
+ {"number": 30, "title": "(\u00a0scope): Repair metadata",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z", "assignees": [], "body": ""},
+ {"number": 31, "title": "(scope\u00a0): Repair metadata",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z", "assignees": [], "body": ""},
+ {"number": 32, "title": "(scope): \u00a0Repair metadata",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z", "assignees": [], "body": ""},
+ {"number": 33, "title": "(scope): Repair metadata\u00a0",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z", "assignees": [], "body": ""},
+ {"number": 34, "title": "(scope): Repair\tmetadata",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z", "assignees": [], "body": ""},
+ {"number": 35, "title": "(scope): Repair\u0001metadata",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z", "assignees": [], "body": ""},
  {"number": 24, "title": "(classification): Remove a retired area value",
   "labels": [{"name": "bug"}, {"name": "area:legacy"}, {"name": "layer:ui"},
              {"name": "domain:auth"}],
@@ -839,6 +879,9 @@ jq -e '.open[] | select(.number == 23) | .flags
     fail "a canonical scoped title must not be flagged"
 jq -e '.open[] | select(.number == 29) | .flags | index("title-malformed")' \
     "$scan_out" >/dev/null || fail "a malformed scoped separator must be flagged"
+jq -e '[.open[] | select(.number >= 30 and .number <= 35)
+        | .flags | index("title-malformed")] | all' "$scan_out" >/dev/null ||
+    fail "scan must reject NBSP boundaries and internal C0 controls"
 jq -e '.open[] | select(.number == 21) | .axis_state.domain == "conflict"' \
     "$scan_out" >/dev/null || fail "domain conflict missing"
 jq -e '.open[] | select(.number == 21) | .flags | index("axis-conflict:domain")' \

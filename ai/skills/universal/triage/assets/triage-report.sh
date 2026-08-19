@@ -47,6 +47,8 @@ set -euo pipefail
 
 MARKER='<!-- harmon-triage-report -->'
 DEFAULT_TITLE='(triage): Track backlog findings'
+asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
+title_module_dir="$asset_dir/../../issue-title-support/assets"
 
 usage() {
     echo "Usage: $0 find --repo owner/repo [--title TITLE]" >&2
@@ -63,28 +65,17 @@ die() {
 }
 
 validate_title() {
-    local title="$1" scope statement length
-    case "$title" in
-    \(*'): '*) ;;
-    *) die 2 "report title must match '(scope): imperative outcome'" ;;
+    local title="$1" rc=0
+    [ -r "$title_module_dir/issue-title.jq" ] ||
+        die 2 "shared issue-title predicate is missing"
+    jq -e -n -L "$title_module_dir" --arg value "$title" \
+        'include "issue-title"; $value | issue_title_valid' \
+        >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+    0) ;;
+    1) die 2 "report title violates the canonical scoped-title contract" ;;
+    *) die 2 "could not evaluate the shared issue-title predicate" ;;
     esac
-    scope="${title#\(}"
-    scope="${scope%%\): *}"
-    statement="${title#*\): }"
-    [ -n "$scope" ] && [ -n "$statement" ] ||
-        die 2 "report title requires a nonempty scope and outcome"
-    ! jq -en --arg value "$title" \
-        '$value | explode | any(. < 32 or (. >= 127 and . <= 159))' >/dev/null ||
-        die 2 "report title contains a control character"
-    ! printf '%s' "$scope" | grep -qE '^[[:space:]]|[[:space:]]$|[()]|[[:cntrl:]]' ||
-        die 2 "report title has an invalid scope"
-    ! printf '%s' "$statement" | grep -qE '^[[:space:]]|[[:space:]]$|[[:cntrl:]]' ||
-        die 2 "report title has an invalid outcome"
-    ! printf '%s' "$statement" | grep -qiE '^\[[^]]+\][[:space:]]*:?[[:space:]]*|^(bug|feature|task|research|documentation|question|enhancement):[[:space:]]*|^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]*\))?!?:[[:space:]]*|^P[0-9]+:[[:space:]]*' ||
-        die 2 "report title has a forbidden nested prefix"
-    length="$(jq -nr --arg value "$title" '$value | explode | length')" ||
-        die 2 "could not count report title code points"
-    [ "$length" -le 70 ] || die 2 "report title exceeds 70 Unicode code points"
 }
 
 # Print the open report issue's number, or nothing. Dies on ambiguity.

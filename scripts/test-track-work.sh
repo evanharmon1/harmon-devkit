@@ -732,6 +732,8 @@ mkdir -p "$standalone_track_work"
 cp -R ai/skills/universal/track-work "$standalone_track_work/track-work"
 cp -R ai/skills/universal/label-registry-support \
     "$standalone_track_work/label-registry-support"
+cp -R ai/skills/universal/issue-title-support \
+    "$standalone_track_work/issue-title-support"
 [ ! -e "$standalone_track_work/triage" ] ||
     fail "standalone track-work fixture must not contain triage"
 standalone_metadata="$standalone_track_work/track-work/assets/check-issue-metadata.sh"
@@ -792,10 +794,21 @@ for title in '' 'Metadata is missing' '(): Repair metadata' '( scope): Repair me
 done
 
 echo "==> metadata: surrounding whitespace and controls fail"
+unicode_invalid_titles=(
+    $'(\u00a0scope): Repair metadata'
+    $'(scope\u00a0): Repair metadata'
+    $'(scope): \u00a0Repair metadata'
+    $'(scope): Repair metadata\u00a0'
+    $'(scope): Repair\tmetadata'
+    $'(scope): Repair\001metadata'
+)
 for title in ' (scope): Repair metadata' '(scope): Repair metadata ' \
-    "(scope): Repair"$'\n'"metadata"; do
+    "(scope): Repair"$'\n'"metadata" \
+    "${unicode_invalid_titles[@]}"; do
     [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 1 ] ||
-        fail "a title with surrounding whitespace should fail: '$title'"
+        fail "authoring must reject Unicode boundary whitespace and controls: '$title'"
+    [ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title "$title")" = 1 ] ||
+        fail "title-only mode must reject the same invalid title: '$title'"
 done
 
 echo "==> metadata: title-only mode validates retitles without draft metadata"

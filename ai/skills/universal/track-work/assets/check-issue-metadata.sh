@@ -5,8 +5,9 @@
 # manifest exists, and never calls a GitHub write endpoint.
 set -euo pipefail
 
-TITLE_MAX=70
 FORBIDDEN_RE='^(foreman:|rigor:|tier:|method:|claim:|suggest:|agent:)'
+asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
+title_module_dir="$asset_dir/../../issue-title-support/assets"
 
 help_text() {
     cat <<'EOF'
@@ -117,62 +118,17 @@ while [ "$#" -gt 0 ]; do
 done
 
 validate_title() {
-    local scope statement title_length
-
-    if ! printf '%s' "$title" | grep -q '[^[:space:]]'; then
-        violation "title must be nonempty"
-    fi
-    if printf '%s' "$title" | grep -qE '^[[:space:]]|[[:space:]]$'; then
-        violation "title has leading or trailing whitespace"
-    fi
-    title_length="$(jq -nr --arg value "$title" '$value | explode | length')" ||
-        die "could not count title code points"
-    if [ "$title_length" -gt "$TITLE_MAX" ]; then
-        violation "title is $title_length Unicode code points; maximum is $TITLE_MAX"
-    fi
-    if jq -en --arg value "$title" \
-        '$value | explode | any(. < 32 or (. >= 127 and . <= 159))' >/dev/null; then
-        violation "title contains a control character"
-    fi
-
-    case "$title" in
-    \(*'): '*) ;;
-    *)
-        violation "title must match '(scope): imperative outcome' with the exact '): ' separator"
-        return
-        ;;
+    local rc=0
+    [ -r "$title_module_dir/issue-title.jq" ] ||
+        die "shared issue-title predicate is missing"
+    jq -e -n -L "$title_module_dir" --arg value "$title" \
+        'include "issue-title"; $value | issue_title_valid' \
+        >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+    0) ;;
+    1) violation "title violates the canonical '(scope): imperative outcome' contract" ;;
+    *) die "could not evaluate the shared issue-title predicate" ;;
     esac
-    scope="${title#\(}"
-    scope="${scope%%\): *}"
-    statement="${title#*\): }"
-
-    if [ -z "$scope" ] || ! printf '%s' "$scope" | grep -q '[^[:space:]]'; then
-        violation "title scope must be nonempty"
-    fi
-    if printf '%s' "$scope" | grep -qE '^[[:space:]]|[[:space:]]$'; then
-        violation "title scope has leading or trailing whitespace"
-    fi
-    if printf '%s' "$scope" | grep -q '[()]'; then
-        violation "title scope cannot contain parentheses"
-    fi
-    if [ -z "$statement" ] || ! printf '%s' "$statement" | grep -q '[^[:space:]]'; then
-        violation "title outcome must be nonempty"
-    fi
-    if printf '%s' "$statement" | grep -qE '^[[:space:]]|[[:space:]]$'; then
-        violation "title outcome has leading or trailing whitespace"
-    fi
-    if printf '%s' "$statement" | grep -qiE '^\[[^]]+\][[:space:]]*:?[[:space:]]*'; then
-        violation "title outcome has a forbidden bracket or issue-form prefix"
-    fi
-    if printf '%s' "$statement" | grep -qiE '^(bug|feature|task|research|documentation|question|enhancement):[[:space:]]*'; then
-        violation "title outcome has a forbidden issue-form prefix"
-    fi
-    if printf '%s' "$statement" | grep -qiE '^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]*\))?!?:[[:space:]]*'; then
-        violation "title outcome has a forbidden Conventional Commit prefix"
-    fi
-    if printf '%s' "$statement" | grep -qiE '^P[0-9]+:[[:space:]]*'; then
-        violation "title outcome has a forbidden priority prefix"
-    fi
 }
 
 if [ "$title_only" -eq 1 ]; then
@@ -264,7 +220,6 @@ trap 'rm -rf "$tmp"' EXIT
 vocab="$tmp/vocabulary"
 : >"$vocab"
 manifest="$repo_root/label-registry.json"
-asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
 registry_helper="$asset_dir/../../label-registry-support/assets/label-registry.sh"
 [ -x "$registry_helper" ] ||
     die "shared label-registry interpreter is missing: $registry_helper"
