@@ -223,7 +223,8 @@ fi
 if jq -e '
     .mode == "registry" and .default_branch == "trunk" and
     .default_branch_commit == "1111111111111111111111111111111111111111" and
-    .verified_semantics == true
+    .verified_semantics == true and
+    .work_type_selection == "registry-semantics"
 ' \
     <<<"$output" >/dev/null; then
     ok "registry result is bound to the remote default branch"
@@ -241,11 +242,22 @@ fi
 
 if jq -e '
     .families[] | select(.family == "area") |
-    .exclusive == true and .labels[0].provision == true
+    .purpose == "Repository areas" and .axis == "classification" and
+    .exclusive == true and .labels[0].name == "area:api" and
+    .labels[0].description == "Live area" and .labels[0].provision == true
 ' <<<"$output" >/dev/null; then
-    ok "family exclusivity and provision metadata are preserved"
+    ok "family purpose, axis, exclusivity, and live label metadata are preserved"
 else
-    bad "family exclusivity and provision metadata are preserved"
+    bad "family purpose, axis, exclusivity, and live label metadata are preserved"
+fi
+
+if jq -e '
+    .families[] | select(.family == "custom") |
+    .exclusive == false and .labels[0].description == "Created by its tool"
+' <<<"$output" >/dev/null; then
+    ok "nonexclusive families retain independently selectable live descriptions"
+else
+    bad "nonexclusive families retain independently selectable live descriptions"
 fi
 
 if jq -e '
@@ -324,6 +336,8 @@ cat >"$fallback/labels.json" <<'JSON'
 [
   {"name":"feature","description":"Feature"},
   {"name":"area:api","description":"Area"},
+  {"name":"priority:high","description":"Priority"},
+  {"name":"security","description":"Security"},
   {"name":"claim:gpt","description":"Claim"},
   {"name":"Claim:claude","description":"Case-varied claim"},
   {"name":"agent:codex","description":"Legacy claim"},
@@ -333,11 +347,12 @@ JSON
 fallback_output="$(discover "$fallback")"
 if jq -e '
     .mode == "live-label-fallback" and .verified_semantics == false and
-    ([.labels[].name] | sort) == ["area:api", "feature"]
+    .work_type_selection == "human-confirmation-required" and
+    ([.labels[].name] | sort) == ["area:api", "feature", "priority:high", "security"]
 ' <<<"$fallback_output" >/dev/null; then
-    ok "missing registry falls back to bounded non-arming live labels"
+    ok "missing registry leaves bounded live labels semantically unclassified"
 else
-    bad "missing registry falls back to bounded non-arming live labels"
+    bad "missing registry leaves bounded live labels semantically unclassified"
 fi
 
 empty="$tmproot/empty"
@@ -346,6 +361,7 @@ touch "$empty/empty-repository"
 printf '[{"name":"feature","description":"Feature"}]\n' >"$empty/labels.json"
 if empty_output="$(discover "$empty")" && jq -e '
     .mode == "live-label-fallback" and .default_branch_commit == null and
+    .work_type_selection == "human-confirmation-required" and
     [.labels[].name] == ["feature"]
 ' <<<"$empty_output" >/dev/null; then
     ok "a readable repository with no branch refs uses live-label fallback"
@@ -379,6 +395,45 @@ elif [ ! -s "$schema_invalid/output" ] && grep -q 'fails its schema' "$schema_in
     ok "schema-invalid registry metadata fails closed with a diagnostic"
 else
     bad "schema-invalid registry metadata fails closed with a diagnostic"
+fi
+
+semantic_axis_type="$tmproot/semantic-axis-type"
+mkdir -p "$semantic_axis_type"
+write_registry "$semantic_axis_type" api
+write_labels "$semantic_axis_type" api
+jq '.families[0].axis = 42' "$semantic_axis_type/label-registry.json" \
+    >"$semantic_axis_type/registry.json"
+mv "$semantic_axis_type/registry.json" "$semantic_axis_type/label-registry.json"
+jq '.["$defs"].family.properties.axis = {}' "$semantic_axis_type/label-registry.schema.json" \
+    >"$semantic_axis_type/schema.json"
+mv "$semantic_axis_type/schema.json" "$semantic_axis_type/label-registry.schema.json"
+if discover "$semantic_axis_type" >"$semantic_axis_type/output" 2>"$semantic_axis_type/error"; then
+    bad "a target schema cannot certify a non-string axis"
+elif [ ! -s "$semantic_axis_type/output" ] &&
+    grep -q 'family\[0\]\.axis is unsupported: 42' "$semantic_axis_type/error"; then
+    ok "non-string axes fail the asset's semantic validation"
+else
+    bad "non-string axes fail closed with a semantic diagnostic"
+fi
+
+semantic_axis_value="$tmproot/semantic-axis-value"
+mkdir -p "$semantic_axis_value"
+write_registry "$semantic_axis_value" api
+write_labels "$semantic_axis_value" api
+jq '.families[0].axis = "target-defined"' "$semantic_axis_value/label-registry.json" \
+    >"$semantic_axis_value/registry.json"
+mv "$semantic_axis_value/registry.json" "$semantic_axis_value/label-registry.json"
+jq '.["$defs"].family.properties.axis = {}' "$semantic_axis_value/label-registry.schema.json" \
+    >"$semantic_axis_value/schema.json"
+mv "$semantic_axis_value/schema.json" "$semantic_axis_value/label-registry.schema.json"
+if discover "$semantic_axis_value" >"$semantic_axis_value/output" 2>"$semantic_axis_value/error"; then
+    bad "a target schema cannot extend the supported axis vocabulary"
+elif [ ! -s "$semantic_axis_value/output" ] &&
+    grep -q 'family\[0\]\.axis is unsupported: "target-defined"' \
+        "$semantic_axis_value/error"; then
+    ok "unknown axes fail the asset's semantic validation"
+else
+    bad "unknown axes fail closed with a semantic diagnostic"
 fi
 
 unsafe_schema="$tmproot/unsafe-schema"
@@ -658,6 +713,35 @@ elif grep -qF 'withhold it for the entire breakdown run' "$skill" &&
     ok "breakdown never retains a path that writes an arming signal"
 else
     bad "breakdown documents the trusted arming handoff"
+fi
+
+if grep -qF "family's \`purpose\` and" "$skill" &&
+    grep -qF "candidate's live \`description\`" "$skill" &&
+    grep -qF 'Copy the candidate' "$skill" &&
+    grep -qF 'independently applicable to the chunk' "$skill" &&
+    grep -qF 'Every emitted `requires` entry is a companion label' "$skill"; then
+    ok "breakdown selects labels from emitted semantics and honors family constraints"
+else
+    bad "breakdown selects labels from emitted semantics and honors family constraints"
+fi
+
+if grep -qF 'On an organization-owned repository, choose exactly one valid native issue' \
+    "$skill" &&
+    grep -qF 'Do not duplicate or substitute it with a registry family' "$skill" &&
+    grep -qF 'On a personal-account repository' "$skill" &&
+    grep -qF 'choose exactly one `work-type` label' "$skill" &&
+    grep -qF 'In `mode: registry`' "$skill" &&
+    grep -qF 'In `mode: live-label-fallback`' "$skill" &&
+    grep -qF 'work_type_selection: human-confirmation-required' "$skill" &&
+    grep -qF 'Do not infer, rank, or nominate a' "$skill" &&
+    grep -qF 'ask the human to name' "$skill" &&
+    grep -qF 'The checker validates admissibility; it is not a work-type' "$skill" &&
+    grep -qF 'Choose the single best match for the chunk' "$skill" &&
+    grep -qF 'stop before approval or writes and ask the' "$skill" &&
+    grep -qF 'never omit the classification or apply multiple candidates' "$skill"; then
+    ok "breakdown enforces exactly one repository-appropriate work classification"
+else
+    bad "breakdown enforces exactly one repository-appropriate work classification"
 fi
 
 if [ "$fail" -gt 0 ]; then

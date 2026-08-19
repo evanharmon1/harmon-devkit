@@ -53,12 +53,13 @@ read it in the UI) — never guess.
   referencing the issue, or activity newer than this session's claim comment,
   means the claim may not be yours alone to release — say so and let the user
   decide rather than presenting cleanup as obviously safe. One exemption: the
-  closing PR's own trail. A merged PR that delivered this claim's work
-  necessarily leaves cross-reference, merge, and closure events newer than the
-  claim comment — that is the claim's expected end of life, not somebody
-  else's work, and counting it would make the merged path below ask every
-  time. What counts is *unrelated* newer activity: another open PR, a claim
-  comment you did not write, someone else's hands on the markers.
+  qualifying delivery PR's own trail. A merged PR that delivered this claim's
+  work necessarily leaves cross-reference and merge events newer than the
+  claim comment, plus a closure event when it closed the issue — that is the
+  claim's expected end of life, not somebody else's work, and counting it
+  would make both merged outcomes below ask every time. What counts is
+  *unrelated* newer activity: another open PR, a claim comment you did not
+  write, someone else's hands on the markers.
 
   **Every path that clears a marker must say it released the claim.**
   Whichever outcome applies below, any cleanup that removes or restores a
@@ -100,9 +101,77 @@ read it in the UI) — never guess.
   below. In particular, family metadata does not replace the recorded label
   ownership fields, and runtime metadata never selects a cleanup path.
 
-  Three outcomes:
+  Four outcomes:
   - **PR open** — the claim is accurate; `/shepherd` owns the card from here.
     Nothing to do.
+  - **Partial delivery / issue open** — one PR deliberately landed part of the
+    claim, and the issue remains open for named remaining work.
+    Confirm no work is currently in flight. This is a completed release of
+    *this claim*, not a
+    completed issue and not a generic mid-flight hand-back. Assemble the same
+    claim-owned cleanup commands as the hand-back block below and present them
+    as the default single-confirmation action, but streamline to that action
+    only when **all** of this attributable evidence agrees:
+
+    - the current trusted claim record is authored by the account returned by
+      `gh api user --jq .login`, is complete (including a known chain board
+      status, or direct prior status for a legacy record), and accounts for
+      every marker the cleanup would touch through its direct and current
+      `claim chain` ownership fields;
+    - the issue is still open, and its timeline identifies exactly one
+      qualifying cross-reference from a PR in this same repository; re-read
+      that PR with `gh pr view --repo <owner/repo>` and require it to be
+      merged after the current claim comment, authored by the authenticated account,
+      to have a head branch exactly matching the branch recorded by the current
+      claim,
+      and to carry an explicit `Refs #<n>` (or repository-qualified `Refs`)
+      reference while not naming the issue in `closingIssuesReferences`;
+    - no other open PR cross-references the issue, no later trusted
+      `Claiming —` comment or unrelated post-claim activity indicates replacement
+      work, and the current assignees, claim labels, and card status are
+      consistent with the record rather than another worker's ownership; and
+    - the release explanation can name both sides from attributable evidence:
+      the merged PR and what it landed, plus the specific work the still-open
+      issue retains. Do not infer either side from a branch name or commit
+      summary.
+
+    `Refs` text alone is not evidence: bind it to the issue's cross-reference
+    event and the same-repository PR read. A merged PR alone is not evidence
+    either: an old, pre-claim, fork, closing-keyword, or differently-authored PR
+    does not qualify. Zero or multiple qualifying PRs, a missing or incomplete
+    claim record, an `unknown` chain board status (or direct prior status for a
+    legacy record), an unreadable PR/timeline, or any newer activity that
+    cannot be attributed to the qualifying PR all
+    **fail closed to maintainer confirmation**.
+
+    Immediately before the first cleanup write, re-run the issue, timeline,
+    comments, card, and qualifying-PR reads used above and
+    require the same current claim record, PR attribution, marker state, and absence of competing
+    work. Any changed or unreadable evidence returns to maintainer confirmation;
+    a confirmation based on the earlier snapshot never authorizes cleanup of
+    newer state.
+
+    On the qualifying path, restore the recorded chain board status (or direct
+    prior status for a legacy record) — never set an open issue to `Done` —
+    then restore the exact displaced `claim:*` or legacy `agent:*` label the
+    current claim chain proves it inherited. Remove only claim-owned assignees
+    and the live claim label: that can mean both the inherited chain assignee
+    login and the current author when the direct record says this claim added a
+    distinct assignment. Do not collapse those two proven markers into one.
+    Keep the board-first/searchable-markers-last ordering and partial-failure
+    rules above. The final release comment must explain the transition before
+    its supersede line, for example:
+
+    ```text
+    Partial delivery: <PR URL and what landed>. Remaining: <specific open work>.
+
+    Claim released — partial delivery landed and the remaining work is not in flight. (Supersedes the claim record above.)
+    ```
+
+    Post that comment last, only after every applicable restore/removal
+    succeeds. Unlike completed closure below, restoring the displaced label is
+    required because the issue is still open; omitting it would erase the
+    predecessor ownership that this claim temporarily displaced.
   - **Merged / issue closed** — *not* "nothing to release". GitHub clears no
     marker on merge, and a personal-account project has no automation to move
     the card, so the work finishes and the board shows an agent still holding
@@ -169,8 +238,11 @@ read it in the UI) — never guess.
     (`stateReason`), or a merged PR linked it with a *closing keyword*
     (`closedByPullRequestsReferences`). A merged PR that only says `Refs #N`
     finished part of it, and an issue closed `not planned` was never
-    delivered — `Done` would be false in both. In those cases **restore the
-    status the claim comment recorded** rather than leaving `Status` alone:
+    delivered — `Done` would be false in both. A qualifying open-issue partial
+    delivery takes the dedicated outcome above; an ambiguous or closed
+    non-delivery case stops for confirmation. Whenever cleanup is approved for
+    one of those non-completed cases, **restore the status the claim comment
+    recorded** rather than leaving `Status` alone:
     `/shepherd` deliberately parks a `Refs`-only issue at `In Progress`, so
     doing nothing here leaves the board advertising an active claim over work
     that has stopped. (`/shepherd` never sets `Done` at all: it stops before
@@ -188,18 +260,14 @@ read it in the UI) — never guess.
     are all add-if-missing, so on that path they changed nothing. Removing
     them anyway destroys state the session never created, and no amount of
     user approval recovers it, because by then nobody can tell which it was.
-    Use the three core `claim chain` fields when present; the chain label is the
-    removal target and its assignee-login companion identifies an inherited
-    assignment's owner. Direct leaf ownership is additive: when the direct
-    assignee field also says `yes`, remove `@me` as well (unless it is the same
-    login), because a cross-account takeover can own both assignments. The
-    chain board-status field preserves the status the chain originally
-    overwrote. These are authoritative current ownership and hand-back
+    Use the three core `claim chain` fields when present; their optional
+    assignee-login companion identifies an inherited assignment's owner, and
+    the chain board-status field preserves the status the chain originally
+    overwrote. They are authoritative current ownership and hand-back
     provenance after a refresh or takeover. Restore the chain board status
     rather than the direct prior status on a current chain record. Skip any
-    line the record marks `no`; use direct fields only for a legacy record with
-    no chain fields. If no record survives, ask rather than assume the claim
-    created everything.
+    line the record marks `no`; if no record survives, ask rather than assume
+    the claim created everything.
 
     ```sh
     # Separate commands on purpose: the label is optional (/claim skips it
@@ -230,10 +298,10 @@ read it in the UI) — never guess.
       --project '<the board the claim comment recorded>' \
       --status '<the chain board status, or direct prior status for a legacy record>'
     # If the record names a displaced label, put it back — the claim removed it:
-    gh issue edit <n> --repo <owner/repo> --add-label <the chain-displaced label, or direct displaced label for a legacy record>
-    gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned label, or direct added label for a legacy record>
-    gh issue edit <n> --repo <owner/repo> --remove-assignee <the chain-owned assignee login>  # when chain-owned; inherited target first
-    gh issue edit <n> --repo <owner/repo> --remove-assignee @me  # also when the direct assignee field says yes and @me differs
+    gh issue edit <n> --repo <owner/repo> --add-label <the displaced label the record names>
+    gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned label; use the direct added label only for a legacy record>
+    gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned model label, when the record names one>
+    gh issue edit <n> --repo <owner/repo> --remove-assignee <each recorded direct and inherited chain-owned login>
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```
 

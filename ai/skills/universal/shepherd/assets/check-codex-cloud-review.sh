@@ -508,7 +508,7 @@ codex_verdict_defs=$(
             (body_text | split("\n") | first // "" |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
           def has_severity_marker:
-            (body_text | ascii_downcase | test("\\bp[0-2]\\b"));
+            (body_text | ascii_downcase | test("\\bp[0-9]+\\b"));
           # Factored out of `rest_is_boilerplate` so the carrier defs below can
           # reuse the exact same removal and the exact same metadata pattern
           # instead of restating them. Same regexes, same flags, same order —
@@ -546,8 +546,9 @@ codex_verdict_defs=$(
           # part of Codex's output that does NOT vary:
           #
           #   1. the verdict sentence itself, matched exactly;
-          #   2. the absence of any P0/P1/P2 badge ANYWHERE in the body —
-          #      every finding Codex has ever posted here carried one;
+          #   2. the absence of any severity badge ANYWHERE in the body —
+          #      every finding Codex has ever posted here carried one,
+          #      including the observed P3;
           #   3. every remaining line being Codex's own metadata.
           #
           # Inline comments on the current head are classified as findings
@@ -1426,7 +1427,7 @@ check)
     # top-level comment whose first line is "Codex Review: Didn't find any
     # major issues." plus a praise clause. Findings are a review body opening
     # "### Codex Review", and the findings themselves are INLINE comments
-    # carrying a P0/P1/P2 badge — which are rejected before this point. So the
+    # carrying a severity badge — which are rejected before this point. So the
     # prefix is the real signal, and the trailing clause is decoration.
     #
     # Equality on the whole line was the original bug: Codex always appends
@@ -1438,7 +1439,7 @@ check)
     # trying to read intent out of free text.
     #
     #   * does not open with the verdict sentence   -> findings
-    #   * carries a P0/P1/P2 marker anywhere        -> findings
+    #   * carries a severity marker anywhere        -> findings
     #   * a later line is not Codex's own metadata  -> INDETERMINATE
     #   * otherwise                                 -> clean
     #
@@ -1509,7 +1510,7 @@ check)
     # answered, not a verdict — so an `unrecognized` sibling is still seen.
     #
     # One more condition, and it is not optional: a review whose BODY carries a
-    # P0/P1/P2 badge is never settled by its inline comments, however well
+    # severity badge is never settled by its inline comments, however well
     # adjudicated those are. Codex states some findings in the review body
     # itself, and attribution cannot reach them — there is no inline comment to
     # reply to — so reclassifying the whole review on the strength of its
@@ -2000,7 +2001,7 @@ settle)
     # which a disposition would mean anything about.
     printf '%s' "$target" |
         jq -e "$codex_verdict_defs"' has_severity_marker' >/dev/null ||
-        die "target $target_id carries no P0/P1/P2 badge, so it is not a finding to settle"
+        die "target $target_id carries no severity badge, so it is not a finding to settle"
 
     # A disposition settles the TARGET, and a target can hold more than one
     # finding: Codex sometimes states several in one body. Since the entry is
@@ -2027,9 +2028,9 @@ settle)
     # at least one finding is present either way.
     badge_count=$(printf '%s' "$target" |
         jq -r '((.body // "") | ascii_downcase) as $body |
-               ([$body | scan("!\\[p[0-2] badge\\]")] | length) as $rendered |
+               ([$body | scan("!\\[p[0-9]+ badge\\]")] | length) as $rendered |
                if $rendered > 0 then $rendered
-               else ([$body | scan("\\bp[0-2]\\b")] | length) end') ||
+               else ([$body | scan("\\bp[0-9]+\\b")] | length) end') ||
         die "cannot count the findings in target $target_id"
     if [ "$badge_count" -gt 1 ]; then
         [ -n "$covers" ] ||

@@ -163,6 +163,21 @@ valid_label() {
     esac
 }
 
+valid_model_label() {
+    [[ "$1" =~ ^claim:[a-z0-9]+(-[a-z0-9]+)*:[a-z0-9]+(-[a-z0-9]+)*$ ]]
+}
+
+model_matches_family_label() {
+    case "$2" in
+    claim:*) [ "${1%:*}" = "$2" ] ;;
+    # A legacy alias may be the family marker during migration. The model's
+    # trusted family is validated by the producer; the releaser only requires
+    # that an actual family marker accompanies it.
+    agent:*) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
 valid_login() {
     case "$1" in
     '' | *[!a-zA-Z0-9-]*) return 1 ;;
@@ -218,7 +233,12 @@ fetch_claim() {
                 and (trusted_claimant or dl == "github-actions[bot]");
             add // []
             | map(select(.body != null))
-            | map(select(trusted_claimant or trusted_release)) as $events
+            # Historical write-associated claims remain lineage evidence even
+            # after a partial retry removed their assignee. They can never be
+            # selected as the current claim unless trusted_claimant also holds.
+            | map(select(trusted_claimant
+                         or trusted_release
+                         or ((.body | startswith("Claiming —")) and writeauth))) as $events
             | ($events
                | map((.body | startswith("Claiming —")) and trusted_claimant)
                | rindex(true)) as $ci
@@ -228,8 +248,7 @@ fetch_claim() {
                      | $i] | last // -1) as $release_before
               | ([range($release_before + 1; $ci) as $i
                   | select($events[$i]
-                           | ((.body | startswith("Claiming —"))
-                              and trusted_claimant))
+                           | ((.body | startswith("Claiming —")) and writeauth))
                   | $i] | last // null) as $pi
               | {found: true,
                     id: $events[$ci].id,
@@ -246,8 +265,7 @@ fetch_claim() {
                     lineage:
                         ([range($release_before + 1; $ci + 1) as $i
                           | select($events[$i]
-                                   | ((.body | startswith("Claiming —"))
-                                      and trusted_claimant))
+                                   | ((.body | startswith("Claiming —")) and writeauth))
                           | {id: $events[$i].id,
                              updated: ($events[$i].updated_at // ""),
                              author: $events[$i].user.login,
@@ -313,23 +331,30 @@ fi
 record_present=0
 saw_assignee=0
 saw_label=0
+saw_model_label=0
 saw_displaced=0
 saw_chain_assignee_set=0
 saw_chain_assignee=0
 saw_chain_assignee_login=0
 saw_chain_label=0
+saw_chain_model_label=0
 saw_chain_displaced=0
 assignee_added=""
 label_added=""
+model_label_added=""
 label_displaced=""
 chain_assignee_set=""
 chain_assignee_owned=""
 chain_assignee_login=""
 chain_label_owned=""
+chain_model_label_owned=""
 chain_label_displaced=""
 direct_assignee_added="no"
+direct_model_label_added=""
 owned_assignees_file="$lineage_tmp/owned-assignees"
+omitted_assignees_file="$lineage_tmp/omitted-assignees"
 : >"$owned_assignees_file"
+: >"$omitted_assignees_file"
 extract_value() {
     v="${1#*by this claim:}"
     v="${v%%,*}"
@@ -377,13 +402,36 @@ canonical_login_set() {
     [ "$value" != none ] || return 0
     jq -er --arg value "$value" '
         ($value | split(",")) as $items
-        | select(($items | length) > 0)
+        | select(($items | length) > 0 and ($items | length) <= 10)
         | select(all($items[];
             test("^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$")
             and . == ascii_downcase))
         | select(($items | sort | unique | join(",")) == $value)
         | $items[]
     ' <<<'null'
+}
+
+# v3 writers use the canonical comma form above. During the dependency branch's
+# review window, bounded whitespace-separated v3 records were emitted; accept
+# those as a read-only transition without allowing new comma records to relax
+# canonical ordering or case.
+read_login_set() {
+    local value="$1" normalized count login
+    if [[ "$value" == *,* ]] || [ "$value" = none ]; then
+        canonical_login_set "$value"
+        return
+    fi
+    normalized=""
+    count=0
+    for login in $value; do
+        valid_login "$login" && [ "$login" = "$(lower "$login")" ] || return 1
+        count=$((count + 1))
+        [ "$count" -le 10 ] || return 1
+        printf '%s\n' "$normalized" | grep -Fxq "$login" && return 1
+        normalized="${normalized}${normalized:+$'\n'}$login"
+    done
+    [ "$count" -gt 0 ] || return 1
+    printf '%s\n' "$normalized" | sort
 }
 
 set_has() {
@@ -416,7 +464,7 @@ prove_assignee_lineage() {
         fi
         if [ -n "$set_value" ]; then
             set_value="$(line_value "$set_value")"
-            if ! canonical_login_set "$set_value" >"$candidate"; then
+            if ! read_login_set "$set_value" >"$candidate"; then
                 return 1
             fi
             while IFS= read -r target; do
@@ -426,6 +474,17 @@ prove_assignee_lineage() {
             if [ "$direct" = yes ] && ! set_has "$candidate" "$author"; then
                 return 1
             fi
+            while IFS= read -r target; do
+                [ -n "$target" ] || continue
+                if ! set_has "$candidate" "$target" &&
+                    jq -e --arg a "$target" 'any(.assignees[]?; (.login | ascii_downcase) == $a)' \
+                        <<<"$issue_json" >/dev/null; then
+                    return 1
+                fi
+                if ! set_has "$candidate" "$target"; then
+                    printf '%s\n' "$target" >>"$omitted_assignees_file"
+                fi
+            done <"$proven"
             sort -u "$candidate" >"$next"
             mv "$next" "$proven"
             i=$((i + 1))
@@ -462,6 +521,64 @@ prove_assignee_lineage() {
     cat "$proven"
 }
 
+# Prove family/model cleanup targets across the same trusted lineage. A leaf
+# may retain only the predecessor's proven target or initialize ownership with
+# the exact label that leaf directly added.
+prove_label_lineage() {
+    local lineage_json="$1" count i body direct direct_model chain chain_model proven proven_model
+    proven=""
+    proven_model=""
+    count="$(jq '.lineage | length' <<<"$lineage_json")"
+    i=0
+    while [ "$i" -lt "$count" ]; do
+        body="$(jq -r --argjson i "$i" '.lineage[$i].body' <<<"$lineage_json")"
+        direct="$(optional_body_value '- `claim:` label added by this claim: ' "$body")" || return 1
+        [ -n "$direct" ] || direct="$(optional_body_value '- claim: label added by this claim: ' "$body")" || return 1
+        [ -n "$direct" ] || direct="$(optional_body_value '- `agent:` label added by this claim: ' "$body")" || return 1
+        [ -n "$direct" ] || direct="$(optional_body_value '- agent: label added by this claim: ' "$body")" || return 1
+        direct="$(line_value "$direct")"
+        direct_model="$(optional_body_value '- `claim:` model label added by this claim: ' "$body")" || return 1
+        [ -n "$direct_model" ] || direct_model="$(optional_body_value '- claim: model label added by this claim: ' "$body")" || return 1
+        chain="$(optional_body_value '- `claim:` label owned by this claim chain: ' "$body")" || return 1
+        [ -n "$chain" ] || chain="$(optional_body_value '- claim: label owned by this claim chain: ' "$body")" || return 1
+        [ -n "$chain" ] || chain="$(optional_body_value '- `agent:` label owned by this claim chain: ' "$body")" || return 1
+        [ -n "$chain" ] || chain="$(optional_body_value '- agent: label owned by this claim chain: ' "$body")" || return 1
+        chain="$(line_value "$chain")"
+        chain_model="$(optional_body_value '- `claim:` model label owned by this claim chain: ' "$body")" || return 1
+        [ -n "$chain_model" ] || chain_model="$(optional_body_value '- claim: model label owned by this claim chain: ' "$body")" || return 1
+
+        case "$(lower "$direct")" in no | n/a | none | '') direct="" ;; *) valid_label "$direct" || return 1 ;; esac
+        case "$(lower "$direct_model")" in no | n/a | none | '') direct_model="" ;; *) valid_model_label "$direct_model" || return 1 ;; esac
+        if [ -n "$chain" ]; then
+            case "$(lower "$chain")" in
+            no | n/a | none) proven="" ;;
+            *)
+                valid_label "$chain" || return 1
+                { [ "$chain" = "$proven" ] || [ "$chain" = "$direct" ]; } || return 1
+                proven="$chain"
+                ;;
+            esac
+        else
+            proven="$direct"
+        fi
+        if [ -n "$chain_model" ]; then
+            case "$(lower "$chain_model")" in
+            no | n/a | none) proven_model="" ;;
+            *)
+                valid_model_label "$chain_model" || return 1
+                { [ "$chain_model" = "$proven_model" ] || [ "$chain_model" = "$direct_model" ]; } || return 1
+                model_matches_family_label "$chain_model" "$proven" || return 1
+                proven_model="$chain_model"
+                ;;
+            esac
+        else
+            proven_model="$direct_model"
+        fi
+        i=$((i + 1))
+    done
+    printf '%s\n%s\n' "${proven:-none}" "${proven_model:-none}"
+}
+
 # Optional harness/model/family/runtime-environment/session lines are
 # operational metadata only. They are deliberately ignored here: release
 # authority comes solely from the required "by this claim" fields below, and
@@ -472,6 +589,10 @@ while IFS= read -r line; do
     *"assignee added by this claim:"*)
         saw_assignee=1
         assignee_added="$(lower "$(extract_value "$line")")"
+        ;;
+    *"model label added by this claim:"*)
+        saw_model_label=1
+        model_label_added="$(extract_value "$line")"
         ;;
     *"label added by this claim:"*)
         saw_label=1
@@ -493,6 +614,10 @@ while IFS= read -r line; do
         saw_chain_assignee_login=1
         chain_assignee_login="$(extract_chain_value "$line")"
         ;;
+    *"model label owned by this claim chain:"*)
+        saw_chain_model_label=1
+        chain_model_label_owned="$(extract_chain_value "$line")"
+        ;;
     *"label owned by this claim chain:"*)
         saw_chain_label=1
         chain_label_owned="$(extract_chain_value "$line")"
@@ -508,6 +633,7 @@ if [ "$record_present" -eq 1 ]; then
     # Keep the leaf's direct ownership separate from inherited chain ownership:
     # a cross-account takeover can legitimately own both assignments.
     direct_assignee_added="$assignee_added"
+    direct_model_label_added="$model_label_added"
     # A record with a missing or truncated field is unreadable provenance,
     # not a no-op: releasing around it would clear some markers, leave
     # others, and then a supersede comment would block every retry.
@@ -535,6 +661,19 @@ if [ "$record_present" -eq 1 ]; then
         fi
         ;;
     esac
+    if [ "$saw_model_label" -ne "$saw_chain_model_label" ]; then
+        echo "$repo#$issue: claim record has incomplete model-label ownership — fail closed" >&2
+        exit 2
+    fi
+    case "$(lower "$model_label_added")" in
+    no | n/a | none | '') ;;
+    *)
+        valid_model_label "$model_label_added" || {
+            echo "$repo#$issue: claim record names an implausible model label ('$model_label_added') — fail closed" >&2
+            exit 2
+        }
+        ;;
+    esac
     case "$(lower "$label_displaced")" in
     none | '') label_displaced="" ;;
     *)
@@ -548,17 +687,32 @@ if [ "$record_present" -eq 1 ]; then
     if [ "$saw_chain_assignee_set" -ne 0 ]; then
         chain_record=1
         if [ "$saw_chain_assignee_set" -ne 1 ] || [ -z "$chain_assignee_set" ] ||
-            [ "$saw_chain_assignee" -ne 0 ] || [ "$saw_chain_assignee_login" -ne 0 ] ||
-            [ "$saw_chain_label" -ne 1 ] || [ "$saw_chain_displaced" -ne 1 ]; then
+            [ "$saw_chain_assignee" -gt 1 ] || [ "$saw_chain_assignee_login" -ne 0 ] ||
+            [ "$saw_chain_label" -ne 1 ] || [ "$saw_chain_displaced" -ne 1 ] ||
+            { [ "$saw_model_label" -eq 1 ] && [ "$saw_chain_model_label" -ne 1 ]; }; then
             echo "$repo#$issue: claim record has incomplete or mixed claim-chain ownership — fail closed" >&2
             exit 2
         fi
-        if ! canonical_login_set "$chain_assignee_set" >/dev/null; then
-            echo "$repo#$issue: claim-chain assignee set is noncanonical ('$chain_assignee_set') — fail closed" >&2
+        if ! read_login_set "$chain_assignee_set" >/dev/null; then
+            echo "$repo#$issue: claim-chain assignee set is unreadable ('$chain_assignee_set') — fail closed" >&2
             exit 2
         fi
+        if [ "$saw_chain_assignee" -eq 1 ]; then
+            case "$chain_assignee_owned:$chain_assignee_set" in
+            yes:none | no:none) expected_chain_owned=no ;;
+            yes:*) expected_chain_owned=yes ;;
+            *)
+                echo "$repo#$issue: transitional claim-chain assignee scalar disagrees with its set — fail closed" >&2
+                exit 2
+                ;;
+            esac
+            [ "$chain_assignee_owned" = "$expected_chain_owned" ] || {
+                echo "$repo#$issue: transitional claim-chain assignee scalar disagrees with its set — fail closed" >&2
+                exit 2
+            }
+        fi
     elif [ "$saw_chain_assignee" -ne 0 ] || [ "$saw_chain_assignee_login" -ne 0 ] ||
-        [ "$saw_chain_label" -ne 0 ] || [ "$saw_chain_displaced" -ne 0 ]; then
+        [ "$saw_chain_label" -ne 0 ] || [ "$saw_chain_model_label" -ne 0 ] || [ "$saw_chain_displaced" -ne 0 ]; then
         chain_record=1
         if [ "$saw_chain_assignee" -ne 1 ] || [ "$saw_chain_label" -ne 1 ] || [ "$saw_chain_displaced" -ne 1 ] ||
             [ -z "$chain_assignee_owned" ] || [ -z "$chain_label_owned" ] || [ -z "$chain_label_displaced" ]; then
@@ -598,17 +752,51 @@ if [ "$record_present" -eq 1 ]; then
             fi
             ;;
         esac
+        case "$(lower "$chain_model_label_owned")" in
+        no | n/a | none | '') ;;
+        *)
+            if ! valid_model_label "$chain_model_label_owned" ||
+                ! model_matches_family_label "$chain_model_label_owned" "$chain_label_owned"; then
+                echo "$repo#$issue: claim-chain ownership names an implausible model label ('$chain_model_label_owned') — fail closed" >&2
+                exit 2
+            fi
+            ;;
+        esac
         # The current leaf, not its author, owns inherited provenance. This is
         # what makes a crashed-session takeover release predecessor markers.
         label_added="$chain_label_owned"
+        model_label_added="$chain_model_label_owned"
         label_displaced="$chain_label_displaced"
     fi
+
+    case "$(lower "$direct_model_label_added")" in
+    no | n/a | none | '') ;;
+    *)
+        if ! model_matches_family_label "$direct_model_label_added" "$label_added"; then
+            echo "$repo#$issue: direct model label does not refine its owned family label — fail closed" >&2
+            exit 2
+        fi
+        ;;
+    esac
 
     if [ "$chain_record" -eq 1 ]; then
         if ! prove_assignee_lineage "$claim_json" >"$owned_assignees_file"; then
             echo "$repo#$issue: inherited assignee targets lack unambiguous predecessor provenance — fail closed" >&2
             exit 2
         fi
+        if ! proven_labels="$(prove_label_lineage "$claim_json")"; then
+            echo "$repo#$issue: inherited label targets lack unambiguous predecessor provenance — fail closed" >&2
+            exit 2
+        fi
+        expected_proven_label="$label_added"
+        expected_proven_model="$model_label_added"
+        case "$(lower "$expected_proven_label")" in no | n/a | none | '') expected_proven_label=none ;; esac
+        case "$(lower "$expected_proven_model")" in no | n/a | none | '') expected_proven_model=none ;; esac
+        [ "$(sed -n '1p' <<<"$proven_labels")" = "$expected_proven_label" ] &&
+            [ "$(sed -n '2p' <<<"$proven_labels")" = "$expected_proven_model" ] || {
+            echo "$repo#$issue: current label cleanup targets do not match proven lineage — fail closed" >&2
+            exit 2
+        }
     elif [ "$direct_assignee_added" = yes ]; then
         printf '%s\n' "$(lower "$claim_author")" >"$owned_assignees_file"
     fi
@@ -643,6 +831,17 @@ if [ "$record_present" -eq 1 ]; then
         ;;
     esac
 fi
+
+for owned_model_label in "$direct_model_label_added" "$model_label_added"; do
+    case "$(lower "$owned_model_label")" in
+    no | n/a | none | '') continue ;;
+    esac
+    if jq -e --arg l "$owned_model_label" '.labels[] | select(.name == $l)' \
+        <<<"$issue_json" >/dev/null &&
+        ! printf '%s' "$labels_to_remove" | grep -Fqx "$owned_model_label"; then
+        labels_to_remove="$labels_to_remove$owned_model_label"$'\n'
+    fi
+done
 
 assignees_to_remove="$lineage_tmp/assignees-to-remove"
 : >"$assignees_to_remove"
@@ -700,6 +899,14 @@ if [ "$recheck_id" != "$claim_id" ] ||
     echo "$repo#$issue: the claim of record changed between read and write — leaving it for the next event" >&2
     exit 3
 fi
+while IFS= read -r omitted; do
+    [ -n "$omitted" ] || continue
+    if jq -e --arg a "$omitted" 'any(.assignees[]?; (.login | ascii_downcase) == $a)' \
+        <<<"$recheck_issue" >/dev/null; then
+        echo "$repo#$issue: an omitted predecessor assignee became live before write — leaving it for the next event" >&2
+        exit 3
+    fi
+done < <(sort -u "$omitted_assignees_file")
 
 # ── Execute ──────────────────────────────────────────────────────────────────
 run_write() {

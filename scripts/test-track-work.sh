@@ -683,7 +683,17 @@ BODY
 
 run_metadata() {
     _rc=0
-    "$metadata" "$@" >"$tmp/metadata.out" 2>&1 || _rc=$?
+    _metadata_args=()
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = --title ] && [ "${METADATA_RAW_TITLE:-0}" != 1 ]; then
+            _metadata_args+=(--title "(tests): $2")
+            shift 2
+        else
+            _metadata_args+=("$1")
+            shift
+        fi
+    done
+    "$metadata" "${_metadata_args[@]}" >"$tmp/metadata.out" 2>&1 || _rc=$?
     echo "$_rc"
 }
 
@@ -722,13 +732,15 @@ mkdir -p "$standalone_track_work"
 cp -R ai/skills/universal/track-work "$standalone_track_work/track-work"
 cp -R ai/skills/universal/label-registry-support \
     "$standalone_track_work/label-registry-support"
+cp -R ai/skills/universal/issue-title-support \
+    "$standalone_track_work/issue-title-support"
 [ ! -e "$standalone_track_work/triage" ] ||
     fail "standalone track-work fixture must not contain triage"
 standalone_metadata="$standalone_track_work/track-work/assets/check-issue-metadata.sh"
 _rc=0
 PATH="$metadata_stub:$PATH" "$standalone_metadata" \
     --repo testowner/testrepo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Validate standalone issue metadata' \
+    --owner-type personal --title '(tests): Validate standalone metadata' \
     --body-file "$valid_body" --agent-authored --label feature \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -756,23 +768,57 @@ grep -q 'does not match target repository owner type' "$tmp/metadata.out" ||
     fail "the owner mismatch should be the reported violation"
 
 echo "==> metadata: exact title boundary is 70 Unicode code points"
-title70="$(printf 'a%.0s' {1..70})"
+title70="(scope): $(printf 'a%.0s' {1..61})"
 title71="${title70}a"
-[ "$(run_personal "$title70" "$valid_body")" = 0 ] || fail "70 code points should pass"
-[ "$(run_personal "$title71" "$valid_body")" = 1 ] || fail "71 code points should fail"
+[ "$(METADATA_RAW_TITLE=1 run_personal "$title70" "$valid_body")" = 0 ] ||
+    fail "70 code points should pass"
+[ "$(METADATA_RAW_TITLE=1 run_personal "$title71" "$valid_body")" = 1 ] ||
+    fail "71 code points should fail"
 
-echo "==> metadata: empty and prefixed titles fail"
-[ "$(run_personal '' "$valid_body")" = 1 ] || fail "empty title should fail"
-for title in '[Bug]: metadata is missing' 'Bug: metadata is missing' \
-    'fix(track-work): add metadata' 'P1: metadata is missing'; do
-    [ "$(run_personal "$title" "$valid_body")" = 1 ] || fail "prefixed title should fail: $title"
+echo "==> metadata: free-form Unicode, spaced, and punctuated scopes pass"
+for title in '(CI/CD): Reject stale runs' '(Build Tools): Repair cache keys' \
+    '(déploiement 🚀): Verify rollback'; do
+    [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 0 ] ||
+        fail "valid scoped title should pass: $title ($(cat "$tmp/metadata.out"))"
 done
 
-echo "==> metadata: surrounding whitespace cannot smuggle a forbidden prefix"
-for title in ' fix: repair metadata' 'Trailing space title '; do
-    [ "$(run_personal "$title" "$valid_body")" = 1 ] ||
-        fail "a title with surrounding whitespace should fail: '$title'"
+echo "==> metadata: empty, unscoped, malformed, and nested-prefix titles fail"
+for title in '' 'Metadata is missing' '(): Repair metadata' '( scope): Repair metadata' \
+    '(scope ): Repair metadata' '(nested(scope)): Repair metadata' \
+    '(scope):Repair metadata' '(scope) : Repair metadata' '(scope): ' \
+    '(scope): [] Metadata is missing' '(scope): [Bug]: Metadata is missing' \
+    '(scope): Bug: Metadata is missing' \
+    '(scope): fix: Add metadata' '(scope): fix(track-work): Add metadata' \
+    '(scope): P1: Repair metadata'; do
+    [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 1 ] ||
+        fail "malformed or nested-prefix title should fail: $title"
 done
+
+echo "==> metadata: surrounding whitespace and controls fail"
+unicode_invalid_titles=(
+    $'(\u00a0scope): Repair metadata'
+    $'(scope\u00a0): Repair metadata'
+    $'(scope): \u00a0Repair metadata'
+    $'(scope): Repair metadata\u00a0'
+    $'(scope): Repair\tmetadata'
+    $'(scope): Repair\001metadata'
+)
+for title in ' (scope): Repair metadata' '(scope): Repair metadata ' \
+    "(scope): Repair"$'\n'"metadata" \
+    "${unicode_invalid_titles[@]}"; do
+    [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 1 ] ||
+        fail "authoring must reject Unicode boundary whitespace and controls: '$title'"
+    [ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title "$title")" = 1 ] ||
+        fail "title-only mode must reject the same invalid title: '$title'"
+done
+
+echo "==> metadata: title-only mode validates retitles without draft metadata"
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+    --title '(delivery queue): Reject stale dispatches')" = 0 ] ||
+    fail "valid title-only retitle should pass: $(cat "$tmp/metadata.out")"
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+    --title 'Reject stale dispatches')" = 1 ] ||
+    fail "legacy unscoped title-only retitle should fail"
 
 echo "==> metadata: required headings must exist once, be nonempty, and stay ordered"
 for case_name in missing-problem missing-acceptance duplicate-problem empty-problem out-of-order; do
@@ -1166,7 +1212,7 @@ echo "==> metadata: manifest open-value families resolve proposed live labels"
 _rc=0
 METADATA_GH_LOG="$tmp/metadata-gh.log" "$metadata" \
     --repo testowner/testrepo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Allow a live open-value label' \
+    --owner-type personal --title '(tests): Allow a live open-value label' \
     --body-file "$valid_body" --human-authored --label feature \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1197,7 +1243,7 @@ jq '.families |= map(
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_open_classification" --owner-type personal \
-    --title 'Allow an open classification family' --body-file "$valid_body" \
+    --title '(tests): Allow an open classification family' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture \
     --inapplicable layer --label domain:fixture >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] ||
@@ -1219,7 +1265,7 @@ jq '.families += [{
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_ambiguous" --owner-type personal \
-    --title 'Reject ambiguous open-value prefixes' --body-file "$valid_body" \
+    --title '(tests): Reject ambiguous open-value prefixes' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "an ambiguous open-value label should be indeterminate (got $_rc): $(cat "$tmp/metadata.out")"
@@ -1242,7 +1288,7 @@ jq '.families |= map(
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_enumerated" --owner-type personal \
-    --title 'Reject absent enumerated open members' --body-file "$valid_body" \
+    --title '(tests): Reject absent enumerated open members' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture --label type:stale-member >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] ||
@@ -1260,7 +1306,7 @@ printf '{not json\n' >"$metadata_subdir_root/label-registry.json"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo testowner/testrepo --repo-root "$metadata_subdir_root/nested/deeper" \
-    --owner-type personal --title 'Resolve the top-level manifest' \
+    --owner-type personal --title '(tests): Resolve the top-level manifest' \
     --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] ||
@@ -1284,7 +1330,7 @@ jq '.families += [{
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_strategy" --owner-type personal \
-    --title 'Reject renamed strategy families' --body-file "$valid_body" \
+    --title '(tests): Reject renamed strategy families' --body-file "$valid_body" \
     --agent-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture --label ai-generated --label route:fast \
     >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1312,7 +1358,7 @@ jq '.families |= map(
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_retired" --owner-type personal \
-    --title 'Reject retired open members' --body-file "$valid_body" \
+    --title '(tests): Reject retired open members' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] ||
@@ -1375,7 +1421,7 @@ jq '.families += [{
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_shadowed" --owner-type personal \
-    --title 'Reject shadowed open-value labels' --body-file "$valid_body" \
+    --title '(tests): Reject shadowed open-value labels' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture --label type:fix >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "an open label shadowed by a concrete family should be indeterminate (got $_rc): $(cat "$tmp/metadata.out")"
@@ -1386,13 +1432,13 @@ grep -q 'type-concrete' "$tmp/metadata.out" && grep -q 'type-override' "$tmp/met
 
 echo "==> metadata: incomplete classification requires needs-triage and names the axis"
 _rc="$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Keep incomplete classification visible' \
+    --owner-type personal --title '(tests): Keep incomplete classification visible' \
     --body-file "$valid_body" --agent-authored --label feature \
     --label area:fixture --inapplicable layer --label ai-generated)"
 [ "$_rc" = 1 ] || fail "missing domain without needs-triage should fail"
 grep -qi 'domain' "$tmp/metadata.out" || fail "the undecided domain axis should be named"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Keep incomplete classification visible' \
+    --owner-type personal --title '(tests): Keep incomplete classification visible' \
     --body-file "$valid_body" --agent-authored --label feature \
     --label area:fixture --inapplicable layer --label ai-generated \
     --label needs-triage)" = 0 ] ||
@@ -1400,7 +1446,7 @@ grep -qi 'domain' "$tmp/metadata.out" || fail "the undecided domain axis should 
 
 echo "==> metadata: owner type controls work classification"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Require a work type' --body-file "$valid_body" \
+    --owner-type personal --title '(tests): Require a work type' --body-file "$valid_body" \
     --human-authored --label area:fixture --inapplicable layer --label domain:fixture)" = 1 ] ||
     fail "personal repo without a work type should fail"
 [ "$(run_personal 'Reject stacked work types' "$valid_body" --label task)" = 1 ] ||
@@ -1408,12 +1454,12 @@ echo "==> metadata: owner type controls work classification"
 [ "$(run_organization 'Reject labels in place of Issue Type' "$valid_body" --label feature)" = 1 ] ||
     fail "organization repo with a work-type label should fail"
 [ "$(run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
-    --owner-type organization --title 'Require native Issue Type' --body-file "$valid_body" \
+    --owner-type organization --title '(tests): Require native Issue Type' --body-file "$valid_body" \
     --human-authored --label area:fixture --inapplicable layer --label domain:fixture)" = 1 ] ||
     fail "organization repo without Issue Type should fail"
 [ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo \
     --repo-root "$metadata_repo" --owner-type organization \
-    --issue-type 'Definitely Not A Real Type' --title 'Validate native Issue Types' \
+    --issue-type 'Definitely Not A Real Type' --title '(tests): Validate native Issue Types' \
     --body-file "$valid_body" --human-authored --label area:fixture --inapplicable layer \
     --label domain:fixture)" = 1 ] || fail "unknown native Issue Type should fail"
 
@@ -1429,7 +1475,7 @@ echo "==> metadata: an absent manifest falls back to one bounded label read"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-    --owner-type personal --title 'Validate fallback metadata' \
+    --owner-type personal --title '(tests): Validate fallback metadata' \
     --body-file "$valid_body" --agent-authored --work-type-label enhancement \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1443,7 +1489,7 @@ echo "==> metadata: forbidden fallback families are case-insensitive"
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo fallback/repo \
     --repo-root "$metadata_fallback" --owner-type personal \
-    --title 'Reject authoring controls' --body-file "$valid_body" \
+    --title '(tests): Reject authoring controls' --body-file "$valid_body" \
     --agent-authored --work-type-label 'Rigor:deep' --label area:fixture \
     --inapplicable layer --label domain:fixture --label ai-generated \
     >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1455,7 +1501,7 @@ _rc=0
 METADATA_GH_LABELS="$(printf '%s\n' enhancement area:fixture domain:fixture \
     ai-generated sec 'sec|concern|concern|human,agent|false')" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-    --owner-type personal --title 'Reject forged fallback writers' \
+    --owner-type personal --title '(tests): Reject forged fallback writers' \
     --body-file "$valid_body" --agent-authored --work-type-label enhancement \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label ai-generated --label sec >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1469,7 +1515,7 @@ printf '{not json\n' >"$metadata_fallback/label-registry.json"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-    --owner-type personal --title 'Reject an invalid manifest' \
+    --owner-type personal --title '(tests): Reject an invalid manifest' \
     --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "invalid present manifest should exit 2 (got $_rc)"
@@ -1481,7 +1527,7 @@ jq '.families[0].writers = "agent"' label-registry.json >"$metadata_fallback/lab
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-    --owner-type personal --title 'Reject an invalid manifest shape' \
+    --owner-type personal --title '(tests): Reject an invalid manifest shape' \
     --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "structurally invalid manifest should exit 2 (got $_rc)"
@@ -1501,7 +1547,7 @@ for mutation in missing-required duplicate-value; do
     esac
     _rc=0
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-        --owner-type personal --title 'Reject invalid manifest records' \
+        --owner-type personal --title '(tests): Reject invalid manifest records' \
         --body-file "$valid_body" --human-authored --label feature \
         --inapplicable area --inapplicable layer --inapplicable domain \
         >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -1518,7 +1564,7 @@ git -C "$metadata_sshport" remote add origin 'ssh://git@ssh.github.com/testowner
 cp "$metadata_repo/label-registry.json" "$metadata_sshport/label-registry.json"
 [ "$(PATH="$metadata_stub:$PATH" run_metadata --repo testowner/testrepo \
     --repo-root "$metadata_sshport" --owner-type personal \
-    --title 'Bind portless ssh remotes' --body-file "$valid_body" \
+    --title '(tests): Bind portless ssh remotes' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture)" = 0 ] ||
     fail "a portless ssh.github.com remote should bind: $(cat "$tmp/metadata.out")"
@@ -1526,7 +1572,7 @@ cp "$metadata_repo/label-registry.json" "$metadata_sshport/label-registry.json"
 echo "==> metadata: the checkout remote must match the requested repository"
 _rc=0
 "$metadata" --repo another/repo --repo-root "$metadata_repo" \
-    --owner-type personal --title 'Bind the target checkout' --body-file "$valid_body" \
+    --owner-type personal --title '(tests): Bind the target checkout' --body-file "$valid_body" \
     --human-authored --label feature --inapplicable area --inapplicable layer \
     --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "mismatched repo-root should exit 2 (got $_rc)"
@@ -2665,7 +2711,9 @@ chmod +x "$stub/gh"
 echo "==> claim-record producer and consumers document operational metadata"
 claim_skill="./ai/skills/universal/claim/SKILL.md"
 claim_lifecycle="./ai/skills/universal/track-work/references/claim-lifecycle.md"
+implement_skill="./ai/skills/universal/implement/SKILL.md"
 wrap_skill="./ai/skills/universal/wrap/SKILL.md"
+shepherd_skill="./ai/skills/universal/shepherd/SKILL.md"
 for field in harness model family 'runtime environment' session; do
     grep -Fq -- "  - $field:" "$claim_skill" ||
         fail "/claim must write the $field field"
@@ -2674,6 +2722,79 @@ for field in harness model family 'runtime environment' session; do
 done
 grep -Fq 'optional `harness`, `model`, `family`, `runtime' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
+grep -Fq -- '--remove-label <the chain-owned model label' "$wrap_skill" ||
+    fail "/wrap must release a recorded model refinement separately"
+grep -Fq -- '--remove-label <the model label the claim record names' "$shepherd_skill" ||
+    fail "/shepherd must release a recorded model refinement separately"
+
+echo "==> wrap documents the attributable partial-delivery outcome"
+partial_contract="$tmp/wrap-partial-contract.md"
+grep -Fq 'Four outcomes:' "$wrap_skill" || fail "/wrap must enumerate four outcomes"
+for outcome in \
+    '**PR open**' \
+    '**Partial delivery / issue open**' \
+    '**Merged / issue closed**' \
+    '**Neither**'; do
+    grep -Fq "$outcome" "$wrap_skill" || fail "/wrap must retain the distinct $outcome outcome"
+done
+awk '/^  - \*\*Partial delivery \/ issue open\*\*/ { capture = 1 }
+     capture && /^  - \*\*Merged \/ issue closed\*\*/ { exit }
+     capture { print }' "$wrap_skill" >"$partial_contract"
+[ -s "$partial_contract" ] || fail "/wrap must define a fourth partial-delivery outcome"
+for required in \
+    'issue remains open' \
+    'no work is currently in flight' \
+    'current trusted claim record' \
+    'same repository' \
+    'authored by the authenticated account' \
+    'head branch exactly matching the branch recorded by the current' \
+    'merged after the current claim comment' \
+    'no other open PR' \
+    'no later trusted' \
+    'Immediately before the first cleanup write' \
+    'same current claim record' \
+    'confirmation based on the earlier snapshot never authorizes cleanup' \
+    'fail closed to maintainer confirmation'; do
+    grep -Fq "$required" "$partial_contract" ||
+        fail "/wrap partial delivery must require: $required"
+done
+grep -Fq "qualifying delivery PR's own trail" "$wrap_skill" ||
+    fail "/wrap must exempt only the attributable delivery PR's newer trail"
+
+echo "==> partial delivery restores open-issue state and explains the release"
+for required in \
+    'restore the recorded chain board status' \
+    'direct prior status for a legacy record' \
+    'never set an open issue to `Done`' \
+    'restore the exact displaced' \
+    'Remove only claim-owned assignees' \
+    'both the inherited chain assignee' \
+    'distinct assignment' \
+    'what landed' \
+    'specific open work' \
+    'Claim released — partial delivery landed and the remaining work is not in flight.'; do
+    grep -Fq "$required" "$partial_contract" ||
+        fail "/wrap partial delivery cleanup must include: $required"
+done
+
+echo "==> lifecycle reference distinguishes partial delivery from event release"
+for required in \
+    'triggers no event-driven release' \
+    '/wrap` owns the attributable partial-delivery transition' \
+    'event automation deliberately does not infer this state'; do
+    grep -Fq "$required" "$claim_lifecycle" ||
+        fail "claim lifecycle must document partial delivery: $required"
+done
+
+echo "==> claim takeover guidance seeds direct displacement into chain provenance"
+grep -Fq 'A label displaced by this takeover seeds the chain-displaced field directly;' "$claim_skill" ||
+    fail "/claim must seed a takeover's direct label displacement into the claim chain"
+
+echo "==> implement refresh guidance resets direct ownership while carrying chain ownership"
+grep -Fq '`added by this claim` fields describe only writes performed by the refresh' "$implement_skill" ||
+    fail "/implement must reset refresh direct-ownership fields from the refresh's own writes"
+grep -Fq '(normally `no`), while proven chain fields' "$implement_skill" ||
+    fail "/implement must carry proven chain ownership across a refresh"
 
 echo "==> claim lifecycle consumers preserve chain-owned cleanup targets"
 retro_skill="./ai/skills/universal/retro/SKILL.md"
@@ -2760,7 +2881,7 @@ run_release() {
         RC_COMMENTS_FILE2="${RC_COMMENTS_FILE2:-}" \
         RC_ISSUE_FILE2="${RC_ISSUE_FILE2:-}" RC_STATE="$rc_state" \
         RC_FAIL_MATCH="${RC_FAIL_MATCH:-}" RC_LOG="$rc_log" RC_BODY_OUT="$rc_body" \
-        "$release_sh" --repo "$repo" --issue 5 "$@" >/dev/null 2>&1 || _rc=$?
+        "$release_sh" --repo "$repo" --issue 5 "$@" >/dev/null 2>"$tmp/release.err" || _rc=$?
     echo "$_rc"
 }
 
@@ -2825,28 +2946,9 @@ body_v2="$(printf '%s' "$body_v1" | sed 's/`agent:` label/`claim:` label/g; s/ag
 body_extended="$(printf '%s' "$body_v2" | awk '
     { print }
     /Claim record/ {
-        print "- harness: Claude Code"
-        print "- model: claude-opus-4-1"
-        print "- family: claude"
-        print "- runtime environment: devcontainer"
-        print "- session: claim-record-fields-450"
-    }
-')"
-body_extended_gpt="$(printf '%s' "$body_v2" | sed 's/claim:claude/claim:gpt/g' | awk '
-    { print }
-    /Claim record/ {
         print "- harness: Codex CLI"
         print "- model: gpt-5"
-        print "- family: gpt"
-        print "- runtime environment: host"
-        print "- session: claim-runtime-identity-549"
-    }
-')"
-body_extended_unknown="$(printf '%s' "$body_v2" | awk '
-    { print }
-    /Claim record/ {
-        print "- family: claude"
-        print "- runtime environment: unknown"
+        print "- session: claim-record-fields-450"
     }
 ')"
 issue_closed_claim='{"state":"closed","labels":[{"name":"bug"},{"name":"claim:claude"}],"assignees":[{"login":"evanharmon1"}]}'
@@ -2856,7 +2958,6 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v2")")" "$issue_closed_c
 [ "$(run_release --reason 'issue closed (completed)')" = 0 ] || fail "a claim:* record release should exit 0"
 grep -q -- '--remove-label claim:claude' "$rc_log" || fail "a claim:* record must remove the named claim: label"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "a claim:* record must still remove the assignment"
-cp "$rc_log" "$tmp/legacy-release-log"
 
 echo "==> an extended claim record ignores operational metadata and releases"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_extended")")" "$issue_closed_claim"
@@ -2866,25 +2967,6 @@ grep -q -- '--remove-label claim:claude' "$rc_log" ||
     fail "operational metadata must not change the recorded label removal"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
     fail "operational metadata must not change the recorded assignee removal"
-cmp -s "$tmp/legacy-release-log" "$rc_log" ||
-    fail "Claude family and container metadata must leave cleanup exactly equivalent to a legacy record"
-
-echo "==> GPT family and host metadata are ignored by cleanup"
-rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_extended_gpt")")" \
-    '{"state":"closed","labels":[{"name":"bug"},{"name":"claim:gpt"}],"assignees":[{"login":"evanharmon1"}]}'
-[ "$(run_release --reason 'issue closed (completed)')" = 0 ] ||
-    fail "a GPT extended claim record release should exit 0"
-grep -q -- '--remove-label claim:gpt' "$rc_log" ||
-    fail "family metadata must not override the actual recorded claim label"
-grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
-    fail "host metadata must not change the recorded assignee removal"
-
-echo "==> unknown runtime metadata remains optional and non-authoritative"
-rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_extended_unknown")")" "$issue_closed_claim"
-[ "$(run_release --reason 'issue closed (completed)')" = 0 ] ||
-    fail "an unknown runtime record should release"
-grep -q -- '--remove-label claim:claude' "$rc_log" ||
-    fail "the unknown fallback must not suppress marker cleanup"
 
 echo "==> a family+model claim label (claim:claude:opus) is released verbatim"
 body_model="$(printf '%s' "$body_v2" | sed 's/claim:claude/claim:claude:opus/g')"
@@ -2892,6 +2974,33 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_model")")" \
     '{"state":"closed","labels":[{"name":"claim:claude:opus"}],"assignees":[{"login":"evanharmon1"}]}'
 [ "$(run_release --reason r)" = 0 ] || fail "a model-segmented claim label should release"
 grep -q -- '--remove-label claim:claude:opus' "$rc_log" || fail "the optional :model segment must be preserved in the removal"
+
+echo "==> a model refinement releases both chain-owned family and model labels"
+body_model_refinement="$(printf '%s' "$body_v2" |
+    sed 's/label added by this claim: claim:claude/label added by this claim: no/')
+- claim: model label added by this claim: claim:claude:opus
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: evanharmon1
+- claim: label owned by this claim chain: claim:claude
+- claim: model label owned by this claim chain: claim:claude:opus
+- claim: label displaced by this claim chain: none"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v2" 1)" \
+    "$(rc_comment evanharmon1 "$body_model_refinement" 2)")" \
+    '{"state":"closed","labels":[{"name":"claim:claude"},{"name":"claim:claude:opus"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a family+model refinement should release: $(cat "$tmp/release.err")"
+grep -q -- '--remove-label claim:claude' "$rc_log" || fail "the chain-owned family label must be removed"
+grep -q -- '--remove-label claim:claude:opus' "$rc_log" || fail "the chain-owned model refinement must be removed"
+
+echo "==> model ownership fields accept only a matching model refinement"
+for invalid_model_label in claim:claude agent:claude-code claim:gpt:opus; do
+    invalid_model_body="$(printf '%s' "$body_model_refinement" |
+        sed "s/claim:claude:opus/$invalid_model_label/g")"
+    rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$invalid_model_body")")" \
+        '{"state":"closed","labels":[{"name":"claim:claude"}],"assignees":[{"login":"evanharmon1"}]}'
+    [ "$(run_release --reason r)" = 2 ] ||
+        fail "invalid model ownership '$invalid_model_label' must fail closed"
+    [ ! -s "$rc_log" ] || fail "invalid model ownership must trigger zero writes"
+done
 
 echo "==> a legacy 'yes' record sweeps live claim:* labels too, not only agent:*"
 body_yes_claim="$(printf '%s' "$body_v2" | sed 's/claim:claude$/yes/')"
@@ -2923,6 +3032,24 @@ grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
     fail "the current chain record must remove the inherited label"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
     fail "the current chain record must remove the inherited assignee"
+
+echo "==> a takeover's direct label displacement is restored by a later open hand-back"
+body_displaced_takeover="$(printf '%s' "$body_v1" |
+    sed 's/label displaced by this claim: none/label displaced by this claim: agent:codex/')
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: evanharmon1
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: agent:codex"
+predecessor_displaced_takeover="$(printf '%s' "$body_v1" |
+    sed 's/agent:claude-code/agent:codex/g')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$predecessor_displaced_takeover" 1)" \
+    "$(rc_comment evanharmon1 "$body_displaced_takeover" 2)")" \
+    '{"state":"open","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a directly displaced takeover label should hand back"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "the takeover's chain-owned label must be removed"
+grep -q -- '--add-label agent:codex' "$rc_log" ||
+    fail "the takeover's directly displaced predecessor label must be restored"
 
 echo "==> a cross-account takeover releases the inherited assignee by recorded login"
 body_chain_cross_account="$(printf '%s' "$body_chain_takeover" |
@@ -2956,47 +3083,165 @@ grep -q -- '--add-assignee collaborator' "$rc_log" || fail "inherited assignee m
 grep -q -- '--add-assignee evanharmon1' "$rc_log" || fail "direct assignee must be restored"
 if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "unrelated assignee must not be restored"; fi
 
-body_set_a="$body_v1
-- assignee logins owned by this claim chain: alice
+# The plural v3 companion carries the complete bounded ownership set through
+# every takeover. Each leaf adds its own direct assignment to the inherited
+# set, so the third leaf can release all three without touching a fourth,
+# unrelated assignee.
+body_chain_plural_second="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: collaborator evanharmon1
 - agent: label owned by this claim chain: agent:claude-code
 - agent: label displaced by this claim chain: none"
-body_set_b="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
-- assignee logins owned by this claim chain: alice,bob
+body_chain_plural_third="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: collaborator evanharmon1 third-owner
 - agent: label owned by this claim chain: agent:claude-code
 - agent: label displaced by this claim chain: none"
-body_set_c="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
-- assignee logins owned by this claim chain: alice,bob,carol
-- agent: label owned by this claim chain: agent:claude-code
-- agent: label displaced by this claim chain: none"
-abc_issue='{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"alice"},{"login":"bob"},{"login":"carol"},{"login":"dave"}]}'
+issue_repeated_takeover='{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"third-owner"},{"login":"unrelated"}]}'
 
-echo "==> A to B to C provenance releases every owned assignee and preserves unrelated D"
-rc_scenario "$(rc_page "$(rc_comment alice "$body_set_a" 1 '' COLLABORATOR)" \
-    "$(rc_comment bob "$body_set_b" 2 '' COLLABORATOR)" \
-    "$(rc_comment carol "$body_set_c" 3 '' COLLABORATOR)")" "$abc_issue"
-[ "$(run_release --reason r)" = 0 ] || fail "A+B+C set release should succeed"
-for owned in alice bob carol; do
-    grep -q -- "--remove-assignee $owned" "$rc_log" || fail "owned assignee $owned must be removed"
+echo "==> repeated takeovers release every proven chain-owned assignee and preserve unrelated assignees"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 0 ] || fail "a repeated takeover should release"
+for login in collaborator evanharmon1 third-owner; do
+    grep -q -- "--remove-assignee $login" "$rc_log" ||
+        fail "repeated takeover must remove proven assignee $login"
 done
-if grep -q -- '--remove-assignee dave' "$rc_log"; then fail "unrelated D must remain"; fi
+if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "repeated takeover must preserve unrelated assignees"; fi
 
-echo "==> failed A+B+C supersede publication compensates every owned assignee only"
-rc_scenario "$(rc_page "$(rc_comment alice "$body_set_a" 1 '' COLLABORATOR)" \
-    "$(rc_comment bob "$body_set_b" 2 '' COLLABORATOR)" \
-    "$(rc_comment carol "$body_set_c" 3 '' COLLABORATOR)")" "$abc_issue"
-[ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] || fail "failed A+B+C comment should exit 1"
-for owned in alice bob carol; do
-    grep -q -- "--add-assignee $owned" "$rc_log" || fail "owned assignee $owned must be restored"
+echo "==> comma-canonical v3 lineage releases A to B to C and rejects a forged target"
+body_comma_a="$body_v1
+- assignee logins owned by this claim chain: collaborator
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+body_comma_b="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee logins owned by this claim chain: collaborator,evanharmon1
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+body_comma_c="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee logins owned by this claim chain: collaborator,evanharmon1,third-owner
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_comma_a" 1)" \
+    "$(rc_comment evanharmon1 "$body_comma_b" 2)" \
+    "$(rc_comment third-owner "$body_comma_c" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 0 ] || fail "comma-canonical A→B→C lineage should release"
+for login in collaborator evanharmon1 third-owner; do
+    grep -q -- "--remove-assignee $login" "$rc_log" ||
+        fail "comma-canonical lineage must remove proven assignee $login"
 done
-if grep -q -- '--add-assignee dave' "$rc_log"; then fail "unrelated D must never be compensation state"; fi
+if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "comma-canonical lineage must preserve unrelated assignees"; fi
 
-echo "==> a forged inherited assignee target fails closed with zero writes"
-body_set_forged="$(printf '%s' "$body_set_c" | sed 's/alice,bob,carol$/alice,bob,carol,dave/')"
-rc_scenario "$(rc_page "$(rc_comment alice "$body_set_a" 1 '' COLLABORATOR)" \
-    "$(rc_comment bob "$body_set_b" 2 '' COLLABORATOR)" \
-    "$(rc_comment carol "$body_set_forged" 3 '' COLLABORATOR)")" "$abc_issue"
-[ "$(run_release --reason r)" = 2 ] || fail "forged inherited victim must fail closed"
-[ ! -s "$rc_log" ] || fail "forged inherited victim must trigger zero writes"
+body_comma_forged="$(printf '%s' "$body_comma_c" |
+    sed 's/collaborator,evanharmon1,third-owner/collaborator,evanharmon1,mallory,third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_comma_a" 1)" \
+    "$(rc_comment evanharmon1 "$body_comma_b" 2)" \
+    "$(rc_comment third-owner "$body_comma_forged" 3)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"mallory"},{"login":"third-owner"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "comma-canonical forged inheritance must fail closed"
+[ ! -s "$rc_log" ] || fail "comma-canonical forged inheritance must write nothing"
+
+echo "==> a forged inherited login absent from the trusted predecessor record fails closed"
+body_chain_plural_forged="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/collaborator evanharmon1 mallory third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_forged" 3)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"mallory"},{"login":"third-owner"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "an unproven inherited login must fail closed"
+[ ! -s "$rc_log" ] || fail "an unproven inherited login must trigger zero writes"
+
+echo "==> a takeover that drops a live predecessor-owned login fails closed"
+body_chain_plural_missing="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/evanharmon1 third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_missing" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "dropping proven live ownership must fail closed"
+[ ! -s "$rc_log" ] || fail "a dropped predecessor-owned login must trigger zero writes"
+
+echo "==> a refresh may omit a predecessor owner already absent before transfer"
+body_chain_plural_transfer="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/evanharmon1 third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_transfer" 3)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"},{"login":"third-owner"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a transfer must accept an already-absent predecessor owner"
+for login in evanharmon1 third-owner; do
+    grep -q -- "--remove-assignee $login" "$rc_log" ||
+        fail "the transferred claim must release remaining owner $login"
+done
+
+echo "==> a partial predecessor v2 chain cannot prove inherited ownership"
+body_chain_predecessor_partial="$(printf '%s' "$body_chain_plural_second" |
+    sed '/agent: label owned by this claim chain:/d; /agent: label displaced by this claim chain:/d')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_predecessor_partial" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "a partial predecessor chain must fail closed"
+[ ! -s "$rc_log" ] || fail "a partial predecessor chain must trigger zero writes"
+
+echo "==> model fields cannot stand in for predecessor base-label provenance"
+body_chain_predecessor_model_only="$(printf '%s' "$body_chain_plural_second" |
+    sed 's/label added by this claim:/model label added by this claim:/; s/label owned by this claim chain:/model label owned by this claim chain:/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_predecessor_model_only" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "model-only predecessor provenance must fail closed"
+[ ! -s "$rc_log" ] || fail "model-only predecessor provenance must trigger zero writes"
+
+echo "==> predecessor model provenance must refine its recorded family"
+body_chain_predecessor_model_mismatch="$(printf '%s' "$body_chain_plural_second" |
+    sed 's/agent:claude-code/claim:claude/g')
+- claim: model label added by this claim: claim:gpt:terra
+- claim: model label owned by this claim chain: claim:gpt:terra"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_predecessor_model_mismatch" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "mismatched predecessor model provenance must fail closed"
+[ ! -s "$rc_log" ] || fail "mismatched predecessor model provenance must trigger zero writes"
+
+echo "==> a claim-chain assignee list is bounded at ten logins"
+body_chain_plural_too_many="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11/')"
+rc_scenario "$(rc_page "$(rc_comment third-owner "$body_chain_plural_too_many" 1)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "an oversized claim-chain assignee list must fail closed"
+[ ! -s "$rc_log" ] || fail "an oversized claim-chain assignee list must trigger zero writes"
+
+echo "==> failed repeated-takeover release restores every removed chain-owned assignee"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] ||
+    fail "failed repeated-takeover comment should exit 1"
+for login in collaborator evanharmon1 third-owner; do
+    grep -q -- "--add-assignee $login" "$rc_log" ||
+        fail "comment-failure compensation must restore $login"
+done
+if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "compensation must not add unrelated assignees"; fi
+
+echo "==> partial inherited removal retries from durable predecessor provenance"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "retry must accept already-removed proven inherited owner"
+
+echo "==> a non-write-associated predecessor cannot prove inherited ownership"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:00:00Z' NONE)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "an untrusted predecessor must not prove inherited ownership"
+[ ! -s "$rc_log" ] || fail "an untrusted predecessor must trigger zero writes"
+
+echo "==> inherited owners are removed before the non-owner claimant to preserve retry trust"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
+[ "$(RC_FAIL_MATCH='--remove-assignee evanharmon1' run_release --reason r)" = 4 ] || fail "late claimant removal failure should remain retryable"
+first_removed="$(grep -- '--remove-assignee' "$rc_log" | head -n 1)"
+printf '%s' "$first_removed" | grep -q -- '--remove-assignee collaborator' || fail "inherited owner must be removed before claimant"
 
 echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"
@@ -3248,5 +3493,26 @@ rc_scenario "$comments_before" "$issue_closed_full"
 _rcs="$(RC_COMMENTS_FILE2="$tmp/rc-comments-2.json" run_release --reason r)"
 [ "$_rcs" = 3 ] || fail "a shifted claim of record should exit 3 (got $_rcs)"
 [ ! -s "$rc_log" ] || fail "a shifted claim must trigger zero writes"
+
+echo "==> an edited predecessor cannot supply stale release provenance"
+comments_before="$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")"
+comments_after="$(rc_page "$(rc_comment collaborator "$body_noassign" 1 '2026-01-01T00:00:00Z' OWNER '2026-07-01T00:00:00Z')" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")"
+printf '%s' "$comments_after" >"$tmp/rc-comments-2.json"
+rc_scenario "$comments_before" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
+_rcs="$(RC_COMMENTS_FILE2="$tmp/rc-comments-2.json" run_release --reason r)"
+[ "$_rcs" = 3 ] || fail "an edited predecessor must abort before writes (got $_rcs)"
+[ ! -s "$rc_log" ] || fail "an edited predecessor must trigger zero writes"
+
+echo "==> an omitted predecessor owner reassigned before write aborts"
+comments_before="$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_transfer" 3)")"
+rc_scenario "$comments_before" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"},{"login":"third-owner"}]}'
+printf '%s' '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"third-owner"}]}' >"$tmp/rc-issue-2.json"
+_rcs="$(RC_ISSUE_FILE2="$tmp/rc-issue-2.json" run_release --reason r)"
+[ "$_rcs" = 3 ] || fail "a reassigned omitted owner must abort before writes (got $_rcs)"
+[ ! -s "$rc_log" ] || fail "a reassigned omitted owner must trigger zero writes"
 
 echo "✓ track-work checks behave"

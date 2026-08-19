@@ -542,14 +542,28 @@ target repository (§3); then run the read-only pre-create checker below before
 
 ### Title contract
 
-Write an **imperative problem/outcome statement**: approximately 70 characters
-or fewer, specific enough to distinguish the work, and understandable without a
-label prefix. Do not start it with an Issue Form prefix (`[Bug]:`), a
-Conventional Commit prefix (`fix(scope):`), a priority (`P1:`), or any other
-bracket prefix. The checker enforces the mechanical boundary as **70 Unicode
-code points** and rejects those prefix shapes. Whether the words are genuinely
-imperative is semantic judgment; the checker does not pretend to classify
-natural language.
+Write every issue title as **`(<scope>): <imperative problem/outcome
+statement>`**. The scope is required and free-form: generate the shortest
+useful description of the work's concern without looking for or inventing a
+matching label. It may contain spaces, punctuation, Unicode, and capitalization,
+but no parentheses or control characters; it must not have surrounding
+whitespace. The exact separator is `):` followed by one space.
+
+The outcome is required, has no surrounding whitespace, and must remain
+specific and understandable without either the scope or labels. Do not nest an
+Issue Form prefix (`[Bug]:`), Conventional Commit prefix (`fix:` or
+`fix(parser):`), priority (`P1:`), or another bracket prefix inside it. The
+checker enforces this grammar and the **70 Unicode code point** ceiling over the
+entire title, including scope. Whether the outcome is genuinely imperative is
+semantic judgment; the checker does not pretend to classify natural language.
+
+For a proposed retitle, validate the title without manufacturing an issue body
+or metadata proposal:
+
+```sh
+<skill-dir>/assets/check-issue-metadata.sh --title-only \
+  --title '(cache): Reject stale entries'
+```
 
 ### Body contract
 

@@ -47,8 +47,8 @@ holds it to. `release-claim.sh` is the reference parser.
 
 **Vocabulary transition.** The live-claim label is migrating from the
 harness-named `agent:*` family to the model-centric `claim:<family>[:<model>]`
-family (registry: harmon-init's `agent-registry.json`; e.g. `claim:claude`,
-`claim:gpt`). New claims **prefer `claim:*`, falling back to the legacy
+family (registry: the target's root `agent-registry.json`; e.g.
+`claim:<family>` and `claim:<family>:<model>`). New claims **prefer `claim:*`, falling back to the legacy
 `agent:*` label** on a repo whose label provisioning has not yet migrated (so a
 currently-provisioned repo keeps its claim labeled rather than regressing to an
 unlabeled one); the parser and every reader recognize **both** families until
@@ -99,18 +99,20 @@ in the claim record, never in the label.
   Claim record (for `/wrap` — undo only what this claim added):
   - harness: <the current execution harness, e.g. Claude Code or Codex CLI>
   - model: <the exact model identifier exposed by the harness, or "unknown">
-  - family: <the trusted acting-family resolver output, e.g. claude or gpt>
+  - family: <the trusted acting-family resolver output>
   - runtime environment: <host|devcontainer|coder|codespace|github-actions|unknown>
   - session: <the `/kickoff` session name, or "unknown">
   - board: <board title, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - prior board status owned by this claim chain: <the original status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
-  - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
+  - `claim:` label added by this claim: <the exact family or legacy label applied | no | n/a>
+  - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
+  - `claim:` label displaced by this claim: <the exact competing family/model or legacy label | none>
   - assignee logins owned by this claim chain: <canonical comma-separated lowercase logins | none>
   - `claim:` label owned by this claim chain: <the exact still-present label | no | n/a>
-  - `claim:` label displaced by this claim chain: <claim:gpt | agent:codex (legacy) | none>
+  - `claim:` model label owned by this claim chain: <the exact still-present claim:<family>:<model> refinement | no | n/a>
+  - `claim:` label displaced by this claim chain: <the exact displaced family/model or legacy label | none>
   ```
 
 - `harness`, `model`, `family`, `runtime environment`, and `session` are
@@ -129,10 +131,10 @@ in the claim record, never in the label.
   values separately and requires any corresponding record lines to match
   before writing; those checks authenticate what is recorded without making
   either value marker or cleanup authority.
-- The label fields name the **actual label** (`claim:…`, e.g. `claim:claude` —
+- The label fields name the **actual label** (`claim:<family>` —
   the family segment names the model intelligence, not the harness). A new
   claim adds a `claim:*` label where the repo has the family and falls back to a
-  legacy `agent:claude-code` where provisioning has not migrated (so a
+  a registry-declared legacy `agent:<harness>` alias where provisioning has not migrated (so a
   currently-provisioned repo keeps its claim labeled during the window); the
   **displaced** field may likewise name a legacy `agent:*` label when the claim
   takes over a legacy in-flight claim, and pre-migration records name `agent:*`
@@ -142,8 +144,10 @@ in the claim record, never in the label.
   legacy records written with `` `agent:` `` still parse. Records that wrote
   `yes` (older still) name no label; the parser falls back to every live
   `claim:*` **and** `agent:*` label on the issue.
-- **Current ownership is explicit (v3).** New records carry a canonical
-  deduplicated assignee-login set, the two label `claim chain` fields, and the
+- **Current ownership is explicit (v3).** New records carry a canonical,
+  deduplicated assignee-login set: lowercase, sorted, comma-separated, and
+  bounded at ten entries,
+  the family/model/displaced `claim chain` fields, and the
   prior board status the chain owns. The producer derives the assignee set from
   exactly the immediate latest trusted predecessor's proven set plus the
   authenticated login when this attempt directly assigned it; absent
@@ -171,9 +175,14 @@ in the claim record, never in the label.
   union of historical comments:
   GitHub's current marker state cannot distinguish a pre-existing label from a
   later independent re-add of the same text. When that provenance cannot be
-  proven, record it as unowned and leave it in place. The parser accepts v1 and
-  v2 records, validates their scalar inherited target against predecessor
-  provenance, and rejects a partially written or mixed chain group.
+  proven, record it as unowned and leave it in place. Family and model
+  refinements coexist and carry separate direct/chain ownership: cleanup may
+  remove both only when each target is proven through this lineage. The parser
+  accepts v1 and v2 scalar records and the bounded whitespace-separated v3
+  records emitted during the dependency branch's transition, but every new or
+  refreshed producer writes only the stronger comma-canonical form. It rejects
+  partial ownership groups, contradictory scalar/set companions, and forged
+  family, model, or assignee targets before its first write.
 - Values are untrusted data. Parsers validate fields that can steer an action
   before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's
@@ -250,9 +259,20 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
 - A PR merged into a **non-default base branch** does not auto-close its
   issues, so no event fires; the claim releases whenever the issue eventually
   closes.
-- A merged PR that only `Refs` an issue releases nothing — `/shepherd`
-  deliberately parks such issues at `In Progress`, and the claim is still
-  live.
+- A merged PR that only `Refs` an issue triggers no event-driven release —
+  `/shepherd` deliberately parks such issues at `In Progress`. `/wrap` owns the attributable partial-delivery transition when the issue stays open and
+  no work remains in flight: it requires a complete trusted current claim
+  record, a same-repository merged `Refs` PR authored by the authenticated
+  account, whose head branch matches the current claim record and whose merge
+  postdates that claim, no competing open PR or newer unrelated claim activity,
+  and attributable descriptions of what landed and what remains. It re-reads
+  that evidence immediately before cleanup and fails closed if the ground
+  moved. That interactive cleanup restores the recorded chain board status, or
+  the direct prior status for a legacy record (never `Done`), restores a proven
+  displaced claim label because the issue remains open, releases only markers
+  proven owned by the direct/current chain record, and posts the supersede
+  comment last. Ambiguous evidence fails closed to maintainer confirmation;
+  event automation deliberately does not infer this state.
 - An unmerged **fork** PR's close releases nothing: `pull_request` runs from
   forks carry a read-only `GITHUB_TOKEN`, and `pull_request_target` is what
   this repo's security guidance tells workflows to gate against — so the

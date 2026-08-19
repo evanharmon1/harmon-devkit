@@ -327,16 +327,33 @@ guessed from an issue label.
 # may validate that attestation, but never supplies it.
 harness=<trusted runtime harness slug>
 runtime_family=<trusted runtime family slug>
+claim_model=<trusted model slug, only when deliberately requesting claim:<family>:<model>>
+project_management=<fetched project_management answer: github|linear|none>
 
 # `git show` is a read but may prompt because it can write via --output. The
 # fetched default is the target's trusted registry snapshot, not this branch.
 registry="$(mktemp)"
-if git show "$default:agent-registry.json" >"$registry" 2>/dev/null; then
+if ! registry_entry="$(git ls-tree "$default" -- ':(top)agent-registry.json')"; then
+  echo "claim: could not determine whether the target registry exists" >&2
+  exit 1
+elif [ -n "$registry_entry" ]; then
+  if ! git show "$default:agent-registry.json" >"$registry"; then
+    echo "claim: target registry exists but could not be read" >&2
+    exit 1
+  fi
   registry_arg=(--registry "$registry")
 else
   registry_arg=()
 fi
 runtime_arg=(--runtime-family "$runtime_family")
+model_arg=()
+if [ -n "$claim_model" ]; then
+  model_arg=(--claim-model "$claim_model")
+fi
+unlabeled_github_arg=()
+if [ "${user_approved_unlabeled_github_claim:-no}" = yes ]; then
+  unlabeled_github_arg=(--allow-unlabeled-github)
+fi
 available="$(mktemp)" issue_labels="$(mktemp)"
 if ! gh label list --repo "$repo" --limit 1000 --json name \
   -q '.[].name' >"$available"; then
@@ -357,15 +374,25 @@ fi
 set +e
 plan="$(<claim-skill-dir>/assets/resolve-claim-label.sh \
   --harness "$harness" "${registry_arg[@]}" \
-  "${runtime_arg[@]}" \
+  "${runtime_arg[@]}" "${model_arg[@]}" "${unlabeled_github_arg[@]}" \
+  --project-management "$project_management" \
   --available-labels "$available" --issue-labels "$issue_labels")"
 resolver_status=$?
 set -e
 case "$resolver_status" in
 0) ;;
-10) echo 'claim: one competing ownership marker requires explicit user approval' >&2 ;;
+10)
+  if [ -z "${approved_takeover_label:-}" ]; then
+    echo 'claim: one competing ownership marker requires explicit user approval' >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$plan" | grep -Fqx "conflict_label=$approved_takeover_label"; then
+    echo 'claim: approval does not name the resolver conflict exactly' >&2
+    exit 1
+  fi
+  ;;
 11) echo 'claim: multiple competing ownership markers make takeover unsafe' >&2; exit 1 ;;
-*) echo 'claim: identity or vocabulary is unverified' >&2; exit 1 ;;
+*) echo 'claim: identity, project mode, or vocabulary is unverified' >&2; exit 1 ;;
 esac
 
 # Portable operational context only: this helper deliberately emits no raw
@@ -410,14 +437,15 @@ is not among the writes the invocation approved. A `suggest:*`
 label naming another family is **not** a blocker: it is advice, and picking up
 work suggested for another family is a legitimate, visible choice — note it in
 the findings and carry on. If the repo has no `claim:*`/`agent:*` label family
-at all, ownership is **unverifiable** — say so and get the user's go-ahead
-rather than treating silence as "unclaimed". That is the third exempt
-escalation: the invocation approved claiming an issue *checked* to be
-unclaimed, not one whose ownership nothing could check. Once the user approves
-that explicit limitation, continue with an assignee-backed durable record and
-pass `--claim-label none` to the transaction helper below. A missing label
-vocabulary removes one corroborating marker; it never removes the record
-requirement or permits an unassigned claim.
+at all, ownership is **unverifiable** in `project_management: github` — the
+resolver fails closed without `--allow-unlabeled-github`; say so, get the
+user's go-ahead, and rerun with that trusted flag rather than treating silence
+as "unclaimed". That is the third exempt escalation: the invocation approved
+claiming an issue *checked* to be unclaimed, not one whose ownership nothing
+could check. The approved plan returns `target_label=n/a`. In a fetched
+`project_management: none` or `linear` profile, label absence is expected and
+the resolver returns `target_label=n/a` directly. In every mode the assignee
+and durable comment remain authoritative, and an unassigned claim is forbidden.
 
 Carry every answer into the claim comment. `/wrap` undoes only what the claim
 actually added. **Do not run the assignee, label, comment, and board writes as
@@ -434,8 +462,10 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   family. A pre-existing assignee is recorded as `no` and is never removed by
   compensation.
 - **Label** — the `claim:<family>[:<model>]` family names *which* intelligence
-  has it. Claim at the family level (`claim:<family>`) unless you deliberately
-  pin the model (`claim:<family>:<model>`); the harness that ran it is
+  has it. Claim at the family level (`claim:<family>`). A trusted session may
+  deliberately request a provisioned `claim:<family>:<model>` refinement; the
+  resolver requires its family marker to coexist and never treats that marker
+  as a takeover conflict. The harness that ran it is
   operational detail for the claim comment, not the label. Apply a label only
   when the resolver found no same-family `existing_label`. **Prefer `claim:*`,
   falling back only to a registry-declared legacy `agent:*` alias** when the
@@ -467,6 +497,9 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   separately. The helper requires it in the pre-write snapshot, applies the
   one-for-one takeover, and restores it if record publication is confirmed
   absent.
+
+  A label displaced by this takeover seeds the chain-displaced field directly;
+  inherited displacement is carried only from a proven predecessor.
 
   A displaced label may itself be legacy. Remove and record that exact label so
   the hand-back restores it.
@@ -533,18 +566,26 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   - prior board status owned by this claim chain: <the original status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
+  - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
   - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   - assignee logins owned by this claim chain: <canonical comma-separated lowercase logins | none>
   - `claim:` label owned by this claim chain: <the exact still-present claim:<family>[:<model>] or family-owned legacy agent:* label | no | n/a>
+  - `claim:` model label owned by this claim chain: <the exact still-present claim:<family>:<model> refinement | no | n/a>
   - `claim:` label displaced by this claim chain: <the exact displaced claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   CLAIM_BODY_9f3k
 
   # 3. one executable transaction: markers -> durable record -> board
-  # target is the resolver's exact target/existing label, or "none" only
-  # after the user approved a repository with no claim-label family.
+  # family_target and model_target are derived from the resolver plan; either
+  # is "none" when that marker does not apply. A label-less plan maps n/a to
+  # --claim-label none only after the resolver has approved that mode.
+  family_target=<family_label from the resolver>
+  model_target=<model_label from the resolver>
+  [ "$target" = "n/a" ] && family_target=none
+  [ "$model_target" = "n/a" ] && model_target=none
   <claim-skill-dir>/assets/claim-transaction.sh \
     --repo "$repo" --issue <n> --record-file "$record_file" \
-    --claim-label "$target" --displaced-label "$displaced" \
+    --claim-label "$family_target" --model-label "$model_target" \
+    --displaced-label "$displaced" \
     --family "$family" --runtime-environment "$runtime_environment"
   ```
 
@@ -576,7 +617,9 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   **The record is a parsed contract, not prose.** The `Claim released —`
   workflow (`.github/workflows/claim-release.yml` where installed) machine-
   reads the undo fields to release the claim after a close event, so every
-  field stays on one line and values use the template above. The optional
+  field stays on one line and values use the template above. The model-label
+  fields are an optional paired extension for older records; new records write
+  both, using `no` when no model refinement is owned. The optional
   operational fields (`harness`, `model`, `family`, `runtime environment`, and
   `session`) are not release authority; parsers accept records with or without
   them. The label fields name the **actual label** (`claim:<family>`,

@@ -166,6 +166,20 @@ Claim record (for \`/wrap\` — undo only what this claim added):
 EOF
 }
 
+add_model_fields() {
+    local direct_model="$1" chain_model="$2" next="$tmp/record-with-model.md"
+    awk -v direct="$direct_model" -v chain="$chain_model" '
+        { print }
+        /- `claim:` label added by this claim:/ {
+            print "- `claim:` model label added by this claim: " direct
+        }
+        /- `claim:` label owned by this claim chain:/ {
+            print "- `claim:` model label owned by this claim chain: " chain
+        }
+    ' "$record" >"$next"
+    mv "$next" "$record"
+}
+
 run_claim() {
     local rc=0
     env PATH="$stub:$PATH" \
@@ -248,9 +262,30 @@ grep -q 'VALID CLAIM COMMITTED' "$err" || fail "valid-claim board gap must be ex
 
 echo "==> pre-existing markers are never rewritten or compensated"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}'
-make_record no no none no none claim:gpt none
+make_record no no none no none no none
 [ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "pre-existing marker claim should succeed: $(cat "$err")"
 if grep -q '^edit' "$log"; then fail "pre-existing markers must not be edited"; fi
+
+echo "==> a model refinement preserves its family marker and commits transactionally"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/family
+family_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
+family_predecessor="$(jq -n --argjson body "$family_body" '[{id:1,user:{login:"evanharmon1"},author_association:"OWNER",body:$body}]')"
+scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$family_predecessor"
+make_record no no none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/model
+add_model_fields claim:gpt:terra claim:gpt:terra
+[ "$(run_claim --claim-label claim:gpt --model-label claim:gpt:terra)" = 0 ] ||
+    fail "model refinement should commit through the claim transaction: $(cat "$err")"
+grep -q -- '--add-label claim:gpt:terra' "$log" || fail "model refinement must add its exact model label"
+if grep -q -- '--add-label claim:gpt\($\| \)' "$log"; then fail "model refinement must not rewrite the family marker"; fi
+
+echo "==> failed model publication removes only the tentative model refinement"
+scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$family_predecessor"
+make_record no no none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/model
+add_model_fields claim:gpt:terra claim:gpt:terra
+[ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt --model-label claim:gpt:terra)" = 4 ] ||
+    fail "confirmed absent model record should compensate: $(cat "$err")"
+grep -q -- '--remove-label claim:gpt:terra' "$log" || fail "compensation must remove the tentative model label"
+if grep -q -- '--remove-label claim:gpt\($\| \)' "$log"; then fail "compensation must preserve the pre-existing family marker"; fi
 
 echo "==> a failed refresh leaves the predecessor current and markers untouched"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/predecessor
@@ -278,6 +313,16 @@ scenario '{"assignees":[{"login":"alice"},{"login":"bob"}],"labels":[{"name":"cl
 make_record yes no none yes 'alice,bob,carol' claim:gpt none
 [ "$(RUN_LOGIN=carol run_claim --claim-label claim:gpt)" = 0 ] || fail "C must retain A and B while adding itself: $(cat "$err")"
 grep -Fq -- '- assignee logins owned by this claim chain: alice,bob,carol' "$record" || fail "record must carry the canonical A+B+C set"
+
+echo "==> refresh reads bounded whitespace v3 but writes comma-canonical v3"
+whitespace_predecessor_body="$(printf '%s' "$predecessor_body" | sed 's/alice,bob/alice bob/')"
+scenario '{"assignees":[{"login":"alice"},{"login":"bob"}],"labels":[{"name":"claim:gpt"}]}' \
+    "$(jq -n --argjson body "$whitespace_predecessor_body" '[{id:1,user:{login:"bob"},author_association:"COLLABORATOR",body:$body}]')"
+make_record yes no none yes 'alice,bob,carol' claim:gpt none
+[ "$(RUN_LOGIN=carol run_claim --claim-label claim:gpt)" = 0 ] ||
+    fail "transitional whitespace predecessor should refresh into canonical v3: $(cat "$err")"
+grep -Fq -- '- assignee logins owned by this claim chain: alice,bob,carol' "$record" ||
+    fail "refreshed records must remain comma-canonical"
 
 echo "==> the producer rejects a forged assignee outside predecessor plus direct ownership"
 scenario '{"assignees":[{"login":"alice"},{"login":"bob"}],"labels":[{"name":"claim:gpt"}]}' \

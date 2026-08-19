@@ -9,7 +9,8 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage: claim-transaction.sh --repo owner/repo --issue N --record-file FILE
-       --claim-label LABEL|none [--displaced-label LABEL|none]
+       --claim-label LABEL|none [--model-label LABEL|none]
+       [--displaced-label LABEL|none]
        [--family SLUG] [--runtime-environment VALUE]
        [--status-helper FILE] [--project TITLE]
 
@@ -28,6 +29,7 @@ repo=""
 issue=""
 record_file=""
 claim_label=""
+model_label="none"
 displaced_label="none"
 family=""
 runtime_environment=""
@@ -53,6 +55,11 @@ while [ "$#" -gt 0 ]; do
     --claim-label)
         [ "$#" -ge 2 ] || usage
         claim_label="$2"
+        shift 2
+        ;;
+    --model-label)
+        [ "$#" -ge 2 ] || usage
+        model_label="$2"
         shift 2
         ;;
     --displaced-label)
@@ -125,12 +132,26 @@ if [ "$claim_label" != "none" ]; then
         exit 2
     }
 fi
+if [ "$model_label" != "none" ]; then
+    [[ "$model_label" =~ ^claim:[a-z0-9]+(-[a-z0-9]+)*:[a-z0-9]+(-[a-z0-9]+)*$ ]] || {
+        echo "claim transaction: invalid model label: $model_label" >&2
+        exit 2
+    }
+    [ -n "$family" ] && [ "${model_label%:*}" = "claim:$family" ] || {
+        echo "claim transaction: model label does not refine the trusted family" >&2
+        exit 2
+    }
+    [ "$claim_label" != none ] || {
+        echo "claim transaction: a model label requires a family marker" >&2
+        exit 2
+    }
+fi
 if [ "$displaced_label" != "none" ]; then
     valid_label "$displaced_label" || {
         echo "claim transaction: invalid displaced label: $displaced_label" >&2
         exit 2
     }
-    [ "$claim_label" != "none" ] || {
+    { [ "$claim_label" != "none" ] || [ "$model_label" != "none" ]; } || {
         echo "claim transaction: cannot displace a label without a replacement" >&2
         exit 2
     }
@@ -211,7 +232,7 @@ canonical_login_set() {
     fi
     if ! jq -er --arg value "$value" '
         ($value | split(",")) as $items
-        | select(($items | length) > 0)
+        | select(($items | length) > 0 and ($items | length) <= 10)
         | select(all($items[];
             test("^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$")
             and . == ascii_downcase))
@@ -221,6 +242,28 @@ canonical_login_set() {
         echo "claim transaction: claim-chain assignee set is not canonical ('$value')" >&2
         return 1
     fi
+}
+
+# Transitional read support for bounded whitespace-separated v3 records that
+# the dependency branch emitted before comma-canonical v3 became final.
+read_login_set() {
+    local value="$1" normalized count login
+    if [[ "$value" == *,* ]] || [ "$value" = none ]; then
+        canonical_login_set "$value"
+        return
+    fi
+    normalized=""
+    count=0
+    for login in $value; do
+        [[ "$login" =~ ^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$ ]] &&
+            [ "$login" = "$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')" ] || return 1
+        count=$((count + 1))
+        [ "$count" -le 10 ] || return 1
+        printf '%s\n' "$normalized" | grep -Fxq "$login" && return 1
+        normalized="${normalized}${normalized:+$'\n'}$login"
+    done
+    [ "$count" -gt 0 ] || return 1
+    printf '%s\n' "$normalized" | sort
 }
 
 optional_record_value() {
@@ -251,7 +294,7 @@ predecessor_owned_assignees() {
     fi
     if [ -n "$value" ]; then
         value="$(record_line_value "$value")"
-        canonical_login_set "$value"
+        read_login_set "$value"
         return
     fi
 
@@ -352,6 +395,21 @@ if ! predecessor_owned_assignees "$tmp/predecessor.json" >"$tmp/predecessor-assi
     echo "claim transaction: predecessor assignee provenance is unreadable" >&2
     exit 2
 fi
+predecessor_chain_label=""
+predecessor_chain_model=""
+if [ "$(jq -r '.found' "$tmp/predecessor.json")" = true ]; then
+    jq -r '.body' "$tmp/predecessor.json" >"$tmp/predecessor-body-for-labels"
+    predecessor_chain_label="$(optional_record_value '- `claim:` label owned by this claim chain: ' "$tmp/predecessor-body-for-labels")" || {
+        echo "claim transaction: predecessor family-label provenance is ambiguous" >&2
+        exit 2
+    }
+    predecessor_chain_model="$(optional_record_value '- `claim:` model label owned by this claim chain: ' "$tmp/predecessor-body-for-labels")" || {
+        echo "claim transaction: predecessor model-label provenance is ambiguous" >&2
+        exit 2
+    }
+    [ -z "$predecessor_chain_label" ] || predecessor_chain_label="$(record_token "$predecessor_chain_label")"
+    [ -z "$predecessor_chain_model" ] || predecessor_chain_model="$(record_token "$predecessor_chain_model")"
+fi
 
 status_args=(--repo "$repo" --issue "$issue")
 [ -n "$project_title" ] && status_args+=(--project "$project_title")
@@ -394,11 +452,20 @@ label_preexisting=0
 if [ "$claim_label" != "none" ] && has_label "$tmp/issue-before.json" "$claim_label"; then
     label_preexisting=1
 fi
+model_preexisting=0
+if [ "$model_label" != "none" ] && has_label "$tmp/issue-before.json" "$model_label"; then
+    model_preexisting=1
+fi
 if [ "$displaced_label" != "none" ]; then
-    [ "$label_preexisting" -eq 0 ] || {
+    if [ "$model_label" != none ]; then
+        [ "$model_preexisting" -eq 0 ] || {
+            echo "claim transaction: replacement model label already exists during a takeover" >&2
+            exit 2
+        }
+    elif [ "$label_preexisting" -ne 0 ]; then
         echo "claim transaction: replacement label already exists during a takeover" >&2
         exit 2
-    }
+    fi
     has_label "$tmp/issue-before.json" "$displaced_label" || {
         echo "claim transaction: displaced label is not present in the pre-write state" >&2
         exit 2
@@ -414,11 +481,23 @@ elif [ "$label_preexisting" -eq 1 ]; then
 else
     expected_label="$claim_label"
 fi
+if [ "$model_label" = "none" ]; then
+    expected_model="n/a"
+elif [ "$model_preexisting" -eq 1 ]; then
+    expected_model="no"
+else
+    expected_model="$model_label"
+fi
 
 record_board="$(record_value '- board: ')"
 record_prior="$(record_value '- prior board status: ')"
 record_assignee="$(record_token "$(record_value '- assignee added by this claim: ')")"
 record_label="$(record_token "$(record_value '- `claim:` label added by this claim: ')")"
+record_model="$(optional_record_value '- `claim:` model label added by this claim: ' "$record_file")" || {
+    echo "claim transaction: model-label ownership is duplicated or empty" >&2
+    exit 2
+}
+[ -z "$record_model" ] || record_model="$(record_token "$record_model")"
 record_displaced="$(record_token "$(record_value '- `claim:` label displaced by this claim: ')")"
 record_family="$(optional_record_value '- family: ' "$record_file")" || {
     echo "claim transaction: family metadata is duplicated or empty" >&2
@@ -430,6 +509,11 @@ record_runtime="$(optional_record_value '- runtime environment: ' "$record_file"
 }
 chain_assignees="$(record_line_value "$(record_value '- assignee logins owned by this claim chain: ')")"
 chain_label="$(record_token "$(record_value '- `claim:` label owned by this claim chain: ')")"
+chain_model="$(optional_record_value '- `claim:` model label owned by this claim chain: ' "$record_file")" || {
+    echo "claim transaction: claim-chain model ownership is duplicated or empty" >&2
+    exit 2
+}
+[ -z "$chain_model" ] || chain_model="$(record_token "$chain_model")"
 chain_displaced="$(record_token "$(record_value '- `claim:` label displaced by this claim chain: ')")"
 
 [ "$record_board" = "$board" ] || {
@@ -446,6 +530,10 @@ chain_displaced="$(record_token "$(record_value '- `claim:` label displaced by t
 }
 [ "$record_label" = "$expected_label" ] || {
     echo "claim transaction: label ownership must be '$expected_label'" >&2
+    exit 2
+}
+{ [ -z "$record_model" ] && [ "$model_label" = none ]; } || [ "$record_model" = "$expected_model" ] || {
+    echo "claim transaction: model-label ownership must be '$expected_model'" >&2
     exit 2
 }
 [ "$record_displaced" = "$displaced_label" ] || {
@@ -469,6 +557,16 @@ case "$chain_label" in no | n/a) ;; *) valid_label "$chain_label" || {
     echo "claim transaction: claim-chain label is invalid" >&2
     exit 2
 } ;; esac
+case "$chain_model" in
+'' | no | n/a) ;;
+*)
+    [[ "$chain_model" =~ ^claim:[a-z0-9]+(-[a-z0-9]+)*:[a-z0-9]+(-[a-z0-9]+)*$ ]] &&
+        [ -n "$family" ] && [ "${chain_model%:*}" = "claim:$family" ] || {
+        echo "claim transaction: claim-chain model label is invalid" >&2
+        exit 2
+    }
+    ;;
+esac
 case "$chain_displaced" in none) ;; *) valid_label "$chain_displaced" || {
     echo "claim transaction: displaced claim-chain label is invalid" >&2
     exit 2
@@ -492,6 +590,26 @@ if [ "$expected_label" = "$claim_label" ] && [ "$claim_label" != none ]; then
         echo "claim transaction: a newly added label must initialize chain ownership" >&2
         exit 2
     }
+elif [ "$claim_label" != none ] && [ "$label_preexisting" -eq 1 ]; then
+    expected_chain_label=no
+    [ "$predecessor_chain_label" = "$claim_label" ] && expected_chain_label="$claim_label"
+    [ "$chain_label" = "$expected_chain_label" ] || {
+        echo "claim transaction: pre-existing family-label ownership is not proven by the predecessor" >&2
+        exit 2
+    }
+fi
+if [ "$expected_model" = "$model_label" ] && [ "$model_label" != none ]; then
+    [ "$chain_model" = "$model_label" ] || {
+        echo "claim transaction: a newly added model label must initialize chain ownership" >&2
+        exit 2
+    }
+elif [ "$model_label" != none ] && [ "$model_preexisting" -eq 1 ]; then
+    expected_chain_model=no
+    [ "$predecessor_chain_model" = "$model_label" ] && expected_chain_model="$model_label"
+    [ "$chain_model" = "$expected_chain_model" ] || {
+        echo "claim transaction: pre-existing model-label ownership is not proven by the predecessor" >&2
+        exit 2
+    }
 fi
 if [ "$displaced_label" != none ]; then
     [ "$chain_displaced" = "$displaced_label" ] || {
@@ -502,6 +620,7 @@ fi
 
 assignee_added=0
 label_added=0
+model_added=0
 displaced_removed=0
 
 compensate() {
@@ -515,6 +634,12 @@ compensate() {
     if [ "$label_added" -eq 1 ] && has_label "$snapshot" "$claim_label"; then
         if ! gh issue edit "$issue" --repo "$repo" --remove-label "$claim_label"; then
             echo "claim transaction: COMPENSATION FAILED removing added label '$claim_label'" >&2
+            failed=1
+        fi
+    fi
+    if [ "$model_added" -eq 1 ] && has_label "$snapshot" "$model_label"; then
+        if ! gh issue edit "$issue" --repo "$repo" --remove-label "$model_label"; then
+            echo "claim transaction: COMPENSATION FAILED removing added model label '$model_label'" >&2
             failed=1
         fi
     fi
@@ -556,23 +681,33 @@ if [ "$assignee_preexisting" -eq 0 ]; then
     fi
 fi
 
-if [ "$claim_label" != "none" ] && [ "$label_preexisting" -eq 0 ]; then
-    label_args=("$issue" --repo "$repo" --add-label "$claim_label")
+if { [ "$claim_label" != "none" ] && [ "$label_preexisting" -eq 0 ]; } ||
+    { [ "$model_label" != "none" ] && [ "$model_preexisting" -eq 0 ]; }; then
+    label_args=("$issue" --repo "$repo")
+    [ "$claim_label" = none ] || [ "$label_preexisting" -eq 1 ] || label_args+=(--add-label "$claim_label")
+    [ "$model_label" = none ] || [ "$model_preexisting" -eq 1 ] || label_args+=(--add-label "$model_label")
     [ "$displaced_label" != none ] && label_args+=(--remove-label "$displaced_label")
     if gh issue edit "${label_args[@]}"; then
-        label_added=1
+        [ "$claim_label" = none ] || [ "$label_preexisting" -eq 1 ] || label_added=1
+        [ "$model_label" = none ] || [ "$model_preexisting" -eq 1 ] || model_added=1
         [ "$displaced_label" != none ] && displaced_removed=1
     else
         if ! issue_snapshot >"$tmp/issue-after-label.json"; then
             echo "claim transaction: label write is indeterminate; leaving visible markers for recovery" >&2
             exit 6
         fi
-        has_label "$tmp/issue-after-label.json" "$claim_label" && label_added=1
+        if [ "$claim_label" != none ] && has_label "$tmp/issue-after-label.json" "$claim_label"; then
+            label_added=1
+        fi
+        if [ "$model_label" != none ] && has_label "$tmp/issue-after-label.json" "$model_label"; then
+            model_added=1
+        fi
         if [ "$displaced_label" != none ] && ! has_label "$tmp/issue-after-label.json" "$displaced_label"; then
             displaced_removed=1
         fi
         intended=1
-        [ "$label_added" -eq 1 ] || intended=0
+        [ "$claim_label" = none ] || [ "$label_preexisting" -eq 1 ] || [ "$label_added" -eq 1 ] || intended=0
+        [ "$model_label" = none ] || [ "$model_preexisting" -eq 1 ] || [ "$model_added" -eq 1 ] || intended=0
         [ "$displaced_label" = none ] || [ "$displaced_removed" -eq 1 ] || intended=0
         if [ "$intended" -eq 1 ]; then
             echo "claim transaction: label write returned failure but reconciliation confirmed it applied" >&2
