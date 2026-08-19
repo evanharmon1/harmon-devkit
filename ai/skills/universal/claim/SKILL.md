@@ -562,11 +562,14 @@ actually added.
   supersedes the earlier record atomically for readers. Carry the predecessor's
   chain board status (or the predecessor's direct status for a legacy record),
   rather than the current `In Progress` status that this claim sees, so a later
-  hand-back restores the status the chain originally displaced. Transfer an
-  assignee or still-present claim label
-  only after confirming it still exists and the predecessor record proves it
-  was claim-owned; otherwise write `no`, `n/a`, or `none`, because current
-  state cannot prove a same-text marker was not independently re-added later.
+  hand-back restores the status the chain originally displaced. A marker this
+  claim just added is proven direct ownership: initialize the chain assignee
+  and label from those direct fields first. Only when the current claim added
+  no replacement marker may it transfer an assignee or still-present claim
+  label from the predecessor, and then only after confirming it still exists
+  and the predecessor record proves it was claim-owned. Otherwise write `no`,
+  `n/a`, or `none`, because current state cannot prove a same-text marker was
+  not independently re-added later.
   A displaced label is different: it is expected to be absent while the
   takeover is live, so carry it after proving the predecessor displaced it;
   that preserves an open-issue hand-back. Keep the three core marker-chain
