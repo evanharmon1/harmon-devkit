@@ -26,6 +26,7 @@ die() {
     exit 1
 }
 
+[ "$#" -ge 1 ] || usage
 command="$1"
 case "$command" in
 validate | render)
@@ -164,7 +165,8 @@ if [ "$command" = guidance ] && [ "$manifest_present" -eq 0 ]; then
     gh label list --repo "$repo" --limit 1000 --json name,description \
         -q '.[] | [.name, (.description // "")] | @tsv' |
         while IFS=$'\t' read -r label description; do
-            case "$label" in
+            normalized_label="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
+            case "$normalized_label" in
             claim:* | suggest:* | agent:* | foreman:* | rigor:* | tier:* | method:*) continue ;;
             esac
             case "$label$description" in
@@ -190,14 +192,17 @@ if [ "$command" = guidance ]; then
     ' "$manifest" >/dev/null ||
         die "manifest guidance fields are not safe to render"
     jq -r '
+      def control_namespace:
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method):");
       .families[] as $f
       | select(($f.retired // false) | not)
-      | select(($f.family | IN("claim", "suggest", "claim-model", "suggest-model",
-                               "agent-legacy", "foreman-arming", "foreman-protocol",
-                               "foreman-lifecycle", "rigor", "tier", "method")) | not)
+      | select($f.source != "agent-registry" and $f.source != "tool-owned")
+      | select(($f.arming // false) | not)
+      | select(($f.gate // "") == "")
       | $f.values[]
       | select((.retired // false) | not)
       | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end) as $label
+      | select(($label | control_namespace) | not)
       | ["guidance", $label, (.description // ""), $f.family, $f.purpose]
       | join("|")
     ' "$manifest" || die "could not render manifest guidance"

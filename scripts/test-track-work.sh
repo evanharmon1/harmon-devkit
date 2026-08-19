@@ -601,14 +601,17 @@ echo "three backticks inside"
 metadata_repo="$tmp/metadata-repo"
 metadata_stub="$tmp/metadata-bin"
 metadata_fallback="$tmp/metadata-fallback"
+metadata_other="$tmp/metadata-other"
 mkdir -p "$metadata_repo"
-mkdir -p "$metadata_stub" "$metadata_fallback"
+mkdir -p "$metadata_stub" "$metadata_fallback" "$metadata_other"
 git -C "$metadata_repo" init -q
 git -C "$metadata_repo" remote add personal https://github.com/testowner/testrepo.git
 git -C "$metadata_repo" remote add organization git@github.com:testorg/testrepo.git
 : >"$metadata_repo/component.vue"
 git -C "$metadata_fallback" init -q
 git -C "$metadata_fallback" remote add origin https://github.com/fallback/repo.git
+git -C "$metadata_other" init -q
+git -C "$metadata_other" remote add origin https://github.com/other/repo.git
 cat >"$metadata_stub/gh" <<'STUB'
 #!/bin/sh
 if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
@@ -640,6 +643,7 @@ jq '.families |= map(
                      "writers":["trusted-human"]}]
       else . end
     )' label-registry.json >"$metadata_repo/label-registry.json"
+cp "$metadata_repo/label-registry.json" "$metadata_other/label-registry.json"
 
 valid_body="$tmp/metadata-valid.md"
 cat >"$valid_body" <<'BODY'
@@ -726,6 +730,13 @@ printf '%s\n' "$guidance_output" |
 if printf '%s\n' "$guidance_output" | grep -Eq '^guidance\\|(claim:|suggest:|agent:|foreman:)'; then
     fail "track-work guidance must not surface execution controls"
 fi
+
+echo "==> guidance: Track Work refuses a checkout bound to another repository"
+_rc=0
+"$guidance" --repo testowner/testrepo --repo-root "$metadata_other" >"$tmp/guidance.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "guidance must reject a mismatched target checkout"
+grep -q 'no GitHub remote matching --repo testowner/testrepo' "$tmp/guidance.out" ||
+    fail "guidance should name the target-checkout binding failure"
 
 echo "==> metadata: track-work works from a standalone vendored support bundle"
 standalone_track_work="$tmp/standalone-track-work"

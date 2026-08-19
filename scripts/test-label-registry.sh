@@ -77,7 +77,7 @@ case "${1:-} ${2:-}" in
         'suggest:gpt\tSuggested for GPT' \
         'agent:legacy\tLegacy agent claim' \
         'foreman:claude\tDispatch control' \
-        'rigor:deep\tExecution budget' \
+        'Rigor:deep\tExecution budget' \
         'tier:frontier\tModel routing' \
         'method:plan\tExecution topology'
     ;;
@@ -99,6 +99,15 @@ fi
 printf '%s\n' "$manifest_guidance" | awk -F '|' 'NF != 5 { exit 1 }' ||
     fail "guidance records must contain only label, description, family, and purpose"
 
+echo "==> guidance: control namespaces stay excluded when family identifiers change"
+jq '(.families[] | select(.family == "rigor")).family = "effort"' \
+    label-registry.json >"$guidance_tmp/renamed-family.json"
+renamed_guidance="$("$guidance_helper" guidance "$guidance_tmp/renamed-family.json" testowner/testrepo)" ||
+    fail "guidance should render a schema-valid renamed family"
+if printf '%s\n' "$renamed_guidance" | grep -qi '^guidance|rigor:'; then
+    fail "guidance must exclude controls by rendered namespace, not family identifier"
+fi
+
 echo "==> guidance: delegated agent-registry families remain on the shared exclusion boundary"
 for control in claim:gpt suggest:gpt foreman:claude; do
     if printf '%s\n' "$manifest_guidance" | grep -q "^guidance|$control|"; then
@@ -110,7 +119,13 @@ echo "==> guidance: no manifest uses live names and descriptions without inferre
 fallback_guidance="$(PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/missing.json" testowner/testrepo)" ||
     fail "no-manifest guidance should use the bounded live-label fallback"
 [ "$fallback_guidance" = 'guidance|area:live|Live area description||' ] ||
-    fail "no-manifest guidance should retain only safe live label name and description"
+    fail "no-manifest guidance should retain only safe live label name and description, case-insensitively"
+
+echo "==> guidance: missing command arguments keep the usage exit contract"
+_rc=0
+"$guidance_helper" >"$guidance_tmp/out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] ||
+    fail "guidance helper with no arguments should exit 2"
 
 echo "==> guidance: a malformed manifest is indeterminate, not a live fallback"
 printf '%s\n' '{"schema_version":999}' >"$guidance_tmp/malformed.json"
