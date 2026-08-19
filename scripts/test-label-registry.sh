@@ -88,6 +88,8 @@ case "${1:-} ${2:-}" in
       {"name":"area:literal","description":"Windows path C:\\temp and\ttab"},
       {"name":"area:old","description":"Still live but retired by the manifest"},
       {"name":"area:track-work","description":"Stale live area description"},
+      {"name":"unsafe,comma","description":"Cannot pass authoring validation"},
+      {"name":"unsafe|pipe","description":"Cannot pass authoring validation"},
       {"name":"claim:gpt","description":"Claimed by GPT"},
       {"name":"suggest:gpt","description":"Suggested for GPT"},
       {"name":"agent:legacy","description":"Legacy agent claim"},

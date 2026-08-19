@@ -229,8 +229,8 @@ if [ -e "$manifest" ]; then
         matched_record=""
         while IFS='|' read -r prefix family axis writers exclusive; do
             [ -n "$prefix" ] || continue
-            case "$label" in
-            "$prefix":*)
+            case "${label,,}" in
+            "${prefix,,}":*)
                 matched_count=$((matched_count + 1))
                 matched_families="${matched_families}${matched_families:+, }$family"
                 matched_record="$label|$family|$axis|$writers|$exclusive"

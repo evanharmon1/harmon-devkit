@@ -172,12 +172,15 @@ if [ "$command" = guidance ] && [ "$manifest_present" -eq 0 ]; then
             if (.description? == null) then "" else .description end;
           def control_namespace:
             ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+          def authorable_label:
+            test("[,|\\r\\n]") | not;
           if type != "array"
              or any(.[]; (.name | type) != "string" or (description | type) != "string")
           then error("live label data is invalid")
           else .[]
           | {label: .name, description: description}
           | select((.label | control_namespace) | not)
+          | select(.label | authorable_label)
           | {record: "guidance", label, description, family: null, purpose: null}
           end
         ' || die "could not read live labels from $repo"
@@ -220,6 +223,8 @@ if [ "$command" = guidance ]; then
     jq -c --slurpfile live "$live_labels_file" '
       def control_namespace:
         ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+      def authorable_label:
+        test("[,|\\r\\n]") | not;
       def authoring_family:
         ((.retired // false) | not)
         and (.source != "agent-registry" and .source != "tool-owned")
@@ -272,6 +277,7 @@ if [ "$command" = guidance ]; then
          | select(($retired_label_keys | index($live_label.label | ascii_downcase)) | not)
          | $matches[0] as $f
          | select(($live_label.label | control_namespace) | not)
+         | select($live_label.label | authorable_label)
          | [$open_enumerated[]
             | select(.family == $f.family and .label_key == ($live_label.label | ascii_downcase))] as $enumerated_match
          | {record: "guidance", label: $live_label.label,
