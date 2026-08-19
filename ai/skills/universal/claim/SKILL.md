@@ -316,17 +316,30 @@ is not proof of the broker's selected provider.
 Read the registry from the fetched default branch when it exists; otherwise the
 host-attested family plus the target's live `claim:<family>` label is the
 portable fallback. The resolver fails closed before any write on an unknown
-harness/family, a fixed-harness mismatch, missing matching claim label, or a
-different live claim. It recognizes `claim:<family>[:<model>]` generically;
-registry-declared legacy `agent:*` aliases are compatibility-only and never
-guessed from an issue label.
+harness/family, a fixed-harness mismatch, a missing matching claim label in a
+`project_management: github` repo, or a different live claim. A fetched
+`project_management: none` or `linear` answer explicitly selects the documented
+assignee/comment-only fallback when no ownership label is provisioned; an
+unknown or unreadable answer fails closed rather than guessing that exception.
+It recognizes `claim:<family>[:<model>]` generically and rejects malformed
+ownership markers rather than treating their prefix as identity.
+Registry-declared legacy `agent:*` aliases are compatibility-only and never
+guessed from an issue label. For the skills-first migration window, the resolver
+carries the finite aliases that predate the registry field; once a family record
+declares `legacy_claim_labels` — including an explicit empty array — that fetched
+value is authoritative.
 
 ```sh
 # Trusted values copied from the execution host, not from repository or issue
-# content. Every harness MUST provide its active family. The target registry
-# may validate that attestation, but never supplies it.
+# content. Every harness MUST provide its active family. A model-pinned claim
+# is an explicit trusted session choice, never inferred from an issue label.
+# The target registry may validate those attestations, but never supplies them.
 harness=<trusted runtime harness slug>
 runtime_family=<trusted runtime family slug>
+claim_model=<trusted model slug, only when deliberately requesting claim:<family>:<model>>
+# The fetched Copier answer read in step 2; only github, linear, or none is
+# accepted. Repository/issue prose does not select this value.
+project_management=<fetched project_management answer>
 
 # `git show` is a read but may prompt because it can write via --output. The
 # fetched default is the target's trusted registry snapshot, not this branch.
@@ -337,6 +350,10 @@ else
   registry_arg=()
 fi
 runtime_arg=(--runtime-family "$runtime_family")
+model_arg=()
+if [ -n "$claim_model" ]; then
+  model_arg=(--claim-model "$claim_model")
+fi
 available="$(mktemp)" issue_labels="$(mktemp)"
 if ! gh label list --repo "$repo" --limit 1000 --json name \
   -q '.[].name' >"$available"; then
@@ -352,12 +369,13 @@ fi
 # Exit 0: target_label is safe to add (unless existing_label is non-empty,
 # which is idempotent). Exit 10: exactly one other family owns the issue and
 # needs explicit user approval to replace. Exit 11: multiple foreign ownership
-# markers make takeover unsafe. Exit 20: identity or vocabulary is unverified
-# — stop before every write.
+# markers make takeover unsafe. Exit 20: identity, project mode, or required
+# vocabulary is unverified — stop before every write.
 set +e
 plan="$(<claim-skill-dir>/assets/resolve-claim-label.sh \
   --harness "$harness" "${registry_arg[@]}" \
-  "${runtime_arg[@]}" \
+  "${runtime_arg[@]}" "${model_arg[@]}" \
+  --project-management "$project_management" \
   --available-labels "$available" --issue-labels "$issue_labels")"
 resolver_status=$?
 set -e
@@ -365,7 +383,7 @@ case "$resolver_status" in
 0) ;;
 10) echo 'claim: one competing ownership marker requires explicit user approval' >&2 ;;
 11) echo 'claim: multiple competing ownership markers make takeover unsafe' >&2; exit 1 ;;
-*) echo 'claim: identity or vocabulary is unverified' >&2; exit 1 ;;
+*) echo 'claim: identity, project mode, or vocabulary is unverified' >&2; exit 1 ;;
 esac
 ```
 
@@ -402,20 +420,25 @@ is not among the writes the invocation approved. A `suggest:*`
 label naming another family is **not** a blocker: it is advice, and picking up
 work suggested for another family is a legitimate, visible choice — note it in
 the findings and carry on. If the repo has no `claim:*`/`agent:*` label family
-at all, ownership is **unverifiable** — say so and get the user's go-ahead
-rather than treating silence as "unclaimed". That is the third exempt
-escalation: the invocation approved claiming an issue *checked* to be
-unclaimed, not one whose ownership nothing could check.
+at all, ownership is **unverifiable** in `project_management: github` — say so
+and get the user's go-ahead rather than treating silence as "unclaimed". That
+is the third exempt escalation: the invocation approved claiming an issue
+*checked* to be unclaimed, not one whose ownership nothing could check. In a
+fetched `project_management: none` or `linear` profile, label absence is
+expected and the resolver returns `target_label=n/a`; the assignee and claim
+comment remain the authoritative markers.
 
 Carry every answer into the claim comment. `/wrap` undoes only what the claim
 actually added.
 
 - **Assign:** `gh issue edit <n> --repo "$repo" --add-assignee @me`
 - **Label** — the `claim:<family>[:<model>]` family names *which* intelligence
-  has it. Claim at the family level (`claim:<family>`) unless you deliberately
-  pin the model (`claim:<family>:<model>`); the harness that ran it is
-  operational detail for the claim comment, not the label. Apply a label only
-  when the resolver found no same-family `existing_label`. **Prefer `claim:*`,
+  has it. Claim at the family level (`claim:<family>`) unless trusted session
+  context deliberately passes `--claim-model <model>` for a provisioned
+  `claim:<family>:<model>` label; the resolver refuses a requested model that
+  is not registered for the family or not provisioned. The harness that ran it
+  is operational detail for the claim comment, not the label. Apply a label
+  only when the resolver found no same-family `existing_label`. **Prefer `claim:*`,
   falling back only to a registry-declared legacy `agent:*` alias** when the
   matching family label is not provisioned. This preserves a migrated skill on
   a not-yet-migrated consumer without inventing a harness-to-label mapping.
@@ -424,7 +447,7 @@ actually added.
   ```sh
   target=<target_label from the resolver>
   existing=<existing_label from the resolver>
-  if [ -z "$existing" ]; then
+  if [ -z "$existing" ] && [ "$target" != "n/a" ]; then
     gh issue edit <n> --repo "$repo" --add-label "$target"
   fi
   ```
@@ -432,8 +455,10 @@ actually added.
   **Record the exact label applied** in the claim record below — the release
   parser removes exactly that one, so a legacy fallback is recorded as its
   actual family-owned `agent:*` alias, not a synthesized `claim:<family>`. A repo
-  with no resolvable family marker is **unverifiable**, not silently unlabeled:
-  stop and ask as described above.
+  with no resolvable family marker is **unverifiable** in
+  `project_management: github`, not silently unlabeled: stop and ask as
+  described above. A `none`/`linear` profile records `n/a` and performs no label
+  write, preserving its documented assignee/comment-only claim.
 
   **If the user approved proceeding past exactly one other owner's claim
   label**, replace that one rather than adding alongside: `--add-label` alone
@@ -445,9 +470,14 @@ actually added.
   record it so the hand-back can restore it:
 
   ```sh
-  gh issue edit <n> --repo "$repo" \
-    --add-label <the resolver's target_label> \
-    --remove-label <the one ACTUAL competing label>
+  target=<target_label from the resolver>
+  conflict=<the one ACTUAL competing label>
+  if [ "$target" = "n/a" ]; then
+    gh issue edit <n> --repo "$repo" --remove-label "$conflict"
+  else
+    gh issue edit <n> --repo "$repo" \
+      --add-label "$target" --remove-label "$conflict"
+  fi
   ```
 
   A displaced label may itself be legacy. Remove and record that exact label so

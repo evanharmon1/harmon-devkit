@@ -48,6 +48,7 @@
     {
       "slug": "qwen",
       "display_name": "Qwen",
+      "legacy_claim_labels": ["agent:qwen-code"],
       "models": [
         { "slug": "max", "display_name": "3.7 Max" },
         { "slug": "coder-plus", "display_name": "3 Coder Plus" },
@@ -75,6 +76,7 @@
     {
       "slug": "kimi",
       "display_name": "Kimi",
+      "legacy_claim_labels": ["agent:kimi-k2"],
       "models": [{ "slug": "k3", "display_name": "K3" }]
     },
     {
@@ -85,6 +87,7 @@
     {
       "slug": "gemini",
       "display_name": "Gemini",
+      "legacy_claim_labels": ["agent:gemini-cli"],
       "models": [
         { "slug": "3-1-pro", "display_name": "3.1 Pro" },
         { "slug": "3-6-flash", "display_name": "3.6 Flash" },
