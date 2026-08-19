@@ -367,6 +367,14 @@ case "$resolver_status" in
 11) echo 'claim: multiple competing ownership markers make takeover unsafe' >&2; exit 1 ;;
 *) echo 'claim: identity or vocabulary is unverified' >&2; exit 1 ;;
 esac
+
+# Portable operational context only: this helper deliberately emits no raw
+# hostname or workspace identifier. Its output is informational, not input to
+# the claim-label plan or any later cleanup.
+runtime_environment="$(<claim-skill-dir>/assets/resolve-runtime-environment.sh)" || {
+  echo 'claim: runtime environment could not be classified' >&2
+  exit 1
+}
 ```
 
 Do not use `eval` to read the plan. Extract `family`, `target_label`, and
@@ -507,6 +515,8 @@ actually added.
   Claim record (for `/wrap` — undo only what this claim added):
   - harness: <the current execution harness, e.g. Claude Code or Codex CLI>
   - model: <the exact model identifier exposed by the harness, or "unknown">
+  - family: <the resolver's literal `family` value>
+  - runtime environment: <host|devcontainer|coder|codespace|github-actions|unknown>
   - session: <the `/kickoff` session name, or "unknown">
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
@@ -533,18 +543,24 @@ actually added.
 
   **Record the operational identity without guessing.** `harness` names the
   tool running this claim (for example, Claude Code or Codex CLI), `model`
-  copies the exact model identifier the harness exposes, and `session` copies
-  `/kickoff`'s session name. Write `unknown` when the model identifier or
-  session name is unavailable. These fields help a maintainer find, stop, or
-  resume the worker; they are informational and must never steer cleanup
-  writes. Older records omit them and remain valid.
+  copies the exact model identifier the harness exposes, `family` copies the
+  literal trusted value emitted by `resolve-claim-label.sh`, `runtime
+  environment` copies the portable helper result above, and `session` copies
+  `/kickoff`'s session name. Never infer family from issue text or a label, and
+  never publish a raw hostname, workspace name, or machine identifier. Write
+  `unknown` when the model identifier or session name is unavailable. If any
+  free-form operational value contains a line break, record `unknown` instead;
+  every field is a single-line record. These fields help a maintainer find,
+  stop, or resume the worker; they are informational and must never steer
+  cleanup writes. Older records may omit any of them and remain valid.
 
   **The record is a parsed contract, not prose.** The `Claim released —`
   workflow (`.github/workflows/claim-release.yml` where installed) machine-
   reads the undo fields to release the claim after a close event, so every
   field stays on one line and values use the template above. The optional
-  operational fields are not release authority; parsers accept records with or
-  without them. The label fields name the **actual label** (`claim:<family>`,
+  operational fields (`harness`, `model`, `family`, `runtime environment`, and
+  `session`) are not release authority; parsers accept records with or without
+  them. The label fields name the **actual label** (`claim:<family>`,
   not `yes`) so the
   release does not have to guess which label to remove, and every value stays
   on its own single line. The parser anchors on `label added by this claim:`

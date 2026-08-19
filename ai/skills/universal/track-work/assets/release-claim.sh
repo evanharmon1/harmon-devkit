@@ -318,9 +318,10 @@ extract_chain_value() {
     printf '%s' "$v"
 }
 
-# Optional harness/model/session lines are operational metadata only. They are
-# deliberately ignored here: release authority comes solely from the required
-# "by this claim" fields below, and legacy records omit the metadata entirely.
+# Optional harness/model/family/runtime-environment/session lines are
+# operational metadata only. They are deliberately ignored here: release
+# authority comes solely from the required "by this claim" fields below, and
+# legacy records omit the metadata entirely.
 while IFS= read -r line; do
     case "$line" in
     *"Claim record"*) record_present=1 ;;

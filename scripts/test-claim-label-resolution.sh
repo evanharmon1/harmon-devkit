@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 resolver="ai/skills/universal/claim/assets/resolve-claim-label.sh"
+runtime_resolver="ai/skills/universal/claim/assets/resolve-runtime-environment.sh"
 fail() {
     echo "TEST FAIL: $*" >&2
     exit 1
@@ -121,4 +122,26 @@ if "$resolver" --registry "$tmp/ambiguous-alias-registry.json" --harness codex-c
 grep -F 'if ! gh label list' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label vocabulary read must fail closed"
 grep -F 'if ! gh issue view' ai/skills/universal/claim/SKILL.md >/dev/null || fail "issue-label read must fail closed"
 
-echo 'PASS: portable claim family resolution'
+runtime() {
+    env -i PATH="$PATH" "$@" "$runtime_resolver"
+}
+
+[ "$(runtime)" = host ] || fail "an execution host without container signals must resolve to host"
+[ "$(runtime REMOTE_CONTAINERS=true)" = devcontainer ] || fail "the devcontainer signal was not recognized"
+[ "$(runtime CODER_AGENT_URL=https://coder.invalid REMOTE_CONTAINERS=true)" = coder ] ||
+    fail "Coder must outrank its inherited devcontainer signal"
+[ "$(runtime CODESPACES=true REMOTE_CONTAINERS=true)" = codespace ] ||
+    fail "Codespaces must outrank its inherited devcontainer signal"
+[ "$(runtime GITHUB_ACTIONS=true CODESPACES=true)" = github-actions ] ||
+    fail "GitHub Actions must have deterministic precedence"
+[ "$(runtime CI=true)" = unknown ] || fail "unclassified automation must use the unknown fallback"
+[ "$(runtime REMOTE_CONTAINERS=unexpected)" = unknown ] ||
+    fail "a malformed environment signal must use the unknown fallback"
+if env -i PATH="$PATH" "$runtime_resolver" extra >/dev/null 2>&1; then
+    fail "the runtime resolver must reject caller-supplied identity"
+fi
+if rg -n 'HOSTNAME|hostname|COMPUTERNAME' "$runtime_resolver" >/dev/null; then
+    fail "the portable runtime resolver must not read or publish a machine name"
+fi
+
+echo 'PASS: portable claim family and runtime resolution'

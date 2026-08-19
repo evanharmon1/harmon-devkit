@@ -2666,13 +2666,13 @@ echo "==> claim-record producer and consumers document operational metadata"
 claim_skill="./ai/skills/universal/claim/SKILL.md"
 claim_lifecycle="./ai/skills/universal/track-work/references/claim-lifecycle.md"
 wrap_skill="./ai/skills/universal/wrap/SKILL.md"
-for field in harness model session; do
+for field in harness model family 'runtime environment' session; do
     grep -Fq -- "  - $field:" "$claim_skill" ||
         fail "/claim must write the $field field"
     grep -Fq -- "  - $field:" "$claim_lifecycle" ||
         fail "claim-lifecycle.md must document the $field field"
 done
-grep -Fq 'optional `harness`, `model`, and `session`' "$wrap_skill" ||
+grep -Fq 'optional `harness`, `model`, `family`, `runtime' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
 
 echo "==> claim lifecycle consumers preserve chain-owned cleanup targets"
@@ -2827,9 +2827,28 @@ body_v2="$(printf '%s' "$body_v1" | sed 's/`agent:` label/`claim:` label/g; s/ag
 body_extended="$(printf '%s' "$body_v2" | awk '
     { print }
     /Claim record/ {
+        print "- harness: Claude Code"
+        print "- model: claude-opus-4-1"
+        print "- family: claude"
+        print "- runtime environment: devcontainer"
+        print "- session: claim-record-fields-450"
+    }
+')"
+body_extended_gpt="$(printf '%s' "$body_v2" | sed 's/claim:claude/claim:gpt/g' | awk '
+    { print }
+    /Claim record/ {
         print "- harness: Codex CLI"
         print "- model: gpt-5"
-        print "- session: claim-record-fields-450"
+        print "- family: gpt"
+        print "- runtime environment: host"
+        print "- session: claim-runtime-identity-549"
+    }
+')"
+body_extended_unknown="$(printf '%s' "$body_v2" | awk '
+    { print }
+    /Claim record/ {
+        print "- family: claude"
+        print "- runtime environment: unknown"
     }
 ')"
 issue_closed_claim='{"state":"closed","labels":[{"name":"bug"},{"name":"claim:claude"}],"assignees":[{"login":"evanharmon1"}]}'
@@ -2839,6 +2858,7 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v2")")" "$issue_closed_c
 [ "$(run_release --reason 'issue closed (completed)')" = 0 ] || fail "a claim:* record release should exit 0"
 grep -q -- '--remove-label claim:claude' "$rc_log" || fail "a claim:* record must remove the named claim: label"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "a claim:* record must still remove the assignment"
+cp "$rc_log" "$tmp/legacy-release-log"
 
 echo "==> an extended claim record ignores operational metadata and releases"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_extended")")" "$issue_closed_claim"
@@ -2848,6 +2868,25 @@ grep -q -- '--remove-label claim:claude' "$rc_log" ||
     fail "operational metadata must not change the recorded label removal"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
     fail "operational metadata must not change the recorded assignee removal"
+cmp -s "$tmp/legacy-release-log" "$rc_log" ||
+    fail "Claude family and container metadata must leave cleanup exactly equivalent to a legacy record"
+
+echo "==> GPT family and host metadata are ignored by cleanup"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_extended_gpt")")" \
+    '{"state":"closed","labels":[{"name":"bug"},{"name":"claim:gpt"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason 'issue closed (completed)')" = 0 ] ||
+    fail "a GPT extended claim record release should exit 0"
+grep -q -- '--remove-label claim:gpt' "$rc_log" ||
+    fail "family metadata must not override the actual recorded claim label"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
+    fail "host metadata must not change the recorded assignee removal"
+
+echo "==> unknown runtime metadata remains optional and non-authoritative"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_extended_unknown")")" "$issue_closed_claim"
+[ "$(run_release --reason 'issue closed (completed)')" = 0 ] ||
+    fail "an unknown runtime record should release"
+grep -q -- '--remove-label claim:claude' "$rc_log" ||
+    fail "the unknown fallback must not suppress marker cleanup"
 
 echo "==> a family+model claim label (claim:claude:opus) is released verbatim"
 body_model="$(printf '%s' "$body_v2" | sed 's/claim:claude/claim:claude:opus/g')"

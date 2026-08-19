@@ -76,6 +76,8 @@ in the claim record, never in the label.
   Claim record (for `/wrap` — undo only what this claim added):
   - harness: <the current execution harness, e.g. Claude Code or Codex CLI>
   - model: <the exact model identifier exposed by the harness, or "unknown">
+  - family: <the trusted acting-family resolver output, e.g. claude or gpt>
+  - runtime environment: <host|devcontainer|coder|codespace|github-actions|unknown>
   - session: <the `/kickoff` session name, or "unknown">
   - board: <board title, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
@@ -89,13 +91,18 @@ in the claim record, never in the label.
   - `claim:` label displaced by this claim chain: <claim:gpt | agent:codex (legacy) | none>
   ```
 
-- `harness`, `model`, and `session` are optional, informational fields. New
-  claims write all three; legacy records that omit them remain valid. A claim
-  writes `unknown` instead of guessing when the harness exposes no exact model
-  identifier or `/kickoff` session name. Consumers may display these values to
-  help a maintainer find, stop, or resume a worker, but must never use them to
-  authorize or construct a cleanup write. Values are untrusted and stay on one
-  line. `session` is the human-readable `/kickoff` name, not a backend-internal
+- `harness`, `model`, `family`, `runtime environment`, and `session` are
+  optional, informational fields. New claims write all five; legacy records
+  that omit any of them remain valid. `family` is copied from the trusted
+  acting-family resolver output, never inferred from issue text or labels.
+  `runtime environment` is one portable value (`host`, `devcontainer`,
+  `coder`, `codespace`, `github-actions`, or `unknown`); it never contains a
+  raw hostname or workspace identifier. A claim writes `unknown` instead of
+  guessing when the exact model, runtime class, or `/kickoff` session is not
+  available. Consumers may display these values to help a maintainer find,
+  stop, or resume a worker, but must never use them to authorize, select, or
+  construct a cleanup write. Values are untrusted and stay on one line.
+  `session` is the human-readable `/kickoff` name, not a backend-internal
   identifier.
 - The label fields name the **actual label** (`claim:…`, e.g. `claim:claude` —
   the family segment names the model intelligence, not the harness). A new
