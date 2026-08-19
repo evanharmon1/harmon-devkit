@@ -344,7 +344,7 @@ project_management=<fetched project_management answer>
 # `git show` is a read but may prompt because it can write via --output. The
 # fetched default is the target's trusted registry snapshot, not this branch.
 registry="$(mktemp)"
-if ! registry_entry="$(git ls-tree "$default" -- agent-registry.json)"; then
+if ! registry_entry="$(git ls-tree "$default" -- ':(top)agent-registry.json')"; then
   echo "claim: could not determine whether the target registry exists" >&2
   exit 1
 elif [ -n "$registry_entry" ]; then

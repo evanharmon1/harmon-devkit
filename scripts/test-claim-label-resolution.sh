@@ -229,7 +229,7 @@ fi
 
 grep -F 'if ! gh label list' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label vocabulary read must fail closed"
 grep -F 'if ! gh issue view' ai/skills/universal/claim/SKILL.md >/dev/null || fail "issue-label read must fail closed"
-grep -F 'if ! registry_entry="$(git ls-tree "$default" -- agent-registry.json)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "registry existence probe must fail closed"
+grep -F "if ! registry_entry=\"\$(git ls-tree \"\$default\" -- ':(top)agent-registry.json')\"; then" ai/skills/universal/claim/SKILL.md >/dev/null || fail "registry existence probe must be root-relative and fail closed"
 grep -F 'if ! git show "$default:agent-registry.json" >"$registry"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "present registry read must fail closed"
 grep -F -- '--project-management "$project_management"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must pass the trusted project mode"
 grep -F 'unlabeled_github_arg=(--allow-unlabeled-github)' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must expose only the approved label-less GitHub continuation"
@@ -238,5 +238,11 @@ if grep -Eq 'claim:(claude|gpt)|agent:(claude-code|codex)' \
     ai/skills/universal/track-work/references/claim-lifecycle.md; then
     fail "canonical claim lifecycle examples must use portable family placeholders"
 fi
+
+(
+    cd ai/skills
+    registry_entry="$(git ls-tree HEAD -- ':(top)agent-registry.json')"
+    [ -n "$registry_entry" ] || fail "root registry probe disappeared from a subdirectory"
+)
 
 echo 'PASS: portable claim family resolution'
