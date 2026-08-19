@@ -295,6 +295,11 @@ issue may be moved at all.
   owns the code: `$repo` is this PR's base, so reusing it searches the tracker
   you are working in instead of the one you are filing into, and finds nothing
   every time.
+- **Validate the follow-up title before filing.** Follow-ups use
+  `(<free-form scope>): <imperative outcome>` and the title-only checker from
+  `track-work` §5. The scope describes the concern independently of labels;
+  never publish a review finding under a legacy unscoped or nested-prefix
+  title.
 - **Qualify the number in the tick when it crosses a repo.** `filed as #<n>` is
   only correct for a follow-up in `$repo`; a bare `#<n>` in a PR body resolves
   against the PR's own repository, so where you filed into another one it

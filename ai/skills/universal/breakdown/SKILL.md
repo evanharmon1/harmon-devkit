@@ -205,6 +205,12 @@ judgment. The bar, concretely:
   decision already made). A spec that names the variable names is too deep; a
   spec whose acceptance criteria could pass on the wrong implementation is too
   shallow.
+- **Scoped title**: every parent, child, and flat issue uses
+  `(<scope>): <imperative outcome>` from `track-work` §5. Generate the
+  free-form scope from the chunk's concern, independently of labels; the scope
+  is not a request to mint or find a matching taxonomy value. Keep the complete
+  title within 70 Unicode code points and reject a proposed chunk whose title
+  does not pass the canonical title checker.
 - **Acceptance criteria as `- [ ]` task-list items** — what `track-work`'s
   tick machinery and its closing-keyword guard read. Each criterion must be
   adjudicable from the PR's diff and gates; "works well" is not a criterion.
@@ -263,7 +269,10 @@ not per-issue. Before writing anything to GitHub, present:
   not size confidently.
 
 Then stop and get explicit approval. Scope changes here are cheap — retitle,
-resplit, reorder, and re-present if the edits are structural. Approval of the
+resplit, reorder, and re-present if the edits are structural. A requested
+retitle is still constrained by `track-work`'s scoped-title grammar: show the
+revised scoped title and validate it before treating the proposal as final.
+Approval of the
 proposal is approval of the *set* of writes in §7; it does not extend to
 chunks added afterward.
 
@@ -320,6 +329,13 @@ fallback conditionally, so the human approves both shapes rather than the
 run switching shape after approval). Any
 target failing the preflight blocks the whole execution: report it and
 return to §6 rather than filing a partial decomposition.
+
+The same preflight validates **every final issue draft**, including parents,
+children, and flat issues, with `track-work`'s
+`check-issue-metadata.sh` against the checkout and metadata for its target
+repository. This is the last check after any approved retitle and before any
+`gh issue create`; a malformed or legacy unscoped title blocks the entire
+execution rather than publishing a partial decomposition.
 
 **A partial failure halts the run — it does not improvise recovery.** This
 skill executes interactively, under a §6 approval, with the human reachable;

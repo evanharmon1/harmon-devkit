@@ -228,7 +228,11 @@ the entries file, no entry keys):
   removed this run — the report must not claim a need this run resolved.
 
 - `## Title violations` — one bullet `#<n> — <title>` per issue flagged
-  `title-long` or `title-prefixed`.
+  `title-long` or `title-malformed`. The latter covers legacy unscoped titles,
+  malformed scopes/separators, and forbidden nested prefixes. Report them;
+  never bulk-retitle ordinary backlog issues. The only title this skill may
+  update is its own trusted-author, marker-protected rolling report, which
+  `triage-report.sh` normalizes to the canonical scoped title.
 - `## Unverified candidates` — one bullet
   `#<n> — <flag>` for every verification-needing candidate the reading
   budget did not reach this run. Required whenever the budget ran out: an
