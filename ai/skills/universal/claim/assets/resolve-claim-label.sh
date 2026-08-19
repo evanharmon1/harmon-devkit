@@ -49,6 +49,7 @@ done
 
 family=""
 legacy_labels=""
+legacy_aliases_declared=false
 if [ -n "$registry" ]; then
     [ -r "$registry" ] || {
         echo "claim identity: registry is unreadable" >&2
@@ -82,11 +83,12 @@ if [ -n "$registry" ]; then
         echo "claim identity: unknown runtime family '$family'" >&2
         exit 20
     }
+    legacy_aliases_declared="$(jq -r --arg harness "$harness" '.harnesses[] | select(.slug == $harness) | has("legacy_claim_labels")' "$registry")"
     legacy_labels="$(jq -r --arg harness "$harness" '.harnesses[] | select(.slug == $harness) | .legacy_claim_labels[]?' "$registry")"
     # Rolling upgrades can install this skill before the target registry grows
     # the explicit alias field. Keep the two historical labels as a bounded
     # bridge; every newer alias must come from the registry.
-    if [ -z "$legacy_labels" ]; then
+    if [ "$legacy_aliases_declared" = false ]; then
         case "$harness" in
         claude-code) legacy_labels="agent:claude-code" ;;
         codex-cli) legacy_labels="agent:codex" ;;
@@ -108,6 +110,34 @@ case "$family" in
 esac
 
 target="claim:$family"
+same=""
+conflicts=""
+while IFS= read -r label; do
+    case "$label" in
+    claim:*)
+        label_family="${label#claim:}"
+        label_family="${label_family%%:*}"
+        if [ "$label_family" = "$family" ]; then same="$label"; else conflicts="${conflicts}${label}"$'\n'; fi
+        ;;
+    agent:*)
+        if printf '%s\n' "$legacy_labels" | grep -Fqx "$label"; then same="$label"; else conflicts="${conflicts}${label}"$'\n'; fi
+        ;;
+    esac
+done <"$issue_labels"
+
+if [ -n "$conflicts" ]; then
+    printf 'family=%s\n' "$family"
+    while IFS= read -r conflict; do
+        [ -n "$conflict" ] && printf 'conflict_label=%s\n' "$conflict"
+    done <<<"$conflicts"
+    exit 10
+fi
+
+if [ -n "$same" ]; then
+    printf 'family=%s\ntarget_label=%s\nexisting_label=%s\n' "$family" "$same" "$same"
+    exit 0
+fi
+
 if ! grep -Fqx "$target" "$available_labels"; then
     selected_legacy=""
     while IFS= read -r candidate; do
@@ -118,30 +148,10 @@ if ! grep -Fqx "$target" "$available_labels"; then
         fi
     done <<<"$legacy_labels"
     if [ -z "$selected_legacy" ]; then
-        echo "claim identity: target lacks '$target' and no registry-declared legacy label is provisioned" >&2
+        echo "claim identity: target lacks '$target' and no trusted legacy label is provisioned" >&2
         exit 20
     fi
     target="$selected_legacy"
-fi
-
-same=""
-conflict=""
-while IFS= read -r label; do
-    case "$label" in
-    claim:*)
-        label_family="${label#claim:}"
-        label_family="${label_family%%:*}"
-        if [ "$label_family" = "$family" ]; then same="$label"; else conflict="$label"; fi
-        ;;
-    agent:*)
-        if printf '%s\n' "$legacy_labels" | grep -Fqx "$label"; then same="$label"; else conflict="$label"; fi
-        ;;
-    esac
-done <"$issue_labels"
-
-if [ -n "$conflict" ]; then
-    printf 'family=%s\nconflict_label=%s\n' "$family" "$conflict"
-    exit 10
 fi
 
 printf 'family=%s\ntarget_label=%s\nexisting_label=%s\n' "$family" "$target" "$same"

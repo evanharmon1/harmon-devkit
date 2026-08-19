@@ -323,9 +323,10 @@ guessed from an issue label.
 
 ```sh
 # Trusted values copied from the execution host, not from repository or issue
-# content. A broker MUST provide its active family; a fixed harness may omit it.
+# content. A broker MUST provide its active family. A fixed harness may omit it
+# only when the fetched target registry resolves that harness.
 harness=<trusted runtime harness slug>
-runtime_family=<trusted runtime family slug, or empty for a fixed harness>
+runtime_family=<trusted runtime family slug>
 
 # `git show` is a read but may prompt because it can write via --output. The
 # fetched default is the target's trusted registry snapshot, not this branch.
@@ -362,9 +363,11 @@ plan="$(<claim-skill-dir>/assets/resolve-claim-label.sh \
 
 Do not use `eval` to read the plan. Extract `family`, `target_label`, and
 `existing_label` as literal single-line values, then carry them through the
-commands and claim record below. An `existing_label` in the same family is
-idempotent; a different family is the blocker above. The board's own markers
-remain a separate read:
+commands and claim record below. Exit 10 may emit more than one
+`conflict_label`; preserve every literal line. An `existing_label` in the same
+family is idempotent; a different family is the blocker above. When the target
+registry is absent, even a fixed harness must pass its host-attested family.
+The board's own markers remain a separate read:
 
 ```sh
 <track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --show
@@ -423,18 +426,19 @@ actually added.
   stop and ask as described above.
 
   **If the user approved proceeding past another owner's claim label**, *replace*
-  it rather than adding alongside: `--add-label` alone leaves the issue
+  all of them rather than adding alongside: `--add-label` alone leaves the issue
   advertising two owners, which is worse than the conflict it was meant to
   resolve. Remove the other one in the same edit and record it, so the hand-back
   can put it back:
 
   ```sh
   gh issue edit <n> --repo "$repo" \
-    --add-label <the resolver's target_label> --remove-label <the ACTUAL competing label>
+    --add-label <the resolver's target_label> \
+    --remove-label <every ACTUAL competing label>
   ```
 
-  The displaced label may itself be legacy. Remove and record the label that is
-  *actually there*, so the hand-back restores the same one.
+  A displaced label may itself be legacy. Remove and record every label that is
+  *actually there*, so the hand-back restores the same set.
 
 - **Board** — the assignee and the label are both invisible on the project
   board, which is where the work is actually watched, so move the card there

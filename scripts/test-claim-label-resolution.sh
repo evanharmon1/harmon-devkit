@@ -36,6 +36,13 @@ if run --harness codex-cli >"$tmp/out" 2>&1; then fail "different-family claim m
 [ "$status" = 10 ] || fail "different-family claim exited $status, want 10"
 grep -Fx 'conflict_label=claim:claude' "$tmp/out" >/dev/null || fail "conflict label was not reported"
 
+printf '%s\n' claim:claude agent:claude-code >"$issue"
+if run --harness codex-cli >"$tmp/out" 2>&1; then fail "all foreign markers must block"; else status=$?; fi
+[ "$status" = 10 ] || fail "multiple foreign markers exited $status, want 10"
+[ "$(grep -c '^conflict_label=' "$tmp/out")" = 2 ] || fail "resolver did not report every foreign marker"
+grep -Fx 'conflict_label=claim:claude' "$tmp/out" >/dev/null || fail "modern conflict was lost"
+grep -Fx 'conflict_label=agent:claude-code' "$tmp/out" >/dev/null || fail "legacy conflict was lost"
+
 printf '%s\n' >"$issue"
 if run --harness claude-code --runtime-family gpt >/dev/null 2>&1; then fail "fixed harness mismatch must fail closed"; else status=$?; fi
 [ "$status" = 20 ] || fail "fixed harness mismatch exited $status, want 20"
@@ -62,6 +69,22 @@ jq '(.harnesses[] | select(.slug == "codex-cli")) |= del(.legacy_claim_labels)' 
     agent-registry.json >"$tmp/pre-migration-registry.json"
 out="$("$resolver" --registry "$tmp/pre-migration-registry.json" --harness codex-cli --available-labels "$tmp/legacy-available" --issue-labels "$issue")" || fail "pre-migration registry bridge failed"
 printf '%s\n' "$out" | grep -Fx 'target_label=agent:codex' >/dev/null || fail "pre-migration registry bridge selected the wrong label"
+
+printf '%s\n' claim:gpt:terra >"$tmp/model-only-available"
+printf '%s\n' claim:gpt:terra >"$issue"
+out="$("$resolver" --registry agent-registry.json --harness codex-cli --available-labels "$tmp/model-only-available" --issue-labels "$issue")" || fail "existing model claim must not require a family label"
+printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "existing model claim was not retained"
+
+: >"$issue"
+if "$resolver" --harness codex-cli --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then fail "registry-less fixed harness without family must fail"; else status=$?; fi
+[ "$status" = 20 ] || fail "registry-less missing family exited $status, want 20"
+out="$("$resolver" --harness codex-cli --runtime-family gpt --available-labels "$available" --issue-labels "$issue")" || fail "registry-less trusted family failed"
+printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "registry-less trusted family selected wrong target"
+
+jq '(.harnesses[] | select(.slug == "codex-cli")).legacy_claim_labels = []' \
+    agent-registry.json >"$tmp/no-legacy-registry.json"
+if "$resolver" --registry "$tmp/no-legacy-registry.json" --harness codex-cli --available-labels "$tmp/legacy-available" --issue-labels "$issue" >/dev/null 2>&1; then fail "explicit empty aliases must disable the bridge"; else status=$?; fi
+[ "$status" = 20 ] || fail "explicit empty aliases exited $status, want 20"
 
 grep -F 'if ! gh label list' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label vocabulary read must fail closed"
 grep -F 'if ! gh issue view' ai/skills/universal/claim/SKILL.md >/dev/null || fail "issue-label read must fail closed"
