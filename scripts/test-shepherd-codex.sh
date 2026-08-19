@@ -405,9 +405,10 @@ jq -cn \
     ]]' >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:01:00Z'
 # Deliberate. Codex has never posted an unbadged concern — every finding it has
-# made in this repo carried a P0/P1/P2 badge — and this would require it to
-# contradict itself inside one sentence. The gate promotes a draft to
-# ready-for-review rather than merging, so a human still reads the PR.
+# made in this repo carried a severity badge, including an observed P3 — and
+# this would require it to contradict itself inside one sentence. The gate
+# promotes a draft to ready-for-review rather than merging, so a human still
+# reads the PR.
 # If this ever fires in the wild, do NOT resume parsing the clause: raise it
 # with the maintainer, because the assumption behind the design has broken.
 assert_status 0 clean
@@ -555,7 +556,8 @@ assert_status 0 clean
 # line's own tail: the classifier does not parse that tail, so a badge is what
 # catches a finding parked there. An UNBADGED qualifier on that line is the
 # residual documented above `verdict_class` and tracked as evanharmon1/harmon-devkit#285.
-for tail in "P1: the retry path is unguarded" "P0: data loss on rollback"; do
+for tail in "P1: the retry path is unguarded" "P0: data loss on rollback" \
+    "P3: newline-filename parsing fails" "P10: a future severity"; do
     echo "==> a verdict line carrying '${tail}' is a finding"
     new_cycle
     jq -cn \
@@ -582,7 +584,7 @@ done
 # only imply the tail is being inspected when it is not.
 #
 # The protections that do NOT depend on the tail are exercised above and below:
-# a P0/P1/P2 badge anywhere in the body, a non-clean verdict sentence, any
+# a severity badge anywhere in the body, a non-clean verdict sentence, any
 # non-boilerplate line, and inline comments on the current head.
 
 echo "==> a concern parked on a LATER line is not clean"
@@ -2547,12 +2549,13 @@ write_badged_comment() {
         --argjson actor "$actor_id" \
         --arg login "$actor_login" \
         --arg prefix "$comment_prefix" \
+        --arg severity "${4:-P1}" \
         --arg updated "${3:-2026-07-31T08:00:02Z}" \
         '{
           id:$id,user:{id:$actor,login:$login},
           created_at:"2026-07-31T08:00:02Z",updated_at:$updated,
           issue_url:"https://api.github.com/repos/example/repo/issues/493",
-          body:("**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the rollback path loses data**\n\n**Reviewed commit:** `" +
+          body:("**<sub><sub>![" + $severity + " Badge](https://img.shields.io/badge/" + $severity + "-orange?style=flat)</sub></sub>  the rollback path loses data**\n\n**Reviewed commit:** `" +
             $prefix + "`")
         }' >"${fixtures}/comment-${1}.json"
     jq -c '[[.]]' "${fixtures}/comment-${1}.json" \
@@ -2603,6 +2606,50 @@ assert_status 0 clean
 # result (PR #424 shepherd round 4).
 printf '%s' "$check_out" | jq -e '.detail | test("settled: declined")' >/dev/null ||
     fail "a disposition-clean must name the disposition applied: $check_out"
+
+echo "==> a rendered P3 badge is a finding and can be settled"
+new_cycle
+write_badged_comment 77 "" "" P3
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface comment --id 77 --disposition declined --note "P3 is cosmetic"
+[ "$settle_rc" -eq 0 ] ||
+    fail "a rendered P3 badge must settle: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> a future rendered severity is a finding and can be settled"
+new_cycle
+write_badged_comment 77 "" "" P10
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface comment --id 77 --disposition declined --note "P10 is future-proof coverage"
+[ "$settle_rc" -eq 0 ] ||
+    fail "a rendered P10 badge must settle: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> a plain P3 marker is a finding and can be settled"
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" \
+    '{
+      id:$id,user:{id:$id,login:$login},
+      created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
+      issue_url:"https://api.github.com/repos/example/repo/issues/493",
+      body:("P3: cosmetic wording\n\n**Reviewed commit:** `" + $prefix + "`")
+    }' >"${fixtures}/comment-77.json"
+jq -c '[[.]]' "${fixtures}/comment-77.json" >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface comment --id 77 --disposition declined --note "P3 is cosmetic"
+[ "$settle_rc" -eq 0 ] ||
+    fail "a plain P3 marker must settle: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
 
 echo "==> a settled review body stops blocking the cycle"
 new_cycle
