@@ -35,6 +35,7 @@ printf '%s\n' claim:claude >"$issue"
 if run --harness codex-cli --runtime-family gpt >"$tmp/out" 2>&1; then fail "different-family claim must block"; else status=$?; fi
 [ "$status" = 10 ] || fail "different-family claim exited $status, want 10"
 grep -Fx 'conflict_label=claim:claude' "$tmp/out" >/dev/null || fail "conflict label was not reported"
+grep -Fx 'existing_label=' "$tmp/out" >/dev/null || fail "foreign-only conflict must report no existing marker"
 
 printf '%s\n' claim:claude agent:claude-code >"$issue"
 if run --harness codex-cli --runtime-family gpt >"$tmp/out" 2>&1; then fail "all foreign markers must block"; else status=$?; fi
@@ -43,6 +44,11 @@ if run --harness codex-cli --runtime-family gpt >"$tmp/out" 2>&1; then fail "all
 grep -Fx 'takeover=refused' "$tmp/out" >/dev/null || fail "multi-marker takeover was not refused"
 grep -Fx 'conflict_label=claim:claude' "$tmp/out" >/dev/null || fail "modern conflict was lost"
 grep -Fx 'conflict_label=agent:claude-code' "$tmp/out" >/dev/null || fail "legacy conflict was lost"
+
+printf '%s\n' claim:gpt claim:claude >"$issue"
+if run --harness codex-cli --runtime-family gpt >"$tmp/out" 2>&1; then fail "mixed ownership must block"; else status=$?; fi
+[ "$status" = 10 ] || fail "mixed ownership exited $status, want 10"
+grep -Fx 'existing_label=claim:gpt' "$tmp/out" >/dev/null || fail "mixed ownership omitted its existing marker"
 
 printf '%s\n' >"$issue"
 if run --harness claude-code --runtime-family gpt >/dev/null 2>&1; then fail "fixed harness mismatch must fail closed"; else status=$?; fi
@@ -98,6 +104,11 @@ jq '(.families[] | select(.slug == "gpt")).legacy_claim_labels = ["not-a-label"]
     agent-registry.json >"$tmp/malformed-alias-registry.json"
 if "$resolver" --registry "$tmp/malformed-alias-registry.json" --harness codex-cli --runtime-family gpt --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then fail "malformed registry alias must fail closed"; else status=$?; fi
 [ "$status" = 20 ] || fail "malformed registry alias exited $status, want 20"
+
+jq '(.families[] | select(.slug == "claude")).legacy_claim_labels = ["agent:shared"] | (.families[] | select(.slug == "gpt")).legacy_claim_labels = ["agent:shared"]' \
+    agent-registry.json >"$tmp/ambiguous-alias-registry.json"
+if "$resolver" --registry "$tmp/ambiguous-alias-registry.json" --harness codex-cli --runtime-family gpt --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then fail "duplicate legacy aliases must fail closed"; else status=$?; fi
+[ "$status" = 20 ] || fail "duplicate legacy aliases exited $status, want 20"
 
 grep -F 'if ! gh label list' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label vocabulary read must fail closed"
 grep -F 'if ! gh issue view' ai/skills/universal/claim/SKILL.md >/dev/null || fail "issue-label read must fail closed"

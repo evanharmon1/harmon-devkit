@@ -354,10 +354,19 @@ fi
 # needs explicit user approval to replace. Exit 11: multiple foreign ownership
 # markers make takeover unsafe. Exit 20: identity or vocabulary is unverified
 # — stop before every write.
+set +e
 plan="$(<claim-skill-dir>/assets/resolve-claim-label.sh \
   --harness "$harness" "${registry_arg[@]}" \
   "${runtime_arg[@]}" \
   --available-labels "$available" --issue-labels "$issue_labels")"
+resolver_status=$?
+set -e
+case "$resolver_status" in
+0) ;;
+10) echo 'claim: one competing ownership marker requires explicit user approval' >&2 ;;
+11) echo 'claim: multiple competing ownership markers make takeover unsafe' >&2; exit 1 ;;
+*) echo 'claim: identity or vocabulary is unverified' >&2; exit 1 ;;
+esac
 ```
 
 Do not use `eval` to read the plan. Extract `family`, `target_label`, and

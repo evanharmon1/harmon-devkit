@@ -70,6 +70,7 @@ if [ -n "$registry" ]; then
       and (.harnesses | type == "array")
       and ([.families[].slug] | all(slug) and length == (unique | length))
       and ([.harnesses[].slug] | all(slug) and length == (unique | length))
+      and ([.families[].legacy_claim_labels[]?] | length == (unique | length))
       and all(.families[];
         type == "object" and (.slug | slug)
         and ((.legacy_claim_labels? // []) | type == "array" and all(.[]; alias)))
@@ -157,7 +158,7 @@ fi
 conflict_count="$(printf '%s' "$conflicts" | sed '/^$/d' | wc -l | tr -d ' ')"
 if [ "$conflict_count" -gt 0 ]; then
     printf 'family=%s\n' "$family"
-    printf 'target_label=%s\nconflict_count=%s\n' "$target" "$conflict_count"
+    printf 'target_label=%s\nexisting_label=%s\nconflict_count=%s\n' "$target" "$same" "$conflict_count"
     while IFS= read -r conflict; do
         [ -n "$conflict" ] && printf 'conflict_label=%s\n' "$conflict"
     done <<<"$conflicts"
