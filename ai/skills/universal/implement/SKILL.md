@@ -90,9 +90,10 @@ issue, and two agents start implementing.
 3. **Claimed by you** — and the markers are **not equally good evidence of
    who**, so rank them rather than accepting any one:
    - **Strong** — a claim comment naming *this session*, **authored by you**,
-     not superseded by a later `Claim released —`. `/claim` writes exactly
-     that record, which is why it is the one marker that answers "who", not
-     merely "someone". The session name alone; the branch it records is **not**
+     the latest trusted `Claiming —` comment after the latest trusted `Claim
+     released —` comment. `/claim` writes exactly that record, which is why it
+     is the one marker that answers "who", not merely "someone". The session
+     name alone; the branch it records is **not**
      identity evidence, for the reason below.
 
      **Check the author, not just the text.** A claim comment is ordinary issue
@@ -211,9 +212,23 @@ existed, so its comment names the default branch or an intended name — and
 that line is a parsed contract now: the claim-release workflow releases an
 unmerged PR's claim only when the PR's head matches it
 (`track-work/references/claim-lifecycle.md`). Post a new `Claiming —` comment
-with the real branch and the same record values (latest trusted claim wins,
-so this becomes the claim of record; nothing else changed, so the record
-lines carry over verbatim). **Copy the `Preflight (§3):` block over verbatim
+with the real branch and the same record values. Its one successful append
+supersedes the predecessor for readers; if it fails, the predecessor remains
+the sole current record. Re-prove each chain field before carrying it: a
+same-text marker independently re-added after the first claim is not owned by
+the refresh. The displaced-label chain value is the exception to presence — it
+is expected to be absent while the takeover is live, so carry it only from
+proven predecessor displacement. Carry the predecessor's chain board status
+(or its direct status when the predecessor is legacy) as well: the current card
+normally already says `In Progress`, so recording it as the refresh's direct
+prior status would lose the status an eventual hand-back must restore. Direct
+  `added by this claim` fields describe only writes performed by the refresh
+  (normally `no`), while proven chain fields
+ preserve original ownership and board provenance for release or hand-back. If
+ an inherited assignee disappeared before a refresh, omit it only after checking
+ it is absent live; the releaser rejects a record that drops a still-present
+ predecessor owner.
+**Copy the `Preflight (§3):` block over verbatim
 too**, where the claim comment carries one: it is the durable record of the
 credential gaps and human-only steps that claim found, and the refreshed
 comment is the one a maintainer or a later session reads. Skip this when the

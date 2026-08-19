@@ -449,9 +449,14 @@ actually added.
   - session: <the `/kickoff` session name, or "unknown">
   - board: <board title from --show, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
+  - prior board status owned by this claim chain: <the original status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
   - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
+  - assignee owned by this claim chain: <yes|no>
+  - assignee logins owned by this claim chain: <up to ten exact, space-separated assignee logins | none>
+  - `claim:` label owned by this claim chain: <the exact still-present label | no | n/a>
+  - `claim:` label displaced by this claim chain: <claim:gpt | agent:codex (legacy) | none>
   CLAIM_BODY_9f3k
 
   # 3. only now move the card
@@ -488,6 +493,36 @@ actually added.
   live in `track-work/references/claim-lifecycle.md` and
   `track-work/assets/release-claim.sh`. Explanatory clauses go after a comma
   (`n/a, repo has no such label`) — parsers stop at the first comma.
+
+  **Initialize and transfer claim-chain ownership deliberately.** A fresh
+  claim copies its direct marker values and prior board status into the chain
+  fields and records its own login when it owns the assignee. The assignee list
+  is a unique, space-separated set capped at ten logins; exceeding the bound is
+  a hard stop rather than permission to drop an earlier owner. A branch/scope
+  refresh or crash-recovery takeover posts one new record; that append
+  supersedes the earlier record atomically for readers. Carry the predecessor's
+  chain board status (or the predecessor's direct status for a legacy record),
+  rather than the current `In Progress` status that this claim sees, so a later
+  hand-back restores the status the chain originally displaced. Transfer an
+  assignee or still-present predecessor label only after confirming it still
+  exists and the immediately preceding trusted claim record proves it was
+  claim-owned. Copy every still-present, proven predecessor login into the new
+  set and add the current login when this leaf directly added it; an omitted
+  predecessor login is valid only when it is already absent live, so release
+  can distinguish a completed partial cleanup from silently dropping a marker.
+  Never accept a
+  login merely because it is currently assigned. A label newly added by this takeover is directly owned and
+  initializes the chain to that label; otherwise write `no`, `n/a`, or `none`, because current
+  state cannot prove a same-text marker was not independently re-added later.
+  A label displaced by this takeover seeds the chain-displaced field directly;
+  otherwise a displaced label is expected to be absent while the takeover is
+  live, so carry it after proving the predecessor displaced it;
+  that preserves an open-issue hand-back. Keep the three core marker-chain
+  fields together — a partial trio is rejected by the releaser — and write
+  `none` for the assignee logins when the chain does not own an assignee.
+  Legacy records with the singular `assignee login owned by this claim chain:`
+  companion remain readable, but new and refreshed records write only the
+  plural form.
 
   **"Unset" and "unknown" are different answers.** `--show` exiting 0 with no
   `Status=` line is a successful read of a card whose `Status` is genuinely

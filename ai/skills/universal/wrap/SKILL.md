@@ -143,7 +143,8 @@ read it in the UI) — never guess.
     the same pre-write re-read `/claim` performs before claiming.
 
     Otherwise **stop and ask** — in particular when no claim record survives,
-    the record says `prior board status: unknown`, another agent's `claim:*`
+    the record says `prior board status owned by this claim chain: unknown`
+    (or, for a legacy record, `prior board status: unknown`), another agent's `claim:*`
     (or legacy `agent:*`) label is present, another open PR still references the issue, or the card
     sits at a status this lifecycle never writes.
 
@@ -176,15 +177,22 @@ read it in the UI) — never guess.
     leaves the issue still advertising itself as held — the exact failure this
     step exists to prevent:
 
-    **Undo only what the claim added.** The claim comment carries a "Claim
-    record" listing which markers `/claim` actually created. An issue can
+    **Undo only what the current claim chain owns.** The current claim comment
+    carries a "Claim record" listing which markers `/claim` actually created
+    and, in v2, which predecessor ownership it inherited. An issue can
     be assigned to you, or carry the label, *before* the claim — ordinary
     backlog ownership, which `/claim` explicitly allows — and the writes
     are all add-if-missing, so on that path they changed nothing. Removing
     them anyway destroys state the session never created, and no amount of
     user approval recovers it, because by then nobody can tell which it was.
-    Skip any line the record marks `no`; if no record survives, ask rather
-    than assume the claim created everything.
+    Use the three core `claim chain` fields when present; their optional
+    assignee-login companion identifies an inherited assignment's owner, and
+    the chain board-status field preserves the status the chain originally
+    overwrote. They are authoritative current ownership and hand-back
+    provenance after a refresh or takeover. Restore the chain board status
+    rather than the direct prior status on a current chain record. Skip any
+    line the record marks `no`; if no record survives, ask rather than assume
+    the claim created everything.
 
     ```sh
     # Separate commands on purpose: the label is optional (/claim skips it
@@ -213,11 +221,11 @@ read it in the UI) — never guess.
     # containing a quote.
     <track-work-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
       --project '<the board the claim comment recorded>' \
-      --status '<the status the claim comment recorded>'
+      --status '<the chain board status, or direct prior status for a legacy record>'
     # If the record names a displaced label, put it back — the claim removed it:
     gh issue edit <n> --repo <owner/repo> --add-label <the displaced label the record names>
-    gh issue edit <n> --repo <owner/repo> --remove-label <the exact label the record says the claim added>  # e.g. claim:claude, model-pinned claim:claude:opus, or legacy agent:claude-code
-    gh issue edit <n> --repo <owner/repo> --remove-assignee @me          # likewise
+    gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned label; use the direct added label only for a legacy record>
+    gh issue edit <n> --repo <owner/repo> --remove-assignee <each recorded direct and inherited chain-owned login>
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```
 

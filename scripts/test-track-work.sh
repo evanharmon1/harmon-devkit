@@ -2711,6 +2711,7 @@ chmod +x "$stub/gh"
 echo "==> claim-record producer and consumers document operational metadata"
 claim_skill="./ai/skills/universal/claim/SKILL.md"
 claim_lifecycle="./ai/skills/universal/track-work/references/claim-lifecycle.md"
+implement_skill="./ai/skills/universal/implement/SKILL.md"
 wrap_skill="./ai/skills/universal/wrap/SKILL.md"
 for field in harness model session; do
     grep -Fq -- "  - $field:" "$claim_skill" ||
@@ -2720,6 +2721,16 @@ for field in harness model session; do
 done
 grep -Fq 'optional `harness`, `model`, and `session`' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
+
+echo "==> claim takeover guidance seeds direct displacement into chain provenance"
+grep -Fq 'A label displaced by this takeover seeds the chain-displaced field directly;' "$claim_skill" ||
+    fail "/claim must seed a takeover's direct label displacement into the claim chain"
+
+echo "==> implement refresh guidance resets direct ownership while carrying chain ownership"
+grep -Fq '`added by this claim` fields describe only writes performed by the refresh' "$implement_skill" ||
+    fail "/implement must reset refresh direct-ownership fields from the refresh's own writes"
+grep -Fq '(normally `no`), while proven chain fields' "$implement_skill" ||
+    fail "/implement must carry proven chain ownership across a refresh"
 
 # --- release-claim.sh --------------------------------------------------------
 # Fully offline: a stubbed `gh` serves comment/issue JSON from scenario files
@@ -2905,6 +2916,215 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_noassign")")" "$issue_cl
 [ "$(run_release --reason r)" = 0 ] || fail "no-assignee release should exit 0"
 if grep -q -- '--remove-assignee' "$rc_log"; then fail "an assignee the claim did not add must stay"; fi
 
+# A v2 leaf carries ownership across a refresh or crash-recovery takeover. Its
+# direct fields deliberately say it added nothing: releasing it must use the
+# claim-chain fields rather than strand the predecessor's markers (#533/#537).
+body_chain_takeover="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- assignee login owned by this claim chain: evanharmon1
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+echo "==> a refreshed current record releases inherited predecessor ownership"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_takeover" 2)")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "a chain-owned refreshed claim should release"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "the current chain record must remove the inherited label"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
+    fail "the current chain record must remove the inherited assignee"
+
+echo "==> a takeover's direct label displacement is restored by a later open hand-back"
+body_displaced_takeover="$(printf '%s' "$body_v1" |
+    sed 's/label displaced by this claim: none/label displaced by this claim: agent:codex/')
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: evanharmon1
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: agent:codex"
+predecessor_displaced_takeover="$(printf '%s' "$body_v1" |
+    sed 's/agent:claude-code/agent:codex/g')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$predecessor_displaced_takeover" 1)" \
+    "$(rc_comment evanharmon1 "$body_displaced_takeover" 2)")" \
+    '{"state":"open","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a directly displaced takeover label should hand back"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "the takeover's chain-owned label must be removed"
+grep -q -- '--add-label agent:codex' "$rc_log" ||
+    fail "the takeover's directly displaced predecessor label must be restored"
+
+echo "==> a cross-account takeover releases the inherited assignee by recorded login"
+body_chain_cross_account="$(printf '%s' "$body_chain_takeover" |
+    sed 's/assignee login owned by this claim chain: evanharmon1/assignee login owned by this claim chain: collaborator/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_cross_account" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a cross-account chain claim should release"
+grep -q -- '--remove-assignee collaborator' "$rc_log" ||
+    fail "the recorded inherited assignee must be removed"
+if grep -q -- '--remove-assignee evanharmon1' "$rc_log"; then
+    fail "the replacement author must not replace the inherited assignee target"
+fi
+
+echo "==> a cross-account takeover releases both directly and inherited owned assignees"
+body_chain_cross_both="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- assignee login owned by this claim chain: collaborator
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" "$(rc_comment evanharmon1 "$body_chain_cross_both" 2)")" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"unrelated"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "both owned assignees should release"
+grep -q -- '--remove-assignee collaborator' "$rc_log" || fail "inherited assignee must be removed"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "direct assignee must be removed"
+if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "unrelated assignee must remain"; fi
+
+echo "==> failed dual-assignee release restores both owned assignees"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" "$(rc_comment evanharmon1 "$body_chain_cross_both" 2)")" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"unrelated"}]}'
+[ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] || fail "failed dual-assignee comment should exit 1"
+grep -q -- '--add-assignee collaborator' "$rc_log" || fail "inherited assignee must be restored"
+grep -q -- '--add-assignee evanharmon1' "$rc_log" || fail "direct assignee must be restored"
+if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "unrelated assignee must not be restored"; fi
+
+# The plural v3 companion carries the complete bounded ownership set through
+# every takeover. Each leaf adds its own direct assignment to the inherited
+# set, so the third leaf can release all three without touching a fourth,
+# unrelated assignee.
+body_chain_plural_second="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: collaborator evanharmon1
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+body_chain_plural_third="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: collaborator evanharmon1 third-owner
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+issue_repeated_takeover='{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"third-owner"},{"login":"unrelated"}]}'
+
+echo "==> repeated takeovers release every proven chain-owned assignee and preserve unrelated assignees"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 0 ] || fail "a repeated takeover should release"
+for login in collaborator evanharmon1 third-owner; do
+    grep -q -- "--remove-assignee $login" "$rc_log" ||
+        fail "repeated takeover must remove proven assignee $login"
+done
+if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "repeated takeover must preserve unrelated assignees"; fi
+
+echo "==> a forged inherited login absent from the trusted predecessor record fails closed"
+body_chain_plural_forged="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/collaborator evanharmon1 mallory third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_forged" 3)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"mallory"},{"login":"third-owner"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "an unproven inherited login must fail closed"
+[ ! -s "$rc_log" ] || fail "an unproven inherited login must trigger zero writes"
+
+echo "==> a takeover that drops a live predecessor-owned login fails closed"
+body_chain_plural_missing="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/evanharmon1 third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_missing" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "dropping proven live ownership must fail closed"
+[ ! -s "$rc_log" ] || fail "a dropped predecessor-owned login must trigger zero writes"
+
+echo "==> a refresh may omit a predecessor owner already absent before transfer"
+body_chain_plural_transfer="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/evanharmon1 third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_transfer" 3)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"},{"login":"third-owner"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a transfer must accept an already-absent predecessor owner"
+for login in evanharmon1 third-owner; do
+    grep -q -- "--remove-assignee $login" "$rc_log" ||
+        fail "the transferred claim must release remaining owner $login"
+done
+
+echo "==> a partial predecessor v2 chain cannot prove inherited ownership"
+body_chain_predecessor_partial="$(printf '%s' "$body_chain_plural_second" |
+    sed '/agent: label owned by this claim chain:/d; /agent: label displaced by this claim chain:/d')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_predecessor_partial" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "a partial predecessor chain must fail closed"
+[ ! -s "$rc_log" ] || fail "a partial predecessor chain must trigger zero writes"
+
+echo "==> a claim-chain assignee list is bounded at ten logins"
+body_chain_plural_too_many="$(printf '%s' "$body_chain_plural_third" |
+    sed 's/collaborator evanharmon1 third-owner/a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11/')"
+rc_scenario "$(rc_page "$(rc_comment third-owner "$body_chain_plural_too_many" 1)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "an oversized claim-chain assignee list must fail closed"
+[ ! -s "$rc_log" ] || fail "an oversized claim-chain assignee list must trigger zero writes"
+
+echo "==> failed repeated-takeover release restores every removed chain-owned assignee"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] ||
+    fail "failed repeated-takeover comment should exit 1"
+for login in collaborator evanharmon1 third-owner; do
+    grep -q -- "--add-assignee $login" "$rc_log" ||
+        fail "comment-failure compensation must restore $login"
+done
+if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "compensation must not add unrelated assignees"; fi
+
+echo "==> partial inherited removal retries from durable predecessor provenance"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "retry must accept already-removed proven inherited owner"
+
+echo "==> a non-write-associated predecessor cannot prove inherited ownership"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:00:00Z' NONE)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "an untrusted predecessor must not prove inherited ownership"
+[ ! -s "$rc_log" ] || fail "an untrusted predecessor must trigger zero writes"
+
+echo "==> inherited owners are removed before the non-owner claimant to preserve retry trust"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
+[ "$(RC_FAIL_MATCH='--remove-assignee evanharmon1' run_release --reason r)" = 4 ] || fail "late claimant removal failure should remain retryable"
+first_removed="$(grep -- '--remove-assignee' "$rc_log" | head -n 1)"
+printf '%s' "$first_removed" | grep -q -- '--remove-assignee collaborator' || fail "inherited owner must be removed before claimant"
+
+echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] ||
+    fail "without a published replacement, the predecessor must remain releasable"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "a failed refresh must not lose the predecessor's label ownership"
+
+echo "==> independently owned later markers stay protected by an unowned current chain"
+body_chain_unowned="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: no
+- assignee login owned by this claim chain: none
+- agent: label owned by this claim chain: no
+- agent: label displaced by this claim chain: none"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_unowned" 2)")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 0 ] || fail "an unowned current chain should still release its comment"
+if grep -q -- '--remove-label\|--remove-assignee' "$rc_log"; then
+    fail "markers no longer proven claim-owned must remain protected"
+fi
+
+echo "==> a partially written v2 ownership trio fails closed"
+body_chain_partial="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_chain_partial")")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 2 ] || fail "a partial chain-ownership record must fail closed"
+[ ! -s "$rc_log" ] || fail "a partial chain-ownership record must trigger zero writes"
+
+echo "==> a lone v2 assignee-login field fails closed"
+body_chain_login_only="$(printf '%s' "$body_noassign" | sed 's/agent:claude-code$/no/')
+- assignee login owned by this claim chain: collaborator"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_chain_login_only")")" "$issue_closed_full"
+[ "$(run_release --reason r)" = 2 ] || fail "a lone chain-login field must fail closed"
+[ ! -s "$rc_log" ] || fail "a lone chain-login field must trigger zero writes"
+
 echo "==> 'label added: n/a' touches no label"
 body_nolabel="$(printf '%s' "$body_v1" | sed 's/^- `agent:` label added by this claim: agent:claude-code/- `agent:` label added by this claim: n\/a, repo has no such label/')"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_nolabel")")" "$issue_closed_full"
@@ -2993,6 +3213,18 @@ _rc1="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
 [ "$_rc1" = 1 ] || fail "a failed supersede post should exit 1 (got $_rc1)"
 grep -q -- '--add-assignee evanharmon1' "$rc_log" ||
     fail "the compensation must re-add the removed assignee so the retry stays trusted"
+
+echo "==> failed comment compensation restores the inherited assignee, not the takeover author"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_cross_account" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"}]}'
+_rc_cross_comment="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
+[ "$_rc_cross_comment" = 1 ] || fail "a failed cross-account supersede post should exit 1 (got $_rc_cross_comment)"
+grep -q -- '--add-assignee collaborator' "$rc_log" ||
+    fail "cross-account compensation must restore the inherited assignee"
+if grep -q -- '--add-assignee evanharmon1' "$rc_log"; then
+    fail "cross-account compensation must not add the takeover author"
+fi
 
 echo "==> a claim EDITED between read and write aborts with exit 3 (same id, new updated_at)"
 comments_orig="$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")"
@@ -3109,5 +3341,26 @@ rc_scenario "$comments_before" "$issue_closed_full"
 _rcs="$(RC_COMMENTS_FILE2="$tmp/rc-comments-2.json" run_release --reason r)"
 [ "$_rcs" = 3 ] || fail "a shifted claim of record should exit 3 (got $_rcs)"
 [ ! -s "$rc_log" ] || fail "a shifted claim must trigger zero writes"
+
+echo "==> an edited predecessor cannot supply stale release provenance"
+comments_before="$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")"
+comments_after="$(rc_page "$(rc_comment collaborator "$body_noassign" 1 '2026-01-01T00:00:00Z' OWNER '2026-07-01T00:00:00Z')" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")"
+printf '%s' "$comments_after" >"$tmp/rc-comments-2.json"
+rc_scenario "$comments_before" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
+_rcs="$(RC_COMMENTS_FILE2="$tmp/rc-comments-2.json" run_release --reason r)"
+[ "$_rcs" = 3 ] || fail "an edited predecessor must abort before writes (got $_rcs)"
+[ ! -s "$rc_log" ] || fail "an edited predecessor must trigger zero writes"
+
+echo "==> an omitted predecessor owner reassigned before write aborts"
+comments_before="$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_transfer" 3)")"
+rc_scenario "$comments_before" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"},{"login":"third-owner"}]}'
+printf '%s' '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"third-owner"}]}' >"$tmp/rc-issue-2.json"
+_rcs="$(RC_ISSUE_FILE2="$tmp/rc-issue-2.json" run_release --reason r)"
+[ "$_rcs" = 3 ] || fail "a reassigned omitted owner must abort before writes (got $_rcs)"
+[ ! -s "$rc_log" ] || fail "a reassigned omitted owner must trigger zero writes"
 
 echo "✓ track-work checks behave"

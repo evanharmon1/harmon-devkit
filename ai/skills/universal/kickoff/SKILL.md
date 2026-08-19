@@ -96,9 +96,11 @@ claim comment survives its own release — and where the issue was already
 assigned to you, `/wrap` correctly leaves that assignment in place too. Both
 markers then persist forever, and treating the comment alone as current would
 make every future `/kickoff` re-report the same long-released claim. So the
-comment counts only when **no later `Claim released —` comment supersedes it**.
+comment counts only when it is the **latest trusted `Claiming —` comment after
+the latest trusted `Claim released —` comment**. A newer trusted claim record
+supersedes an earlier refresh record without releasing the active claim.
 Prefer the live markers (`claim:*` label, card at `In Progress`); fall back to
-the comment only after checking what follows it.
+that one current comment only after checking what follows it.
 
 Report what survives that test as loose ends and point at `/wrap` for the
 release commands. Do not clear anything here: this step orients, it does not
