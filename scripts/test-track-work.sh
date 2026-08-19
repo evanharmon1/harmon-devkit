@@ -725,9 +725,10 @@ echo "==> guidance: Track Work exposes read-only descriptions and family purpose
 guidance_output="$("$guidance" --repo testowner/testrepo --repo-root "$metadata_repo")" ||
     fail "track-work guidance should render from the target manifest"
 printf '%s\n' "$guidance_output" |
-    grep -q '^guidance|area:fixture|Fixture-only area|area|Codebase subsystem the work lives in (solution space); at most one per issue.$' ||
+    jq -se 'any(.[]; . == {record: "guidance", label: "area:fixture", description: "Fixture-only area", family: "area", purpose: "Codebase subsystem the work lives in (solution space); at most one per issue."})' >/dev/null ||
     fail "track-work guidance should expose the shared label description and family purpose"
-if printf '%s\n' "$guidance_output" | grep -Eq '^guidance\\|(claim:|suggest:|agent:|foreman:)'; then
+if printf '%s\n' "$guidance_output" |
+    jq -e 'select(.label | test("^(claim|suggest|agent|foreman):"; "i"))' >/dev/null; then
     fail "track-work guidance must not surface execution controls"
 fi
 
@@ -760,7 +761,8 @@ PATH="$metadata_stub:$PATH" "$standalone_metadata" \
 
 standalone_guidance_output="$("$standalone_guidance" --repo testowner/testrepo --repo-root "$metadata_repo")" ||
     fail "standalone track-work guidance should find its vendored support bundle"
-printf '%s\n' "$standalone_guidance_output" | grep -q '^guidance|area:fixture|' ||
+printf '%s\n' "$standalone_guidance_output" |
+    jq -se 'any(.[]; .label == "area:fixture")' >/dev/null ||
     fail "standalone track-work guidance should render fixture labels"
 
 echo "==> metadata: an organization draft uses native Issue Type and no work-type label"
@@ -1554,7 +1556,8 @@ cp "$metadata_repo/label-registry.json" "$metadata_sshport/label-registry.json"
 echo "==> guidance: the portless ssh.github.com remote form binds the checkout"
 guidance_sshport="$("$guidance" --repo testowner/testrepo --repo-root "$metadata_sshport")" ||
     fail "guidance should bind a portless ssh.github.com remote"
-printf '%s\n' "$guidance_sshport" | grep -q '^guidance|area:fixture|' ||
+printf '%s\n' "$guidance_sshport" |
+    jq -se 'any(.[]; .label == "area:fixture")' >/dev/null ||
     fail "guidance should render from a portless ssh.github.com remote"
 
 echo "==> metadata: the checkout remote must match the requested repository"

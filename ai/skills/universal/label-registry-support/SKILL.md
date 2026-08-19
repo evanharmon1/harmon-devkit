@@ -10,8 +10,8 @@ user-invocable: false
 # Label registry support
 
 This package gives `track-work` and `triage` one strict interpreter for the
-v1 label registry. Its `guidance` mode is read-only and returns only a label's
-description plus its family and family purpose; it intentionally omits writer,
-lifecycle, and other enforcement state. It is a `SKILL.md`-bearing package only
+v1 label registry. Its `guidance` mode is read-only and returns JSON Lines with
+only a label's description plus its family and family purpose; it intentionally
+omits writer, lifecycle, and other enforcement state. It is a `SKILL.md`-bearing package only
 so both current and legacy category-sync engines vendor it with the universal
 category; it has no user-facing workflow.

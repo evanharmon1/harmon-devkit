@@ -92,27 +92,30 @@ echo "==> guidance: manifest records include descriptions and compact family pur
 manifest_guidance="$("$guidance_helper" guidance label-registry.json testowner/testrepo)" ||
     fail "manifest-backed guidance should render"
 printf '%s\n' "$manifest_guidance" |
-    grep -q '^guidance|area:track-work|The track-work skill: issue authoring standards and PR/commit linkage; claims are session-flow|area|Codebase subsystem the work lives in (solution space); at most one per issue.$' ||
+    jq -se 'any(.[]; . == {record: "guidance", label: "area:track-work", description: "The track-work skill: issue authoring standards and PR/commit linkage; claims are session-flow", family: "area", purpose: "Codebase subsystem the work lives in (solution space); at most one per issue."})' >/dev/null ||
     fail "manifest-backed guidance should include value description and family purpose"
 if printf '%s\n' "$manifest_guidance" |
-    grep -Eq '^guidance\\|(claim:|suggest:|agent:|foreman:|rigor:|tier:|method:)'; then
+    jq -e 'select(.label | test("^(claim|suggest|agent|foreman|rigor|tier|method):"; "i"))' >/dev/null; then
     fail "guidance must exclude claim, suggestion, legacy-agent, Foreman, and execution controls"
 fi
-printf '%s\n' "$manifest_guidance" | awk -F '|' 'NF != 5 { exit 1 }' ||
-    fail "guidance records must contain only label, description, family, and purpose"
+printf '%s\n' "$manifest_guidance" |
+    jq -se 'all(.[]; keys == ["description", "family", "label", "purpose", "record"] and .record == "guidance")' >/dev/null ||
+    fail "guidance records must contain only label, description, family, purpose, and record"
 
 echo "==> guidance: control namespaces stay excluded when family identifiers change"
 jq '(.families[] | select(.family == "rigor")).family = "effort"' \
     label-registry.json >"$guidance_tmp/renamed-family.json"
 renamed_guidance="$("$guidance_helper" guidance "$guidance_tmp/renamed-family.json" testowner/testrepo)" ||
     fail "guidance should render a schema-valid renamed family"
-if printf '%s\n' "$renamed_guidance" | grep -qi '^guidance|rigor:'; then
+if printf '%s\n' "$renamed_guidance" |
+    jq -e 'select(.label | test("^rigor:"; "i"))' >/dev/null; then
     fail "guidance must exclude controls by rendered namespace, not family identifier"
 fi
 
 echo "==> guidance: delegated agent-registry families remain on the shared exclusion boundary"
 for control in claim:gpt suggest:gpt foreman:claude; do
-    if printf '%s\n' "$manifest_guidance" | grep -q "^guidance|$control|"; then
+    if printf '%s\n' "$manifest_guidance" |
+        jq -e --arg control "$control" 'select(.label == $control)' >/dev/null; then
         fail "guidance must not surface delegated control $control"
     fi
 done
@@ -120,10 +123,25 @@ done
 echo "==> guidance: no manifest uses live names and descriptions without inferred family policy"
 fallback_guidance="$(PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/missing.json" testowner/testrepo)" ||
     fail "no-manifest guidance should use the bounded live-label fallback"
-printf '%s\n' "$fallback_guidance" | grep -Fqx 'guidance|area:live|Live area description||' ||
+printf '%s\n' "$fallback_guidance" |
+    jq -se 'any(.[]; . == {record: "guidance", label: "area:live", description: "Live area description", family: null, purpose: null})' >/dev/null ||
     fail "no-manifest guidance should retain safe live names and descriptions, case-insensitively"
-printf '%s\n' "$fallback_guidance" | grep -Fqx $'guidance|area:literal|Windows path C:\\temp and\ttab||' ||
+printf '%s\n' "$fallback_guidance" |
+    jq -se 'any(.[]; . == {record: "guidance", label: "area:literal", description: "Windows path C:\\temp and\ttab", family: null, purpose: null})' >/dev/null ||
     fail "no-manifest guidance should preserve literal backslashes and tabs in live descriptions"
+
+echo "==> guidance: schema-valid prose with delimiters stays decodable"
+jq '(.families[] | select(.family == "area").purpose) = "Solution | subsystem\nwith a second line"
+    | (.families[] | select(.family == "area").values[] | select(.value == "track-work").description) = "Path C:\\temp | tab\t"
+    | (.families[] | select(.family == "foreman").purpose) = "Excluded | control\rtext"' \
+    label-registry.json >"$guidance_tmp/delimited-prose.json"
+delimited_guidance="$($guidance_helper guidance "$guidance_tmp/delimited-prose.json" testowner/testrepo)" ||
+    fail "schema-valid prose must not make manifest guidance unusable"
+printf '%s\n' "$delimited_guidance" |
+    jq -se 'any(.[]; .label == "area:track-work"
+        and .description == "Path C:\\temp | tab\t"
+        and .purpose == "Solution | subsystem\nwith a second line")' >/dev/null ||
+    fail "JSON Lines guidance must preserve selected delimiter prose exactly"
 
 echo "==> guidance: missing command arguments keep the usage exit contract"
 _rc=0

@@ -3,12 +3,13 @@
 # universal skills. It validates the complete v1 contract before rendering any
 # records, so callers cannot derive policy from a partial or malformed registry.
 #
-# Output is pipe-delimited and safe to parse only because validation rejects
-# pipes/newlines in every rendered free-form value.
+# `render` output is pipe-delimited; its label-derived fields are validated for
+# that transport. `guidance` is JSON Lines so schema-valid human prose remains
+# exact even when it contains a pipe, tab, or newline.
 #
 #   family|family|prefix|axis|writers|exclusive|source|open_values|retired
 #   value|label|family|prefix|axis|writers|exclusive|source|open_values|family_retired|value_retired
-#   guidance|label|description|family|purpose
+#   {"record":"guidance","label":"…","description":"…","family":"…","purpose":"…"}
 #
 # `writers` is effective: a value override wins over its family writers.
 # `guidance` deliberately has no policy fields: it is the read-only, pre-
@@ -161,27 +162,25 @@ validate() {
 if [ "$command" = guidance ] && [ "$manifest_present" -eq 0 ]; then
     # A repository with no manifest has no declared family or policy to infer.
     # Preserve only the bounded, human-readable GitHub label data and omit
-    # execution controls by their stable namespaces.
-    # Keep the GitHub response as JSON until each field has been decoded.
-    # `@tsv` escapes backslashes, tabs, and newlines; the fallback must either
-    # preserve those descriptions exactly or reject data unsafe for its
-    # line-oriented output, never return the escaping artifact as guidance.
+    # execution controls by their stable namespaces. JSON Lines avoids the
+    # lossy `@tsv` transport: a reader can recover literal backslashes, tabs,
+    # and newlines from the JSON value without making record boundaries
+    # ambiguous.
     gh label list --repo "$repo" --limit 1000 --json name,description |
-        jq -c '.[] | {name, description: (.description // "")}' |
-        while IFS= read -r record; do
-            label="$(printf '%s\n' "$record" | jq -er '.name | select(type == "string")')" ||
-                die "live label data is invalid"
-            description="$(printf '%s\n' "$record" | jq -er '.description | select(type == "string")')" ||
-                die "live label data is invalid"
-            normalized_label="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
-            case "$normalized_label" in
-            claim:* | suggest:* | agent:* | foreman:* | rigor:* | tier:* | method:*) continue ;;
-            esac
-            case "$label$description" in
-            *'|'* | *$'\n'* | *$'\r'*) die "live label data is not safe to render" ;;
-            esac
-            printf 'guidance|%s|%s||\n' "$label" "$description"
-        done || die "could not read live labels from $repo"
+        jq -c '
+          def description:
+            if (.description? == null) then "" else .description end;
+          def control_namespace:
+            ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method):");
+          if type != "array"
+             or any(.[]; (.name | type) != "string" or (description | type) != "string")
+          then error("live label data is invalid")
+          else .[]
+          | {label: .name, description: description}
+          | select((.label | control_namespace) | not)
+          | {record: "guidance", label, description, family: null, purpose: null}
+          end
+        ' || die "could not read live labels from $repo"
     exit 0
 fi
 
@@ -193,13 +192,7 @@ if [ "$command" = guidance ]; then
     # whose namespaces are workflow controls, including delegated
     # agent-registry families; this is discovery for issue authoring, not a
     # route into claims, suggestions, Foreman, or execution-budget controls.
-    jq -e '
-      all(.families[];
-        (.purpose | test("[\\r\\n|]") | not)
-        and all(.values[]; ((.description // "") | test("[\\r\\n|]") | not)))
-    ' "$manifest" >/dev/null ||
-        die "manifest guidance fields are not safe to render"
-    jq -r '
+    jq -c '
       def control_namespace:
         ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method):");
       .families[] as $f
@@ -211,8 +204,8 @@ if [ "$command" = guidance ]; then
       | select((.retired // false) | not)
       | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end) as $label
       | select(($label | control_namespace) | not)
-      | ["guidance", $label, (.description // ""), $f.family, $f.purpose]
-      | join("|")
+      | {record: "guidance", label: $label, description: (.description // ""),
+         family: $f.family, purpose: $f.purpose}
     ' "$manifest" || die "could not render manifest guidance"
     exit 0
 fi

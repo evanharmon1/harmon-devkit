@@ -629,9 +629,10 @@ Markdown/CLI draft uses the canonical level-two skeleton exactly.
 Decide metadata before creation and pass the proposed values to the checker:
 
 Before choosing those values, use the read-only discovery surface when a target
-checkout is available. It prints `guidance|label|description|family|purpose`
-records for manifest-backed repositories, or only `guidance|label|description||`
-from one bounded live-label read when no manifest exists. It never prints or
+checkout is available. It prints one JSON object per line with `record` set to
+`guidance`, plus `label`, `description`, `family`, and `purpose`; `family` and
+`purpose` are `null` for the bounded no-manifest live-label fallback. JSON Lines
+preserves schema-valid prose exactly, including delimiters and line breaks. It never prints or
 infers writer, lifecycle, exclusivity, retirement, source, open-value, or trust
 state, and it excludes claim, suggestion, legacy-agent, Foreman, and execution
 control labels.

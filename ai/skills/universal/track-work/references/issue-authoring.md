@@ -106,10 +106,12 @@ checkout is available:
   --repo <owner/repo> --repo-root <target-checkout>
 ```
 
-Manifest-backed output is `guidance|label|description|family|purpose`; without
-a manifest it is limited to `guidance|label|description||` from one bounded
-live-label read. The helper does not expose or infer enforcement state and
-omits claim, suggestion, legacy-agent, Foreman, and execution-control labels.
+Output is JSON Lines: each object has `record: "guidance"`, `label`,
+`description`, `family`, and `purpose`. Without a manifest, one bounded live
+label read supplies only `label` and `description`; `family` and `purpose` are
+`null`. JSON preserves schema-valid description and purpose prose exactly. The
+helper does not expose or infer enforcement state and omits claim, suggestion,
+legacy-agent, Foreman, and execution-control labels.
 
 - In a personal-account repository, select exactly one work-type label.
 - In an organization repository, select one native Issue Type and no work-type
