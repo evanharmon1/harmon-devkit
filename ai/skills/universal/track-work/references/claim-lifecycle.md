@@ -84,7 +84,7 @@ in the claim record, never in the label.
   - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
   - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   - assignee owned by this claim chain: <yes|no>
-  - assignee login owned by this claim chain: <the exact assignee login | none>
+  - assignee logins owned by this claim chain: <up to ten exact, space-separated assignee logins | none>
   - `claim:` label owned by this claim chain: <the exact still-present label | no | n/a>
   - `claim:` label displaced by this claim chain: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   ```
@@ -112,31 +112,43 @@ in the claim record, never in the label.
   legacy records written with `` `agent:` `` still parse. Records that wrote
   `yes` (older still) name no label; the parser falls back to every live
   `claim:*` **and** `agent:*` label on the issue.
-- **Current ownership is explicit (v2).** New records carry the final three
+- **Current ownership is explicit (v2+).** New records carry the final three
   core marker `claim chain` fields and the prior board status the chain owns.
-  Fresh records also record the owned assignee login (v2 records that predate
-  that companion retain the author fallback). A fresh claim initializes the
+  Fresh records also record the owned assignee logins (v2 records that predate
+  the companion retain the author fallback, and singular-companion records
+  remain readable). The plural value is a unique, space-separated set capped
+  at ten logins; a chain that would exceed the bound must stop instead of
+  silently dropping provenance. A fresh claim initializes the
   core fields from its direct `added by this claim` fields and copies its direct
-  prior board status into the chain field. A refresh or new-session takeover
-  likewise initializes an assignee or label from a marker it directly added;
-  direct ownership outranks inheritance. Only where it added no replacement
-  does it copy a still-present marker from the predecessor chain, and then only
-  when that chain proves ownership. It writes `no`/`n/a` for a marker that
-  predated the chain, disappeared, or was independently introduced.
+  prior board status into the chain field. A refresh
+  or a new-session takeover copies every still-present assignee and any
+  still-present label only when the immediately preceding trusted claim record
+  proves ownership; it writes `no`/`n/a` for a
+  marker that predated the chain, disappeared, or was independently introduced.
   Its displaced label is different: it is normally absent while the takeover
   is live, so carry it when the predecessor proves it displaced the label.
   The refresh or takeover also carries the predecessor's chain board status
   (or its direct status for a legacy predecessor), rather than treating the
   predecessor's `In Progress` card as its own prior state; `/wrap` can then
   restore the original status after an abandoned hand-back. The current record
-  is then sufficient for release: it removes the
-  inherited assignee by login and restores a proven displaced label without
+  is then sufficient for release: it removes every proven inherited assignee
+  plus the current leaf's directly owned assignee, while preserving unrelated
+  assignees, and restores a proven displaced label without
   relying on the replacement author having added them. This is intentionally an explicit
   transfer rather than a best-effort union of historical comments:
   GitHub's current marker state cannot distinguish a pre-existing label from a
   later independent re-add of the same text. When that provenance cannot be
-  proven, record it as unowned and leave it in place. The parser accepts v1
-  records without these fields, but rejects a partially written v2 trio.
+  proven, record it as unowned and leave it in place. At release, every inherited
+  login must be proven by the immediately preceding trusted claim record. An
+  extra login is forged provenance and fails closed. A refresh may omit a
+  predecessor login only when it is absent from the fresh live issue state;
+  that subset rule covers a completed partial cleanup without permitting a
+  still-live owner to be silently dropped. The parser binds both current and
+  predecessor comment identity/version and rechecks that absence before writes.
+  The
+  parser accepts v1 records without these fields and legacy singular login
+  companions, but rejects a partially written v2 trio or a record carrying
+  both singular and plural companions.
 - Values are untrusted data. Parsers validate fields that can steer an action
   before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's

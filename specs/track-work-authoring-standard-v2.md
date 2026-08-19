@@ -51,9 +51,14 @@ Ship one portable issue-authoring contract in `track-work` that:
 
 ### Authoring contract
 
-- [ ] `ai/skills/universal/track-work/SKILL.md` §5 defines an imperative
-      problem/outcome title, approximately 70 characters or fewer, with no
-      issue-form, Conventional Commit, priority, or bracket prefix.
+- [ ] `ai/skills/universal/track-work/SKILL.md` §5 defines
+      `(<scope>): <imperative outcome>` with a required free-form scope that is
+      independent of labels and `):` followed by exactly one space. Spaces, punctuation,
+      Unicode, and capitalization are permitted in the scope; parentheses,
+      control characters, and surrounding whitespace are not.
+- [ ] The complete title is at most 70 Unicode code points and the outcome
+      cannot nest an issue-form, Conventional Commit, priority, or bracket
+      prefix.
 - [ ] §5 defines this heading order:
       `## Problem`; optional
       `## Current violation (observed YYYY-MM-DD)`;
@@ -97,10 +102,12 @@ Ship one portable issue-authoring contract in `track-work` that:
       state, and explicit inapplicability for classification axes. Its help
       text documents the exact interface and gives one personal-account and
       one organization example.
-- [ ] The checker enforces the mechanically decidable title rules: nonempty,
-      bounded length, and forbidden prefixes. The prose rule owns the semantic
-      judgment that the title is imperative; the checker must not pretend to
-      solve natural-language classification.
+- [ ] The checker enforces the mechanically decidable title rules: nonempty
+      trimmed scope and outcome, exact delimiter, permitted scope characters,
+      bounded total length, and forbidden nested prefixes. A title-only mode
+      supports proposed retitles without a synthetic issue body or metadata.
+      The prose rule owns the semantic judgment that the title is imperative;
+      the checker must not pretend to solve natural-language classification.
 - [ ] The checker enforces required headings, heading order, nonempty required
       sections, task-list acceptance criteria, `[CI]`/`[HUMAN]` tags, and the
       existing perishable-fact gate.
@@ -241,9 +248,8 @@ Ship one portable issue-authoring contract in `track-work` that:
 
 ## Open questions
 
-- Should the mechanically enforced title cap be exactly 70 Unicode code points,
-  or should 70 remain guidance with a slightly larger hard ceiling? Resolve
-  before writing title-boundary fixtures.
+- The mechanically enforced title cap is exactly 70 Unicode code points,
+  including the scope and separator.
 - Should explicit classification inapplicability be represented by repeatable
   checker flags, a draft metadata file, or another portable input shape? The
   interface must remain easy to invoke immediately before `gh issue create`.

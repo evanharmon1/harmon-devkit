@@ -45,6 +45,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+title_module_dir="$script_dir/../../issue-title-support/assets"
 
 usage() {
     echo "Usage: $0 --repo owner/repo [--manifest PATH] [--limit N]" >&2
@@ -56,6 +57,9 @@ die() {
     echo "triage-scan: $*" >&2
     exit 2
 }
+
+[ -r "$title_module_dir/issue-title.jq" ] ||
+    die "shared issue-title predicate is missing"
 
 repo=""
 manifest="./label-registry.json"
@@ -223,7 +227,7 @@ truncated_closed=false
 # --out: the scan owns its output file so the caller needs no redirection.
 [ -z "$out" ] || exec >"$out"
 
-jq -n \
+jq -n -L "$title_module_dir" \
     --arg repo "$repo" \
     --arg owner_type "$owner_type" \
     --arg mode "$mode" \
@@ -241,6 +245,7 @@ jq -n \
     --argjson known "$known_json" \
     --arg native_type_mode "$native_type_mode" \
     --argjson wt "$wt_json" '
+  include "issue-title";
   def axis_labels($ls; $a): [$ls[] | select(startswith($a + ":"))];
   def axis_known($ls; $a):
     [axis_labels($ls; $a)[] | select(. as $l | $known | index($l) != null)];
@@ -382,8 +387,8 @@ jq -n \
                  then "aging-needs-candidate" else empty end),
                 (if (.title | length) > 70
                  then "title-long" else empty end),
-                (if (.title | test("^\\S+:"))
-                 then "title-prefixed" else empty end)
+                (if (.title | issue_title_valid | not)
+                 then "title-malformed" else empty end)
               ])}
         | select(($all == 1) or ((.flags | length) > 0))
       ],

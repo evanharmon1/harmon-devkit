@@ -6,10 +6,13 @@ same title, body, and proposed metadata with `check-issue-metadata.sh`.
 
 ## Title contract
 
-Write an imperative problem or outcome statement, approximately 70 characters
-or fewer. The checker enforces a hard ceiling of 70 Unicode code points and
-rejects an empty title. It also rejects these mechanically recognizable
-prefixes:
+Write `(<scope>): <imperative problem/outcome statement>`. The required scope
+is free-form and independent of labels. It may contain spaces, punctuation,
+Unicode, and capitalization, but not parentheses, control characters, or
+surrounding whitespace. Use `):` followed by exactly one space. The required outcome
+also has no surrounding whitespace. The checker enforces a hard ceiling of 70
+Unicode code points over the whole title and rejects these nested prefixes in
+the outcome:
 
 - issue-form prefixes such as `[Bug]:`;
 - Conventional Commit prefixes such as `fix:` or `feat(parser):`;
@@ -18,6 +21,13 @@ prefixes:
 
 Whether the wording is genuinely imperative is a semantic authoring judgment,
 not something the checker guesses from natural language.
+
+For a proposed retitle, validate only the title:
+
+```sh
+<skill-dir>/assets/check-issue-metadata.sh --title-only \
+  --title '(delivery queue): Reject stale dispatches'
+```
 
 ## Canonical body
 
@@ -128,7 +138,7 @@ repository root rather than the installed skill directory:
   --repo <owner/repo> \
   --repo-root <target-checkout> \
   --owner-type personal \
-  --title '<imperative title>' \
+  --title '(<free-form scope>): <imperative outcome>' \
   --body-file <draft.md> \
   --work-type-label task \
   --label area:automation \

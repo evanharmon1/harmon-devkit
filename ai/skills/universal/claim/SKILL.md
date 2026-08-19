@@ -545,7 +545,7 @@ actually added.
   - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
   - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   - assignee owned by this claim chain: <yes|no>
-  - assignee login owned by this claim chain: <the exact assignee login | none>
+  - assignee logins owned by this claim chain: <up to ten exact, space-separated assignee logins | none>
   - `claim:` label owned by this claim chain: <the exact still-present claim:<family>[:<model>] or family-owned legacy agent:* label | no | n/a>
   - `claim:` label displaced by this claim chain: <the exact displaced claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   CLAIM_BODY_9f3k
@@ -587,24 +587,33 @@ actually added.
 
   **Initialize and transfer claim-chain ownership deliberately.** A fresh
   claim copies its direct marker values and prior board status into the chain
-  fields and records its own login when it owns the assignee. A branch/scope
+  fields and records its own login when it owns the assignee. The assignee list
+  is a unique, space-separated set capped at ten logins; exceeding the bound is
+  a hard stop rather than permission to drop an earlier owner. A branch/scope
   refresh or crash-recovery takeover posts one new record; that append
   supersedes the earlier record atomically for readers. Carry the predecessor's
   chain board status (or the predecessor's direct status for a legacy record),
   rather than the current `In Progress` status that this claim sees, so a later
-  hand-back restores the status the chain originally displaced. A marker this
-  claim just added is proven direct ownership: initialize the chain assignee
-  and label from those direct fields first. Only when the current claim added
-  no replacement marker may it transfer an assignee or still-present claim
-  label from the predecessor, and then only after confirming it still exists
-  and the predecessor record proves it was claim-owned. Otherwise write `no`,
-  `n/a`, or `none`, because current state cannot prove a same-text marker was
-  not independently re-added later.
-  A displaced label is different: it is expected to be absent while the
-  takeover is live, so carry it after proving the predecessor displaced it;
+  hand-back restores the status the chain originally displaced. Transfer an
+  assignee or still-present predecessor label only after confirming it still
+  exists and the immediately preceding trusted claim record proves it was
+  claim-owned. Copy every still-present, proven predecessor login into the new
+  set and add the current login when this leaf directly added it; an omitted
+  predecessor login is valid only when it is already absent live, so release
+  can distinguish a completed partial cleanup from silently dropping a marker.
+  Never accept a
+  login merely because it is currently assigned. A label newly added by this takeover is directly owned and
+  initializes the chain to that label; otherwise write `no`, `n/a`, or `none`, because current
+  state cannot prove a same-text marker was not independently re-added later.
+  A label displaced by this takeover seeds the chain-displaced field directly;
+  otherwise a displaced label is expected to be absent while the takeover is
+  live, so carry it after proving the predecessor displaced it;
   that preserves an open-issue hand-back. Keep the three core marker-chain
   fields together — a partial trio is rejected by the releaser — and write
-  `none` for the assignee login when the chain does not own an assignee.
+  `none` for the assignee logins when the chain does not own an assignee.
+  Legacy records with the singular `assignee login owned by this claim chain:`
+  companion remain readable, but new and refreshed records write only the
+  plural form.
 
   **"Unset" and "unknown" are different answers.** `--show` exiting 0 with no
   `Status=` line is a successful read of a card whose `Status` is genuinely

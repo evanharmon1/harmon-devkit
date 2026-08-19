@@ -11,3 +11,5 @@
 - Updated triage skill discovery and invocation references for the local `matt-triage` rename.
 - Added the attribution notice in `SKILL.md`.
 - Adapted Markdown formatting to satisfy harmon-devkit lint rules without changing the skill's instructions.
+- Added the local canonical GitHub issue-title convention so `to-spec`,
+  `to-tickets`, and `wayfinder` publish free-form scoped titles consistently.

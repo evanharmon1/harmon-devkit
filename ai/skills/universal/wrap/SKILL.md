@@ -185,18 +185,14 @@ read it in the UI) — never guess.
     are all add-if-missing, so on that path they changed nothing. Removing
     them anyway destroys state the session never created, and no amount of
     user approval recovers it, because by then nobody can tell which it was.
-    Use the three core `claim chain` fields when present; the chain label is the
-    removal target and its assignee-login companion identifies an inherited
-    assignment's owner. Direct leaf ownership is additive: when the direct
-    assignee field also says `yes`, remove `@me` as well (unless it is the same
-    login), because a cross-account takeover can own both assignments. The
-    chain board-status field preserves the status the chain originally
-    overwrote. These are authoritative current ownership and hand-back
+    Use the three core `claim chain` fields when present; their optional
+    assignee-login companion identifies an inherited assignment's owner, and
+    the chain board-status field preserves the status the chain originally
+    overwrote. They are authoritative current ownership and hand-back
     provenance after a refresh or takeover. Restore the chain board status
     rather than the direct prior status on a current chain record. Skip any
-    line the record marks `no`; use direct fields only for a legacy record with
-    no chain fields. If no record survives, ask rather than assume the claim
-    created everything.
+    line the record marks `no`; if no record survives, ask rather than assume
+    the claim created everything.
 
     ```sh
     # Separate commands on purpose: the label is optional (/claim skips it
@@ -227,10 +223,9 @@ read it in the UI) — never guess.
       --project '<the board the claim comment recorded>' \
       --status '<the chain board status, or direct prior status for a legacy record>'
     # If the record names a displaced label, put it back — the claim removed it:
-    gh issue edit <n> --repo <owner/repo> --add-label <the chain-displaced label, or direct displaced label for a legacy record>
-    gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned label, or direct added label for a legacy record>
-    gh issue edit <n> --repo <owner/repo> --remove-assignee <the chain-owned assignee login>  # when chain-owned; inherited target first
-    gh issue edit <n> --repo <owner/repo> --remove-assignee @me  # also when the direct assignee field says yes and @me differs
+    gh issue edit <n> --repo <owner/repo> --add-label <the displaced label the record names>
+    gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned label; use the direct added label only for a legacy record>
+    gh issue edit <n> --repo <owner/repo> --remove-assignee <each recorded direct and inherited chain-owned login>
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```
 

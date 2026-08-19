@@ -111,8 +111,9 @@ List each as a concrete next action.
 
 - Skills worth writing or updating based on friction hit this session.
 - Settings, hooks, or environment improvements.
-- GitHub issues worth filing — draft a title and one-line body for each, but
-  do **not** create them unless asked.
+- GitHub issues worth filing — draft a `(<free-form scope>): <imperative
+  outcome>` title and one-line body for each, following `track-work`'s complete
+  title contract, but do **not** create them unless asked.
 
 ## 4. Status tables
 

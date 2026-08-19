@@ -295,6 +295,11 @@ issue may be moved at all.
   owns the code: `$repo` is this PR's base, so reusing it searches the tracker
   you are working in instead of the one you are filing into, and finds nothing
   every time.
+- **Validate the follow-up title before filing.** Follow-ups use
+  `(<free-form scope>): <imperative outcome>` and the title-only checker from
+  `track-work` §5. The scope describes the concern independently of labels;
+  never publish a review finding under a legacy unscoped or nested-prefix
+  title.
 - **Qualify the number in the tick when it crosses a repo.** `filed as #<n>` is
   only correct for a follow-up in `$repo`; a bare `#<n>` in a PR body resolves
   against the PR's own repository, so where you filed into another one it
@@ -523,7 +528,7 @@ you rather than the bot):
 
   Classification is three-way, because "I cannot tell" is a real answer and
   reporting it as a finding is a false statement about what the reviewer said.
-  A result carrying a P0/P1/P2 marker anywhere in its body is a **finding**;
+  A result carrying a severity marker anywhere in its body is a **finding**;
   one that opens with the clean verdict sentence and whose remaining lines are
   Codex's own metadata is **clean**; anything else is **indeterminate** and
   escalates.
@@ -545,8 +550,9 @@ you rather than the bot):
 
   **The residual, stated so nobody rediscovers it as a surprise:** an unbadged
   concern appended to the verdict sentence would classify clean. It has never
-  been observed — every finding Codex has posted in this repo carried a badge,
-  and this would require it to contradict itself inside one sentence — and the
+  been observed — every finding Codex has posted in this repo carried a
+  severity badge, including an observed P3, and this would require it to
+  contradict itself inside one sentence — and the
   gate promotes a draft to *ready for review* rather than merging, so a human
   still reads the PR. `scripts/test-shepherd-codex.sh` pins that case
   deliberately, and it is tracked as evanharmon1/harmon-devkit#285. **If it
@@ -695,7 +701,7 @@ you rather than the bot):
 
   **A badged finding outside an inline thread is settled with `settle`.** The
   reply rule above reaches inline comments only, because they are the only
-  surface GitHub gives a reply linkage. A P0/P1/P2 finding stated in a
+  surface GitHub gives a reply linkage. A badged finding stated in a
   **top-level conversation comment** or in a **review body** has nothing to
   reply to, so no act on GitHub can ever record that you answered it and
   `check` returns exit 10 for that head forever — the deadlock the inline

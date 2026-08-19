@@ -165,3 +165,22 @@ Repositories without a registry retain a conservative live-label fallback.
 - harmon-devkit#333 overlaps the same `suggest` paragraph. Its pairing invariant
   should not regress; whether to complete that issue in the same PR is a
   separate tracking decision.
+
+## 2026-08-19 audit addendum
+
+- Discovery now emits the registry-validated family `axis` alongside `purpose`
+  and preserves each candidate's live name and description. Selection uses
+  those semantics rather than treating the label name as sufficient evidence.
+- Family constraints are selection rules: exclusive families contribute at
+  most one candidate, nonexclusive candidates must each independently fit the
+  chunk, and every emitted `requires` companion travels with its candidate.
+- Native issue Types remain orthogonal to labels. Every issue gets exactly one
+  work classification: organization repositories require one valid native Type
+  without a duplicate `work-type` label, while personal-account repositories
+  require the single best matching `work-type` label even when the registry
+  family is nonexclusive. Registry-less fallback cannot infer work-type
+  semantics from arbitrary live labels: it requires the human to identify the
+  repository's exact live work-type label, after which the canonical
+  pre-create checker validates that same spelling. The checker is an
+  admissibility gate, not a semantic classifier; absent human confirmation
+  stops before approval or writes.
