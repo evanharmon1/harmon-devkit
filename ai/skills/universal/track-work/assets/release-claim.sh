@@ -394,7 +394,8 @@ if [ "$record_present" -eq 1 ]; then
     # v2 makes current ownership explicit.  The three fields are one unit:
     # accepting a partial lineage would be worse than the v1 fallback because
     # it could clear only one inherited marker and then publish a release.
-    if [ "$saw_chain_assignee" -ne 0 ] || [ "$saw_chain_label" -ne 0 ] || [ "$saw_chain_displaced" -ne 0 ]; then
+    if [ "$saw_chain_assignee" -ne 0 ] || [ "$saw_chain_assignee_login" -ne 0 ] ||
+        [ "$saw_chain_label" -ne 0 ] || [ "$saw_chain_displaced" -ne 0 ]; then
         if [ "$saw_chain_assignee" -ne 1 ] || [ "$saw_chain_label" -ne 1 ] || [ "$saw_chain_displaced" -ne 1 ] ||
             [ -z "$chain_assignee_owned" ] || [ -z "$chain_label_owned" ] || [ -z "$chain_label_displaced" ]; then
             echo "$repo#$issue: claim record has incomplete claim-chain ownership — fail closed" >&2
@@ -627,10 +628,10 @@ elif ! printf '%s\n' "$body" | gh issue comment "$issue" --repo "$repo" --body-f
     if [ "$assignee_removed" -eq 1 ] &&
         post_fail_json="$(fetch_claim)" &&
         [ "$(jq -r '.superseded' <<<"$post_fail_json")" != "true" ]; then
-        if gh issue edit "$issue" --repo "$repo" --add-assignee "$claim_author" >/dev/null; then
-            echo "$repo#$issue: re-added assignee '$claim_author' so the retry stays trusted and the claim stays findable" >&2
+        if gh issue edit "$issue" --repo "$repo" --add-assignee "$assignee_to_remove" >/dev/null; then
+            echo "$repo#$issue: re-added assignee '$assignee_to_remove' so the retry stays trusted and the claim stays findable" >&2
         else
-            echo "$repo#$issue: could not re-add assignee '$claim_author' — a retry may need the owner's hand" >&2
+            echo "$repo#$issue: could not re-add assignee '$assignee_to_remove' — a retry may need the owner's hand" >&2
         fi
     fi
     exit 1
