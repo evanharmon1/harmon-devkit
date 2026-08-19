@@ -222,7 +222,8 @@ proven predecessor displacement. Carry the predecessor's chain board status
 (or its direct status when the predecessor is legacy) as well: the current card
 normally already says `In Progress`, so recording it as the refresh's direct
 prior status would lose the status an eventual hand-back must restore. Direct
-`added by this claim` fields describe the refresh, while proven chain fields
+  `added by this claim` fields describe only writes performed by the refresh
+  (normally `no`), while proven chain fields
 preserve original ownership and board provenance for release or hand-back.
 **Copy the `Preflight (§3):` block over verbatim
 too**, where the claim comment carries one: it is the durable record of the

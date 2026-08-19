@@ -511,8 +511,9 @@ actually added.
   login merely because it is currently assigned. A label newly added by this takeover is directly owned and
   initializes the chain to that label; otherwise write `no`, `n/a`, or `none`, because current
   state cannot prove a same-text marker was not independently re-added later.
-  A displaced label is different: it is expected to be absent while the
-  takeover is live, so carry it after proving the predecessor displaced it;
+  A label displaced by this takeover seeds the chain-displaced field directly;
+  otherwise a displaced label is expected to be absent while the takeover is
+  live, so carry it after proving the predecessor displaced it;
   that preserves an open-issue hand-back. Keep the three core marker-chain
   fields together — a partial trio is rejected by the releaser — and write
   `none` for the assignee logins when the chain does not own an assignee.

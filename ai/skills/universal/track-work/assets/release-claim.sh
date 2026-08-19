@@ -775,6 +775,16 @@ fi
 # this cannot protect).
 assignees_removed=""
 if [ -n "$assignees_to_remove" ]; then
+    # Keep a non-owner claimant assigned until every inherited owner has been
+    # released: it is the trust anchor that makes an exit-4 retry selectable.
+    ordered_assignees=""
+    while IFS= read -r login; do
+        [ -n "$login" ] && [ "$login" != "$claim_author" ] &&
+            ordered_assignees="$ordered_assignees$login"$'\n'
+    done <<<"$assignees_to_remove"
+    if printf '%s\n' "$assignees_to_remove" | grep -Fxq "$claim_author"; then
+        ordered_assignees="$ordered_assignees$claim_author"$'\n'
+    fi
     while IFS= read -r login; do
         [ -n "$login" ] || continue
         if [ "$marker_failed" -eq 1 ]; then
@@ -786,7 +796,7 @@ if [ -n "$assignees_to_remove" ]; then
             marker_failed=1
             echo "$repo#$issue: failed to remove assignee '$login'" >&2
         fi
-    done <<<"$assignees_to_remove"
+    done <<<"$ordered_assignees"
 elif [ "$record_present" -eq 1 ]; then
     note "assignee: left in place (the claim record says the claim did not add it, or it is already gone)"
 fi
