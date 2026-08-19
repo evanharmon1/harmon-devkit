@@ -250,6 +250,7 @@ if [ "$command" = guidance ]; then
          | select((.retired // false) | not)
          | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end) as $label
          | select(($label | control_namespace) | not)
+         | select(($label | authorable_label))
          | {record: "guidance", label: $label, description: (.description // ""),
             family: $f.family, purpose: $f.purpose}] as $enumerated
       | [$registry.families[]
