@@ -408,10 +408,17 @@ regardless of the registry family's `exclusive` value:
 - On a personal-account repository, where native organization issue Types are
   unavailable, choose exactly one `work-type` label. In `mode: registry`, take
   it from the verified `work-type` axis even when that family has
-  `exclusive: false`. In `mode: live-label-fallback`, take it only from the
-  bounded live labels and require `track-work`'s canonical pre-create metadata
-  checker to accept that exact live spelling as the work classification; do
-  not infer any other family semantics from fallback labels.
+  `exclusive: false`; the asset marks this `work_type_selection:
+  registry-semantics`. In `mode: live-label-fallback`, the asset marks
+  `work_type_selection: human-confirmation-required` because the bounded live
+  list has no trustworthy axis semantics. Do not infer, rank, or nominate a
+  work type from that list: `priority`, `security`, and any other live label
+  are equally unclassified. Before approval or writes, ask the human to name
+  the exact live label that this repository uses as its work type. Treat only
+  that explicit response as the semantic classification, then require
+  `track-work`'s canonical pre-create metadata checker to accept the same live
+  spelling. The checker validates admissibility; it is not a work-type
+  classifier.
 
 Choose the single best match for the chunk. If no choice is defensible, or more
 than one remains equally defensible, stop before approval or writes and ask the

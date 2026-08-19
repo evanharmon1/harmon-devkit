@@ -335,6 +335,8 @@ cat >"$fallback/labels.json" <<'JSON'
 [
   {"name":"feature","description":"Feature"},
   {"name":"area:api","description":"Area"},
+  {"name":"priority:high","description":"Priority"},
+  {"name":"security","description":"Security"},
   {"name":"claim:gpt","description":"Claim"},
   {"name":"Claim:claude","description":"Case-varied claim"},
   {"name":"agent:codex","description":"Legacy claim"},
@@ -344,11 +346,12 @@ JSON
 fallback_output="$(discover "$fallback")"
 if jq -e '
     .mode == "live-label-fallback" and .verified_semantics == false and
-    ([.labels[].name] | sort) == ["area:api", "feature"]
+    .work_type_selection == "human-confirmation-required" and
+    ([.labels[].name] | sort) == ["area:api", "feature", "priority:high", "security"]
 ' <<<"$fallback_output" >/dev/null; then
-    ok "missing registry falls back to bounded non-arming live labels"
+    ok "missing registry leaves bounded live labels semantically unclassified"
 else
-    bad "missing registry falls back to bounded non-arming live labels"
+    bad "missing registry leaves bounded live labels semantically unclassified"
 fi
 
 empty="$tmproot/empty"
@@ -357,6 +360,7 @@ touch "$empty/empty-repository"
 printf '[{"name":"feature","description":"Feature"}]\n' >"$empty/labels.json"
 if empty_output="$(discover "$empty")" && jq -e '
     .mode == "live-label-fallback" and .default_branch_commit == null and
+    .work_type_selection == "human-confirmation-required" and
     [.labels[].name] == ["feature"]
 ' <<<"$empty_output" >/dev/null; then
     ok "a readable repository with no branch refs uses live-label fallback"
@@ -727,8 +731,10 @@ if grep -qF 'On an organization-owned repository, choose exactly one valid nativ
     grep -qF 'choose exactly one `work-type` label' "$skill" &&
     grep -qF 'In `mode: registry`' "$skill" &&
     grep -qF 'In `mode: live-label-fallback`' "$skill" &&
-    grep -qF "require \`track-work\`'s canonical pre-create" "$skill" &&
-    grep -qF 'infer any other family semantics from fallback labels' "$skill" &&
+    grep -qF 'work_type_selection: human-confirmation-required' "$skill" &&
+    grep -qF 'Do not infer, rank, or nominate a' "$skill" &&
+    grep -qF 'ask the human to name' "$skill" &&
+    grep -qF 'The checker validates admissibility; it is not a work-type' "$skill" &&
     grep -qF 'Choose the single best match for the chunk' "$skill" &&
     grep -qF 'stop before approval or writes and ask the' "$skill" &&
     grep -qF 'never omit the classification or apply multiple candidates' "$skill"; then

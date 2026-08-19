@@ -563,6 +563,7 @@ if (!defaultPaths.has('label-registry.json')) {
         default_branch: defaultBranch,
         default_branch_commit: defaultBranchCommit,
         verified_semantics: false,
+        work_type_selection: 'human-confirmation-required',
         warning:
           'label-registry.json is absent; family, writer, lifecycle, and exclusivity semantics are unknown',
         excluded_prefixes: excludedPrefixes,
@@ -787,6 +788,7 @@ process.stdout.write(
       default_branch: defaultBranch,
       default_branch_commit: defaultBranchCommit,
       verified_semantics: true,
+      work_type_selection: 'registry-semantics',
       families: [...resultFamilies.values()]
     },
     null,
