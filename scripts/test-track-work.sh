@@ -3002,6 +3002,19 @@ for login in collaborator evanharmon1 third-owner; do
 done
 if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "compensation must not add unrelated assignees"; fi
 
+echo "==> partial inherited removal retries from durable predecessor provenance"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "retry must accept already-removed proven inherited owner"
+
+echo "==> a non-write-associated predecessor cannot prove inherited ownership"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:00:00Z' NONE)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "an untrusted predecessor must not prove inherited ownership"
+[ ! -s "$rc_log" ] || fail "an untrusted predecessor must trigger zero writes"
+
 echo "==> inherited owners are removed before the non-owner claimant to preserve retry trust"
 rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
     "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \

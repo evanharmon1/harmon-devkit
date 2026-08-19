@@ -215,12 +215,17 @@ fetch_claim() {
                 and (trusted_claimant or dl == "github-actions[bot]");
             add // []
             | map(select(.body != null))
-            | map(select(trusted_claimant or trusted_release))
+            # Keep write-associated historical claims for lineage only. They
+            # cannot become the current write-authorized claim without also
+            # satisfying trusted_claimant below.
+            | map(select(trusted_claimant
+                         or trusted_release
+                         or ((.body | startswith("Claiming —")) and writeauth)))
             | (map((.body | startswith("Claiming —")) and trusted_claimant)
                | rindex(true)) as $ci
             | if $ci == null then {found: false}
               else ([.[0:$ci][]
-                      | select(((.body | startswith("Claiming —")) and trusted_claimant)
+                      | select(((.body | startswith("Claiming —")) and writeauth)
                                or trusted_release)] | last) as $predecessor
               | {found: true,
                     id: .[$ci].id,
@@ -608,21 +613,20 @@ if [ "$record_present" -eq 1 ] && [ "$chain_assignee_owned" = "yes" ]; then
         sort -u)"
     predecessor_body="$(jq -r '.predecessor_body // ""' <<<"$claim_json")"
     predecessor_author="$(jq -r '.predecessor_author // ""' <<<"$claim_json")"
-    if [ -n "$predecessor_body" ]; then
+    # A direct takeover owns only the current claimant's assignment, so it has
+    # no inherited login to prove. Its predecessor is still used elsewhere for
+    # label hand-back, but must not make this empty assignee set fail closed.
+    if [ -n "$inherited_assignees" ] && [ -n "$predecessor_body" ]; then
         if ! predecessor_assignees="$(predecessor_owned_assignees "$predecessor_body" "$predecessor_author")"; then
             echo "$repo#$issue: inherited assignee provenance has no readable trusted predecessor claim record — fail closed" >&2
             exit 2
         fi
-        live_predecessor_assignees=""
-        while IFS= read -r login; do
-            [ -n "$login" ] || continue
-            if jq -e --arg a "$login" '.assignees[] | select(.login == $a)' <<<"$issue_json" >/dev/null; then
-                live_predecessor_assignees="$live_predecessor_assignees"$'\n'"$login"
-            fi
-        done <<<"$predecessor_assignees"
-        live_predecessor_assignees="$(printf '%s\n' "$live_predecessor_assignees" | sed '/^$/d' | sort -u)"
-        if [ "$inherited_assignees" != "$live_predecessor_assignees" ]; then
-            echo "$repo#$issue: inherited assignee logins do not exactly match the trusted predecessor's live ownership — fail closed" >&2
+        # A prior exit-4 may already have removed some proven owners before a
+        # later write failed. Compare against durable predecessor provenance,
+        # not today's live subset, so that retry remains possible; exact set
+        # equality still rejects a forged or dropped login.
+        if [ "$inherited_assignees" != "$predecessor_assignees" ]; then
+            echo "$repo#$issue: inherited assignee logins do not exactly match trusted predecessor ownership — fail closed" >&2
             exit 2
         fi
     elif [ -n "$inherited_assignees" ]; then
