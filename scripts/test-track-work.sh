@@ -2702,6 +2702,8 @@ for required in \
     grep -Fq "$required" "$partial_contract" ||
         fail "/wrap partial delivery must require: $required"
 done
+grep -Fq "qualifying delivery PR's own trail" "$wrap_skill" ||
+    fail "/wrap must exempt only the attributable delivery PR's newer trail"
 
 echo "==> partial delivery restores open-issue state and explains the release"
 for required in \

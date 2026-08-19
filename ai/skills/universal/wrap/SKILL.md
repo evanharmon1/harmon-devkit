@@ -53,12 +53,13 @@ read it in the UI) — never guess.
   referencing the issue, or activity newer than this session's claim comment,
   means the claim may not be yours alone to release — say so and let the user
   decide rather than presenting cleanup as obviously safe. One exemption: the
-  closing PR's own trail. A merged PR that delivered this claim's work
-  necessarily leaves cross-reference, merge, and closure events newer than the
-  claim comment — that is the claim's expected end of life, not somebody
-  else's work, and counting it would make the merged path below ask every
-  time. What counts is *unrelated* newer activity: another open PR, a claim
-  comment you did not write, someone else's hands on the markers.
+  qualifying delivery PR's own trail. A merged PR that delivered this claim's
+  work necessarily leaves cross-reference and merge events newer than the
+  claim comment, plus a closure event when it closed the issue — that is the
+  claim's expected end of life, not somebody else's work, and counting it
+  would make both merged outcomes below ask every time. What counts is
+  *unrelated* newer activity: another open PR, a claim comment you did not
+  write, someone else's hands on the markers.
 
   **Every path that clears a marker must say it released the claim.**
   Whichever outcome applies below, any cleanup that removes or restores a
