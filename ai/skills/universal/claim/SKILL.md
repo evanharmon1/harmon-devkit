@@ -564,10 +564,12 @@ actually added.
   - prior board status owned by this claim chain: <the original status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
+  - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
   - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   - assignee owned by this claim chain: <yes|no>
   - assignee logins owned by this claim chain: <up to ten exact, space-separated assignee logins | none>
   - `claim:` label owned by this claim chain: <the exact still-present claim:<family>[:<model>] or family-owned legacy agent:* label | no | n/a>
+  - `claim:` model label owned by this claim chain: <the exact still-present claim:<family>:<model> refinement | no | n/a>
   - `claim:` label displaced by this claim chain: <the exact displaced claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   CLAIM_BODY_9f3k
 
@@ -593,9 +595,11 @@ actually added.
   **The record is a parsed contract, not prose.** The `Claim released —`
   workflow (`.github/workflows/claim-release.yml` where installed) machine-
   reads the undo fields to release the claim after a close event, so every
-  field stays on one line and values use the template above. The optional
-  operational fields are not release authority; parsers accept records with or
-  without them. The label fields name the **actual label** (`claim:<family>`,
+  field stays on one line and values use the template above. The model-label
+  fields are an optional paired extension for older records; new records write
+  both, using `no` when no model refinement is owned. The optional operational
+  fields are not release authority; parsers accept records with or without
+  them. The label fields name the **actual label** (`claim:<family>`,
   not `yes`) so the
   release does not have to guess which label to remove, and every value stays
   on its own single line. The parser anchors on `label added by this claim:`
@@ -616,9 +620,12 @@ actually added.
   chain board status (or the predecessor's direct status for a legacy record),
   rather than the current `In Progress` status that this claim sees, so a later
   hand-back restores the status the chain originally displaced. Transfer an
-  assignee or still-present predecessor label only after confirming it still
-  exists and the immediately preceding trusted claim record proves it was
-  claim-owned. Copy every still-present, proven predecessor login into the new
+  assignee, family label, or model-refinement label only after confirming it
+  still exists and the immediately preceding trusted claim record proves it was
+  claim-owned. A model-pinned claim records the model label it directly adds and
+  carries any proven family-label ownership separately; release can then remove
+  both without treating the required family marker as a takeover conflict. Copy
+  every still-present, proven predecessor login into the new
   set and add the current login when this leaf directly added it; an omitted
   predecessor login is valid only when it is already absent live, so release
   can distinguish a completed partial cleanup from silently dropping a marker.

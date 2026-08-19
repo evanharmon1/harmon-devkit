@@ -82,10 +82,12 @@ in the claim record, never in the label.
   - prior board status owned by this claim chain: <the original status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
+  - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
   - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   - assignee owned by this claim chain: <yes|no>
   - assignee logins owned by this claim chain: <up to ten exact, space-separated assignee logins | none>
   - `claim:` label owned by this claim chain: <the exact still-present label | no | n/a>
+  - `claim:` model label owned by this claim chain: <the exact still-present claim:<family>:<model> refinement | no | n/a>
   - `claim:` label displaced by this claim chain: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   ```
 
@@ -112,6 +114,11 @@ in the claim record, never in the label.
   legacy records written with `` `agent:` `` still parse. Records that wrote
   `yes` (older still) name no label; the parser falls back to every live
   `claim:*` **and** `agent:*` label on the issue.
+- The model-label fields are a paired extension: old records may omit both, but
+  a new record writes both and uses `no` when it owns no refinement. Keeping
+  model ownership separate lets a model-pinned claim preserve its required
+  family marker while release removes every label the claim chain actually
+  owns.
 - **Current ownership is explicit (v2+).** New records carry the final three
   core marker `claim chain` fields and the prior board status the chain owns.
   Fresh records also record the owned assignee logins (v2 records that predate

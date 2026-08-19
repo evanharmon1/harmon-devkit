@@ -2961,6 +2961,21 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_model")")" \
 [ "$(run_release --reason r)" = 0 ] || fail "a model-segmented claim label should release"
 grep -q -- '--remove-label claim:claude:opus' "$rc_log" || fail "the optional :model segment must be preserved in the removal"
 
+echo "==> a model refinement releases both chain-owned family and model labels"
+body_model_refinement="$(printf '%s' "$body_v2" |
+    sed 's/label added by this claim: claim:claude/label added by this claim: no/')
+- claim: model label added by this claim: claim:claude:opus
+- assignee owned by this claim chain: yes
+- assignee logins owned by this claim chain: evanharmon1
+- claim: label owned by this claim chain: claim:claude
+- claim: model label owned by this claim chain: claim:claude:opus
+- claim: label displaced by this claim chain: none"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_model_refinement")")" \
+    '{"state":"closed","labels":[{"name":"claim:claude"},{"name":"claim:claude:opus"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a family+model refinement should release"
+grep -q -- '--remove-label claim:claude' "$rc_log" || fail "the chain-owned family label must be removed"
+grep -q -- '--remove-label claim:claude:opus' "$rc_log" || fail "the chain-owned model refinement must be removed"
+
 echo "==> a legacy 'yes' record sweeps live claim:* labels too, not only agent:*"
 body_yes_claim="$(printf '%s' "$body_v2" | sed 's/claim:claude$/yes/')"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_yes_claim")")" \

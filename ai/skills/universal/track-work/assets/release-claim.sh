@@ -298,21 +298,26 @@ fi
 record_present=0
 saw_assignee=0
 saw_label=0
+saw_model_label=0
 saw_displaced=0
 saw_chain_assignee=0
 saw_chain_assignee_login=0
 saw_chain_assignee_logins=0
 saw_chain_label=0
+saw_chain_model_label=0
 saw_chain_displaced=0
 assignee_added=""
 label_added=""
+model_label_added=""
 label_displaced=""
 chain_assignee_owned=""
 chain_assignee_login=""
 chain_assignee_logins=""
 chain_label_owned=""
+chain_model_label_owned=""
 chain_label_displaced=""
 direct_assignee_added="no"
+direct_model_label_added=""
 extract_value() {
     v="${1#*by this claim:}"
     v="${v%%,*}"
@@ -375,6 +380,10 @@ while IFS= read -r line; do
         saw_assignee=1
         assignee_added="$(lower "$(extract_value "$line")")"
         ;;
+    *"model label added by this claim:"*)
+        saw_model_label=1
+        model_label_added="$(extract_value "$line")"
+        ;;
     *"label added by this claim:"*)
         saw_label=1
         label_added="$(extract_value "$line")"
@@ -395,6 +404,10 @@ while IFS= read -r line; do
         saw_chain_assignee_logins=1
         chain_assignee_logins="$(extract_chain_list "$line")"
         ;;
+    *"model label owned by this claim chain:"*)
+        saw_chain_model_label=1
+        chain_model_label_owned="$(extract_chain_value "$line")"
+        ;;
     *"label owned by this claim chain:"*)
         saw_chain_label=1
         chain_label_owned="$(extract_chain_value "$line")"
@@ -410,6 +423,7 @@ if [ "$record_present" -eq 1 ]; then
     # Keep the leaf's direct ownership separate from inherited chain ownership:
     # a cross-account takeover can legitimately own both assignments.
     direct_assignee_added="$assignee_added"
+    direct_model_label_added="$model_label_added"
     # A record with a missing or truncated field is unreadable provenance,
     # not a no-op: releasing around it would clear some markers, leave
     # others, and then a supersede comment would block every retry.
@@ -437,6 +451,15 @@ if [ "$record_present" -eq 1 ]; then
         fi
         ;;
     esac
+    case "$(lower "$model_label_added")" in
+    no | n/a | none | '') ;;
+    *)
+        if ! valid_label "$model_label_added"; then
+            echo "$repo#$issue: claim record names an implausible model label ('$model_label_added') — fail closed" >&2
+            exit 2
+        fi
+        ;;
+    esac
     case "$(lower "$label_displaced")" in
     none | '') label_displaced="" ;;
     *)
@@ -451,10 +474,14 @@ if [ "$record_present" -eq 1 ]; then
     # it could clear only one inherited marker and then publish a release.
     if [ "$saw_chain_assignee" -ne 0 ] || [ "$saw_chain_assignee_login" -ne 0 ] ||
         [ "$saw_chain_assignee_logins" -ne 0 ] ||
-        [ "$saw_chain_label" -ne 0 ] || [ "$saw_chain_displaced" -ne 0 ]; then
+        [ "$saw_chain_label" -ne 0 ] || [ "$saw_chain_model_label" -ne 0 ] || [ "$saw_chain_displaced" -ne 0 ]; then
         if [ "$saw_chain_assignee" -ne 1 ] || [ "$saw_chain_label" -ne 1 ] || [ "$saw_chain_displaced" -ne 1 ] ||
             [ -z "$chain_assignee_owned" ] || [ -z "$chain_label_owned" ] || [ -z "$chain_label_displaced" ]; then
             echo "$repo#$issue: claim record has incomplete claim-chain ownership — fail closed" >&2
+            exit 2
+        fi
+        if [ "$saw_model_label" -ne "$saw_chain_model_label" ]; then
+            echo "$repo#$issue: claim record has incomplete model-label ownership — fail closed" >&2
             exit 2
         fi
         case "$chain_assignee_owned" in
@@ -512,10 +539,20 @@ if [ "$record_present" -eq 1 ]; then
             fi
             ;;
         esac
+        case "$(lower "$chain_model_label_owned")" in
+        no | n/a | none | '') ;;
+        *)
+            if ! valid_label "$chain_model_label_owned"; then
+                echo "$repo#$issue: claim-chain ownership names an implausible model label ('$chain_model_label_owned') — fail closed" >&2
+                exit 2
+            fi
+            ;;
+        esac
         # The current leaf, not its author, owns inherited provenance. This is
         # what makes a crashed-session takeover release predecessor markers.
         assignee_added="$chain_assignee_owned"
         label_added="$chain_label_owned"
+        model_label_added="$chain_model_label_owned"
         label_displaced="$chain_label_displaced"
     fi
 fi
@@ -704,6 +741,17 @@ if [ "$record_present" -eq 1 ]; then
         ;;
     esac
 fi
+
+for owned_model_label in "$direct_model_label_added" "$model_label_added"; do
+    case "$(lower "$owned_model_label")" in
+    no | n/a | none | '') continue ;;
+    esac
+    if jq -e --arg l "$owned_model_label" '.labels[] | select(.name == $l)' \
+        <<<"$issue_json" >/dev/null &&
+        ! printf '%s' "$labels_to_remove" | grep -Fqx "$owned_model_label"; then
+        labels_to_remove="$labels_to_remove$owned_model_label"$'\n'
+    fi
+done
 
 assignees_to_remove=""
 if [ "$record_present" -eq 1 ]; then
