@@ -155,7 +155,7 @@ validate() {
                      and ((.retired // false) | not))
             | if $f.prefix == null then .value
               else "\($f.prefix):\(.value)" end]
-           | length == (unique | length))
+           | map(ascii_downcase) | length == (unique | length))
     ' "$manifest" >/dev/null 2>&1
 }
 

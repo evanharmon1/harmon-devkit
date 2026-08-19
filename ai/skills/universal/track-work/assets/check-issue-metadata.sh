@@ -274,7 +274,7 @@ if [ -e "$manifest" ]; then
                 # ambiguity guard above guarantees any existing record for
                 # this name is that same family's own, so dropping it makes
                 # the absent label fail as unknown instead of passing stale.
-                awk -F '|' -v wanted="$label" '$1 != wanted' "$vocab" >"$vocab.pruned" &&
+                awk -F '|' -v wanted="$label_key" 'tolower($1) != wanted' "$vocab" >"$vocab.pruned" &&
                     mv "$vocab.pruned" "$vocab" ||
                     die "could not prune an absent open-value label from the vocabulary"
                 continue
@@ -296,14 +296,15 @@ else
         case "$label" in
         *'|'*) continue ;;
         esac
-        case "$label" in
+        label_key="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
+        case "$label_key" in
         area:*) printf '%s|area|classification|human,agent|true\n' "$label" ;;
         layer:*) printf '%s|layer|classification|human,agent|true\n' "$label" ;;
         domain:*) printf '%s|domain|classification|human,agent|true\n' "$label" ;;
         ai-generated) printf '%s|provenance|provenance|human,agent|false\n' "$label" ;;
         needs-triage) printf '%s|workflow|workflow|human,agent|false\n' "$label" ;;
         *)
-            if [ -n "$work_type_label" ] && [ "$label" = "$work_type_label" ]; then
+            if [ -n "$work_type_label" ] && [ "$label_key" = "$(printf '%s' "$work_type_label" | tr '[:upper:]' '[:lower:]')" ]; then
                 printf '%s|work-type|work-type|human,agent|false\n' "$label"
             else
                 printf '%s|fallback-other|meta|human|false\n' "$label"
@@ -609,8 +610,8 @@ EOF
         *) violation "label '$label' is not writable by a human author" ;;
         esac
     fi
-    [ "$label" = ai-generated ] && has_ai_generated=1
-    [ "$label" = needs-triage ] && has_needs_triage=1
+    [ "$label_key" = ai-generated ] && has_ai_generated=1
+    [ "$label_key" = needs-triage ] && has_needs_triage=1
     [ "$axis" = work-type ] && work_type_count=$((work_type_count + 1))
     case "$family" in
     area) area_count=$((area_count + 1)) ;;
@@ -619,8 +620,8 @@ EOF
     esac
     if [ "$exclusive" = true ]; then
         family_count="$(awk -F '|' -v fam="$family" -v seen="$seen_labels" '
-          BEGIN { while ((getline line < seen) > 0) selected[line]=1 }
-          selected[$1] && $2 == fam { n++ }
+          BEGIN { while ((getline line < seen) > 0) selected[tolower(line)]=1 }
+          selected[tolower($1)] && $2 == fam { n++ }
           END { print n + 0 }
         ' "$vocab")"
         [ "$family_count" -le 1 ] || violation "exclusive label family '$family' has $family_count proposed values"
