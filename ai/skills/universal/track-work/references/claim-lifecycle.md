@@ -223,9 +223,22 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
 - A PR merged into a **non-default base branch** does not auto-close its
   issues, so no event fires; the claim releases whenever the issue eventually
   closes.
-- A merged PR that only `Refs` an issue releases nothing — `/shepherd`
-  deliberately parks such issues at `In Progress`, and the claim is still
-  live.
+- A merged PR that only `Refs` an issue triggers no event-driven release —
+  `/shepherd` deliberately parks such issues at `In Progress`.
+  `/wrap` owns the attributable partial-delivery transition when the issue stays open and no
+  work remains in flight: it requires a complete trusted current claim record,
+  a same-repository merged `Refs` PR authored by the authenticated account,
+  whose head branch matches the current claim record and whose merge postdates
+  that claim, no competing open PR or newer unrelated claim activity, and
+  attributable descriptions of what landed and what remains. It re-reads that
+  evidence immediately before cleanup and fails closed if the ground moved.
+  That interactive cleanup restores the recorded chain board status, or the
+  direct prior status for a legacy record (never `Done`), restores a proven
+  displaced claim label because the issue remains open, releases only markers
+  proven owned by the direct/current chain record (including both distinct
+  claim-owned assignees when applicable), and posts the landed/remaining
+  supersede comment last. Ambiguous evidence fails closed to maintainer
+  confirmation; event automation deliberately does not infer this state.
 - An unmerged **fork** PR's close releases nothing: `pull_request` runs from
   forks carry a read-only `GITHUB_TOKEN`, and `pull_request_target` is what
   this repo's security guidance tells workflows to gate against — so the
