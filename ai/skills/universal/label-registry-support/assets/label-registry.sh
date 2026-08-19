@@ -207,12 +207,17 @@ if [ "$command" = guidance ]; then
        | select((.open_values // false) and .prefix != null)]
       | length
     ' "$manifest")" || die "could not inspect manifest open-value families"
-    live_labels='[]'
+    # Keep the bounded GitHub response out of argv: 1,000 labels with rich
+    # descriptions can exceed the platform argument limit before jq starts.
+    live_labels_file="$(mktemp)"
+    trap 'rm -f "$live_labels_file"' EXIT
     if [ "$open_family_count" -gt 0 ]; then
-        live_labels="$(gh label list --repo "$repo" --limit 1000 --json name,description)" ||
+        gh label list --repo "$repo" --limit 1000 --json name,description >"$live_labels_file" ||
             die "could not read live labels for manifest guidance"
+    else
+        printf '[]\n' >"$live_labels_file"
     fi
-    jq -c --argjson live "$live_labels" '
+    jq -c --slurpfile live "$live_labels_file" '
       def control_namespace:
         ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
       def authoring_family:
@@ -223,7 +228,8 @@ if [ "$command" = guidance ]; then
         and (.axis != "strategy" and .axis != "model" and .axis != "foreman");
       def live_description:
         if (.description? == null) then "" else .description end;
-      if ($live | type) != "array"
+      ($live[0]) as $live
+      | if ($live | type) != "array"
          or any($live[]; (.name | type) != "string" or (live_description | type) != "string")
       then error("live label data is invalid")
       else . as $registry
@@ -247,24 +253,25 @@ if [ "$command" = guidance ]; then
       | [$open_families[] as $f
          | $f.values[]
          | select((.retired // false) | not)
-         | {label: "\($f.prefix):\(.value)", family: $f.family,
+         | {label: "\($f.prefix):\(.value)", label_key: ("\($f.prefix):\(.value)" | ascii_downcase), family: $f.family,
             description: (.description // "")} ] as $open_enumerated
       | [$registry.families[] as $f
          | select(($f.retired // false) | not)
          | $f.values[]
          | select(.retired // false)
-         | if $f.prefix == null then .value else "\($f.prefix):\(.value)" end] as $retired_labels
+            | if $f.prefix == null then .value else "\($f.prefix):\(.value)" end
+            | ascii_downcase] as $retired_label_keys
       | [$live[]
          | {label: .name, description: live_description}
          | . as $live_label
          | [$open_families[]
             | select(.prefix as $prefix | $live_label.label | startswith($prefix + ":"))] as $matches
          | select($matches | length == 1)
-         | select(($retired_labels | index($live_label.label)) | not)
+         | select(($retired_label_keys | index($live_label.label | ascii_downcase)) | not)
          | $matches[0] as $f
          | select(($live_label.label | control_namespace) | not)
          | [$open_enumerated[]
-            | select(.family == $f.family and .label == $live_label.label)] as $enumerated_match
+            | select(.family == $f.family and .label_key == ($live_label.label | ascii_downcase))] as $enumerated_match
          | {record: "guidance", label: $live_label.label,
             description: (if ($enumerated_match | length) == 1
                           then $enumerated_match[0].description

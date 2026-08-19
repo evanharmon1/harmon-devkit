@@ -69,6 +69,14 @@ guidance_bin="$guidance_tmp/bin"
 mkdir -p "$guidance_bin"
 cat >"$guidance_bin/gh" <<'STUB'
 #!/bin/sh
+if [ "${GUIDANCE_RETIRED_UPPERCASE:-}" = 1 ]; then
+    printf '%s\n' '[{"name":"area:OLD","description":"Still live but retired by the manifest"}]'
+    exit 0
+fi
+if [ "${GUIDANCE_LONG_LABELS:-}" = 1 ]; then
+    jq -n '[range(0; 1000) | {name: ("area:long-" + tostring), description: ("x" * 3000)}]'
+    exit 0
+fi
 case "${1:-} ${2:-}" in
 "label list")
     printf '%s\n' '[
@@ -177,12 +185,20 @@ jq '(.families[] | select(.family == "area"))
       |= (.open_values = true | .placeholder = "area:<value>"
           | .values = [{"value": "old", "description": "Retired area", "retired": true}])' \
     label-registry.json >"$guidance_tmp/retired-open-area.json"
-retired_open_guidance="$(PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/retired-open-area.json" testowner/testrepo)" ||
+retired_open_guidance="$(GUIDANCE_RETIRED_UPPERCASE=1 PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/retired-open-area.json" testowner/testrepo)" ||
     fail "retired open-family guidance should render remaining live members"
 if printf '%s\n' "$retired_open_guidance" |
-    jq -e 'select(.label == "area:old")' >/dev/null; then
+    jq -e 'select(.label | ascii_downcase == "area:old")' >/dev/null; then
     fail "retired manifest members must not return through open-family live guidance"
 fi
+
+echo "==> guidance: bounded live label payloads do not pass through argv"
+long_guidance="$guidance_tmp/long-guidance.jsonl"
+GUIDANCE_LONG_LABELS=1 PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/open-area.json" testowner/testrepo >"$long_guidance" ||
+    fail "large bounded live label payloads should render without an argv-size failure"
+jq -se '(. as $all | [$all[] | select(.label | startswith("area:long-"))] | length == 1000)
+        and any(.[]; .label == "area:long-999" and (.description | length) == 3000)' "$long_guidance" >/dev/null ||
+    fail "large bounded live label payloads should retain the final live record"
 
 echo "==> guidance: prefixless open families retain active manifest members"
 jq '(.families[] | select(.family == "concern"))
