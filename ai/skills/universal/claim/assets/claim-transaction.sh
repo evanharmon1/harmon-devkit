@@ -167,6 +167,95 @@ record_token() {
     printf '%s' "$value"
 }
 
+record_line_value() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+canonical_login_set() {
+    local value="$1"
+    if [ "$value" = none ]; then
+        return 0
+    fi
+    if ! jq -er --arg value "$value" '
+        ($value | split(",")) as $items
+        | select(($items | length) > 0)
+        | select(all($items[];
+            test("^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$")
+            and . == ascii_downcase))
+        | select(($items | sort | unique | join(",")) == $value)
+        | $items[]
+    ' <<<'null'; then
+        echo "claim transaction: claim-chain assignee set is not canonical ('$value')" >&2
+        return 1
+    fi
+}
+
+optional_record_value() {
+    local prefix="$1"
+    awk -v prefix="$prefix" '
+        index($0, prefix) == 1 { count++; value = substr($0, length(prefix) + 1) }
+        END {
+            if (count > 1 || (count == 1 && value == "")) exit 2
+            if (count == 1) print value
+        }
+    ' "$2"
+}
+
+predecessor_owned_assignees() {
+    local predecessor_json="$1" body_file="$tmp/predecessor-body" author value owned login direct
+    [ "$(jq -r '.found' "$predecessor_json")" = true ] || return 0
+    jq -r '.body' "$predecessor_json" >"$body_file"
+    author="$(jq -r '.author' "$predecessor_json" | tr '[:upper:]' '[:lower:]')"
+    if ! direct="$(optional_record_value '- assignee added by this claim: ' "$body_file")"; then
+        return 1
+    fi
+    direct="$(record_token "$direct")"
+    case "$direct" in yes | no | '') ;; *) return 1 ;; esac
+
+    if ! value="$(optional_record_value '- assignee logins owned by this claim chain: ' "$body_file")"; then
+        echo "claim transaction: predecessor assignee set is ambiguous or empty" >&2
+        return 1
+    fi
+    if [ -n "$value" ]; then
+        value="$(record_line_value "$value")"
+        canonical_login_set "$value"
+        return
+    fi
+
+    if ! owned="$(optional_record_value '- assignee owned by this claim chain: ' "$body_file")" ||
+        ! login="$(optional_record_value '- assignee login owned by this claim chain: ' "$body_file")"; then
+        echo "claim transaction: predecessor scalar assignee provenance is ambiguous" >&2
+        return 1
+    fi
+    if [ -n "$owned" ] || [ -n "$login" ]; then
+        owned="$(record_token "$owned")"
+        login="$(record_token "$login")"
+        case "$owned" in
+        yes)
+            [ -n "$login" ] || login="$author"
+            [ "$login" != none ] && [[ "$login" =~ ^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$ ]] || return 1
+            printf '%s\n' "$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')"
+            [ "$direct" = yes ] && printf '%s\n' "$author"
+            ;;
+        no)
+            [ -z "$login" ] || [ "$login" = none ] || return 1
+            [ "$direct" = yes ] && printf '%s\n' "$author"
+            ;;
+        *) return 1 ;;
+        esac
+        return
+    fi
+
+    case "$direct" in
+    yes) printf '%s\n' "$author" ;;
+    no | '') ;;
+    *) return 1 ;;
+    esac
+}
+
 if ! head -n 1 "$record_file" | grep -q '^Claiming —'; then
     echo "claim transaction: record must start with 'Claiming —'" >&2
     exit 2
@@ -192,6 +281,45 @@ if ! issue_snapshot >"$tmp/issue-before.json"; then
 fi
 if ! comments_snapshot >"$tmp/comments-before.json"; then
     echo "claim transaction: could not read comments before writing" >&2
+    exit 2
+fi
+
+# The immediate latest trusted predecessor is the only source of inherited
+# assignee ownership. A release comment resets the chain. Trust is the same as
+# the lifecycle reader: repository owner or a current write-associated assignee.
+if ! jq --arg owner "${repo%%/*}" --slurpfile issue "$tmp/issue-before.json" '
+    def dl: (.user.login | ascii_downcase);
+    def writeauth:
+        (.author_association // "") as $a
+        | (["OWNER", "MEMBER", "COLLABORATOR"] | index($a)) != null;
+    def trusted_claimant:
+        dl as $login
+        | (($login == ($owner | ascii_downcase))
+         or ([ $issue[0].assignees[].login | ascii_downcase ] | index($login) != null))
+        and writeauth;
+    def trusted_release:
+        (.body | startswith("Claim released —"))
+        and (trusted_claimant or dl == "github-actions[bot]");
+    [ .[]
+      | select(.body != null)
+      | select(trusted_claimant or trusted_release) ] as $events
+    | ([range(0; $events | length) as $i
+        | select($events[$i] | trusted_release)
+        | $i] | last // -1) as $release
+    | ([range($release + 1; $events | length) as $i
+        | select($events[$i]
+                 | ((.body | startswith("Claiming —")) and trusted_claimant))
+        | $events[$i]] | last // null) as $predecessor
+    | if $predecessor == null then {found:false}
+      else {found:true, id:$predecessor.id, author:$predecessor.user.login,
+            body:$predecessor.body}
+      end
+' "$tmp/comments-before.json" >"$tmp/predecessor.json"; then
+    echo "claim transaction: could not select the immediate trusted predecessor" >&2
+    exit 2
+fi
+if ! predecessor_owned_assignees "$tmp/predecessor.json" >"$tmp/predecessor-assignees"; then
+    echo "claim transaction: predecessor assignee provenance is unreadable" >&2
     exit 2
 fi
 
@@ -262,8 +390,7 @@ record_prior="$(record_value '- prior board status: ')"
 record_assignee="$(record_token "$(record_value '- assignee added by this claim: ')")"
 record_label="$(record_token "$(record_value '- `claim:` label added by this claim: ')")"
 record_displaced="$(record_token "$(record_value '- `claim:` label displaced by this claim: ')")"
-chain_assignee="$(record_token "$(record_value '- assignee owned by this claim chain: ')")"
-chain_login="$(record_token "$(record_value '- assignee login owned by this claim chain: ')")"
+chain_assignees="$(record_line_value "$(record_value '- assignee logins owned by this claim chain: ')")"
 chain_label="$(record_token "$(record_value '- `claim:` label owned by this claim chain: ')")"
 chain_displaced="$(record_token "$(record_value '- `claim:` label displaced by this claim chain: ')")"
 
@@ -287,22 +414,7 @@ chain_displaced="$(record_token "$(record_value '- `claim:` label displaced by t
     echo "claim transaction: displaced label must be '$displaced_label'" >&2
     exit 2
 }
-case "$chain_assignee" in yes | no) ;; *)
-    echo "claim transaction: claim-chain assignee must be yes or no" >&2
-    exit 2
-    ;;
-esac
-if [ "$chain_assignee" = yes ]; then
-    [[ "$chain_login" =~ ^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$ ]] || {
-        echo "claim transaction: owned assignee login is invalid" >&2
-        exit 2
-    }
-else
-    [ "$chain_login" = none ] || {
-        echo "claim transaction: unowned assignee login must be none" >&2
-        exit 2
-    }
-fi
+canonical_login_set "$chain_assignees" >/dev/null || exit 2
 case "$chain_label" in no | n/a) ;; *) valid_label "$chain_label" || {
     echo "claim transaction: claim-chain label is invalid" >&2
     exit 2
@@ -311,8 +423,18 @@ case "$chain_displaced" in none) ;; *) valid_label "$chain_displaced" || {
     echo "claim transaction: displaced claim-chain label is invalid" >&2
     exit 2
 } ;; esac
-[ "$expected_assignee" != yes ] || { [ "$chain_assignee" = yes ] && [ "$chain_login" = "$login" ]; } || {
-    echo "claim transaction: a newly added assignee must initialize chain ownership" >&2
+{
+    while IFS= read -r inherited; do
+        [ -n "$inherited" ] || continue
+        has_assignee "$tmp/issue-before.json" "$inherited" && printf '%s\n' "$inherited"
+    done <"$tmp/predecessor-assignees"
+    [ "$expected_assignee" = yes ] && printf '%s\n' "$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')"
+    true
+} | sort -u >"$tmp/expected-assignees"
+expected_chain_assignees="$(paste -sd, "$tmp/expected-assignees")"
+[ -n "$expected_chain_assignees" ] || expected_chain_assignees=none
+[ "$chain_assignees" = "$expected_chain_assignees" ] || {
+    echo "claim transaction: assignee set must be derived from the immediate predecessor plus this attempt ('$expected_chain_assignees')" >&2
     exit 2
 }
 if [ "$expected_label" = "$claim_label" ] && [ "$claim_label" != none ]; then

@@ -86,7 +86,7 @@ issue)
         success | commit_fail)
             next="${CLAIM_COMMENTS_FILE}.next"
             jq --rawfile body "$body_file" --arg login "${CLAIM_LOGIN:-evanharmon1}" \
-                '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, body:($body | sub("\\n+$"; ""))}]' \
+                '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"OWNER", body:($body | sub("\\n+$"; ""))}]' \
                 "$CLAIM_COMMENTS_FILE" >"$next"
             mv "$next" "$CLAIM_COMMENTS_FILE"
             [ "${CLAIM_COMMENT_MODE:-success}" = success ] || exit 1
@@ -157,8 +157,7 @@ Claim record (for \`/wrap\` — undo only what this claim added):
 - assignee added by this claim: $assignee
 - \`claim:\` label added by this claim: $label
 - \`claim:\` label displaced by this claim: $displaced
-- assignee owned by this claim chain: $chain_assignee
-- assignee login owned by this claim chain: $chain_login
+- assignee logins owned by this claim chain: $([ "$chain_assignee" = yes ] && printf '%s' "$chain_login" || printf 'none')
 - \`claim:\` label owned by this claim chain: $chain_label
 - \`claim:\` label displaced by this claim chain: $chain_displaced
 EOF
@@ -169,7 +168,7 @@ run_claim() {
     env PATH="$stub:$PATH" \
         CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
         CLAIM_COMMENTS_FAIL_FLAG="$comments_fail_flag" CLAIM_LOG="$log" \
-        CLAIM_LOGIN=evanharmon1 \
+        CLAIM_LOGIN="${RUN_LOGIN:-evanharmon1}" \
         "$helper" --repo evanharmon1/harmon-devkit --issue 543 \
         --record-file "$record" --status-helper "$stub/status-helper" "$@" \
         >"$tmp/out" 2>"$err" || rc=$?
@@ -228,12 +227,14 @@ grep -q 'VALID CLAIM COMMITTED' "$err" || fail "valid-claim board gap must be ex
 
 echo "==> pre-existing markers are never rewritten or compensated"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}'
-make_record no no none yes evanharmon1 claim:gpt none
-[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "pre-existing marker claim should succeed"
+make_record no no none no none claim:gpt none
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "pre-existing marker claim should succeed: $(cat "$err")"
 if grep -q '^edit' "$log"; then fail "pre-existing markers must not be edited"; fi
 
 echo "==> a failed refresh leaves the predecessor current and markers untouched"
-predecessor='[{"id":1,"user":{"login":"evanharmon1"},"body":"Claiming — predecessor record"}]'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/predecessor
+predecessor_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
+predecessor="$(jq -n --argjson body "$predecessor_body" '[{id:1,user:{login:"evanharmon1"},author_association:"OWNER",body:$body}]')"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$predecessor"
 make_record no no none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/refreshed
 [ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt)" = 4 ] || fail "failed refresh should exit 4"
@@ -247,5 +248,21 @@ make_record yes n/a none yes evanharmon1 n/a none none none
 jq -e 'any(.assignees[]; .login == "evanharmon1")' "$issue_file" >/dev/null || fail "label-less claim must be assignee-backed"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "label-less claim still requires a record"
 if grep -q -- '--add-label' "$log"; then fail "label-less repository must not invent a label"; fi
+
+echo "==> A to B to C takeover retains the canonical predecessor ownership set"
+make_record yes no none yes 'alice,bob' claim:gpt none 'Owner Project' Ready fix/predecessor
+predecessor_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
+scenario '{"assignees":[{"login":"alice"},{"login":"bob"}],"labels":[{"name":"claim:gpt"}]}' \
+    "$(jq -n --argjson body "$predecessor_body" '[{id:1,user:{login:"bob"},author_association:"COLLABORATOR",body:$body}]')"
+make_record yes no none yes 'alice,bob,carol' claim:gpt none
+[ "$(RUN_LOGIN=carol run_claim --claim-label claim:gpt)" = 0 ] || fail "C must retain A and B while adding itself: $(cat "$err")"
+grep -Fq -- '- assignee logins owned by this claim chain: alice,bob,carol' "$record" || fail "record must carry the canonical A+B+C set"
+
+echo "==> the producer rejects a forged assignee outside predecessor plus direct ownership"
+scenario '{"assignees":[{"login":"alice"},{"login":"bob"}],"labels":[{"name":"claim:gpt"}]}' \
+    "$(jq -n --argjson body "$predecessor_body" '[{id:1,user:{login:"bob"},author_association:"COLLABORATOR",body:$body}]')"
+make_record yes no none yes 'alice,bob,carol,dave' claim:gpt none
+[ "$(RUN_LOGIN=carol run_claim --claim-label claim:gpt)" = 2 ] || fail "forged victim must fail before writes"
+if grep -q '^edit\|^comment$\|^status write$' "$log"; then fail "forged victim rejection must perform zero writes"; fi
 
 echo "PASS: claim transaction semantics"

@@ -106,8 +106,7 @@ in the claim record, never in the label.
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
   - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
-  - assignee owned by this claim chain: <yes|no>
-  - assignee login owned by this claim chain: <the exact assignee login | none>
+  - assignee logins owned by this claim chain: <canonical comma-separated lowercase logins | none>
   - `claim:` label owned by this claim chain: <the exact still-present label | no | n/a>
   - `claim:` label displaced by this claim chain: <claim:gpt | agent:codex (legacy) | none>
   ```
@@ -133,31 +132,38 @@ in the claim record, never in the label.
   legacy records written with `` `agent:` `` still parse. Records that wrote
   `yes` (older still) name no label; the parser falls back to every live
   `claim:*` **and** `agent:*` label on the issue.
-- **Current ownership is explicit (v2).** New records carry the final three
-  core marker `claim chain` fields and the prior board status the chain owns.
-  Fresh records also record the owned assignee login (v2 records that predate
-  that companion retain the author fallback). A fresh claim initializes the
-  core fields from its direct `added by this claim` fields and copies its direct
-  prior board status into the chain field. A refresh or new-session takeover
-  likewise initializes an assignee or label from a marker it directly added;
-  direct ownership outranks inheritance. Only where it added no replacement
-  does it copy a still-present marker from the predecessor chain, and then only
-  when that chain proves ownership. It writes `no`/`n/a` for a marker that
-  predated the chain, disappeared, or was independently introduced.
+- **Current ownership is explicit (v3).** New records carry a canonical
+  deduplicated assignee-login set, the two label `claim chain` fields, and the
+  prior board status the chain owns. The producer derives the assignee set from
+  exactly the immediate latest trusted predecessor's proven set plus the
+  authenticated login when this attempt directly assigned it; absent
+  predecessor members are dropped, and the result is lowercase and sorted.
+  The record is validation input, never authority to invent another victim.
+  This union preserves A→B→C ownership instead of replacing A with B and then
+  B with C. A refresh or new-session takeover likewise copies a still-present
+  label only when the immediate predecessor proves ownership. It writes
+  `no`/`n/a` for a marker that predated the chain, disappeared, or was
+  independently introduced.
   Its displaced label is different: it is normally absent while the takeover
   is live, so carry it when the predecessor proves it displaced the label.
   The refresh or takeover also carries the predecessor's chain board status
   (or its direct status for a legacy predecessor), rather than treating the
   predecessor's `In Progress` card as its own prior state; `/wrap` can then
   restore the original status after an abandoned hand-back. The current record
-  is then sufficient for release: it removes the
-  inherited assignee by login and restores a proven displaced label without
-  relying on the replacement author having added them. This is intentionally an explicit
-  transfer rather than a best-effort union of historical comments:
+  is then sufficient for release only after independent lineage proof. The
+  releaser walks the trusted claim run oldest-to-newest and proves every
+  inherited login appeared in the immediate predecessor's proven set (or is
+  the leaf's direct assignee) before its first write. Missing, unreadable,
+  ambiguous, edited, or forged provenance fails closed with zero writes. A
+  proven release removes every still-present owned assignee while preserving
+  unrelated assignees, and a failed supersede publication restores that same
+  set. This is intentionally an explicit transfer rather than a best-effort
+  union of historical comments:
   GitHub's current marker state cannot distinguish a pre-existing label from a
   later independent re-add of the same text. When that provenance cannot be
-  proven, record it as unowned and leave it in place. The parser accepts v1
-  records without these fields, but rejects a partially written v2 trio.
+  proven, record it as unowned and leave it in place. The parser accepts v1 and
+  v2 records, validates their scalar inherited target against predecessor
+  provenance, and rejects a partially written or mixed chain group.
 - Values are untrusted data. Parsers validate fields that can steer an action
   before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's

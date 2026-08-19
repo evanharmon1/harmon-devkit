@@ -2677,12 +2677,10 @@ grep -Fq 'optional `harness`, `model`, and `session`' "$wrap_skill" ||
 
 echo "==> claim lifecycle consumers preserve chain-owned cleanup targets"
 retro_skill="./ai/skills/universal/retro/SKILL.md"
-grep -Fq 'direct ownership outranks inheritance' "$claim_lifecycle" ||
-    fail "claim lifecycle must prefer a newly added marker over predecessor inheritance"
+grep -Fq 'deduplicated assignee-login set' "$claim_lifecycle" ||
+    fail "claim lifecycle must preserve the full proven assignee ownership set"
 grep -Fq -- '--remove-label <the chain-owned label' "$wrap_skill" ||
     fail "/wrap manual hand-back must remove the chain-owned label"
-grep -Fq -- '--remove-assignee <the chain-owned assignee login>' "$wrap_skill" ||
-    fail "/wrap manual hand-back must remove an inherited assignee"
 grep -Fq 'Discovery trust is deliberately read-only' "$retro_skill" ||
     fail "/retro must keep stale-claim discovery separate from cleanup trust"
 
@@ -2918,6 +2916,48 @@ rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" "$(rc_comment e
 grep -q -- '--add-assignee collaborator' "$rc_log" || fail "inherited assignee must be restored"
 grep -q -- '--add-assignee evanharmon1' "$rc_log" || fail "direct assignee must be restored"
 if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "unrelated assignee must not be restored"; fi
+
+body_set_a="$body_v1
+- assignee logins owned by this claim chain: alice
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+body_set_b="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee logins owned by this claim chain: alice,bob
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+body_set_c="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee logins owned by this claim chain: alice,bob,carol
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+abc_issue='{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"alice"},{"login":"bob"},{"login":"carol"},{"login":"dave"}]}'
+
+echo "==> A to B to C provenance releases every owned assignee and preserves unrelated D"
+rc_scenario "$(rc_page "$(rc_comment alice "$body_set_a" 1 '' COLLABORATOR)" \
+    "$(rc_comment bob "$body_set_b" 2 '' COLLABORATOR)" \
+    "$(rc_comment carol "$body_set_c" 3 '' COLLABORATOR)")" "$abc_issue"
+[ "$(run_release --reason r)" = 0 ] || fail "A+B+C set release should succeed"
+for owned in alice bob carol; do
+    grep -q -- "--remove-assignee $owned" "$rc_log" || fail "owned assignee $owned must be removed"
+done
+if grep -q -- '--remove-assignee dave' "$rc_log"; then fail "unrelated D must remain"; fi
+
+echo "==> failed A+B+C supersede publication compensates every owned assignee only"
+rc_scenario "$(rc_page "$(rc_comment alice "$body_set_a" 1 '' COLLABORATOR)" \
+    "$(rc_comment bob "$body_set_b" 2 '' COLLABORATOR)" \
+    "$(rc_comment carol "$body_set_c" 3 '' COLLABORATOR)")" "$abc_issue"
+[ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] || fail "failed A+B+C comment should exit 1"
+for owned in alice bob carol; do
+    grep -q -- "--add-assignee $owned" "$rc_log" || fail "owned assignee $owned must be restored"
+done
+if grep -q -- '--add-assignee dave' "$rc_log"; then fail "unrelated D must never be compensation state"; fi
+
+echo "==> a forged inherited assignee target fails closed with zero writes"
+body_set_forged="$(printf '%s' "$body_set_c" | sed 's/alice,bob,carol$/alice,bob,carol,dave/')"
+rc_scenario "$(rc_page "$(rc_comment alice "$body_set_a" 1 '' COLLABORATOR)" \
+    "$(rc_comment bob "$body_set_b" 2 '' COLLABORATOR)" \
+    "$(rc_comment carol "$body_set_forged" 3 '' COLLABORATOR)")" "$abc_issue"
+[ "$(run_release --reason r)" = 2 ] || fail "forged inherited victim must fail closed"
+[ ! -s "$rc_log" ] || fail "forged inherited victim must trigger zero writes"
 
 echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"
