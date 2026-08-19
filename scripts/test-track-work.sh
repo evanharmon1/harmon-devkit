@@ -1248,7 +1248,7 @@ _rc=0
 METADATA_GH_LABELS="$(printf '%s\n' enhancement 'Area:track-work' domain:fixture)" \
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_open_enumerated" --owner-type personal \
-    --title 'Allow a case-insensitive open member' --body-file "$valid_body" \
+    --title '(tests): Allow a case-insensitive open member' --body-file "$valid_body" \
     --human-authored --label feature --label 'Area:track-work' \
     --inapplicable layer --label domain:fixture >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] ||
