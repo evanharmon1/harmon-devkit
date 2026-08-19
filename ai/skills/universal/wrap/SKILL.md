@@ -136,8 +136,8 @@ read it in the UI) — never guess.
     does not qualify. Zero or multiple qualifying PRs, a missing or incomplete
     claim record, an `unknown` chain board status (or direct prior status for a
     legacy record), an unreadable PR/timeline, or any newer activity that
-    cannot be attributed to the qualifying PR all **fail closed to maintainer
-    confirmation**.
+    cannot be attributed to the qualifying PR all
+    **fail closed to maintainer confirmation**.
 
     On the qualifying path, restore the recorded chain board status (or direct
     prior status for a legacy record) — never set an open issue to `Done` —
