@@ -160,6 +160,19 @@ valid_label() {
     esac
 }
 
+# A model field is a refinement, never a family or legacy marker. Otherwise a
+# malformed record could turn either into an unintended cleanup target.
+valid_model_label() {
+    [[ "$1" =~ ^claim:[a-z0-9]+(-[a-z0-9]+)*:[a-z0-9]+(-[a-z0-9]+)*$ ]]
+}
+
+model_matches_family_label() {
+    case "$2" in
+    claim:*) [ "${1%:*}" = "$2" ] ;;
+    *) return 0 ;;
+    esac
+}
+
 valid_login() {
     case "$1" in
     '' | *[!a-zA-Z0-9-]*) return 1 ;;
@@ -298,21 +311,26 @@ fi
 record_present=0
 saw_assignee=0
 saw_label=0
+saw_model_label=0
 saw_displaced=0
 saw_chain_assignee=0
 saw_chain_assignee_login=0
 saw_chain_assignee_logins=0
 saw_chain_label=0
+saw_chain_model_label=0
 saw_chain_displaced=0
 assignee_added=""
 label_added=""
+model_label_added=""
 label_displaced=""
 chain_assignee_owned=""
 chain_assignee_login=""
 chain_assignee_logins=""
 chain_label_owned=""
+chain_model_label_owned=""
 chain_label_displaced=""
 direct_assignee_added="no"
+direct_model_label_added=""
 extract_value() {
     v="${1#*by this claim:}"
     v="${v%%,*}"
@@ -375,6 +393,10 @@ while IFS= read -r line; do
         saw_assignee=1
         assignee_added="$(lower "$(extract_value "$line")")"
         ;;
+    *"model label added by this claim:"*)
+        saw_model_label=1
+        model_label_added="$(extract_value "$line")"
+        ;;
     *"label added by this claim:"*)
         saw_label=1
         label_added="$(extract_value "$line")"
@@ -395,6 +417,10 @@ while IFS= read -r line; do
         saw_chain_assignee_logins=1
         chain_assignee_logins="$(extract_chain_list "$line")"
         ;;
+    *"model label owned by this claim chain:"*)
+        saw_chain_model_label=1
+        chain_model_label_owned="$(extract_chain_value "$line")"
+        ;;
     *"label owned by this claim chain:"*)
         saw_chain_label=1
         chain_label_owned="$(extract_chain_value "$line")"
@@ -410,6 +436,7 @@ if [ "$record_present" -eq 1 ]; then
     # Keep the leaf's direct ownership separate from inherited chain ownership:
     # a cross-account takeover can legitimately own both assignments.
     direct_assignee_added="$assignee_added"
+    direct_model_label_added="$model_label_added"
     # A record with a missing or truncated field is unreadable provenance,
     # not a no-op: releasing around it would clear some markers, leave
     # others, and then a supersede comment would block every retry.
@@ -437,6 +464,15 @@ if [ "$record_present" -eq 1 ]; then
         fi
         ;;
     esac
+    case "$(lower "$model_label_added")" in
+    no | n/a | none | '') ;;
+    *)
+        if ! valid_model_label "$model_label_added"; then
+            echo "$repo#$issue: claim record names an implausible model label ('$model_label_added') — fail closed" >&2
+            exit 2
+        fi
+        ;;
+    esac
     case "$(lower "$label_displaced")" in
     none | '') label_displaced="" ;;
     *)
@@ -446,12 +482,16 @@ if [ "$record_present" -eq 1 ]; then
         fi
         ;;
     esac
+    if [ "$saw_model_label" -ne "$saw_chain_model_label" ]; then
+        echo "$repo#$issue: claim record has incomplete model-label ownership — fail closed" >&2
+        exit 2
+    fi
     # v2 makes current ownership explicit.  The three fields are one unit:
     # accepting a partial lineage would be worse than the v1 fallback because
     # it could clear only one inherited marker and then publish a release.
     if [ "$saw_chain_assignee" -ne 0 ] || [ "$saw_chain_assignee_login" -ne 0 ] ||
         [ "$saw_chain_assignee_logins" -ne 0 ] ||
-        [ "$saw_chain_label" -ne 0 ] || [ "$saw_chain_displaced" -ne 0 ]; then
+        [ "$saw_chain_label" -ne 0 ] || [ "$saw_chain_model_label" -ne 0 ] || [ "$saw_chain_displaced" -ne 0 ]; then
         if [ "$saw_chain_assignee" -ne 1 ] || [ "$saw_chain_label" -ne 1 ] || [ "$saw_chain_displaced" -ne 1 ] ||
             [ -z "$chain_assignee_owned" ] || [ -z "$chain_label_owned" ] || [ -z "$chain_label_displaced" ]; then
             echo "$repo#$issue: claim record has incomplete claim-chain ownership — fail closed" >&2
@@ -512,12 +552,32 @@ if [ "$record_present" -eq 1 ]; then
             fi
             ;;
         esac
+        case "$(lower "$chain_model_label_owned")" in
+        no | n/a | none | '') ;;
+        *)
+            if ! valid_model_label "$chain_model_label_owned" ||
+                ! model_matches_family_label "$chain_model_label_owned" "$chain_label_owned"; then
+                echo "$repo#$issue: claim-chain ownership names an implausible model label ('$chain_model_label_owned') — fail closed" >&2
+                exit 2
+            fi
+            ;;
+        esac
         # The current leaf, not its author, owns inherited provenance. This is
         # what makes a crashed-session takeover release predecessor markers.
         assignee_added="$chain_assignee_owned"
         label_added="$chain_label_owned"
+        model_label_added="$chain_model_label_owned"
         label_displaced="$chain_label_displaced"
     fi
+    case "$(lower "$direct_model_label_added")" in
+    no | n/a | none | '') ;;
+    *)
+        if ! model_matches_family_label "$direct_model_label_added" "$label_added"; then
+            echo "$repo#$issue: direct model label does not refine its owned family label — fail closed" >&2
+            exit 2
+        fi
+        ;;
+    esac
 fi
 
 # Return every assignee the predecessor record says its chain owned: its
@@ -532,6 +592,8 @@ predecessor_owned_assignees() {
     p_direct=""
     p_saw_label=0
     p_label=""
+    p_saw_model_label=0
+    p_model_label=""
     p_saw_displaced=0
     p_displaced=""
     p_saw_owned=0
@@ -540,6 +602,9 @@ predecessor_owned_assignees() {
     p_login=""
     p_saw_logins=0
     p_logins=""
+    p_saw_chain_model_label=0
+    p_chain_model_label=""
+    p_chain_label=""
 
     while IFS= read -r line; do
         case "$line" in
@@ -547,6 +612,10 @@ predecessor_owned_assignees() {
         *"assignee added by this claim:"*)
             p_saw_direct=1
             p_direct="$(lower "$(extract_value "$line")")"
+            ;;
+        *"model label added by this claim:"*)
+            p_saw_model_label=1
+            p_model_label="$(extract_value "$line")"
             ;;
         *"label added by this claim:"*)
             p_saw_label=1
@@ -568,7 +637,14 @@ predecessor_owned_assignees() {
             p_saw_logins=1
             p_logins="$(extract_chain_list "$line")"
             ;;
-        *"label owned by this claim chain:"*) p_saw_chain_label=1 ;;
+        *"model label owned by this claim chain:"*)
+            p_saw_chain_model_label=1
+            p_chain_model_label="$(extract_chain_value "$line")"
+            ;;
+        *"label owned by this claim chain:"*)
+            p_saw_chain_label=1
+            p_chain_label="$(extract_chain_value "$line")"
+            ;;
         *"label displaced by this claim chain:"*) p_saw_chain_displaced=1 ;;
         esac
     done <<<"$predecessor"
@@ -577,6 +653,17 @@ predecessor_owned_assignees() {
         [ "$p_saw_label" -eq 1 ] && [ "$p_saw_displaced" -eq 1 ] || return 1
     case "$p_direct" in yes | no) ;; *) return 1 ;; esac
     [ -n "$p_label" ] && [ -n "$p_displaced" ] || return 1
+    [ "$p_saw_model_label" -eq "$p_saw_chain_model_label" ] || return 1
+    for predecessor_model_label in "$p_model_label" "$p_chain_model_label"; do
+        case "$(lower "$predecessor_model_label")" in
+        no | n/a | none | '') ;;
+        *) valid_model_label "$predecessor_model_label" || return 1 ;;
+        esac
+    done
+    case "$(lower "$p_chain_model_label")" in
+    no | n/a | none | '') ;;
+    *) model_matches_family_label "$p_chain_model_label" "$p_chain_label" || return 1 ;;
+    esac
     valid_login "$predecessor_author" || return 1
     [ "$p_saw_login" -eq 0 ] || [ "$p_saw_logins" -eq 0 ] || return 1
 
@@ -585,10 +672,19 @@ predecessor_owned_assignees() {
     # is present, as the current-record parser already requires.
     if [ "$p_saw_owned" -ne 0 ] || [ "$p_saw_login" -ne 0 ] ||
         [ "$p_saw_logins" -ne 0 ] || [ "${p_saw_chain_label:-0}" -ne 0 ] ||
+        [ "$p_saw_chain_model_label" -ne 0 ] ||
         [ "${p_saw_chain_displaced:-0}" -ne 0 ]; then
         [ "$p_saw_owned" -eq 1 ] && [ "${p_saw_chain_label:-0}" -eq 1 ] &&
             [ "${p_saw_chain_displaced:-0}" -eq 1 ] || return 1
     fi
+    p_effective_label="$p_label"
+    [ "${p_saw_chain_label:-0}" -eq 0 ] || p_effective_label="$p_chain_label"
+    for predecessor_model_label in "$p_model_label" "$p_chain_model_label"; do
+        case "$(lower "$predecessor_model_label")" in
+        no | n/a | none | '') ;;
+        *) model_matches_family_label "$predecessor_model_label" "$p_effective_label" || return 1 ;;
+        esac
+    done
 
     result=""
     if [ "$p_saw_owned" -eq 1 ]; then
@@ -704,6 +800,17 @@ if [ "$record_present" -eq 1 ]; then
         ;;
     esac
 fi
+
+for owned_model_label in "$direct_model_label_added" "$model_label_added"; do
+    case "$(lower "$owned_model_label")" in
+    no | n/a | none | '') continue ;;
+    esac
+    if jq -e --arg l "$owned_model_label" '.labels[] | select(.name == $l)' \
+        <<<"$issue_json" >/dev/null &&
+        ! printf '%s' "$labels_to_remove" | grep -Fqx "$owned_model_label"; then
+        labels_to_remove="$labels_to_remove$owned_model_label"$'\n'
+    fi
+done
 
 assignees_to_remove=""
 if [ "$record_present" -eq 1 ]; then

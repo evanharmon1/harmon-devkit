@@ -38,6 +38,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 const [inputPath, outputPath, mutation] = process.argv.slice(2)
 const registry = JSON.parse(await readFile(inputPath, 'utf8'))
 const adapter = (slug) => registry.foreman_adapters.find((entry) => entry.slug === slug)
+const family = (slug) => registry.families.find((entry) => entry.slug === slug)
 const harness = (slug) => registry.harnesses.find((entry) => entry.slug === slug)
 
 switch (mutation) {
@@ -46,6 +47,12 @@ switch (mutation) {
     break
   case 'duplicate-harness':
     registry.harnesses.push(structuredClone(registry.harnesses[0]))
+    break
+  case 'duplicate-legacy-claim-label':
+    family('gpt').legacy_claim_labels = ['agent:claude-code']
+    break
+  case 'overlong-legacy-claim-label':
+    family('gpt').legacy_claim_labels = [`agent:${'a'.repeat(45)}`]
     break
   case 'missing-model-owner':
     delete registry.harnesses[0].model_resolution.owner
@@ -209,6 +216,12 @@ rejects "duplicate family slugs" \
 rejects "duplicate harness slugs" \
     'duplicate-harness' \
     'duplicate harness slug'
+rejects "legacy claim labels shared by two families" \
+    'duplicate-legacy-claim-label' \
+    'legacy claim label agent:claude-code is shared by families claude and gpt'
+rejects "legacy claim labels over GitHub's limit" \
+    'overlong-legacy-claim-label' \
+    'must contain at most 50 character(s)'
 rejects "missing model-resolution ownership" \
     'missing-model-owner' \
     'missing required property owner'

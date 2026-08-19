@@ -45,6 +45,10 @@ const safePatterns = new Map([
   [
     '^[a-z0-9]+(?:-[a-z0-9]+)*[.]sh$',
     (value) => /^[a-z0-9]+(?:-[a-z0-9]+)*[.]sh$/.test(value)
+  ],
+  [
+    '^agent:[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$',
+    (value) => /^agent:[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$/.test(value)
   ]
 ])
 

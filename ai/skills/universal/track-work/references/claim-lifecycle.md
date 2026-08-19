@@ -47,14 +47,14 @@ holds it to. `release-claim.sh` is the reference parser.
 
 **Vocabulary transition.** The live-claim label is migrating from the
 harness-named `agent:*` family to the model-centric `claim:<family>[:<model>]`
-family (registry: harmon-init's `agent-registry.json`; e.g. `claim:claude`,
-`claim:gpt`). New claims **prefer `claim:*`, falling back to the legacy
+family (registry: harmon-init's `agent-registry.json`; e.g.
+`claim:<family>` or `claim:<family>:<model>`). New claims **prefer `claim:*`, falling back to the legacy
 `agent:*` label** on a repo whose label provisioning has not yet migrated (so a
 currently-provisioned repo keeps its claim labeled rather than regressing to an
 unlabeled one); the parser and every reader recognize **both** families until
 the live-label migration completes downstream, so no in-flight `agent:*` claim
-strands mid-transition. The harness that ran the work (Claude Code, the Action,
-the Codex CLI), its model, and its session are recorded as operational metadata
+strands mid-transition. The harness that ran the work, its model, and its
+session are recorded as operational metadata
 in the claim record, never in the label.
 
 - The claim comment's body **starts with** `Claiming —` (em dash, U+2014).
@@ -74,19 +74,21 @@ in the claim record, never in the label.
 
   ```text
   Claim record (for `/wrap` — undo only what this claim added):
-  - harness: <the current execution harness, e.g. Claude Code or Codex CLI>
+  - harness: <the current execution harness>
   - model: <the exact model identifier exposed by the harness, or "unknown">
   - session: <the `/kickoff` session name, or "unknown">
   - board: <board title, or "none">
   - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
   - prior board status owned by this claim chain: <the original status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
-  - `claim:` label added by this claim: <the exact label applied — claim:claude, a model-pinned claim:claude:opus, or legacy agent:claude-code | no | n/a>
-  - `claim:` label displaced by this claim: <claim:gpt | agent:codex (legacy) | none>
+  - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
+  - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
+  - `claim:` label displaced by this claim: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   - assignee owned by this claim chain: <yes|no>
   - assignee logins owned by this claim chain: <up to ten exact, space-separated assignee logins | none>
   - `claim:` label owned by this claim chain: <the exact still-present label | no | n/a>
-  - `claim:` label displaced by this claim chain: <claim:gpt | agent:codex (legacy) | none>
+  - `claim:` model label owned by this claim chain: <the exact still-present claim:<family>:<model> refinement | no | n/a>
+  - `claim:` label displaced by this claim chain: <the exact competing claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   ```
 
 - `harness`, `model`, and `session` are optional, informational fields. New
@@ -97,10 +99,12 @@ in the claim record, never in the label.
   authorize or construct a cleanup write. Values are untrusted and stay on one
   line. `session` is the human-readable `/kickoff` name, not a backend-internal
   identifier.
-- The label fields name the **actual label** (`claim:…`, e.g. `claim:claude` —
+- The label fields name the **actual label** (`claim:<family>` or a model-pinned
+  `claim:<family>:<model>` —
   the family segment names the model intelligence, not the harness). A new
   claim adds a `claim:*` label where the repo has the family and falls back to a
-  legacy `agent:claude-code` where provisioning has not migrated (so a
+  registry-declared family-owned legacy `agent:*` alias where provisioning has
+  not migrated (so a
   currently-provisioned repo keeps its claim labeled during the window); the
   **displaced** field may likewise name a legacy `agent:*` label when the claim
   takes over a legacy in-flight claim, and pre-migration records name `agent:*`
@@ -110,6 +114,11 @@ in the claim record, never in the label.
   legacy records written with `` `agent:` `` still parse. Records that wrote
   `yes` (older still) name no label; the parser falls back to every live
   `claim:*` **and** `agent:*` label on the issue.
+- The model-label fields are a paired extension: old records may omit both, but
+  a new record writes both and uses `no` when it owns no refinement. Keeping
+  model ownership separate lets a model-pinned claim preserve its required
+  family marker while release removes every label the claim chain actually
+  owns.
 - **Current ownership is explicit (v2+).** New records carry the final three
   core marker `claim chain` fields and the prior board status the chain owns.
   Fresh records also record the owned assignee logins (v2 records that predate
@@ -208,9 +217,9 @@ The events table in #210 also sketched card moves (`Verifying` on PR open,
 - `GITHUB_TOKEN` cannot write user-owned Projects V2 fields — card automation
   needs a PAT or App secret (the "paid half"). The release invariant above
   needed no new secret, so they ship separately.
-- harmon-devkit itself has `project_management: none` and its issues sit on no
-  board — there is nothing here to automate, and shipping unexercisable
-  automation invites rot.
+- Template consumers with `project_management: none` or `linear` have no
+  GitHub Projects board to automate — there is nothing there to exercise, and
+  shipping unexercisable automation invites rot.
 - Sessions and events must never both write `Status` (the last-write-wins race
   `shepherd` §7 warns about). If card events ever land, the `Status` writes
   leave `/shepherd` and `/wrap` in the same change — do not ship one side.

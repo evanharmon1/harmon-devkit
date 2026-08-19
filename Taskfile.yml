@@ -308,6 +308,7 @@ tasks:
       - test:hygiene
       - test:archive-hook
       - test:track-work
+      - test:claim-label-resolution
       - test:triage-skill
       - test:skill-index-lifecycle
       - test:independence
@@ -490,6 +491,11 @@ tasks:
     cmds:
       - ./scripts/test-skills.sh
       - ./scripts/test-breakdown-labels.sh
+
+  test:claim-label-resolution:
+    desc: Behavior-test portable claim identity and ownership-label resolution
+    cmds:
+      - ./scripts/test-claim-label-resolution.sh
 
   test:agents:
     desc: Unit-test the shared-subagent source guard (offline)
