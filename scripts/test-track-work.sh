@@ -2973,6 +2973,14 @@ for login in collaborator evanharmon1 third-owner; do
 done
 if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "compensation must not add unrelated assignees"; fi
 
+echo "==> inherited owners are removed before the non-owner claimant to preserve retry trust"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
+[ "$(RC_FAIL_MATCH='--remove-assignee evanharmon1' run_release --reason r)" = 4 ] || fail "late claimant removal failure should remain retryable"
+first_removed="$(grep -- '--remove-assignee' "$rc_log" | head -n 1)"
+printf '%s' "$first_removed" | grep -q -- '--remove-assignee collaborator' || fail "inherited owner must be removed before claimant"
+
 echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"
 [ "$(run_release --reason r)" = 0 ] ||
