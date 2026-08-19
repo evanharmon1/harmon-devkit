@@ -296,6 +296,7 @@ chain_assignee_owned=""
 chain_assignee_login=""
 chain_label_owned=""
 chain_label_displaced=""
+direct_assignee_added="no"
 extract_value() {
     v="${1#*by this claim:}"
     v="${v%%,*}"
@@ -355,6 +356,9 @@ while IFS= read -r line; do
 done <<<"$(jq -r '.body' <<<"$claim_json")"
 
 if [ "$record_present" -eq 1 ]; then
+    # Keep the leaf's direct ownership separate from inherited chain ownership:
+    # a cross-account takeover can legitimately own both assignments.
+    direct_assignee_added="$assignee_added"
     # A record with a missing or truncated field is unreadable provenance,
     # not a no-op: releasing around it would clear some markers, leave
     # others, and then a supersede comment would block every retry.
@@ -581,6 +585,7 @@ fi
 # retryable (see claim-lifecycle.md's residual-gap note for the one write
 # this cannot protect).
 assignee_removed=0
+direct_assignee_removed=0
 if [ "$remove_assignee" -eq 1 ]; then
     if [ "$marker_failed" -eq 1 ]; then
         note "assignee \`$assignee_to_remove\`: left in place — an earlier write failed and the assignment keeps the retry trusted"
@@ -593,6 +598,20 @@ if [ "$remove_assignee" -eq 1 ]; then
     fi
 elif [ "$record_present" -eq 1 ]; then
     note "assignee: left in place (the claim record says the claim did not add it, or it is already gone)"
+fi
+
+if [ "$record_present" -eq 1 ] && [ "$direct_assignee_added" = "yes" ] && [ "$claim_author" != "$assignee_to_remove" ]; then
+    if [ "$marker_failed" -eq 1 ]; then
+        note "assignee \`$claim_author\`: left in place — an earlier write failed and the assignment keeps the retry trusted"
+    elif jq -e --arg a "$claim_author" '.assignees[] | select(.login == $a)' <<<"$issue_json" >/dev/null; then
+        if run_write gh issue edit "$issue" --repo "$repo" --remove-assignee "$claim_author" >/dev/null; then
+            direct_assignee_removed=1
+            note "assignee \`$claim_author\`: removed"
+        else
+            marker_failed=1
+            echo "$repo#$issue: failed to remove assignee '$claim_author'" >&2
+        fi
+    fi
 fi
 
 if [ "$record_present" -eq 0 ]; then
@@ -633,6 +652,12 @@ elif ! printf '%s\n' "$body" | gh issue comment "$issue" --repo "$repo" --body-f
         else
             echo "$repo#$issue: could not re-add assignee '$assignee_to_remove' — a retry may need the owner's hand" >&2
         fi
+    fi
+    if [ "$direct_assignee_removed" -eq 1 ] &&
+        post_fail_json="$(fetch_claim)" &&
+        [ "$(jq -r '.superseded' <<<"$post_fail_json")" != "true" ]; then
+        gh issue edit "$issue" --repo "$repo" --add-assignee "$claim_author" >/dev/null ||
+            echo "$repo#$issue: could not re-add assignee '$claim_author' — a retry may need the owner's hand" >&2
     fi
     exit 1
 fi
