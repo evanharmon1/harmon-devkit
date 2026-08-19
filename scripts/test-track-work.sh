@@ -2889,6 +2889,18 @@ if grep -q -- '--remove-assignee evanharmon1' "$rc_log"; then
     fail "the replacement author must not replace the inherited assignee target"
 fi
 
+echo "==> a cross-account takeover releases both directly and inherited owned assignees"
+body_chain_cross_both="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee owned by this claim chain: yes
+- assignee login owned by this claim chain: collaborator
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" "$(rc_comment evanharmon1 "$body_chain_cross_both" 2)")" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"unrelated"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "both owned assignees should release"
+grep -q -- '--remove-assignee collaborator' "$rc_log" || fail "inherited assignee must be removed"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "direct assignee must be removed"
+if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "unrelated assignee must remain"; fi
+
 echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"
 [ "$(run_release --reason r)" = 0 ] ||
