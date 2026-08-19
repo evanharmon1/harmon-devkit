@@ -2722,6 +2722,65 @@ done
 grep -Fq 'optional `harness`, `model`, and `session`' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
 
+echo "==> wrap documents the attributable partial-delivery outcome"
+partial_contract="$tmp/wrap-partial-contract.md"
+grep -Fq 'Four outcomes:' "$wrap_skill" || fail "/wrap must enumerate four outcomes"
+for outcome in \
+    '**PR open**' \
+    '**Partial delivery / issue open**' \
+    '**Merged / issue closed**' \
+    '**Neither**'; do
+    grep -Fq "$outcome" "$wrap_skill" || fail "/wrap must retain the distinct $outcome outcome"
+done
+awk '/^  - \*\*Partial delivery \/ issue open\*\*/ { capture = 1 }
+     capture && /^  - \*\*Merged \/ issue closed\*\*/ { exit }
+     capture { print }' "$wrap_skill" >"$partial_contract"
+[ -s "$partial_contract" ] || fail "/wrap must define a fourth partial-delivery outcome"
+for required in \
+    'issue remains open' \
+    'no work is currently in flight' \
+    'current trusted claim record' \
+    'same repository' \
+    'authored by the authenticated account' \
+    'head branch exactly matching the branch recorded by the current' \
+    'merged after the current claim comment' \
+    'no other open PR' \
+    'no later trusted' \
+    'Immediately before the first cleanup write' \
+    'same current claim record' \
+    'confirmation based on the earlier snapshot never authorizes cleanup' \
+    'fail closed to maintainer confirmation'; do
+    grep -Fq "$required" "$partial_contract" ||
+        fail "/wrap partial delivery must require: $required"
+done
+grep -Fq "qualifying delivery PR's own trail" "$wrap_skill" ||
+    fail "/wrap must exempt only the attributable delivery PR's newer trail"
+
+echo "==> partial delivery restores open-issue state and explains the release"
+for required in \
+    'restore the recorded chain board status' \
+    'direct prior status for a legacy record' \
+    'never set an open issue to `Done`' \
+    'restore the exact displaced' \
+    'Remove only claim-owned assignees' \
+    'both the inherited chain assignee' \
+    'distinct assignment' \
+    'what landed' \
+    'specific open work' \
+    'Claim released — partial delivery landed and the remaining work is not in flight.'; do
+    grep -Fq "$required" "$partial_contract" ||
+        fail "/wrap partial delivery cleanup must include: $required"
+done
+
+echo "==> lifecycle reference distinguishes partial delivery from event release"
+for required in \
+    'triggers no event-driven release' \
+    '/wrap` owns the attributable partial-delivery transition' \
+    'event automation deliberately does not infer this state'; do
+    grep -Fq "$required" "$claim_lifecycle" ||
+        fail "claim lifecycle must document partial delivery: $required"
+done
+
 echo "==> claim takeover guidance seeds direct displacement into chain provenance"
 grep -Fq 'A label displaced by this takeover seeds the chain-displaced field directly;' "$claim_skill" ||
     fail "/claim must seed a takeover's direct label displacement into the claim chain"
