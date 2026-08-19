@@ -223,7 +223,8 @@ fi
 if jq -e '
     .mode == "registry" and .default_branch == "trunk" and
     .default_branch_commit == "1111111111111111111111111111111111111111" and
-    .verified_semantics == true
+    .verified_semantics == true and
+    .work_type_selection == "registry-semantics"
 ' \
     <<<"$output" >/dev/null; then
     ok "registry result is bound to the remote default branch"
