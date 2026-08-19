@@ -297,6 +297,7 @@ read it in the UI) — never guess.
     # If the record names a displaced label, put it back — the claim removed it:
     gh issue edit <n> --repo <owner/repo> --add-label <the displaced label the record names>
     gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned label; use the direct added label only for a legacy record>
+    gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned model label, when the record names one>
     gh issue edit <n> --repo <owner/repo> --remove-assignee <each recorded direct and inherited chain-owned login>
     gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
     ```

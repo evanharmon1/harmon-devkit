@@ -211,6 +211,10 @@ while IFS= read -r label; do
         if printf '%s\n' "$legacy_labels" | grep -Fqx "$label"; then
             if [ -z "$claim_model" ]; then
                 same="$label"
+            else
+                # During migration, a registry-declared legacy alias is the
+                # durable family marker for a model refinement too.
+                family_marker="$label"
             fi
         elif [ -n "$claim_model" ]; then
             conflicts="${conflicts}${label}"$'\n'

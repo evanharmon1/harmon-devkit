@@ -160,6 +160,19 @@ valid_label() {
     esac
 }
 
+# A model field is a refinement, never a family or legacy marker. Otherwise a
+# malformed record could turn either into an unintended cleanup target.
+valid_model_label() {
+    [[ "$1" =~ ^claim:[a-z0-9]+(-[a-z0-9]+)*:[a-z0-9]+(-[a-z0-9]+)*$ ]]
+}
+
+model_matches_family_label() {
+    case "$2" in
+    claim:*) [ "${1%:*}" = "$2" ] ;;
+    *) return 0 ;;
+    esac
+}
+
 valid_login() {
     case "$1" in
     '' | *[!a-zA-Z0-9-]*) return 1 ;;
@@ -454,7 +467,7 @@ if [ "$record_present" -eq 1 ]; then
     case "$(lower "$model_label_added")" in
     no | n/a | none | '') ;;
     *)
-        if ! valid_label "$model_label_added"; then
+        if ! valid_model_label "$model_label_added"; then
             echo "$repo#$issue: claim record names an implausible model label ('$model_label_added') — fail closed" >&2
             exit 2
         fi
@@ -542,7 +555,8 @@ if [ "$record_present" -eq 1 ]; then
         case "$(lower "$chain_model_label_owned")" in
         no | n/a | none | '') ;;
         *)
-            if ! valid_label "$chain_model_label_owned"; then
+            if ! valid_model_label "$chain_model_label_owned" ||
+                ! model_matches_family_label "$chain_model_label_owned" "$chain_label_owned"; then
                 echo "$repo#$issue: claim-chain ownership names an implausible model label ('$chain_model_label_owned') — fail closed" >&2
                 exit 2
             fi
@@ -555,6 +569,15 @@ if [ "$record_present" -eq 1 ]; then
         model_label_added="$chain_model_label_owned"
         label_displaced="$chain_label_displaced"
     fi
+    case "$(lower "$direct_model_label_added")" in
+    no | n/a | none | '') ;;
+    *)
+        if ! model_matches_family_label "$direct_model_label_added" "$label_added"; then
+            echo "$repo#$issue: direct model label does not refine its owned family label — fail closed" >&2
+            exit 2
+        fi
+        ;;
+    esac
 fi
 
 # Return every assignee the predecessor record says its chain owned: its
@@ -581,6 +604,7 @@ predecessor_owned_assignees() {
     p_logins=""
     p_saw_chain_model_label=0
     p_chain_model_label=""
+    p_chain_label=""
 
     while IFS= read -r line; do
         case "$line" in
@@ -617,7 +641,10 @@ predecessor_owned_assignees() {
             p_saw_chain_model_label=1
             p_chain_model_label="$(extract_chain_value "$line")"
             ;;
-        *"label owned by this claim chain:"*) p_saw_chain_label=1 ;;
+        *"label owned by this claim chain:"*)
+            p_saw_chain_label=1
+            p_chain_label="$(extract_chain_value "$line")"
+            ;;
         *"label displaced by this claim chain:"*) p_saw_chain_displaced=1 ;;
         esac
     done <<<"$predecessor"
@@ -630,9 +657,13 @@ predecessor_owned_assignees() {
     for predecessor_model_label in "$p_model_label" "$p_chain_model_label"; do
         case "$(lower "$predecessor_model_label")" in
         no | n/a | none | '') ;;
-        *) valid_label "$predecessor_model_label" || return 1 ;;
+        *) valid_model_label "$predecessor_model_label" || return 1 ;;
         esac
     done
+    case "$(lower "$p_chain_model_label")" in
+    no | n/a | none | '') ;;
+    *) model_matches_family_label "$p_chain_model_label" "$p_chain_label" || return 1 ;;
+    esac
     valid_login "$predecessor_author" || return 1
     [ "$p_saw_login" -eq 0 ] || [ "$p_saw_logins" -eq 0 ] || return 1
 
@@ -646,6 +677,14 @@ predecessor_owned_assignees() {
         [ "$p_saw_owned" -eq 1 ] && [ "${p_saw_chain_label:-0}" -eq 1 ] &&
             [ "${p_saw_chain_displaced:-0}" -eq 1 ] || return 1
     fi
+    p_effective_label="$p_label"
+    [ "${p_saw_chain_label:-0}" -eq 0 ] || p_effective_label="$p_chain_label"
+    for predecessor_model_label in "$p_model_label" "$p_chain_model_label"; do
+        case "$(lower "$predecessor_model_label")" in
+        no | n/a | none | '') ;;
+        *) model_matches_family_label "$predecessor_model_label" "$p_effective_label" || return 1 ;;
+        esac
+    done
 
     result=""
     if [ "$p_saw_owned" -eq 1 ]; then

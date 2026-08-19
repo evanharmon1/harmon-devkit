@@ -2713,6 +2713,7 @@ claim_skill="./ai/skills/universal/claim/SKILL.md"
 claim_lifecycle="./ai/skills/universal/track-work/references/claim-lifecycle.md"
 implement_skill="./ai/skills/universal/implement/SKILL.md"
 wrap_skill="./ai/skills/universal/wrap/SKILL.md"
+shepherd_skill="./ai/skills/universal/shepherd/SKILL.md"
 for field in harness model session; do
     grep -Fq -- "  - $field:" "$claim_skill" ||
         fail "/claim must write the $field field"
@@ -2721,6 +2722,10 @@ for field in harness model session; do
 done
 grep -Fq 'optional `harness`, `model`, and `session`' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
+grep -Fq -- '--remove-label <the chain-owned model label' "$wrap_skill" ||
+    fail "/wrap must release a recorded model refinement separately"
+grep -Fq -- '--remove-label <the model label the claim record names' "$shepherd_skill" ||
+    fail "/shepherd must release a recorded model refinement separately"
 
 echo "==> wrap documents the attributable partial-delivery outcome"
 partial_contract="$tmp/wrap-partial-contract.md"
@@ -2976,6 +2981,17 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_model_refinement")")" \
 grep -q -- '--remove-label claim:claude' "$rc_log" || fail "the chain-owned family label must be removed"
 grep -q -- '--remove-label claim:claude:opus' "$rc_log" || fail "the chain-owned model refinement must be removed"
 
+echo "==> model ownership fields accept only a matching model refinement"
+for invalid_model_label in claim:claude agent:claude-code claim:gpt:opus; do
+    invalid_model_body="$(printf '%s' "$body_model_refinement" |
+        sed "s/claim:claude:opus/$invalid_model_label/g")"
+    rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$invalid_model_body")")" \
+        '{"state":"closed","labels":[{"name":"claim:claude"}],"assignees":[{"login":"evanharmon1"}]}'
+    [ "$(run_release --reason r)" = 2 ] ||
+        fail "invalid model ownership '$invalid_model_label' must fail closed"
+    [ ! -s "$rc_log" ] || fail "invalid model ownership must trigger zero writes"
+done
+
 echo "==> a legacy 'yes' record sweeps live claim:* labels too, not only agent:*"
 body_yes_claim="$(printf '%s' "$body_v2" | sed 's/claim:claude$/yes/')"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_yes_claim")")" \
@@ -3133,6 +3149,17 @@ rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
     "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
 [ "$(run_release --reason r)" = 2 ] || fail "model-only predecessor provenance must fail closed"
 [ ! -s "$rc_log" ] || fail "model-only predecessor provenance must trigger zero writes"
+
+echo "==> predecessor model provenance must refine its recorded family"
+body_chain_predecessor_model_mismatch="$(printf '%s' "$body_chain_plural_second" |
+    sed 's/agent:claude-code/claim:claude/g')
+- claim: model label added by this claim: claim:gpt:terra
+- claim: model label owned by this claim chain: claim:gpt:terra"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_chain_predecessor_model_mismatch" 2)" \
+    "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 2 ] || fail "mismatched predecessor model provenance must fail closed"
+[ ! -s "$rc_log" ] || fail "mismatched predecessor model provenance must trigger zero writes"
 
 echo "==> a claim-chain assignee list is bounded at ten logins"
 body_chain_plural_too_many="$(printf '%s' "$body_chain_plural_third" |

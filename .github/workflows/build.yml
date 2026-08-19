@@ -66,6 +66,7 @@ jobs:
       - run: task test:lint-hygiene
       - run: task test:release-title
       - run: task test:track-work
+      - run: task test:claim-label-resolution
       - run: task test:notify-release
       - run: task test:setup-github-project
       - run: task test:sync-devkit-release

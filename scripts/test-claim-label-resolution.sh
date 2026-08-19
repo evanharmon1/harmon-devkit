@@ -32,6 +32,11 @@ out="$(run --harness codex-cli --runtime-family gpt --claim-model terra)" || fai
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "trusted model pin was not selected"
 printf '%s\n' "$out" | grep -Fx 'existing_label=' >/dev/null || fail "family marker must not suppress the model-label write"
 
+printf '%s\n' agent:codex >"$issue"
+out="$(run --harness codex-cli --runtime-family gpt --claim-model terra)" || fail "legacy family marker must permit model refinement"
+printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "legacy family marker selected the wrong model refinement"
+printf '%s\n' "$out" | grep -Fx 'existing_label=' >/dev/null || fail "legacy family marker must coexist with the model-label write"
+
 : >"$issue"
 if run --harness codex-cli --runtime-family gpt --claim-model terra >/dev/null 2>&1; then fail "model pin without its family marker must fail closed"; else status=$?; fi
 [ "$status" = 20 ] || fail "model pin without family marker exited $status, want 20"
@@ -131,7 +136,7 @@ printf '%s\n' "$out" | grep -Fx 'existing_label=agent:codex' >/dev/null || fail 
 out="$("$resolver" --harness codex-cli --runtime-family gpt --project-management github --available-labels "$tmp/legacy-available" --issue-labels "$issue")" || fail "registry-less legacy fallback failed"
 printf '%s\n' "$out" | grep -Fx 'target_label=agent:codex' >/dev/null || fail "registry-less resolver selected the wrong legacy fallback"
 for malformed_family in -gpt gpt- gpt--next; do
-    if "$resolver" --harness codex-cli --runtime-family "$malformed_family" --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then
+    if "$resolver" --harness codex-cli --runtime-family "$malformed_family" --project-management github --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then
         fail "registry-less malformed family '$malformed_family' must fail"
     else
         status=$?

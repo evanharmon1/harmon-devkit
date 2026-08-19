@@ -1313,26 +1313,28 @@ loops indefinitely:
    card ([§7](#7-move-the-project-card)) — `Ready to Merge` only when
    `reviewDecision` is `APPROVED`, otherwise `In Review`, because a `BLOCKED`
    or `REVIEW_REQUIRED` PR is ready *and still waiting on a human*.
-   **Release the `claim:*` label** as part of this stop: the label asserts an
+   **Release the chain-owned `claim:*` labels** as part of this stop: the labels assert an
    agent is implementing the issue *right now*, which becomes false the
    moment the work is handed to a human — leaving it is the misleading board
-   state harmon-devkit#210 exists to remove. Remove it only when it is
+   state harmon-devkit#210 exists to remove. Remove them only when they are
    currently on the issue **and** the claim comment's record says this claim
-   added it (read the record — shepherd is routinely a different session
+   added them (read the record — shepherd is routinely a different session
    from the one that claimed, so "I know I added it" is session memory, not
    evidence; the record grammar is in
-   `track-work/references/claim-lifecycle.md`). Remove **the exact label the
-   record names** — `claim:claude`, a model-pinned `claim:claude:opus`, or a
-   legacy `agent:claude-code` for a claim made before the migration. Substitute
-   that recorded value for the placeholder below; do not assume the family-level
-   label:
+   `track-work/references/claim-lifecycle.md`). Remove **each exact chain-owned
+   label the record names**: its base ownership label (`claim:claude` or a
+   legacy `agent:claude-code`) and, when present, its distinct model refinement
+   (`claim:claude:opus`). Substitute those recorded values for the placeholders
+   below; do not infer either one:
 
    ```sh
    gh issue edit <n> --repo "$repo" --remove-label <the label the claim record names>
+   gh issue edit <n> --repo "$repo" --remove-label <the model label the claim record names, when present>
    ```
 
-   If the record is missing or unreadable, leave the label and say so in the
-   report instead of guessing. Do **not** post a release comment — the claim
+   If the record is missing or unreadable, leave the labels and say so in the
+   report instead of guessing. Skip a recorded label that is already absent.
+   Do **not** post a release comment — the claim
    as a whole is still live (assignee, card) until the close event or
    `/wrap` releases it; only the label's "right now" assertion has expired.
    And the release is not one-way: if review activity later pulls shepherd
