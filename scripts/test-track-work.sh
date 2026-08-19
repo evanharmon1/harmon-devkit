@@ -786,7 +786,8 @@ echo "==> metadata: empty, unscoped, malformed, and nested-prefix titles fail"
 for title in '' 'Metadata is missing' '(): Repair metadata' '( scope): Repair metadata' \
     '(scope ): Repair metadata' '(nested(scope)): Repair metadata' \
     '(scope):Repair metadata' '(scope) : Repair metadata' '(scope): ' \
-    '(scope): [Bug]: Metadata is missing' '(scope): Bug: Metadata is missing' \
+    '(scope): [] Metadata is missing' '(scope): [Bug]: Metadata is missing' \
+    '(scope): Bug: Metadata is missing' \
     '(scope): fix: Add metadata' '(scope): fix(track-work): Add metadata' \
     '(scope): P1: Repair metadata'; do
     [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 1 ] ||

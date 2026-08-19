@@ -35,7 +35,7 @@ def issue_title_valid:
          and (($outcome[-1] // -1) | issue_title_is_whitespace | not))
     and (
       (($parts.outcome // "") | test(
-        "^(\\[[^]]+\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)";
+        "^(\\[[^]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)";
         "i"))
       | not
     );
