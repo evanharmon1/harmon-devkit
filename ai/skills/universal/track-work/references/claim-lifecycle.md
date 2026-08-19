@@ -212,8 +212,8 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
   issues, so no event fires; the claim releases whenever the issue eventually
   closes.
 - A merged PR that only `Refs` an issue triggers no event-driven release —
-  `/shepherd` deliberately parks such issues at `In Progress`. `/wrap` owns the
-  attributable partial-delivery transition when the issue stays open and no
+  `/shepherd` deliberately parks such issues at `In Progress`.
+  `/wrap` owns the attributable partial-delivery transition when the issue stays open and no
   work remains in flight: it requires a complete trusted current claim record,
   a same-repository merged `Refs` PR authored by the authenticated account and
   merged after that claim, no competing open PR or newer unrelated claim
