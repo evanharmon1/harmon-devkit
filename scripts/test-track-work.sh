@@ -2901,6 +2901,13 @@ grep -q -- '--remove-assignee collaborator' "$rc_log" || fail "inherited assigne
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "direct assignee must be removed"
 if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "unrelated assignee must remain"; fi
 
+echo "==> failed dual-assignee release restores both owned assignees"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" "$(rc_comment evanharmon1 "$body_chain_cross_both" 2)")" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"unrelated"}]}'
+[ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] || fail "failed dual-assignee comment should exit 1"
+grep -q -- '--add-assignee collaborator' "$rc_log" || fail "inherited assignee must be restored"
+grep -q -- '--add-assignee evanharmon1' "$rc_log" || fail "direct assignee must be restored"
+if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "unrelated assignee must not be restored"; fi
+
 echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"
 [ "$(run_release --reason r)" = 0 ] ||
