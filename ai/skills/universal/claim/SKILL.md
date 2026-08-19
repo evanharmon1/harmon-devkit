@@ -452,10 +452,12 @@ actually added.
 - **Label** — the `claim:<family>[:<model>]` family names *which* intelligence
   has it. Claim at the family level (`claim:<family>`) unless trusted session
   context deliberately passes `--claim-model <model>` for a provisioned
-  `claim:<family>:<model>` label; the resolver refuses a requested model that
-  is not registered for the family or not provisioned. The harness that ran it
-  is operational detail for the claim comment, not the label. Apply a label
-  only when the resolver found no same-family `existing_label`. **Prefer `claim:*`,
+  `claim:<family>:<model>` label. With a target registry, the resolver refuses
+  a requested model that is not registered for the family; the registry-less
+  compatibility path can verify only that the constructed model label is
+  provisioned. The harness that ran it is operational detail for the claim
+  comment, not the label. Apply a label only when the resolver found no
+  same-family `existing_label`. **Prefer `claim:*`,
   falling back only to a registry-declared legacy `agent:*` alias** when the
   matching family label is not provisioned. This preserves a migrated skill on
   a not-yet-migrated consumer without inventing a harness-to-label mapping.

@@ -762,10 +762,11 @@ creates the retired `Agent` field. The rollout is ordered **skills first**:
 harmon-init#663 ships the released devkit whose skills speak `claim:*` before any
 live `agent:*` labels are renamed, so the skew a repo actually sees is new skills
 against still-legacy provisioning. The skills absorb exactly that direction: a
-claim prefers `claim:claude` and falls back to the legacy `agent:claude-code`
-label when `claim:*` is not yet provisioned, and the release and stale-claim
-sweeps still *recognize* a legacy `agent:*` claim so in-flight work started under
-the old vocabulary is not stranded. That read-side recognition is also why a plain grep for the literal
+claim resolves its registry-backed acting family, prefers that family's
+`claim:<family>` label, and falls back only to its registry-declared legacy
+`agent:*` alias when the family label is not yet provisioned. The release and
+stale-claim sweeps still *recognize* those legacy claims so in-flight work started
+under the old vocabulary is not stranded. That read-side recognition is also why a plain grep for the literal
 `agent:claude-code` no longer proves a legacy *writer* is installed — the
 automation check below accounts for it.
 
