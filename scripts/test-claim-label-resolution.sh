@@ -117,6 +117,12 @@ if "$resolver" --harness codex-cli --project-management github --available-label
 [ "$status" = 20 ] || fail "registry-less missing family exited $status, want 20"
 out="$("$resolver" --harness codex-cli --runtime-family gpt --project-management github --available-labels "$available" --issue-labels "$issue")" || fail "registry-less trusted family failed"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "registry-less trusted family selected wrong target"
+printf '%s\n' agent:codex >"$issue"
+out="$("$resolver" --harness codex-cli --runtime-family gpt --project-management github --available-labels "$tmp/legacy-available" --issue-labels "$issue")" || fail "registry-less legacy claim must remain idempotent"
+printf '%s\n' "$out" | grep -Fx 'existing_label=agent:codex' >/dev/null || fail "registry-less legacy claim was misclassified"
+: >"$issue"
+out="$("$resolver" --harness codex-cli --runtime-family gpt --project-management github --available-labels "$tmp/legacy-available" --issue-labels "$issue")" || fail "registry-less legacy fallback failed"
+printf '%s\n' "$out" | grep -Fx 'target_label=agent:codex' >/dev/null || fail "registry-less resolver selected the wrong legacy fallback"
 for malformed_family in -gpt gpt- gpt--next; do
     if "$resolver" --harness codex-cli --runtime-family "$malformed_family" --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then
         fail "registry-less malformed family '$malformed_family' must fail"
@@ -124,6 +130,14 @@ for malformed_family in -gpt gpt- gpt--next; do
         status=$?
     fi
     [ "$status" = 20 ] || fail "registry-less malformed family '$malformed_family' exited $status, want 20"
+done
+for malformed_model in -sol sol- sol--next; do
+    if "$resolver" --harness codex-cli --runtime-family gpt --claim-model "$malformed_model" --project-management github --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then
+        fail "registry-less malformed model '$malformed_model' must fail"
+    else
+        status=$?
+    fi
+    [ "$status" = 20 ] || fail "registry-less malformed model '$malformed_model' exited $status, want 20"
 done
 
 jq '(.families[] | select(.slug == "gpt")).legacy_claim_labels = []' \
@@ -148,6 +162,10 @@ if "$resolver" --registry "$tmp/ambiguous-alias-registry.json" --harness codex-c
 printf '%s\n' claim:gpt:model:extra >"$issue"
 if run --harness codex-cli --runtime-family gpt >/dev/null 2>&1; then fail "malformed same-family claim marker must fail closed"; else status=$?; fi
 [ "$status" = 20 ] || fail "malformed same-family claim marker exited $status, want 20"
+
+printf '%s\n' 'agent:foo bar' >"$issue"
+if run --harness codex-cli --runtime-family gpt >/dev/null 2>&1; then fail "malformed legacy ownership marker must fail closed"; else status=$?; fi
+[ "$status" = 20 ] || fail "malformed legacy marker exited $status, want 20"
 
 echo "==> label-less project modes retain the assignee/comment fallback"
 : >"$available"

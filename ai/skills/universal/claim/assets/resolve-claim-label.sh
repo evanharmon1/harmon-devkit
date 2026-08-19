@@ -76,7 +76,7 @@ case "$runtime_family" in
     ;;
 esac
 case "$claim_model" in
-*[!a-z0-9-]*)
+*[!a-z0-9-]* | -* | *- | *--*)
     echo "claim identity: invalid trusted claim model '$claim_model'" >&2
     exit 20
     ;;
@@ -163,6 +163,10 @@ if [ -n "$registry" ]; then
     fi
 else
     family="$runtime_family"
+    # A target old enough to lack the registry may still expose the finite
+    # pre-migration ownership vocabulary. Runtime family remains host-attested;
+    # this table maps only that trusted family to its historical label.
+    legacy_labels="$(legacy_labels_for_pre_field_registry "$family")"
 fi
 
 target="claim:$family"
@@ -187,6 +191,10 @@ while IFS= read -r label; do
         fi
         ;;
     agent:*)
+        if [[ ! "$label" =~ ^agent:[a-z0-9]+([a-z0-9._-]*[a-z0-9])?$ ]]; then
+            echo "claim identity: malformed ownership label '$label'" >&2
+            exit 20
+        fi
         if [ -n "$claim_model" ]; then
             conflicts="${conflicts}${label}"$'\n'
         elif printf '%s\n' "$legacy_labels" | grep -Fqx "$label"; then
