@@ -117,8 +117,8 @@ read it in the UI) — never guess.
       `claim chain` ownership fields;
     - the issue is still open, and its timeline identifies exactly one
       qualifying cross-reference from a PR in this same repository; re-read
-      that PR with `gh pr view --repo <owner/repo>` and require it to be merged
-      after the current claim comment, authored by the authenticated account,
+      that PR with `gh pr view --repo <owner/repo>` and require it to be
+      merged after the current claim comment, authored by the authenticated account,
       and to carry an explicit `Refs #<n>` (or repository-qualified `Refs`)
       reference while not naming the issue in `closingIssuesReferences`;
     - no other open PR cross-references the issue, no later trusted
