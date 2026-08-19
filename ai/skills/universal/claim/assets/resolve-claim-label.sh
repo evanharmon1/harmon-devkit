@@ -142,10 +142,22 @@ while IFS= read -r label; do
     claim:*)
         label_family="${label#claim:}"
         label_family="${label_family%%:*}"
-        if [ "$label_family" = "$family" ]; then same="$label"; else conflicts="${conflicts}${label}"$'\n'; fi
+        if [ "$label_family" != "$family" ]; then
+            conflicts="${conflicts}${label}"$'\n'
+        elif [ -n "$claim_model" ] && [ "$label" != "claim:$family:$claim_model" ]; then
+            conflicts="${conflicts}${label}"$'\n'
+        else
+            same="$label"
+        fi
         ;;
     agent:*)
-        if printf '%s\n' "$legacy_labels" | grep -Fqx "$label"; then same="$label"; else conflicts="${conflicts}${label}"$'\n'; fi
+        if [ -n "$claim_model" ]; then
+            conflicts="${conflicts}${label}"$'\n'
+        elif printf '%s\n' "$legacy_labels" | grep -Fqx "$label"; then
+            same="$label"
+        else
+            conflicts="${conflicts}${label}"$'\n'
+        fi
         ;;
     esac
 done <"$issue_labels"
