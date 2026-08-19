@@ -12,7 +12,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 available="$tmp/available"
 issue="$tmp/issue"
-printf '%s\n' claim:claude claim:gpt claim:gpt:terra agent:claude-code agent:codex >"$available"
+printf '%s\n' claim:claude claim:gpt claim:gpt:terra agent:claude-code agent:codex agent:gemini-cli agent:kimi-k2 agent:qwen-code >"$available"
 
 run() {
     "$resolver" --registry agent-registry.json --available-labels "$available" --issue-labels "$issue" "$@"
@@ -75,6 +75,18 @@ printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "bro
 printf '%s\n' agent:codex >"$issue"
 out="$(run --harness codex-cli --runtime-family gpt)" || fail "registry-declared Codex legacy marker must be idempotent"
 printf '%s\n' "$out" | grep -Fx 'existing_label=agent:codex' >/dev/null || fail "Codex legacy marker was not recognized"
+
+printf '%s\n' agent:gemini-cli >"$issue"
+out="$(run --harness antigravity --runtime-family gemini)" || fail "Gemini legacy marker must be idempotent"
+printf '%s\n' "$out" | grep -Fx 'existing_label=agent:gemini-cli' >/dev/null || fail "Gemini legacy marker was not recognized"
+
+printf '%s\n' agent:kimi-k2 >"$issue"
+out="$(run --harness claude-code-kimi --runtime-family kimi)" || fail "Kimi legacy marker must be idempotent"
+printf '%s\n' "$out" | grep -Fx 'existing_label=agent:kimi-k2' >/dev/null || fail "Kimi legacy marker was not recognized"
+
+printf '%s\n' agent:qwen-code >"$issue"
+out="$(run --harness qwen-code --runtime-family qwen)" || fail "Qwen legacy marker must be idempotent"
+printf '%s\n' "$out" | grep -Fx 'existing_label=agent:qwen-code' >/dev/null || fail "Qwen legacy marker was not recognized"
 
 printf '%s\n' agent:claude-code >"$issue"
 if run --harness codex-cli --runtime-family gpt >/dev/null 2>&1; then fail "foreign legacy marker must block"; else status=$?; fi

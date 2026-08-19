@@ -51,6 +51,9 @@ switch (mutation) {
   case 'duplicate-legacy-claim-label':
     family('gpt').legacy_claim_labels = ['agent:claude-code']
     break
+  case 'overlong-legacy-claim-label':
+    family('gpt').legacy_claim_labels = [`agent:${'a'.repeat(45)}`]
+    break
   case 'missing-model-owner':
     delete registry.harnesses[0].model_resolution.owner
     break
@@ -216,6 +219,9 @@ rejects "duplicate harness slugs" \
 rejects "legacy claim labels shared by two families" \
     'duplicate-legacy-claim-label' \
     'legacy claim label agent:claude-code is shared by families claude and gpt'
+rejects "legacy claim labels over GitHub's limit" \
+    'overlong-legacy-claim-label' \
+    'must contain at most 50 character(s)'
 rejects "missing model-resolution ownership" \
     'missing-model-owner' \
     'missing required property owner'
