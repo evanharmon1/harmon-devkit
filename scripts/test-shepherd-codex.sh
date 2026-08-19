@@ -2633,11 +2633,12 @@ echo "==> a plain P3 marker is a finding and can be settled"
 new_cycle
 prefix="${head_sha:0:10}"
 jq -cn \
-    --argjson id "$actor_id" \
+    --argjson id 77 \
+    --argjson actor "$actor_id" \
     --arg login "$actor_login" \
     --arg prefix "$prefix" \
     '{
-      id:$id,user:{id:$id,login:$login},
+      id:$id,user:{id:$actor,login:$login},
       created_at:"2026-07-31T08:00:02Z",updated_at:"2026-07-31T08:00:02Z",
       issue_url:"https://api.github.com/repos/example/repo/issues/493",
       body:("P3: cosmetic wording\n\n**Reviewed commit:** `" + $prefix + "`")
