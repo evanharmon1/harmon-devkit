@@ -99,6 +99,10 @@ legacy_labels_for_pre_field_registry() {
     qwen) printf '%s\n' agent:qwen-code ;;
     esac
 }
+finite_legacy_label_matches_family() {
+    local label="$1"
+    legacy_labels_for_pre_field_registry "$family" | grep -Fqx "$label"
+}
 if [ -n "$registry" ]; then
     [ -r "$registry" ] || {
         echo "claim identity: registry is unreadable" >&2
@@ -179,6 +183,7 @@ target="claim:$family"
 [ -z "$claim_model" ] || target="${target}:$claim_model"
 same=""
 family_marker=""
+observed_model=""
 conflicts=""
 while IFS= read -r label; do
     case "$label" in
@@ -200,7 +205,14 @@ while IFS= read -r label; do
                 conflicts="${conflicts}${label}"$'\n'
             fi
         else
-            same="$label"
+            if [ "$label" = "claim:$family" ]; then
+                same="$label"
+            elif [ -n "$observed_model" ] && [ "$observed_model" != "$label" ]; then
+                echo "claim identity: multiple model refinements are ambiguous for a family-level claim" >&2
+                exit 20
+            else
+                observed_model="$label"
+            fi
         fi
         ;;
     agent:*)
@@ -212,8 +224,14 @@ while IFS= read -r label; do
             if [ -z "$claim_model" ]; then
                 same="$label"
             else
-                # During migration, a registry-declared legacy alias is the
-                # durable family marker for a model refinement too.
+                # Event-driven release can bind model refinements only to the
+                # finite pre-registry aliases. A registry-only alias has no
+                # trusted snapshot at release time, so emitting that plan here
+                # would advertise a transaction the producer rejects.
+                finite_legacy_label_matches_family "$label" || {
+                    echo "claim identity: custom legacy marker '$label' cannot own a model refinement; migrate to 'claim:$family'" >&2
+                    exit 20
+                }
                 family_marker="$label"
             fi
         elif [ -n "$claim_model" ]; then
@@ -225,13 +243,39 @@ while IFS= read -r label; do
     esac
 done <"$issue_labels"
 
+# A model-only marker remains a supported legacy family-level claim. When the
+# base family marker coexists with exactly one refinement, preserve both as a
+# coherent dual-marker plan instead of letting input ordering pick one.
+if [ -z "$claim_model" ] && [ -z "$same" ] && [ -n "$observed_model" ]; then
+    same="$observed_model"
+fi
+
 if [ -n "$claim_model" ] && [ -z "$family_marker" ]; then
     echo "claim identity: model claim '$target' requires the existing family marker 'claim:$family'" >&2
     exit 20
 fi
 
 if [ -n "$same" ] && [ -z "$conflicts" ]; then
-    printf 'family=%s\ntarget_label=%s\nexisting_label=%s\n' "$family" "$same" "$same"
+    if [ -n "$claim_model" ]; then
+        printf 'family=%s\ntarget_label=%s\nexisting_label=%s\nfamily_label=%s\nmodel_label=%s\n' \
+            "$family" "$same" "$same" "$family_marker" "$same"
+    else
+        family_marker="$same"
+        model_marker="n/a"
+        if [ -n "$observed_model" ] && [ "$observed_model" != "$same" ]; then
+            case "$family_marker" in
+            agent:*)
+                finite_legacy_label_matches_family "$family_marker" || {
+                    echo "claim identity: custom legacy marker '$family_marker' cannot own an observed model refinement; migrate to 'claim:$family'" >&2
+                    exit 20
+                }
+                ;;
+            esac
+            model_marker="$observed_model"
+        fi
+        printf 'family=%s\ntarget_label=%s\nexisting_label=%s\nfamily_label=%s\nmodel_label=%s\n' \
+            "$family" "$same" "$same" "$family_marker" "$model_marker"
+    fi
     exit 0
 fi
 
@@ -272,9 +316,18 @@ else
 fi
 
 conflict_count="$(printf '%s' "$conflicts" | sed '/^$/d' | wc -l | tr -d ' ')"
+family_target="$target"
+model_target="n/a"
+if [ -n "$claim_model" ]; then
+    family_target="$family_marker"
+    model_target="$target"
+elif [ -n "$observed_model" ] && [ "$observed_model" != "$family_target" ]; then
+    model_target="$observed_model"
+fi
 if [ "$conflict_count" -gt 0 ]; then
     printf 'family=%s\n' "$family"
-    printf 'target_label=%s\nexisting_label=%s\nconflict_count=%s\n' "$target" "$same" "$conflict_count"
+    printf 'target_label=%s\nexisting_label=%s\nfamily_label=%s\nmodel_label=%s\nconflict_count=%s\n' \
+        "$target" "$same" "$family_target" "$model_target" "$conflict_count"
     while IFS= read -r conflict; do
         [ -n "$conflict" ] && printf 'conflict_label=%s\n' "$conflict"
     done <<<"$conflicts"
@@ -286,4 +339,5 @@ if [ "$conflict_count" -gt 0 ]; then
     exit 10
 fi
 
-printf 'family=%s\ntarget_label=%s\nexisting_label=%s\n' "$family" "$target" "$same"
+printf 'family=%s\ntarget_label=%s\nexisting_label=%s\nfamily_label=%s\nmodel_label=%s\n' \
+    "$family" "$target" "$same" "$family_target" "$model_target"

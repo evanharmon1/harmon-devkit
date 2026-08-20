@@ -42,8 +42,8 @@ told you to are all ordinary writes and still need their own go-ahead.
 `ai/skills/universal/track-work/assets/…` in harmon-devkit itself. Each script
 takes `--help` and each prints why it failed. Where a repo exposes
 `task guard:closing-keywords`, prefer it — same check, no path to resolve.
-`/claim`, `/shepherd`, and `/wrap` resolve `assets/set-issue-status.sh`
-(§6) by the same two paths.
+`assets/set-issue-status.sh` (§6) is available for an explicitly requested
+manual Project update; claim lifecycle skills never call it.
 
 ## 1. Before you describe an issue, re-read it
 
@@ -187,9 +187,8 @@ can lapse mid-run.
 Note which marker it reads. §6 calls a claim a signal rather than a lock, and
 that stands — the assignee here is not being used to arbitrate between two
 workers, only to establish that *some* human authorised work on this issue.
-Of the three markers it is the one that carries that meaning: the label says
-which agent is working, the board says where the work sits, and neither is a
-record of authorisation.
+Of the live markers it is the one that carries that meaning: the label says
+which agent is working and is not a record of authorisation.
 
 The gap that leaves is deliberate and worth naming: an assignment records that
 someone authorised the work, not that *this* conversation did, so a misdirected
@@ -728,25 +727,22 @@ reference nor an Issue Form is a weaker alternate standard.
 ## 6. Making an agent's work visible while it happens
 
 An issue being *worked on right now* is a fact the tracker holds badly. The
-assignee is buried on the issue page, a claim comment is one entry in a thread,
-and neither appears on the board — which is where the work is actually watched.
-So two agents, or an agent and a human, start the same issue because nothing
-visible said it was taken.
+assignee is buried on the issue page and a claim comment is one entry in a
+thread. So two agents, or an agent and a human, can start the same issue because
+nothing prominent said it was taken.
 
 **A claim is a signal, not a lock.** Nothing here is atomic: two sessions can
 read "unclaimed" and both write. Worse, two sessions authenticating as the
 *same* GitHub user are invisible to each other — `--add-assignee @me`
 converges on the same value and the label is idempotent, so the post-claim assignee re-read shows no collision. The
 claim makes concurrent work *discoverable by a human*; it does not prevent it.
-Read the board before starting, and treat a claim as information rather than a
-mutex.
+Treat a claim as information rather than a mutex.
 
-The taxonomy already answers this; nothing was writing it. Three markers, each
-blind where the others see:
+The taxonomy already answers this; nothing was writing it. Two live markers
+plus the durable claim comment make the work discoverable:
 
 | Marker | Says | Visible in |
 | --- | --- | --- |
-| `Status` = `In Progress` | where it is in delivery | the board |
 | `claim:<family>` label | *which* intelligence is working it right now | `gh issue list --label`, the issue page, and every owner type |
 | assignee | a human-shaped "taken" | notifications, `gh issue list --assignee` |
 
@@ -763,6 +759,13 @@ Both being labels makes the claim behave the same everywhere: the old `Agent`
 field was an org *issue field* that Projects V2 could not write at all, so a
 claim depending on it could never have worked there.
 
+**Project status is manual and non-authoritative.** Claim lifecycle skills do
+not read or write Project fields. A one-way session projection cannot safely
+restore a planning value displaced before an independent edit, while the
+assignee, claim labels, and durable record already form the complete claim
+contract. Use the helper below only for an explicitly requested manual Project
+update, never as part of claiming, implementing, shepherding, or wrapping work.
+
 ```sh
 <skill-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
   --status "In Progress"
@@ -777,11 +780,9 @@ The script never creates fields, options, or labels: the vocabulary belongs to
 `task setup:github-project` and `task setup:github-labels`, and minting one per
 repo is how vocabularies fork.
 
-**A claim must be released.** `In Progress` on finished or abandoned work is
-worse than no signal, because the next reader believes it. `/claim` claims,
-`/shepherd` advances (`In Review` → `Ready to Merge`), `/wrap` catches what
-neither did. `Done` records an *observed* merge — never predict it, and never
-set it to mean "I finished my part".
+**A claim must be released.** `/claim` creates the assignee/label/comment
+contract, `/shepherd` releases its active-work label at handoff, and `/wrap`
+catches what event-driven release did not. Project status never participates.
 
 ## Scope
 

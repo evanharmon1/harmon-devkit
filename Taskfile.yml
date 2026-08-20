@@ -430,6 +430,7 @@ tasks:
     desc: Unit-test the track-work skill's issue/PR tracking checks (offline)
     cmds:
       - ./scripts/test-track-work.sh
+      - ./scripts/test-claim-transaction.sh
 
   test:triage-skill:
     desc: "Unit-test the triage skill's contract scripts (offline, stubbed gh/claude)"

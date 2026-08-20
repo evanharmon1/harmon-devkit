@@ -142,10 +142,8 @@ and compare against the local branch and HEAD. Requirements, all hard:
   checkout at all: stop, report what the remote CI shows, and hand the fix
   decision to the maintainer.
 
-Once the PR is confirmed `OPEN` and the checkout matches, move the claimed
-issue's card to `Verifying` while checks run — see
-[§7](#7-move-the-project-card), which is also where the rules live for *which*
-issue may be moved at all.
+Once the PR is confirmed `OPEN` and the checkout matches, begin the checks
+watch. Leave Project fields unchanged; §7 records why they are manual.
 
 ## 2. Watch
 
@@ -1309,13 +1307,11 @@ loops indefinitely:
    `BLOCKED` or `REVIEW_REQUIRED` mean "ready for review and awaiting the
    maintainer/required approval" — say that, and
    list unresolved threads you answered with rejections (they stay
-   unresolved until the maintainer resolves them). Move the claimed issue's
-   card ([§7](#7-move-the-project-card)) — `Ready to Merge` only when
-   `reviewDecision` is `APPROVED`, otherwise `In Review`, because a `BLOCKED`
-   or `REVIEW_REQUIRED` PR is ready *and still waiting on a human*.
+   unresolved until the maintainer resolves them). Project status is a manual,
+   non-authoritative delivery view; shepherd never reads or writes it.
    **Release the chain-owned `claim:*` labels** as part of this stop: the labels assert an
    agent is implementing the issue *right now*, which becomes false the
-   moment the work is handed to a human — leaving it is the misleading board
+   moment the work is handed to a human — leaving it is the misleading claim
    state harmon-devkit#210 exists to remove. Remove them only when they are
    currently on the issue **and** the claim comment's record says this claim
    added them (read the record — shepherd is routinely a different session
@@ -1335,7 +1331,7 @@ loops indefinitely:
    If the record is missing or unreadable, leave the labels and say so in the
    report instead of guessing. Skip a recorded label that is already absent.
    Do **not** post a release comment — the claim
-   as a whole is still live (assignee, card) until the close event or
+   as a whole is still live (assignee) until the close event or
    `/wrap` releases it; only the label's "right now" assertion has expired.
    And the release is not one-way: if review activity later pulls shepherd
    back into §5 fix rounds, **re-add the label first** (same guard — the
@@ -1368,101 +1364,9 @@ unresolved and why (including
 findings you dispute, with evidence), and what you recommend. Then end — do
 not keep iterating past a stop condition.
 
-## 7. Move the project card
+## 7. Leave Project status manual
 
-(Who writes which claim marker, and when, is recorded in
-`track-work/references/claim-lifecycle.md` — this section is the
-session-written half.)
-
-`/claim` claimed the issue by moving its card to `In Progress`. A claim
-that is never released is worse than no claim at all: the board keeps showing
-an agent mid-flight on work that is finished or abandoned, and the next
-reader trusts it. So shepherd advances the same card as the PR moves.
-
-**Which issue — this is the part that goes wrong.** Two separate questions,
-and collapsing them is the bug:
-
-1. **Is this issue mine to touch?** Only if `/claim` claimed it this
-   session, or a closing keyword links it
-   (`gh pr view <n> --repo "$repo" --json closingIssuesReferences`). Anything
-   else — a `Refs #N` you did not claim, an issue mentioned in a comment — is
-   not yours. Skip it; do not guess from the body.
-2. **May it advance past `In Progress`?** Only if a **closing keyword** links
-   it. `Verifying`, `In Review`, and `Ready to Merge` each assert this PR
-   carries the whole issue, and only the closing keyword makes that claim.
-
-So a claimed issue whose PR says `Refs #N` **stays at `In Progress`** — which
-is exactly true, because the PR does not finish it. `Refs` is the default here
-precisely because it means *related, not resolved* (`track-work` §2), and an
-umbrella issue advanced to `Ready to Merge` by one partial PR is a worse lie
-than never moving it. Having claimed an issue is not evidence of resolving it.
-
-Never move a card in another repo, whatever the `owner/repo#N` reference says,
-unless that repo is `$repo`.
-
-Before the first write, re-read the issue's live state
-(`gh issue view <n> --repo "$repo" --json state,assignees,labels`). A closed
-issue, or one claimed by a different agent since, is not yours to move.
-
-**When.** Match the status to what is *actually* true, using `track-work`'s
-asset (paths resolve as in `track-work`: `.agents/skills/track-work/assets/…`
-portable, `.claude/skills/track-work/assets/…` Claude-first, and
-`ai/skills/universal/track-work/assets/…` in harmon-devkit). The
-pipeline distinguishes these three, so do not collapse them:
-
-| Condition | Status |
-| --- | --- |
-| Claimed, but the PR only `Refs` it | leave at `In Progress` |
-| Closing-keyword linked, checks still running | `Verifying` |
-| Closing-keyword linked, checks green, awaiting human review | `In Review` |
-| …and `reviewDecision` is `APPROVED` with step 6's readiness conditions | `Ready to Merge` |
-
-```sh
-<track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --status "Verifying"
-```
-
-`Ready to Merge` means *approved, awaiting merge* — that is the option's own
-description on the board. A draft that has not passed readiness stays
-`Verifying`; after promotion, a `BLOCKED` or `REVIEW_REQUIRED` PR stays at
-`In Review`: it is waiting on a human, which is what `In Review` says and what
-`Ready to Merge` would deny. Report the distinction rather than rounding it up.
-
-Do **not** move the card to `Done` — shepherd stops *before* the merge, so
-from here `Done` is a prediction rather than a record. Once a merge has
-actually been observed, `/wrap` offers it.
-
-Exit **3** means the issue is on no board or the board lacks that option —
-benign, note it once and never retry. **1** and **2** are worth a line in the
-report; **2** is usually a missing token scope
-(`gh auth refresh -s read:project,project`). These are writes like
-any other: they need the user's go-ahead, and where `gh` cannot write, report
-the command instead of failing the round.
-
-**On an organization, prefer doing nothing.** `project-automation.yml` already
-syncs `Status` from PR and CI events — it sets `Verifying` on open/synchronize
-and advances after CI. Writing the same field from here races it, and the final
-value is decided by whichever wrote last. Where that workflow is active, leave
-these transitions to it and say so in the report; only write the card yourself
-when nothing is automating it.
-
-Check for it on the **base** revision, never the checkout:
-
-```sh
-base="$(gh pr view <n> --repo "$repo" --json baseRefName -q .baseRefName)"
-gh api "repos/$repo/contents/.github/workflows/project-automation.yml?ref=$base" \
-  --jq .name >/dev/null 2>&1 && echo present
-```
-
-The checkout is the PR head (step 1 requires it), so reading the file there
-lets the PR under review decide the answer: a PR that *adds* the workflow would
-suppress manual writes although nothing is running yet, and a PR that *deletes*
-it would authorize them although the base workflow is still live and still
-racing. What matters is what runs on the PR's base today — hence the explicit
-`?ref=`, since the contents endpoint otherwise reads the *default* branch,
-which is not the base for a stacked or release-branch PR.
-
-Presence is not activation: a workflow can be disabled
-(`gh api repos/"$repo"/actions/workflows --jq '.workflows[]|{path,state}'`
-reports `disabled_manually`). When the two disagree, say which you observed
-rather than assuming — and when it is genuinely ambiguous, write nothing and
-report that, because a racing write is worse than a missing one.
+Project fields are a manual, non-authoritative delivery view. Shepherd never
+reads or writes them: the PR state, checks, reviews, and claim markers are its
+authoritative inputs. This avoids a one-way session projection that cannot be
+restored safely after independent planning edits.

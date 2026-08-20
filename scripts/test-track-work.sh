@@ -2772,16 +2772,16 @@ claim_lifecycle="./ai/skills/universal/track-work/references/claim-lifecycle.md"
 implement_skill="./ai/skills/universal/implement/SKILL.md"
 wrap_skill="./ai/skills/universal/wrap/SKILL.md"
 shepherd_skill="./ai/skills/universal/shepherd/SKILL.md"
-for field in harness model session; do
+for field in harness model family 'runtime environment' session; do
     grep -Fq -- "  - $field:" "$claim_skill" ||
         fail "/claim must write the $field field"
     grep -Fq -- "  - $field:" "$claim_lifecycle" ||
         fail "claim-lifecycle.md must document the $field field"
 done
-grep -Fq 'optional `harness`, `model`, and `session`' "$wrap_skill" ||
+grep -Fq 'optional `harness`, `model`, `family`, `runtime' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
-grep -Fq -- '--remove-label <the chain-owned model label' "$wrap_skill" ||
-    fail "/wrap must release a recorded model refinement separately"
+grep -Fq -- '<track-work-dir>/assets/release-claim.sh' "$wrap_skill" ||
+    fail "/wrap must delegate release writes to the lineage-validating helper"
 grep -Fq -- '--remove-label <the model label the claim record names' "$shepherd_skill" ||
     fail "/shepherd must release a recorded model refinement separately"
 
@@ -2821,9 +2821,6 @@ grep -Fq "qualifying delivery PR's own trail" "$wrap_skill" ||
 
 echo "==> partial delivery restores open-issue state and explains the release"
 for required in \
-    'restore the recorded chain board status' \
-    'direct prior status for a legacy record' \
-    'never set an open issue to `Done`' \
     'restore the exact displaced' \
     'Remove only claim-owned assignees' \
     'both the inherited chain assignee' \
@@ -2834,6 +2831,12 @@ for required in \
     grep -Fq "$required" "$partial_contract" ||
         fail "/wrap partial delivery cleanup must include: $required"
 done
+if grep -Fq 'set-issue-status.sh' "$claim_skill"; then
+    fail "/claim must not write Project status"
+fi
+if grep -Fq 'set-issue-status.sh' "$shepherd_skill"; then
+    fail "/shepherd must not write Project status"
+fi
 
 echo "==> lifecycle reference distinguishes partial delivery from event release"
 for required in \
@@ -2844,15 +2847,33 @@ for required in \
         fail "claim lifecycle must document partial delivery: $required"
 done
 
-echo "==> claim takeover guidance seeds direct displacement into chain provenance"
-grep -Fq 'A label displaced by this takeover seeds the chain-displaced field directly;' "$claim_skill" ||
-    fail "/claim must seed a takeover's direct label displacement into the claim chain"
+echo "==> exceptional takeover guidance stays manual and records exact provenance"
+grep -Fq 'does not accept `--displaced-label`' "$claim_skill" ||
+    fail "/claim must keep displacement outside the routine transaction helper"
+grep -Fq 'Record the exact direct and chain provenance' "$claim_skill" ||
+    fail "/claim manual takeover must record the provenance its approved writes established"
 
-echo "==> implement refresh guidance resets direct ownership while carrying chain ownership"
-grep -Fq '`added by this claim` fields describe only writes performed by the refresh' "$implement_skill" ||
-    fail "/implement must reset refresh direct-ownership fields from the refresh's own writes"
-grep -Fq '(normally `no`), while proven chain fields' "$implement_skill" ||
-    fail "/implement must carry proven chain ownership across a refresh"
+echo "==> implement routes every routine refresh through the claim transaction"
+for required in \
+    'Route every routine branch or' \
+    '`assets/claim-transaction.sh`' \
+    'explicit target-bound approval' \
+    'fresh pre- and post-publication'; do
+    grep -Fq "$required" "$implement_skill" ||
+        fail "/implement transaction refresh contract is missing: $required"
+done
+if grep -Fq 'Post a new `Claiming —` comment' "$implement_skill"; then
+    fail "/implement must not retain a manual claim-comment refresh path"
+fi
+
+echo "==> claim lifecycle consumers preserve chain-owned cleanup targets"
+retro_skill="./ai/skills/universal/retro/SKILL.md"
+grep -Fq 'deduplicated assignee-login set' "$claim_lifecycle" ||
+    fail "claim lifecycle must preserve the full proven assignee ownership set"
+grep -Fq 'proves every' "$wrap_skill" ||
+    fail "/wrap hand-back must prove inherited cleanup targets across the full lineage"
+grep -Fq 'Discovery trust is deliberately read-only' "$retro_skill" ||
+    fail "/retro must keep stale-claim discovery separate from cleanup trust"
 
 # --- release-claim.sh --------------------------------------------------------
 # Fully offline: a stubbed `gh` serves comment/issue JSON from scenario files
@@ -2864,6 +2885,7 @@ rc_bin="$tmp/rcbin"
 mkdir -p "$rc_bin"
 rc_comments="$tmp/rc-comments.json"
 rc_issue="$tmp/rc-issue.json"
+rc_timeline="$tmp/rc-timeline.json"
 rc_log="$tmp/rc-writes.log"
 rc_body="$tmp/rc-body.txt"
 cat >"$rc_bin/gh" <<'STUB'
@@ -2880,6 +2902,10 @@ if [ -n "${RC_FAIL_MATCH:-}" ]; then
     esac
 fi
 case "$*" in
+*--slurp*timeline*)
+    [ "${RC_TIMELINE_FAIL:-0}" -eq 0 ] || exit 1
+    cat "$RC_TIMELINE_FILE"
+    ;;
 *--slurp*comments*)
     # Two-phase mode: with RC_COMMENTS_FILE2 set, the first fetch serves
     # RC_COMMENTS_FILE and every later fetch serves RC_COMMENTS_FILE2 —
@@ -2917,6 +2943,13 @@ rc_state="$tmp/rc-state"
 rc_scenario() {
     printf '%s' "$1" >"$rc_comments"
     printf '%s' "$2" >"$rc_issue"
+    # Unless a test replaces the fixture, model every Claiming author as
+    # assigned at publication. Release lineage now requires that historical
+    # trust proof; owner-authored claims also remain valid independently.
+    jq '[[.. | objects
+        | select((.body? // "") | startswith("Claiming —"))
+        | {event:"assigned", created_at:"2025-12-31T23:59:59Z",
+           assignee:{login:.user.login}}]]' "$rc_comments" >"$rc_timeline"
     : >"$rc_log"
     : >"$rc_body"
     rm -f "$rc_state"
@@ -2927,10 +2960,11 @@ run_release() {
     _rc=0
     env PATH="$rc_bin:$PATH" GH_REPO="" \
         RC_COMMENTS_FILE="$rc_comments" RC_ISSUE_FILE="$rc_issue" \
+        RC_TIMELINE_FILE="$rc_timeline" RC_TIMELINE_FAIL="${RC_TIMELINE_FAIL:-0}" \
         RC_COMMENTS_FILE2="${RC_COMMENTS_FILE2:-}" \
         RC_ISSUE_FILE2="${RC_ISSUE_FILE2:-}" RC_STATE="$rc_state" \
         RC_FAIL_MATCH="${RC_FAIL_MATCH:-}" RC_LOG="$rc_log" RC_BODY_OUT="$rc_body" \
-        "$release_sh" --repo "$repo" --issue 5 "$@" >/dev/null 2>&1 || _rc=$?
+        "$release_sh" --repo "$repo" --issue 5 "$@" >/dev/null 2>"$tmp/release.err" || _rc=$?
     echo "$_rc"
 }
 
@@ -2948,8 +2982,6 @@ rc_comment() {
 body_v1='Claiming — starting implementation on branch b (session s).
 
 Claim record (for `/wrap` — undo only what this claim added):
-- board: none
-- prior board status: none
 - assignee added by this claim: yes
 - `agent:` label added by this claim: agent:claude-code
 - `agent:` label displaced by this claim: none'
@@ -2975,6 +3007,34 @@ grep -q 'issue comment' "$rc_log" || fail "the supersede comment must be posted"
 echo "==> the supersede comment's first line is the exact contract literal"
 head -1 "$rc_body" | grep -Fxq 'Claim released — issue closed (completed). (Supersedes the claim record above.)' ||
     fail "release comment first line must match the contract (got: $(head -1 "$rc_body"))"
+
+echo "==> release requires uninterrupted label ownership after the current leaf"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+printf '%s' '[[{"event":"unlabeled","created_at":"2026-01-02T00:00:00Z","label":{"name":"agent:claude-code"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 3 ] || fail "a removed and re-added label must fail closed"
+[ ! -s "$rc_log" ] || fail "broken label continuity must trigger zero writes"
+
+echo "==> release requires uninterrupted assignee ownership after the current leaf"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+printf '%s' '[[{"event":"unassigned","created_at":"2026-01-02T00:00:00Z","assignee":{"login":"evanharmon1"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 3 ] || fail "a removed and re-added assignee must fail closed"
+[ ! -s "$rc_log" ] || fail "broken assignee continuity must trigger zero writes"
+
+echo "==> release fails closed on unreadable or malformed continuity evidence"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+[ "$(RC_TIMELINE_FAIL=1 run_release --reason r)" = 2 ] || fail "an unreadable timeline must fail closed"
+[ ! -s "$rc_log" ] || fail "an unreadable timeline must trigger zero writes"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+printf '%s' '[[{"event":"unlabeled","created_at":"2026-01-02T00:00:00Z","label":{}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 2 ] || fail "a malformed timeline must fail closed"
+[ ! -s "$rc_log" ] || fail "a malformed timeline must trigger zero writes"
+
+echo "==> removals before the current leaf do not block an uninterrupted release"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+printf '%s' '[[{"event":"unlabeled","created_at":"2025-12-31T00:00:00Z","label":{"name":"agent:claude-code"}},{"event":"unassigned","created_at":"2025-12-31T00:00:00Z","assignee":{"login":"evanharmon1"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 0 ] || fail "pre-claim history must not block uninterrupted release"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" || fail "uninterrupted release must remove the label"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "uninterrupted release must remove the assignee"
 
 echo "==> a legacy 'yes' record removes the live agent:* labels"
 body_legacy="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/yes/')"
@@ -3033,11 +3093,23 @@ body_model_refinement="$(printf '%s' "$body_v2" |
 - claim: label owned by this claim chain: claim:claude
 - claim: model label owned by this claim chain: claim:claude:opus
 - claim: label displaced by this claim chain: none"
-rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_model_refinement")")" \
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v2" 1)" \
+    "$(rc_comment evanharmon1 "$body_model_refinement" 2)")" \
     '{"state":"closed","labels":[{"name":"claim:claude"},{"name":"claim:claude:opus"}],"assignees":[{"login":"evanharmon1"}]}'
-[ "$(run_release --reason r)" = 0 ] || fail "a family+model refinement should release"
+[ "$(run_release --reason r)" = 0 ] || fail "a family+model refinement should release: $(cat "$tmp/release.err")"
 grep -q -- '--remove-label claim:claude' "$rc_log" || fail "the chain-owned family label must be removed"
 grep -q -- '--remove-label claim:claude:opus' "$rc_log" || fail "the chain-owned model refinement must be removed"
+
+echo "==> an owned model refinement may coexist with an unowned live family marker"
+body_model_only_owned="$(printf '%s' "$body_model_refinement" |
+    sed 's/^- claim: label owned by this claim chain: claim:claude$/- claim: label owned by this claim chain: no/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_model_only_owned")")" \
+    '{"state":"closed","labels":[{"name":"claim:claude"},{"name":"claim:claude:opus"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "an owned model over an unowned family should release: $(cat "$tmp/release.err")"
+grep -q -- '--remove-label claim:claude:opus' "$rc_log" || fail "the owned model refinement must be removed"
+if grep -q -- '--remove-label claim:claude\($\| \)' "$rc_log"; then
+    fail "the unowned family marker must remain"
+fi
 
 echo "==> model ownership fields accept only a matching model refinement"
 for invalid_model_label in claim:claude agent:claude-code claim:gpt:opus; do
@@ -3049,6 +3121,22 @@ for invalid_model_label in claim:claude agent:claude-code claim:gpt:opus; do
         fail "invalid model ownership '$invalid_model_label' must fail closed"
     [ ! -s "$rc_log" ] || fail "invalid model ownership must trigger zero writes"
 done
+
+echo "==> legacy family aliases bind model refinements to their finite family"
+legacy_family_predecessor="$(printf '%s' "$body_v2" | sed 's/claim:claude/agent:claude-code/g')"
+legacy_model_refinement="$(printf '%s' "$body_model_refinement" |
+    sed 's/claim: label owned by this claim chain: claim:claude$/claim: label owned by this claim chain: agent:claude-code/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$legacy_family_predecessor" 1)" \
+    "$(rc_comment evanharmon1 "$legacy_model_refinement" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"},{"name":"claim:claude:opus"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a matching legacy family/model refinement should release"
+
+legacy_model_mismatch="$(printf '%s' "$legacy_model_refinement" | sed 's/claim:claude:opus/claim:gpt:terra/g')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$legacy_family_predecessor" 1)" \
+    "$(rc_comment evanharmon1 "$legacy_model_mismatch" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"},{"name":"claim:gpt:terra"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "a mismatched legacy family/model refinement must fail closed"
+[ ! -s "$rc_log" ] || fail "legacy family/model mismatch must trigger zero writes"
 
 echo "==> a legacy 'yes' record sweeps live claim:* labels too, not only agent:*"
 body_yes_claim="$(printf '%s' "$body_v2" | sed 's/claim:claude$/yes/')"
@@ -3080,6 +3168,69 @@ grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
     fail "the current chain record must remove the inherited label"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
     fail "the current chain record must remove the inherited assignee"
+
+echo "==> a never-assigned collaborator claim cannot poison trusted lineage"
+body_collaborator_poison="$(printf '%s' "$body_v1" | sed 's/agent:claude-code/agent:codex/g')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
+    "$(rc_comment collaborator "$body_collaborator_poison" 2 '2026-01-01T00:01:00Z' COLLABORATOR)" \
+    "$(rc_comment evanharmon1 "$body_chain_takeover" 3 '2026-01-01T00:02:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 0 ] || fail "an unassigned collaborator record must be excluded from lineage"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "trusted lineage must retain its family cleanup authority"
+if grep -q -- '--remove-label agent:codex' "$rc_log"; then
+    fail "an unassigned collaborator must not grant label cleanup authority"
+fi
+
+echo "==> a historical body edited after unassignment grants zero cleanup authority"
+body_label_only_leaf="$(printf '%s' "$body_chain_takeover" |
+    sed 's/assignee owned by this claim chain: yes/assignee owned by this claim chain: no/; s/assignee login owned by this claim chain: evanharmon1/assignee login owned by this claim chain: none/')"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:01:00Z' COLLABORATOR '2026-01-01T00:03:00Z')" \
+    "$(rc_comment evanharmon1 "$body_label_only_leaf" 2 '2026-01-01T00:04:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee":{"login":"collaborator"}},{"event":"unassigned","created_at":"2026-01-01T00:02:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 2 ] || fail "an edit after unassignment must not prove historical ownership"
+[ ! -s "$rc_log" ] || fail "an edit after unassignment must trigger zero writes"
+
+echo "==> same-second assignment and body version are ambiguous"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:01:00Z' COLLABORATOR)" \
+    "$(rc_comment evanharmon1 "$body_label_only_leaf" 2 '2026-01-01T00:02:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:01:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 2 ] || fail "same-second assignment must not prove historical ownership"
+[ ! -s "$rc_log" ] || fail "same-second assignment ambiguity must trigger zero writes"
+
+echo "==> an edit while continuously assigned remains trusted"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:01:00Z' COLLABORATOR '2026-01-01T00:03:00Z')" \
+    "$(rc_comment evanharmon1 "$body_label_only_leaf" 2 '2026-01-01T00:04:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 0 ] || fail "a safely ordered edit during continuous assignment should release"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "continuous historical trust must preserve label cleanup authority"
+
+echo "==> a reassignment starts a new trusted body-version interval"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:01:00Z' COLLABORATOR '2026-01-01T00:03:00Z')" \
+    "$(rc_comment evanharmon1 "$body_label_only_leaf" 2 '2026-01-01T00:04:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee":{"login":"collaborator"}},{"event":"unassigned","created_at":"2026-01-01T00:01:00Z","assignee":{"login":"collaborator"}},{"event":"assigned","created_at":"2026-01-01T00:02:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 0 ] || fail "a safely ordered reassignment should trust the new body version"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "the new trusted assignment interval must preserve label cleanup authority"
+
+echo "==> an edit during an unassigned gap stays untrusted after later reassignment"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:00:30Z' COLLABORATOR '2026-01-01T00:02:00Z')" \
+    "$(rc_comment evanharmon1 "$body_label_only_leaf" 2 '2026-01-01T00:04:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee":{"login":"collaborator"}},{"event":"unassigned","created_at":"2026-01-01T00:01:00Z","assignee":{"login":"collaborator"}},{"event":"assigned","created_at":"2026-01-01T00:03:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 2 ] || fail "a later reassignment must not trust a body version published during the gap"
+[ ! -s "$rc_log" ] || fail "an untrusted gap edit must trigger zero writes"
 
 echo "==> a takeover's direct label displacement is restored by a later open hand-back"
 body_displaced_takeover="$(printf '%s' "$body_v1" |
@@ -3124,12 +3275,12 @@ grep -q -- '--remove-assignee collaborator' "$rc_log" || fail "inherited assigne
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "direct assignee must be removed"
 if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "unrelated assignee must remain"; fi
 
-echo "==> failed dual-assignee release restores both owned assignees"
+echo "==> failed dual-assignee comment does not reassign either owner"
 rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" "$(rc_comment evanharmon1 "$body_chain_cross_both" 2)")" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"unrelated"}]}'
 [ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] || fail "failed dual-assignee comment should exit 1"
-grep -q -- '--add-assignee collaborator' "$rc_log" || fail "inherited assignee must be restored"
-grep -q -- '--add-assignee evanharmon1' "$rc_log" || fail "direct assignee must be restored"
-if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "unrelated assignee must not be restored"; fi
+if grep -q -- '--add-assignee' "$rc_log"; then
+    fail "failed dual-assignee comment must not create new assignment intervals"
+fi
 
 # The plural v3 companion carries the complete bounded ownership set through
 # every takeover. Each leaf adds its own direct assignment to the inherited
@@ -3157,6 +3308,48 @@ for login in collaborator evanharmon1 third-owner; do
         fail "repeated takeover must remove proven assignee $login"
 done
 if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "repeated takeover must preserve unrelated assignees"; fi
+
+echo "==> comma-canonical v3 lineage releases A to B to C and rejects a forged target"
+body_comma_a="$body_v1
+- assignee logins owned by this claim chain: collaborator
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+body_comma_b="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee logins owned by this claim chain: collaborator,evanharmon1
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+body_comma_c="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/no/')
+- assignee logins owned by this claim chain: collaborator,evanharmon1,third-owner
+- agent: label owned by this claim chain: agent:claude-code
+- agent: label displaced by this claim chain: none"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_comma_a" 1)" \
+    "$(rc_comment evanharmon1 "$body_comma_b" 2)" \
+    "$(rc_comment third-owner "$body_comma_c" 3)")" "$issue_repeated_takeover"
+[ "$(run_release --reason r)" = 0 ] || fail "comma-canonical A→B→C lineage should release"
+for login in collaborator evanharmon1 third-owner; do
+    grep -q -- "--remove-assignee $login" "$rc_log" ||
+        fail "comma-canonical lineage must remove proven assignee $login"
+done
+if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "comma-canonical lineage must preserve unrelated assignees"; fi
+
+body_comma_forged="$(printf '%s' "$body_comma_c" |
+    sed 's/collaborator,evanharmon1,third-owner/collaborator,evanharmon1,mallory,third-owner/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_comma_a" 1)" \
+    "$(rc_comment evanharmon1 "$body_comma_b" 2)" \
+    "$(rc_comment third-owner "$body_comma_forged" 3)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"mallory"},{"login":"third-owner"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "comma-canonical forged inheritance must fail closed"
+[ ! -s "$rc_log" ] || fail "comma-canonical forged inheritance must write nothing"
+
+echo "==> a forged chain-displaced target fails lineage proof"
+body_displaced_forged="$(printf '%s' "$body_comma_c" |
+    sed 's/label displaced by this claim chain: none/label displaced by this claim chain: agent:codex/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_comma_a" 1)" \
+    "$(rc_comment evanharmon1 "$body_comma_b" 2)" \
+    "$(rc_comment third-owner "$body_displaced_forged" 3)")" \
+    '{"state":"open","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"third-owner"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "a forged displaced-label target must fail closed"
+[ ! -s "$rc_log" ] || fail "a forged displaced-label target must trigger zero writes"
 
 echo "==> a forged inherited login absent from the trusted predecessor record fails closed"
 body_chain_plural_forged="$(printf '%s' "$body_chain_plural_third" |
@@ -3226,17 +3419,15 @@ rc_scenario "$(rc_page "$(rc_comment third-owner "$body_chain_plural_too_many" 1
 [ "$(run_release --reason r)" = 2 ] || fail "an oversized claim-chain assignee list must fail closed"
 [ ! -s "$rc_log" ] || fail "an oversized claim-chain assignee list must trigger zero writes"
 
-echo "==> failed repeated-takeover release restores every removed chain-owned assignee"
+echo "==> failed repeated-takeover comment does not reassign removed owners"
 rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
     "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
     "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
 [ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] ||
     fail "failed repeated-takeover comment should exit 1"
-for login in collaborator evanharmon1 third-owner; do
-    grep -q -- "--add-assignee $login" "$rc_log" ||
-        fail "comment-failure compensation must restore $login"
-done
-if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "compensation must not add unrelated assignees"; fi
+if grep -q -- '--add-assignee' "$rc_log"; then
+    fail "comment failure must not create independently owned assignment intervals"
+fi
 
 echo "==> partial inherited removal retries from durable predecessor provenance"
 rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
@@ -3336,6 +3527,7 @@ grep -q 'skipped restoring' "$rc_body" || fail "the skip must be recorded in the
 echo "==> a claim authored by neither the owner nor an assignee is ignored"
 rc_scenario "$(rc_page "$(rc_comment mallory "$body_v1")")" \
     '{"state":"closed","labels":[],"assignees":[{"login":"evanharmon1"}]}'
+printf '%s' '[[]]' >"$rc_timeline"
 [ "$(run_release --reason r)" = 3 ] || fail "an untrusted claim should exit 3"
 [ ! -s "$rc_log" ] || fail "an untrusted claim must trigger zero writes"
 
@@ -3364,6 +3556,68 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 'Claiming — starting work (se
 if grep -q 'issue edit' "$rc_log"; then fail "no record means no marker may be touched"; fi
 grep -q 'no claim record survived' "$rc_body" || fail "the comment must say the markers were left"
 
+echo "==> a structured refresh after a recordless predecessor starts fresh proof"
+body_recordless='Claiming — starting legacy work (session old).'
+body_after_recordless='Claiming — starting implementation on branch refreshed (session new).
+
+Claim record (for `/wrap` — undo only what this claim added):
+- assignee added by this claim: no
+- `claim:` label added by this claim: n/a
+- `claim:` label displaced by this claim: none
+- assignee logins owned by this claim chain: none
+- `claim:` label owned by this claim chain: n/a
+- `claim:` label displaced by this claim chain: none'
+recordless_refresh_comments="$(rc_page \
+    "$(rc_comment evanharmon1 "$body_recordless" 1)" \
+    "$(rc_comment evanharmon1 "$body_after_recordless" 2)")"
+rc_scenario "$recordless_refresh_comments" \
+    '{"state":"closed","labels":[],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] ||
+    fail "a structured refresh after a recordless predecessor should release: $(cat "$tmp/release.err")"
+if grep -q -- '--remove-assignee\|--remove-label' "$rc_log"; then
+    fail "a recordless boundary must not confer cleanup ownership"
+fi
+
+echo "==> recordless prose mentioning Claim record remains an ownership boundary"
+body_recordless_prose='Claiming — starting legacy work (session old).
+
+The Claim record migration will be handled by a later refresh.'
+rc_scenario "$(rc_page \
+    "$(rc_comment evanharmon1 "$body_recordless_prose" 1)" \
+    "$(rc_comment evanharmon1 "$body_after_recordless" 2)")" \
+    '{"state":"closed","labels":[],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] ||
+    fail "ordinary prose must not masquerade as the canonical record heading: $(cat "$tmp/release.err")"
+if grep -q -- '--remove-assignee\|--remove-label' "$rc_log"; then
+    fail "recordless prose must still reset inherited cleanup ownership"
+fi
+
+body_after_recordless_forged="$(printf '%s' "$body_after_recordless" |
+    sed 's/assignee logins owned by this claim chain: none/assignee logins owned by this claim chain: mallory/')"
+rc_scenario "$(rc_page \
+    "$(rc_comment mallory "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_recordless" 2)" \
+    "$(rc_comment evanharmon1 "$body_after_recordless_forged" 3)")" \
+    '{"state":"closed","labels":[],"assignees":[{"login":"evanharmon1"},{"login":"mallory"}]}'
+[ "$(run_release --reason r)" = 2 ] ||
+    fail "a recordless boundary must not allow inheritance from an older structured claim"
+[ ! -s "$rc_log" ] || fail "forged inheritance across a recordless boundary must write nothing"
+
+echo "==> a structured refresh treats legacy yes as direct-only label authority"
+body_after_legacy_yes="$(printf '%s' "$body_after_recordless" |
+    sed 's/assignee logins owned by this claim chain: none/assignee logins owned by this claim chain: evanharmon1/')"
+rc_scenario "$(rc_page \
+    "$(rc_comment evanharmon1 "$body_legacy" 1)" \
+    "$(rc_comment evanharmon1 "$body_after_legacy_yes" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] ||
+    fail "a structured refresh after legacy yes should release: $(cat "$tmp/release.err")"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
+    fail "structured refresh must preserve exact inherited assignee authority"
+if grep -q -- '--remove-label agent:claude-code' "$rc_log"; then
+    fail "ambiguous legacy yes must not become inherited exact-label authority"
+fi
+
 echo "==> a failed marker write withholds the comment AND the assignee removal"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
 _rc4="$(RC_FAIL_MATCH='--remove-label' run_release --reason r)"
@@ -3375,23 +3629,24 @@ if grep -q 'issue comment' "$rc_log"; then
     fail "a partial release must NOT post the supersede comment — a re-run would read it as settled"
 fi
 
-echo "==> a failed comment post is exit 1 and re-adds the assignee (trust anchor)"
+echo "==> a failed comment post leaves removed assignees historical, not re-added"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
 _rc1="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
 [ "$_rc1" = 1 ] || fail "a failed supersede post should exit 1 (got $_rc1)"
-grep -q -- '--add-assignee evanharmon1' "$rc_log" ||
-    fail "the compensation must re-add the removed assignee so the retry stays trusted"
+if grep -q -- '--add-assignee' "$rc_log"; then
+    fail "comment failure must not manufacture a new assignment interval"
+fi
 
-echo "==> failed comment compensation restores the inherited assignee, not the takeover author"
-rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
-    "$(rc_comment evanharmon1 "$body_chain_cross_account" 2)")" \
-    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"}]}'
-_rc_cross_comment="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
-[ "$_rc_cross_comment" = 1 ] || fail "a failed cross-account supersede post should exit 1 (got $_rc_cross_comment)"
-grep -q -- '--add-assignee collaborator' "$rc_log" ||
-    fail "cross-account compensation must restore the inherited assignee"
-if grep -q -- '--add-assignee evanharmon1' "$rc_log"; then
-    fail "cross-account compensation must not add the takeover author"
+echo "==> a retry trusts the historical body after successful marker removals"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:01:00Z' COLLABORATOR)")" \
+    '{"state":"closed","labels":[],"assignees":[]}'
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee":{"login":"collaborator"}},{"event":"unassigned","created_at":"2026-01-01T00:02:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 0 ] ||
+    fail "retry after marker removal must trust the historical claim body: $(cat "$tmp/release.err")"
+[ "$(grep -c 'issue comment' "$rc_log")" = 1 ] || fail "retry must publish exactly the missing release comment"
+if grep -q -- 'issue edit' "$rc_log"; then
+    fail "retry after successful marker removal must not repeat destructive writes"
 fi
 
 echo "==> a claim EDITED between read and write aborts with exit 3 (same id, new updated_at)"
@@ -3436,6 +3691,7 @@ echo "==> a forged newer 'Claiming —' from an untrusted author does not shadow
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
     "$(rc_comment mallory 'Claiming — totally my issue now (session x).' 2)")" \
     "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2025-12-31T23:59:59Z","assignee":{"login":"evanharmon1"}}]]' >"$rc_timeline"
 [ "$(run_release --reason r)" = 0 ] || fail "an untrusted claim comment must be invisible"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "the trusted claim of record must be the one released"
 

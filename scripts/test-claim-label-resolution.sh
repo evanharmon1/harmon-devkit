@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 resolver="ai/skills/universal/claim/assets/resolve-claim-label.sh"
+runtime_resolver="ai/skills/universal/claim/assets/resolve-runtime-environment.sh"
+transaction_helper="ai/skills/universal/claim/assets/claim-transaction.sh"
 fail() {
     echo "TEST FAIL: $*" >&2
     exit 1
@@ -37,6 +39,34 @@ out="$(run --harness codex-cli --runtime-family gpt --claim-model terra)" || fai
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "legacy family marker selected the wrong model refinement"
 printf '%s\n' "$out" | grep -Fx 'existing_label=' >/dev/null || fail "legacy family marker must coexist with the model-label write"
 
+jq '(.families[] | select(.slug == "gpt")).legacy_claim_labels = ["agent:custom-gpt"]' \
+    agent-registry.json >"$tmp/custom-legacy-registry.json"
+printf '%s\n' agent:custom-gpt >"$issue"
+printf '%s\n' agent:custom-gpt claim:gpt:terra >"$tmp/custom-legacy-available"
+if "$resolver" --registry "$tmp/custom-legacy-registry.json" --harness codex-cli \
+    --runtime-family gpt --claim-model terra --project-management github \
+    --available-labels "$tmp/custom-legacy-available" --issue-labels "$issue" \
+    >"$tmp/out" 2>&1; then
+    fail "a custom legacy alias/model plan must be rejected by the resolver"
+else
+    status=$?
+fi
+[ "$status" = 20 ] || fail "custom legacy alias/model plan exited $status, want 20"
+grep -Fq "migrate to 'claim:gpt'" "$tmp/out" || fail "custom legacy alias/model rejection must name the canonical migration"
+
+printf '%s\n' agent:custom-gpt claim:gpt:terra >"$issue"
+if "$resolver" --registry "$tmp/custom-legacy-registry.json" --harness codex-cli \
+    --runtime-family gpt --project-management github \
+    --available-labels "$tmp/custom-legacy-available" --issue-labels "$issue" \
+    >"$tmp/out" 2>&1; then
+    fail "a custom legacy alias with an observed model must be rejected by the resolver"
+else
+    status=$?
+fi
+[ "$status" = 20 ] || fail "custom legacy alias/observed model plan exited $status, want 20"
+grep -Fq "migrate to 'claim:gpt'" "$tmp/out" ||
+    fail "custom legacy alias/observed model rejection must name the canonical migration"
+
 : >"$issue"
 if run --harness codex-cli --runtime-family gpt --claim-model terra >/dev/null 2>&1; then fail "model pin without its family marker must fail closed"; else status=$?; fi
 [ "$status" = 20 ] || fail "model pin without family marker exited $status, want 20"
@@ -56,7 +86,8 @@ if run --harness codex-cli --runtime-family gpt --claim-model opus >/dev/null 2>
 
 printf '%s\n' claim:gpt claim:gpt:terra >"$issue"
 out="$(run --harness codex-cli --runtime-family gpt)" || fail "same-family model claim must be idempotent"
-printf '%s\n' "$out" | grep -Fx 'existing_label=claim:gpt:terra' >/dev/null || fail "same-family claim was not recognized"
+printf '%s\n' "$out" | grep -Fx 'existing_label=claim:gpt' >/dev/null || fail "same-family base marker was not recognized"
+printf '%s\n' "$out" | grep -Fx 'model_label=claim:gpt:terra' >/dev/null || fail "same-family model refinement was not preserved"
 
 printf '%s\n' claim:claude >"$issue"
 if run --harness codex-cli --runtime-family gpt >"$tmp/out" 2>&1; then fail "different-family claim must block"; else status=$?; fi
@@ -123,6 +154,23 @@ printf '%s\n' claim:gpt:terra >"$tmp/model-only-available"
 printf '%s\n' claim:gpt:terra >"$issue"
 out="$("$resolver" --registry agent-registry.json --harness codex-cli --runtime-family gpt --project-management github --available-labels "$tmp/model-only-available" --issue-labels "$issue")" || fail "existing model claim must not require a family label"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "existing model claim was not retained"
+
+printf '%s\n' claim:gpt claim:gpt:terra >"$issue"
+out="$("$resolver" --registry agent-registry.json --harness codex-cli --runtime-family gpt --project-management github --available-labels "$available" --issue-labels "$issue")" ||
+    fail "coexisting family and model markers must produce a usable family-level plan"
+printf '%s\n' "$out" | grep -Fx 'family_label=claim:gpt' >/dev/null ||
+    fail "family-level plan must retain the base family marker"
+printf '%s\n' "$out" | grep -Fx 'model_label=claim:gpt:terra' >/dev/null ||
+    fail "family-level plan must report the coexisting model refinement"
+
+printf '%s\n' claim:gpt claim:gpt:terra claim:gpt:sol >"$issue"
+if "$resolver" --registry agent-registry.json --harness codex-cli --runtime-family gpt \
+    --project-management github --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then
+    fail "multiple model refinements must not collapse into an order-dependent plan"
+else
+    status=$?
+fi
+[ "$status" = 20 ] || fail "ambiguous model refinements exited $status, want 20"
 
 : >"$issue"
 if "$resolver" --harness codex-cli --project-management github --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then fail "registry-less fixed harness without family must fail"; else status=$?; fi
@@ -238,9 +286,35 @@ grep -F "if ! registry_entry=\"\$(git ls-tree \"\$default\" -- ':(top)agent-regi
 grep -F 'if ! git show "$default:agent-registry.json" >"$registry"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "present registry read must fail closed"
 grep -F -- '--project-management "$project_management"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must pass the trusted project mode"
 grep -F 'unlabeled_github_arg=(--allow-unlabeled-github)' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must expose only the approved label-less GitHub continuation"
-grep -F 'if [ -z "${approved_takeover_label:-}" ]; then' ai/skills/universal/claim/SKILL.md >/dev/null || fail "single-conflict takeover must stop without explicit approval"
+grep -F 'user_approved_unlabeled_github_claim=no' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label-less approval must start from an invocation-local denial"
+grep -F 'approved_takeover_label=' ai/skills/universal/claim/SKILL.md >/dev/null || fail "takeover approval must start empty in each invocation"
+if grep -F '${user_approved_unlabeled_github_claim:-' ai/skills/universal/claim/SKILL.md >/dev/null; then
+    fail "label-less approval must never fall back to an inherited environment value"
+fi
+grep -F 'if [ -z "$approved_takeover_label" ]; then' ai/skills/universal/claim/SKILL.md >/dev/null || fail "single-conflict takeover must stop without explicit approval"
 grep -F 'grep -Fqx "conflict_label=$approved_takeover_label"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "takeover approval must name the exact resolver conflict"
-grep -F '[ "$target" = "n/a" ]' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label-less takeover must omit the add-label operation"
+grep -F 'target="$(plan_value target_label)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must extract the selected target"
+grep -F 'family_target="$(plan_value family_label)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must extract the family marker"
+grep -F 'model_target="$(plan_value model_label)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must extract the model marker"
+grep -F 'displaced=none' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must initialize displacement to none"
+grep -F '[ "$resolver_status" -ne 10 ] || displaced="$approved_takeover_label"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must bind displacement to the approved conflict"
+grep -F '[ "$resolver_status" -eq 0 ] || exit 1' ai/skills/universal/claim/SKILL.md >/dev/null || fail "routine transaction must require a successful resolver plan"
+grep -F 'label_args=(--claim-label none --allow-label-less)' ai/skills/universal/claim/SKILL.md >/dev/null || fail "verified label-less plans must use the transaction helper explicitly"
+if grep -F 'Bash(./ai/skills/universal/claim/assets/claim-transaction.sh:' ai/skills/universal/claim/SKILL.md >/dev/null ||
+    grep -F 'Bash(./.agents/skills/claim/assets/claim-transaction.sh:' ai/skills/universal/claim/SKILL.md >/dev/null ||
+    grep -F 'Bash(./.claude/skills/claim/assets/claim-transaction.sh:' ai/skills/universal/claim/SKILL.md >/dev/null; then
+    fail "transaction helper must remain outside the pre-authorized tool boundary"
+fi
+grep -F -- '--registry-snapshot "$registry_snapshot"' ai/skills/universal/claim/SKILL.md >/dev/null ||
+    fail "transaction helper must receive the fetched default-branch registry snapshot"
+grep -F -- '--allow-label-less)' "$transaction_helper" >/dev/null || fail "transaction helper must parse the explicit label-less authorization"
+grep -F '[ "$allow_label_less" -eq 1 ] && [ "$model_label" = none ]' "$transaction_helper" >/dev/null || fail "label-less claims must require the explicit flag and exclude model markers"
+if grep -F -- '--displaced-label' "$transaction_helper" >/dev/null; then
+    fail "routine helper must not accept displacement as a flag"
+fi
+if grep -F 'set-issue-status.sh' ai/skills/universal/claim/SKILL.md >/dev/null; then
+    fail "/claim must never project Project status"
+fi
 if grep -Eq 'claim:(claude|gpt)|agent:(claude-code|codex)' \
     ai/skills/universal/track-work/references/claim-lifecycle.md; then
     fail "canonical claim lifecycle examples must use portable family placeholders"
@@ -252,4 +326,31 @@ fi
     [ -n "$registry_entry" ] || fail "root registry probe disappeared from a subdirectory"
 )
 
-echo 'PASS: portable claim family resolution'
+runtime() {
+    env -i PATH="$PATH" "$@" "$runtime_resolver"
+}
+
+if grep -Eq '\$\{[^}]*,,' "$runtime_resolver"; then
+    fail "runtime resolver must remain compatible with macOS Bash 3.2"
+fi
+
+[ "$(runtime)" = host ] || fail "an execution host without container signals must resolve to host"
+[ "$(runtime REMOTE_CONTAINERS=TRUE)" = devcontainer ] || fail "runtime signal matching must remain case-insensitive"
+[ "$(runtime REMOTE_CONTAINERS=true)" = devcontainer ] || fail "the devcontainer signal was not recognized"
+[ "$(runtime CODER_AGENT_URL=https://coder.invalid REMOTE_CONTAINERS=true)" = coder ] ||
+    fail "Coder must outrank its inherited devcontainer signal"
+[ "$(runtime CODESPACES=true REMOTE_CONTAINERS=true)" = codespace ] ||
+    fail "Codespaces must outrank its inherited devcontainer signal"
+[ "$(runtime GITHUB_ACTIONS=true CODESPACES=true)" = github-actions ] ||
+    fail "GitHub Actions must have deterministic precedence"
+[ "$(runtime CI=true)" = unknown ] || fail "unclassified automation must use the unknown fallback"
+[ "$(runtime REMOTE_CONTAINERS=unexpected)" = unknown ] ||
+    fail "a malformed environment signal must use the unknown fallback"
+if env -i PATH="$PATH" "$runtime_resolver" extra >/dev/null 2>&1; then
+    fail "the runtime resolver must reject caller-supplied identity"
+fi
+if rg -n 'HOSTNAME|hostname|COMPUTERNAME' "$runtime_resolver" >/dev/null; then
+    fail "the portable runtime resolver must not read or publish a machine name"
+fi
+
+echo 'PASS: portable claim family and runtime resolution'
