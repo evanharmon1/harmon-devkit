@@ -3213,6 +3213,25 @@ printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee
 grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
     fail "continuous historical trust must preserve label cleanup authority"
 
+echo "==> a reassignment starts a new trusted body-version interval"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:01:00Z' COLLABORATOR '2026-01-01T00:03:00Z')" \
+    "$(rc_comment evanharmon1 "$body_label_only_leaf" 2 '2026-01-01T00:04:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee":{"login":"collaborator"}},{"event":"unassigned","created_at":"2026-01-01T00:01:00Z","assignee":{"login":"collaborator"}},{"event":"assigned","created_at":"2026-01-01T00:02:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 0 ] || fail "a safely ordered reassignment should trust the new body version"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "the new trusted assignment interval must preserve label cleanup authority"
+
+echo "==> an edit during an unassigned gap stays untrusted after later reassignment"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:00:30Z' COLLABORATOR '2026-01-01T00:02:00Z')" \
+    "$(rc_comment evanharmon1 "$body_label_only_leaf" 2 '2026-01-01T00:04:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee":{"login":"collaborator"}},{"event":"unassigned","created_at":"2026-01-01T00:01:00Z","assignee":{"login":"collaborator"}},{"event":"assigned","created_at":"2026-01-01T00:03:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 2 ] || fail "a later reassignment must not trust a body version published during the gap"
+[ ! -s "$rc_log" ] || fail "an untrusted gap edit must trigger zero writes"
+
 echo "==> a takeover's direct label displacement is restored by a later open hand-back"
 body_displaced_takeover="$(printf '%s' "$body_v1" |
     sed 's/label displaced by this claim: none/label displaced by this claim: agent:codex/')
