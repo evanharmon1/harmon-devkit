@@ -33,6 +33,11 @@ api)
         printf '%s\n' "${CLAIM_LOGIN:-evanharmon1}"
         exit 0
     fi
+    if [[ " $* " == *"/timeline"* ]]; then
+        [ ! -e "${CLAIM_TIMELINE_FAIL_FLAG:-/nonexistent}" ] || exit 1
+        printf '[%s]\n' "$(cat "$CLAIM_TIMELINE_FILE")"
+        exit 0
+    fi
     if [ -e "${CLAIM_COMMENTS_FAIL_FLAG:-/nonexistent}" ]; then
         exit 1
     fi
@@ -107,7 +112,8 @@ issue)
         success | commit_fail)
             next="${CLAIM_COMMENTS_FILE}.next"
             jq --rawfile body "$body_file" --arg login "${CLAIM_LOGIN:-evanharmon1}" \
-                '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"OWNER", body:($body | sub("\\n+$"; ""))}]' \
+                '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"OWNER",
+                       created_at:"2026-08-20T12:00:00Z", body:($body | sub("\\n+$"; ""))}]' \
                 "$CLAIM_COMMENTS_FILE" >"$next"
             mv "$next" "$CLAIM_COMMENTS_FILE"
             if [ "${CLAIM_CLOSE_AFTER_COMMENT:-false}" = true ]; then
@@ -133,7 +139,9 @@ chmod +x "$stub/gh"
 
 issue_file="$tmp/issue.json"
 comments_file="$tmp/comments.json"
+timeline_file="$tmp/timeline.json"
 comments_fail_flag="$tmp/comments.fail"
+timeline_fail_flag="$tmp/timeline.fail"
 comments_read_count="$tmp/comments.read-count"
 log="$tmp/actions.log"
 record="$tmp/record.md"
@@ -141,9 +149,11 @@ err="$tmp/err"
 
 scenario() {
     printf '%s' "$1" | jq '.state //= "OPEN"' >"$issue_file"
-    printf '%s' "${2:-[]}" >"$comments_file"
+    printf '%s' "${2:-[]}" | jq 'map(.created_at //= "2026-08-20T10:00:00Z")' >"$comments_file"
+    printf '%s' "${3:-[]}" >"$timeline_file"
     : >"$log"
     rm -f "$comments_fail_flag"
+    rm -f "$timeline_fail_flag"
     rm -f "$comments_read_count"
 }
 
@@ -188,6 +198,7 @@ run_claim() {
     env PATH="$stub:$PATH" \
         CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
         CLAIM_COMMENTS_FAIL_FLAG="$comments_fail_flag" CLAIM_LOG="$log" \
+        CLAIM_TIMELINE_FILE="$timeline_file" CLAIM_TIMELINE_FAIL_FLAG="$timeline_fail_flag" \
         CLAIM_COMMENTS_READ_COUNT="$comments_read_count" \
         CLAIM_MUTATE_COMMENTS_ON_READ="${RUN_MUTATE_COMMENTS_ON_READ:-}" \
         CLAIM_CONCURRENT_RECORD="${RUN_CONCURRENT_RECORD:-$record}" \
@@ -487,6 +498,39 @@ make_record no no none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/
 [ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt)" = 6 ] || fail "failed refresh should exit 6"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "failed refresh must preserve only the predecessor"
 if grep -q '^edit' "$log"; then fail "failed refresh must not touch inherited markers"; fi
+
+echo "==> removed and independently re-added labels do not carry predecessor ownership"
+make_record no no none no none claim:gpt none
+predecessor_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
+predecessor="$(jq -n --argjson body "$predecessor_body" \
+    '[{id:1,user:{login:"evanharmon1"},author_association:"OWNER",body:$body}]')"
+label_readded_timeline='[{"event":"unlabeled","created_at":"2026-08-20T11:00:00Z","label":{"name":"claim:gpt"},"actor":{"login":"independent"}},{"event":"labeled","created_at":"2026-08-20T11:01:00Z","label":{"name":"claim:gpt"},"actor":{"login":"independent"}}]'
+scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' \
+    "$predecessor" "$label_readded_timeline"
+make_record no no none no none no none
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] ||
+    fail "a re-added label must remain live without inherited cleanup authority: $(cat "$err")"
+if grep -q '^edit' "$log"; then fail "a re-added live label must not be rewritten"; fi
+
+echo "==> removed and independently re-added assignees do not carry predecessor ownership"
+make_record yes no none yes evanharmon1 no none
+predecessor_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
+predecessor="$(jq -n --argjson body "$predecessor_body" \
+    '[{id:1,user:{login:"evanharmon1"},author_association:"OWNER",body:$body}]')"
+assignee_readded_timeline='[{"event":"unassigned","created_at":"2026-08-20T11:00:00Z","assignee":{"login":"evanharmon1"},"actor":{"login":"independent"}},{"event":"assigned","created_at":"2026-08-20T11:01:00Z","assignee":{"login":"evanharmon1"},"actor":{"login":"independent"}}]'
+scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' \
+    "$predecessor" "$assignee_readded_timeline"
+make_record no no none no none no none
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] ||
+    fail "a re-added assignee must remain live without inherited cleanup authority: $(cat "$err")"
+if grep -q '^edit' "$log"; then fail "a re-added live assignee must not be rewritten"; fi
+
+echo "==> unreadable continuity evidence fails before inherited authority can be recorded"
+scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$predecessor"
+: >"$timeline_fail_flag"
+make_record no no none yes evanharmon1 no none
+[ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "an unreadable timeline must fail closed"
+[ ! -s "$log" ] || fail "unreadable continuity must fail before writes"
 
 echo "==> label-less repositories remain an explicit manual exception"
 scenario "$empty_issue"

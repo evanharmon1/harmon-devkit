@@ -203,6 +203,11 @@ comments_snapshot() {
     gh api --paginate --slurp "repos/$owner/$name/issues/$issue/comments" | jq 'add // []'
 }
 
+timeline_snapshot() {
+    local owner="${repo%%/*}" name="${repo#*/}"
+    gh api --paginate --slurp "repos/$owner/$name/issues/$issue/timeline" | jq 'add // []'
+}
+
 select_predecessor() {
     local issue_file="$1" comments_file="$2" output_file="$3"
     jq --arg owner "${repo%%/*}" --slurpfile issue "$issue_file" '
@@ -230,7 +235,7 @@ select_predecessor() {
             | $events[$i]] | last // null) as $predecessor
         | if $predecessor == null then {found:false}
           else {found:true, id:$predecessor.id, author:$predecessor.user.login,
-                body:$predecessor.body}
+                created_at:$predecessor.created_at, body:$predecessor.body}
           end
     ' "$comments_file" >"$output_file"
 }
@@ -378,6 +383,40 @@ predecessor_owned_assignees() {
     esac
 }
 
+marker_continuous_since_predecessor() {
+    local kind="$1" marker="$2" predecessor_json="$3" timeline_file="$4" created_at
+    created_at="$(jq -er '.created_at | select(type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' \
+        "$predecessor_json")" || return 2
+    jq -e '
+        all(.[];
+            if .event == "unassigned" then
+                (.created_at | type == "string") and (.assignee.login | type == "string")
+            elif .event == "unlabeled" then
+                (.created_at | type == "string") and (.label.name | type == "string")
+            else true
+            end)
+    ' "$timeline_file" >/dev/null || return 2
+    case "$kind" in
+    assignee)
+        ! jq -e --arg marker "$marker" --arg since "$created_at" '
+            any(.[];
+                .event == "unassigned"
+                and (.assignee.login | ascii_downcase) == ($marker | ascii_downcase)
+                and .created_at >= $since)
+        ' "$timeline_file" >/dev/null
+        ;;
+    label)
+        ! jq -e --arg marker "$marker" --arg since "$created_at" '
+            any(.[];
+                .event == "unlabeled"
+                and .label.name == $marker
+                and .created_at >= $since)
+        ' "$timeline_file" >/dev/null
+        ;;
+    *) return 2 ;;
+    esac
+}
+
 if ! head -n 1 "$record_file" | grep -q '^Claiming —'; then
     echo "claim transaction: record must start with 'Claiming —'" >&2
     exit 2
@@ -420,7 +459,7 @@ if jq -e --arg login "$login" --rawfile body "$record_file" '
 ' "$tmp/predecessor.json" >/dev/null; then
     resume_exact=1
 fi
-if ! predecessor_owned_assignees "$tmp/predecessor.json" >"$tmp/predecessor-assignees"; then
+if ! predecessor_owned_assignees "$tmp/predecessor.json" >"$tmp/predecessor-assignees-recorded"; then
     echo "claim transaction: predecessor assignee provenance is unreadable" >&2
     exit 2
 fi
@@ -450,6 +489,60 @@ if [ "$(jq -r '.found' "$tmp/predecessor.json")" = true ]; then
     [ -z "$predecessor_chain_label" ] || predecessor_chain_label="$(record_token "$predecessor_chain_label")"
     [ -z "$predecessor_chain_model" ] || predecessor_chain_model="$(record_token "$predecessor_chain_model")"
     [ -z "$predecessor_chain_displaced" ] || predecessor_chain_displaced="$(record_token "$predecessor_chain_displaced")"
+fi
+
+# A predecessor record proves what that claim owned when it was published, not
+# that ownership remained continuous. GitHub's paginated timeline is the
+# durable evidence for removals. A removed marker that was independently
+# re-added is live state, but it is not cleanup authority this chain may inherit.
+: >"$tmp/predecessor-assignees"
+if [ "$(jq -r '.found' "$tmp/predecessor.json")" = true ] &&
+    { [ -s "$tmp/predecessor-assignees-recorded" ] ||
+        [ -n "$predecessor_chain_label" ] || [ -n "$predecessor_chain_model" ]; }; then
+    if ! timeline_snapshot >"$tmp/timeline-before.json"; then
+        echo "claim transaction: marker continuity timeline is unreadable" >&2
+        exit 2
+    fi
+    while IFS= read -r inherited; do
+        [ -n "$inherited" ] || continue
+        if marker_continuous_since_predecessor assignee "$inherited" "$tmp/predecessor.json" \
+            "$tmp/timeline-before.json"; then
+            continuity_rc=0
+        else
+            continuity_rc=$?
+        fi
+        [ "$continuity_rc" -ne 2 ] || {
+            echo "claim transaction: predecessor assignee continuity is ambiguous" >&2
+            exit 2
+        }
+        [ "$continuity_rc" -eq 0 ] && printf '%s\n' "$inherited" >>"$tmp/predecessor-assignees"
+    done <"$tmp/predecessor-assignees-recorded"
+    if [ -n "$predecessor_chain_label" ]; then
+        if marker_continuous_since_predecessor label "$predecessor_chain_label" "$tmp/predecessor.json" \
+            "$tmp/timeline-before.json"; then
+            continuity_rc=0
+        else
+            continuity_rc=$?
+        fi
+        [ "$continuity_rc" -ne 2 ] || {
+            echo "claim transaction: predecessor family-label continuity is ambiguous" >&2
+            exit 2
+        }
+        [ "$continuity_rc" -eq 0 ] || predecessor_chain_label=""
+    fi
+    if [ -n "$predecessor_chain_model" ]; then
+        if marker_continuous_since_predecessor label "$predecessor_chain_model" "$tmp/predecessor.json" \
+            "$tmp/timeline-before.json"; then
+            continuity_rc=0
+        else
+            continuity_rc=$?
+        fi
+        [ "$continuity_rc" -ne 2 ] || {
+            echo "claim transaction: predecessor model-label continuity is ambiguous" >&2
+            exit 2
+        }
+        [ "$continuity_rc" -eq 0 ] || predecessor_chain_model=""
+    fi
 fi
 
 claim_blockers_absent() {
