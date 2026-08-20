@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.34.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.33.0...v0.34.0) (2026-08-20)
+
+
+### Features
+
+* **skills:** require scoped issue titles ([#550](https://github.com/evanharmon1/harmon-devkit/issues/550)) ([286390c](https://github.com/evanharmon1/harmon-devkit/commit/286390cb7353c800843c2dc64b1b7574bd26157c))
+* **track-work:** expose registry label guidance ([#557](https://github.com/evanharmon1/harmon-devkit/issues/557)) ([66c2f58](https://github.com/evanharmon1/harmon-devkit/commit/66c2f580e961a884b15934651aa605cb85ae9fc0))
+
+
+### Bug Fixes
+
+* handle partial claim delivery ([#556](https://github.com/evanharmon1/harmon-devkit/issues/556)) ([4961569](https://github.com/evanharmon1/harmon-devkit/commit/49615698cb99ff8b4f58e1af3b02c0de284f8e64))
+* resolve portable claim ownership families ([#558](https://github.com/evanharmon1/harmon-devkit/issues/558)) ([96c478f](https://github.com/evanharmon1/harmon-devkit/commit/96c478f526a82bdbbc5aca503d3300f0e1e035b4))
+* **shepherd:** recognize numeric severity badges ([#544](https://github.com/evanharmon1/harmon-devkit/issues/544)) ([5c7e3f4](https://github.com/evanharmon1/harmon-devkit/commit/5c7e3f4be867013c2700b0c730cacfedf2596fd7))
+* **skills:** make breakdown registry-aware ([#552](https://github.com/evanharmon1/harmon-devkit/issues/552)) ([ab650e5](https://github.com/evanharmon1/harmon-devkit/commit/ab650e58e1dc1bdb13d3260d282103866aec180d))
+* **skills:** preserve claim ownership across refreshes ([#540](https://github.com/evanharmon1/harmon-devkit/issues/540)) ([6b0fa17](https://github.com/evanharmon1/harmon-devkit/commit/6b0fa17b3a90394604891b36be77d9ae98e1499a))
+
 ## [0.33.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.32.0...v0.33.0) (2026-08-18)
 
 
