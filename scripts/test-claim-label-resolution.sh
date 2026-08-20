@@ -39,6 +39,21 @@ out="$(run --harness codex-cli --runtime-family gpt --claim-model terra)" || fai
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "legacy family marker selected the wrong model refinement"
 printf '%s\n' "$out" | grep -Fx 'existing_label=' >/dev/null || fail "legacy family marker must coexist with the model-label write"
 
+jq '(.families[] | select(.slug == "gpt")).legacy_claim_labels = ["agent:custom-gpt"]' \
+    agent-registry.json >"$tmp/custom-legacy-registry.json"
+printf '%s\n' agent:custom-gpt >"$issue"
+printf '%s\n' agent:custom-gpt claim:gpt:terra >"$tmp/custom-legacy-available"
+if "$resolver" --registry "$tmp/custom-legacy-registry.json" --harness codex-cli \
+    --runtime-family gpt --claim-model terra --project-management github \
+    --available-labels "$tmp/custom-legacy-available" --issue-labels "$issue" \
+    >"$tmp/out" 2>&1; then
+    fail "a custom legacy alias/model plan must be rejected by the resolver"
+else
+    status=$?
+fi
+[ "$status" = 20 ] || fail "custom legacy alias/model plan exited $status, want 20"
+grep -Fq "migrate to 'claim:gpt'" "$tmp/out" || fail "custom legacy alias/model rejection must name the canonical migration"
+
 : >"$issue"
 if run --harness codex-cli --runtime-family gpt --claim-model terra >/dev/null 2>&1; then fail "model pin without its family marker must fail closed"; else status=$?; fi
 [ "$status" = 20 ] || fail "model pin without family marker exited $status, want 20"

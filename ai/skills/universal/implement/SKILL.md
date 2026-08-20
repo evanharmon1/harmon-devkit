@@ -210,20 +210,18 @@ recorded, refresh the claim.** `/claim` usually ran before this step
 existed, so its comment names the default branch or an intended name — and
 that line is a parsed contract now: the claim-release workflow releases an
 unmerged PR's claim only when the PR's head matches it
-(`track-work/references/claim-lifecycle.md`). Post a new `Claiming —` comment
-with the real branch and the same record values. Its one successful append
-supersedes the predecessor for readers; if it fails, the predecessor remains
-the sole current record. Re-prove each chain field before carrying it: a
-same-text marker independently re-added after the first claim is not owned by
-the refresh. The displaced-label chain value is the exception to presence — it
-is expected to be absent while the takeover is live, so carry it only from
-proven predecessor displacement. Project status is not claim provenance and
-is never copied into a refreshed record. Direct `added by this claim` fields
-describe only writes performed by the refresh (normally `no`), while proven
-chain fields preserve original marker ownership for release or hand-back. If
-an inherited assignee disappeared before a refresh, omit it only after checking
-it is absent live; the releaser rejects a record that drops a still-present
-predecessor owner.
+(`track-work/references/claim-lifecycle.md`). Route every routine branch or
+scope refresh through `/claim`'s `assets/claim-transaction.sh`; never append a
+`Claiming —` comment directly. Re-enter `/claim` §5 for the same issue: resolve
+the trusted runtime family/model, fetch the default-branch registry snapshot,
+build the candidate record with the real branch and refreshed preflight, and
+obtain the same explicit target-bound approval for the helper invocation (the
+helper remains outside this skill's allowed-tools boundary). The helper is the
+only publisher: it rechecks blockers, derives and validates chain ownership,
+proves timeline continuity, and performs fresh pre- and post-publication
+lineage checks. A failed refresh therefore leaves the predecessor current;
+manual reads never authorize a direct append. Project status remains outside
+the record and claim contract.
 **Copy the `Preflight (§3):` block over verbatim
 too**, where the claim comment carries one: it is the durable record of the
 credential gaps and human-only steps that claim found, and the refreshed
@@ -238,7 +236,8 @@ block, rather than leaving the claim of record asserting `n/a` over a provider
 or a human prerequisite the issue has since grown. This is not conditional on
 the branch name: a claim that already named the eventual branch is exactly the
 case where the copy-forward above never runs and the stale block would survive
-untouched.
+untouched. Publish that refreshed block only through the same transaction route
+above.
 
 The default branch is not always named `main`, which is why it is resolved
 rather than assumed.

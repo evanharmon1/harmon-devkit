@@ -266,6 +266,7 @@ fetch_claim() {
                   | $i] | last // null) as $pi
               | {found: true,
                     id: $events[$ci].id,
+                    created: ($events[$ci].created_at // ""),
                     updated: ($events[$ci].updated_at // ""),
                     author: $events[$ci].user.login,
                     body: $events[$ci].body,
@@ -281,6 +282,7 @@ fetch_claim() {
                           | select($events[$i]
                                    | ((.body | startswith("Claiming —")) and writeauth))
                           | {id: $events[$i].id,
+                             created: ($events[$i].created_at // ""),
                              updated: ($events[$i].updated_at // ""),
                              author: $events[$i].user.login,
                              body: $events[$i].body}]),
@@ -310,6 +312,11 @@ if [ "$(jq -r '.too_new' <<<"$claim_json")" = "true" ]; then
     exit 3
 fi
 claim_id="$(jq -r '.id' <<<"$claim_json")"
+claim_created="$(jq -er '.created | select(type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' \
+    <<<"$claim_json")" || {
+    echo "$repo#$issue: claim timestamp is unreadable — cannot prove marker continuity" >&2
+    exit 2
+}
 claim_author="$(jq -r '.author // empty' <<<"$claim_json")"
 claim_lineage_fingerprint="$(jq -c '[.lineage[] | {id, updated}]' <<<"$claim_json")"
 
@@ -1028,6 +1035,65 @@ while IFS= read -r omitted; do
         exit 3
     fi
 done < <(sort -u "$omitted_assignees_file")
+
+# Marker presence plus comment lineage cannot distinguish continuous ownership
+# from a removal followed by an independent same-value re-add. Immediately
+# before destructive writes, prove that every assignee/family/model cleanup
+# target stayed uninterrupted since the current trusted leaf committed. The
+# transaction producer proves inherited continuity up to that leaf; this check
+# extends the same invariant from the leaf to cleanup time.
+marker_continuous_since_leaf() {
+    local kind="$1" marker="$2" timeline="$3"
+    jq -e --arg kind "$kind" --arg marker "$(lower "$marker")" --arg since "$claim_created" '
+        all(.[];
+            if $kind == "assignee" and .event == "unassigned"
+                and (.assignee.login | ascii_downcase) == $marker then
+                .created_at < $since
+            elif $kind == "label" and .event == "unlabeled"
+                and (.label.name | ascii_downcase) == $marker then
+                .created_at < $since
+            else true
+            end)
+    ' <<<"$timeline" >/dev/null
+}
+
+if [ -s "$assignees_to_remove" ] || [ -n "$labels_to_remove" ]; then
+    if ! cleanup_timeline="$(gh api --paginate --slurp "repos/$repo/issues/$issue/timeline" | jq 'add // []')"; then
+        echo "$repo#$issue: pre-write timeline is unreadable — cannot prove marker continuity" >&2
+        exit 2
+    fi
+    if ! jq -e '
+        type == "array"
+        and all(.[];
+            if .event == "unassigned" then
+                (.created_at | type == "string"
+                    and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                and (.assignee.login | type == "string")
+            elif .event == "unlabeled" then
+                (.created_at | type == "string"
+                    and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                and (.label.name | type == "string")
+            else true
+            end)
+    ' <<<"$cleanup_timeline" >/dev/null; then
+        echo "$repo#$issue: pre-write timeline is malformed — cannot prove marker continuity" >&2
+        exit 2
+    fi
+    while IFS= read -r cleanup_assignee; do
+        [ -n "$cleanup_assignee" ] || continue
+        if ! marker_continuous_since_leaf assignee "$cleanup_assignee" "$cleanup_timeline"; then
+            echo "$repo#$issue: assignee '$cleanup_assignee' lacks uninterrupted ownership through cleanup — leaving markers untouched" >&2
+            exit 3
+        fi
+    done <"$assignees_to_remove"
+    while IFS= read -r cleanup_label; do
+        [ -n "$cleanup_label" ] || continue
+        if ! marker_continuous_since_leaf label "$cleanup_label" "$cleanup_timeline"; then
+            echo "$repo#$issue: label '$cleanup_label' lacks uninterrupted ownership through cleanup — leaving markers untouched" >&2
+            exit 3
+        fi
+    done <<<"$labels_to_remove"
+fi
 
 # ── Execute ──────────────────────────────────────────────────────────────────
 run_write() {

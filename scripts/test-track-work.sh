@@ -2795,13 +2795,18 @@ grep -Fq 'does not accept `--displaced-label`' "$claim_skill" ||
 grep -Fq 'Record the exact direct and chain provenance' "$claim_skill" ||
     fail "/claim manual takeover must record the provenance its approved writes established"
 
-echo "==> implement refresh guidance resets direct ownership while carrying chain ownership"
-grep -Fq 'Direct `added by this claim` fields' "$implement_skill" &&
-    grep -Fq 'describe only writes performed by the refresh' "$implement_skill" ||
-    fail "/implement must reset refresh direct-ownership fields from the refresh's own writes"
-grep -Fq '(normally `no`), while proven' "$implement_skill" &&
-    grep -Fq 'chain fields preserve original marker ownership' "$implement_skill" ||
-    fail "/implement must carry proven chain ownership across a refresh"
+echo "==> implement routes every routine refresh through the claim transaction"
+for required in \
+    'Route every routine branch or' \
+    '`assets/claim-transaction.sh`' \
+    'explicit target-bound approval' \
+    'fresh pre- and post-publication'; do
+    grep -Fq "$required" "$implement_skill" ||
+        fail "/implement transaction refresh contract is missing: $required"
+done
+if grep -Fq 'Post a new `Claiming —` comment' "$implement_skill"; then
+    fail "/implement must not retain a manual claim-comment refresh path"
+fi
 
 echo "==> claim lifecycle consumers preserve chain-owned cleanup targets"
 retro_skill="./ai/skills/universal/retro/SKILL.md"
@@ -2822,6 +2827,7 @@ rc_bin="$tmp/rcbin"
 mkdir -p "$rc_bin"
 rc_comments="$tmp/rc-comments.json"
 rc_issue="$tmp/rc-issue.json"
+rc_timeline="$tmp/rc-timeline.json"
 rc_log="$tmp/rc-writes.log"
 rc_body="$tmp/rc-body.txt"
 cat >"$rc_bin/gh" <<'STUB'
@@ -2838,6 +2844,10 @@ if [ -n "${RC_FAIL_MATCH:-}" ]; then
     esac
 fi
 case "$*" in
+*--slurp*timeline*)
+    [ "${RC_TIMELINE_FAIL:-0}" -eq 0 ] || exit 1
+    cat "$RC_TIMELINE_FILE"
+    ;;
 *--slurp*comments*)
     # Two-phase mode: with RC_COMMENTS_FILE2 set, the first fetch serves
     # RC_COMMENTS_FILE and every later fetch serves RC_COMMENTS_FILE2 —
@@ -2875,6 +2885,7 @@ rc_state="$tmp/rc-state"
 rc_scenario() {
     printf '%s' "$1" >"$rc_comments"
     printf '%s' "$2" >"$rc_issue"
+    printf '%s' '[[]]' >"$rc_timeline"
     : >"$rc_log"
     : >"$rc_body"
     rm -f "$rc_state"
@@ -2885,6 +2896,7 @@ run_release() {
     _rc=0
     env PATH="$rc_bin:$PATH" GH_REPO="" \
         RC_COMMENTS_FILE="$rc_comments" RC_ISSUE_FILE="$rc_issue" \
+        RC_TIMELINE_FILE="$rc_timeline" RC_TIMELINE_FAIL="${RC_TIMELINE_FAIL:-0}" \
         RC_COMMENTS_FILE2="${RC_COMMENTS_FILE2:-}" \
         RC_ISSUE_FILE2="${RC_ISSUE_FILE2:-}" RC_STATE="$rc_state" \
         RC_FAIL_MATCH="${RC_FAIL_MATCH:-}" RC_LOG="$rc_log" RC_BODY_OUT="$rc_body" \
@@ -2931,6 +2943,34 @@ grep -q 'issue comment' "$rc_log" || fail "the supersede comment must be posted"
 echo "==> the supersede comment's first line is the exact contract literal"
 head -1 "$rc_body" | grep -Fxq 'Claim released — issue closed (completed). (Supersedes the claim record above.)' ||
     fail "release comment first line must match the contract (got: $(head -1 "$rc_body"))"
+
+echo "==> release requires uninterrupted label ownership after the current leaf"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+printf '%s' '[[{"event":"unlabeled","created_at":"2026-01-02T00:00:00Z","label":{"name":"agent:claude-code"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 3 ] || fail "a removed and re-added label must fail closed"
+[ ! -s "$rc_log" ] || fail "broken label continuity must trigger zero writes"
+
+echo "==> release requires uninterrupted assignee ownership after the current leaf"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+printf '%s' '[[{"event":"unassigned","created_at":"2026-01-02T00:00:00Z","assignee":{"login":"evanharmon1"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 3 ] || fail "a removed and re-added assignee must fail closed"
+[ ! -s "$rc_log" ] || fail "broken assignee continuity must trigger zero writes"
+
+echo "==> release fails closed on unreadable or malformed continuity evidence"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+[ "$(RC_TIMELINE_FAIL=1 run_release --reason r)" = 2 ] || fail "an unreadable timeline must fail closed"
+[ ! -s "$rc_log" ] || fail "an unreadable timeline must trigger zero writes"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+printf '%s' '[[{"event":"unlabeled","created_at":"2026-01-02T00:00:00Z","label":{}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 2 ] || fail "a malformed timeline must fail closed"
+[ ! -s "$rc_log" ] || fail "a malformed timeline must trigger zero writes"
+
+echo "==> removals before the current leaf do not block an uninterrupted release"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
+printf '%s' '[[{"event":"unlabeled","created_at":"2025-12-31T00:00:00Z","label":{"name":"agent:claude-code"}},{"event":"unassigned","created_at":"2025-12-31T00:00:00Z","assignee":{"login":"evanharmon1"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 0 ] || fail "pre-claim history must not block uninterrupted release"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" || fail "uninterrupted release must remove the label"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "uninterrupted release must remove the assignee"
 
 echo "==> a legacy 'yes' record removes the live agent:* labels"
 body_legacy="$(printf '%s' "$body_v1" | sed 's/agent:claude-code$/yes/')"

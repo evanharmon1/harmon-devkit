@@ -170,7 +170,12 @@ in the claim record, never in the label.
   ambiguous, edited, or forged provenance fails closed with zero writes. A
   proven release removes every still-present owned assignee while preserving
   unrelated assignees, and a failed supersede publication restores that same
-  set. This is intentionally an explicit transfer rather than a best-effort
+  set. Immediately before destructive cleanup it also reads the complete issue
+  timeline and requires every assignee, family label, and model label target to
+  have remained uninterrupted since the current trusted leaf committed.
+  Removal followed by an independent same-value re-add, or unreadable/malformed
+  timeline evidence, fails closed with zero writes. This is intentionally an
+  explicit transfer rather than a best-effort
   union of historical comments:
   GitHub's current marker state cannot distinguish a pre-existing label from a
   later independent re-add of the same text. When that provenance cannot be
@@ -220,9 +225,10 @@ in the claim record, never in the label.
   obsolete PR was closed is not that PR's to release. Keep the line's shape.
   The line is kept *true* by `/implement` §3: when the feature branch it
   creates differs from the branch the claim recorded (the normal case —
-  `/claim` runs before the branch exists), it posts a refreshed
-  `Claiming —` comment naming the real branch, which becomes the claim of
-  record. A mismatch at PR-close therefore means the claim is genuinely not
+  `/claim` runs before the branch exists), it routes a refreshed candidate
+  through `/claim`'s transaction helper. Only that helper may publish the
+  `Claiming —` comment naming the real branch, after blocker, continuity, and
+  fresh lineage checks. A mismatch at PR-close therefore means the claim is genuinely not
   that PR's; worst case it releases when the issue closes (no `--branch`
   there).
 - **An incomplete record fails closed**: `Claim record` present but any of

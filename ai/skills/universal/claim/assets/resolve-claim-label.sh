@@ -99,6 +99,10 @@ legacy_labels_for_pre_field_registry() {
     qwen) printf '%s\n' agent:qwen-code ;;
     esac
 }
+finite_legacy_label_matches_family() {
+    local label="$1"
+    legacy_labels_for_pre_field_registry "$family" | grep -Fqx "$label"
+}
 if [ -n "$registry" ]; then
     [ -r "$registry" ] || {
         echo "claim identity: registry is unreadable" >&2
@@ -220,8 +224,14 @@ while IFS= read -r label; do
             if [ -z "$claim_model" ]; then
                 same="$label"
             else
-                # During migration, a registry-declared legacy alias is the
-                # durable family marker for a model refinement too.
+                # Event-driven release can bind model refinements only to the
+                # finite pre-registry aliases. A registry-only alias has no
+                # trusted snapshot at release time, so emitting that plan here
+                # would advertise a transaction the producer rejects.
+                finite_legacy_label_matches_family "$label" || {
+                    echo "claim identity: custom legacy marker '$label' cannot own a model refinement; migrate to 'claim:$family'" >&2
+                    exit 20
+                }
                 family_marker="$label"
             fi
         elif [ -n "$claim_model" ]; then
