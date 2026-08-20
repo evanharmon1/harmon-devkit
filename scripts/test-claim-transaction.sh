@@ -62,6 +62,11 @@ issue)
         if [ -n "${CLAIM_FAIL_EDIT_MATCH:-}" ] && [[ " ${*:3} " == *"$CLAIM_FAIL_EDIT_MATCH"* ]]; then
             exit 1
         fi
+        fail_after=0
+        if [ -n "${CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH:-}" ] &&
+            [[ " ${*:3} " == *"$CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH"* ]]; then
+            fail_after=1
+        fi
         shift 2
         while [ "$#" -gt 0 ]; do
             case "$1" in
@@ -84,6 +89,7 @@ issue)
             *) shift ;;
             esac
         done
+        [ "$fail_after" -eq 0 ] || exit 1
         ;;
     comment)
         body_file=""
@@ -129,11 +135,21 @@ set -euo pipefail
 case " $* " in
 *' --show '*)
     printf 'status show\n' >>"$CLAIM_LOG"
-    case "${CLAIM_STATUS_SHOW_RC:-0}" in
+    status_count=0
+    [ ! -f "$CLAIM_STATUS_READ_COUNT" ] || status_count="$(cat "$CLAIM_STATUS_READ_COUNT")"
+    status_count=$((status_count + 1))
+    printf '%s\n' "$status_count" >"$CLAIM_STATUS_READ_COUNT"
+    status_rc="${CLAIM_STATUS_SHOW_RC:-0}"
+    status_value="${CLAIM_PRIOR_STATUS:-Ready}"
+    if [ "$status_count" -gt 1 ]; then
+        status_rc="${CLAIM_STATUS_SHOW_RC_AFTER_FIRST:-$status_rc}"
+        status_value="${CLAIM_STATUS_AFTER_FIRST:-$status_value}"
+    fi
+    case "$status_rc" in
     0)
-        printf 'Status=%s\nboard=%s\n' "${CLAIM_PRIOR_STATUS:-Ready}" "${CLAIM_BOARD:-Owner Project}"
+        printf 'Status=%s\nboard=%s\n' "$status_value" "${CLAIM_BOARD:-Owner Project}"
         ;;
-    *) exit "${CLAIM_STATUS_SHOW_RC}" ;;
+    *) exit "$status_rc" ;;
     esac
     ;;
 *)
@@ -148,6 +164,7 @@ issue_file="$tmp/issue.json"
 comments_file="$tmp/comments.json"
 comments_fail_flag="$tmp/comments.fail"
 comments_read_count="$tmp/comments.read-count"
+status_read_count="$tmp/status.read-count"
 log="$tmp/actions.log"
 record="$tmp/record.md"
 err="$tmp/err"
@@ -158,6 +175,7 @@ scenario() {
     : >"$log"
     rm -f "$comments_fail_flag"
     rm -f "$comments_read_count"
+    rm -f "$status_read_count"
 }
 
 make_record() {
@@ -205,10 +223,12 @@ run_claim() {
         CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
         CLAIM_COMMENTS_FAIL_FLAG="$comments_fail_flag" CLAIM_LOG="$log" \
         CLAIM_COMMENTS_READ_COUNT="$comments_read_count" \
+        CLAIM_STATUS_READ_COUNT="$status_read_count" \
         CLAIM_MUTATE_COMMENTS_ON_READ="${RUN_MUTATE_COMMENTS_ON_READ:-}" \
         CLAIM_CONCURRENT_RECORD="${RUN_CONCURRENT_RECORD:-$record}" \
         CLAIM_CONCURRENT_LOGIN="${RUN_CONCURRENT_LOGIN:-collaborator}" \
         CLAIM_CLOSE_AFTER_COMMENT="${RUN_CLOSE_AFTER_COMMENT:-false}" \
+        CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH="${CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH:-}" \
         CLAIM_LOGIN="${RUN_LOGIN:-evanharmon1}" \
         "$helper" --repo evanharmon1/harmon-devkit --issue 543 \
         --record-file "$record" --status-helper "$stub/status-helper" "$@" \
@@ -228,7 +248,8 @@ make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 sed -n '2p' "$log" | grep -q -- '--add-assignee evanharmon1' || fail "assignee must be the first write"
 sed -n '3p' "$log" | grep -q -- '--add-label claim:gpt' || fail "label must be the second write"
 [ "$(sed -n '4p' "$log")" = comment ] || fail "record must follow marker writes"
-[ "$(sed -n '5p' "$log")" = 'status write' ] || fail "board must follow the record"
+[ "$(sed -n '5p' "$log")" = 'status show' ] || fail "board status must be re-read after the record"
+[ "$(sed -n '6p' "$log")" = 'status write' ] || fail "board must follow its fresh proof"
 
 echo "==> trusted family and runtime metadata commit through the transaction"
 scenario '{"assignees":[],"labels":[]}'
@@ -369,12 +390,59 @@ make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 grep -q 'partial recordless claim remains' "$err" || fail "partial recordless claim must be named"
 jq -e 'any(.labels[]; .name == "claim:gpt")' "$issue_file" >/dev/null || fail "failed removal should remain visible"
 
+echo "==> a failed label response never attributes changed state to this attempt"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH='--add-label claim:gpt' run_claim --claim-label claim:gpt)" = 6 ] ||
+    fail "changed state after a failed label response must be indeterminate"
+grep -q 'ambiguous provenance' "$err" || fail "ambiguous label provenance must be explicit"
+jq -e 'any(.assignees[]; .login == "evanharmon1") and any(.labels[]; .name == "claim:gpt")' \
+    "$issue_file" >/dev/null || fail "indeterminate marker state must remain visible"
+if grep -q -- '--remove-' "$log"; then fail "ambiguous label state must never be compensated"; fi
+
 echo "==> board failure retains the valid claim and reports the board gap"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(CLAIM_STATUS_WRITE_RC=1 run_claim --claim-label claim:gpt)" = 5 ] || fail "board failure should exit 5"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "board failure must retain the durable record"
 grep -q 'VALID CLAIM COMMITTED' "$err" || fail "valid-claim board gap must be explicit"
+
+echo "==> unreadable initial board state commits the claim but is never overwritten"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none unknown unknown
+[ "$(CLAIM_STATUS_SHOW_RC=2 run_claim --claim-label claim:gpt)" = 5 ] ||
+    fail "unreadable prior board state must become a committed board gap"
+[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "unreadable board must not discard the valid claim"
+if grep -q '^status write$' "$log"; then fail "unknown prior status must never be overwritten"; fi
+
+echo "==> a concurrent board change is preserved after claim publication"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(CLAIM_STATUS_AFTER_FIRST=Done run_claim --claim-label claim:gpt)" = 5 ] ||
+    fail "changed board state must block the stale write"
+grep -q "board status changed from 'Ready' to 'Done'" "$err" ||
+    fail "concurrent board change must be reported"
+if grep -q '^status write$' "$log"; then fail "concurrent board status must not be overwritten"; fi
+
+echo "==> an exact committed-record retry resumes only the board phase"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(CLAIM_STATUS_WRITE_RC=1 run_claim --claim-label claim:gpt)" = 5 ] ||
+    fail "fixture must leave a committed record before board success"
+: >"$log"
+rm -f "$status_read_count"
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] ||
+    fail "exact committed record must resume its board phase: $(cat "$err")"
+[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "resume must not publish a duplicate record"
+if grep -q '^edit\|^comment$' "$log"; then fail "resume must not repeat marker or comment writes"; fi
+[ "$(grep -c '^status write$' "$log")" -eq 1 ] || fail "resume must perform the pending board write once"
+
+echo "==> an exact retry treats an already-In-Progress board as complete"
+: >"$log"
+rm -f "$status_read_count"
+[ "$(CLAIM_PRIOR_STATUS='In Progress' run_claim --claim-label claim:gpt)" = 0 ] ||
+    fail "already-complete board phase must be idempotent"
+if grep -q '^status write$\|^edit\|^comment$' "$log"; then fail "completed retry must perform no writes"; fi
 
 echo "==> a claim closed after publication cannot be moved back to In Progress"
 scenario "$empty_issue"

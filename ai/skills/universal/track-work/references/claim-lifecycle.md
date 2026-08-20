@@ -98,6 +98,11 @@ in the claim record, never in the label.
   and record. On refresh, publication failure leaves the predecessor current;
   pre-existing or inherited markers were not added by the attempt and are never
   compensation targets.
+- **The record is the board-phase resume token.** An exact-current record may
+  retry only its pending board transition. The producer freshly compares the
+  selected board and status with the record immediately before writing,
+  preserves any concurrent change, treats an already-`In Progress` status as
+  complete, and never overwrites an unreadable prior status.
 - The body carries a `Claim record` block whose fields are **one line each**,
   anchored on the literal `by this claim:` (the keys contain backticks and
   their own colons — parsers must never split on a colon):

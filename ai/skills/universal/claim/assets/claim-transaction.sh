@@ -405,6 +405,13 @@ if ! select_predecessor "$tmp/issue-before.json" "$tmp/comments-before.json" "$t
     echo "claim transaction: could not select the immediate trusted predecessor" >&2
     exit 2
 fi
+resume_exact=0
+if jq -e --arg login "$login" --rawfile body "$record_file" '
+    ($body | sub("\\n+$"; "")) as $expected
+    | .found == true and .author == $login and .body == $expected
+' "$tmp/predecessor.json" >/dev/null; then
+    resume_exact=1
+fi
 if ! predecessor_owned_assignees "$tmp/predecessor.json" >"$tmp/predecessor-assignees"; then
     echo "claim transaction: predecessor assignee provenance is unreadable" >&2
     exit 2
@@ -467,36 +474,106 @@ claim_blockers_absent() {
     done < <(jq -r '.labels[]?.name' "$snapshot")
 }
 
-if ! claim_blockers_absent "$tmp/issue-before.json"; then
+if [ "$resume_exact" -eq 0 ] && ! claim_blockers_absent "$tmp/issue-before.json"; then
     echo "claim transaction: issue state, assignees, or ownership labels changed into a claim blocker" >&2
     exit 2
 fi
 
 status_args=(--repo "$repo" --issue "$issue")
 [ -n "$project_title" ] && status_args+=(--project "$project_title")
-set +e
-status_before="$($status_helper "${status_args[@]}" --show 2>"$tmp/status-show.err")"
-status_read=$?
-set -e
+
+read_status_snapshot() {
+    status_snapshot=""
+    status_snapshot_rc=0
+    status_snapshot="$($status_helper "${status_args[@]}" --show 2>"$tmp/status-show.err")" ||
+        status_snapshot_rc=$?
+    case "$status_snapshot_rc" in
+    0)
+        status_snapshot_board="$(printf '%s\n' "$status_snapshot" | sed -n 's/^board=//p')"
+        [ "$(printf '%s\n' "$status_snapshot" | grep -c '^board=' || true)" -eq 1 ] &&
+            [ -n "$status_snapshot_board" ] || return 2
+        status_snapshot_value="$(printf '%s\n' "$status_snapshot" | sed -n 's/^Status=//p')"
+        [ "$(printf '%s\n' "$status_snapshot" | grep -c '^Status=' || true)" -le 1 ] || return 2
+        [ -n "$status_snapshot_value" ] || status_snapshot_value="none"
+        return 0
+        ;;
+    3)
+        status_snapshot_board="none"
+        status_snapshot_value="none"
+        return 3
+        ;;
+    1 | 2) return 2 ;;
+    *) return 2 ;;
+    esac
+}
+
+finish_board_phase() {
+    local board_read=0 board_write=0
+    if ! issue_snapshot >"$tmp/issue-before-board.json" ||
+        ! comments_snapshot >"$tmp/comments-before-board.json" ||
+        ! select_predecessor "$tmp/issue-before-board.json" "$tmp/comments-before-board.json" \
+            "$tmp/current-before-board.json"; then
+        echo "claim transaction: VALID CLAIM COMMITTED, but current claim state is indeterminate before the board move" >&2
+        return 5
+    fi
+    if [ "$(jq -r '.state' "$tmp/issue-before-board.json")" != OPEN ] ||
+        ! jq -e --arg login "$login" --rawfile body "$record_file" '
+            ($body | sub("\\n+$"; "")) as $expected
+            | .found == true and .author == $login and .body == $expected
+        ' "$tmp/current-before-board.json" >/dev/null; then
+        echo "claim transaction: VALID CLAIM COMMITTED, but it is no longer current on an open issue; refusing the board move" >&2
+        return 5
+    fi
+    if [ "$record_board" = unknown ] || [ "$record_prior" = unknown ]; then
+        echo "claim transaction: VALID CLAIM COMMITTED, but unreadable prior board state cannot be overwritten safely" >&2
+        return 5
+    fi
+    read_status_snapshot || board_read=$?
+    if [ "$record_board" = none ] && [ "$record_prior" = none ]; then
+        if [ "$board_read" -eq 3 ]; then
+            echo "claim transaction: claim committed; no board status was available to move" >&2
+            return 3
+        fi
+        echo "claim transaction: VALID CLAIM COMMITTED, but board availability changed; refusing the board move" >&2
+        return 5
+    fi
+    if [ "$board_read" -ne 0 ] || [ "$status_snapshot_board" != "$record_board" ]; then
+        echo "claim transaction: VALID CLAIM COMMITTED, but the recorded board cannot be revalidated" >&2
+        return 5
+    fi
+    if [ "$status_snapshot_value" = "In Progress" ]; then
+        return 0
+    fi
+    if [ "$status_snapshot_value" != "$record_prior" ]; then
+        echo "claim transaction: VALID CLAIM COMMITTED, but board status changed from '$record_prior' to '$status_snapshot_value'; refusing overwrite" >&2
+        return 5
+    fi
+    "$status_helper" "${status_args[@]}" --status "In Progress" || board_write=$?
+    case "$board_write" in
+    0) return 0 ;;
+    3)
+        echo "claim transaction: claim committed; no board status was available to move" >&2
+        return 3
+        ;;
+    *)
+        echo "claim transaction: VALID CLAIM COMMITTED, but the board move failed or is unverifiable" >&2
+        return 5
+        ;;
+    esac
+}
+
+status_read=0
+read_status_snapshot || status_read=$?
 case "$status_read" in
 0)
-    board="$(printf '%s\n' "$status_before" | sed -n 's/^board=//p')"
-    [ "$(printf '%s\n' "$status_before" | grep -c '^board=' || true)" -eq 1 ] && [ -n "$board" ] || {
-        echo "claim transaction: status helper returned no unique board title" >&2
-        exit 2
-    }
-    prior_status="$(printf '%s\n' "$status_before" | sed -n 's/^Status=//p')"
-    [ "$(printf '%s\n' "$status_before" | grep -c '^Status=' || true)" -le 1 ] || {
-        echo "claim transaction: status helper returned multiple Status values" >&2
-        exit 2
-    }
-    [ -n "$prior_status" ] || prior_status="none"
+    board="$status_snapshot_board"
+    prior_status="$status_snapshot_value"
     ;;
 3)
     board="none"
     prior_status="none"
     ;;
-1 | 2)
+2)
     board="unknown"
     prior_status="unknown"
     echo "claim transaction: board state is unreadable; the record and later board result will preserve that gap" >&2
@@ -517,7 +594,7 @@ model_preexisting=0
 if [ "$model_label" != "none" ] && has_label "$tmp/issue-before.json" "$model_label"; then
     model_preexisting=1
 fi
-if [ "$displaced_label" != "none" ]; then
+if [ "$resume_exact" -eq 0 ] && [ "$displaced_label" != "none" ]; then
     has_label "$tmp/issue-before.json" "$displaced_label" || {
         echo "claim transaction: displaced label is not present in the pre-write state" >&2
         exit 2
@@ -569,36 +646,66 @@ chain_model="$(optional_record_value '- `claim:` model label owned by this claim
 [ -z "$chain_model" ] || chain_model="$(record_token "$chain_model")"
 chain_displaced="$(record_token "$(record_value '- `claim:` label displaced by this claim chain: ')")"
 
-[ "$record_board" = "$board" ] || {
-    echo "claim transaction: record board '$record_board' does not match '$board'" >&2
+case "$record_assignee" in yes | no) ;; *)
+    echo "claim transaction: assignee ownership must be yes or no" >&2
     exit 2
-}
-[ "$record_prior" = "$prior_status" ] || {
-    echo "claim transaction: record prior status '$record_prior' does not match '$prior_status'" >&2
-    exit 2
-}
-expected_chain_prior="$prior_status"
-[ -z "$predecessor_chain_prior" ] || expected_chain_prior="$predecessor_chain_prior"
-[ "$record_chain_prior" = "$expected_chain_prior" ] || {
-    echo "claim transaction: chain board status must come from the immediate predecessor ('$expected_chain_prior')" >&2
-    exit 2
-}
-[ "$record_assignee" = "$expected_assignee" ] || {
-    echo "claim transaction: assignee ownership must be '$expected_assignee'" >&2
-    exit 2
-}
-[ "$record_label" = "$expected_label" ] || {
-    echo "claim transaction: label ownership must be '$expected_label'" >&2
-    exit 2
-}
-{ [ -z "$record_model" ] && [ "$model_label" = none ]; } || [ "$record_model" = "$expected_model" ] || {
-    echo "claim transaction: model-label ownership must be '$expected_model'" >&2
-    exit 2
-}
+    ;;
+esac
+if [ "$claim_label" = none ]; then
+    [ "$record_label" = n/a ] || {
+        echo "claim transaction: a label-less record must use n/a direct label ownership" >&2
+        exit 2
+    }
+else
+    [ "$record_label" = "$claim_label" ] || [ "$record_label" = no ] || {
+        echo "claim transaction: direct family-label ownership does not match the requested marker" >&2
+        exit 2
+    }
+fi
+if [ "$model_label" = none ]; then
+    [ -z "$record_model" ] || [ "$record_model" = n/a ] || {
+        echo "claim transaction: a model-less record must use n/a model ownership" >&2
+        exit 2
+    }
+else
+    [ "$record_model" = "$model_label" ] || [ "$record_model" = no ] || {
+        echo "claim transaction: direct model-label ownership does not match the requested marker" >&2
+        exit 2
+    }
+fi
 [ "$record_displaced" = "$displaced_label" ] || {
     echo "claim transaction: displaced label must be '$displaced_label'" >&2
     exit 2
 }
+
+if [ "$resume_exact" -eq 0 ]; then
+    [ "$record_board" = "$board" ] || {
+        echo "claim transaction: record board '$record_board' does not match '$board'" >&2
+        exit 2
+    }
+    [ "$record_prior" = "$prior_status" ] || {
+        echo "claim transaction: record prior status '$record_prior' does not match '$prior_status'" >&2
+        exit 2
+    }
+    expected_chain_prior="$prior_status"
+    [ -z "$predecessor_chain_prior" ] || expected_chain_prior="$predecessor_chain_prior"
+    [ "$record_chain_prior" = "$expected_chain_prior" ] || {
+        echo "claim transaction: chain board status must come from the immediate predecessor ('$expected_chain_prior')" >&2
+        exit 2
+    }
+    [ "$record_assignee" = "$expected_assignee" ] || {
+        echo "claim transaction: assignee ownership must be '$expected_assignee'" >&2
+        exit 2
+    }
+    [ "$record_label" = "$expected_label" ] || {
+        echo "claim transaction: label ownership must be '$expected_label'" >&2
+        exit 2
+    }
+    { [ -z "$record_model" ] && [ "$model_label" = none ]; } || [ "$record_model" = "$expected_model" ] || {
+        echo "claim transaction: model-label ownership must be '$expected_model'" >&2
+        exit 2
+    }
+fi
 if [ -n "$record_family" ] || [ -n "$family" ]; then
     [ -n "$family" ] && [ "$record_family" = "$family" ] || {
         echo "claim transaction: record family must equal the trusted resolver output" >&2
@@ -630,6 +737,11 @@ case "$chain_displaced" in none) ;; *) valid_label "$chain_displaced" || {
     echo "claim transaction: displaced claim-chain label is invalid" >&2
     exit 2
 } ;; esac
+if [ "$resume_exact" -eq 1 ]; then
+    resume_result=0
+    finish_board_phase || resume_result=$?
+    exit "$resume_result"
+fi
 {
     while IFS= read -r inherited; do
         [ -n "$inherited" ] || continue
@@ -749,11 +861,10 @@ if [ "$assignee_preexisting" -eq 0 ]; then
             exit 6
         fi
         if has_assignee "$tmp/issue-after-assignee.json" "$login"; then
-            assignee_added=1
-            echo "claim transaction: assignee write returned failure but reconciliation confirmed it applied" >&2
-        else
-            exit 4
+            echo "claim transaction: assignee write returned failure and visible assignment has ambiguous provenance" >&2
+            exit 6
         fi
+        exit 4
     fi
 fi
 
@@ -773,28 +884,27 @@ if { [ "$claim_label" != "none" ] && [ "$label_preexisting" -eq 0 ]; } ||
             echo "claim transaction: label write is indeterminate; leaving visible markers for recovery" >&2
             exit 6
         fi
-        if [ "$claim_label" != none ] && has_label "$tmp/issue-after-label.json" "$claim_label"; then
-            label_added=1
+        label_state_changed=0
+        if [ "$claim_label" != none ] && [ "$label_preexisting" -eq 0 ] &&
+            has_label "$tmp/issue-after-label.json" "$claim_label"; then
+            label_state_changed=1
         fi
-        if [ "$model_label" != none ] && has_label "$tmp/issue-after-label.json" "$model_label"; then
-            model_added=1
+        if [ "$model_label" != none ] && [ "$model_preexisting" -eq 0 ] &&
+            has_label "$tmp/issue-after-label.json" "$model_label"; then
+            label_state_changed=1
         fi
         if [ "$displaced_label" != none ] && ! has_label "$tmp/issue-after-label.json" "$displaced_label"; then
-            displaced_removed=1
+            label_state_changed=1
         fi
-        intended=1
-        [ "$claim_label" = none ] || [ "$label_preexisting" -eq 1 ] || [ "$label_added" -eq 1 ] || intended=0
-        [ "$model_label" = none ] || [ "$model_preexisting" -eq 1 ] || [ "$model_added" -eq 1 ] || intended=0
-        [ "$displaced_label" = none ] || [ "$displaced_removed" -eq 1 ] || intended=0
-        if [ "$intended" -eq 1 ]; then
-            echo "claim transaction: label write returned failure but reconciliation confirmed it applied" >&2
-        else
-            set +e
-            compensate_after_read
-            result=$?
-            set -e
-            exit "$result"
+        if [ "$label_state_changed" -eq 1 ]; then
+            echo "claim transaction: label write returned failure and changed marker state has ambiguous provenance" >&2
+            exit 6
         fi
+        set +e
+        compensate_after_read
+        result=$?
+        set -e
+        exit "$result"
     fi
 fi
 
@@ -883,37 +993,6 @@ fi
     echo "claim transaction: internal error: record state unresolved" >&2
     exit 6
 }
-if ! issue_snapshot >"$tmp/issue-before-board.json" ||
-    ! comments_snapshot >"$tmp/comments-before-board.json" ||
-    ! select_predecessor "$tmp/issue-before-board.json" "$tmp/comments-before-board.json" \
-        "$tmp/current-before-board.json"; then
-    echo "claim transaction: VALID CLAIM COMMITTED, but current claim state is indeterminate before the board move" >&2
-    exit 5
-fi
-if [ "$(jq -r '.state' "$tmp/issue-before-board.json")" != OPEN ] ||
-    ! jq -e --arg login "$login" --rawfile body "$record_file" '
-        ($body | sub("\\n+$"; "")) as $expected
-        | .found == true and .author == $login and .body == $expected
-    ' "$tmp/current-before-board.json" >/dev/null; then
-    echo "claim transaction: VALID CLAIM COMMITTED, but it is no longer current on an open issue; refusing the board move" >&2
-    exit 5
-fi
-set +e
-"$status_helper" "${status_args[@]}" --status "In Progress"
-board_result=$?
-set -e
-case "$board_result" in
-0) exit 0 ;;
-3)
-    echo "claim transaction: claim committed; no board status was available to move" >&2
-    exit 3
-    ;;
-1 | 2)
-    echo "claim transaction: VALID CLAIM COMMITTED, but the board move failed or is unverifiable" >&2
-    exit 5
-    ;;
-*)
-    echo "claim transaction: VALID CLAIM COMMITTED, but the board helper returned unexpected exit $board_result" >&2
-    exit 5
-    ;;
-esac
+board_result=0
+finish_board_phase || board_result=$?
+exit "$board_result"

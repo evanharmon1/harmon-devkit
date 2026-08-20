@@ -703,6 +703,17 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   before moving the board; a concurrent release, replacement, or close leaves
   the committed record/state untouched and reports the board gap.
 
+  The exact committed record is also the resume token. Re-running the same
+  transaction recognizes it before deriving fresh marker ownership and enters
+  only the board phase: it re-proves that the record is current, re-reads the
+  selected board, accepts either the recorded prior status or the already
+  completed `In Progress`, and never repeats marker or comment writes. An
+  unreadable initial board value is recorded as a committed gap and is never
+  overwritten; a readable value that changes before the write is preserved.
+  Failed marker commands do not gain ownership from the resulting marker
+  snapshot alone. If changed state cannot be attributed to this attempt, the
+  transaction leaves it visible and reports an indeterminate result.
+
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):
 `--add-assignee` accumulates rather than arbitrates, so if someone else
