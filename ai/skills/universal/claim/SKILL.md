@@ -3,8 +3,8 @@ name: claim
 description: >-
   Pre-implementation sanity check — verify the latest state of the target
   issue, related PRs, and recent merges against the live repo, surface
-  blockers, then claim the issue (assign, label, move the project card to
-  In Progress, comment). Invoke as /claim [issue #].
+  blockers, then claim the issue (assign, label, comment). Invoke as /claim
+  [issue #].
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(git remote), Bash(git remote get-url:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
 ---
@@ -530,17 +530,6 @@ Never approve or run a silently inferred or substituted target.
   marker presence. Record the exact direct and chain provenance that the
   approved manual writes actually established.
 
-- **Board** — synchronize `Status` to `In Progress` only as a non-authoritative,
-  best-effort projection **after** the claim record commits. `Agent` remains
-  retired. The script ships with `track-work`, so
-  `<track-work-dir>` is `.agents/skills/track-work` when the portable path is
-  present, `.claude/skills/track-work` in a Claude-first consumer, and
-  `ai/skills/universal/track-work` in harmon-devkit itself. Run
-  `set-issue-status.sh --status "In Progress"` once after transaction exit 0.
-  Report its result accurately, but never let board absence, drift, failure, or
-  ambiguity change claim success, trigger marker rollback, become cleanup
-  authority, or initiate a transaction retry. The durable comment plus live
-  assignee/labels define the claim; Project state does not.
 - **Comment**: build the exact body in a temporary file with a quoted heredoc
   so the branch/session values are
   never re-evaluated by the shell (a branch name can contain `$(…)`). Use a
@@ -586,10 +575,6 @@ Never approve or run a silently inferred or substituted target.
     --family "$family" --runtime-environment "$runtime_environment" \
     --registry-snapshot "$registry_snapshot"
 
-  # 3. best-effort projection only; its result cannot alter claim success.
-  <track-work-dir>/assets/set-issue-status.sh \
-    --repo "$repo" --issue <n> --status "In Progress" ||
-    echo 'claim committed; Project status was not synchronized' >&2
   ```
 
   The comment is the durable record — it survives compaction, a lost session,
@@ -708,11 +693,12 @@ running as the same user converges on the same assignee and label, and is
 invisible to this check. The claim is a signal, not a lock
 (`track-work` §6).
 
-A claim is a promise to release it. `/shepherd` advances the card as the PR
-moves and releases the `claim:*` label at its stop-at-green; where the
+A claim is a promise to release it. `/shepherd` releases the `claim:*` label at
+its stop-at-green; where the
 claim-release workflow is installed, the close event releases the rest; and
-`/wrap` flags a session that ends with an issue left at `In Progress` and
-nothing in flight (see `track-work/references/claim-lifecycle.md`).
+`/wrap` flags a session that ends with live claim markers and nothing in flight
+(see `track-work/references/claim-lifecycle.md`). Project status is a manual,
+non-authoritative delivery view and `/claim` never reads or writes it.
 
 ## 6. Hand off
 

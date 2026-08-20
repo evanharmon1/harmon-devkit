@@ -2773,8 +2773,12 @@ for required in \
     grep -Fq "$required" "$partial_contract" ||
         fail "/wrap partial delivery cleanup must include: $required"
 done
-grep -Fq 'Project status is not a claim' "$wrap_skill" ||
-    fail "/wrap must exclude Project status from claim cleanup authority"
+if grep -Fq 'set-issue-status.sh' "$claim_skill"; then
+    fail "/claim must not write Project status"
+fi
+if grep -Fq 'set-issue-status.sh' "$shepherd_skill"; then
+    fail "/shepherd must not write Project status"
+fi
 
 echo "==> lifecycle reference distinguishes partial delivery from event release"
 for required in \
@@ -2902,8 +2906,6 @@ rc_comment() {
 body_v1='Claiming — starting implementation on branch b (session s).
 
 Claim record (for `/wrap` — undo only what this claim added):
-- board: none
-- prior board status: none
 - assignee added by this claim: yes
 - `agent:` label added by this claim: agent:claude-code
 - `agent:` label displaced by this claim: none'
@@ -3393,8 +3395,6 @@ body_recordless='Claiming — starting legacy work (session old).'
 body_after_recordless='Claiming — starting implementation on branch refreshed (session new).
 
 Claim record (for `/wrap` — undo only what this claim added):
-- board: none
-- prior board status: none
 - assignee added by this claim: no
 - `claim:` label added by this claim: n/a
 - `claim:` label displaced by this claim: none
@@ -3410,6 +3410,20 @@ rc_scenario "$recordless_refresh_comments" \
     fail "a structured refresh after a recordless predecessor should release: $(cat "$tmp/release.err")"
 if grep -q -- '--remove-assignee\|--remove-label' "$rc_log"; then
     fail "a recordless boundary must not confer cleanup ownership"
+fi
+
+echo "==> recordless prose mentioning Claim record remains an ownership boundary"
+body_recordless_prose='Claiming — starting legacy work (session old).
+
+The Claim record migration will be handled by a later refresh.'
+rc_scenario "$(rc_page \
+    "$(rc_comment evanharmon1 "$body_recordless_prose" 1)" \
+    "$(rc_comment evanharmon1 "$body_after_recordless" 2)")" \
+    '{"state":"closed","labels":[],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] ||
+    fail "ordinary prose must not masquerade as the canonical record heading: $(cat "$tmp/release.err")"
+if grep -q -- '--remove-assignee\|--remove-label' "$rc_log"; then
+    fail "recordless prose must still reset inherited cleanup ownership"
 fi
 
 body_after_recordless_forged="$(printf '%s' "$body_after_recordless" |

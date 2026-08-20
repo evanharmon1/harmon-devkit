@@ -679,9 +679,12 @@ prove_displaced_lineage() {
 # keeping legacy recordless refreshes releasable.
 structured_lineage_suffix() {
     jq '
+        def has_record_heading:
+            any(.body | split("\n")[];
+                . == "Claim record (for `/wrap` — undo only what this claim added):");
         .lineage as $lineage
         | ([range(0; $lineage | length) as $i
-            | select(($lineage[$i].body | contains("Claim record")) | not)
+            | select(($lineage[$i] | has_record_heading) | not)
             | $i] | last // -1) as $boundary
         | .lineage = $lineage[($boundary + 1):]
     ' <<<"$1"
@@ -693,7 +696,7 @@ structured_lineage_suffix() {
 # legacy records omit the metadata entirely.
 while IFS= read -r line; do
     case "$line" in
-    *"Claim record"*) record_present=1 ;;
+    'Claim record (for `/wrap` — undo only what this claim added):') record_present=1 ;;
     *"assignee added by this claim:"*)
         saw_assignee=1
         assignee_added="$(lower "$(extract_value "$line")")"

@@ -99,8 +99,7 @@ read it in the UI) — never guess.
   ownership fields, and runtime metadata never selects a cleanup path.
 
   Four outcomes:
-  - **PR open** — the claim is accurate. Project status remains a separate,
-    non-authoritative delivery projection; nothing to release.
+  - **PR open** — the claim is accurate; nothing to release.
   - **Partial delivery / issue open** — one PR deliberately landed part of the
     claim, and the issue remains open for named remaining work.
     Confirm no work is currently in flight. This is a completed release of
@@ -237,8 +236,8 @@ read it in the UI) — never guess.
     release helper, which walks the trusted A→B→C lineage and proves every
     inherited assignee, owned label, and displaced-label restoration against
     its immediate predecessor before any write. A forged or edited leaf fails
-    closed. Legacy board fields are audit metadata only. If no record survives,
-    ask rather than assume the claim created anything.
+    closed. If no record survives, ask rather than assume the claim created
+    anything.
 
     ```sh
     # Use the exact reason appropriate to the outcome. The helper validates
@@ -252,12 +251,9 @@ read it in the UI) — never guess.
     `Claim released —` supersede line above, verbatim, like every other path
     that clears a marker.
 
-    **Leave the `Agent` field alone.** It is retired, and a claim never wrote
-    it — advisory routing now lives in the `suggest:*` label and live ownership
-    in the `claim:*` label. If a legacy `Agent` value still lingers on an old
-    board, it is a planning artifact this claim never set, so clearing it here
-    would delete a decision the claim never made. Release only what the claim
-    record says the claim added.
+    Release only what the claim record says the claim added. Project fields are
+    manual delivery metadata outside the claim contract and are never cleanup
+    authority.
 
     Do not run any of this mid-flight hand-back unasked — the work is being
     handed back, not finished, so it is the user's call: they may be resuming

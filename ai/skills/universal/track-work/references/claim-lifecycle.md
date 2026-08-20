@@ -2,8 +2,8 @@
 
 The claim convention (`track-work` §6) makes an agent's work visible while it
 happens: assignee, `claim:*` label (the legacy `agent:*` family during the
-rolling transition), and a `Claiming —` comment. A best-effort Project-status
-projection may accompany those markers but is not claim state. This reference
+rolling transition), and a `Claiming —` comment. Project status is a manual,
+non-authoritative delivery view outside the claim contract. This reference
 records the two things the SKILL.md prose cannot carry:
 the **machine contract** for the claim record, and the **design decisions**
 behind event-driven release (harmon-devkit#210).
@@ -17,17 +17,16 @@ consequences that hold independently of whether any session is running:
 1. No closed issue carries a live claim marker — a `claim:*` (or legacy
    `agent:*`) label or a `Claiming —` comment with no `Claim released —`
    successor.
-2. A card's `Status` matches the delivery state GitHub already knows, rather
-   than a snapshot some session took. (Deferred — see the decision below.)
+2. Project fields never authorize, commit, or release a claim.
 
 ## Stages and events
 
 | Stage | Writes |
 | --- | --- |
 | `kickoff` | none — detects drift, never fixes it |
-| `claim` | assignee, `claim:*` label, claim comment; then optionally projects card `In Progress` as non-authoritative best effort — nothing in GitHub knows an agent started before a PR exists, so the durable markers stay session-written |
+| `claim` | assignee, `claim:*` label, claim comment — nothing in GitHub knows an agent started before a PR exists, so these markers stay session-written |
 | `implement` | ticks criteria as verified; files follow-ups |
-| `shepherd` | review replies; releases the `claim:*` label at its terminal stop-at-green ("implementing right now" is false once the work is with a human); card advances (see decision below) |
+| `shepherd` | review replies; releases the `claim:*` label at its terminal stop-at-green ("implementing right now" is false once the work is with a human) |
 | `retro` | none — distinguishes a claim *pending release* from one that outlived its session |
 | `wrap` | releases what events did not; owns the abandoned/parked case |
 
@@ -90,13 +89,11 @@ in the claim record, never in the label.
   The producer never removes a marker or assignee: no final read can authorize
   a later non-conditional delete safely when a same-identity claim may adopt
   the converged marker between those operations.
-- **Project state is not part of claim correctness.** After a record commits,
-  `Status=In Progress` may be attempted once as a best-effort projection. The
-  transaction never reads or writes a board; board absence, drift, failure, or
-  ambiguity cannot change claim success, trigger rollback, authorize cleanup,
-  or create a resumable transaction phase. An exact-current record is only a
-  no-write idempotence token only after the producer revalidates the OPEN issue
-  and every required live marker.
+- **Project state is outside the claim contract.** `/claim` never reads or
+  writes Project fields. Claim authority and the commit contract consist only
+  of live assignee/label markers plus the durable record. An exact-current
+  record is a no-write idempotence token only after the producer revalidates
+  the OPEN issue and every required live marker.
 - The body carries a `Claim record` block whose fields are **one line each**,
   anchored on the literal `by this claim:` (the keys contain backticks and
   their own colons — parsers must never split on a colon):
@@ -117,10 +114,6 @@ in the claim record, never in the label.
   - `claim:` model label owned by this claim chain: <the exact still-present claim:<family>:<model> refinement | no | n/a>
   - `claim:` label displaced by this claim chain: <the exact displaced family/model or legacy label | none>
   ```
-
-  Older records may also contain `board`, `prior board status`, and chain board
-  status lines. They are legacy audit metadata only for current readers and do
-  not authorize a new producer or cleanup path to mutate Project state.
 
 - `harness`, `model`, `family`, `runtime environment`, and `session` are
   optional, informational fields. New claims write all five; legacy records
@@ -256,31 +249,29 @@ in the claim record, never in the label.
 Changing any of this is a contract change: update `/claim`'s template,
 `release-claim.sh`, and this file in the same PR.
 
-## Decision: event-driven `Status` writes — declined for now (2026-07-29)
+## Decision: claim-driven Project writes — removed (2026-08-20)
 
-The events table in #210 also sketched card moves (`Verifying` on PR open,
-`In Review` on green checks, `Ready to Merge` on approval, `Done` on merge).
-**Not shipped**, because:
+The claim flow deliberately performs no automatic Project write. Project
+status is a manual, non-authoritative delivery view, because:
 
-- `GITHUB_TOKEN` cannot write user-owned Projects V2 fields — card automation
-  needs a PAT or App secret (the "paid half"). The release invariant above
-  needed no new secret, so they ship separately.
-- harmon-devkit itself has `project_management: none` and its issues sit on no
-  board — there is nothing here to automate, and shipping unexercisable
-  automation invites rot.
-- Session-written `Status` values are best-effort projections, not claim state.
-  A later event system may replace them, but neither path may use Project state
-  as ownership or cleanup authority.
+- a one-way `In Progress` projection cannot prove which prior status it
+  displaced or restore that status without racing independent planning edits;
+- the assignee, claim labels, and durable record already provide the complete
+  attributable ownership and release contract; and
+- a future event-driven delivery system may own Project transitions end to end,
+  but a session claim must not leave an unowned projection behind.
 
-Revisit when a Projects-scoped secret exists and a board is live.
+This is the maintainer-approved scope decision for harmon-devkit#543. Revisit
+only as a complete event-driven delivery-state design, not as a claim side
+effect.
 
 ## Accepted gaps
 
 - A PR merged into a **non-default base branch** does not auto-close its
   issues, so no event fires; the claim releases whenever the issue eventually
   closes.
-- A merged PR that only `Refs` an issue triggers no event-driven release —
-  `/shepherd` deliberately parks such issues at `In Progress`. `/wrap` owns the attributable partial-delivery transition when the issue stays open and
+- A merged PR that only `Refs` an issue triggers no event-driven release.
+  `/wrap` owns the attributable partial-delivery transition when the issue stays open and
   no work remains in flight: it requires a complete trusted current claim
   record, a same-repository merged `Refs` PR authored by the authenticated
   account, whose head branch matches the current claim record and whose merge

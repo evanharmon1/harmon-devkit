@@ -282,7 +282,9 @@ grep -F 'if [ "$claim_label" = none ]; then' "$transaction_helper" >/dev/null ||
 if grep -F -- '--displaced-label' "$transaction_helper" >/dev/null; then
     fail "routine helper must not accept displacement as a flag"
 fi
-grep -F 'never let board absence, drift, failure, or' ai/skills/universal/claim/SKILL.md >/dev/null || fail "Project synchronization must be explicitly non-authoritative"
+if grep -F 'set-issue-status.sh' ai/skills/universal/claim/SKILL.md >/dev/null; then
+    fail "/claim must never project Project status"
+fi
 if grep -Eq 'claim:(claude|gpt)|agent:(claude-code|codex)' \
     ai/skills/universal/track-work/references/claim-lifecycle.md; then
     fail "canonical claim lifecycle examples must use portable family placeholders"

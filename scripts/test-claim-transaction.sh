@@ -35,6 +35,18 @@ api)
     fi
     if [[ " $* " == *"/timeline"* ]]; then
         [ ! -e "${CLAIM_TIMELINE_FAIL_FLAG:-/nonexistent}" ] || exit 1
+        if [ -n "${CLAIM_MUTATE_TIMELINE_ON_READ:-}" ]; then
+            count=0
+            [ ! -f "$CLAIM_TIMELINE_READ_COUNT" ] || count="$(cat "$CLAIM_TIMELINE_READ_COUNT")"
+            count=$((count + 1))
+            printf '%s\n' "$count" >"$CLAIM_TIMELINE_READ_COUNT"
+            if [ "$count" -eq "$CLAIM_MUTATE_TIMELINE_ON_READ" ]; then
+                next="${CLAIM_TIMELINE_FILE}.next"
+                jq --slurpfile events "$CLAIM_CONCURRENT_TIMELINE_EVENTS" '. + $events[0]' \
+                    "$CLAIM_TIMELINE_FILE" >"$next"
+                mv "$next" "$CLAIM_TIMELINE_FILE"
+            fi
+        fi
         printf '[%s]\n' "$(cat "$CLAIM_TIMELINE_FILE")"
         exit 0
     fi
@@ -142,6 +154,7 @@ comments_file="$tmp/comments.json"
 timeline_file="$tmp/timeline.json"
 comments_fail_flag="$tmp/comments.fail"
 timeline_fail_flag="$tmp/timeline.fail"
+timeline_read_count="$tmp/timeline.read-count"
 comments_read_count="$tmp/comments.read-count"
 log="$tmp/actions.log"
 record="$tmp/record.md"
@@ -154,13 +167,14 @@ scenario() {
     : >"$log"
     rm -f "$comments_fail_flag"
     rm -f "$timeline_fail_flag"
+    rm -f "$timeline_read_count"
     rm -f "$comments_read_count"
 }
 
 make_record() {
     local assignee="$1" label="$2" displaced="$3" chain_assignee="$4" chain_login="$5" chain_label="$6" chain_displaced="$7"
-    local branch="${10:-fix/test}"
-    local family="${11:-gpt}" runtime_environment="${12:-coder}"
+    local branch="${8:-fix/test}"
+    local family="${9:-gpt}" runtime_environment="${10:-coder}"
     cat >"$record" <<EOF
 Claiming — starting implementation on branch $branch (session test-session).
 
@@ -199,6 +213,9 @@ run_claim() {
         CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
         CLAIM_COMMENTS_FAIL_FLAG="$comments_fail_flag" CLAIM_LOG="$log" \
         CLAIM_TIMELINE_FILE="$timeline_file" CLAIM_TIMELINE_FAIL_FLAG="$timeline_fail_flag" \
+        CLAIM_TIMELINE_READ_COUNT="$timeline_read_count" \
+        CLAIM_MUTATE_TIMELINE_ON_READ="${RUN_MUTATE_TIMELINE_ON_READ:-}" \
+        CLAIM_CONCURRENT_TIMELINE_EVENTS="${RUN_CONCURRENT_TIMELINE_EVENTS:-$timeline_file}" \
         CLAIM_COMMENTS_READ_COUNT="$comments_read_count" \
         CLAIM_MUTATE_COMMENTS_ON_READ="${RUN_MUTATE_COMMENTS_ON_READ:-}" \
         CLAIM_CONCURRENT_RECORD="${RUN_CONCURRENT_RECORD:-$record}" \
@@ -248,7 +265,7 @@ if grep -q -- '--remove-' "$log"; then fail "superseded successful publication m
 
 echo "==> trusted family and runtime metadata commit through the transaction"
 scenario '{"assignees":[],"labels":[]}'
-make_record yes claim:claude none yes evanharmon1 claim:claude none 'Owner Project' Ready fix/claude claude devcontainer
+make_record yes claim:claude none yes evanharmon1 claim:claude none fix/claude claude devcontainer
 [ "$(RUN_FAMILY=claude RUN_RUNTIME_ENVIRONMENT=devcontainer run_claim --claim-label claim:claude)" = 0 ] ||
     fail "Claude/devcontainer metadata should commit through the transaction: $(cat "$err")"
 jq -e '.[0].body | contains("- family: claude") and contains("- runtime environment: devcontainer")' \
@@ -275,7 +292,7 @@ echo "==> trusted family rejects mismatched family and model-shaped claim labels
 for mismatched_label in claim:gpt claim:gpt:terra; do
     scenario "$empty_issue"
     make_record yes "$mismatched_label" none yes evanharmon1 "$mismatched_label" none \
-        'Owner Project' Ready fix/mismatch claude
+        fix/mismatch claude
     [ "$(RUN_FAMILY=claude run_claim --claim-label "$mismatched_label")" = 2 ] ||
         fail "trusted family must reject mismatched claim label $mismatched_label"
     [ ! -s "$log" ] || fail "a mismatched family label must trigger zero writes"
@@ -418,27 +435,14 @@ jq -e 'any(.assignees[]; .login == "evanharmon1") and any(.labels[]; .name == "c
     "$issue_file" >/dev/null || fail "indeterminate marker state must remain visible"
 if grep -q -- '--remove-' "$log"; then fail "ambiguous label state must never be compensated"; fi
 
-echo "==> board metadata is non-authoritative and never affects claim commit"
-scenario "$empty_issue"
-make_record yes claim:gpt none yes evanharmon1 claim:gpt none unknown unknown
-awk '
-    { print }
-    /^- session:/ {
-        print "- board: Owner Project"
-        print "- prior board status: unknown"
-        print "- prior board status owned by this claim chain: unknown"
-    }
-' "$record" >"$tmp/legacy-board-record.md"
-mv "$tmp/legacy-board-record.md" "$record"
-[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "board metadata must not gate a durable claim"
-[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "durable record must commit independently of board metadata"
-if grep -q '^status ' "$log"; then fail "transaction must never read or write Project status"; fi
-
 echo "==> an exact committed-record retry is a no-write idempotent success"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "initial claim should commit before retry"
 : >"$log"
 [ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "exact record retry must recognize the committed claim"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "exact retry must not publish a duplicate record"
-[ ! -s "$log" ] || fail "exact retry must perform no marker, comment, or board write"
+[ ! -s "$log" ] || fail "exact retry must perform no marker or comment write"
 
 echo "==> an exact retry succeeds only while its issue and required markers remain live"
 jq '.state = "CLOSED"' "$issue_file" >"$issue_file.next" && mv "$issue_file.next" "$issue_file"
@@ -463,11 +467,11 @@ make_record no no none no none no none
 if grep -q '^edit' "$log"; then fail "pre-existing markers must not be edited"; fi
 
 echo "==> a model refinement preserves its family marker and commits transactionally"
-make_record yes claim:gpt none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/family
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none fix/family
 family_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
 family_predecessor="$(jq -n --argjson body "$family_body" '[{id:1,user:{login:"evanharmon1"},author_association:"OWNER",body:$body}]')"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$family_predecessor"
-make_record no no none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/model
+make_record no no none yes evanharmon1 claim:gpt none fix/model
 add_model_fields claim:gpt:terra claim:gpt:terra
 [ "$(run_claim --claim-label claim:gpt --model-label claim:gpt:terra)" = 0 ] ||
     fail "model refinement should commit through the claim transaction: $(cat "$err")"
@@ -481,7 +485,7 @@ jq '.labels = [.labels[] | select(.name != "claim:gpt:terra")]' "$issue_file" >"
 
 echo "==> failed model publication leaves the tentative refinement visible"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$family_predecessor"
-make_record no no none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/model
+make_record no no none yes evanharmon1 claim:gpt none fix/model
 add_model_fields claim:gpt:terra claim:gpt:terra
 [ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt --model-label claim:gpt:terra)" = 6 ] ||
     fail "confirmed absent model record should remain indeterminate: $(cat "$err")"
@@ -490,11 +494,11 @@ jq -e 'any(.labels[]; .name == "claim:gpt:terra")' "$issue_file" >/dev/null ||
 if grep -q -- '--remove-label' "$log"; then fail "failed model publication must never remove labels"; fi
 
 echo "==> a failed refresh leaves the predecessor current and markers untouched"
-make_record yes claim:gpt none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/predecessor
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none fix/predecessor
 predecessor_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
 predecessor="$(jq -n --argjson body "$predecessor_body" '[{id:1,user:{login:"evanharmon1"},author_association:"OWNER",body:$body}]')"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$predecessor"
-make_record no no none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/refreshed
+make_record no no none yes evanharmon1 claim:gpt none fix/refreshed
 [ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt)" = 6 ] || fail "failed refresh should exit 6"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "failed refresh must preserve only the predecessor"
 if grep -q '^edit' "$log"; then fail "failed refresh must not touch inherited markers"; fi
@@ -532,6 +536,30 @@ make_record no no none yes evanharmon1 no none
 [ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "an unreadable timeline must fail closed"
 [ ! -s "$log" ] || fail "unreadable continuity must fail before writes"
 
+echo "==> inherited marker continuity is revalidated immediately before publication"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+predecessor_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
+predecessor="$(jq -n --argjson body "$predecessor_body" \
+    '[{id:1,user:{login:"evanharmon1"},author_association:"OWNER",body:$body}]')"
+continuity_break="$tmp/continuity-break.json"
+printf '%s' "$label_readded_timeline" >"$continuity_break"
+scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$predecessor"
+make_record no no none yes evanharmon1 claim:gpt none
+[ "$(RUN_MUTATE_TIMELINE_ON_READ=2 RUN_CONCURRENT_TIMELINE_EVENTS="$continuity_break" \
+    run_claim --claim-label claim:gpt)" = 6 ] ||
+    fail "continuity lost before publication must stop the stale append: $(cat "$err")"
+[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "pre-publication continuity drift must not append"
+grep -q 'continuity changed before publication' "$err" || fail "pre-publication continuity drift must be explicit"
+
+echo "==> post-publication reconciliation revalidates original predecessor continuity"
+scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$predecessor"
+make_record no no none yes evanharmon1 claim:gpt none
+[ "$(RUN_MUTATE_TIMELINE_ON_READ=3 RUN_CONCURRENT_TIMELINE_EVENTS="$continuity_break" \
+    run_claim --claim-label claim:gpt)" = 6 ] ||
+    fail "continuity lost during publication must fail reconciliation: $(cat "$err")"
+[ "$(jq 'length' "$comments_file")" -eq 2 ] || fail "the published record remains visible for recovery"
+grep -q 'published record is not the current live claim' "$err" || fail "post-publication continuity drift must be explicit"
+
 echo "==> label-less repositories remain an explicit manual exception"
 scenario "$empty_issue"
 make_record yes n/a none yes evanharmon1 n/a none none none
@@ -541,7 +569,7 @@ jq -e '(.assignees | length) == 0' "$issue_file" >/dev/null || fail "routine hel
 [ ! -s "$log" ] || fail "routine helper must perform zero writes for label-less exception"
 
 echo "==> A to B to C takeover retains the canonical predecessor ownership set"
-make_record yes no none yes 'alice,bob' claim:gpt none 'Owner Project' Ready fix/predecessor
+make_record yes no none yes 'alice,bob' claim:gpt none fix/predecessor
 predecessor_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
 scenario '{"assignees":[{"login":"alice"},{"login":"bob"}],"labels":[{"name":"claim:gpt"}]}' \
     "$(jq -n --argjson body "$predecessor_body" '[{id:1,user:{login:"bob"},author_association:"COLLABORATOR",body:$body}]')"

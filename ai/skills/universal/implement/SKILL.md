@@ -124,9 +124,8 @@ issue, and two agents start implementing.
    - **Corroborating** — a `claim:*` (or legacy `agent:*`) label for this agent. It names the agent
      but not the session, and a repo with no such label family cannot have one
      at all (`/claim` treats that as benign), so its absence proves nothing.
-   - **Not ownership on its own** — a card at `In Progress`. `Status` is the
-     delivery stage, not an identity; a human triaging the board sets it too.
-     Never proceed on this marker alone.
+   - **Not ownership** — Project status is a manual, non-authoritative delivery
+     view outside the claim contract. Never proceed on it.
 
    Proceed when a strong marker matches this session, or a corroborating one
    does and the user confirms it is theirs. **Say plainly what this cannot

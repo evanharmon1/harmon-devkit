@@ -3,7 +3,7 @@
 #
 # The durable comment is the boundary between tentative marker writes and a
 # valid claim. Marker writes happen first and the exact record is published
-# next. Project-board synchronization is deliberately outside this helper.
+# next. Project fields are deliberately outside the claim contract.
 set -euo pipefail
 
 usage() {
@@ -545,6 +545,26 @@ if [ "$(jq -r '.found' "$tmp/predecessor.json")" = true ] &&
     fi
 fi
 
+inherited_continuity_required=0
+if [ -s "$tmp/predecessor-assignees" ] || [ -n "$predecessor_chain_label" ] ||
+    [ -n "$predecessor_chain_model" ]; then
+    inherited_continuity_required=1
+fi
+inherited_continuity_holds() {
+    local timeline_file="$1" inherited
+    while IFS= read -r inherited; do
+        [ -n "$inherited" ] || continue
+        marker_continuous_since_predecessor assignee "$inherited" "$tmp/predecessor.json" \
+            "$timeline_file" || return 1
+    done <"$tmp/predecessor-assignees"
+    [ -z "$predecessor_chain_label" ] ||
+        marker_continuous_since_predecessor label "$predecessor_chain_label" "$tmp/predecessor.json" \
+            "$timeline_file" || return 1
+    [ -z "$predecessor_chain_model" ] ||
+        marker_continuous_since_predecessor label "$predecessor_chain_model" "$tmp/predecessor.json" \
+            "$timeline_file" || return 1
+}
+
 claim_blockers_absent() {
     local snapshot="$1" assigned live_label
     [ "$(jq -r '.state' "$snapshot")" = OPEN ] || return 1
@@ -697,9 +717,11 @@ claim_is_live() {
         { [ "$chain_displaced" = none ] || ! has_label "$snapshot" "$chain_displaced"; }
 }
 current_record_is_live() {
-    local issue_output="$1" comments_output="$2" predecessor_output="$3"
+    local issue_output="$1" comments_output="$2" predecessor_output="$3" timeline_output="$4"
     issue_snapshot >"$issue_output" &&
         comments_snapshot >"$comments_output" &&
+        { [ "$inherited_continuity_required" -eq 0 ] ||
+            { timeline_snapshot >"$timeline_output" && inherited_continuity_holds "$timeline_output"; }; } &&
         select_predecessor "$issue_output" "$comments_output" "$predecessor_output" &&
         jq -e --arg login "$login" --rawfile body "$record_file" '
             ($body | sub("\\n+$"; "")) as $expected
@@ -827,6 +849,13 @@ if ! same_predecessor "$tmp/predecessor.json" "$tmp/predecessor-before-record.js
     echo "claim transaction: a newer trusted claim or release appeared before publication; leaving visible markers for recovery" >&2
     exit 6
 fi
+if [ "$inherited_continuity_required" -eq 1 ]; then
+    if ! timeline_snapshot >"$tmp/timeline-before-record.json" ||
+        ! inherited_continuity_holds "$tmp/timeline-before-record.json"; then
+        echo "claim transaction: inherited marker continuity changed before publication; leaving visible markers for recovery" >&2
+        exit 6
+    fi
+fi
 if ! has_label "$tmp/issue-before-record.json" "$claim_label" ||
     { [ "$model_label" != none ] && ! has_label "$tmp/issue-before-record.json" "$model_label"; }; then
     echo "claim transaction: claim markers changed before publication; leaving visible markers for recovery" >&2
@@ -860,7 +889,7 @@ else
 fi
 
 if ! current_record_is_live "$tmp/issue-after-publication.json" "$tmp/comments-current.json" \
-    "$tmp/predecessor-after-publication.json"; then
+    "$tmp/predecessor-after-publication.json" "$tmp/timeline-after-publication.json"; then
     if [ "$comment_command_succeeded" -eq 1 ]; then
         echo "claim transaction: published record is not the current live claim; leaving visible state for recovery" >&2
     else
