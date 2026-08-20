@@ -166,7 +166,8 @@ if [ -n "$family" ]; then
 fi
 case "$claim_label" in
 claim:*)
-    [ -n "$family" ] && [ "$claim_label" = "claim:$family" ] || {
+    [ -n "$family" ] &&
+        [[ "$claim_label" =~ ^claim:${family}(:[a-z0-9]+(-[a-z0-9]+)*)?$ ]] || {
         echo "claim transaction: family claim label does not match the trusted family" >&2
         exit 2
     }
@@ -683,7 +684,18 @@ model_added=0
 displaced_removed=0
 
 compensate() {
-    local snapshot="$1" failed=0
+    local snapshot="$tmp/issue-before-compensation.json" failed=0
+    if ! issue_snapshot >"$snapshot" ||
+        ! comments_snapshot >"$tmp/comments-before-compensation.json" ||
+        ! select_predecessor "$snapshot" "$tmp/comments-before-compensation.json" \
+            "$tmp/predecessor-before-compensation.json"; then
+        echo "claim transaction: compensation lineage is indeterminate; leaving visible markers for recovery" >&2
+        return 2
+    fi
+    if ! same_predecessor "$tmp/predecessor.json" "$tmp/predecessor-before-compensation.json"; then
+        echo "claim transaction: a newer trusted claim or release adopted the tentative state; refusing compensation" >&2
+        return 2
+    fi
     if [ "$displaced_removed" -eq 1 ] && ! has_label "$snapshot" "$displaced_label"; then
         if ! gh issue edit "$issue" --repo "$repo" --add-label "$displaced_label"; then
             echo "claim transaction: COMPENSATION FAILED restoring displaced label '$displaced_label'" >&2
@@ -716,11 +728,16 @@ compensate_after_read() {
         echo "claim transaction: current marker state is indeterminate; leaving visible markers for recovery" >&2
         return 6
     fi
-    if compensate "$tmp/issue-compensate.json"; then
-        return 4
-    fi
-    echo "claim transaction: partial recordless claim remains after failed compensation" >&2
-    return 7
+    compensation_result=0
+    compensate || compensation_result=$?
+    case "$compensation_result" in
+    0) return 4 ;;
+    2) return 6 ;;
+    *)
+        echo "claim transaction: partial recordless claim remains after failed compensation" >&2
+        return 7
+        ;;
+    esac
 }
 
 if [ "$assignee_preexisting" -eq 0 ]; then
@@ -848,11 +865,14 @@ else
         fi
         echo "claim transaction: record publication is confirmed absent; compensating this attempt" >&2
         set +e
-        compensate "$tmp/issue-after-publication.json"
+        compensate
         compensation_failed=$?
         set -e
         if [ "$compensation_failed" -eq 0 ]; then
             exit 4
+        fi
+        if [ "$compensation_failed" -eq 2 ]; then
+            exit 6
         fi
         echo "claim transaction: partial recordless claim remains after failed compensation" >&2
         exit 7
@@ -863,6 +883,21 @@ fi
     echo "claim transaction: internal error: record state unresolved" >&2
     exit 6
 }
+if ! issue_snapshot >"$tmp/issue-before-board.json" ||
+    ! comments_snapshot >"$tmp/comments-before-board.json" ||
+    ! select_predecessor "$tmp/issue-before-board.json" "$tmp/comments-before-board.json" \
+        "$tmp/current-before-board.json"; then
+    echo "claim transaction: VALID CLAIM COMMITTED, but current claim state is indeterminate before the board move" >&2
+    exit 5
+fi
+if [ "$(jq -r '.state' "$tmp/issue-before-board.json")" != OPEN ] ||
+    ! jq -e --arg login "$login" --rawfile body "$record_file" '
+        ($body | sub("\\n+$"; "")) as $expected
+        | .found == true and .author == $login and .body == $expected
+    ' "$tmp/current-before-board.json" >/dev/null; then
+    echo "claim transaction: VALID CLAIM COMMITTED, but it is no longer current on an open issue; refusing the board move" >&2
+    exit 5
+fi
 set +e
 "$status_helper" "${status_args[@]}" --status "In Progress"
 board_result=$?

@@ -555,7 +555,9 @@ prove_label_lineage() {
         chain_model="$(optional_body_value '- `claim:` model label owned by this claim chain: ' "$body")" || return 1
         [ -n "$chain_model" ] || chain_model="$(optional_body_value '- claim: model label owned by this claim chain: ' "$body")" || return 1
 
-        case "$(lower "$direct")" in no | n/a | none | '') direct="" ;; *) valid_label "$direct" || return 1 ;; esac
+        # Legacy `yes` proves that its own release may sweep then-live labels,
+        # but names no exact target a later structured record may inherit.
+        case "$(lower "$direct")" in yes | no | n/a | none | '') direct="" ;; *) valid_label "$direct" || return 1 ;; esac
         case "$(lower "$direct_model")" in no | n/a | none | '') direct_model="" ;; *) valid_model_label "$direct_model" || return 1 ;; esac
         if [ -n "$chain" ]; then
             case "$(lower "$chain")" in

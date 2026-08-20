@@ -102,6 +102,9 @@ issue)
                 '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"OWNER", body:($body | sub("\\n+$"; ""))}]' \
                 "$CLAIM_COMMENTS_FILE" >"$next"
             mv "$next" "$CLAIM_COMMENTS_FILE"
+            if [ "${CLAIM_CLOSE_AFTER_COMMENT:-false}" = true ]; then
+                write_issue '.state = $value' CLOSED
+            fi
             [ "${CLAIM_COMMENT_MODE:-success}" = success ] || exit 1
             ;;
         absent_fail) exit 1 ;;
@@ -205,6 +208,7 @@ run_claim() {
         CLAIM_MUTATE_COMMENTS_ON_READ="${RUN_MUTATE_COMMENTS_ON_READ:-}" \
         CLAIM_CONCURRENT_RECORD="${RUN_CONCURRENT_RECORD:-$record}" \
         CLAIM_CONCURRENT_LOGIN="${RUN_CONCURRENT_LOGIN:-collaborator}" \
+        CLAIM_CLOSE_AFTER_COMMENT="${RUN_CLOSE_AFTER_COMMENT:-false}" \
         CLAIM_LOGIN="${RUN_LOGIN:-evanharmon1}" \
         "$helper" --repo evanharmon1/harmon-devkit --issue 543 \
         --record-file "$record" --status-helper "$stub/status-helper" "$@" \
@@ -252,13 +256,20 @@ make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ ! -s "$log" ] || fail "a competing marker must trigger zero writes"
 
 echo "==> trusted family rejects mismatched family and model-shaped claim labels"
-for mismatched_label in claim:claude claim:gpt:terra; do
+for mismatched_label in claim:gpt claim:gpt:terra; do
     scenario "$empty_issue"
-    make_record yes "$mismatched_label" none yes evanharmon1 "$mismatched_label" none
-    [ "$(run_claim --claim-label "$mismatched_label")" = 2 ] ||
+    make_record yes "$mismatched_label" none yes evanharmon1 "$mismatched_label" none \
+        'Owner Project' Ready fix/mismatch claude
+    [ "$(RUN_FAMILY=claude run_claim --claim-label "$mismatched_label")" = 2 ] ||
         fail "trusted family must reject mismatched claim label $mismatched_label"
     [ ! -s "$log" ] || fail "a mismatched family label must trigger zero writes"
 done
+
+echo "==> a same-family model-shaped primary marker remains a supported legacy plan"
+scenario "$empty_issue"
+make_record yes claim:gpt:terra none yes evanharmon1 claim:gpt:terra none
+[ "$(run_claim --claim-label claim:gpt:terra)" = 0 ] ||
+    fail "same-family model-shaped primary marker should commit: $(cat "$err")"
 
 echo "==> inherited displacement and board status require predecessor proof"
 scenario "$empty_issue"
@@ -310,6 +321,18 @@ result="$(RUN_MUTATE_COMMENTS_ON_READ=3 RUN_CONCURRENT_RECORD="$concurrent_recor
 grep -q 'refusing compensation' "$err" || fail "adopted tentative markers must be reported"
 if grep -q -- '--remove-' "$log"; then fail "a newer committed claim must protect tentative markers from compensation"; fi
 
+echo "==> final compensation guard catches a claim committed after absence reconciliation"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+cp "$record" "$concurrent_record"
+sed -i 's/test-session/concurrent-session/g' "$concurrent_record"
+result="$(RUN_MUTATE_COMMENTS_ON_READ=4 RUN_CONCURRENT_RECORD="$concurrent_record" \
+    RUN_CONCURRENT_LOGIN=evanharmon1 CLAIM_COMMENT_MODE=absent_fail \
+    run_claim --claim-label claim:gpt)"
+[ "$result" = 6 ] || fail "late claim adoption must block compensation: $(cat "$err")"
+grep -q 'refusing compensation' "$err" || fail "late adoption must be reported"
+if grep -q -- '--remove-' "$log"; then fail "final lineage guard must run before destructive compensation"; fi
+
 echo "==> confirmed record absence compensates only this attempt and restores displacement"
 scenario '{"assignees":[],"labels":[{"name":"claim:claude"}]}'
 make_record yes claim:gpt claim:claude yes evanharmon1 claim:gpt claim:claude
@@ -352,6 +375,14 @@ make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(CLAIM_STATUS_WRITE_RC=1 run_claim --claim-label claim:gpt)" = 5 ] || fail "board failure should exit 5"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "board failure must retain the durable record"
 grep -q 'VALID CLAIM COMMITTED' "$err" || fail "valid-claim board gap must be explicit"
+
+echo "==> a claim closed after publication cannot be moved back to In Progress"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(RUN_CLOSE_AFTER_COMMENT=true run_claim --claim-label claim:gpt)" = 5 ] ||
+    fail "a claim closed after publication must report a board gap"
+[ "$(jq -r '.state' "$issue_file")" = CLOSED ] || fail "the concurrent close must remain visible"
+if grep -q '^status write$' "$log"; then fail "a closed claim must not be moved back to In Progress"; fi
 
 echo "==> pre-existing markers are never rewritten or compensated"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}'

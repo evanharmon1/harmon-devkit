@@ -697,6 +697,12 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   `claim:<family>` resolver output; model refinements use the separate model
   argument and cannot masquerade as that family marker.
 
+  Compensation performs its own final issue-and-lineage read immediately
+  before destructive writes. Once the record commits, the transaction again
+  requires that exact record to remain the current claim on an open issue
+  before moving the board; a concurrent release, replacement, or close leaves
+  the committed record/state untouched and reports the board gap.
+
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):
 `--add-assignee` accumulates rather than arbitrates, so if someone else

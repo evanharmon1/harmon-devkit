@@ -3394,6 +3394,21 @@ rc_scenario "$(rc_page \
     fail "a recordless boundary must not allow inheritance from an older structured claim"
 [ ! -s "$rc_log" ] || fail "forged inheritance across a recordless boundary must write nothing"
 
+echo "==> a structured refresh treats legacy yes as direct-only label authority"
+body_after_legacy_yes="$(printf '%s' "$body_after_recordless" |
+    sed 's/assignee logins owned by this claim chain: none/assignee logins owned by this claim chain: evanharmon1/')"
+rc_scenario "$(rc_page \
+    "$(rc_comment evanharmon1 "$body_legacy" 1)" \
+    "$(rc_comment evanharmon1 "$body_after_legacy_yes" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] ||
+    fail "a structured refresh after legacy yes should release: $(cat "$tmp/release.err")"
+grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
+    fail "structured refresh must preserve exact inherited assignee authority"
+if grep -q -- '--remove-label agent:claude-code' "$rc_log"; then
+    fail "ambiguous legacy yes must not become inherited exact-label authority"
+fi
+
 echo "==> a failed marker write withholds the comment AND the assignee removal"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
 _rc4="$(RC_FAIL_MATCH='--remove-label' run_release --reason r)"

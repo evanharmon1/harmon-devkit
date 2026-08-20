@@ -200,6 +200,10 @@ in the claim record, never in the label.
   structured refresh remains releasable, but its proof starts after the last
   recordless predecessor: nothing before that boundary can become an inherited
   cleanup target.
+- A legacy direct label value of `yes` authorizes only that legacy record's
+  live-label sweep. A later structured refresh may preserve exact assignee
+  provenance across it, but cannot turn the unnamed label into an inherited
+  exact cleanup target.
 - Values are untrusted data. Parsers validate fields that can steer an action
   before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's

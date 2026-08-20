@@ -179,6 +179,7 @@ target="claim:$family"
 [ -z "$claim_model" ] || target="${target}:$claim_model"
 same=""
 family_marker=""
+observed_model=""
 conflicts=""
 while IFS= read -r label; do
     case "$label" in
@@ -200,7 +201,14 @@ while IFS= read -r label; do
                 conflicts="${conflicts}${label}"$'\n'
             fi
         else
-            same="$label"
+            if [ "$label" = "claim:$family" ]; then
+                same="$label"
+            elif [ -n "$observed_model" ] && [ "$observed_model" != "$label" ]; then
+                echo "claim identity: multiple model refinements are ambiguous for a family-level claim" >&2
+                exit 20
+            else
+                observed_model="$label"
+            fi
         fi
         ;;
     agent:*)
@@ -225,6 +233,13 @@ while IFS= read -r label; do
     esac
 done <"$issue_labels"
 
+# A model-only marker remains a supported legacy family-level claim. When the
+# base family marker coexists with exactly one refinement, preserve both as a
+# coherent dual-marker plan instead of letting input ordering pick one.
+if [ -z "$claim_model" ] && [ -z "$same" ] && [ -n "$observed_model" ]; then
+    same="$observed_model"
+fi
+
 if [ -n "$claim_model" ] && [ -z "$family_marker" ]; then
     echo "claim identity: model claim '$target' requires the existing family marker 'claim:$family'" >&2
     exit 20
@@ -235,8 +250,13 @@ if [ -n "$same" ] && [ -z "$conflicts" ]; then
         printf 'family=%s\ntarget_label=%s\nexisting_label=%s\nfamily_label=%s\nmodel_label=%s\n' \
             "$family" "$same" "$same" "$family_marker" "$same"
     else
-        printf 'family=%s\ntarget_label=%s\nexisting_label=%s\nfamily_label=%s\nmodel_label=n/a\n' \
-            "$family" "$same" "$same" "$same"
+        family_marker="$same"
+        model_marker="n/a"
+        if [ -n "$observed_model" ] && [ "$observed_model" != "$same" ]; then
+            model_marker="$observed_model"
+        fi
+        printf 'family=%s\ntarget_label=%s\nexisting_label=%s\nfamily_label=%s\nmodel_label=%s\n' \
+            "$family" "$same" "$same" "$family_marker" "$model_marker"
     fi
     exit 0
 fi
@@ -283,6 +303,8 @@ model_target="n/a"
 if [ -n "$claim_model" ]; then
     family_target="$family_marker"
     model_target="$target"
+elif [ -n "$observed_model" ] && [ "$observed_model" != "$family_target" ]; then
+    model_target="$observed_model"
 fi
 if [ "$conflict_count" -gt 0 ]; then
     printf 'family=%s\n' "$family"

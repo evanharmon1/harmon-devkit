@@ -57,7 +57,8 @@ if run --harness codex-cli --runtime-family gpt --claim-model opus >/dev/null 2>
 
 printf '%s\n' claim:gpt claim:gpt:terra >"$issue"
 out="$(run --harness codex-cli --runtime-family gpt)" || fail "same-family model claim must be idempotent"
-printf '%s\n' "$out" | grep -Fx 'existing_label=claim:gpt:terra' >/dev/null || fail "same-family claim was not recognized"
+printf '%s\n' "$out" | grep -Fx 'existing_label=claim:gpt' >/dev/null || fail "same-family base marker was not recognized"
+printf '%s\n' "$out" | grep -Fx 'model_label=claim:gpt:terra' >/dev/null || fail "same-family model refinement was not preserved"
 
 printf '%s\n' claim:claude >"$issue"
 if run --harness codex-cli --runtime-family gpt >"$tmp/out" 2>&1; then fail "different-family claim must block"; else status=$?; fi
@@ -124,6 +125,23 @@ printf '%s\n' claim:gpt:terra >"$tmp/model-only-available"
 printf '%s\n' claim:gpt:terra >"$issue"
 out="$("$resolver" --registry agent-registry.json --harness codex-cli --runtime-family gpt --project-management github --available-labels "$tmp/model-only-available" --issue-labels "$issue")" || fail "existing model claim must not require a family label"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "existing model claim was not retained"
+
+printf '%s\n' claim:gpt claim:gpt:terra >"$issue"
+out="$("$resolver" --registry agent-registry.json --harness codex-cli --runtime-family gpt --project-management github --available-labels "$available" --issue-labels "$issue")" ||
+    fail "coexisting family and model markers must produce a usable family-level plan"
+printf '%s\n' "$out" | grep -Fx 'family_label=claim:gpt' >/dev/null ||
+    fail "family-level plan must retain the base family marker"
+printf '%s\n' "$out" | grep -Fx 'model_label=claim:gpt:terra' >/dev/null ||
+    fail "family-level plan must report the coexisting model refinement"
+
+printf '%s\n' claim:gpt claim:gpt:terra claim:gpt:sol >"$issue"
+if "$resolver" --registry agent-registry.json --harness codex-cli --runtime-family gpt \
+    --project-management github --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then
+    fail "multiple model refinements must not collapse into an order-dependent plan"
+else
+    status=$?
+fi
+[ "$status" = 20 ] || fail "ambiguous model refinements exited $status, want 20"
 
 : >"$issue"
 if "$resolver" --harness codex-cli --project-management github --available-labels "$available" --issue-labels "$issue" >/dev/null 2>&1; then fail "registry-less fixed harness without family must fail"; else status=$?; fi
