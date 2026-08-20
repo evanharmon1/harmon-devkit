@@ -2722,8 +2722,8 @@ for field in harness model family 'runtime environment' session; do
 done
 grep -Fq 'optional `harness`, `model`, `family`, `runtime' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
-grep -Fq -- '--remove-label <the chain-owned model label' "$wrap_skill" ||
-    fail "/wrap must release a recorded model refinement separately"
+grep -Fq -- '<track-work-dir>/assets/release-claim.sh' "$wrap_skill" ||
+    fail "/wrap must delegate release writes to the lineage-validating helper"
 grep -Fq -- '--remove-label <the model label the claim record names' "$shepherd_skill" ||
     fail "/shepherd must release a recorded model refinement separately"
 
@@ -2792,17 +2792,19 @@ grep -Fq 'Record the exact direct and chain provenance' "$claim_skill" ||
     fail "/claim manual takeover must record the provenance its approved writes established"
 
 echo "==> implement refresh guidance resets direct ownership while carrying chain ownership"
-grep -Fq '`added by this claim` fields describe only writes performed by the refresh' "$implement_skill" ||
+grep -Fq 'Direct `added by this claim` fields' "$implement_skill" &&
+    grep -Fq 'describe only writes performed by the refresh' "$implement_skill" ||
     fail "/implement must reset refresh direct-ownership fields from the refresh's own writes"
-grep -Fq '(normally `no`), while proven chain fields' "$implement_skill" ||
+grep -Fq '(normally `no`), while proven' "$implement_skill" &&
+    grep -Fq 'chain fields preserve original marker ownership' "$implement_skill" ||
     fail "/implement must carry proven chain ownership across a refresh"
 
 echo "==> claim lifecycle consumers preserve chain-owned cleanup targets"
 retro_skill="./ai/skills/universal/retro/SKILL.md"
 grep -Fq 'deduplicated assignee-login set' "$claim_lifecycle" ||
     fail "claim lifecycle must preserve the full proven assignee ownership set"
-grep -Fq -- '--remove-label <the chain-owned label' "$wrap_skill" ||
-    fail "/wrap manual hand-back must remove the chain-owned label"
+grep -Fq 'proves every' "$wrap_skill" ||
+    fail "/wrap hand-back must prove inherited cleanup targets across the full lineage"
 grep -Fq 'Discovery trust is deliberately read-only' "$retro_skill" ||
     fail "/retro must keep stale-claim discovery separate from cleanup trust"
 
@@ -3153,6 +3155,16 @@ rc_scenario "$(rc_page "$(rc_comment collaborator "$body_comma_a" 1)" \
     '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"mallory"},{"login":"third-owner"}]}'
 [ "$(run_release --reason r)" = 2 ] || fail "comma-canonical forged inheritance must fail closed"
 [ ! -s "$rc_log" ] || fail "comma-canonical forged inheritance must write nothing"
+
+echo "==> a forged chain-displaced target fails lineage proof"
+body_displaced_forged="$(printf '%s' "$body_comma_c" |
+    sed 's/label displaced by this claim chain: none/label displaced by this claim chain: agent:codex/')"
+rc_scenario "$(rc_page "$(rc_comment collaborator "$body_comma_a" 1)" \
+    "$(rc_comment evanharmon1 "$body_comma_b" 2)" \
+    "$(rc_comment third-owner "$body_displaced_forged" 3)")" \
+    '{"state":"open","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"third-owner"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "a forged displaced-label target must fail closed"
+[ ! -s "$rc_log" ] || fail "a forged displaced-label target must trigger zero writes"
 
 echo "==> a forged inherited login absent from the trusted predecessor record fails closed"
 body_chain_plural_forged="$(printf '%s' "$body_chain_plural_third" |

@@ -218,16 +218,13 @@ the sole current record. Re-prove each chain field before carrying it: a
 same-text marker independently re-added after the first claim is not owned by
 the refresh. The displaced-label chain value is the exception to presence — it
 is expected to be absent while the takeover is live, so carry it only from
-proven predecessor displacement. Carry the predecessor's chain board status
-(or its direct status when the predecessor is legacy) as well: the current card
-normally already says `In Progress`, so recording it as the refresh's direct
-prior status would lose the status an eventual hand-back must restore. Direct
-  `added by this claim` fields describe only writes performed by the refresh
-  (normally `no`), while proven chain fields
- preserve original ownership and board provenance for release or hand-back. If
- an inherited assignee disappeared before a refresh, omit it only after checking
- it is absent live; the releaser rejects a record that drops a still-present
- predecessor owner.
+proven predecessor displacement. Project status is not claim provenance and
+is never copied into a refreshed record. Direct `added by this claim` fields
+describe only writes performed by the refresh (normally `no`), while proven
+chain fields preserve original marker ownership for release or hand-back. If
+an inherited assignee disappeared before a refresh, omit it only after checking
+it is absent live; the releaser rejects a record that drops a still-present
+predecessor owner.
 **Copy the `Preflight (§3):` block over verbatim
 too**, where the claim comment carries one: it is the durable record of the
 credential gaps and human-only steps that claim found, and the refreshed

@@ -122,11 +122,49 @@ if [ -n "$family" ]; then
         ;;
     esac
 fi
+legacy_labels_for_pre_field_registry() {
+    case "$1" in
+    claude) printf '%s\n' agent:claude-code ;;
+    gpt) printf '%s\n' agent:codex ;;
+    gemini) printf '%s\n' agent:gemini-cli ;;
+    kimi) printf '%s\n' agent:kimi-k2 ;;
+    qwen) printf '%s\n' agent:qwen-code ;;
+    esac
+}
+legacy_label_matches_family() {
+    local root registry has_aliases aliases
+    [ -n "$family" ] || return 1
+    root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    registry="${root:+$root/agent-registry.json}"
+    if [ -n "$registry" ] && [ -e "$registry" ]; then
+        [ -r "$registry" ] || return 1
+        [ "$(jq -r --arg family "$family" '[.families[]? | select(.slug == $family)] | length' "$registry")" = 1 ] ||
+            return 1
+        has_aliases="$(jq -r --arg family "$family" '.families[] | select(.slug == $family) | has("legacy_claim_labels")' "$registry")" ||
+            return 1
+        if [ "$has_aliases" = true ]; then
+            jq -e --arg family "$family" --arg label "$claim_label" '
+                .families[] | select(.slug == $family)
+                | (.legacy_claim_labels | type == "array")
+                  and any(.legacy_claim_labels[]; . == $label)
+            ' "$registry" >/dev/null
+            return
+        fi
+    fi
+    aliases="$(legacy_labels_for_pre_field_registry "$family")"
+    printf '%s\n' "$aliases" | grep -Fqx "$claim_label"
+}
 case "$claim_label" in
 claim:*)
     [ -n "$family" ] &&
         [[ "$claim_label" =~ ^claim:${family}(:[a-z0-9]+(-[a-z0-9]+)*)?$ ]] || {
         echo "claim transaction: family claim label does not match the trusted family" >&2
+        exit 2
+    }
+    ;;
+agent:*)
+    legacy_label_matches_family || {
+        echo "claim transaction: legacy claim label does not match the trusted family" >&2
         exit 2
     }
     ;;
@@ -741,6 +779,7 @@ else
         echo "claim transaction: record publication is indeterminate; leaving visible markers for recovery" >&2
         exit 6
     fi
+    exact_record_found=0
     if jq -e --arg login "$login" --rawfile body "$record_file" \
         --slurpfile before "$tmp/comments-before.json" '
         ($body | sub("\\n+$"; "")) as $expected
@@ -750,8 +789,29 @@ else
             and .body == $expected
             and (.id as $id | ($known | index($id)) == null))
     ' "$tmp/comments-after.json" >/dev/null; then
-        record_committed=1
-        echo "claim transaction: comment command failed but reconciliation confirmed the exact record committed" >&2
+        exact_record_found=1
+    fi
+    if [ "$exact_record_found" -eq 1 ]; then
+        if ! issue_snapshot >"$tmp/issue-after-publication.json" ||
+            ! select_predecessor "$tmp/issue-after-publication.json" "$tmp/comments-after.json" \
+                "$tmp/predecessor-after-publication.json"; then
+            echo "claim transaction: exact record was observed but current claim state is indeterminate" >&2
+            exit 6
+        fi
+        if jq -e --arg login "$login" --rawfile body "$record_file" '
+            ($body | sub("\\n+$"; "")) as $expected
+            | .found == true and .author == $login and .body == $expected
+        ' "$tmp/predecessor-after-publication.json" >/dev/null &&
+            claim_blockers_absent "$tmp/issue-after-publication.json" &&
+            has_assignee "$tmp/issue-after-publication.json" "$login" &&
+            has_label "$tmp/issue-after-publication.json" "$claim_label" &&
+            { [ "$model_label" = none ] || has_label "$tmp/issue-after-publication.json" "$model_label"; }; then
+            record_committed=1
+            echo "claim transaction: comment command failed but reconciliation confirmed the exact current record committed" >&2
+        else
+            echo "claim transaction: exact record was observed but was already superseded or lost required markers" >&2
+            exit 6
+        fi
     else
         if ! issue_snapshot >"$tmp/issue-after-publication.json" ||
             ! select_predecessor "$tmp/issue-after-publication.json" "$tmp/comments-after.json" \

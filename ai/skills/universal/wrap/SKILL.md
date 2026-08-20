@@ -225,38 +225,30 @@ read it in the UI) — never guess.
     leaves the issue still advertising itself as held — the exact failure this
     step exists to prevent:
 
-    **Undo only what the current claim chain owns.** The current claim comment
-    carries a "Claim record" listing which markers `/claim` actually created
-    and, in v2, which predecessor ownership it inherited. An issue can
+    **Undo only what the complete trusted claim lineage proves.** The current
+    claim comment carries a "Claim record" listing which markers `/claim`
+    actually created and which predecessor ownership it inherited. An issue can
     be assigned to you, or carry the label, *before* the claim — ordinary
     backlog ownership, which `/claim` explicitly allows — and the writes
     are all add-if-missing, so on that path they changed nothing. Removing
     them anyway destroys state the session never created, and no amount of
     user approval recovers it, because by then nobody can tell which it was.
-    Use the three core `claim chain` fields when present; their optional
-    assignee-login companion identifies an inherited assignment's owner. They
-    are authoritative current ownership and hand-back provenance after a
-    refresh or takeover. Legacy board fields are audit metadata only. Skip any
-    line the record marks `no`; if no record survives, ask rather than assume
-    the claim created everything.
+    Never turn the leaf record's chain fields directly into commands. Run the
+    release helper, which walks the trusted A→B→C lineage and proves every
+    inherited assignee, owned label, and displaced-label restoration against
+    its immediate predecessor before any write. A forged or edited leaf fails
+    closed. Legacy board fields are audit metadata only. If no record survives,
+    ask rather than assume the claim created anything.
 
     ```sh
-    # Separate commands on purpose: the label is optional (/claim skips it
-    # where the family does not exist), and `--remove-label` on a label the
-    # repo lacks fails the whole `gh issue edit` — taking the assignee removal
-    # down with it and leaving the claim standing. A marker already released
-    # by /shepherd's green stop or the claim-release workflow makes its
-    # command a harmless no-op — skip its line rather than re-releasing.
-    #
-    # If the record names a displaced label, put it back — the claim removed it:
-    gh issue edit <n> --repo <owner/repo> --add-label <the displaced label the record names>
-    gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned label; use the direct added label only for a legacy record>
-    gh issue edit <n> --repo <owner/repo> --remove-label <the chain-owned model label, when the record names one>
-    gh issue edit <n> --repo <owner/repo> --remove-assignee <each recorded direct and inherited chain-owned login>
-    gh issue comment <n> --repo <owner/repo> --body-file -   # why it was handed back
+    # Use the exact reason appropriate to the outcome. The helper validates
+    # the whole lineage, re-reads before writing, performs marker compensation
+    # on partial failure, and posts the fixed supersede line last.
+    <track-work-dir>/assets/release-claim.sh \
+      --repo <owner/repo> --issue <n> --reason '<why it was handed back>'
     ```
 
-    **The hand-back comment is the release comment** — it must carry the
+    **The helper's final comment is the release comment** — it carries the
     `Claim released —` supersede line above, verbatim, like every other path
     that clears a marker.
 

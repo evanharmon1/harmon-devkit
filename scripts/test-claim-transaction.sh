@@ -247,6 +247,17 @@ for mismatched_label in claim:gpt claim:gpt:terra; do
     [ ! -s "$log" ] || fail "a mismatched family label must trigger zero writes"
 done
 
+echo "==> legacy aliases are bound to the trusted family"
+scenario "$empty_issue"
+make_record yes agent:codex none yes evanharmon1 agent:codex none
+[ "$(run_claim --claim-label agent:codex)" = 0 ] ||
+    fail "the registered gpt legacy alias must remain supported: $(cat "$err")"
+scenario "$empty_issue"
+make_record yes agent:claude-code none yes evanharmon1 agent:claude-code none
+[ "$(run_claim --claim-label agent:claude-code)" = 2 ] ||
+    fail "a foreign-family legacy alias must be rejected"
+[ ! -s "$log" ] || fail "legacy family mismatch must fail before writes"
+
 echo "==> a same-family model-shaped primary marker remains a supported legacy plan"
 scenario "$empty_issue"
 make_record yes claim:gpt:terra none yes evanharmon1 claim:gpt:terra none
@@ -264,7 +275,20 @@ scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(CLAIM_COMMENT_MODE=commit_fail run_claim --claim-label claim:gpt)" = 0 ] || fail "committed ambiguous publication should continue"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "reconciled record must remain"
-grep -q 'reconciliation confirmed the exact record committed' "$err" || fail "reconciliation must be reported"
+grep -q 'reconciliation confirmed the exact current record committed' "$err" || fail "reconciliation must be reported"
+
+echo "==> a reconciled exact record must still be the current live claim"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+release_record="$tmp/release-record.md"
+printf '%s\n' 'Claim released — concurrent release. (Supersedes the claim record above.)' >"$release_record"
+result="$(RUN_MUTATE_COMMENTS_ON_READ=3 RUN_CONCURRENT_RECORD="$release_record" \
+    RUN_CONCURRENT_LOGIN=evanharmon1 CLAIM_COMMENT_MODE=commit_fail \
+    run_claim --claim-label claim:gpt)"
+[ "$result" = 6 ] ||
+    fail "an exact record superseded before reconciliation must be indeterminate: $(cat "$err")"
+grep -q 'already superseded' "$err" || fail "superseded exact-record reconciliation must be explicit"
+if grep -q -- '--remove-' "$log"; then fail "superseded reconciliation must not compensate adopted markers"; fi
 
 echo "==> an unreadable reconciliation leaves visible partial markers"
 scenario "$empty_issue"

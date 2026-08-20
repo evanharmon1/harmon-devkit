@@ -671,7 +671,10 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   come from the immediate predecessor; a routine record cannot create one.
   A `claim:*` family marker must equal the trusted
   `claim:<family>` resolver output; model refinements use the separate model
-  argument and cannot masquerade as that family marker.
+  argument and cannot masquerade as that family marker. A legacy `agent:*`
+  marker is independently matched to the trusted family through the fixed root
+  registry, with only the resolver's finite pre-registry alias table as a
+  compatibility fallback.
 
   Compensation performs its own final issue-and-lineage read immediately
   before destructive writes. The exact committed record is an idempotence

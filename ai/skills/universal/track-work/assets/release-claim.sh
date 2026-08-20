@@ -589,6 +589,83 @@ prove_label_lineage() {
     printf '%s\n%s\n' "${proven:-none}" "${proven_model:-none}"
 }
 
+# Prove the one displaced-label hand-back target across the same lineage. Old
+# direct-only records remain readable, but every structured record must either
+# carry the already-proven target unchanged or initialize it by displacing the
+# immediate predecessor's proven owned label.
+prove_displaced_lineage() {
+    local lineage_json="$1" count i body direct chain direct_displaced chain_displaced
+    local prior_owned proven_owned proven_displaced expected
+    proven_owned=""
+    proven_displaced=""
+    count="$(jq '.lineage | length' <<<"$lineage_json")"
+    i=0
+    while [ "$i" -lt "$count" ]; do
+        body="$(jq -r --argjson i "$i" '.lineage[$i].body' <<<"$lineage_json")"
+        direct="$(optional_body_value '- `claim:` label added by this claim: ' "$body")" || return 1
+        [ -n "$direct" ] || direct="$(optional_body_value '- claim: label added by this claim: ' "$body")" || return 1
+        [ -n "$direct" ] || direct="$(optional_body_value '- `agent:` label added by this claim: ' "$body")" || return 1
+        [ -n "$direct" ] || direct="$(optional_body_value '- agent: label added by this claim: ' "$body")" || return 1
+        direct="$(line_value "$direct")"
+        chain="$(optional_body_value '- `claim:` label owned by this claim chain: ' "$body")" || return 1
+        [ -n "$chain" ] || chain="$(optional_body_value '- claim: label owned by this claim chain: ' "$body")" || return 1
+        [ -n "$chain" ] || chain="$(optional_body_value '- `agent:` label owned by this claim chain: ' "$body")" || return 1
+        [ -n "$chain" ] || chain="$(optional_body_value '- agent: label owned by this claim chain: ' "$body")" || return 1
+        direct_displaced="$(optional_body_value '- `claim:` label displaced by this claim: ' "$body")" || return 1
+        [ -n "$direct_displaced" ] || direct_displaced="$(optional_body_value '- claim: label displaced by this claim: ' "$body")" || return 1
+        [ -n "$direct_displaced" ] || direct_displaced="$(optional_body_value '- `agent:` label displaced by this claim: ' "$body")" || return 1
+        [ -n "$direct_displaced" ] || direct_displaced="$(optional_body_value '- agent: label displaced by this claim: ' "$body")" || return 1
+        chain_displaced="$(optional_body_value '- `claim:` label displaced by this claim chain: ' "$body")" || return 1
+        [ -n "$chain_displaced" ] || chain_displaced="$(optional_body_value '- claim: label displaced by this claim chain: ' "$body")" || return 1
+        [ -n "$chain_displaced" ] || chain_displaced="$(optional_body_value '- `agent:` label displaced by this claim chain: ' "$body")" || return 1
+        [ -n "$chain_displaced" ] || chain_displaced="$(optional_body_value '- agent: label displaced by this claim chain: ' "$body")" || return 1
+
+        prior_owned="$proven_owned"
+        case "$(lower "$direct")" in yes | no | n/a | none | '') direct="" ;; *) valid_label "$direct" || return 1 ;; esac
+        if [ -n "$chain" ]; then
+            chain="$(line_value "$chain")"
+            case "$(lower "$chain")" in
+            no | n/a | none) proven_owned="" ;;
+            *)
+                valid_label "$chain" || return 1
+                { [ "$chain" = "$prior_owned" ] || [ "$chain" = "$direct" ]; } || return 1
+                proven_owned="$chain"
+                ;;
+            esac
+        else
+            proven_owned="$direct"
+        fi
+
+        direct_displaced="$(line_value "$direct_displaced")"
+        case "$(lower "$direct_displaced")" in
+        none | '') direct_displaced="" ;;
+        *) valid_label "$direct_displaced" || return 1 ;;
+        esac
+        if [ -n "$chain_displaced" ]; then
+            chain_displaced="$(line_value "$chain_displaced")"
+            case "$(lower "$chain_displaced")" in
+            none) chain_displaced="" ;;
+            *) valid_label "$chain_displaced" || return 1 ;;
+            esac
+            expected="$proven_displaced"
+            if [ -n "$direct_displaced" ]; then
+                [ "$direct_displaced" = "$prior_owned" ] || return 1
+                [ -z "$expected" ] || [ "$expected" = "$direct_displaced" ] || return 1
+                expected="$direct_displaced"
+            fi
+            [ "$chain_displaced" = "$expected" ] || return 1
+            proven_displaced="$chain_displaced"
+        else
+            # Direct-only legacy records predate structured chain proof. Keep
+            # their established reader behavior without letting a structured
+            # successor invent or replace the target.
+            proven_displaced="$direct_displaced"
+        fi
+        i=$((i + 1))
+    done
+    printf '%s\n' "${proven_displaced:-none}"
+}
+
 # A trusted recordless claim is an ownership boundary, not malformed
 # structured provenance. The transaction that follows it cannot inherit any
 # cleanup target from it, so release proves only the structured suffix after
@@ -814,6 +891,10 @@ if [ "$record_present" -eq 1 ]; then
             echo "$repo#$issue: inherited label targets lack unambiguous predecessor provenance — fail closed" >&2
             exit 2
         fi
+        if ! proven_displaced="$(prove_displaced_lineage "$proof_claim_json")"; then
+            echo "$repo#$issue: displaced-label target lacks unambiguous predecessor provenance — fail closed" >&2
+            exit 2
+        fi
         expected_proven_label="$label_added"
         expected_proven_model="$model_label_added"
         case "$(lower "$expected_proven_label")" in no | n/a | none | '') expected_proven_label=none ;; esac
@@ -821,6 +902,11 @@ if [ "$record_present" -eq 1 ]; then
         [ "$(sed -n '1p' <<<"$proven_labels")" = "$expected_proven_label" ] &&
             [ "$(sed -n '2p' <<<"$proven_labels")" = "$expected_proven_model" ] || {
             echo "$repo#$issue: current label cleanup targets do not match proven lineage — fail closed" >&2
+            exit 2
+        }
+        expected_proven_displaced="${label_displaced:-none}"
+        [ "$proven_displaced" = "$expected_proven_displaced" ] || {
+            echo "$repo#$issue: current displaced-label target does not match proven lineage — fail closed" >&2
             exit 2
         }
     elif [ "$direct_assignee_added" = yes ]; then

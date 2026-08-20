@@ -190,8 +190,9 @@ in the claim record, never in the label.
   exceptional record initializes it from that attempt's direct displacement;
   a routine refresh may only copy the immediate predecessor's proven chain
   value (falling back to its direct field for a legacy predecessor). The
-  producer rejects any other value before marker writes, so cleanup cannot
-  manufacture a label restoration.
+  producer rejects any other value before marker writes. The releaser repeats
+  that proof across the complete trusted lineage before restoring the target,
+  so an edited or forged leaf cannot manufacture a label restoration.
 - A trusted legacy claim with no record is an ownership boundary. A later
   structured refresh remains releasable, but its proof starts after the last
   recordless predecessor: nothing before that boundary can become an inherited
