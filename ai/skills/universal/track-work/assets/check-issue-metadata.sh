@@ -260,6 +260,7 @@ if [ -e "$manifest" ]; then
     open_candidates="$tmp/open-candidates"
     : >"$open_candidates"
     for label in "${labels[@]+"${labels[@]}"}"; do
+        label_key="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
         # A label matching more than one active open family has no unique
         # authorization policy — the manifest model does not forbid two open
         # families sharing a prefix, and picking one by manifest order would
@@ -270,8 +271,9 @@ if [ -e "$manifest" ]; then
         matched_record=""
         while IFS='|' read -r prefix family axis writers exclusive; do
             [ -n "$prefix" ] || continue
-            case "$label" in
-            "$prefix":*)
+            prefix_key="$(printf '%s' "$prefix" | tr '[:upper:]' '[:lower:]')"
+            case "$label_key" in
+            "$prefix_key":*)
                 matched_count=$((matched_count + 1))
                 matched_families="${matched_families}${matched_families:+, }$family"
                 matched_record="$label|$family|$axis|$writers|$exclusive"
@@ -280,7 +282,7 @@ if [ -e "$manifest" ]; then
         done <"$open_families"
         [ "$matched_count" -le 1 ] ||
             die "label '$label' matches multiple open-value families ($matched_families); the manifest gives it no unique policy"
-        if [ "$matched_count" -eq 1 ] && grep -qxF -- "$label" "$retired_members"; then
+        if [ "$matched_count" -eq 1 ] && grep -ixqF -- "$label" "$retired_members"; then
             violation "label '$label' is retired by the manifest"
             continue
         fi
@@ -293,8 +295,8 @@ if [ -e "$manifest" ]; then
             # record there is that family's own per-value refinement.
             open_family="${matched_record#*|}"
             open_family="${open_family%%|*}"
-            concrete_family="$(awk -F '|' -v wanted="$label" \
-                '$1 == wanted { print $2; exit }' "$vocab")"
+            concrete_family="$(awk -F '|' -v wanted="$label_key" \
+                'tolower($1) == wanted { print $2; exit }' "$vocab")"
             if [ -n "$concrete_family" ] && [ "$concrete_family" != "$open_family" ]; then
                 die "label '$label' is enumerated by family '$concrete_family' and covered by open-value family '$open_family'; the manifest gives it no unique policy"
             fi
@@ -305,19 +307,20 @@ if [ -e "$manifest" ]; then
         live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
             die "could not read open-value labels from the target repository"
         while IFS='|' read -r label family axis writers exclusive; do
-            if ! printf '%s\n' "$live" | awk -v wanted="$label" '$0 == wanted { found=1 } END { exit(found ? 0 : 1) }'; then
+            label_key="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
+            if ! printf '%s\n' "$live" | awk -v wanted="$label_key" 'tolower($0) == wanted { found=1 } END { exit(found ? 0 : 1) }'; then
                 # Open families opt into live existence: a proposed member the
                 # bounded read cannot find must not validate, including one
                 # the family itself enumerates for a per-value policy — the
                 # ambiguity guard above guarantees any existing record for
                 # this name is that same family's own, so dropping it makes
                 # the absent label fail as unknown instead of passing stale.
-                awk -F '|' -v wanted="$label" '$1 != wanted' "$vocab" >"$vocab.pruned" &&
+                awk -F '|' -v wanted="$label_key" 'tolower($1) != wanted' "$vocab" >"$vocab.pruned" &&
                     mv "$vocab.pruned" "$vocab" ||
                     die "could not prune an absent open-value label from the vocabulary"
                 continue
             fi
-            awk -F '|' -v wanted="$label" '$1 == wanted { found=1 } END { exit(found ? 0 : 1) }' "$vocab" ||
+            awk -F '|' -v wanted="$label_key" 'tolower($1) == wanted { found=1 } END { exit(found ? 0 : 1) }' "$vocab" ||
                 printf '%s|%s|%s|%s|%s\n' \
                     "$label" "$family" "$axis" "$writers" "$exclusive" >>"$vocab"
         done <"$open_candidates"
@@ -334,14 +337,15 @@ else
         case "$label" in
         *'|'*) continue ;;
         esac
-        case "$label" in
+        label_key="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
+        case "$label_key" in
         area:*) printf '%s|area|classification|human,agent|true\n' "$label" ;;
         layer:*) printf '%s|layer|classification|human,agent|true\n' "$label" ;;
         domain:*) printf '%s|domain|classification|human,agent|true\n' "$label" ;;
         ai-generated) printf '%s|provenance|provenance|human,agent|false\n' "$label" ;;
         needs-triage) printf '%s|workflow|workflow|human,agent|false\n' "$label" ;;
         *)
-            if [ -n "$work_type_label" ] && [ "$label" = "$work_type_label" ]; then
+            if [ -n "$work_type_label" ] && [ "$label_key" = "$(printf '%s' "$work_type_label" | tr '[:upper:]' '[:lower:]')" ]; then
                 printf '%s|work-type|work-type|human,agent|false\n' "$label"
             else
                 printf '%s|fallback-other|meta|human|false\n' "$label"
@@ -587,7 +591,8 @@ for label in "${labels[@]+"${labels[@]}"}"; do
         violation "label '$label' belongs to a forbidden authoring-time family"
         continue
     fi
-    record="$(awk -F '|' -v wanted="$label" '$1 == wanted { print; exit }' "$vocab")"
+    label_key="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
+    record="$(awk -F '|' -v wanted="$label_key" 'tolower($1) == wanted { print; exit }' "$vocab")"
     if [ -z "$record" ]; then
         violation "label '$label' does not exist in the target vocabulary"
         continue
@@ -621,8 +626,8 @@ EOF
         *) violation "label '$label' is not writable by a human author" ;;
         esac
     fi
-    [ "$label" = ai-generated ] && has_ai_generated=1
-    [ "$label" = needs-triage ] && has_needs_triage=1
+    [ "$label_key" = ai-generated ] && has_ai_generated=1
+    [ "$label_key" = needs-triage ] && has_needs_triage=1
     [ "$axis" = work-type ] && work_type_count=$((work_type_count + 1))
     case "$family" in
     area) area_count=$((area_count + 1)) ;;
@@ -631,8 +636,8 @@ EOF
     esac
     if [ "$exclusive" = true ]; then
         family_count="$(awk -F '|' -v fam="$family" -v seen="$seen_labels" '
-          BEGIN { while ((getline line < seen) > 0) selected[line]=1 }
-          selected[$1] && $2 == fam { n++ }
+          BEGIN { while ((getline line < seen) > 0) selected[tolower(line)]=1 }
+          selected[tolower($1)] && $2 == fam { n++ }
           END { print n + 0 }
         ' "$vocab")"
         [ "$family_count" -le 1 ] || violation "exclusive label family '$family' has $family_count proposed values"
