@@ -55,6 +55,222 @@ for tool in node jq python3; do
     }
 done
 
+# ── 0. read-only authoring guidance ─────────────────────────────────────────
+# The support interpreter is the single discovery surface used by Track Work.
+# Exercise both manifest and no-manifest modes here, where the registry fixtures
+# already live, rather than duplicating a second label parser in its consumer.
+guidance_helper="ai/skills/universal/label-registry-support/assets/label-registry.sh"
+[ -x "$guidance_helper" ] || {
+    echo "TEST FAIL: missing executable label guidance helper: $guidance_helper" >&2
+    exit 1
+}
+guidance_tmp="$(mktemp -d)"
+guidance_bin="$guidance_tmp/bin"
+mkdir -p "$guidance_bin"
+cat >"$guidance_bin/gh" <<'STUB'
+#!/bin/sh
+if [ "${GUIDANCE_FAIL_ON_CALL:-}" = 1 ]; then
+    exit 97
+fi
+if [ "${GUIDANCE_RETIRED_UPPERCASE:-}" = 1 ]; then
+    printf '%s\n' '[{"name":"area:OLD","description":"Still live but retired by the manifest"}]'
+    exit 0
+fi
+if [ "${GUIDANCE_PREFIX_UPPERCASE:-}" = 1 ]; then
+    printf '%s\n' '[{"name":"Area:live","description":"Live area description"}]'
+    exit 0
+fi
+if [ "${GUIDANCE_LONG_LABELS:-}" = 1 ]; then
+    jq -n '[range(0; 1000) | {name: ("area:long-" + tostring), description: ("x" * 3000)}]'
+    exit 0
+fi
+case "${1:-} ${2:-}" in
+"label list")
+    printf '%s\n' '[
+      {"name":"area:live","description":"Live area description"},
+      {"name":"area:literal","description":"Windows path C:\\temp and\ttab"},
+      {"name":"area:old","description":"Still live but retired by the manifest"},
+      {"name":"area:track-work","description":"Stale live area description"},
+      {"name":"unsafe,comma","description":"Cannot pass authoring validation"},
+      {"name":"unsafe|pipe","description":"Cannot pass authoring validation"},
+      {"name":"claim:gpt","description":"Claimed by GPT"},
+      {"name":"suggest:gpt","description":"Suggested for GPT"},
+      {"name":"agent:legacy","description":"Legacy agent claim"},
+      {"name":"foreman:claude","description":"Dispatch control"},
+      {"name":"Rigor:deep","description":"Execution budget"},
+      {"name":"tier:frontier","description":"Model routing"},
+      {"name":"method:plan","description":"Execution topology"},
+      {"name":"type:patch","description":"Foreman override"},
+      {"name":"autorelease: pending","description":"Release automation state"}
+    ]'
+    ;;
+*) exit 97 ;;
+esac
+STUB
+chmod +x "$guidance_bin/gh"
+
+echo "==> guidance: manifest records include descriptions and compact family purpose only"
+manifest_guidance="$("$guidance_helper" guidance label-registry.json testowner/testrepo)" ||
+    fail "manifest-backed guidance should render"
+printf '%s\n' "$manifest_guidance" |
+    jq -se 'any(.[]; . == {record: "guidance", label: "area:track-work", description: "The track-work skill: issue authoring standards and PR/commit linkage; claims are session-flow", family: "area", purpose: "Codebase subsystem the work lives in (solution space); at most one per issue."})' >/dev/null ||
+    fail "manifest-backed guidance should include value description and family purpose"
+if printf '%s\n' "$manifest_guidance" |
+    jq -e 'select(.label | test("^(claim|suggest|agent|foreman|rigor|tier|method):"; "i"))' >/dev/null; then
+    fail "guidance must exclude claim, suggestion, legacy-agent, Foreman, and execution controls"
+fi
+printf '%s\n' "$manifest_guidance" |
+    jq -se 'all(.[]; keys == ["description", "family", "label", "purpose", "record"] and .record == "guidance")' >/dev/null ||
+    fail "guidance records must contain only label, description, family, purpose, and record"
+
+echo "==> guidance: control namespaces stay excluded when family identifiers change"
+jq '(.families[] | select(.family == "rigor")).family = "effort"' \
+    label-registry.json >"$guidance_tmp/renamed-family.json"
+renamed_guidance="$("$guidance_helper" guidance "$guidance_tmp/renamed-family.json" testowner/testrepo)" ||
+    fail "guidance should render a schema-valid renamed family"
+if printf '%s\n' "$renamed_guidance" |
+    jq -e 'select(.label | test("^rigor:"; "i"))' >/dev/null; then
+    fail "guidance must exclude controls by rendered namespace, not family identifier"
+fi
+
+echo "==> guidance: semantic execution axes stay excluded under custom prefixes"
+jq '(.families[] | select(.family == "rigor"))
+      |= (.family = "effort" | .prefix = "effort")' \
+    label-registry.json >"$guidance_tmp/custom-prefix-control.json"
+custom_prefix_guidance="$($guidance_helper guidance "$guidance_tmp/custom-prefix-control.json" testowner/testrepo)" ||
+    fail "guidance should render a schema-valid custom-prefix control family"
+if printf '%s\n' "$custom_prefix_guidance" |
+    jq -e 'select(.label | test("^effort:"; "i"))' >/dev/null; then
+    fail "guidance must exclude authoring-forbidden semantic axes under custom prefixes"
+fi
+
+echo "==> guidance: control-only open families do not require a live-label read"
+jq '(.families[] | select(.family == "concern"))
+      |= (.prefix = "rigor" | .open_values = true | .placeholder = "rigor:<value>" | .values = [])' \
+    label-registry.json >"$guidance_tmp/control-open-family.json"
+control_open_guidance="$(GUIDANCE_FAIL_ON_CALL=1 PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/control-open-family.json" testowner/testrepo)" ||
+    fail "a control-only open family must not require a live-label read"
+printf '%s\n' "$control_open_guidance" |
+    jq -se 'any(.[]; .label == "area:track-work")' >/dev/null ||
+    fail "a control-only open family should retain self-contained manifest guidance"
+
+echo "==> guidance: delegated agent-registry families remain on the shared exclusion boundary"
+for control in claim:gpt suggest:gpt foreman:claude; do
+    if printf '%s\n' "$manifest_guidance" |
+        jq -e --arg control "$control" 'select(.label == $control)' >/dev/null; then
+        fail "guidance must not surface delegated control $control"
+    fi
+done
+
+echo "==> guidance: no manifest uses live names and descriptions without inferred family policy"
+fallback_guidance="$(PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/missing.json" testowner/testrepo)" ||
+    fail "no-manifest guidance should use the bounded live-label fallback"
+printf '%s\n' "$fallback_guidance" |
+    jq -se 'any(.[]; . == {record: "guidance", label: "area:live", description: "Live area description", family: null, purpose: null})' >/dev/null ||
+    fail "no-manifest guidance should retain safe live names and descriptions, case-insensitively"
+printf '%s\n' "$fallback_guidance" |
+    jq -se 'any(.[]; . == {record: "guidance", label: "area:literal", description: "Windows path C:\\temp and\ttab", family: null, purpose: null})' >/dev/null ||
+    fail "no-manifest guidance should preserve literal backslashes and tabs in live descriptions"
+printf '%s\n' "$fallback_guidance" |
+    jq -se 'length == 4 and all(.[]; .label == "area:live" or .label == "area:literal" or .label == "area:old" or .label == "area:track-work")' >/dev/null ||
+    fail "no-manifest guidance should exclude every known stable control namespace"
+
+echo "==> guidance: open-value authoring families combine live labels with manifest purpose"
+jq '(.families[] | select(.family == "area"))
+      |= (.open_values = true | .placeholder = "area:<value>" | .values = [])' \
+    label-registry.json >"$guidance_tmp/open-area.json"
+open_guidance="$(PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/open-area.json" testowner/testrepo)" ||
+    fail "open-value guidance should make one bounded live-label read"
+printf '%s\n' "$open_guidance" |
+    jq -se 'any(.[]; . == {record: "guidance", label: "area:live", description: "Live area description", family: "area", purpose: "Codebase subsystem the work lives in (solution space); at most one per issue."})' >/dev/null ||
+    fail "open-value guidance should combine live labels with manifest family purpose"
+printf '%s\n' "$open_guidance" |
+    jq -se 'all(.[]; .family != "area" or (.label == "area:live" or .label == "area:literal" or .label == "area:old" or .label == "area:track-work"))' >/dev/null ||
+    fail "open-value guidance should include only bounded live members"
+
+echo "==> guidance: open-family prefixes use GitHub case-insensitive identity"
+uppercase_prefix_guidance="$(GUIDANCE_PREFIX_UPPERCASE=1 PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/open-area.json" testowner/testrepo)" ||
+    fail "open-value guidance should render an uppercase live prefix"
+printf '%s\n' "$uppercase_prefix_guidance" |
+    jq -se 'any(.[]; .label == "Area:live" and .family == "area")' >/dev/null ||
+    fail "open-value guidance should match a live prefix case-insensitively"
+
+echo "==> guidance: enumerated open members keep manifest descriptions"
+jq '(.families[] | select(.family == "area"))
+      |= (.open_values = true | .placeholder = "area:<value>")' \
+    label-registry.json >"$guidance_tmp/open-enumerated-area.json"
+open_enumerated_guidance="$(PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/open-enumerated-area.json" testowner/testrepo)" ||
+    fail "enumerated open-family guidance should render"
+printf '%s\n' "$open_enumerated_guidance" |
+    jq -se 'any(.[]; .label == "area:track-work"
+        and .description == "The track-work skill: issue authoring standards and PR/commit linkage; claims are session-flow")' >/dev/null ||
+    fail "enumerated open-family members should retain manifest descriptions"
+
+echo "==> guidance: retired open-family members are never reintroduced from live labels"
+jq '(.families[] | select(.family == "area"))
+      |= (.open_values = true | .placeholder = "area:<value>"
+          | .values = [{"value": "old", "description": "Retired area", "retired": true}])' \
+    label-registry.json >"$guidance_tmp/retired-open-area.json"
+retired_open_guidance="$(GUIDANCE_RETIRED_UPPERCASE=1 PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/retired-open-area.json" testowner/testrepo)" ||
+    fail "retired open-family guidance should render remaining live members"
+if printf '%s\n' "$retired_open_guidance" |
+    jq -e 'select(.label | ascii_downcase == "area:old")' >/dev/null; then
+    fail "retired manifest members must not return through open-family live guidance"
+fi
+
+echo "==> guidance: bounded live label payloads do not pass through argv"
+long_guidance="$guidance_tmp/long-guidance.jsonl"
+GUIDANCE_LONG_LABELS=1 PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/open-area.json" testowner/testrepo >"$long_guidance" ||
+    fail "large bounded live label payloads should render without an argv-size failure"
+jq -se '(. as $all | [$all[] | select(.label | startswith("area:long-"))] | length == 1000)
+        and any(.[]; .label == "area:long-999" and (.description | length) == 3000)' "$long_guidance" >/dev/null ||
+    fail "large bounded live label payloads should retain the final live record"
+
+echo "==> guidance: prefixless open families retain active manifest members"
+jq '(.families[] | select(.family == "concern"))
+      |= (.open_values = true | .placeholder = "<value>")' \
+    label-registry.json >"$guidance_tmp/prefixless-open-concern.json"
+prefixless_open_guidance="$($guidance_helper guidance "$guidance_tmp/prefixless-open-concern.json" testowner/testrepo)" ||
+    fail "prefixless open-family guidance should render"
+printf '%s\n' "$prefixless_open_guidance" |
+    jq -se 'any(.[]; . == {record: "guidance", label: "sec", description: "Security concern", family: "concern", purpose: "Cross-cutting concerns worth filtering on, color-coded as one family."})' >/dev/null ||
+    fail "prefixless open-family guidance should retain active enumerated members"
+
+echo "==> guidance: schema-valid prose with delimiters stays decodable"
+jq '(.families[] | select(.family == "area").purpose) = "Solution | subsystem\nwith a second line"
+    | (.families[] | select(.family == "area").values[] | select(.value == "track-work").description) = "Path C:\\temp | tab\t"
+    | (.families[] | select(.family == "foreman").purpose) = "Excluded | control\rtext"' \
+    label-registry.json >"$guidance_tmp/delimited-prose.json"
+delimited_guidance="$($guidance_helper guidance "$guidance_tmp/delimited-prose.json" testowner/testrepo)" ||
+    fail "schema-valid prose must not make manifest guidance unusable"
+printf '%s\n' "$delimited_guidance" |
+    jq -se 'any(.[]; .label == "area:track-work"
+        and .description == "Path C:\\temp | tab\t"
+        and .purpose == "Solution | subsystem\nwith a second line")' >/dev/null ||
+    fail "JSON Lines guidance must preserve selected delimiter prose exactly"
+
+echo "==> guidance: missing command arguments keep the usage exit contract"
+_rc=0
+"$guidance_helper" >"$guidance_tmp/out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] ||
+    fail "guidance helper with no arguments should exit 2"
+
+echo "==> guidance: a malformed manifest is indeterminate, not a live fallback"
+printf '%s\n' '{"schema_version":999}' >"$guidance_tmp/malformed.json"
+if "$guidance_helper" guidance "$guidance_tmp/malformed.json" testowner/testrepo >"$guidance_tmp/out" 2>&1; then
+    fail "malformed manifest guidance should fail closed"
+fi
+grep -q 'manifest is invalid or unsupported' "$guidance_tmp/out" ||
+    fail "malformed manifest guidance should name the indeterminate manifest"
+
+echo "==> guidance: an unavailable manifest is indeterminate, not a live fallback"
+ln -s "$guidance_tmp/no-target.json" "$guidance_tmp/unavailable.json"
+if PATH="$guidance_bin:$PATH" "$guidance_helper" guidance "$guidance_tmp/unavailable.json" testowner/testrepo >"$guidance_tmp/out" 2>&1; then
+    fail "unavailable manifest guidance should fail closed"
+fi
+grep -q 'manifest is not a readable regular file' "$guidance_tmp/out" ||
+    fail "unavailable manifest guidance should name the indeterminate manifest"
+
 template_mode=0
 [ -f template/label-registry.json ] && template_mode=1
 
@@ -72,7 +288,7 @@ fi
 # regression that silently accepts a broken manifest must fail here, not at
 # provisioning time.
 mutation_tmp="$(mktemp -d)"
-trap 'rm -rf "$mutation_tmp"' EXIT
+trap 'rm -rf "$mutation_tmp" "$guidance_tmp"' EXIT
 mutated_manifest="$mutation_tmp/label-registry.json"
 cp label-registry.schema.json "$mutation_tmp/label-registry.schema.json"
 

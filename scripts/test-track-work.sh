@@ -14,6 +14,7 @@ cd "$(dirname "$0")/.."
 closing="./ai/skills/universal/track-work/assets/check-closing-keywords.sh"
 rot="./ai/skills/universal/track-work/assets/check-issue-rot.sh"
 metadata="$PWD/ai/skills/universal/track-work/assets/check-issue-metadata.sh"
+guidance="$PWD/ai/skills/universal/track-work/assets/discover-label-guidance.sh"
 tick="$PWD/ai/skills/universal/track-work/assets/tick-criteria.sh"
 status_sh="./ai/skills/universal/track-work/assets/set-issue-status.sh"
 repo="evanharmon1/harmon-devkit"
@@ -600,14 +601,17 @@ echo "three backticks inside"
 metadata_repo="$tmp/metadata-repo"
 metadata_stub="$tmp/metadata-bin"
 metadata_fallback="$tmp/metadata-fallback"
+metadata_other="$tmp/metadata-other"
 mkdir -p "$metadata_repo"
-mkdir -p "$metadata_stub" "$metadata_fallback"
+mkdir -p "$metadata_stub" "$metadata_fallback" "$metadata_other"
 git -C "$metadata_repo" init -q
 git -C "$metadata_repo" remote add personal https://github.com/testowner/testrepo.git
 git -C "$metadata_repo" remote add organization git@github.com:testorg/testrepo.git
 : >"$metadata_repo/component.vue"
 git -C "$metadata_fallback" init -q
 git -C "$metadata_fallback" remote add origin https://github.com/fallback/repo.git
+git -C "$metadata_other" init -q
+git -C "$metadata_other" remote add origin https://github.com/other/repo.git
 cat >"$metadata_stub/gh" <<'STUB'
 #!/bin/sh
 if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
@@ -639,6 +643,7 @@ jq '.families |= map(
                      "writers":["trusted-human"]}]
       else . end
     )' label-registry.json >"$metadata_repo/label-registry.json"
+cp "$metadata_repo/label-registry.json" "$metadata_other/label-registry.json"
 
 valid_body="$tmp/metadata-valid.md"
 cat >"$valid_body" <<'BODY'
@@ -726,6 +731,24 @@ if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" !
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
 fi
 
+echo "==> guidance: Track Work exposes read-only descriptions and family purpose"
+guidance_output="$("$guidance" --repo testowner/testrepo --repo-root "$metadata_repo")" ||
+    fail "track-work guidance should render from the target manifest"
+printf '%s\n' "$guidance_output" |
+    jq -se 'any(.[]; . == {record: "guidance", label: "area:fixture", description: "Fixture-only area", family: "area", purpose: "Codebase subsystem the work lives in (solution space); at most one per issue."})' >/dev/null ||
+    fail "track-work guidance should expose the shared label description and family purpose"
+if printf '%s\n' "$guidance_output" |
+    jq -e 'select(.label | test("^(claim|suggest|agent|foreman):"; "i"))' >/dev/null; then
+    fail "track-work guidance must not surface execution controls"
+fi
+
+echo "==> guidance: Track Work refuses a checkout bound to another repository"
+_rc=0
+"$guidance" --repo testowner/testrepo --repo-root "$metadata_other" >"$tmp/guidance.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "guidance must reject a mismatched target checkout"
+grep -q 'no GitHub remote matching --repo testowner/testrepo' "$tmp/guidance.out" ||
+    fail "guidance should name the target-checkout binding failure"
+
 echo "==> metadata: track-work works from a standalone vendored support bundle"
 standalone_track_work="$tmp/standalone-track-work"
 mkdir -p "$standalone_track_work"
@@ -737,6 +760,7 @@ cp -R ai/skills/universal/issue-title-support \
 [ ! -e "$standalone_track_work/triage" ] ||
     fail "standalone track-work fixture must not contain triage"
 standalone_metadata="$standalone_track_work/track-work/assets/check-issue-metadata.sh"
+standalone_guidance="$standalone_track_work/track-work/assets/discover-label-guidance.sh"
 _rc=0
 PATH="$metadata_stub:$PATH" "$standalone_metadata" \
     --repo testowner/testrepo --repo-root "$metadata_repo" \
@@ -746,6 +770,12 @@ PATH="$metadata_stub:$PATH" "$standalone_metadata" \
     --label ai-generated >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] ||
     fail "standalone track-work metadata should pass: $(cat "$tmp/metadata.out")"
+
+standalone_guidance_output="$("$standalone_guidance" --repo testowner/testrepo --repo-root "$metadata_repo")" ||
+    fail "standalone track-work guidance should find its vendored support bundle"
+printf '%s\n' "$standalone_guidance_output" |
+    jq -se 'any(.[]; .label == "area:fixture")' >/dev/null ||
+    fail "standalone track-work guidance should render fixture labels"
 
 echo "==> metadata: an organization draft uses native Issue Type and no work-type label"
 [ "$(run_organization 'Validate organization issue metadata' "$valid_body")" = 0 ] ||
@@ -1249,6 +1279,27 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
 [ "$_rc" = 0 ] ||
     fail "track-work should accept a live member of an open classification family: $(cat "$tmp/metadata.out")"
 
+echo "==> metadata: enumerated open members use case-insensitive vocabulary lookup"
+metadata_open_enumerated="$tmp/metadata-open-enumerated"
+mkdir -p "$metadata_open_enumerated"
+git -C "$metadata_open_enumerated" init -q
+git -C "$metadata_open_enumerated" remote add origin \
+    https://github.com/testowner/testrepo.git
+jq '.families |= map(
+      if .family == "area" then
+        .open_values = true | .placeholder = "area:<value>"
+      else . end)' "$metadata_repo/label-registry.json" \
+    >"$metadata_open_enumerated/label-registry.json"
+_rc=0
+METADATA_GH_LABELS="$(printf '%s\n' enhancement 'Area:track-work' domain:fixture)" \
+PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+    --repo-root "$metadata_open_enumerated" --owner-type personal \
+    --title '(tests): Allow a case-insensitive open member' --body-file "$valid_body" \
+    --human-authored --label feature --label 'Area:track-work' \
+    --inapplicable layer --label domain:fixture >"$tmp/metadata.out" 2>&1 || _rc=$?
+[ "$_rc" = 0 ] ||
+    fail "an enumerated open member should validate with live casing: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: a label matching two open-value families is ambiguous, not first-match"
 metadata_ambiguous="$tmp/metadata-ambiguous"
 mkdir -p "$metadata_ambiguous"
@@ -1568,6 +1619,13 @@ cp "$metadata_repo/label-registry.json" "$metadata_sshport/label-registry.json"
     --human-authored --label feature --label area:fixture --inapplicable layer \
     --label domain:fixture)" = 0 ] ||
     fail "a portless ssh.github.com remote should bind: $(cat "$tmp/metadata.out")"
+
+echo "==> guidance: the portless ssh.github.com remote form binds the checkout"
+guidance_sshport="$("$guidance" --repo testowner/testrepo --repo-root "$metadata_sshport")" ||
+    fail "guidance should bind a portless ssh.github.com remote"
+printf '%s\n' "$guidance_sshport" |
+    jq -se 'any(.[]; .label == "area:fixture")' >/dev/null ||
+    fail "guidance should render from a portless ssh.github.com remote"
 
 echo "==> metadata: the checkout remote must match the requested repository"
 _rc=0

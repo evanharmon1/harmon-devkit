@@ -3,17 +3,22 @@
 # universal skills. It validates the complete v1 contract before rendering any
 # records, so callers cannot derive policy from a partial or malformed registry.
 #
-# Output is pipe-delimited and safe to parse only because validation rejects
-# pipes/newlines in every rendered free-form value.
+# `render` output is pipe-delimited; its label-derived fields are validated for
+# that transport. `guidance` is JSON Lines so schema-valid human prose remains
+# exact even when it contains a pipe, tab, or newline.
 #
 #   family|family|prefix|axis|writers|exclusive|source|open_values|retired
 #   value|label|family|prefix|axis|writers|exclusive|source|open_values|family_retired|value_retired
+#   {"record":"guidance","label":"…","description":"…","family":"…","purpose":"…"}
 #
 # `writers` is effective: a value override wins over its family writers.
+# `guidance` deliberately has no policy fields: it is the read-only, pre-
+# authoring discovery view, not a second validation interface.
 set -euo pipefail
 
 usage() {
     echo "Usage: $0 {validate|render} MANIFEST" >&2
+    echo "       $0 guidance MANIFEST REPOSITORY" >&2
     exit 2
 }
 
@@ -22,16 +27,29 @@ die() {
     exit 1
 }
 
-[ "$#" -eq 2 ] || usage
+[ "$#" -ge 1 ] || usage
 command="$1"
-manifest="$2"
 case "$command" in
-validate | render) ;;
+validate | render)
+    [ "$#" -eq 2 ] || usage
+    manifest="$2"
+    ;;
+guidance)
+    [ "$#" -eq 3 ] || usage
+    manifest="$2"
+    repo="$3"
+    ;;
 *) usage ;;
 esac
 
-[ -f "$manifest" ] && [ -r "$manifest" ] ||
-    die "manifest is not a readable regular file: $manifest"
+manifest_present=0
+if [ -e "$manifest" ] || [ -L "$manifest" ]; then
+    manifest_present=1
+fi
+if [ "$command" != guidance ] || [ "$manifest_present" -eq 1 ]; then
+    [ -f "$manifest" ] && [ -r "$manifest" ] ||
+        die "manifest is not a readable regular file: $manifest"
+fi
 
 validate() {
     jq -e '
@@ -137,12 +155,145 @@ validate() {
                      and ((.retired // false) | not))
             | if $f.prefix == null then .value
               else "\($f.prefix):\(.value)" end]
-           | length == (unique | length))
+           | map(ascii_downcase) | length == (unique | length))
     ' "$manifest" >/dev/null 2>&1
 }
 
+if [ "$command" = guidance ] && [ "$manifest_present" -eq 0 ]; then
+    # A repository with no manifest has no declared family or policy to infer.
+    # Preserve only the bounded, human-readable GitHub label data and omit
+    # execution controls by their stable namespaces. JSON Lines avoids the
+    # lossy `@tsv` transport: a reader can recover literal backslashes, tabs,
+    # and newlines from the JSON value without making record boundaries
+    # ambiguous.
+    gh label list --repo "$repo" --limit 1000 --json name,description |
+        jq -c '
+          def description:
+            if (.description? == null) then "" else .description end;
+          def control_namespace:
+            ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+          def authorable_label:
+            test("[,|\\r\\n]") | not;
+          if type != "array"
+             or any(.[]; (.name | type) != "string" or (description | type) != "string")
+          then error("live label data is invalid")
+          else .[]
+          | {label: .name, description: description}
+          | select((.label | control_namespace) | not)
+          | select(.label | authorable_label)
+          | {record: "guidance", label, description, family: null, purpose: null}
+          end
+        ' || die "could not read live labels from $repo"
+    exit 0
+fi
+
 validate || die "manifest is invalid or unsupported"
 [ "$command" = validate ] && exit 0
+
+if [ "$command" = guidance ]; then
+    # The manifest owns label descriptions and family purpose. Omit values
+    # whose namespaces are workflow controls, including delegated
+    # agent-registry families; this is discovery for issue authoring, not a
+    # route into claims, suggestions, Foreman, or execution-budget controls.
+    # Active author-selectable open families need one bounded live-label read:
+    # the live record supplies the concrete label and description, while the
+    # manifest still supplies the family and purpose. Do not read live labels
+    # for a manifest that has no such family, so a normal manifest remains
+    # self-contained.
+    open_family_count="$(jq -r '
+      def control_namespace:
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+      [.families[]
+       | select((.retired // false) | not)
+       | select(.source != "agent-registry" and .source != "tool-owned")
+       | select((.arming // false) | not)
+       | select((.gate // "") == "")
+       | select(.axis != "strategy" and .axis != "model" and .axis != "foreman")
+       | select((.open_values // false) and .prefix != null)
+       | select((((.prefix + ":") | control_namespace) | not))]
+      | length
+    ' "$manifest")" || die "could not inspect manifest open-value families"
+    # Keep the bounded GitHub response out of argv: 1,000 labels with rich
+    # descriptions can exceed the platform argument limit before jq starts.
+    live_labels_file="$(mktemp)"
+    trap 'rm -f "$live_labels_file"' EXIT
+    if [ "$open_family_count" -gt 0 ]; then
+        gh label list --repo "$repo" --limit 1000 --json name,description >"$live_labels_file" ||
+            die "could not read live labels for manifest guidance"
+    else
+        printf '[]\n' >"$live_labels_file"
+    fi
+    jq -c --slurpfile live "$live_labels_file" '
+      def control_namespace:
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+      def authorable_label:
+        test("[,|\\r\\n]") | not;
+      def authoring_family:
+        ((.retired // false) | not)
+        and (.source != "agent-registry" and .source != "tool-owned")
+        and ((.arming // false) | not)
+        and ((.gate // "") == "")
+        and (.axis != "strategy" and .axis != "model" and .axis != "foreman");
+      def live_description:
+        if (.description? == null) then "" else .description end;
+      ($live[0]) as $live
+      | if ($live | type) != "array"
+         or any($live[]; (.name | type) != "string" or (live_description | type) != "string")
+      then error("live label data is invalid")
+      else . as $registry
+      | [$registry.families[]
+         | . as $f
+         | select(authoring_family)
+         # Open families deliberately get their concrete members from the
+         # bounded live read below when their prefix makes that match
+         # unambiguous. Prefixless open families have no such live namespace,
+         # so their active manifest enumeration remains the selectable set.
+         | select(((.open_values // false) | not) or .prefix == null)
+         | .values[]
+         | select((.retired // false) | not)
+         | (if $f.prefix == null then .value else "\($f.prefix):\(.value)" end) as $label
+         | select(($label | control_namespace) | not)
+         | select(($label | authorable_label))
+         | {record: "guidance", label: $label, description: (.description // ""),
+            family: $f.family, purpose: $f.purpose}] as $enumerated
+      | [$registry.families[]
+         | . as $f
+         | select(authoring_family and ($f.open_values // false) and $f.prefix != null)] as $open_families
+      | [$open_families[] as $f
+         | $f.values[]
+         | select((.retired // false) | not)
+         | {label: "\($f.prefix):\(.value)", label_key: ("\($f.prefix):\(.value)" | ascii_downcase), family: $f.family,
+            description: (.description // "")} ] as $open_enumerated
+      | [$registry.families[] as $f
+         | select(($f.retired // false) | not)
+         | $f.values[]
+         | select(.retired // false)
+            | if $f.prefix == null then .value else "\($f.prefix):\(.value)" end
+            | ascii_downcase] as $retired_label_keys
+      | [$live[]
+         | {label: .name, description: live_description}
+         | . as $live_label
+         | [$open_families[]
+            | select(.prefix as $prefix
+                     | ($live_label.label | ascii_downcase)
+                     | startswith(($prefix + ":") | ascii_downcase))] as $matches
+         | select($matches | length == 1)
+         | select(($retired_label_keys | index($live_label.label | ascii_downcase)) | not)
+         | $matches[0] as $f
+         | select(($live_label.label | control_namespace) | not)
+         | select($live_label.label | authorable_label)
+         | [$open_enumerated[]
+            | select(.family == $f.family and .label_key == ($live_label.label | ascii_downcase))] as $enumerated_match
+         | {record: "guidance", label: $live_label.label,
+            description: (if ($enumerated_match | length) == 1
+                          then $enumerated_match[0].description
+                          else $live_label.description end),
+            family: $f.family, purpose: $f.purpose}] as $open
+      | ($enumerated + $open | unique_by(.label)[])
+      end
+    ' "$manifest" || die "could not render manifest guidance"
+    exit 0
+fi
 
 jq -r '
   .families[] as $f
