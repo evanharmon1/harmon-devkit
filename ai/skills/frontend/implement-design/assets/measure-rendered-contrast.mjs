@@ -123,102 +123,110 @@ function ratio(fg, bg) {
 const browser = await chromium.launch();
 
 let failures = 0;
-for (const theme of ["light", "dark"]) {
-  console.log(`\n=== ${theme.toUpperCase()} ===`);
-  // FRESH page (and context) per theme: init scripts persist for a page's
-  // lifetime and run in undefined order, so re-adding one per pass on a shared
-  // page would leave BOTH themes' scripts racing on later navigations.
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-  await page.emulateMedia({ colorScheme: theme });
-  await page.addInitScript(
-    ([key, t]) => localStorage.setItem(key, t),
-    [THEME_STORAGE_KEY, theme],
-  );
-  let current = null;
-  for (const [route, selector, label, large] of SAMPLES) {
-    if (current !== route) {
-      await page.goto(BASE + route, { waitUntil: "networkidle" });
-      current = route;
-    }
-    // Raw strings out of the page; parsing/compositing happens in Node (see header).
-    const sample = await page.evaluate((sel) => {
-      const el = document.querySelector(sel);
-      if (!el) return { missing: true };
-      const fgRaw = getComputedStyle(el).color;
-      const bgChain = [];
-      const painted = []; // grounds the solid-color compositor can't model
-      const transparent = "rgba(0, 0, 0, 0)";
-      let node = el;
-      while (node && node.nodeType === 1) {
-        const cs = getComputedStyle(node);
-        const tag = node.tagName.toLowerCase();
-        if (cs.backgroundImage && cs.backgroundImage !== "none")
-          painted.push(`background-image on <${tag}>`);
-        for (const pseudo of ["::before", "::after"]) {
-          const ps = getComputedStyle(node, pseudo);
-          if (
-            ps.content !== "none" &&
-            ((ps.backgroundImage && ps.backgroundImage !== "none") ||
-              (ps.backgroundColor &&
-                ps.backgroundColor !== transparent &&
-                ps.backgroundColor !== "transparent"))
-          )
-            painted.push(`painted ${pseudo} on <${tag}>`);
-        }
-        bgChain.push(cs.backgroundColor);
-        node = node.parentElement;
-      }
-      return { fgRaw, bgChain, painted };
-    }, selector);
-
-    if (sample.missing) {
-      failures++;
-      console.log(`  FAIL ${label} — selector not found (${selector})`);
-      continue;
-    }
-
-    // Fail-closed: a gradient/image/pseudo-element ground would make the
-    // solid-color ratio below fiction — never report AA against it.
-    if (sample.painted.length > 0) {
-      failures++;
-      console.log(
-        `  UNSUPPORTED ${label} — ${[...new Set(sample.painted)].join("; ")}; ` +
-          `measure manually (pixel-sample) and record the ratio`,
-      );
-      continue;
-    }
-
-    const fg = parseColor(sample.fgRaw);
-    // Composite the ancestor backgrounds bottom-up over white.
-    const layers = sample.bgChain.map(parseColor).filter((c) => c && c.alpha > 0);
-    let bg = [255, 255, 255];
-    for (let i = layers.length - 1; i >= 0; i--) {
-      const { rgb, alpha } = layers[i];
-      bg = bg.map((base, k) => rgb[k] * alpha + base * (1 - alpha));
-    }
-    if (!fg) {
-      failures++;
-      console.log(`  FAIL ${label} — unparseable color "${sample.fgRaw}"`);
-      continue;
-    }
-    // Semi-transparent text paints blended into its ground — measure that.
-    const fgEffective =
-      fg.alpha < 1
-        ? fg.rgb.map((c, k) => c * fg.alpha + bg[k] * (1 - fg.alpha))
-        : fg.rgb;
-
-    const r = ratio(fgEffective, bg);
-    const need = large ? 3 : 4.5;
-    const ok = r >= need;
-    if (!ok) failures++;
-    console.log(
-      `  ${ok ? "PASS" : "FAIL"} ${label.padEnd(38)} ${r.toFixed(2)}:1 (need ${need})`,
+// try/finally so a throw from goto/evaluate (e.g. the preview server not up)
+// can't leak the launched Chromium — this script is rerun repeatedly in Phase 5.
+try {
+  for (const theme of ["light", "dark"]) {
+    console.log(`\n=== ${theme.toUpperCase()} ===`);
+    // FRESH page (and context) per theme: init scripts persist for a page's
+    // lifetime and run in undefined order, so re-adding one per pass on a shared
+    // page would leave BOTH themes' scripts racing on later navigations.
+    const page = await browser.newPage({
+      viewport: { width: 1280, height: 900 },
+    });
+    await page.emulateMedia({ colorScheme: theme });
+    await page.addInitScript(
+      ([key, t]) => localStorage.setItem(key, t),
+      [THEME_STORAGE_KEY, theme],
     );
-  }
-  await page.close();
-}
+    let current = null;
+    for (const [route, selector, label, large] of SAMPLES) {
+      if (current !== route) {
+        await page.goto(BASE + route, { waitUntil: "networkidle" });
+        current = route;
+      }
+      // Raw strings out of the page; parsing/compositing happens in Node (see header).
+      const sample = await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return { missing: true };
+        const fgRaw = getComputedStyle(el).color;
+        const bgChain = [];
+        const painted = []; // grounds the solid-color compositor can't model
+        const transparent = "rgba(0, 0, 0, 0)";
+        let node = el;
+        while (node && node.nodeType === 1) {
+          const cs = getComputedStyle(node);
+          const tag = node.tagName.toLowerCase();
+          if (cs.backgroundImage && cs.backgroundImage !== "none")
+            painted.push(`background-image on <${tag}>`);
+          for (const pseudo of ["::before", "::after"]) {
+            const ps = getComputedStyle(node, pseudo);
+            if (
+              ps.content !== "none" &&
+              ((ps.backgroundImage && ps.backgroundImage !== "none") ||
+                (ps.backgroundColor &&
+                  ps.backgroundColor !== transparent &&
+                  ps.backgroundColor !== "transparent"))
+            )
+              painted.push(`painted ${pseudo} on <${tag}>`);
+          }
+          bgChain.push(cs.backgroundColor);
+          node = node.parentElement;
+        }
+        return { fgRaw, bgChain, painted };
+      }, selector);
 
-await browser.close();
+      if (sample.missing) {
+        failures++;
+        console.log(`  FAIL ${label} — selector not found (${selector})`);
+        continue;
+      }
+
+      // Fail-closed: a gradient/image/pseudo-element ground would make the
+      // solid-color ratio below fiction — never report AA against it.
+      if (sample.painted.length > 0) {
+        failures++;
+        console.log(
+          `  UNSUPPORTED ${label} — ${[...new Set(sample.painted)].join("; ")}; ` +
+            `measure manually (pixel-sample) and record the ratio`,
+        );
+        continue;
+      }
+
+      const fg = parseColor(sample.fgRaw);
+      // Composite the ancestor backgrounds bottom-up over white.
+      const layers = sample.bgChain
+        .map(parseColor)
+        .filter((c) => c && c.alpha > 0);
+      let bg = [255, 255, 255];
+      for (let i = layers.length - 1; i >= 0; i--) {
+        const { rgb, alpha } = layers[i];
+        bg = bg.map((base, k) => rgb[k] * alpha + base * (1 - alpha));
+      }
+      if (!fg) {
+        failures++;
+        console.log(`  FAIL ${label} — unparseable color "${sample.fgRaw}"`);
+        continue;
+      }
+      // Semi-transparent text paints blended into its ground — measure that.
+      const fgEffective =
+        fg.alpha < 1
+          ? fg.rgb.map((c, k) => c * fg.alpha + bg[k] * (1 - fg.alpha))
+          : fg.rgb;
+
+      const r = ratio(fgEffective, bg);
+      const need = large ? 3 : 4.5;
+      const ok = r >= need;
+      if (!ok) failures++;
+      console.log(
+        `  ${ok ? "PASS" : "FAIL"} ${label.padEnd(38)} ${r.toFixed(2)}:1 (need ${need})`,
+      );
+    }
+    await page.close();
+  }
+} finally {
+  await browser.close();
+}
 console.log(
   failures === 0
     ? "\nRendered contrast: all pass"
