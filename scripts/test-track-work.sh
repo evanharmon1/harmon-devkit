@@ -2890,7 +2890,7 @@ rc_scenario() {
     # trust proof; owner-authored claims also remain valid independently.
     jq '[[.. | objects
         | select((.body? // "") | startswith("Claiming —"))
-        | {event:"assigned", created_at:.created_at,
+        | {event:"assigned", created_at:"2025-12-31T23:59:59Z",
            assignee:{login:.user.login}}]]' "$rc_comments" >"$rc_timeline"
     : >"$rc_log"
     : >"$rc_body"
@@ -3124,6 +3124,36 @@ grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
 if grep -q -- '--remove-label agent:codex' "$rc_log"; then
     fail "an unassigned collaborator must not grant label cleanup authority"
 fi
+
+echo "==> a historical body edited after unassignment grants zero cleanup authority"
+body_label_only_leaf="$(printf '%s' "$body_chain_takeover" |
+    sed 's/assignee owned by this claim chain: yes/assignee owned by this claim chain: no/; s/assignee login owned by this claim chain: evanharmon1/assignee login owned by this claim chain: none/')"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:01:00Z' COLLABORATOR '2026-01-01T00:03:00Z')" \
+    "$(rc_comment evanharmon1 "$body_label_only_leaf" 2 '2026-01-01T00:04:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee":{"login":"collaborator"}},{"event":"unassigned","created_at":"2026-01-01T00:02:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 2 ] || fail "an edit after unassignment must not prove historical ownership"
+[ ! -s "$rc_log" ] || fail "an edit after unassignment must trigger zero writes"
+
+echo "==> same-second assignment and body version are ambiguous"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:01:00Z' COLLABORATOR)" \
+    "$(rc_comment evanharmon1 "$body_label_only_leaf" 2 '2026-01-01T00:02:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:01:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 2 ] || fail "same-second assignment must not prove historical ownership"
+[ ! -s "$rc_log" ] || fail "same-second assignment ambiguity must trigger zero writes"
+
+echo "==> an edit while continuously assigned remains trusted"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:01:00Z' COLLABORATOR '2026-01-01T00:03:00Z')" \
+    "$(rc_comment evanharmon1 "$body_label_only_leaf" 2 '2026-01-01T00:04:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 0 ] || fail "a safely ordered edit during continuous assignment should release"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "continuous historical trust must preserve label cleanup authority"
 
 echo "==> a takeover's direct label displacement is restored by a later open hand-back"
 body_displaced_takeover="$(printf '%s' "$body_v1" |

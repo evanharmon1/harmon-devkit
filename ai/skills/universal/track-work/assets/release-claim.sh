@@ -273,18 +273,24 @@ fetch_claim() {
                 | (["OWNER", "MEMBER", "COLLABORATOR"] | index($a)) != null;
             def trusted_claimant:
                 (dl as $l | $trusted | index($l) != null) and writeauth;
-            def assigned_at_claim_time:
+            def assigned_through_claim_version:
                 dl as $login
-                | .created_at as $claim_time
+                | .updated_at as $version_time
                 | ([ $timeline[]
-                     | select((.event == "assigned" or .event == "unassigned")
+                     | select(.event == "assigned"
                               and (.assignee.login | ascii_downcase) == $login
-                              and .created_at <= $claim_time) ]
-                   | last // null) as $last
-                | $last != null and $last.event == "assigned";
+                              and .created_at < $version_time) ]
+                   | last // null) as $assignment
+                | $assignment != null
+                and ([ $timeline[]
+                       | select(.event == "unassigned"
+                                and (.assignee.login | ascii_downcase) == $login
+                                and .created_at >= $assignment.created_at
+                                and .created_at <= $version_time) ]
+                     | length == 0);
             def historical_claimant:
                 writeauth
-                and (dl == ($owner | ascii_downcase) or assigned_at_claim_time);
+                and (dl == ($owner | ascii_downcase) or assigned_through_claim_version);
             def trusted_release:
                 (.body | startswith("Claim released —"))
                 and (trusted_claimant or dl == "github-actions[bot]");
@@ -292,7 +298,7 @@ fetch_claim() {
             | map(select(.body != null))
             # Historical claims remain lineage evidence after a partial retry
             # removes their assignee only when the timeline proves that the
-            # author was assigned when the record was published.
+            # author remained assigned through the current body version.
             | map(select(trusted_claimant
                          or trusted_release
                          or ((.body | startswith("Claiming —")) and historical_claimant))) as $events

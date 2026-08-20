@@ -166,8 +166,11 @@ in the claim record, never in the label.
   is live, so carry it when the predecessor proves it displaced the label.
   The current record is sufficient for release only after independent lineage proof. The
   releaser admits a historical record to that run only when its author was the
-  repository owner or the issue timeline proves the author was assigned when
-  the comment was published (with write-shaped association in either case).
+  repository owner or the issue timeline proves the author was assigned
+  strictly before the consumed comment's current `updated_at` and remained
+  assigned through that version (with write-shaped association in either
+  case). An edit after unassignment or same-second assignment/version ordering
+  is ambiguous and grants no cleanup authority.
   It then walks the trusted claim run oldest-to-newest and proves every
   inherited login appeared in the immediate predecessor's proven set (or is
   the leaf's direct assignee) before its first write. Missing, unreadable,
