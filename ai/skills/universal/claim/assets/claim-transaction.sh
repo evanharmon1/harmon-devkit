@@ -151,10 +151,6 @@ if [ "$displaced_label" != "none" ]; then
         echo "claim transaction: invalid displaced label: $displaced_label" >&2
         exit 2
     }
-    { [ "$claim_label" != "none" ] || [ "$model_label" != "none" ]; } || {
-        echo "claim transaction: cannot displace a label without a replacement" >&2
-        exit 2
-    }
     [ "$claim_label" != "$displaced_label" ] || {
         echo "claim transaction: replacement and displaced labels must differ" >&2
         exit 2
@@ -168,6 +164,14 @@ if [ -n "$family" ]; then
         ;;
     esac
 fi
+case "$claim_label" in
+claim:*)
+    [ -n "$family" ] && [ "$claim_label" = "claim:$family" ] || {
+        echo "claim transaction: family claim label does not match the trusted family" >&2
+        exit 2
+    }
+    ;;
+esac
 if [ -n "$runtime_environment" ]; then
     case "$runtime_environment" in
     host | devcontainer | coder | codespace | github-actions | unknown) ;;
@@ -513,15 +517,6 @@ if [ "$model_label" != "none" ] && has_label "$tmp/issue-before.json" "$model_la
     model_preexisting=1
 fi
 if [ "$displaced_label" != "none" ]; then
-    if [ "$model_label" != none ]; then
-        [ "$model_preexisting" -eq 0 ] || {
-            echo "claim transaction: replacement model label already exists during a takeover" >&2
-            exit 2
-        }
-    elif [ "$label_preexisting" -ne 0 ]; then
-        echo "claim transaction: replacement label already exists during a takeover" >&2
-        exit 2
-    fi
     has_label "$tmp/issue-before.json" "$displaced_label" || {
         echo "claim transaction: displaced label is not present in the pre-write state" >&2
         exit 2
@@ -746,7 +741,8 @@ if [ "$assignee_preexisting" -eq 0 ]; then
 fi
 
 if { [ "$claim_label" != "none" ] && [ "$label_preexisting" -eq 0 ]; } ||
-    { [ "$model_label" != "none" ] && [ "$model_preexisting" -eq 0 ]; }; then
+    { [ "$model_label" != "none" ] && [ "$model_preexisting" -eq 0 ]; } ||
+    [ "$displaced_label" != none ]; then
     label_args=("$issue" --repo "$repo")
     [ "$claim_label" = none ] || [ "$label_preexisting" -eq 1 ] || label_args+=(--add-label "$claim_label")
     [ "$model_label" = none ] || [ "$model_preexisting" -eq 1 ] || label_args+=(--add-label "$model_label")

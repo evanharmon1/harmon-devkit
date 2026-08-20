@@ -239,8 +239,7 @@ scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(RUN_FAMILY=claude run_claim --claim-label claim:gpt)" = 2 ] ||
     fail "a record family not matching the trusted resolver output must fail"
-[ "$(cat "$log")" = 'status show' ] ||
-    fail "metadata validation may read board provenance but must precede every write"
+[ ! -s "$log" ] || fail "a mismatched trusted family must fail before board reads or writes"
 
 echo "==> closed issues and newly competing markers fail before writes"
 scenario '{"state":"CLOSED","assignees":[],"labels":[]}'
@@ -251,6 +250,15 @@ scenario '{"assignees":[],"labels":[{"name":"claim:claude"}]}'
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "an unapproved competing ownership label must be rejected"
 [ ! -s "$log" ] || fail "a competing marker must trigger zero writes"
+
+echo "==> trusted family rejects mismatched family and model-shaped claim labels"
+for mismatched_label in claim:claude claim:gpt:terra; do
+    scenario "$empty_issue"
+    make_record yes "$mismatched_label" none yes evanharmon1 "$mismatched_label" none
+    [ "$(run_claim --claim-label "$mismatched_label")" = 2 ] ||
+        fail "trusted family must reject mismatched claim label $mismatched_label"
+    [ ! -s "$log" ] || fail "a mismatched family label must trigger zero writes"
+done
 
 echo "==> inherited displacement and board status require predecessor proof"
 scenario "$empty_issue"
@@ -309,6 +317,26 @@ make_record yes claim:gpt claim:claude yes evanharmon1 claim:gpt claim:claude
 jq -e '(.assignees | length) == 0 and ([.labels[].name] == ["claim:claude"])' "$issue_file" >/dev/null ||
     fail "compensation must restore the exact pre-write markers"
 grep -q -- '--add-label claim:claude' "$log" || fail "displaced label was not restored"
+
+echo "==> takeover may retain an existing replacement while removing the approved conflict"
+scenario '{"assignees":[],"labels":[{"name":"claim:gpt"},{"name":"claim:claude"}]}'
+make_record yes no claim:claude yes evanharmon1 no claim:claude
+[ "$(run_claim --claim-label claim:gpt --displaced-label claim:claude)" = 0 ] ||
+    fail "an existing same-family marker must not block approved takeover: $(cat "$err")"
+grep -q -- '--remove-label claim:claude' "$log" || fail "approved conflict must be removed"
+if grep -q -- '--add-label claim:gpt' "$log"; then fail "existing replacement must not be rewritten"; fi
+jq -e '([.labels[].name] == ["claim:gpt"])' "$issue_file" >/dev/null ||
+    fail "takeover must retain only the existing replacement marker"
+
+echo "==> label-less takeover executes an approved displacement-only plan"
+scenario '{"assignees":[],"labels":[{"name":"claim:claude"}]}'
+make_record yes n/a claim:claude yes evanharmon1 n/a claim:claude
+[ "$(run_claim --claim-label none --displaced-label claim:claude)" = 0 ] ||
+    fail "approved label-less displacement must commit: $(cat "$err")"
+grep -q -- '--remove-label claim:claude' "$log" || fail "remove-only plan must execute its label write"
+if grep -q -- '--add-label' "$log"; then fail "label-less takeover must not invent a replacement"; fi
+jq -e '(.labels | length) == 0' "$issue_file" >/dev/null ||
+    fail "remove-only plan must leave no ownership marker"
 
 echo "==> compensation failure is loud and leaves a partial recordless claim"
 scenario "$empty_issue"

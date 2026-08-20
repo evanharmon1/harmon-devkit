@@ -3359,6 +3359,41 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 'Claiming — starting work (se
 if grep -q 'issue edit' "$rc_log"; then fail "no record means no marker may be touched"; fi
 grep -q 'no claim record survived' "$rc_body" || fail "the comment must say the markers were left"
 
+echo "==> a structured refresh after a recordless predecessor starts fresh proof"
+body_recordless='Claiming — starting legacy work (session old).'
+body_after_recordless='Claiming — starting implementation on branch refreshed (session new).
+
+Claim record (for `/wrap` — undo only what this claim added):
+- board: none
+- prior board status: none
+- assignee added by this claim: no
+- `claim:` label added by this claim: n/a
+- `claim:` label displaced by this claim: none
+- assignee logins owned by this claim chain: none
+- `claim:` label owned by this claim chain: n/a
+- `claim:` label displaced by this claim chain: none'
+recordless_refresh_comments="$(rc_page \
+    "$(rc_comment evanharmon1 "$body_recordless" 1)" \
+    "$(rc_comment evanharmon1 "$body_after_recordless" 2)")"
+rc_scenario "$recordless_refresh_comments" \
+    '{"state":"closed","labels":[],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] ||
+    fail "a structured refresh after a recordless predecessor should release: $(cat "$tmp/release.err")"
+if grep -q -- '--remove-assignee\|--remove-label' "$rc_log"; then
+    fail "a recordless boundary must not confer cleanup ownership"
+fi
+
+body_after_recordless_forged="$(printf '%s' "$body_after_recordless" |
+    sed 's/assignee logins owned by this claim chain: none/assignee logins owned by this claim chain: mallory/')"
+rc_scenario "$(rc_page \
+    "$(rc_comment mallory "$body_v1" 1)" \
+    "$(rc_comment evanharmon1 "$body_recordless" 2)" \
+    "$(rc_comment evanharmon1 "$body_after_recordless_forged" 3)")" \
+    '{"state":"closed","labels":[],"assignees":[{"login":"evanharmon1"},{"login":"mallory"}]}'
+[ "$(run_release --reason r)" = 2 ] ||
+    fail "a recordless boundary must not allow inheritance from an older structured claim"
+[ ! -s "$rc_log" ] || fail "forged inheritance across a recordless boundary must write nothing"
+
 echo "==> a failed marker write withholds the comment AND the assignee removal"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
 _rc4="$(RC_FAIL_MATCH='--remove-label' run_release --reason r)"

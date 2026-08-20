@@ -690,6 +690,13 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   the immediate predecessor's proven value; record prose cannot invent either
   cleanup target.
 
+  An approved takeover may keep a same-family marker that was already live,
+  or remove the one approved conflict without adding a replacement in a
+  resolver-approved label-less mode. In both cases the record owns only the
+  writes this attempt made. A `claim:*` family marker must equal the trusted
+  `claim:<family>` resolver output; model refinements use the separate model
+  argument and cannot masquerade as that family marker.
+
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):
 `--add-assignee` accumulates rather than arbitrates, so if someone else

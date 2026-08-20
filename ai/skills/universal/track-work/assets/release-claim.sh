@@ -587,6 +587,21 @@ prove_label_lineage() {
     printf '%s\n%s\n' "${proven:-none}" "${proven_model:-none}"
 }
 
+# A trusted recordless claim is an ownership boundary, not malformed
+# structured provenance. The transaction that follows it cannot inherit any
+# cleanup target from it, so release proves only the structured suffix after
+# the last such boundary. This preserves strict proof inside that suffix while
+# keeping legacy recordless refreshes releasable.
+structured_lineage_suffix() {
+    jq '
+        .lineage as $lineage
+        | ([range(0; $lineage | length) as $i
+            | select(($lineage[$i].body | contains("Claim record")) | not)
+            | $i] | last // -1) as $boundary
+        | .lineage = $lineage[($boundary + 1):]
+    ' <<<"$1"
+}
+
 # Optional harness/model/family/runtime-environment/session lines are
 # operational metadata only. They are deliberately ignored here: release
 # authority comes solely from the required "by this claim" fields below, and
@@ -788,11 +803,12 @@ if [ "$record_present" -eq 1 ]; then
     esac
 
     if [ "$chain_record" -eq 1 ]; then
-        if ! prove_assignee_lineage "$claim_json" >"$owned_assignees_file"; then
+        proof_claim_json="$(structured_lineage_suffix "$claim_json")"
+        if ! prove_assignee_lineage "$proof_claim_json" >"$owned_assignees_file"; then
             echo "$repo#$issue: inherited assignee targets lack unambiguous predecessor provenance — fail closed" >&2
             exit 2
         fi
-        if ! proven_labels="$(prove_label_lineage "$claim_json")"; then
+        if ! proven_labels="$(prove_label_lineage "$proof_claim_json")"; then
             echo "$repo#$issue: inherited label targets lack unambiguous predecessor provenance — fail closed" >&2
             exit 2
         fi

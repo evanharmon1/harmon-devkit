@@ -196,6 +196,10 @@ in the claim record, never in the label.
   proven chain values (falling back to its direct fields only for a legacy
   predecessor). The producer rejects any other value before marker writes, so
   cleanup cannot manufacture a label restoration or board transition.
+- A trusted legacy claim with no record is an ownership boundary. A later
+  structured refresh remains releasable, but its proof starts after the last
+  recordless predecessor: nothing before that boundary can become an inherited
+  cleanup target.
 - Values are untrusted data. Parsers validate fields that can steer an action
   before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's
