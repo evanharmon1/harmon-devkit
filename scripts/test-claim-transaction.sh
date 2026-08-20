@@ -129,42 +129,10 @@ esac
 STUB
 chmod +x "$stub/gh"
 
-cat >"$stub/status-helper" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-case " $* " in
-*' --show '*)
-    printf 'status show\n' >>"$CLAIM_LOG"
-    status_count=0
-    [ ! -f "$CLAIM_STATUS_READ_COUNT" ] || status_count="$(cat "$CLAIM_STATUS_READ_COUNT")"
-    status_count=$((status_count + 1))
-    printf '%s\n' "$status_count" >"$CLAIM_STATUS_READ_COUNT"
-    status_rc="${CLAIM_STATUS_SHOW_RC:-0}"
-    status_value="${CLAIM_PRIOR_STATUS:-Ready}"
-    if [ "$status_count" -gt 1 ]; then
-        status_rc="${CLAIM_STATUS_SHOW_RC_AFTER_FIRST:-$status_rc}"
-        status_value="${CLAIM_STATUS_AFTER_FIRST:-$status_value}"
-    fi
-    case "$status_rc" in
-    0)
-        printf 'Status=%s\nboard=%s\n' "$status_value" "${CLAIM_BOARD:-Owner Project}"
-        ;;
-    *) exit "$status_rc" ;;
-    esac
-    ;;
-*)
-    printf 'status write\n' >>"$CLAIM_LOG"
-    exit "${CLAIM_STATUS_WRITE_RC:-0}"
-    ;;
-esac
-STUB
-chmod +x "$stub/status-helper"
-
 issue_file="$tmp/issue.json"
 comments_file="$tmp/comments.json"
 comments_fail_flag="$tmp/comments.fail"
 comments_read_count="$tmp/comments.read-count"
-status_read_count="$tmp/status.read-count"
 log="$tmp/actions.log"
 record="$tmp/record.md"
 err="$tmp/err"
@@ -175,12 +143,11 @@ scenario() {
     : >"$log"
     rm -f "$comments_fail_flag"
     rm -f "$comments_read_count"
-    rm -f "$status_read_count"
 }
 
 make_record() {
     local assignee="$1" label="$2" displaced="$3" chain_assignee="$4" chain_login="$5" chain_label="$6" chain_displaced="$7"
-    local board="${8:-Owner Project}" prior="${9:-Ready}" branch="${10:-fix/test}"
+    local branch="${10:-fix/test}"
     local family="${11:-gpt}" runtime_environment="${12:-coder}"
     cat >"$record" <<EOF
 Claiming — starting implementation on branch $branch (session test-session).
@@ -191,9 +158,6 @@ Claim record (for \`/wrap\` — undo only what this claim added):
 - family: $family
 - runtime environment: $runtime_environment
 - session: test-session
-- board: $board
-- prior board status: $prior
-- prior board status owned by this claim chain: $prior
 - assignee added by this claim: $assignee
 - \`claim:\` label added by this claim: $label
 - \`claim:\` label displaced by this claim: $displaced
@@ -223,7 +187,6 @@ run_claim() {
         CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
         CLAIM_COMMENTS_FAIL_FLAG="$comments_fail_flag" CLAIM_LOG="$log" \
         CLAIM_COMMENTS_READ_COUNT="$comments_read_count" \
-        CLAIM_STATUS_READ_COUNT="$status_read_count" \
         CLAIM_MUTATE_COMMENTS_ON_READ="${RUN_MUTATE_COMMENTS_ON_READ:-}" \
         CLAIM_CONCURRENT_RECORD="${RUN_CONCURRENT_RECORD:-$record}" \
         CLAIM_CONCURRENT_LOGIN="${RUN_CONCURRENT_LOGIN:-collaborator}" \
@@ -231,7 +194,7 @@ run_claim() {
         CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH="${CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH:-}" \
         CLAIM_LOGIN="${RUN_LOGIN:-evanharmon1}" \
         "$helper" --repo evanharmon1/harmon-devkit --issue 543 \
-        --record-file "$record" --status-helper "$stub/status-helper" "$@" \
+        --record-file "$record" "$@" \
         --family "${RUN_FAMILY:-gpt}" \
         --runtime-environment "${RUN_RUNTIME_ENVIRONMENT:-coder}" \
         >"$tmp/out" 2>"$err" || rc=$?
@@ -240,16 +203,14 @@ run_claim() {
 
 empty_issue='{"assignees":[],"labels":[]}'
 
-echo "==> successful claims order markers, record, then board"
+echo "==> successful claims commit markers then the durable record"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "successful claim should exit 0: $(cat "$err")"
-[ "$(sed -n '1p' "$log")" = 'status show' ] || fail "prior board state must be read first"
-sed -n '2p' "$log" | grep -q -- '--add-assignee evanharmon1' || fail "assignee must be the first write"
-sed -n '3p' "$log" | grep -q -- '--add-label claim:gpt' || fail "label must be the second write"
-[ "$(sed -n '4p' "$log")" = comment ] || fail "record must follow marker writes"
-[ "$(sed -n '5p' "$log")" = 'status show' ] || fail "board status must be re-read after the record"
-[ "$(sed -n '6p' "$log")" = 'status write' ] || fail "board must follow its fresh proof"
+sed -n '1p' "$log" | grep -q -- '--add-assignee evanharmon1' || fail "assignee must be the first write"
+sed -n '2p' "$log" | grep -q -- '--add-label claim:gpt' || fail "label must be the second write"
+[ "$(sed -n '3p' "$log")" = comment ] || fail "record must follow marker writes"
+[ "$(wc -l <"$log" | tr -d ' ')" = 3 ] || fail "transaction must perform no Project board operation"
 
 echo "==> trusted family and runtime metadata commit through the transaction"
 scenario '{"assignees":[],"labels":[]}'
@@ -264,7 +225,7 @@ scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(RUN_FAMILY=claude run_claim --claim-label claim:gpt)" = 2 ] ||
     fail "a record family not matching the trusted resolver output must fail"
-[ ! -s "$log" ] || fail "a mismatched trusted family must fail before board reads or writes"
+[ ! -s "$log" ] || fail "a mismatched trusted family must fail before writes"
 
 echo "==> closed issues and newly competing markers fail before writes"
 scenario '{"state":"CLOSED","assignees":[],"labels":[]}'
@@ -292,16 +253,11 @@ make_record yes claim:gpt:terra none yes evanharmon1 claim:gpt:terra none
 [ "$(run_claim --claim-label claim:gpt:terra)" = 0 ] ||
     fail "same-family model-shaped primary marker should commit: $(cat "$err")"
 
-echo "==> inherited displacement and board status require predecessor proof"
+echo "==> inherited displacement requires predecessor proof"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt claim:claude
 [ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "a forged inherited displacement must be rejected"
-[ "$(cat "$log")" = 'status show' ] || fail "forged displacement must fail before writes"
-scenario "$empty_issue"
-make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-sed -i 's/prior board status owned by this claim chain: Ready/prior board status owned by this claim chain: Done/' "$record"
-[ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "a forged inherited board status must be rejected"
-[ "$(cat "$log")" = 'status show' ] || fail "forged board provenance must fail before writes"
+[ ! -s "$log" ] || fail "forged displacement must fail before writes"
 
 echo "==> a failed response that committed the exact record reconciles as success"
 scenario "$empty_issue"
@@ -354,44 +310,18 @@ result="$(RUN_MUTATE_COMMENTS_ON_READ=4 RUN_CONCURRENT_RECORD="$concurrent_recor
 grep -q 'refusing compensation' "$err" || fail "late adoption must be reported"
 if grep -q -- '--remove-' "$log"; then fail "final lineage guard must run before destructive compensation"; fi
 
-echo "==> confirmed record absence compensates only this attempt and restores displacement"
-scenario '{"assignees":[],"labels":[{"name":"claim:claude"}]}'
-make_record yes claim:gpt claim:claude yes evanharmon1 claim:gpt claim:claude
-[ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt --displaced-label claim:claude)" = 4 ] || fail "compensated absence should exit 4: $(cat "$err")"
-jq -e '(.assignees | length) == 0 and ([.labels[].name] == ["claim:claude"])' "$issue_file" >/dev/null ||
-    fail "compensation must restore the exact pre-write markers"
-grep -q -- '--add-label claim:claude' "$log" || fail "displaced label was not restored"
-
-echo "==> takeover may retain an existing replacement while removing the approved conflict"
+echo "==> routine helper rejects displacement before every write"
 scenario '{"assignees":[],"labels":[{"name":"claim:gpt"},{"name":"claim:claude"}]}'
 make_record yes no claim:claude yes evanharmon1 no claim:claude
-[ "$(run_claim --claim-label claim:gpt --displaced-label claim:claude)" = 0 ] ||
-    fail "an existing same-family marker must not block approved takeover: $(cat "$err")"
-grep -q -- '--remove-label claim:claude' "$log" || fail "approved conflict must be removed"
-if grep -q -- '--add-label claim:gpt' "$log"; then fail "existing replacement must not be rewritten"; fi
-jq -e '([.labels[].name] == ["claim:gpt"])' "$issue_file" >/dev/null ||
-    fail "takeover must retain only the existing replacement marker"
+[ "$(run_claim --claim-label claim:gpt --displaced-label claim:claude)" = 2 ] ||
+    fail "routine helper must not accept a displacement flag"
+[ ! -s "$log" ] || fail "exceptional displacement must remain outside the routine write boundary"
 
-echo "==> label-less takeover executes an approved displacement-only plan"
-scenario '{"assignees":[],"labels":[{"name":"claim:claude"}]}'
-make_record yes n/a claim:claude yes evanharmon1 n/a claim:claude
-[ "$(run_claim --claim-label none --displaced-label claim:claude)" = 0 ] ||
-    fail "approved label-less displacement must commit: $(cat "$err")"
-grep -q -- '--remove-label claim:claude' "$log" || fail "remove-only plan must execute its label write"
-if grep -q -- '--add-label' "$log"; then fail "label-less takeover must not invent a replacement"; fi
-jq -e '(.labels | length) == 0' "$issue_file" >/dev/null ||
-    fail "remove-only plan must leave no ownership marker"
-
-echo "==> label-less records cannot forge family or model chain ownership"
-scenario "$empty_issue"
-make_record yes n/a none yes evanharmon1 claim:gpt none
-[ "$(run_claim --claim-label none)" = 2 ] || fail "label-less family chain ownership must be rejected"
-if grep -Eq '^(edit|comment|status write)$' "$log"; then fail "forged label-less family ownership must stop before writes"; fi
+echo "==> routine helper rejects every label-less plan before every write"
 scenario "$empty_issue"
 make_record yes n/a none yes evanharmon1 n/a none
-add_model_fields n/a claim:gpt:terra
-[ "$(run_claim --claim-label none)" = 2 ] || fail "label-less model chain ownership must be rejected"
-if grep -Eq '^(edit|comment|status write)$' "$log"; then fail "forged label-less model ownership must stop before writes"; fi
+[ "$(run_claim --claim-label none)" = 2 ] || fail "routine helper must reject a label-less claim"
+[ ! -s "$log" ] || fail "label-less exceptional flow must remain outside the routine write boundary"
 
 echo "==> compensation failure is loud and leaves a partial recordless claim"
 scenario "$empty_issue"
@@ -411,66 +341,27 @@ jq -e 'any(.assignees[]; .login == "evanharmon1") and any(.labels[]; .name == "c
     "$issue_file" >/dev/null || fail "indeterminate marker state must remain visible"
 if grep -q -- '--remove-' "$log"; then fail "ambiguous label state must never be compensated"; fi
 
-echo "==> board failure retains the valid claim and reports the board gap"
-scenario "$empty_issue"
-make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-[ "$(CLAIM_STATUS_WRITE_RC=1 run_claim --claim-label claim:gpt)" = 5 ] || fail "board failure should exit 5"
-[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "board failure must retain the durable record"
-grep -q 'VALID CLAIM COMMITTED' "$err" || fail "valid-claim board gap must be explicit"
-
-echo "==> unreadable initial board state commits the claim but is never overwritten"
+echo "==> board metadata is non-authoritative and never affects claim commit"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none unknown unknown
-[ "$(CLAIM_STATUS_SHOW_RC=2 run_claim --claim-label claim:gpt)" = 5 ] ||
-    fail "unreadable prior board state must become a committed board gap"
-[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "unreadable board must not discard the valid claim"
-if grep -q '^status write$' "$log"; then fail "unknown prior status must never be overwritten"; fi
+awk '
+    { print }
+    /^- session:/ {
+        print "- board: Owner Project"
+        print "- prior board status: unknown"
+        print "- prior board status owned by this claim chain: unknown"
+    }
+' "$record" >"$tmp/legacy-board-record.md"
+mv "$tmp/legacy-board-record.md" "$record"
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "board metadata must not gate a durable claim"
+[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "durable record must commit independently of board metadata"
+if grep -q '^status ' "$log"; then fail "transaction must never read or write Project status"; fi
 
-echo "==> a concurrent board change is preserved after claim publication"
-scenario "$empty_issue"
-make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-[ "$(CLAIM_STATUS_AFTER_FIRST=Done run_claim --claim-label claim:gpt)" = 5 ] ||
-    fail "changed board state must block the stale write"
-grep -q "board status changed from 'Ready' to 'Done'" "$err" ||
-    fail "concurrent board change must be reported"
-if grep -q '^status write$' "$log"; then fail "concurrent board status must not be overwritten"; fi
-
-echo "==> an exact committed-record retry resumes only the board phase"
-scenario "$empty_issue"
-make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-[ "$(CLAIM_STATUS_WRITE_RC=1 run_claim --claim-label claim:gpt)" = 5 ] ||
-    fail "fixture must leave a committed record before board success"
+echo "==> an exact committed-record retry is a no-write idempotent success"
 : >"$log"
-rm -f "$status_read_count"
-[ "$(run_claim --claim-label claim:gpt)" = 0 ] ||
-    fail "exact committed record must resume its board phase: $(cat "$err")"
-[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "resume must not publish a duplicate record"
-if grep -q '^edit\|^comment$' "$log"; then fail "resume must not repeat marker or comment writes"; fi
-[ "$(grep -c '^status write$' "$log")" -eq 1 ] || fail "resume must perform the pending board write once"
-
-echo "==> an exact retry treats an already-In-Progress board as complete"
-: >"$log"
-rm -f "$status_read_count"
-[ "$(CLAIM_PRIOR_STATUS='In Progress' run_claim --claim-label claim:gpt)" = 0 ] ||
-    fail "already-complete board phase must be idempotent"
-if grep -q '^status write$\|^edit\|^comment$' "$log"; then fail "completed retry must perform no writes"; fi
-
-echo "==> an exact retry refuses a claim whose required live markers disappeared"
-jq '.assignees = [] | .labels = []' "$issue_file" >"$issue_file.next"
-mv "$issue_file.next" "$issue_file"
-: >"$log"
-rm -f "$status_read_count"
-[ "$(run_claim --claim-label claim:gpt)" = 5 ] || fail "marker loss after commit must block board completion"
-grep -q 'required live markers' "$err" || fail "marker loss must name the committed-claim invariant"
-if grep -q '^status write$\|^edit\|^comment$' "$log"; then fail "marker loss must not be repaired or followed by a board write"; fi
-
-echo "==> a claim closed after publication cannot be moved back to In Progress"
-scenario "$empty_issue"
-make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-[ "$(RUN_CLOSE_AFTER_COMMENT=true run_claim --claim-label claim:gpt)" = 5 ] ||
-    fail "a claim closed after publication must report a board gap"
-[ "$(jq -r '.state' "$issue_file")" = CLOSED ] || fail "the concurrent close must remain visible"
-if grep -q '^status write$' "$log"; then fail "a closed claim must not be moved back to In Progress"; fi
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "exact record retry must recognize the committed claim"
+[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "exact retry must not publish a duplicate record"
+[ ! -s "$log" ] || fail "exact retry must perform no marker, comment, or board write"
 
 echo "==> pre-existing markers are never rewritten or compensated"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}'
@@ -509,13 +400,13 @@ make_record no no none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "failed refresh must preserve only the predecessor"
 if grep -q '^edit' "$log"; then fail "failed refresh must not touch inherited markers"; fi
 
-echo "==> repositories without labels or boards still get an assignee-backed record"
+echo "==> label-less repositories remain an explicit manual exception"
 scenario "$empty_issue"
 make_record yes n/a none yes evanharmon1 n/a none none none
-[ "$(CLAIM_STATUS_SHOW_RC=3 CLAIM_STATUS_WRITE_RC=3 run_claim --claim-label none)" = 3 ] || fail "boardless label-less claim should exit benign 3"
-jq -e 'any(.assignees[]; .login == "evanharmon1")' "$issue_file" >/dev/null || fail "label-less claim must be assignee-backed"
-[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "label-less claim still requires a record"
-if grep -q -- '--add-label' "$log"; then fail "label-less repository must not invent a label"; fi
+[ "$(run_claim --claim-label none)" = 2 ] || fail "routine transaction must reject label-less repositories"
+jq -e '(.assignees | length) == 0' "$issue_file" >/dev/null || fail "routine helper must not partially claim label-less issue"
+[ "$(jq 'length' "$comments_file")" -eq 0 ] || fail "routine helper must not publish a label-less record"
+[ ! -s "$log" ] || fail "routine helper must perform zero writes for label-less exception"
 
 echo "==> A to B to C takeover retains the canonical predecessor ownership set"
 make_record yes no none yes 'alice,bob' claim:gpt none 'Owner Project' Ready fix/predecessor
@@ -541,6 +432,6 @@ scenario '{"assignees":[{"login":"alice"},{"login":"bob"}],"labels":[{"name":"cl
     "$(jq -n --argjson body "$predecessor_body" '[{id:1,user:{login:"bob"},author_association:"COLLABORATOR",body:$body}]')"
 make_record yes no none yes 'alice,bob,carol,dave' claim:gpt none
 [ "$(RUN_LOGIN=carol run_claim --claim-label claim:gpt)" = 2 ] || fail "forged victim must fail before writes"
-if grep -q '^edit\|^comment$\|^status write$' "$log"; then fail "forged victim rejection must perform zero writes"; fi
+if grep -q '^edit\|^comment$' "$log"; then fail "forged victim rejection must perform zero writes"; fi
 
 echo "PASS: claim transaction semantics"

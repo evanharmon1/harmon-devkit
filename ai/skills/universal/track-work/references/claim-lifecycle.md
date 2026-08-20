@@ -2,8 +2,9 @@
 
 The claim convention (`track-work` §6) makes an agent's work visible while it
 happens: assignee, `claim:*` label (the legacy `agent:*` family during the
-rolling transition), a card at `In Progress`, and a `Claiming —`
-comment. This reference records the two things the SKILL.md prose cannot carry:
+rolling transition), and a `Claiming —` comment. A best-effort Project-status
+projection may accompany those markers but is not claim state. This reference
+records the two things the SKILL.md prose cannot carry:
 the **machine contract** for the claim record, and the **design decisions**
 behind event-driven release (harmon-devkit#210).
 
@@ -14,8 +15,8 @@ derive from its own state is written by an event, not by a session. Two
 consequences that hold independently of whether any session is running:
 
 1. No closed issue carries a live claim marker — a `claim:*` (or legacy
-   `agent:*`) label, a card at `In Progress`, or a `Claiming —` comment with no
-   `Claim released —` successor.
+   `agent:*`) label or a `Claiming —` comment with no `Claim released —`
+   successor.
 2. A card's `Status` matches the delivery state GitHub already knows, rather
    than a snapshot some session took. (Deferred — see the decision below.)
 
@@ -24,7 +25,7 @@ consequences that hold independently of whether any session is running:
 | Stage | Writes |
 | --- | --- |
 | `kickoff` | none — detects drift, never fixes it |
-| `claim` | assignee, `claim:*` label, card `In Progress`, claim comment — nothing in GitHub knows an agent started before a PR exists, so this stays session-written |
+| `claim` | assignee, `claim:*` label, claim comment; then optionally projects card `In Progress` as non-authoritative best effort — nothing in GitHub knows an agent started before a PR exists, so the durable markers stay session-written |
 | `implement` | ticks criteria as verified; files follow-ups |
 | `shepherd` | review replies; releases the `claim:*` label at its terminal stop-at-green ("implementing right now" is false once the work is with a human); card advances (see decision below) |
 | `retro` | none — distinguishes a claim *pending release* from one that outlived its session |
@@ -69,13 +70,12 @@ in the claim record, never in the label.
   a second live claim. All readers (`kickoff`, `retro`, `implement`, and the
   workflow) use this one-current-record predicate.
 - **The record append is the claim transaction's commit point.** The executable
-  producer is `claim/assets/claim-transaction.sh`. It snapshots the issue,
-  comments, board, and prior status; adds only the authenticated assignee and
-  resolved claim label that were absent; publishes the exact record; then and
-  only then moves the board to `In Progress`. Repositories without a
-  claim-label family or board still commit an assignee-backed record (with
-  explicit `n/a`/`none` values); neither optional integration weakens the
-  durable-record requirement. Immediately before publication it re-reads the
+  routine producer is `claim/assets/claim-transaction.sh`. It snapshots the
+  issue and comments, adds only the authenticated assignee and resolved claim
+  labels that were absent, and publishes the exact record. It rejects
+  label-less and displacement plans: those exceptional, explicitly approved
+  flows remain manual and separately prompted rather than becoming flags on a
+  pre-authorized helper. Immediately before publication the routine producer re-reads the
   markers and trusted comment lineage; a newer trusted claim/release or marker
   drift stops the stale append and leaves the visible state for recovery. The
   transaction itself rejects a closed issue, an assignee not proven by the
@@ -89,20 +89,15 @@ in the claim record, never in the label.
   absent permits compensation only when the trusted predecessor is still the
   one the attempt started from. A newer trusted claim may have adopted the
   tentative markers, so lineage drift refuses compensation. Otherwise the
-  producer removes only markers this attempt added and restores its one proven
-  displaced label. Failure to compensate is a loud partial recordless claim;
+  producer removes only markers this routine attempt added. Failure to
+  compensate is a loud partial recordless claim;
   it must never be reported as rolled back.
-- **Board failure is after commit and never rolls a claim back.** Once the
-  record exists, a missing board is benign and a failed or unverifiable board
-  write is a valid claim with a reported board gap. Retain the assignee, label,
-  and record. On refresh, publication failure leaves the predecessor current;
-  pre-existing or inherited markers were not added by the attempt and are never
-  compensation targets.
-- **The record is the board-phase resume token.** An exact-current record may
-  retry only its pending board transition. The producer freshly compares the
-  selected board and status with the record immediately before writing,
-  preserves any concurrent change, treats an already-`In Progress` status as
-  complete, and never overwrites an unreadable prior status.
+- **Project state is not part of claim correctness.** After a record commits,
+  `Status=In Progress` may be attempted once as a best-effort projection. The
+  transaction never reads or writes a board; board absence, drift, failure, or
+  ambiguity cannot change claim success, trigger rollback, authorize cleanup,
+  or create a resumable transaction phase. An exact-current record is only a
+  no-write idempotence token.
 - The body carries a `Claim record` block whose fields are **one line each**,
   anchored on the literal `by this claim:` (the keys contain backticks and
   their own colons — parsers must never split on a colon):
@@ -114,9 +109,6 @@ in the claim record, never in the label.
   - family: <the trusted acting-family resolver output>
   - runtime environment: <host|devcontainer|coder|codespace|github-actions|unknown>
   - session: <the `/kickoff` session name, or "unknown">
-  - board: <board title, or "none">
-  - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
-  - prior board status owned by this claim chain: <the original status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact family or legacy label applied | no | n/a>
   - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
@@ -126,6 +118,10 @@ in the claim record, never in the label.
   - `claim:` model label owned by this claim chain: <the exact still-present claim:<family>:<model> refinement | no | n/a>
   - `claim:` label displaced by this claim chain: <the exact displaced family/model or legacy label | none>
   ```
+
+  Older records may also contain `board`, `prior board status`, and chain board
+  status lines. They are legacy audit metadata only for current readers and do
+  not authorize a new producer or cleanup path to mutate Project state.
 
 - `harness`, `model`, `family`, `runtime environment`, and `session` are
   optional, informational fields. New claims write all five; legacy records
@@ -159,8 +155,7 @@ in the claim record, never in the label.
 - **Current ownership is explicit (v3).** New records carry a canonical,
   deduplicated assignee-login set: lowercase, sorted, comma-separated, and
   bounded at ten entries,
-  the family/model/displaced `claim chain` fields, and the
-  prior board status the chain owns. The producer derives the assignee set from
+  plus the family/model/displaced `claim chain` fields. The producer derives the assignee set from
   exactly the immediate latest trusted predecessor's proven set plus the
   authenticated login when this attempt directly assigned it; absent
   predecessor members are dropped, and the result is lowercase and sorted.
@@ -172,11 +167,7 @@ in the claim record, never in the label.
   independently introduced.
   Its displaced label is different: it is normally absent while the takeover
   is live, so carry it when the predecessor proves it displaced the label.
-  The refresh or takeover also carries the predecessor's chain board status
-  (or its direct status for a legacy predecessor), rather than treating the
-  predecessor's `In Progress` card as its own prior state; `/wrap` can then
-  restore the original status after an abandoned hand-back. The current record
-  is then sufficient for release only after independent lineage proof. The
+  The current record is sufficient for release only after independent lineage proof. The
   releaser walks the trusted claim run oldest-to-newest and proves every
   inherited login appeared in the immediate predecessor's proven set (or is
   the leaf's direct assignee) before its first write. Missing, unreadable,
@@ -195,12 +186,12 @@ in the claim record, never in the label.
   refreshed producer writes only the stronger comma-canonical form. It rejects
   partial ownership groups, contradictory scalar/set companions, and forged
   family, model, or assignee targets before its first write.
-- The chain-owned displaced label and prior board status are provenance too.
-  A fresh record initializes them from this attempt's direct displacement and
-  direct prior status; a refresh/takeover must copy the immediate predecessor's
-  proven chain values (falling back to its direct fields only for a legacy
-  predecessor). The producer rejects any other value before marker writes, so
-  cleanup cannot manufacture a label restoration or board transition.
+- The chain-owned displaced label is provenance too. A manually approved
+  exceptional record initializes it from that attempt's direct displacement;
+  a routine refresh may only copy the immediate predecessor's proven chain
+  value (falling back to its direct field for a legacy predecessor). The
+  producer rejects any other value before marker writes, so cleanup cannot
+  manufacture a label restoration.
 - A trusted legacy claim with no record is an ownership boundary. A later
   structured refresh remains releasable, but its proof starts after the last
   recordless predecessor: nothing before that boundary can become an inherited
@@ -273,12 +264,11 @@ The events table in #210 also sketched card moves (`Verifying` on PR open,
 - harmon-devkit itself has `project_management: none` and its issues sit on no
   board — there is nothing here to automate, and shipping unexercisable
   automation invites rot.
-- Sessions and events must never both write `Status` (the last-write-wins race
-  `shepherd` §7 warns about). If card events ever land, the `Status` writes
-  leave `/shepherd` and `/wrap` in the same change — do not ship one side.
+- Session-written `Status` values are best-effort projections, not claim state.
+  A later event system may replace them, but neither path may use Project state
+  as ownership or cleanup authority.
 
-Revisit when a Projects-scoped secret exists and a board is live. Until then
-`/shepherd` and `/wrap` keep their session-written card moves.
+Revisit when a Projects-scoped secret exists and a board is live.
 
 ## Accepted gaps
 
@@ -293,9 +283,8 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
   postdates that claim, no competing open PR or newer unrelated claim activity,
   and attributable descriptions of what landed and what remains. It re-reads
   that evidence immediately before cleanup and fails closed if the ground
-  moved. That interactive cleanup restores the recorded chain board status, or
-  the direct prior status for a legacy record (never `Done`), restores a proven
-  displaced claim label because the issue remains open, releases only markers
+  moved. That interactive cleanup restores a proven displaced claim label
+  because the issue remains open, releases only markers
   proven owned by the direct/current chain record, and posts the supersede
   comment last. Ambiguous evidence fails closed to maintainer confirmation;
   event automation deliberately does not infer this state.
@@ -339,9 +328,8 @@ Revisit when a Projects-scoped secret exists and a board is live. Until then
   instead: the script re-reads before writing, recognizes its own
   bot-authored supersede comments, and withholds the comment on partial
   failure, so the worst interleaving is a duplicate release comment.
-- A claim whose only surviving markers are on the board (no comment, no
-  label) is invisible to the release workflow — that discovery gap is
-  harmon-devkit#183.
+- A card alone is never a claim marker. With no trusted comment, assignee, or
+  ownership label, release has nothing attributable to mutate.
 - Loop safety rests on two independent facts: comments posted with
   `GITHUB_TOKEN` never trigger workflow runs, and every `issue_comment`
   workflow in this repo gates on an allowlisted sender. A future workflow

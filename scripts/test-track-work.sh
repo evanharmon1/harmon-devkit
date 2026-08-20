@@ -2763,9 +2763,6 @@ grep -Fq "qualifying delivery PR's own trail" "$wrap_skill" ||
 
 echo "==> partial delivery restores open-issue state and explains the release"
 for required in \
-    'restore the recorded chain board status' \
-    'direct prior status for a legacy record' \
-    'never set an open issue to `Done`' \
     'restore the exact displaced' \
     'Remove only claim-owned assignees' \
     'both the inherited chain assignee' \
@@ -2776,6 +2773,8 @@ for required in \
     grep -Fq "$required" "$partial_contract" ||
         fail "/wrap partial delivery cleanup must include: $required"
 done
+grep -Fq 'Project status is not a claim' "$wrap_skill" ||
+    fail "/wrap must exclude Project status from claim cleanup authority"
 
 echo "==> lifecycle reference distinguishes partial delivery from event release"
 for required in \
@@ -2786,9 +2785,11 @@ for required in \
         fail "claim lifecycle must document partial delivery: $required"
 done
 
-echo "==> claim takeover guidance seeds direct displacement into chain provenance"
-grep -Fq 'A label displaced by this takeover seeds the chain-displaced field directly;' "$claim_skill" ||
-    fail "/claim must seed a takeover's direct label displacement into the claim chain"
+echo "==> exceptional takeover guidance stays manual and records exact provenance"
+grep -Fq 'does not accept `--displaced-label`' "$claim_skill" ||
+    fail "/claim must keep displacement outside the routine transaction helper"
+grep -Fq 'Record the exact direct and chain provenance' "$claim_skill" ||
+    fail "/claim manual takeover must record the provenance its approved writes established"
 
 echo "==> implement refresh guidance resets direct ownership while carrying chain ownership"
 grep -Fq '`added by this claim` fields describe only writes performed by the refresh' "$implement_skill" ||

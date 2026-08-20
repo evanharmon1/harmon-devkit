@@ -439,11 +439,6 @@ family is idempotent; a different family is the blocker above. A registry is
 also structural input: the resolver validates its selected family and every
 legacy alias before using either. When the target registry is absent, every
 harness still must pass its host-attested family.
-The board's own markers remain a separate read:
-
-```sh
-<track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --show
-```
 
 **A claim never writes the `Agent` field — it is retired.** Advisory routing
 (*which* family/model *should* do the work) is now the human-authored
@@ -475,11 +470,11 @@ the resolver returns `target_label=n/a` directly. In every mode the assignee
 and durable comment remain authoritative, and an unassigned claim is forbidden.
 
 Carry every answer into the claim comment. `/wrap` undoes only what the claim
-actually added. **Do not run the assignee, label, comment, and board writes as
+actually added. **Do not run the routine assignee, label, and comment writes as
 independent commands.** The claim asset `assets/claim-transaction.sh` is their
 executable state machine: it snapshots the exact pre-write markers and comments,
 validates the record against that state, applies only missing markers, treats the
-record append as the commit point, and moves the board only after that commit.
+record append as the commit point, and never reads or writes Project state.
 Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
 `ai/skills/universal/claim` in harmon-devkit itself.
 
@@ -511,45 +506,31 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   with no resolvable family marker is **unverifiable**, not silently unlabeled:
   stop and ask as described above.
 
-  **If the user approved proceeding past exactly one other owner's claim
-  label**, replace that one rather than adding alongside: `--add-label` alone
-  leaves the issue advertising two owners, which is worse than the conflict it
-  was meant to resolve. Exit 11 (`takeover=refused`) means there are multiple
-  competing labels; stop even with a general takeover request. The claim record
-  and release grammar preserve one exact displaced label, not an arbitrary set.
-  For the single approved conflict, remove the actual label in the same edit and
-  record it so the hand-back can restore it:
+  **Exceptional plans stay outside the routine executable boundary.** The
+  pre-authorized transaction helper accepts only a normal labeled claim. It
+  rejects `--claim-label none` and does not accept `--displaced-label`, so
+  routine `/claim` authorization cannot accidentally exercise either
+  escalation. If the user explicitly approves an unverifiable label-less claim
+  or one exact takeover in the current interaction, do not call the routine
+  helper. Re-read the issue and resolver plan, then perform the assignee,
+  exact-label, and durable-comment writes manually through separately prompted
+  `gh` commands. A takeover removes only the approved conflict; exit 11 remains
+  refused. Treat any ambiguous write response as indeterminate and leave the
+  visible state for recovery—never infer ownership or compensate from current
+  marker presence. Record the exact direct and chain provenance that the
+  approved manual writes actually established.
 
-  Pass the approved competing label as `--displaced-label`; do not remove it
-  separately. The helper requires it in the pre-write snapshot, applies the
-  one-for-one takeover, and restores it if record publication is confirmed
-  absent.
-
-  A label displaced by this takeover seeds the chain-displaced field directly;
-  inherited displacement is carried only from a proven predecessor.
-
-  A displaced label may itself be legacy. Remove and record that exact label so
-  the hand-back restores it.
-
-- **Board** — the assignee and the label are both invisible on the project
-  board, which is where the work is actually watched, so move the card there
-  too. `Status` only — the `Agent` field is retired (`set-issue-status.sh` no
-  longer writes it). **Do this after the
-  comment below**, not here in list order: the comment is what preserves the
-  status this write destroys. The script ships with `track-work`, so
+- **Board** — synchronize `Status` to `In Progress` only as a non-authoritative,
+  best-effort projection **after** the claim record commits. `Agent` remains
+  retired. The script ships with `track-work`, so
   `<track-work-dir>` is `.agents/skills/track-work` when the portable path is
   present, `.claude/skills/track-work` in a Claude-first consumer, and
-  `ai/skills/universal/track-work` in harmon-devkit itself. The transaction
-  helper resolves that sibling status helper and invokes it; do not invoke the
-  board write separately.
-
-  Read the transaction's exit code rather than the noise: **0** record
-  committed and board applied, **3** record committed and nothing to do
-  (the issue is on no board, or the board lacks the field/option) — benign,
-  note it and move on, and **5** the record committed but the board write
-  failed or could not be verified. Exit 5 is a valid visible claim with a board
-  gap; never compensate its assignee or label. Never retry a 3. A card still
-  sitting outside `In Progress` must not be reported as moved.
+  `ai/skills/universal/track-work` in harmon-devkit itself. Run
+  `set-issue-status.sh --status "In Progress"` once after transaction exit 0.
+  Report its result accurately, but never let board absence, drift, failure, or
+  ambiguity change claim success, trigger marker rollback, become cleanup
+  authority, or initiate a transaction retry. The durable comment plus live
+  assignee/labels define the claim; Project state does not.
 - **Comment**: build the exact body in a temporary file with a quoted heredoc
   so the branch/session values are
   never re-evaluated by the shell (a branch name can contain `$(…)`). Use a
@@ -557,21 +538,8 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   termination, so a body containing a literal `EOF` line would end a
   fixed-`EOF` heredoc early:
 
-  **Record the status you are overwriting, and record it first.**
-  `--status "In Progress"` destroys whatever the card held — `Ready`,
-  `Shaping`, `Next`, `Agent Queue` — and nothing anywhere else remembers it, so
-  an abandoned session cannot put the issue back and has to guess. Read it with
-  `--show` and write the comment **before** the board write. Ordered the other
-  way, an interruption or a failed `gh issue comment` between the two loses the
-  old value permanently:
-
   ```sh
-  # 1. read (writes nothing)
-  <track-work-dir>/assets/set-issue-status.sh --repo "$repo" --issue <n> --show
-  # -> Status=Ready
-  #    board=<owner> Project
-
-  # 2. prepare the exact record; the helper publishes it after marker writes
+  # 1. prepare the exact record; the helper publishes it after marker writes
   record_file="$(mktemp)"
   cat >"$record_file" <<'CLAIM_BODY_9f3k'
   Claiming — starting implementation on branch <branch> (session <name>).
@@ -588,9 +556,6 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   - family: <the resolver's literal `family` value>
   - runtime environment: <host|devcontainer|coder|codespace|github-actions|unknown>
   - session: <the `/kickoff` session name, or "unknown">
-  - board: <board title from --show, or "none">
-  - prior board status: <status | "none" (unset) | "unknown" (unreadable)>
-  - prior board status owned by this claim chain: <the original status | "none" (unset) | "unknown" (unreadable)>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
   - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
@@ -601,18 +566,19 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   - `claim:` label displaced by this claim chain: <the exact displaced claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   CLAIM_BODY_9f3k
 
-  # 3. one executable transaction: markers -> durable record -> board
-  # family_target, model_target, and displaced were derived from the resolver
-  # plan above. Either marker target is "none" when it does not apply. A
-  # label-less plan maps n/a to --claim-label none only after the resolver has
-  # approved that mode; displaced remains none absent an approved conflict.
-  [ "$target" = "n/a" ] && family_target=none
+  # 2. the routine transaction accepts only a normal labeled, non-displacing
+  # resolver plan. Exceptional approved plans use the manual flow above.
+  [ "$resolver_status" -eq 0 ] && [ "$target" != "n/a" ] || exit 1
   [ "$model_target" = "n/a" ] && model_target=none
   <claim-skill-dir>/assets/claim-transaction.sh \
     --repo "$repo" --issue <n> --record-file "$record_file" \
     --claim-label "$family_target" --model-label "$model_target" \
-    --displaced-label "$displaced" \
     --family "$family" --runtime-environment "$runtime_environment"
+
+  # 3. best-effort projection only; its result cannot alter claim success.
+  <track-work-dir>/assets/set-issue-status.sh \
+    --repo "$repo" --issue <n> --status "In Progress" ||
+    echo 'claim committed; Project status was not synchronized' >&2
   ```
 
   The comment is the durable record — it survives compaction, a lost session,
@@ -638,7 +604,7 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   Pass the trusted family and portable runtime values to the transaction
   helper as shown: it requires any corresponding record line to match exactly
   before the first write, but never uses either value to choose a marker,
-  compensation, board, or release action.
+  compensation, or release action.
 
   **The record is a parsed contract, not prose.** The `Claim released —`
   workflow (`.github/workflows/claim-release.yml` where installed) machine-
@@ -660,16 +626,12 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   (`n/a, repo has no such label`) — parsers stop at the first comma.
 
   **Initialize and transfer claim-chain ownership deliberately.** A fresh
-  claim copies its direct marker values and prior board status into the chain
-  fields and records its own login in the assignee set when it owns the
-  assignment. A branch/scope
+  claim copies its direct marker values into the chain fields and records its
+  own login in the assignee set when it owns the assignment. A branch/scope
   refresh or crash-recovery takeover posts one new record; that append
-  supersedes the earlier record atomically for readers. Carry the predecessor's
-  chain board status (or the predecessor's direct status for a legacy record),
-  rather than the current `In Progress` status that this claim sees, so a later
-  hand-back restores the status the chain originally displaced. The
-  transaction helper derives the assignee set; never author target logins from
-  memory. It takes the immediate latest trusted predecessor's proven set,
+  supersedes the earlier record atomically for readers. The transaction helper
+  derives the assignee set; never author target logins from memory. It takes
+  the immediate latest trusted predecessor's proven set,
   retains only members still assigned, adds the authenticated login only when
   this attempt directly assigned it, then lowercases, deduplicates, sorts, and
   validates the submitted field against that result. Thus A→B→C records
@@ -685,24 +647,18 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   chain fields together — a partial group is rejected by the releaser — and
   write `none` when the chain owns no assignee.
 
-  **"Unset" and "unknown" are different answers.** `--show` exiting 0 with no
-  `Status=` line is a successful read of a card whose `Status` is genuinely
-  empty — a real, restorable state. Only a *failed* call (exit 2) is unknown.
-  Record `none` for the first and `unknown` for the second: `/wrap` restores
-  an unset field by clearing it (manual — `gh project item-edit --clear`), and only has to ask the user in the second case.
-
   **Publication failure is reconciled before compensation.** The helper
   snapshots comment IDs before writing. If the comment command fails, it
   re-reads all comments and accepts only a new comment by the authenticated
   login whose body exactly matches the submitted record. A confirmed match is
-  committed and proceeds to the board; an unreadable re-fetch is indeterminate
+  committed; an unreadable re-fetch is indeterminate
   (exit 6) and leaves the visible markers in place for recovery. Only a
   successful re-fetch that confirms the exact record absent may compensate,
   and only when the latest trusted claim/release still matches the attempt's
   starting lineage. The helper also performs that lineage and marker recheck
   immediately before publication; drift stops without appending a stale
-  record. Compensation removes only the assignee and label this attempt added,
-  and restores the one displaced label. Exit 4 means
+  record. Compensation removes only the assignee and labels this routine
+  attempt added. Exit 4 means
   that compensation completed and no claim committed. Exit 7 means
   compensation failed: a loud partial recordless claim remains and must be
   repaired manually. A failed refresh writes no new current record, so the
@@ -711,31 +667,17 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   The transaction also re-enforces the live claim blockers itself: the issue
   must remain open, every other assignee must be proven by the predecessor
   chain, and every live `claim:*`/`agent:*` marker must be one of the exact
-  resolved family, model, or approved displacement values. Its chain-owned
-  displaced label and board status must equal this attempt's direct value or
-  the immediate predecessor's proven value; record prose cannot invent either
-  cleanup target.
-
-  An approved takeover may keep a same-family marker that was already live,
-  or remove the one approved conflict without adding a replacement in a
-  resolver-approved label-less mode. In both cases the record owns only the
-  writes this attempt made. A `claim:*` family marker must equal the trusted
+  resolved family or model values. A carried chain-owned displaced label must
+  come from the immediate predecessor; a routine record cannot create one.
+  A `claim:*` family marker must equal the trusted
   `claim:<family>` resolver output; model refinements use the separate model
   argument and cannot masquerade as that family marker.
 
   Compensation performs its own final issue-and-lineage read immediately
-  before destructive writes. Once the record commits, the transaction again
-  requires that exact record to remain the current claim on an open issue
-  before moving the board; a concurrent release, replacement, or close leaves
-  the committed record/state untouched and reports the board gap.
+  before destructive writes. The exact committed record is an idempotence
+  token: re-running the same routine transaction recognizes the durable commit
+  and performs no marker, comment, or Project write.
 
-  The exact committed record is also the resume token. Re-running the same
-  transaction recognizes it before deriving fresh marker ownership and enters
-  only the board phase: it re-proves that the record is current, re-reads the
-  selected board, accepts either the recorded prior status or the already
-  completed `In Progress`, and never repeats marker or comment writes. An
-  unreadable initial board value is recorded as a committed gap and is never
-  overwritten; a readable value that changes before the write is preserved.
   Failed marker commands do not gain ownership from the resulting marker
   snapshot alone. If changed state cannot be attributed to this attempt, the
   transaction leaves it visible and reports an indeterminate result.

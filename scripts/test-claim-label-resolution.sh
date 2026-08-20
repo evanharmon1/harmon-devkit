@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 
 resolver="ai/skills/universal/claim/assets/resolve-claim-label.sh"
 runtime_resolver="ai/skills/universal/claim/assets/resolve-runtime-environment.sh"
+transaction_helper="ai/skills/universal/claim/assets/claim-transaction.sh"
 fail() {
     echo "TEST FAIL: $*" >&2
     exit 1
@@ -269,7 +270,12 @@ grep -F 'family_target="$(plan_value family_label)"' ai/skills/universal/claim/S
 grep -F 'model_target="$(plan_value model_label)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must extract the model marker"
 grep -F 'displaced=none' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must initialize displacement to none"
 grep -F '[ "$resolver_status" -ne 10 ] || displaced="$approved_takeover_label"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must bind displacement to the approved conflict"
-grep -F '[ "$target" = "n/a" ] && family_target=none' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label-less takeover must omit the add-label operation"
+grep -F '[ "$resolver_status" -eq 0 ] && [ "$target" != "n/a" ] || exit 1' ai/skills/universal/claim/SKILL.md >/dev/null || fail "routine transaction must exclude every exceptional plan"
+grep -F 'if [ "$claim_label" = none ]; then' "$transaction_helper" >/dev/null || fail "routine helper must reject label-less claims"
+if grep -F -- '--displaced-label' "$transaction_helper" >/dev/null; then
+    fail "routine helper must not accept displacement as a flag"
+fi
+grep -F 'never let board absence, drift, failure, or' ai/skills/universal/claim/SKILL.md >/dev/null || fail "Project synchronization must be explicitly non-authoritative"
 if grep -Eq 'claim:(claude|gpt)|agent:(claude-code|codex)' \
     ai/skills/universal/track-work/references/claim-lifecycle.md; then
     fail "canonical claim lifecycle examples must use portable family placeholders"
