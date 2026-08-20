@@ -259,7 +259,12 @@ grep -F -- '--project-management "$project_management"' ai/skills/universal/clai
 grep -F 'unlabeled_github_arg=(--allow-unlabeled-github)' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must expose only the approved label-less GitHub continuation"
 grep -F 'if [ -z "${approved_takeover_label:-}" ]; then' ai/skills/universal/claim/SKILL.md >/dev/null || fail "single-conflict takeover must stop without explicit approval"
 grep -F 'grep -Fqx "conflict_label=$approved_takeover_label"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "takeover approval must name the exact resolver conflict"
-grep -F '[ "$target" = "n/a" ]' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label-less takeover must omit the add-label operation"
+grep -F 'target="$(plan_value target_label)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must extract the selected target"
+grep -F 'family_target="$(plan_value family_label)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must extract the family marker"
+grep -F 'model_target="$(plan_value model_label)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must extract the model marker"
+grep -F 'displaced=none' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must initialize displacement to none"
+grep -F '[ "$resolver_status" -ne 10 ] || displaced="$approved_takeover_label"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must bind displacement to the approved conflict"
+grep -F '[ "$target" = "n/a" ] && family_target=none' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label-less takeover must omit the add-label operation"
 if grep -Eq 'claim:(claude|gpt)|agent:(claude-code|codex)' \
     ai/skills/universal/track-work/references/claim-lifecycle.md; then
     fail "canonical claim lifecycle examples must use portable family placeholders"
@@ -275,7 +280,12 @@ runtime() {
     env -i PATH="$PATH" "$@" "$runtime_resolver"
 }
 
+if grep -Eq '\$\{[^}]*,,' "$runtime_resolver"; then
+    fail "runtime resolver must remain compatible with macOS Bash 3.2"
+fi
+
 [ "$(runtime)" = host ] || fail "an execution host without container signals must resolve to host"
+[ "$(runtime REMOTE_CONTAINERS=TRUE)" = devcontainer ] || fail "runtime signal matching must remain case-insensitive"
 [ "$(runtime REMOTE_CONTAINERS=true)" = devcontainer ] || fail "the devcontainer signal was not recognized"
 [ "$(runtime CODER_AGENT_URL=https://coder.invalid REMOTE_CONTAINERS=true)" = coder ] ||
     fail "Coder must outrank its inherited devcontainer signal"

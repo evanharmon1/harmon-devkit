@@ -382,6 +382,17 @@ if grep -q -- '--add-label' "$log"; then fail "label-less takeover must not inve
 jq -e '(.labels | length) == 0' "$issue_file" >/dev/null ||
     fail "remove-only plan must leave no ownership marker"
 
+echo "==> label-less records cannot forge family or model chain ownership"
+scenario "$empty_issue"
+make_record yes n/a none yes evanharmon1 claim:gpt none
+[ "$(run_claim --claim-label none)" = 2 ] || fail "label-less family chain ownership must be rejected"
+if grep -Eq '^(edit|comment|status write)$' "$log"; then fail "forged label-less family ownership must stop before writes"; fi
+scenario "$empty_issue"
+make_record yes n/a none yes evanharmon1 n/a none
+add_model_fields n/a claim:gpt:terra
+[ "$(run_claim --claim-label none)" = 2 ] || fail "label-less model chain ownership must be rejected"
+if grep -Eq '^(edit|comment|status write)$' "$log"; then fail "forged label-less model ownership must stop before writes"; fi
+
 echo "==> compensation failure is loud and leaves a partial recordless claim"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none

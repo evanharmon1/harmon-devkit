@@ -733,6 +733,18 @@ case "$chain_model" in
     }
     ;;
 esac
+if [ "$claim_label" = none ]; then
+    case "$chain_label" in n/a | no) ;; *)
+        echo "claim transaction: a label-less claim cannot own a claim-chain label" >&2
+        exit 2
+        ;;
+    esac
+    case "$chain_model" in '' | n/a | no) ;; *)
+        echo "claim transaction: a label-less claim cannot own a claim-chain model label" >&2
+        exit 2
+        ;;
+    esac
+fi
 case "$chain_displaced" in none) ;; *) valid_label "$chain_displaced" || {
     echo "claim transaction: displaced claim-chain label is invalid" >&2
     exit 2

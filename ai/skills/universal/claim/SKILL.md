@@ -395,6 +395,26 @@ case "$resolver_status" in
 *) echo 'claim: identity, project mode, or vocabulary is unverified' >&2; exit 1 ;;
 esac
 
+# Read each single-valued field literally. Do not use eval: the resolver plan
+# is data, not shell source. conflict_label is the only repeatable field and is
+# consumed only through the exact approved value above.
+plan_value() {
+  plan_key="$1"
+  plan_count="$(printf '%s\n' "$plan" | grep -c "^${plan_key}=" || true)"
+  [ "$plan_count" -eq 1 ] || {
+    echo "claim: resolver plan must contain exactly one $plan_key field" >&2
+    return 1
+  }
+  printf '%s\n' "$plan" | sed -n "s/^${plan_key}=//p"
+}
+family="$(plan_value family)" || exit 1
+target="$(plan_value target_label)" || exit 1
+existing="$(plan_value existing_label)" || exit 1
+family_target="$(plan_value family_label)" || exit 1
+model_target="$(plan_value model_label)" || exit 1
+displaced=none
+[ "$resolver_status" -ne 10 ] || displaced="$approved_takeover_label"
+
 # Portable operational context only: this helper deliberately emits no raw
 # hostname or workspace identifier. Its output is informational, not input to
 # the claim-label plan or any later cleanup.
@@ -575,11 +595,10 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   CLAIM_BODY_9f3k
 
   # 3. one executable transaction: markers -> durable record -> board
-  # family_target and model_target are derived from the resolver plan; either
-  # is "none" when that marker does not apply. A label-less plan maps n/a to
-  # --claim-label none only after the resolver has approved that mode.
-  family_target=<family_label from the resolver>
-  model_target=<model_label from the resolver>
+  # family_target, model_target, and displaced were derived from the resolver
+  # plan above. Either marker target is "none" when it does not apply. A
+  # label-less plan maps n/a to --claim-label none only after the resolver has
+  # approved that mode; displaced remains none absent an approved conflict.
   [ "$target" = "n/a" ] && family_target=none
   [ "$model_target" = "n/a" ] && model_target=none
   <claim-skill-dir>/assets/claim-transaction.sh \

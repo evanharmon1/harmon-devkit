@@ -14,14 +14,18 @@ if [ "$#" -ne 0 ]; then
 fi
 
 is_true() {
-    case "${1,,}" in
+    local normalized
+    normalized="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$normalized" in
     1 | true | yes) return 0 ;;
     *) return 1 ;;
     esac
 }
 
 is_false_or_empty() {
-    case "${1,,}" in
+    local normalized
+    normalized="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$normalized" in
     '' | 0 | false | no) return 0 ;;
     *) return 1 ;;
     esac
