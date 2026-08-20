@@ -3016,6 +3016,22 @@ for invalid_model_label in claim:claude agent:claude-code claim:gpt:opus; do
     [ ! -s "$rc_log" ] || fail "invalid model ownership must trigger zero writes"
 done
 
+echo "==> legacy family aliases bind model refinements to their finite family"
+legacy_family_predecessor="$(printf '%s' "$body_v2" | sed 's/claim:claude/agent:claude-code/g')"
+legacy_model_refinement="$(printf '%s' "$body_model_refinement" |
+    sed 's/claim: label owned by this claim chain: claim:claude$/claim: label owned by this claim chain: agent:claude-code/')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$legacy_family_predecessor" 1)" \
+    "$(rc_comment evanharmon1 "$legacy_model_refinement" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"},{"name":"claim:claude:opus"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 0 ] || fail "a matching legacy family/model refinement should release"
+
+legacy_model_mismatch="$(printf '%s' "$legacy_model_refinement" | sed 's/claim:claude:opus/claim:gpt:terra/g')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$legacy_family_predecessor" 1)" \
+    "$(rc_comment evanharmon1 "$legacy_model_mismatch" 2)")" \
+    '{"state":"closed","labels":[{"name":"agent:claude-code"},{"name":"claim:gpt:terra"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 2 ] || fail "a mismatched legacy family/model refinement must fail closed"
+[ ! -s "$rc_log" ] || fail "legacy family/model mismatch must trigger zero writes"
+
 echo "==> a legacy 'yes' record sweeps live claim:* labels too, not only agent:*"
 body_yes_claim="$(printf '%s' "$body_v2" | sed 's/claim:claude$/yes/')"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_yes_claim")")" \

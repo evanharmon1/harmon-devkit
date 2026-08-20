@@ -6,7 +6,7 @@ description: >-
   blockers, then claim the issue (assign, label, move the project card to
   In Progress, comment). Invoke as /claim [issue #].
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(git remote), Bash(git remote get-url:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*), Bash(./ai/skills/universal/claim/assets/claim-transaction.sh:*), Bash(./.agents/skills/claim/assets/claim-transaction.sh:*), Bash(./.claude/skills/claim/assets/claim-transaction.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(git remote), Bash(git remote get-url:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
 ---
 
 # Claim
@@ -333,6 +333,7 @@ project_management=<fetched project_management answer: github|linear|none>
 # `git show` is a read but may prompt because it can write via --output. The
 # fetched default is the target's trusted registry snapshot, not this branch.
 registry="$(mktemp)"
+registry_snapshot=none
 if ! registry_entry="$(git ls-tree "$default" -- ':(top)agent-registry.json')"; then
   echo "claim: could not determine whether the target registry exists" >&2
   exit 1
@@ -342,6 +343,7 @@ elif [ -n "$registry_entry" ]; then
     exit 1
   fi
   registry_arg=(--registry "$registry")
+  registry_snapshot="$registry"
 else
   registry_arg=()
 fi
@@ -476,13 +478,16 @@ executable state machine: it snapshots the exact pre-write markers and comments,
 validates the record against that state, applies only missing markers, treats the
 record append as the commit point, and never reads or writes Project state.
 Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
-`ai/skills/universal/claim` in harmon-devkit itself.
+`ai/skills/universal/claim` in harmon-devkit itself. The helper is deliberately
+not in `allowed-tools`: its write approval must display the exact user-named
+`--repo` and `--issue`, and those arguments must match this invocation's target.
+Never approve or run a silently inferred or substituted target.
 
 - **Assign:** the helper adds the authenticated login only when it was absent
   from its pre-write snapshot. The same authenticated assignee must be present
   immediately before publication, including on a repository with no claim-label
   family. A pre-existing assignee is recorded as `no` and is never removed by
-  compensation.
+  the helper.
 - **Label** — the `claim:<family>[:<model>]` family names *which* intelligence
   has it. Claim at the family level (`claim:<family>`). A trusted session may
   deliberately request a provisioned `claim:<family>:<model>` refinement; the
@@ -507,7 +512,7 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   stop and ask as described above.
 
   **Exceptional plans stay outside the routine executable boundary.** The
-  pre-authorized transaction helper accepts only a normal labeled claim. It
+  transaction helper accepts only a normal labeled claim. It
   rejects `--claim-label none` and does not accept `--displaced-label`, so
   routine `/claim` authorization cannot accidentally exercise either
   escalation. If the user explicitly approves an unverifiable label-less claim
@@ -573,7 +578,8 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   <claim-skill-dir>/assets/claim-transaction.sh \
     --repo "$repo" --issue <n> --record-file "$record_file" \
     --claim-label "$family_target" --model-label "$model_target" \
-    --family "$family" --runtime-environment "$runtime_environment"
+    --family "$family" --runtime-environment "$runtime_environment" \
+    --registry-snapshot "$registry_snapshot"
 
   # 3. best-effort projection only; its result cannot alter claim success.
   <track-work-dir>/assets/set-issue-status.sh \
@@ -604,7 +610,7 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   Pass the trusted family and portable runtime values to the transaction
   helper as shown: it requires any corresponding record line to match exactly
   before the first write, but never uses either value to choose a marker,
-  compensation, or release action.
+  failure-recovery, or release action.
 
   **The record is a parsed contract, not prose.** The `Claim released —`
   workflow (`.github/workflows/claim-release.yml` where installed) machine-
@@ -647,21 +653,19 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   chain fields together — a partial group is rejected by the releaser — and
   write `none` when the chain owns no assignee.
 
-  **Publication failure is reconciled before compensation.** The helper
+  **Publication failure is reconciled without destructive recovery.** The helper
   snapshots comment IDs before writing. If the comment command fails, it
   re-reads all comments and accepts only a new comment by the authenticated
   login whose body exactly matches the submitted record. A confirmed match is
-  committed; an unreadable re-fetch is indeterminate
-  (exit 6) and leaves the visible markers in place for recovery. Only a
-  successful re-fetch that confirms the exact record absent may compensate,
-  and only when the latest trusted claim/release still matches the attempt's
-  starting lineage. The helper also performs that lineage and marker recheck
+  committed only when it remains the exact current record on an OPEN issue
+  with every required marker live. Any unreadable or absent reconciliation is
+  indeterminate (exit 6) and leaves visible markers in place for recovery. The
+  helper never removes a marker or assignee: no GitHub conditional edit can
+  close the race between a final lineage read and a destructive compensation
+  write, so a same-identity claim could otherwise adopt a marker just before it
+  is deleted. The helper also performs that lineage and marker recheck
   immediately before publication; drift stops without appending a stale
-  record. Compensation removes only the assignee and labels this routine
-  attempt added. Exit 4 means
-  that compensation completed and no claim committed. Exit 7 means
-  compensation failed: a loud partial recordless claim remains and must be
-  repaired manually. A failed refresh writes no new current record, so the
+  record. A failed refresh writes no new current record, so the
   predecessor remains current and inherited markers remain untouched.
 
   The transaction also re-enforces the live claim blockers itself: the issue
@@ -672,14 +676,15 @@ Resolve it from `.agents/skills/claim`, then `.claude/skills/claim`, then
   A `claim:*` family marker must equal the trusted
   `claim:<family>` resolver output; model refinements use the separate model
   argument and cannot masquerade as that family marker. A legacy `agent:*`
-  marker is independently matched to the trusted family through the fixed root
-  registry, with only the resolver's finite pre-registry alias table as a
-  compatibility fallback.
+  marker is independently matched to the trusted family through the exact
+  fetched default-branch registry snapshot already passed to the resolver,
+  with only the resolver's finite pre-registry alias table as the explicit
+  `none` compatibility fallback. Never pass the working-tree registry.
 
-  Compensation performs its own final issue-and-lineage read immediately
-  before destructive writes. The exact committed record is an idempotence
-  token: re-running the same routine transaction recognizes the durable commit
-  and performs no marker, comment, or Project write.
+  The helper performs no destructive recovery. The exact committed record is
+  an idempotence token only while the issue remains OPEN and its claimant,
+  family, optional model, and displaced-label absence are all live: re-running
+  that same transaction then performs no marker, comment, or Project write.
 
   Failed marker commands do not gain ownership from the resulting marker
   snapshot alone. If changed state cannot be attributed to this attempt, the

@@ -11,12 +11,11 @@ usage() {
 Usage: claim-transaction.sh --repo owner/repo --issue N --record-file FILE
        --claim-label LABEL [--model-label LABEL|none]
        [--family SLUG] [--runtime-environment VALUE]
+       --registry-snapshot FILE|none
 
 Exit: 0 = record committed
       2 = usage, invalid record, or pre-write state could not be verified
-      4 = record did not commit; this attempt's marker writes were compensated
       6 = publication/marker state is indeterminate; markers remain visible
-      7 = record absent and compensation failed; partial recordless claim remains
 EOF
     exit 2
 }
@@ -28,6 +27,7 @@ claim_label=""
 model_label="none"
 family=""
 runtime_environment=""
+registry_snapshot=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --repo)
@@ -65,12 +65,18 @@ while [ "$#" -gt 0 ]; do
         runtime_environment="$2"
         shift 2
         ;;
+    --registry-snapshot)
+        [ "$#" -ge 2 ] || usage
+        registry_snapshot="$2"
+        shift 2
+        ;;
     -h | --help) usage ;;
     *) usage ;;
     esac
 done
 
-[ -n "$repo" ] && [ -n "$issue" ] && [ -n "$record_file" ] && [ -n "$claim_label" ] || usage
+[ -n "$repo" ] && [ -n "$issue" ] && [ -n "$record_file" ] && [ -n "$claim_label" ] &&
+    [ -n "$registry_snapshot" ] || usage
 case "$repo" in
 */*) ;;
 *) usage ;;
@@ -132,22 +138,20 @@ legacy_labels_for_pre_field_registry() {
     esac
 }
 legacy_label_matches_family() {
-    local root registry has_aliases aliases
+    local has_aliases aliases
     [ -n "$family" ] || return 1
-    root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-    registry="${root:+$root/agent-registry.json}"
-    if [ -n "$registry" ] && [ -e "$registry" ]; then
-        [ -r "$registry" ] || return 1
-        [ "$(jq -r --arg family "$family" '[.families[]? | select(.slug == $family)] | length' "$registry")" = 1 ] ||
+    if [ "$registry_snapshot" != none ]; then
+        [ -r "$registry_snapshot" ] || return 1
+        [ "$(jq -r --arg family "$family" '[.families[]? | select(.slug == $family)] | length' "$registry_snapshot")" = 1 ] ||
             return 1
-        has_aliases="$(jq -r --arg family "$family" '.families[] | select(.slug == $family) | has("legacy_claim_labels")' "$registry")" ||
+        has_aliases="$(jq -r --arg family "$family" '.families[] | select(.slug == $family) | has("legacy_claim_labels")' "$registry_snapshot")" ||
             return 1
         if [ "$has_aliases" = true ]; then
             jq -e --arg family "$family" --arg label "$claim_label" '
                 .families[] | select(.slug == $family)
                 | (.legacy_claim_labels | type == "array")
                   and any(.legacy_claim_labels[]; . == $label)
-            ' "$registry" >/dev/null
+            ' "$registry_snapshot" >/dev/null
             return
         fi
     fi
@@ -583,7 +587,19 @@ case "$chain_displaced" in none) ;; *) valid_label "$chain_displaced" || {
     echo "claim transaction: displaced claim-chain label is invalid" >&2
     exit 2
 } ;; esac
+claim_is_live() {
+    local snapshot="$1"
+    claim_blockers_absent "$snapshot" &&
+        has_assignee "$snapshot" "$login" &&
+        has_label "$snapshot" "$claim_label" &&
+        { [ "$model_label" = none ] || has_label "$snapshot" "$model_label"; } &&
+        { [ "$chain_displaced" = none ] || ! has_label "$snapshot" "$chain_displaced"; }
+}
 if [ "$resume_exact" -eq 1 ]; then
+    claim_is_live "$tmp/issue-before.json" || {
+        echo "claim transaction: exact current record lacks an OPEN issue or its required live markers" >&2
+        exit 6
+    }
     exit 0
 fi
 {
@@ -633,65 +649,8 @@ expected_chain_displaced=none
     exit 2
 }
 
-assignee_added=0
-label_added=0
-model_added=0
-
-compensate() {
-    local snapshot="$tmp/issue-before-compensation.json" failed=0
-    if ! issue_snapshot >"$snapshot" ||
-        ! comments_snapshot >"$tmp/comments-before-compensation.json" ||
-        ! select_predecessor "$snapshot" "$tmp/comments-before-compensation.json" \
-            "$tmp/predecessor-before-compensation.json"; then
-        echo "claim transaction: compensation lineage is indeterminate; leaving visible markers for recovery" >&2
-        return 2
-    fi
-    if ! same_predecessor "$tmp/predecessor.json" "$tmp/predecessor-before-compensation.json"; then
-        echo "claim transaction: a newer trusted claim or release adopted the tentative state; refusing compensation" >&2
-        return 2
-    fi
-    if [ "$label_added" -eq 1 ] && has_label "$snapshot" "$claim_label"; then
-        if ! gh issue edit "$issue" --repo "$repo" --remove-label "$claim_label"; then
-            echo "claim transaction: COMPENSATION FAILED removing added label '$claim_label'" >&2
-            failed=1
-        fi
-    fi
-    if [ "$model_added" -eq 1 ] && has_label "$snapshot" "$model_label"; then
-        if ! gh issue edit "$issue" --repo "$repo" --remove-label "$model_label"; then
-            echo "claim transaction: COMPENSATION FAILED removing added model label '$model_label'" >&2
-            failed=1
-        fi
-    fi
-    if [ "$assignee_added" -eq 1 ] && has_assignee "$snapshot" "$login"; then
-        if ! gh issue edit "$issue" --repo "$repo" --remove-assignee "$login"; then
-            echo "claim transaction: COMPENSATION FAILED removing added assignee '$login'" >&2
-            failed=1
-        fi
-    fi
-    return "$failed"
-}
-
-compensate_after_read() {
-    if ! issue_snapshot >"$tmp/issue-compensate.json"; then
-        echo "claim transaction: current marker state is indeterminate; leaving visible markers for recovery" >&2
-        return 6
-    fi
-    compensation_result=0
-    compensate || compensation_result=$?
-    case "$compensation_result" in
-    0) return 4 ;;
-    2) return 6 ;;
-    *)
-        echo "claim transaction: partial recordless claim remains after failed compensation" >&2
-        return 7
-        ;;
-    esac
-}
-
 if [ "$assignee_preexisting" -eq 0 ]; then
-    if gh issue edit "$issue" --repo "$repo" --add-assignee "$login"; then
-        assignee_added=1
-    else
+    if ! gh issue edit "$issue" --repo "$repo" --add-assignee "$login"; then
         if ! issue_snapshot >"$tmp/issue-after-assignee.json"; then
             echo "claim transaction: assignee write is indeterminate; leaving any visible marker for recovery" >&2
             exit 6
@@ -700,7 +659,8 @@ if [ "$assignee_preexisting" -eq 0 ]; then
             echo "claim transaction: assignee write returned failure and visible assignment has ambiguous provenance" >&2
             exit 6
         fi
-        exit 4
+        echo "claim transaction: assignee write failed; no destructive recovery is safe" >&2
+        exit 6
     fi
 fi
 
@@ -709,10 +669,7 @@ if [ "$label_preexisting" -eq 0 ] ||
     label_args=("$issue" --repo "$repo")
     [ "$label_preexisting" -eq 1 ] || label_args+=(--add-label "$claim_label")
     [ "$model_label" = none ] || [ "$model_preexisting" -eq 1 ] || label_args+=(--add-label "$model_label")
-    if gh issue edit "${label_args[@]}"; then
-        [ "$label_preexisting" -eq 1 ] || label_added=1
-        [ "$model_label" = none ] || [ "$model_preexisting" -eq 1 ] || model_added=1
-    else
+    if ! gh issue edit "${label_args[@]}"; then
         if ! issue_snapshot >"$tmp/issue-after-label.json"; then
             echo "claim transaction: label write is indeterminate; leaving visible markers for recovery" >&2
             exit 6
@@ -729,21 +686,14 @@ if [ "$label_preexisting" -eq 0 ] ||
             echo "claim transaction: label write returned failure and changed marker state has ambiguous provenance" >&2
             exit 6
         fi
-        set +e
-        compensate_after_read
-        result=$?
-        set -e
-        exit "$result"
+        echo "claim transaction: label write failed; leaving visible markers because destructive recovery is unsafe" >&2
+        exit 6
     fi
 fi
 
 if ! issue_snapshot >"$tmp/issue-before-record.json" || ! has_assignee "$tmp/issue-before-record.json" "$login"; then
-    echo "claim transaction: no authenticated assignee backs the record; compensating tentative markers" >&2
-    set +e
-    compensate_after_read
-    result=$?
-    set -e
-    exit "$result"
+    echo "claim transaction: no authenticated assignee backs the record; leaving visible markers because destructive recovery is unsafe" >&2
+    exit 6
 fi
 if ! claim_blockers_absent "$tmp/issue-before-record.json"; then
     echo "claim transaction: a claim blocker appeared before publication; leaving visible markers for recovery" >&2
@@ -802,10 +752,7 @@ else
             ($body | sub("\\n+$"; "")) as $expected
             | .found == true and .author == $login and .body == $expected
         ' "$tmp/predecessor-after-publication.json" >/dev/null &&
-            claim_blockers_absent "$tmp/issue-after-publication.json" &&
-            has_assignee "$tmp/issue-after-publication.json" "$login" &&
-            has_label "$tmp/issue-after-publication.json" "$claim_label" &&
-            { [ "$model_label" = none ] || has_label "$tmp/issue-after-publication.json" "$model_label"; }; then
+            claim_is_live "$tmp/issue-after-publication.json"; then
             record_committed=1
             echo "claim transaction: comment command failed but reconciliation confirmed the exact current record committed" >&2
         else
@@ -813,29 +760,8 @@ else
             exit 6
         fi
     else
-        if ! issue_snapshot >"$tmp/issue-after-publication.json" ||
-            ! select_predecessor "$tmp/issue-after-publication.json" "$tmp/comments-after.json" \
-                "$tmp/predecessor-after-publication.json"; then
-            echo "claim transaction: record absence is known but current lineage is indeterminate; leaving visible markers for recovery" >&2
-            exit 6
-        fi
-        if ! same_predecessor "$tmp/predecessor.json" "$tmp/predecessor-after-publication.json"; then
-            echo "claim transaction: a newer trusted claim or release adopted the tentative state; refusing compensation" >&2
-            exit 6
-        fi
-        echo "claim transaction: record publication is confirmed absent; compensating this attempt" >&2
-        set +e
-        compensate
-        compensation_failed=$?
-        set -e
-        if [ "$compensation_failed" -eq 0 ]; then
-            exit 4
-        fi
-        if [ "$compensation_failed" -eq 2 ]; then
-            exit 6
-        fi
-        echo "claim transaction: partial recordless claim remains after failed compensation" >&2
-        exit 7
+        echo "claim transaction: record publication is confirmed absent; leaving visible markers because destructive recovery is unsafe" >&2
+        exit 6
     fi
 fi
 

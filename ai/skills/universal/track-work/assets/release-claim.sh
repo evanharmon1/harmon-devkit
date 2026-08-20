@@ -171,10 +171,16 @@ model_matches_family_label() {
     model_family="${1%:*}"
     case "$2" in
     claim:*) [ "$model_family" = "$2" ] ;;
-    # A legacy alias may be the family marker during migration. The model's
-    # trusted family is validated by the producer; the releaser only requires
-    # that an actual family marker accompanies it.
-    agent:*) return 0 ;;
+    # A legacy alias may be the family marker during migration. Only the fixed
+    # pre-registry aliases can prove a model family during event-driven release;
+    # a registry-only alias has no trusted snapshot here and therefore fails
+    # closed when paired with a model refinement.
+    agent:claude-code) [ "$model_family" = claim:claude ] ;;
+    agent:codex) [ "$model_family" = claim:gpt ] ;;
+    agent:gemini-cli) [ "$model_family" = claim:gemini ] ;;
+    agent:kimi-k2) [ "$model_family" = claim:kimi ] ;;
+    agent:qwen-code) [ "$model_family" = claim:qwen ] ;;
+    agent:*) return 1 ;;
     no | n/a | none | '')
         # A claim may own a model refinement while its required family marker
         # predates the chain. The family is then validation context, not a

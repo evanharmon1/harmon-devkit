@@ -6,6 +6,8 @@ cd "$(dirname "$0")/.."
 helper="$PWD/ai/skills/universal/claim/assets/claim-transaction.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+registry_snapshot="$tmp/default-branch-agent-registry.json"
+cp agent-registry.json "$registry_snapshot"
 stub="$tmp/bin"
 mkdir -p "$stub"
 
@@ -197,6 +199,7 @@ run_claim() {
         --record-file "$record" "$@" \
         --family "${RUN_FAMILY:-gpt}" \
         --runtime-environment "${RUN_RUNTIME_ENVIRONMENT:-coder}" \
+        --registry-snapshot "${RUN_REGISTRY_SNAPSHOT:-$registry_snapshot}" \
         >"$tmp/out" 2>"$err" || rc=$?
     printf '%s\n' "$rc"
 }
@@ -258,6 +261,22 @@ make_record yes agent:claude-code none yes evanharmon1 agent:claude-code none
     fail "a foreign-family legacy alias must be rejected"
 [ ! -s "$log" ] || fail "legacy family mismatch must fail before writes"
 
+echo "==> legacy aliases use only the supplied trusted snapshot or finite fallback"
+scenario "$empty_issue"
+make_record yes agent:codex none yes evanharmon1 agent:codex none
+[ "$(RUN_REGISTRY_SNAPSHOT=none run_claim --claim-label agent:codex)" = 0 ] ||
+    fail "the finite pre-registry gpt alias must remain supported"
+scenario "$empty_issue"
+make_record yes agent:branch-injected none yes evanharmon1 agent:branch-injected none
+[ "$(run_claim --claim-label agent:branch-injected)" = 2 ] ||
+    fail "an alias absent from the fetched snapshot must be rejected"
+[ ! -s "$log" ] || fail "untrusted branch alias must fail before writes"
+scenario "$empty_issue"
+make_record yes agent:codex none yes evanharmon1 agent:codex none
+[ "$(RUN_REGISTRY_SNAPSHOT="$tmp/missing-registry.json" run_claim --claim-label agent:codex)" = 2 ] ||
+    fail "an unreadable declared registry snapshot must fail closed"
+[ ! -s "$log" ] || fail "unreadable registry snapshot must fail before writes"
+
 echo "==> a same-family model-shaped primary marker remains a supported legacy plan"
 scenario "$empty_issue"
 make_record yes claim:gpt:terra none yes evanharmon1 claim:gpt:terra none
@@ -311,28 +330,15 @@ result="$(RUN_MUTATE_COMMENTS_ON_READ=2 RUN_CONCURRENT_RECORD="$concurrent_recor
 [ "$(grep -c '^comment$' "$log" || true)" -eq 0 ] || fail "pre-publication lineage drift must stop before the comment write"
 grep -q 'newer trusted claim or release appeared' "$err" || fail "lineage collision must be explained"
 
-echo "==> confirmed absence never compensates markers adopted by a newer claim"
+echo "==> confirmed absence leaves visible markers without destructive recovery"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-cp "$record" "$concurrent_record"
-sed -i 's/test-session/concurrent-session/g' "$concurrent_record"
-result="$(RUN_MUTATE_COMMENTS_ON_READ=3 RUN_CONCURRENT_RECORD="$concurrent_record" RUN_CONCURRENT_LOGIN=evanharmon1 \
-    CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt)"
-[ "$result" = 6 ] || fail "a newer claim after failed publication must block compensation: $(cat "$err")"
-grep -q 'refusing compensation' "$err" || fail "adopted tentative markers must be reported"
-if grep -q -- '--remove-' "$log"; then fail "a newer committed claim must protect tentative markers from compensation"; fi
-
-echo "==> final compensation guard catches a claim committed after absence reconciliation"
-scenario "$empty_issue"
-make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-cp "$record" "$concurrent_record"
-sed -i 's/test-session/concurrent-session/g' "$concurrent_record"
-result="$(RUN_MUTATE_COMMENTS_ON_READ=4 RUN_CONCURRENT_RECORD="$concurrent_record" \
-    RUN_CONCURRENT_LOGIN=evanharmon1 CLAIM_COMMENT_MODE=absent_fail \
-    run_claim --claim-label claim:gpt)"
-[ "$result" = 6 ] || fail "late claim adoption must block compensation: $(cat "$err")"
-grep -q 'refusing compensation' "$err" || fail "late adoption must be reported"
-if grep -q -- '--remove-' "$log"; then fail "final lineage guard must run before destructive compensation"; fi
+[ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt)" = 6 ] ||
+    fail "an absent record after marker writes must remain indeterminate: $(cat "$err")"
+grep -q 'destructive recovery is unsafe' "$err" || fail "non-destructive recovery must be explicit"
+jq -e 'any(.assignees[]; .login == "evanharmon1") and any(.labels[]; .name == "claim:gpt")' \
+    "$issue_file" >/dev/null || fail "tentative markers must remain visible for recovery"
+if grep -q -- '--remove-' "$log"; then fail "transaction recovery must never remove a marker"; fi
 
 echo "==> routine helper rejects displacement before every write"
 scenario '{"assignees":[],"labels":[{"name":"claim:gpt"},{"name":"claim:claude"}]}'
@@ -347,13 +353,13 @@ make_record yes n/a none yes evanharmon1 n/a none
 [ "$(run_claim --claim-label none)" = 2 ] || fail "routine helper must reject a label-less claim"
 [ ! -s "$log" ] || fail "label-less exceptional flow must remain outside the routine write boundary"
 
-echo "==> compensation failure is loud and leaves a partial recordless claim"
+echo "==> failed publication always leaves a visible partial recordless claim"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-[ "$(CLAIM_COMMENT_MODE=absent_fail CLAIM_FAIL_EDIT_MATCH='--remove-label claim:gpt' run_claim --claim-label claim:gpt)" = 7 ] ||
-    fail "failed compensation should exit 7"
-grep -q 'partial recordless claim remains' "$err" || fail "partial recordless claim must be named"
-jq -e 'any(.labels[]; .name == "claim:gpt")' "$issue_file" >/dev/null || fail "failed removal should remain visible"
+[ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt)" = 6 ] ||
+    fail "failed publication should remain indeterminate"
+jq -e 'any(.labels[]; .name == "claim:gpt")' "$issue_file" >/dev/null || fail "partial marker must remain visible"
+if grep -q -- '--remove-' "$log"; then fail "failed publication must never trigger destructive recovery"; fi
 
 echo "==> a failed label response never attributes changed state to this attempt"
 scenario "$empty_issue"
@@ -387,7 +393,23 @@ echo "==> an exact committed-record retry is a no-write idempotent success"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "exact retry must not publish a duplicate record"
 [ ! -s "$log" ] || fail "exact retry must perform no marker, comment, or board write"
 
-echo "==> pre-existing markers are never rewritten or compensated"
+echo "==> an exact retry succeeds only while its issue and required markers remain live"
+jq '.state = "CLOSED"' "$issue_file" >"$issue_file.next" && mv "$issue_file.next" "$issue_file"
+: >"$log"
+[ "$(run_claim --claim-label claim:gpt)" = 6 ] || fail "exact retry on a closed issue must fail closed"
+[ ! -s "$log" ] || fail "closed exact retry must remain no-write"
+jq '.state = "OPEN" | .labels = []' "$issue_file" >"$issue_file.next" && mv "$issue_file.next" "$issue_file"
+[ "$(run_claim --claim-label claim:gpt)" = 6 ] || fail "exact retry missing its family marker must fail closed"
+[ ! -s "$log" ] || fail "markerless exact retry must remain no-write"
+
+make_record no no none yes evanharmon1 claim:gpt claim:claude
+displaced_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
+displaced_current="$(jq -n --argjson body "$displaced_body" '[{id:1,user:{login:"evanharmon1"},author_association:"OWNER",body:$body}]')"
+scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"},{"name":"claim:claude"}]}' "$displaced_current"
+[ "$(run_claim --claim-label claim:gpt)" = 6 ] || fail "exact retry must reject a reappeared displaced marker"
+[ ! -s "$log" ] || fail "displaced-marker exact retry must remain no-write"
+
+echo "==> pre-existing markers are never rewritten or removed"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}'
 make_record no no none no none no none
 [ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "pre-existing marker claim should succeed: $(cat "$err")"
@@ -404,15 +426,21 @@ add_model_fields claim:gpt:terra claim:gpt:terra
     fail "model refinement should commit through the claim transaction: $(cat "$err")"
 grep -q -- '--add-label claim:gpt:terra' "$log" || fail "model refinement must add its exact model label"
 if grep -q -- '--add-label claim:gpt\($\| \)' "$log"; then fail "model refinement must not rewrite the family marker"; fi
+: >"$log"
+jq '.labels = [.labels[] | select(.name != "claim:gpt:terra")]' "$issue_file" >"$issue_file.next" && mv "$issue_file.next" "$issue_file"
+[ "$(run_claim --claim-label claim:gpt --model-label claim:gpt:terra)" = 6 ] ||
+    fail "exact model retry missing its refinement marker must fail closed"
+[ ! -s "$log" ] || fail "markerless exact model retry must remain no-write"
 
-echo "==> failed model publication removes only the tentative model refinement"
+echo "==> failed model publication leaves the tentative refinement visible"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$family_predecessor"
 make_record no no none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/model
 add_model_fields claim:gpt:terra claim:gpt:terra
-[ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt --model-label claim:gpt:terra)" = 4 ] ||
-    fail "confirmed absent model record should compensate: $(cat "$err")"
-grep -q -- '--remove-label claim:gpt:terra' "$log" || fail "compensation must remove the tentative model label"
-if grep -q -- '--remove-label claim:gpt\($\| \)' "$log"; then fail "compensation must preserve the pre-existing family marker"; fi
+[ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt --model-label claim:gpt:terra)" = 6 ] ||
+    fail "confirmed absent model record should remain indeterminate: $(cat "$err")"
+jq -e 'any(.labels[]; .name == "claim:gpt:terra")' "$issue_file" >/dev/null ||
+    fail "tentative model refinement must remain visible"
+if grep -q -- '--remove-label' "$log"; then fail "failed model publication must never remove labels"; fi
 
 echo "==> a failed refresh leaves the predecessor current and markers untouched"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/predecessor
@@ -420,7 +448,7 @@ predecessor_body="$(jq -Rs 'sub("\\n+$"; "")' "$record")"
 predecessor="$(jq -n --argjson body "$predecessor_body" '[{id:1,user:{login:"evanharmon1"},author_association:"OWNER",body:$body}]')"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$predecessor"
 make_record no no none yes evanharmon1 claim:gpt none 'Owner Project' Ready fix/refreshed
-[ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt)" = 4 ] || fail "failed refresh should exit 4"
+[ "$(CLAIM_COMMENT_MODE=absent_fail run_claim --claim-label claim:gpt)" = 6 ] || fail "failed refresh should exit 6"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "failed refresh must preserve only the predecessor"
 if grep -q '^edit' "$log"; then fail "failed refresh must not touch inherited markers"; fi
 

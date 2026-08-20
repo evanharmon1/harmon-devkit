@@ -75,7 +75,7 @@ in the claim record, never in the label.
   labels that were absent, and publishes the exact record. It rejects
   label-less and displacement plans: those exceptional, explicitly approved
   flows remain manual and separately prompted rather than becoming flags on a
-  pre-authorized helper. Immediately before publication the routine producer re-reads the
+  routine helper. Immediately before publication the routine producer re-reads the
   markers and trusted comment lineage; a newer trusted claim/release or marker
   drift stops the stale append and leaves the visible state for recovery. The
   transaction itself rejects a closed issue, an assignee not proven by the
@@ -84,20 +84,19 @@ in the claim record, never in the label.
 - **A failed comment response is not evidence of absence.** The producer
   re-reads all comments and searches for a new comment by the authenticated
   login with the exact submitted body. A confirmed match commits the claim. An
-  unreadable re-fetch is indeterminate and leaves tentative markers visible so
-  a recovery can see them. Only a successful re-fetch confirming the record
-  absent permits compensation only when the trusted predecessor is still the
-  one the attempt started from. A newer trusted claim may have adopted the
-  tentative markers, so lineage drift refuses compensation. Otherwise the
-  producer removes only markers this routine attempt added. Failure to
-  compensate is a loud partial recordless claim;
-  it must never be reported as rolled back.
+  exact match commits only when it remains the current claim on an OPEN issue
+  with all required markers live. Every unreadable or absent reconciliation is
+  indeterminate and leaves tentative markers visible so recovery can see them.
+  The producer never removes a marker or assignee: no final read can authorize
+  a later non-conditional delete safely when a same-identity claim may adopt
+  the converged marker between those operations.
 - **Project state is not part of claim correctness.** After a record commits,
   `Status=In Progress` may be attempted once as a best-effort projection. The
   transaction never reads or writes a board; board absence, drift, failure, or
   ambiguity cannot change claim success, trigger rollback, authorize cleanup,
   or create a resumable transaction phase. An exact-current record is only a
-  no-write idempotence token.
+  no-write idempotence token only after the producer revalidates the OPEN issue
+  and every required live marker.
 - The body carries a `Claim record` block whose fields are **one line each**,
   anchored on the literal `by this claim:` (the keys contain backticks and
   their own colons — parsers must never split on a colon):

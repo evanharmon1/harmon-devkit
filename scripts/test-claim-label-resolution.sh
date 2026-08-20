@@ -271,6 +271,13 @@ grep -F 'model_target="$(plan_value model_label)"' ai/skills/universal/claim/SKI
 grep -F 'displaced=none' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must initialize displacement to none"
 grep -F '[ "$resolver_status" -ne 10 ] || displaced="$approved_takeover_label"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must bind displacement to the approved conflict"
 grep -F '[ "$resolver_status" -eq 0 ] && [ "$target" != "n/a" ] || exit 1' ai/skills/universal/claim/SKILL.md >/dev/null || fail "routine transaction must exclude every exceptional plan"
+if grep -F 'Bash(./ai/skills/universal/claim/assets/claim-transaction.sh:' ai/skills/universal/claim/SKILL.md >/dev/null ||
+    grep -F 'Bash(./.agents/skills/claim/assets/claim-transaction.sh:' ai/skills/universal/claim/SKILL.md >/dev/null ||
+    grep -F 'Bash(./.claude/skills/claim/assets/claim-transaction.sh:' ai/skills/universal/claim/SKILL.md >/dev/null; then
+    fail "transaction helper must remain outside the pre-authorized tool boundary"
+fi
+grep -F -- '--registry-snapshot "$registry_snapshot"' ai/skills/universal/claim/SKILL.md >/dev/null ||
+    fail "transaction helper must receive the fetched default-branch registry snapshot"
 grep -F 'if [ "$claim_label" = none ]; then' "$transaction_helper" >/dev/null || fail "routine helper must reject label-less claims"
 if grep -F -- '--displaced-label' "$transaction_helper" >/dev/null; then
     fail "routine helper must not accept displacement as a flag"
