@@ -455,6 +455,15 @@ rm -f "$status_read_count"
     fail "already-complete board phase must be idempotent"
 if grep -q '^status write$\|^edit\|^comment$' "$log"; then fail "completed retry must perform no writes"; fi
 
+echo "==> an exact retry refuses a claim whose required live markers disappeared"
+jq '.assignees = [] | .labels = []' "$issue_file" >"$issue_file.next"
+mv "$issue_file.next" "$issue_file"
+: >"$log"
+rm -f "$status_read_count"
+[ "$(run_claim --claim-label claim:gpt)" = 5 ] || fail "marker loss after commit must block board completion"
+grep -q 'required live markers' "$err" || fail "marker loss must name the committed-claim invariant"
+if grep -q '^status write$\|^edit\|^comment$' "$log"; then fail "marker loss must not be repaired or followed by a board write"; fi
+
 echo "==> a claim closed after publication cannot be moved back to In Progress"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none

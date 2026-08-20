@@ -350,8 +350,15 @@ model_arg=()
 if [ -n "$claim_model" ]; then
   model_arg=(--claim-model "$claim_model")
 fi
+# Deny both exceptional writes at the start of every invocation. These are
+# invocation-local decisions, not configuration: change a literal below only
+# after the user explicitly approves that exact action in the current
+# interaction, then rerun this recipe. Never consume inherited values with
+# ${name:-default}; a target checkout can preset environment variables.
+user_approved_unlabeled_github_claim=no
+approved_takeover_label=
 unlabeled_github_arg=()
-if [ "${user_approved_unlabeled_github_claim:-no}" = yes ]; then
+if [ "$user_approved_unlabeled_github_claim" = yes ]; then
   unlabeled_github_arg=(--allow-unlabeled-github)
 fi
 available="$(mktemp)" issue_labels="$(mktemp)"
@@ -382,7 +389,7 @@ set -e
 case "$resolver_status" in
 0) ;;
 10)
-  if [ -z "${approved_takeover_label:-}" ]; then
+  if [ -z "$approved_takeover_label" ]; then
     echo 'claim: one competing ownership marker requires explicit user approval' >&2
     exit 1
   fi

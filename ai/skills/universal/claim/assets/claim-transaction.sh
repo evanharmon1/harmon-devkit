@@ -474,6 +474,15 @@ claim_blockers_absent() {
     done < <(jq -r '.labels[]?.name' "$snapshot")
 }
 
+committed_claim_is_live() {
+    local snapshot="$1"
+    claim_blockers_absent "$snapshot" || return 1
+    has_assignee "$snapshot" "$login" || return 1
+    [ "$claim_label" = none ] || has_label "$snapshot" "$claim_label" || return 1
+    [ "$model_label" = none ] || has_label "$snapshot" "$model_label" || return 1
+    [ "$displaced_label" = none ] || ! has_label "$snapshot" "$displaced_label" || return 1
+}
+
 if [ "$resume_exact" -eq 0 ] && ! claim_blockers_absent "$tmp/issue-before.json"; then
     echo "claim transaction: issue state, assignees, or ownership labels changed into a claim blocker" >&2
     exit 2
@@ -516,12 +525,12 @@ finish_board_phase() {
         echo "claim transaction: VALID CLAIM COMMITTED, but current claim state is indeterminate before the board move" >&2
         return 5
     fi
-    if [ "$(jq -r '.state' "$tmp/issue-before-board.json")" != OPEN ] ||
+    if ! committed_claim_is_live "$tmp/issue-before-board.json" ||
         ! jq -e --arg login "$login" --rawfile body "$record_file" '
             ($body | sub("\\n+$"; "")) as $expected
             | .found == true and .author == $login and .body == $expected
         ' "$tmp/current-before-board.json" >/dev/null; then
-        echo "claim transaction: VALID CLAIM COMMITTED, but it is no longer current on an open issue; refusing the board move" >&2
+        echo "claim transaction: VALID CLAIM COMMITTED, but it is no longer current with its required live markers; refusing the board move" >&2
         return 5
     fi
     if [ "$record_board" = unknown ] || [ "$record_prior" = unknown ]; then

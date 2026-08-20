@@ -257,7 +257,12 @@ grep -F "if ! registry_entry=\"\$(git ls-tree \"\$default\" -- ':(top)agent-regi
 grep -F 'if ! git show "$default:agent-registry.json" >"$registry"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "present registry read must fail closed"
 grep -F -- '--project-management "$project_management"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must pass the trusted project mode"
 grep -F 'unlabeled_github_arg=(--allow-unlabeled-github)' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must expose only the approved label-less GitHub continuation"
-grep -F 'if [ -z "${approved_takeover_label:-}" ]; then' ai/skills/universal/claim/SKILL.md >/dev/null || fail "single-conflict takeover must stop without explicit approval"
+grep -F 'user_approved_unlabeled_github_claim=no' ai/skills/universal/claim/SKILL.md >/dev/null || fail "label-less approval must start from an invocation-local denial"
+grep -F 'approved_takeover_label=' ai/skills/universal/claim/SKILL.md >/dev/null || fail "takeover approval must start empty in each invocation"
+if grep -F '${user_approved_unlabeled_github_claim:-' ai/skills/universal/claim/SKILL.md >/dev/null; then
+    fail "label-less approval must never fall back to an inherited environment value"
+fi
+grep -F 'if [ -z "$approved_takeover_label" ]; then' ai/skills/universal/claim/SKILL.md >/dev/null || fail "single-conflict takeover must stop without explicit approval"
 grep -F 'grep -Fqx "conflict_label=$approved_takeover_label"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "takeover approval must name the exact resolver conflict"
 grep -F 'target="$(plan_value target_label)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must extract the selected target"
 grep -F 'family_target="$(plan_value family_label)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must extract the family marker"
