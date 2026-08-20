@@ -19,9 +19,10 @@
 # BOTH during the rolling transition — a claim record may name either, and the
 # legacy `yes` fallback sweeps every live `agent:*` AND `claim:*` label.
 #
-#   1. Reads the issue (state, labels, assignees) — also the trust anchor:
-#      only comments authored by the repo owner or a CURRENT assignee count,
-#      when selecting the claim AND when deciding it was already released.
+#   1. Reads the issue (state, labels, assignees) and the assignment timeline.
+#      A non-owner comment counts only when its current body version was
+#      published during a provable assignment interval; owner comments remain
+#      trusted directly. Release comments use the automation identity rules.
 #      Comments are attacker-writable on a public repo; a forged `Claiming —`
 #      must not shadow the real claim, and a forged `Claim released —` must
 #      not suppress its cleanup.
@@ -220,7 +221,7 @@ timeline_well_formed() {
     ' <<<"$1" >/dev/null
 }
 
-# ── Live issue state — also the trust anchor ─────────────────────────────────
+# ── Live issue state ─────────────────────────────────────────────────────────
 if ! issue_json="$(gh api "repos/$repo/issues/$issue")"; then
     echo "could not fetch $repo#$issue — cannot verify, treat as unsafe" >&2
     exit 2
@@ -290,6 +291,7 @@ fetch_claim() {
                      | length == 0);
             def historical_claimant:
                 writeauth
+                and dl != "github-actions[bot]"
                 and (dl == ($owner | ascii_downcase) or assigned_through_claim_version);
             def trusted_release:
                 (.body | startswith("Claim released —"))
@@ -303,7 +305,7 @@ fetch_claim() {
                          or trusted_release
                          or ((.body | startswith("Claiming —")) and historical_claimant))) as $events
             | ($events
-               | map((.body | startswith("Claiming —")) and trusted_claimant)
+               | map((.body | startswith("Claiming —")) and historical_claimant)
                | rindex(true)) as $ci
             | if $ci == null then {found: false}
               else ([range(0; $ci) as $i
@@ -369,6 +371,11 @@ claim_created="$(jq -er '.created | select(type == "string" and test("^[0-9]{4}-
 }
 claim_author="$(jq -r '.author // empty' <<<"$claim_json")"
 claim_lineage_fingerprint="$(jq -c '[.lineage[] | {id, updated}]' <<<"$claim_json")"
+claim_author_was_live=0
+if jq -e --arg a "$(lower "$claim_author")" \
+    'any(.assignees[]?; (.login | ascii_downcase) == $a)' <<<"$issue_json" >/dev/null; then
+    claim_author_was_live=1
+fi
 
 # With --branch (the unmerged-PR path), release only the claim that PR owns:
 # the claim's first line names its branch, and a claim for a different
@@ -1085,6 +1092,13 @@ if [ "$recheck_id" != "$claim_id" ] ||
     echo "$repo#$issue: the claim of record changed between read and write — leaving it for the next event" >&2
     exit 3
 fi
+if [ "$claim_author_was_live" -eq 1 ] &&
+    [ "$(lower "$claim_author")" != "$(lower "$owner")" ] &&
+    ! jq -e --arg a "$(lower "$claim_author")" \
+        'any(.assignees[]?; (.login | ascii_downcase) == $a)' <<<"$recheck_issue" >/dev/null; then
+    echo "$repo#$issue: the current claimant was unassigned between read and write — leaving it for the next event" >&2
+    exit 3
+fi
 while IFS= read -r omitted; do
     [ -n "$omitted" ] || continue
     if jq -e --arg a "$omitted" 'any(.assignees[]?; (.login | ascii_downcase) == $a)' \
@@ -1174,14 +1188,11 @@ if [ -n "$displaced_note" ]; then
     note "$displaced_note"
 fi
 
-# Assignee LAST among the marker writes: for a claim authored by a non-owner
-# assignee, that assignment is also the trust anchor a re-run needs — remove
-# it only once everything else has succeeded, so a failed earlier write stays
-# retryable (see claim-lifecycle.md's residual-gap note for the one write
-# this cannot protect).
-assignees_removed="$lineage_tmp/assignees-removed"
+# Assignee LAST among the marker writes, so a failed earlier write leaves the
+# assignment in place. Once assignee removal succeeds, a retry can still trust
+# the exact historical claim body through its proven assignment interval; do
+# not manufacture a new assignment interval as compensation.
 assignee_order="$lineage_tmp/assignee-order"
-: >"$assignees_removed"
 claim_author_lower="$(lower "$claim_author")"
 {
     grep -Fvx "$claim_author_lower" "$assignees_to_remove" || true
@@ -1193,7 +1204,6 @@ if [ -s "$assignee_order" ]; then
         if [ "$marker_failed" -eq 1 ]; then
             note "assignee \`$assignee_to_remove\`: left in place — an earlier write failed and an assignment keeps the retry trusted"
         elif run_write gh issue edit "$issue" --repo "$repo" --remove-assignee "$assignee_to_remove" >/dev/null; then
-            printf '%s\n' "$assignee_to_remove" >>"$assignees_removed"
             note "assignee \`$assignee_to_remove\`: removed"
         else
             marker_failed=1
@@ -1227,25 +1237,6 @@ if [ "$dry_run" -eq 1 ]; then
     echo "BODY"
 elif ! printf '%s\n' "$body" | gh issue comment "$issue" --repo "$repo" --body-file - >/dev/null; then
     echo "$repo#$issue: failed to post the supersede comment — the release is NOT recorded; re-run to retry" >&2
-    # Compensate: the removed assignment may be the claim's only trust
-    # anchor (a non-owner claimant, or any organization repo, where the
-    # owner prong never matches a user). Without it a re-run would find the
-    # claim untrusted and exit 3, permanently stranding the release. But
-    # only while the claim is still live: a concurrent run may have posted
-    # the release between our recheck and this failure, and re-adding the
-    # assignee over a completed release would strand a stale assignment.
-    if [ -s "$assignees_removed" ] &&
-        post_fail_json="$(fetch_claim)" &&
-        [ "$(jq -r '.superseded' <<<"$post_fail_json")" != true ]; then
-        while IFS= read -r removed_assignee; do
-            [ -n "$removed_assignee" ] || continue
-            if gh issue edit "$issue" --repo "$repo" --add-assignee "$removed_assignee" >/dev/null; then
-                echo "$repo#$issue: re-added assignee '$removed_assignee' so the retry stays trusted and the claim stays findable" >&2
-            else
-                echo "$repo#$issue: could not re-add assignee '$removed_assignee' — a retry may need the owner's hand" >&2
-            fi
-        done <"$assignees_removed"
-    fi
     exit 1
 fi
 

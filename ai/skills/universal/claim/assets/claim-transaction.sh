@@ -491,6 +491,36 @@ if [ "$(jq -r '.found' "$tmp/predecessor.json")" = true ]; then
         echo "claim transaction: predecessor model-label provenance is ambiguous" >&2
         exit 2
     }
+    # Pre-chain records can still carry exact, named direct ownership. Preserve
+    # that authority across a refresh, while deliberately refusing legacy
+    # `yes`: unnamed ownership cannot be made exact after superseding its only
+    # durable record.
+    if [ -z "$predecessor_chain_label" ]; then
+        predecessor_direct_label="$(optional_record_value '- `claim:` label added by this claim: ' "$tmp/predecessor-body-for-labels")" || {
+            echo "claim transaction: predecessor direct family-label provenance is ambiguous" >&2
+            exit 2
+        }
+        if [ -z "$predecessor_direct_label" ]; then
+            predecessor_direct_label="$(optional_record_value '- `agent:` label added by this claim: ' "$tmp/predecessor-body-for-labels")" || {
+                echo "claim transaction: predecessor legacy direct family-label provenance is ambiguous" >&2
+                exit 2
+            }
+        fi
+        predecessor_direct_label="$(record_token "$predecessor_direct_label")"
+        if valid_label "$predecessor_direct_label"; then
+            predecessor_chain_label="$predecessor_direct_label"
+        fi
+    fi
+    if [ -z "$predecessor_chain_model" ]; then
+        predecessor_direct_model="$(optional_record_value '- `claim:` model label added by this claim: ' "$tmp/predecessor-body-for-labels")" || {
+            echo "claim transaction: predecessor direct model-label provenance is ambiguous" >&2
+            exit 2
+        }
+        predecessor_direct_model="$(record_token "$predecessor_direct_model")"
+        if valid_label "$predecessor_direct_model"; then
+            predecessor_chain_model="$predecessor_direct_model"
+        fi
+    fi
     predecessor_chain_displaced="$(optional_record_value '- `claim:` label displaced by this claim chain: ' "$tmp/predecessor-body-for-labels")" || {
         echo "claim transaction: predecessor displaced-label provenance is ambiguous" >&2
         exit 2

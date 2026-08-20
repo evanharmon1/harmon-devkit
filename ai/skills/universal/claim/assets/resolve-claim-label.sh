@@ -263,6 +263,14 @@ if [ -n "$same" ] && [ -z "$conflicts" ]; then
         family_marker="$same"
         model_marker="n/a"
         if [ -n "$observed_model" ] && [ "$observed_model" != "$same" ]; then
+            case "$family_marker" in
+            agent:*)
+                finite_legacy_label_matches_family "$family_marker" || {
+                    echo "claim identity: custom legacy marker '$family_marker' cannot own an observed model refinement; migrate to 'claim:$family'" >&2
+                    exit 20
+                }
+                ;;
+            esac
             model_marker="$observed_model"
         fi
         printf 'family=%s\ntarget_label=%s\nexisting_label=%s\nfamily_label=%s\nmodel_label=%s\n' \

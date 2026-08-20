@@ -3275,12 +3275,12 @@ grep -q -- '--remove-assignee collaborator' "$rc_log" || fail "inherited assigne
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "direct assignee must be removed"
 if grep -q -- '--remove-assignee unrelated' "$rc_log"; then fail "unrelated assignee must remain"; fi
 
-echo "==> failed dual-assignee release restores both owned assignees"
+echo "==> failed dual-assignee comment does not reassign either owner"
 rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" "$(rc_comment evanharmon1 "$body_chain_cross_both" 2)")" '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"},{"login":"unrelated"}]}'
 [ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] || fail "failed dual-assignee comment should exit 1"
-grep -q -- '--add-assignee collaborator' "$rc_log" || fail "inherited assignee must be restored"
-grep -q -- '--add-assignee evanharmon1' "$rc_log" || fail "direct assignee must be restored"
-if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "unrelated assignee must not be restored"; fi
+if grep -q -- '--add-assignee' "$rc_log"; then
+    fail "failed dual-assignee comment must not create new assignment intervals"
+fi
 
 # The plural v3 companion carries the complete bounded ownership set through
 # every takeover. Each leaf adds its own direct assignment to the inherited
@@ -3419,17 +3419,15 @@ rc_scenario "$(rc_page "$(rc_comment third-owner "$body_chain_plural_too_many" 1
 [ "$(run_release --reason r)" = 2 ] || fail "an oversized claim-chain assignee list must fail closed"
 [ ! -s "$rc_log" ] || fail "an oversized claim-chain assignee list must trigger zero writes"
 
-echo "==> failed repeated-takeover release restores every removed chain-owned assignee"
+echo "==> failed repeated-takeover comment does not reassign removed owners"
 rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
     "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)" \
     "$(rc_comment third-owner "$body_chain_plural_third" 3)")" "$issue_repeated_takeover"
 [ "$(RC_FAIL_MATCH='issue comment' run_release --reason r)" = 1 ] ||
     fail "failed repeated-takeover comment should exit 1"
-for login in collaborator evanharmon1 third-owner; do
-    grep -q -- "--add-assignee $login" "$rc_log" ||
-        fail "comment-failure compensation must restore $login"
-done
-if grep -q -- '--add-assignee unrelated' "$rc_log"; then fail "compensation must not add unrelated assignees"; fi
+if grep -q -- '--add-assignee' "$rc_log"; then
+    fail "comment failure must not create independently owned assignment intervals"
+fi
 
 echo "==> partial inherited removal retries from durable predecessor provenance"
 rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
@@ -3529,6 +3527,7 @@ grep -q 'skipped restoring' "$rc_body" || fail "the skip must be recorded in the
 echo "==> a claim authored by neither the owner nor an assignee is ignored"
 rc_scenario "$(rc_page "$(rc_comment mallory "$body_v1")")" \
     '{"state":"closed","labels":[],"assignees":[{"login":"evanharmon1"}]}'
+printf '%s' '[[]]' >"$rc_timeline"
 [ "$(run_release --reason r)" = 3 ] || fail "an untrusted claim should exit 3"
 [ ! -s "$rc_log" ] || fail "an untrusted claim must trigger zero writes"
 
@@ -3630,23 +3629,24 @@ if grep -q 'issue comment' "$rc_log"; then
     fail "a partial release must NOT post the supersede comment — a re-run would read it as settled"
 fi
 
-echo "==> a failed comment post is exit 1 and re-adds the assignee (trust anchor)"
+echo "==> a failed comment post leaves removed assignees historical, not re-added"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"
 _rc1="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
 [ "$_rc1" = 1 ] || fail "a failed supersede post should exit 1 (got $_rc1)"
-grep -q -- '--add-assignee evanharmon1' "$rc_log" ||
-    fail "the compensation must re-add the removed assignee so the retry stays trusted"
+if grep -q -- '--add-assignee' "$rc_log"; then
+    fail "comment failure must not manufacture a new assignment interval"
+fi
 
-echo "==> failed comment compensation restores the inherited assignee, not the takeover author"
-rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
-    "$(rc_comment evanharmon1 "$body_chain_cross_account" 2)")" \
-    '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"}]}'
-_rc_cross_comment="$(RC_FAIL_MATCH='issue comment' run_release --reason r)"
-[ "$_rc_cross_comment" = 1 ] || fail "a failed cross-account supersede post should exit 1 (got $_rc_cross_comment)"
-grep -q -- '--add-assignee collaborator' "$rc_log" ||
-    fail "cross-account compensation must restore the inherited assignee"
-if grep -q -- '--add-assignee evanharmon1' "$rc_log"; then
-    fail "cross-account compensation must not add the takeover author"
+echo "==> a retry trusts the historical body after successful marker removals"
+rc_scenario "$(rc_page \
+    "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:01:00Z' COLLABORATOR)")" \
+    '{"state":"closed","labels":[],"assignees":[]}'
+printf '%s' '[[{"event":"assigned","created_at":"2026-01-01T00:00:00Z","assignee":{"login":"collaborator"}},{"event":"unassigned","created_at":"2026-01-01T00:02:00Z","assignee":{"login":"collaborator"}}]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 0 ] ||
+    fail "retry after marker removal must trust the historical claim body: $(cat "$tmp/release.err")"
+[ "$(grep -c 'issue comment' "$rc_log")" = 1 ] || fail "retry must publish exactly the missing release comment"
+if grep -q -- 'issue edit' "$rc_log"; then
+    fail "retry after successful marker removal must not repeat destructive writes"
 fi
 
 echo "==> a claim EDITED between read and write aborts with exit 3 (same id, new updated_at)"
@@ -3691,6 +3691,7 @@ echo "==> a forged newer 'Claiming —' from an untrusted author does not shadow
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
     "$(rc_comment mallory 'Claiming — totally my issue now (session x).' 2)")" \
     "$issue_closed_full"
+printf '%s' '[[{"event":"assigned","created_at":"2025-12-31T23:59:59Z","assignee":{"login":"evanharmon1"}}]]' >"$rc_timeline"
 [ "$(run_release --reason r)" = 0 ] || fail "an untrusted claim comment must be invisible"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "the trusted claim of record must be the one released"
 

@@ -241,8 +241,8 @@ read it in the UI) — never guess.
 
     ```sh
     # Use the exact reason appropriate to the outcome. The helper validates
-    # the whole lineage, re-reads before writing, performs marker compensation
-    # on partial failure, and posts the fixed supersede line last.
+    # the whole lineage, re-reads before writing, orders destructive writes so
+    # partial failures remain retryable, and posts the fixed supersede line last.
     <track-work-dir>/assets/release-claim.sh \
       --repo <owner/repo> --issue <n> --reason '<why it was handed back>'
     ```

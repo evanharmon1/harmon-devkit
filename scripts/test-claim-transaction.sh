@@ -491,6 +491,24 @@ jq '.labels = [.labels[] | select(.name != "claim:gpt:terra")]' "$issue_file" >"
     fail "exact model retry missing its refinement marker must fail closed"
 [ ! -s "$log" ] || fail "markerless exact model retry must remain no-write"
 
+echo "==> refresh carries exact direct ownership from a pre-chain record"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none fix/legacy-direct
+add_model_fields claim:gpt:terra claim:gpt:terra
+sed '/owned by this claim chain:/d; /logins owned by this claim chain:/d; /displaced by this claim chain:/d' \
+    "$record" >"$tmp/legacy-direct-record.md"
+legacy_direct_body="$(jq -Rs 'sub("\\n+$"; "")' "$tmp/legacy-direct-record.md")"
+legacy_direct_predecessor="$(jq -n --argjson body "$legacy_direct_body" '[{id:1,user:{login:"evanharmon1"},author_association:"OWNER",body:$body}]')"
+scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"},{"name":"claim:gpt:terra"}]}' \
+    "$legacy_direct_predecessor"
+make_record no no none yes evanharmon1 claim:gpt none fix/refreshed
+add_model_fields no claim:gpt:terra
+[ "$(run_claim --claim-label claim:gpt --model-label claim:gpt:terra)" = 0 ] ||
+    fail "refresh must preserve exact direct family/model authority: $(cat "$err")"
+if grep -q -- '--add-label\|--add-assignee' "$log"; then
+    fail "refresh of live direct-owned markers must not rewrite them"
+fi
+grep -q '^comment$' "$log" || fail "refresh must publish the inherited chain record"
+
 echo "==> failed model publication leaves the tentative refinement visible"
 scenario '{"assignees":[{"login":"evanharmon1"}],"labels":[{"name":"claim:gpt"}]}' "$family_predecessor"
 make_record no no none yes evanharmon1 claim:gpt none fix/model

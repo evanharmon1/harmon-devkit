@@ -308,21 +308,19 @@ effect.
   naming the closed PR's head branch releases, and everything else exits 3
   untouched.
 - For a claim authored by a **non-owner assignee** (the norm on organization
-  repos, where the owner prong never matches a user), the assignment is also
-  the trust anchor: the script removes it last, skips it when an earlier
-  write failed, and **re-adds it if the supersede post then fails** — after
-  first re-checking that no concurrent run released in the meantime, so the
-  compensation cannot resurrect an assignee over a completed release. The
-  residue is the compensation itself failing — two consecutive write
-  failures — which strands a findable, assigned claim for `/kickoff` to
-  surface.
-- **Org-repo v1 limitation**: trust requires the claim author to be the repo
-  owner or a *current* assignee (with write-shaped association). On an
-  organization repo the owner prong never matches a user, so a maintainer
-  unassigning or reassigning the claimant before the close event strands
-  that claim (exit 3) until `/wrap` or a re-assignment. Widening trust to
-  association alone would admit read-only collaborators' forged claims, so
-  the narrow gate stays until an org actually consumes this workflow.
+  repos, where the owner prong never matches a user), trust binds to the
+  consumed comment body's `updated_at`: a strictly earlier assignment must
+  begin an interval with no unassignment through that version. The script
+  removes assignees last and skips them when an earlier marker write failed.
+  If every marker write succeeds but the supersede post fails, it does not
+  re-add an assignee and manufacture a new ownership interval; the retry uses
+  the already-proven historical body version and posts the missing release
+  comment without repeating absent marker removals.
+- **Org-repo v1 trust** uses that same historical body-version proof. A later
+  manual unassignment does not erase authorship trust for a body safely
+  published while assigned, but an edit during an unassigned gap, a
+  same-second ambiguous assignment, or unreadable timeline evidence fails
+  closed. Association alone never admits a collaborator's forged claim.
 - The write window after the script's final pre-write re-read is **not**
   race-free: a reopen-and-reclaim landing inside those seconds can lose
   markers or be superseded by the in-flight release comment. GitHub offers
