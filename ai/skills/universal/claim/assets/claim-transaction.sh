@@ -137,8 +137,13 @@ legacy_labels_for_pre_field_registry() {
     qwen) printf '%s\n' agent:qwen-code ;;
     esac
 }
+finite_legacy_label_matches_family() {
+    local aliases
+    aliases="$(legacy_labels_for_pre_field_registry "$family")"
+    printf '%s\n' "$aliases" | grep -Fqx "$claim_label"
+}
 legacy_label_matches_family() {
-    local has_aliases aliases
+    local has_aliases
     [ -n "$family" ] || return 1
     if [ "$registry_snapshot" != none ]; then
         [ -r "$registry_snapshot" ] || return 1
@@ -155,8 +160,7 @@ legacy_label_matches_family() {
             return
         fi
     fi
-    aliases="$(legacy_labels_for_pre_field_registry "$family")"
-    printf '%s\n' "$aliases" | grep -Fqx "$claim_label"
+    finite_legacy_label_matches_family
 }
 case "$claim_label" in
 claim:*)
@@ -171,6 +175,10 @@ agent:*)
         echo "claim transaction: legacy claim label does not match the trusted family" >&2
         exit 2
     }
+    if [ "$model_label" != none ] && ! finite_legacy_label_matches_family; then
+        echo "claim transaction: a custom legacy alias cannot safely own a model refinement" >&2
+        exit 2
+    fi
     ;;
 esac
 if [ -n "$runtime_environment" ]; then
@@ -595,6 +603,17 @@ claim_is_live() {
         { [ "$model_label" = none ] || has_label "$snapshot" "$model_label"; } &&
         { [ "$chain_displaced" = none ] || ! has_label "$snapshot" "$chain_displaced"; }
 }
+current_record_is_live() {
+    local issue_output="$1" comments_output="$2" predecessor_output="$3"
+    issue_snapshot >"$issue_output" &&
+        comments_snapshot >"$comments_output" &&
+        select_predecessor "$issue_output" "$comments_output" "$predecessor_output" &&
+        jq -e --arg login "$login" --rawfile body "$record_file" '
+            ($body | sub("\\n+$"; "")) as $expected
+            | .found == true and .author == $login and .body == $expected
+        ' "$predecessor_output" >/dev/null &&
+        claim_is_live "$issue_output"
+}
 if [ "$resume_exact" -eq 1 ]; then
     claim_is_live "$tmp/issue-before.json" || {
         echo "claim transaction: exact current record lacks an OPEN issue or its required live markers" >&2
@@ -721,9 +740,9 @@ if ! has_label "$tmp/issue-before-record.json" "$claim_label" ||
     exit 6
 fi
 
-record_committed=0
+comment_command_succeeded=0
 if gh issue comment "$issue" --repo "$repo" --body-file "$record_file"; then
-    record_committed=1
+    comment_command_succeeded=1
 else
     if ! comments_snapshot >"$tmp/comments-after.json"; then
         echo "claim transaction: record publication is indeterminate; leaving visible markers for recovery" >&2
@@ -741,32 +760,21 @@ else
     ' "$tmp/comments-after.json" >/dev/null; then
         exact_record_found=1
     fi
-    if [ "$exact_record_found" -eq 1 ]; then
-        if ! issue_snapshot >"$tmp/issue-after-publication.json" ||
-            ! select_predecessor "$tmp/issue-after-publication.json" "$tmp/comments-after.json" \
-                "$tmp/predecessor-after-publication.json"; then
-            echo "claim transaction: exact record was observed but current claim state is indeterminate" >&2
-            exit 6
-        fi
-        if jq -e --arg login "$login" --rawfile body "$record_file" '
-            ($body | sub("\\n+$"; "")) as $expected
-            | .found == true and .author == $login and .body == $expected
-        ' "$tmp/predecessor-after-publication.json" >/dev/null &&
-            claim_is_live "$tmp/issue-after-publication.json"; then
-            record_committed=1
-            echo "claim transaction: comment command failed but reconciliation confirmed the exact current record committed" >&2
-        else
-            echo "claim transaction: exact record was observed but was already superseded or lost required markers" >&2
-            exit 6
-        fi
-    else
+    if [ "$exact_record_found" -ne 1 ]; then
         echo "claim transaction: record publication is confirmed absent; leaving visible markers because destructive recovery is unsafe" >&2
         exit 6
     fi
 fi
 
-[ "$record_committed" -eq 1 ] || {
-    echo "claim transaction: internal error: record state unresolved" >&2
+if ! current_record_is_live "$tmp/issue-after-publication.json" "$tmp/comments-current.json" \
+    "$tmp/predecessor-after-publication.json"; then
+    if [ "$comment_command_succeeded" -eq 1 ]; then
+        echo "claim transaction: published record is not the current live claim; leaving visible state for recovery" >&2
+    else
+        echo "claim transaction: exact record was observed but was already superseded or lost required markers" >&2
+    fi
     exit 6
-}
+fi
+[ "$comment_command_succeeded" -eq 1 ] ||
+    echo "claim transaction: comment command failed but reconciliation confirmed the exact current record committed" >&2
 exit 0

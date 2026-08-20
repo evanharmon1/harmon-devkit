@@ -143,6 +143,10 @@ in the claim record, never in the label.
   claim adds a `claim:*` label where the repo has the family and falls back to a
   a registry-declared legacy `agent:<harness>` alias where provisioning has not migrated (so a
   currently-provisioned repo keeps its claim labeled during the window); the
+  fixed pre-registry aliases may coexist with a model refinement because the
+  release reader can bind them without external state. Registry-only custom
+  aliases remain family-level compatibility markers and must migrate to
+  `claim:<family>` before a model refinement is claimed. The
   **displaced** field may likewise name a legacy `agent:*` label when the claim
   takes over a legacy in-flight claim, and pre-migration records name `agent:*`
   in the added field too — so consumers must accept **both** families here, not

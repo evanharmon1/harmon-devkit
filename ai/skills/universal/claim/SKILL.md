@@ -504,6 +504,11 @@ Never approve or run a silently inferred or substituted target.
   invocation. The helper adds `target_label` only when its snapshot confirms it
   absent. When `existing_label` is already the same-family marker, pass that
   exact label as `--claim-label` and record `no`; the helper leaves it alone.
+  A model refinement may coexist with a legacy alias only for the fixed
+  pre-registry aliases that event-driven release can independently bind to a
+  family. A registry-only custom alias remains a supported family-level claim,
+  but must migrate to its canonical `claim:<family>` marker before a model
+  refinement is claimed; the routine helper rejects the unreleasable pairing.
 
   **Record the exact label applied** in the claim record below — the release
   parser removes exactly that one, so a legacy fallback is recorded as its
@@ -689,6 +694,10 @@ Never approve or run a silently inferred or substituted target.
   Failed marker commands do not gain ownership from the resulting marker
   snapshot alone. If changed state cannot be attributed to this attempt, the
   transaction leaves it visible and reports an indeterminate result.
+  Successful and ambiguous-failure comment responses both finish through the
+  same fresh reconciliation: the exact record must be the current trusted
+  predecessor and the OPEN issue, claimant, family/model markers, and displaced
+  absence must still be live before the helper reports success.
 
 After claiming, re-fetch the assignees
 (`gh issue view <n> --repo "$repo" --json assignees`):

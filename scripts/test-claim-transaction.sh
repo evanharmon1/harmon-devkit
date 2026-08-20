@@ -215,6 +215,26 @@ sed -n '2p' "$log" | grep -q -- '--add-label claim:gpt' || fail "label must be t
 [ "$(sed -n '3p' "$log")" = comment ] || fail "record must follow marker writes"
 [ "$(wc -l <"$log" | tr -d ' ')" = 3 ] || fail "transaction must perform no Project board operation"
 
+echo "==> successful publication still requires a current live claim"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(RUN_CLOSE_AFTER_COMMENT=true run_claim --claim-label claim:gpt)" = 6 ] ||
+    fail "a claim closed during successful publication must be indeterminate"
+[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "the published record must remain visible"
+grep -q 'published record is not the current live claim' "$err" ||
+    fail "post-success live-state failure must be explicit"
+if grep -q -- '--remove-' "$log"; then fail "post-success reconciliation must not compensate"; fi
+
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+release_record="$tmp/success-release-record.md"
+printf '%s\n' 'Claim released — concurrent release. (Supersedes the claim record above.)' >"$release_record"
+[ "$(RUN_MUTATE_COMMENTS_ON_READ=3 RUN_CONCURRENT_RECORD="$release_record" \
+    RUN_CONCURRENT_LOGIN=evanharmon1 run_claim --claim-label claim:gpt)" = 6 ] ||
+    fail "a successful publication superseded before reconciliation must be indeterminate"
+[ "$(jq 'length' "$comments_file")" -eq 2 ] || fail "both concurrent records must remain visible"
+if grep -q -- '--remove-' "$log"; then fail "superseded successful publication must not compensate"; fi
+
 echo "==> trusted family and runtime metadata commit through the transaction"
 scenario '{"assignees":[],"labels":[]}'
 make_record yes claim:claude none yes evanharmon1 claim:claude none 'Owner Project' Ready fix/claude claude devcontainer
@@ -276,6 +296,22 @@ make_record yes agent:codex none yes evanharmon1 agent:codex none
 [ "$(RUN_REGISTRY_SNAPSHOT="$tmp/missing-registry.json" run_claim --claim-label agent:codex)" = 2 ] ||
     fail "an unreadable declared registry snapshot must fail closed"
 [ ! -s "$log" ] || fail "unreadable registry snapshot must fail before writes"
+
+echo "==> custom registry aliases remain family-only until canonical migration"
+custom_registry="$tmp/custom-alias-registry.json"
+jq '(.families[] | select(.slug == "gpt") | .legacy_claim_labels) += ["agent:custom-gpt"]' \
+    "$registry_snapshot" >"$custom_registry"
+scenario "$empty_issue"
+make_record yes agent:custom-gpt none yes evanharmon1 agent:custom-gpt none
+[ "$(RUN_REGISTRY_SNAPSHOT="$custom_registry" run_claim --claim-label agent:custom-gpt)" = 0 ] ||
+    fail "a trusted custom alias must remain supported for a family-level claim: $(cat "$err")"
+scenario "$empty_issue"
+make_record yes agent:custom-gpt none yes evanharmon1 agent:custom-gpt none
+add_model_fields claim:gpt:terra claim:gpt:terra
+[ "$(RUN_REGISTRY_SNAPSHOT="$custom_registry" run_claim --claim-label agent:custom-gpt \
+    --model-label claim:gpt:terra)" = 2 ] ||
+    fail "an unreleasable custom-alias/model pairing must fail before writes"
+[ ! -s "$log" ] || fail "a custom-alias/model pairing must perform zero writes"
 
 echo "==> a same-family model-shaped primary marker remains a supported legacy plan"
 scenario "$empty_issue"
