@@ -9,7 +9,7 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage: claim-transaction.sh --repo owner/repo --issue N --record-file FILE
-       --claim-label LABEL [--model-label LABEL|none]
+       --claim-label LABEL|none [--allow-label-less] [--model-label LABEL|none]
        [--family SLUG] [--runtime-environment VALUE]
        --registry-snapshot FILE|none
 
@@ -28,6 +28,7 @@ model_label="none"
 family=""
 runtime_environment=""
 registry_snapshot=""
+allow_label_less=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --repo)
@@ -49,6 +50,10 @@ while [ "$#" -gt 0 ]; do
         [ "$#" -ge 2 ] || usage
         claim_label="$2"
         shift 2
+        ;;
+    --allow-label-less)
+        allow_label_less=1
+        shift
         ;;
     --model-label)
         [ "$#" -ge 2 ] || usage
@@ -102,14 +107,23 @@ valid_label() {
     *) return 1 ;;
     esac
 }
+label_required=1
 if [ "$claim_label" = none ]; then
-    echo "claim transaction: label-less claims require the explicit manual exceptional flow" >&2
-    exit 2
+    [ "$allow_label_less" -eq 1 ] && [ "$model_label" = none ] || {
+        echo "claim transaction: label-less claims require --allow-label-less and cannot carry a model label" >&2
+        exit 2
+    }
+    label_required=0
+else
+    [ "$allow_label_less" -eq 0 ] || {
+        echo "claim transaction: --allow-label-less is valid only with --claim-label none" >&2
+        exit 2
+    }
+    valid_label "$claim_label" || {
+        echo "claim transaction: invalid claim label: $claim_label" >&2
+        exit 2
+    }
 fi
-valid_label "$claim_label" || {
-    echo "claim transaction: invalid claim label: $claim_label" >&2
-    exit 2
-}
 if [ "$model_label" != "none" ]; then
     [[ "$model_label" =~ ^claim:[a-z0-9]+(-[a-z0-9]+)*:[a-z0-9]+(-[a-z0-9]+)*$ ]] || {
         echo "claim transaction: invalid model label: $model_label" >&2
@@ -163,6 +177,7 @@ legacy_label_matches_family() {
     finite_legacy_label_matches_family
 }
 case "$claim_label" in
+none) ;;
 claim:*)
     [ -n "$family" ] &&
         [[ "$claim_label" =~ ^claim:${family}(:[a-z0-9]+(-[a-z0-9]+)*)?$ ]] || {
@@ -590,7 +605,7 @@ fi
 assignee_preexisting=0
 has_assignee "$tmp/issue-before.json" "$login" && assignee_preexisting=1
 label_preexisting=0
-if has_label "$tmp/issue-before.json" "$claim_label"; then
+if [ "$label_required" -eq 1 ] && has_label "$tmp/issue-before.json" "$claim_label"; then
     label_preexisting=1
 fi
 model_preexisting=0
@@ -600,7 +615,9 @@ fi
 
 expected_assignee="yes"
 [ "$assignee_preexisting" -eq 1 ] && expected_assignee="no"
-if [ "$label_preexisting" -eq 1 ]; then
+if [ "$label_required" -eq 0 ]; then
+    expected_label="n/a"
+elif [ "$label_preexisting" -eq 1 ]; then
     expected_label="no"
 else
     expected_label="$claim_label"
@@ -643,7 +660,9 @@ case "$record_assignee" in yes | no) ;; *)
     exit 2
     ;;
 esac
-[ "$record_label" = "$claim_label" ] || [ "$record_label" = no ] || {
+{ [ "$label_required" -eq 0 ] && [ "$record_label" = n/a ]; } ||
+    { [ "$label_required" -eq 1 ] &&
+        { [ "$record_label" = "$claim_label" ] || [ "$record_label" = no ]; }; } || {
     echo "claim transaction: direct family-label ownership does not match the requested marker" >&2
     exit 2
 }
@@ -712,7 +731,7 @@ claim_is_live() {
     local snapshot="$1"
     claim_blockers_absent "$snapshot" &&
         has_assignee "$snapshot" "$login" &&
-        has_label "$snapshot" "$claim_label" &&
+        { [ "$label_required" -eq 0 ] || has_label "$snapshot" "$claim_label"; } &&
         { [ "$model_label" = none ] || has_label "$snapshot" "$model_label"; } &&
         { [ "$chain_displaced" = none ] || ! has_label "$snapshot" "$chain_displaced"; }
 }
@@ -750,7 +769,12 @@ expected_chain_assignees="$(paste -sd, "$tmp/expected-assignees")"
     echo "claim transaction: assignee set must be derived from the immediate predecessor plus this attempt ('$expected_chain_assignees')" >&2
     exit 2
 }
-if [ "$expected_label" = "$claim_label" ]; then
+if [ "$label_required" -eq 0 ]; then
+    [ "$chain_label" = n/a ] || {
+        echo "claim transaction: a label-less claim must record n/a chain ownership" >&2
+        exit 2
+    }
+elif [ "$expected_label" = "$claim_label" ]; then
     [ "$chain_label" = "$claim_label" ] || {
         echo "claim transaction: a newly added label must initialize chain ownership" >&2
         exit 2
@@ -798,10 +822,10 @@ if [ "$assignee_preexisting" -eq 0 ]; then
     fi
 fi
 
-if [ "$label_preexisting" -eq 0 ] ||
+if { [ "$label_required" -eq 1 ] && [ "$label_preexisting" -eq 0 ]; } ||
     { [ "$model_label" != "none" ] && [ "$model_preexisting" -eq 0 ]; }; then
     label_args=("$issue" --repo "$repo")
-    [ "$label_preexisting" -eq 1 ] || label_args+=(--add-label "$claim_label")
+    [ "$label_required" -eq 0 ] || [ "$label_preexisting" -eq 1 ] || label_args+=(--add-label "$claim_label")
     [ "$model_label" = none ] || [ "$model_preexisting" -eq 1 ] || label_args+=(--add-label "$model_label")
     if ! gh issue edit "${label_args[@]}"; then
         if ! issue_snapshot >"$tmp/issue-after-label.json"; then
@@ -809,7 +833,8 @@ if [ "$label_preexisting" -eq 0 ] ||
             exit 6
         fi
         label_state_changed=0
-        if [ "$label_preexisting" -eq 0 ] && has_label "$tmp/issue-after-label.json" "$claim_label"; then
+        if [ "$label_required" -eq 1 ] && [ "$label_preexisting" -eq 0 ] &&
+            has_label "$tmp/issue-after-label.json" "$claim_label"; then
             label_state_changed=1
         fi
         if [ "$model_label" != none ] && [ "$model_preexisting" -eq 0 ] &&
@@ -856,7 +881,7 @@ if [ "$inherited_continuity_required" -eq 1 ]; then
         exit 6
     fi
 fi
-if ! has_label "$tmp/issue-before-record.json" "$claim_label" ||
+if { [ "$label_required" -eq 1 ] && ! has_label "$tmp/issue-before-record.json" "$claim_label"; } ||
     { [ "$model_label" != none ] && ! has_label "$tmp/issue-before-record.json" "$model_label"; }; then
     echo "claim transaction: claim markers changed before publication; leaving visible markers for recovery" >&2
     exit 6

@@ -285,7 +285,8 @@ grep -F 'family_target="$(plan_value family_label)"' ai/skills/universal/claim/S
 grep -F 'model_target="$(plan_value model_label)"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must extract the model marker"
 grep -F 'displaced=none' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must initialize displacement to none"
 grep -F '[ "$resolver_status" -ne 10 ] || displaced="$approved_takeover_label"' ai/skills/universal/claim/SKILL.md >/dev/null || fail "claim procedure must bind displacement to the approved conflict"
-grep -F '[ "$resolver_status" -eq 0 ] && [ "$target" != "n/a" ] || exit 1' ai/skills/universal/claim/SKILL.md >/dev/null || fail "routine transaction must exclude every exceptional plan"
+grep -F '[ "$resolver_status" -eq 0 ] || exit 1' ai/skills/universal/claim/SKILL.md >/dev/null || fail "routine transaction must require a successful resolver plan"
+grep -F 'label_args=(--claim-label none --allow-label-less)' ai/skills/universal/claim/SKILL.md >/dev/null || fail "verified label-less plans must use the transaction helper explicitly"
 if grep -F 'Bash(./ai/skills/universal/claim/assets/claim-transaction.sh:' ai/skills/universal/claim/SKILL.md >/dev/null ||
     grep -F 'Bash(./.agents/skills/claim/assets/claim-transaction.sh:' ai/skills/universal/claim/SKILL.md >/dev/null ||
     grep -F 'Bash(./.claude/skills/claim/assets/claim-transaction.sh:' ai/skills/universal/claim/SKILL.md >/dev/null; then
@@ -293,7 +294,8 @@ if grep -F 'Bash(./ai/skills/universal/claim/assets/claim-transaction.sh:' ai/sk
 fi
 grep -F -- '--registry-snapshot "$registry_snapshot"' ai/skills/universal/claim/SKILL.md >/dev/null ||
     fail "transaction helper must receive the fetched default-branch registry snapshot"
-grep -F 'if [ "$claim_label" = none ]; then' "$transaction_helper" >/dev/null || fail "routine helper must reject label-less claims"
+grep -F -- '--allow-label-less)' "$transaction_helper" >/dev/null || fail "transaction helper must parse the explicit label-less authorization"
+grep -F '[ "$allow_label_less" -eq 1 ] && [ "$model_label" = none ]' "$transaction_helper" >/dev/null || fail "label-less claims must require the explicit flag and exclude model markers"
 if grep -F -- '--displaced-label' "$transaction_helper" >/dev/null; then
     fail "routine helper must not accept displacement as a flag"
 fi

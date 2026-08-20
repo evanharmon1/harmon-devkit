@@ -72,9 +72,10 @@ in the claim record, never in the label.
   routine producer is `claim/assets/claim-transaction.sh`. It snapshots the
   issue and comments, adds only the authenticated assignee and resolved claim
   labels that were absent, and publishes the exact record. It rejects
-  label-less and displacement plans: those exceptional, explicitly approved
-  flows remain manual and separately prompted rather than becoming flags on a
-  routine helper. Immediately before publication the routine producer re-reads the
+  displacement plans. A verified `linear`/`none` repository uses its explicit
+  label-less mode, which commits assignee-plus-record through the same helper;
+  an unverifiable GitHub label-less exception still requires separate approval.
+  Immediately before publication the routine producer re-reads the
   markers and trusted comment lineage; a newer trusted claim/release or marker
   drift stops the stale append and leaves the visible state for recovery. The
   transaction itself rejects a closed issue, an assignee not proven by the
@@ -164,7 +165,10 @@ in the claim record, never in the label.
   Its displaced label is different: it is normally absent while the takeover
   is live, so carry it when the predecessor proves it displaced the label.
   The current record is sufficient for release only after independent lineage proof. The
-  releaser walks the trusted claim run oldest-to-newest and proves every
+  releaser admits a historical record to that run only when its author was the
+  repository owner or the issue timeline proves the author was assigned when
+  the comment was published (with write-shaped association in either case).
+  It then walks the trusted claim run oldest-to-newest and proves every
   inherited login appeared in the immediate predecessor's proven set (or is
   the leaf's direct assignee) before its first write. Missing, unreadable,
   ambiguous, edited, or forged provenance fails closed with zero writes. A

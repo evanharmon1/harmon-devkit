@@ -199,6 +199,27 @@ valid_login() {
     esac
 }
 
+fetch_timeline() {
+    gh api --paginate --slurp "repos/$repo/issues/$issue/timeline" | jq 'add // []'
+}
+
+timeline_well_formed() {
+    jq -e '
+        type == "array"
+        and all(.[];
+            if .event == "assigned" or .event == "unassigned" then
+                (.created_at | type == "string"
+                    and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                and (.assignee.login | type == "string")
+            elif .event == "unlabeled" then
+                (.created_at | type == "string"
+                    and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                and (.label.name | type == "string")
+            else true
+            end)
+    ' <<<"$1" >/dev/null
+}
+
 # ── Live issue state — also the trust anchor ─────────────────────────────────
 if ! issue_json="$(gh api "repos/$repo/issues/$issue")"; then
     echo "could not fetch $repo#$issue — cannot verify, treat as unsafe" >&2
@@ -223,6 +244,14 @@ fi
 trusted_json="$(jq --arg owner "$owner" \
     '[$owner] + [.assignees[].login] | map(ascii_downcase) | unique' \
     <<<"$issue_json")"
+if ! lineage_timeline="$(fetch_timeline)"; then
+    echo "$repo#$issue: claim timeline is unreadable — cannot prove historical claimant trust" >&2
+    exit 2
+fi
+if ! timeline_well_formed "$lineage_timeline"; then
+    echo "$repo#$issue: claim timeline is malformed — cannot prove historical claimant trust" >&2
+    exit 2
+fi
 
 # ── Find the claim (trusted comments only) ───────────────────────────────────
 # --paginate --slurp: an array of pages; `add` flattens. The latest trusted
@@ -235,6 +264,8 @@ trusted_json="$(jq --arg owner "$owner" \
 fetch_claim() {
     gh api --paginate --slurp "repos/$repo/issues/$issue/comments" |
         jq --argjson trusted "$trusted_json" \
+            --argjson timeline "$lineage_timeline" \
+            --arg owner "$owner" \
             --arg cutoff "$not_after" '
             def dl: (.user.login | ascii_downcase);
             def writeauth:
@@ -242,17 +273,29 @@ fetch_claim() {
                 | (["OWNER", "MEMBER", "COLLABORATOR"] | index($a)) != null;
             def trusted_claimant:
                 (dl as $l | $trusted | index($l) != null) and writeauth;
+            def assigned_at_claim_time:
+                dl as $login
+                | .created_at as $claim_time
+                | ([ $timeline[]
+                     | select((.event == "assigned" or .event == "unassigned")
+                              and (.assignee.login | ascii_downcase) == $login
+                              and .created_at <= $claim_time) ]
+                   | last // null) as $last
+                | $last != null and $last.event == "assigned";
+            def historical_claimant:
+                writeauth
+                and (dl == ($owner | ascii_downcase) or assigned_at_claim_time);
             def trusted_release:
                 (.body | startswith("Claim released —"))
                 and (trusted_claimant or dl == "github-actions[bot]");
             add // []
             | map(select(.body != null))
-            # Historical write-associated claims remain lineage evidence even
-            # after a partial retry removed their assignee. They can never be
-            # selected as the current claim unless trusted_claimant also holds.
+            # Historical claims remain lineage evidence after a partial retry
+            # removes their assignee only when the timeline proves that the
+            # author was assigned when the record was published.
             | map(select(trusted_claimant
                          or trusted_release
-                         or ((.body | startswith("Claiming —")) and writeauth))) as $events
+                         or ((.body | startswith("Claiming —")) and historical_claimant))) as $events
             | ($events
                | map((.body | startswith("Claiming —")) and trusted_claimant)
                | rindex(true)) as $ci
@@ -262,7 +305,7 @@ fetch_claim() {
                      | $i] | last // -1) as $release_before
               | ([range($release_before + 1; $ci) as $i
                   | select($events[$i]
-                           | ((.body | startswith("Claiming —")) and writeauth))
+                           | ((.body | startswith("Claiming —")) and historical_claimant))
                   | $i] | last // null) as $pi
               | {found: true,
                     id: $events[$ci].id,
@@ -280,7 +323,8 @@ fetch_claim() {
                     lineage:
                         ([range($release_before + 1; $ci + 1) as $i
                           | select($events[$i]
-                                   | ((.body | startswith("Claiming —")) and writeauth))
+                                   | ((.body | startswith("Claiming —"))
+                                      and (historical_claimant or $i == $ci)))
                           | {id: $events[$i].id,
                              created: ($events[$i].created_at // ""),
                              updated: ($events[$i].updated_at // ""),
@@ -1013,6 +1057,14 @@ fi
 trusted_json="$(jq --arg owner "$owner" \
     '[$owner] + [.assignees[].login] | map(ascii_downcase) | unique' \
     <<<"$recheck_issue")"
+if ! lineage_timeline="$(fetch_timeline)"; then
+    echo "$repo#$issue: pre-write timeline is unreadable — cannot prove claim lineage" >&2
+    exit 2
+fi
+if ! timeline_well_formed "$lineage_timeline"; then
+    echo "$repo#$issue: pre-write timeline is malformed — cannot prove claim lineage" >&2
+    exit 2
+fi
 if ! recheck_json="$(fetch_claim)"; then
     echo "$repo#$issue: pre-write re-read failed — cannot verify, treat as unsafe" >&2
     exit 2
@@ -1058,27 +1110,7 @@ marker_continuous_since_leaf() {
 }
 
 if [ -s "$assignees_to_remove" ] || [ -n "$labels_to_remove" ]; then
-    if ! cleanup_timeline="$(gh api --paginate --slurp "repos/$repo/issues/$issue/timeline" | jq 'add // []')"; then
-        echo "$repo#$issue: pre-write timeline is unreadable — cannot prove marker continuity" >&2
-        exit 2
-    fi
-    if ! jq -e '
-        type == "array"
-        and all(.[];
-            if .event == "unassigned" then
-                (.created_at | type == "string"
-                    and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-                and (.assignee.login | type == "string")
-            elif .event == "unlabeled" then
-                (.created_at | type == "string"
-                    and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-                and (.label.name | type == "string")
-            else true
-            end)
-    ' <<<"$cleanup_timeline" >/dev/null; then
-        echo "$repo#$issue: pre-write timeline is malformed — cannot prove marker continuity" >&2
-        exit 2
-    fi
+    cleanup_timeline="$lineage_timeline"
     while IFS= read -r cleanup_assignee; do
         [ -n "$cleanup_assignee" ] || continue
         if ! marker_continuous_since_leaf assignee "$cleanup_assignee" "$cleanup_timeline"; then

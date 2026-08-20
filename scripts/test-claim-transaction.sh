@@ -411,11 +411,19 @@ make_record yes no claim:claude yes evanharmon1 no claim:claude
     fail "routine helper must not accept a displacement flag"
 [ ! -s "$log" ] || fail "exceptional displacement must remain outside the routine write boundary"
 
-echo "==> routine helper rejects every label-less plan before every write"
+echo "==> label-less plans require an explicit transaction flag"
 scenario "$empty_issue"
 make_record yes n/a none yes evanharmon1 n/a none
 [ "$(run_claim --claim-label none)" = 2 ] || fail "routine helper must reject a label-less claim"
-[ ! -s "$log" ] || fail "label-less exceptional flow must remain outside the routine write boundary"
+[ ! -s "$log" ] || fail "an unflagged label-less plan must perform zero writes"
+
+scenario "$empty_issue"
+make_record yes n/a none yes evanharmon1 n/a none
+[ "$(run_claim --claim-label none --allow-label-less)" = 0 ] ||
+    fail "an explicit label-less plan must commit through the transaction helper: $(cat "$err")"
+grep -q -- '--add-assignee evanharmon1' "$log" || fail "label-less transaction must assign the claimant"
+grep -q '^comment$' "$log" || fail "label-less transaction must publish the durable record"
+if grep -q -- '--add-label' "$log"; then fail "label-less transaction must not write a label"; fi
 
 echo "==> failed publication always leaves a visible partial recordless claim"
 scenario "$empty_issue"
@@ -560,13 +568,13 @@ make_record no no none yes evanharmon1 claim:gpt none
 [ "$(jq 'length' "$comments_file")" -eq 2 ] || fail "the published record remains visible for recovery"
 grep -q 'published record is not the current live claim' "$err" || fail "post-publication continuity drift must be explicit"
 
-echo "==> label-less repositories remain an explicit manual exception"
+echo "==> an exact label-less retry is a no-write committed success"
 scenario "$empty_issue"
-make_record yes n/a none yes evanharmon1 n/a none none none
-[ "$(run_claim --claim-label none)" = 2 ] || fail "routine transaction must reject label-less repositories"
-jq -e '(.assignees | length) == 0' "$issue_file" >/dev/null || fail "routine helper must not partially claim label-less issue"
-[ "$(jq 'length' "$comments_file")" -eq 0 ] || fail "routine helper must not publish a label-less record"
-[ ! -s "$log" ] || fail "routine helper must perform zero writes for label-less exception"
+make_record yes n/a none yes evanharmon1 n/a none
+[ "$(run_claim --claim-label none --allow-label-less)" = 0 ] || fail "label-less transaction should commit"
+: >"$log"
+[ "$(run_claim --claim-label none --allow-label-less)" = 0 ] || fail "exact label-less retry should succeed"
+[ ! -s "$log" ] || fail "exact label-less retry must perform zero writes"
 
 echo "==> A to B to C takeover retains the canonical predecessor ownership set"
 make_record yes no none yes 'alice,bob' claim:gpt none fix/predecessor

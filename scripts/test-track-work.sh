@@ -2885,7 +2885,13 @@ rc_state="$tmp/rc-state"
 rc_scenario() {
     printf '%s' "$1" >"$rc_comments"
     printf '%s' "$2" >"$rc_issue"
-    printf '%s' '[[]]' >"$rc_timeline"
+    # Unless a test replaces the fixture, model every Claiming author as
+    # assigned at publication. Release lineage now requires that historical
+    # trust proof; owner-authored claims also remain valid independently.
+    jq '[[.. | objects
+        | select((.body? // "") | startswith("Claiming —"))
+        | {event:"assigned", created_at:.created_at,
+           assignee:{login:.user.login}}]]' "$rc_comments" >"$rc_timeline"
     : >"$rc_log"
     : >"$rc_body"
     rm -f "$rc_state"
@@ -3104,6 +3110,20 @@ grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
     fail "the current chain record must remove the inherited label"
 grep -q -- '--remove-assignee evanharmon1' "$rc_log" ||
     fail "the current chain record must remove the inherited assignee"
+
+echo "==> a never-assigned collaborator claim cannot poison trusted lineage"
+body_collaborator_poison="$(printf '%s' "$body_v1" | sed 's/agent:claude-code/agent:codex/g')"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)" \
+    "$(rc_comment collaborator "$body_collaborator_poison" 2 '2026-01-01T00:01:00Z' COLLABORATOR)" \
+    "$(rc_comment evanharmon1 "$body_chain_takeover" 3 '2026-01-01T00:02:00Z')")" \
+    "$issue_closed_full"
+printf '%s' '[[]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 0 ] || fail "an unassigned collaborator record must be excluded from lineage"
+grep -q -- '--remove-label agent:claude-code' "$rc_log" ||
+    fail "trusted lineage must retain its family cleanup authority"
+if grep -q -- '--remove-label agent:codex' "$rc_log"; then
+    fail "an unassigned collaborator must not grant label cleanup authority"
+fi
 
 echo "==> a takeover's direct label displacement is restored by a later open hand-back"
 body_displaced_takeover="$(printf '%s' "$body_v1" |

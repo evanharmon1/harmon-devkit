@@ -513,22 +513,23 @@ Never approve or run a silently inferred or substituted target.
   **Record the exact label applied** in the claim record below — the release
   parser removes exactly that one, so a legacy fallback is recorded as its
   actual family-owned `agent:*` alias, not a synthesized `claim:<family>`. A repo
-  with no resolvable family marker is **unverifiable**, not silently unlabeled:
-  stop and ask as described above.
+  with no resolvable family marker in GitHub is **unverifiable**, not silently
+  unlabeled: stop and ask as described above. A verified `linear` or `none`
+  project mode intentionally resolves `n/a`; its assignee plus durable record
+  are the complete supported claim signal.
 
   **Exceptional plans stay outside the routine executable boundary.** The
-  transaction helper accepts only a normal labeled claim. It
-  rejects `--claim-label none` and does not accept `--displaced-label`, so
-  routine `/claim` authorization cannot accidentally exercise either
-  escalation. If the user explicitly approves an unverifiable label-less claim
-  or one exact takeover in the current interaction, do not call the routine
-  helper. Re-read the issue and resolver plan, then perform the assignee,
-  exact-label, and durable-comment writes manually through separately prompted
-  `gh` commands. A takeover removes only the approved conflict; exit 11 remains
-  refused. Treat any ambiguous write response as indeterminate and leave the
-  visible state for recovery—never infer ownership or compensate from current
-  marker presence. Record the exact direct and chain provenance that the
-  approved manual writes actually established.
+  transaction helper accepts a normal labeled claim or an explicit
+  `--claim-label none --allow-label-less` plan. The latter is routine for a
+  verified `linear`/`none` mode and requires the user's explicit exception
+  approval for an unverifiable GitHub vocabulary. The helper remains outside
+  the allowed-tools boundary, so its target and this flag are visible at the
+  write approval. It does not accept `--displaced-label`; a user-approved exact
+  takeover remains manual and separately prompted. A takeover removes only the
+  approved conflict; exit 11 remains refused. Treat any ambiguous write
+  response as indeterminate and leave the visible state for recovery—never
+  infer ownership or compensate from current marker presence. Record the exact direct and chain provenance
+  that the approved manual writes actually established.
 
 - **Comment**: build the exact body in a temporary file with a quoted heredoc
   so the branch/session values are
@@ -565,13 +566,17 @@ Never approve or run a silently inferred or substituted target.
   - `claim:` label displaced by this claim chain: <the exact displaced claim:<family>[:<model>] or family-owned legacy agent:* label | none>
   CLAIM_BODY_9f3k
 
-  # 2. the routine transaction accepts only a normal labeled, non-displacing
-  # resolver plan. Exceptional approved plans use the manual flow above.
-  [ "$resolver_status" -eq 0 ] && [ "$target" != "n/a" ] || exit 1
+  # 2. the routine transaction accepts labeled and explicitly label-less
+  # resolver plans. Displacement remains in the manual exceptional flow.
+  [ "$resolver_status" -eq 0 ] || exit 1
+  label_args=(--claim-label "$family_target")
+  if [ "$target" = "n/a" ]; then
+    label_args=(--claim-label none --allow-label-less)
+  fi
   [ "$model_target" = "n/a" ] && model_target=none
   <claim-skill-dir>/assets/claim-transaction.sh \
     --repo "$repo" --issue <n> --record-file "$record_file" \
-    --claim-label "$family_target" --model-label "$model_target" \
+    "${label_args[@]}" --model-label "$model_target" \
     --family "$family" --runtime-environment "$runtime_environment" \
     --registry-snapshot "$registry_snapshot"
 
