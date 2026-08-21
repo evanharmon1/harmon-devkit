@@ -35,6 +35,14 @@ die() {
     exit 1
 }
 
+shell_quote() {
+    # Single-quote $1 for a copy-pasteable remedy: branch names — unlike
+    # worktree names, whose charset is whitelisted — legally carry $, ;,
+    # quotes, and parentheses, so an unquoted name in a printed command
+    # expands or executes when pasted (PR #932 cloud review).
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 name=""
 branch=""
 base=""
@@ -43,7 +51,10 @@ do_install=1
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --branch)
-        [ "$#" -ge 2 ] || die "--branch needs a value"
+        # Non-empty is checked HERE, not by the later default: an empty
+        # supplied value would otherwise fall through `branch=name` and
+        # silently create a branch the caller never asked for (#929).
+        [ "$#" -ge 2 ] && [ -n "$2" ] || die "--branch needs a non-empty value"
         branch="$2"
         shift 2
         ;;
@@ -101,6 +112,26 @@ esac
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
 
 [ -n "$branch" ] || branch="$name"
+
+# Validate the branch EARLY — git itself rejects an invalid ref name only
+# after the path is reserved and locks are held, with its own error instead
+# of this remedy-carrying one (#929). The validator is git's own branch
+# grammar, deliberately NOT the worktree-name charset: branch names are not
+# charset-restricted (create-or-attach must accept an existing
+# `feature+flag` or `release@2026` — docs/conventions.md § Worktrees), and
+# the branch-namespace lock key already byte-clamps arbitrary names safely
+# (#916). check-ref-format is local and side-effect-free, so the full
+# grammar is settled before any lock, reservation, or ref write.
+branch_canon="$(git check-ref-format --branch "$branch" 2>/dev/null)" ||
+    die "invalid branch name '$branch' (from --branch, or the worktree name it defaults to): rejected by git check-ref-format --branch"
+# check-ref-format --branch also EXPANDS checkout shorthand (`@{-1}` exits 0
+# and prints the previous branch), while everything downstream — the branch
+# lock, worktree add -b, the report — would keep the literal value: wrong
+# lock identity, and a deleted previous branch silently recreated under a
+# name the caller never wrote (challenge r3). Requiring the canonical output
+# to equal the input closes that whole class.
+[ "$branch_canon" = "$branch" ] ||
+    die "invalid branch name '$branch': checkout shorthand is not accepted here — name the branch explicitly (this resolves to '$branch_canon')"
 
 # Anchor .worktrees/ to the MAIN worktree, never to whichever linked tree the
 # caller happens to be standing in — otherwise running this from inside a
@@ -198,35 +229,107 @@ verify_default_base() {
     # Everything resolves from $default_base_branch, captured with $base —
     # never from a fresh HEAD read (the main worktree can have switched
     # branches since). The remote name comes from branch config, never from
-    # splitting ref text (a remote name may itself contain '/'); the fetch
-    # SOURCE comes from branch.<name>.merge, never from the abbreviated
-    # upstream name (a non-identity fetch refspec makes them differ); and the
-    # fetch DESTINATION is the upstream's full symbolic ref, never a
-    # refs/remotes/ prefix guess (a custom refspec can map outside
-    # refs/remotes/, and an ambiguous short name would mislead a prefix).
+    # splitting ref text (a remote name may itself contain '/'), and the
+    # probe/fetch SOURCE comes from branch.<name>.merge, never from the
+    # abbreviated upstream name (a non-identity fetch refspec makes them
+    # differ).
     [ -n "$default_base_branch" ] || return 0
     upstream_remote="$(git -C "$main_root" config --get "branch.$default_base_branch.remote" 2>/dev/null || true)"
     upstream_merge="$(git -C "$main_root" config --get "branch.$default_base_branch.merge" 2>/dev/null || true)"
     upstream_full="$(git -C "$main_root" rev-parse --symbolic-full-name "$default_base_branch@{upstream}" 2>/dev/null || true)"
     { [ -n "$upstream_remote" ] && [ -n "$upstream_full" ]; } || return 0
     upstream_label="$(git -C "$main_root" rev-parse --abbrev-ref "$default_base_branch@{upstream}" 2>/dev/null || echo "$upstream_full")"
-    fetch_failed=0
     if [ "$upstream_remote" != "." ]; then
         [ -n "$upstream_merge" ] || return 0
-        git_net fetch --quiet "$upstream_remote" \
-            "+$upstream_merge:$upstream_full" 2>/dev/null ||
-            fetch_failed=1
+        # The freshness answer is read LIVE off the remote and lands in no
+        # ref of ours (harmon-init#916). The earlier form fetched
+        # "+$upstream_merge:$upstream_full" — but @{upstream}'s full name is
+        # wherever the user's refspec maps it, including refs/heads/*, so
+        # that synthesized force-refspec could overwrite a LOCAL branch and
+        # unref local-only commits merely because worktree:new refreshed the
+        # base. Nor is dropping the destination enough: a fetch that names a
+        # mapped source triggers git's opportunistic tracking update, which
+        # force-writes the configured mapping even without "+" in the
+        # refspec (verified empirically on git 2.x — "(forced update)" on a
+        # refs/heads/* mapping). `--refmap=` is what actually detaches the
+        # fetch from remote.<name>.fetch: objects arrive, FETCH_HEAD moves,
+        # and no configured mapping is consulted (verified empirically) —
+        # while the NAMED remote keeps remote-specific transport config
+        # (remote.<name>.uploadpack, .proxy) that an anonymous URL fetch
+        # would silently drop (challenge round 1).
+        verify_known_before="$(git -C "$main_root" rev-parse --verify --quiet "$upstream_full^{commit}" || true)"
+        verify_failed=0
+        verify_probed_tip=""
+        probe_out="$(git_net ls-remote "$upstream_remote" "$upstream_merge")" || verify_failed=1
+        if [ "$verify_failed" -eq 0 ]; then
+            upstream_tip="$(printf '%s\n' "$probe_out" | awk -v ref="$upstream_merge" -F'\t' '$2 == ref {print $1; exit}')"
+            if [ -z "$upstream_tip" ]; then
+                # Nothing to verify against: the configured source branch is
+                # gone from the remote, and the local ref is all there is.
+                echo "==> Note: '$upstream_remote' no longer has ${upstream_merge#refs/heads/} — basing on the local ${base_label}"
+                return 0
+            fi
+            verify_probed_tip="$upstream_tip"
+        fi
+        if [ "$verify_failed" -eq 0 ]; then
+            git_net fetch --quiet --refmap= "$upstream_remote" "$upstream_merge" || verify_failed=1
+        fi
+        if [ "$verify_failed" -eq 0 ]; then
+            # One unconditional post-fetch probe, exactly as the remote-only
+            # branch path below: the remote can advance between the first
+            # probe and the fetch, and a stale tip resolving locally is no
+            # evidence it stayed current. A tip that arrives unresolvable
+            # means the remote moved again mid-operation, which no
+            # client-side sequence can chase.
+            probe_out="$(git_net ls-remote "$upstream_remote" "$upstream_merge")" || verify_failed=1
+        fi
+        if [ "$verify_failed" -eq 0 ]; then
+            upstream_tip="$(printf '%s\n' "$probe_out" | awk -v ref="$upstream_merge" -F'\t' '$2 == ref {print $1; exit}')"
+            if [ -z "$upstream_tip" ]; then
+                echo "==> Note: '$upstream_remote' no longer has ${upstream_merge#refs/heads/} — basing on the local ${base_label}"
+                return 0
+            fi
+            git -C "$main_root" rev-parse --verify --quiet "$upstream_tip^{commit}" >/dev/null ||
+                die "${upstream_label} is moving on '$upstream_remote' — retry, or pass --base <ref>"
+        fi
+        if [ "$verify_failed" -eq 1 ]; then
+            # An unverifiable upstream fails CLOSED (harmon-init#916), the
+            # same policy the branch probes apply: proceeding on the
+            # last-known tracking ref silently defeats the freshness
+            # guarantee this function exists for. The one exception is
+            # positive evidence of a concurrent refresh — the tracking ref
+            # moved between this run's snapshot and the failure, so a
+            # parallel worktree:new won the race and its answer is current
+            # enough to verify against (harmon-init#813).
+            verify_known_after="$(git -C "$main_root" rev-parse --verify --quiet "$upstream_full^{commit}" || true)"
+            verify_trusted=0
+            if [ -n "$verify_known_after" ] && [ "$verify_known_after" != "$verify_known_before" ]; then
+                # Movement alone is not evidence: a custom refspec can map
+                # the upstream into refs/heads/*, where an ordinary LOCAL
+                # commit moves the ref too, and counting that as a
+                # concurrent refresh would silently base the new tree on
+                # unrelated local work (challenge round 2). Trust the
+                # movement only when the moved value equals the tip this
+                # run's own probe returned — remote-attested, THIS run's
+                # answer. The namespace is deliberately not an arm of its
+                # own: a concurrent fetch can publish an OLDER advertised
+                # tip into refs/remotes/* after this run probed a newer
+                # one, and proceeding on it would knowingly contradict the
+                # fresher answer already in hand (challenge round 3).
+                if [ -n "$verify_probed_tip" ] && [ "$verify_known_after" = "$verify_probed_tip" ]; then
+                    verify_trusted=1
+                fi
+            fi
+            if [ "$verify_trusted" -eq 1 ]; then
+                echo "worktree:new: warning: could not fetch '$upstream_remote' — a concurrent fetch refreshed ${upstream_label} mid-run; verifying ${base_label} against that update (harmon-init#813)" >&2
+                upstream_tip="$verify_known_after"
+            else
+                die "could not verify ${base_label} against ${upstream_label} — offline, unreachable, or needs interactive credentials; retry with network/auth, or pass --base <ref> to skip the freshness check"
+            fi
+        fi
+    else
+        upstream_tip="$(git -C "$main_root" rev-parse --verify --quiet "$upstream_full^{commit}" || true)"
     fi
-    # The comparison reads the tracking ref AFTER the fetch attempt, success
-    # or not: a parallel worktree:new fetching the same upstream can win the
-    # ref lock and fail THIS fetch while leaving the ref freshly updated —
-    # returning early on failure would base the loser on the stale snapshot.
-    # Only a genuinely unreadable state keeps the base as captured, and a
-    # failed fetch still says so out loud.
-    if [ "$fetch_failed" -eq 1 ]; then
-        echo "worktree:new: warning: could not fetch '$upstream_remote' — verifying ${base_label} against the last-known ${upstream_label}, which may itself be stale (harmon-init#813)" >&2
-    fi
-    upstream_tip="$(git -C "$main_root" rev-parse --verify --quiet "$upstream_full^{commit}" || true)"
     { [ -n "$upstream_tip" ] && [ "$upstream_tip" != "$base" ]; } || return 0
     if git -C "$main_root" merge-base --is-ancestor "$base" "$upstream_tip"; then
         # Behind: hand out the current upstream tip, not the stale local one.
@@ -268,6 +371,10 @@ tree="$main_root/.worktrees/$name"
 trap release_locks EXIT
 trap 'exit 129' HUP INT TERM
 acquire_path_locks "$name"
+# The branch is a second, independent resource: two creations under
+# DIFFERENT names can name the same --branch, and their path locks never
+# contend — see acquire_branch_lock for the race this closes.
+acquire_branch_lock "$branch"
 
 # Refuse to nest a worktree INSIDE another registered worktree. Git's own
 # guard is on branch names (it will not let `parent/child` coexist with
@@ -373,6 +480,8 @@ fi
 # directory: every exit path from here owns it and must clean it up.
 tree_created=1
 branch_created=0
+branch_owned=0
+branch_owned_tip=""
 probe_dir=""
 cleanup() {
     status=$?
@@ -399,7 +508,8 @@ cleanup() {
         # refusal is relaxed, this stays correct instead of silently deleting a
         # stranger's branch.
         branch_is_ours=0
-        if [ "$branch_created" -eq 1 ] && [ "$tree_registered_before" -eq 0 ] &&
+        if [ "$branch_owned" -eq 0 ] &&
+            [ "$branch_created" -eq 1 ] && [ "$tree_registered_before" -eq 0 ] &&
             git worktree list --porcelain | grep -qxF "worktree $tree"; then
             branch_is_ours=1
         fi
@@ -424,11 +534,61 @@ cleanup() {
         # the scoped form for the only record this run can have created, so a
         # prune has nothing left to do that is ours to do. A record surviving
         # both is reported, never swept.
+        rollback_tree_gone=1
         if git worktree list --porcelain | grep -qxF "worktree $tree"; then
+            rollback_tree_gone=0
             echo "worktree:new: $tree is still registered after rollback — clear it with 'task worktree:rm -- $name'" >&2
         fi
-        if [ "$branch_is_ours" -eq 1 ]; then
-            git branch -D "$branch" >/dev/null 2>&1 || true
+        if [ "$branch_owned" -eq 1 ]; then
+            # The remote-only path published this branch atomically at a
+            # recorded tip, so rollback is a COMPARE-and-delete: the ref
+            # goes only if it still holds exactly that tip. Path locks do
+            # not serialize branch refs, so a concurrent fetch or push can
+            # legitimately move the branch between creation and this
+            # rollback — a moved tip holds commits this run did not create,
+            # and deleting it would discard them (challenge round 1). And
+            # it is gated on the tree actually being DEREGISTERED:
+            # update-ref is plumbing that bypasses git's checked-out guard,
+            # so deleting the branch under a tree the removal failed to
+            # clear would leave a live registered worktree on an unborn
+            # HEAD (challenge round 3).
+            if [ "$rollback_tree_gone" -eq 0 ]; then
+                echo "worktree:new: leaving branch '$branch' alone — its worktree could not be removed and still has it checked out" >&2
+            elif git worktree list --porcelain | grep -qxF "branch refs/heads/$branch"; then
+                # A non-cooperating client — a raw `git worktree add`,
+                # outside the branch lock — can attach the just-published
+                # branch before this run's own attach fails on it, and
+                # update-ref bypasses git's checked-out guard (challenge
+                # round 5). No commit can be orphaned here — any commit
+                # moves the tip and the compare-and-delete below refuses —
+                # but the attach is not ours to break. The moments between
+                # this scan and the delete are the documented residual.
+                echo "worktree:new: leaving branch '$branch' alone — another worktree has it checked out" >&2
+            elif LEFTHOOK=0 git update-ref -d "refs/heads/$branch" "$branch_owned_tip" 2>/dev/null; then
+                # This run's writes are the only possible values here — a
+                # pre-existing remote/merge key refuses creation up front —
+                # so rollback removes exactly the two keys it wrote and
+                # nothing else (pushRemote, rebase, a description are never
+                # touched; challenge round 3). Guarded, because this runs
+                # inside the EXIT trap under set -e and a config-lock
+                # failure must never abort the trap before release_locks
+                # (challenge round 4).
+                # A failed unset (a concurrent process holding the config
+                # lock) leaves debris the stale-config guard will refuse at
+                # the next use of this branch name, so name the remedy NOW
+                # rather than then. Unsetting before the ref delete instead
+                # would be worse: a compare-and-delete refusal after the
+                # unsets leaves a SURVIVING branch silently untracked
+                # (PR #932 cloud review).
+                git config --unset "branch.$branch.remote" 2>/dev/null ||
+                    echo "worktree:new: could not remove branch.$branch.remote — clear it with: git config --unset $(shell_quote "branch.$branch.remote")" >&2 || true
+                git config --unset "branch.$branch.merge" 2>/dev/null ||
+                    echo "worktree:new: could not remove branch.$branch.merge — clear it with: git config --unset $(shell_quote "branch.$branch.merge")" >&2 || true
+            else
+                echo "worktree:new: leaving branch '$branch' alone — its tip moved since this run created it" >&2
+            fi
+        elif [ "$branch_is_ours" -eq 1 ]; then
+            LEFTHOOK=0 git branch -D "$branch" >/dev/null 2>&1 || true
         elif [ "$branch_created" -eq 1 ]; then
             echo "worktree:new: leaving branch '$branch' alone — this run did not create it" >&2
         fi
@@ -497,7 +657,11 @@ EOF
         # that a custom refspec maps a different branch into. The commit to
         # attach is the one the probe saw ($remote_probe_sha), verified
         # present after the fetch rather than read from any ref of ours.
-        git_net fetch --quiet "$remote_match_remote" "refs/heads/$branch" ||
+        # LEFTHOOK=0: this fetch deliberately updates whatever tracking ref
+        # the remote's own refspec maps, and a lefthook-shimmed
+        # reference-transaction hook must not fire on a ref write of this
+        # operation before the new tree exists (PR #932 cloud review).
+        LEFTHOOK=0 git_net fetch --quiet "$remote_match_remote" "refs/heads/$branch" ||
             die "found branch '$branch' on remote '$remote_match_remote' but could not fetch it — retry, or pass --base <ref>"
         # One UNCONDITIONAL post-fetch probe. The remote can advance between
         # the first probe and the fetch, and the first probe's tip resolving
@@ -525,7 +689,6 @@ if git show-ref --verify --quiet "refs/heads/$branch"; then
     LEFTHOOK=0 git worktree add "$tree" "$branch"
 elif [ -n "$remote_ref" ]; then
     echo "==> Creating branch '$branch' tracking $remote_match_remote/$branch"
-    branch_created=1
     # Created from the PROBED commit with tracking written as plain branch
     # config, never via `--track` DWIM and never via a ref this script
     # wrote: --track derives the upstream by reverse-mapping the start point
@@ -534,9 +697,71 @@ elif [ -n "$remote_ref" ]; then
     # custom refspec maps there. branch.<name>.remote + branch.<name>.merge
     # are correct under EVERY refspec, and @{u} then resolves through
     # whatever mapping the repo actually configures.
-    LEFTHOOK=0 git worktree add "$tree" -b "$branch" "$remote_probe_sha"
+    #
+    # Branch and tracking config land BEFORE the worktree attach
+    # (harmon-init#916): `git worktree add` fires any hand-written
+    # post-checkout hook itself — LEFTHOOK=0 suppresses only lefthook-shaped
+    # shims — and a hook that resolves @{upstream} must never observe the
+    # branch untracked.
+    #
+    # Pre-existing branch.<name>.remote/.merge config for a branch that
+    # does not exist locally is refused up front — stale debris from a
+    # deleted branch. Refusing is what keeps the rollback below trivial
+    # and lossless (challenge round 4): this run's writes become the ONLY
+    # possible values for those two keys, so there are no prior values to
+    # capture, no multi-valued snapshots to restore faithfully, and no
+    # signal window in which a capture could be missed. Everything else
+    # in the section (pushRemote, rebase, a description) is never touched
+    # in either direction.
+    # Scoped to --local deliberately: the repository config is the only
+    # scope this script writes and the only one its rollback and the
+    # remedy below can clear — an unscoped lookup would also match a
+    # global/system/include-provided value, which is user configuration
+    # rather than debris, and refuse forever with a remedy git answers
+    # with exit 5 (PR #932 cloud review).
+    for _bk in remote merge; do
+        if git config --local --get-all "branch.$branch.$_bk" >/dev/null 2>&1; then
+            die "branch '$branch' does not exist locally but branch.$branch.$_bk is configured — stale config from a deleted branch; review it, clear it with: git config --unset-all $(shell_quote "branch.$branch.$_bk") — and re-run"
+        fi
+    done
+    # Ownership bookkeeping is armed BEFORE the ref exists and the ref is
+    # created atomically create-only (old value "" = must not exist), so a
+    # signal landing between the ref transaction committing and the next
+    # shell statement already finds the flags set — cleanup can never be
+    # left unaware of a branch this run published (challenge round 1). A
+    # refused create un-arms before dying; what makes the early arming safe
+    # is cleanup's compare-and-delete, which only ever removes the exact
+    # tip recorded here.
+    #
+    # HUP/INT/TERM are DEFERRED (recorded, re-raised after) across the
+    # create -> flag transition: bash runs a pending trap between a FAILED
+    # create-only update-ref and the un-arm below, so the 'exit 129' trap
+    # could reach cleanup still armed — and the compare-and-delete would
+    # match a COMPETING client's branch at the same probed tip, deleting a
+    # branch this run never created (PR #932 cloud review). LEFTHOOK=0 for
+    # the same reason the worktree-add calls carry it: a lefthook-shimmed
+    # reference-transaction hook must not fire mid-publication, before the
+    # tree its project tooling expects exists.
+    publish_sig=""
+    trap 'publish_sig=HUP' HUP
+    trap 'publish_sig=INT' INT
+    trap 'publish_sig=TERM' TERM
+    branch_created=1
+    branch_owned=1
+    branch_owned_tip="$remote_probe_sha"
+    publish_rc=0
+    LEFTHOOK=0 git update-ref "refs/heads/$branch" "$remote_probe_sha" "" 2>/dev/null || publish_rc=$?
+    if [ "$publish_rc" -ne 0 ]; then
+        branch_created=0
+        branch_owned=0
+    fi
+    trap 'exit 129' HUP INT TERM
+    [ -z "$publish_sig" ] || kill -s "$publish_sig" $$
+    [ "$publish_rc" -eq 0 ] ||
+        die "branch '$branch' appeared while this run was creating it (or a reference-transaction hook refused the update) — re-run to attach it"
     git config "branch.$branch.remote" "$remote_match_remote"
     git config "branch.$branch.merge" "refs/heads/$branch"
+    LEFTHOOK=0 git worktree add "$tree" "$branch"
     # Honesty check on the tracking claim: pull and push work off the branch
     # config just written, but @{upstream}-based tooling (status ahead/behind,
     # verify_default_base if this branch ever becomes the main HEAD) resolves
@@ -569,9 +794,156 @@ if [ "$do_install" -eq 1 ]; then
     # keying solely on a root package.json would report such a tree ready with
     # none of its dependencies installed.
     if [ -f "$tree/package.json" ] || [ -f "$tree/pnpm-workspace.yaml" ]; then
-        have pnpm || die "a Node manifest is present but pnpm is not installed — run 'task bootstrap' (or install pnpm) and re-run"
-        echo "==> Installing Node dependencies (pnpm) in the new tree"
-        (cd "$tree" && pnpm install)
+        # package.json is shared by npm, Yarn, Bun, and pnpm alike, so it
+        # proves "this is a Node repo", never "this repo uses pnpm"
+        # (harmon-init#841) — running the wrong installer resolves a different
+        # dependency graph and writes a foreign lockfile into the new tree.
+        # Select the manager deterministically, in this precedence
+        # (documented in docs/conventions.md § Worktrees):
+        #   1. The `packageManager` field in package.json — the repo's own
+        #      declaration (the Corepack convention). It wins over a stale
+        #      foreign lockfile when the declared manager's own
+        #      infrastructure is present — but a declaration whose manager
+        #      has NO files here while other managers' files exist is a
+        #      contradiction, refused before any install: the declared
+        #      manager would succeed by writing a second lockfile into the
+        #      fresh tree, reporting ready with a dirty worktree
+        #      (challenge round 2). Parsed best-effort because jq is not
+        #      one of this script's dependencies: the file is flattened
+        #      first (the field's name, colon, and value legally sit on
+        #      separate lines, and values never contain whitespace), then
+        #      matched as a string-valued key. The spec puts the field at
+        #      top level with a string value; nested objects like
+        #      devEngines.packageManager carry an object value, which this
+        #      pattern does not match.
+        #   2. Exactly one manager's own files at the tree root:
+        #      pnpm-lock.yaml or pnpm-workspace.yaml → pnpm;
+        #      package-lock.json or npm-shrinkwrap.json → npm;
+        #      yarn.lock → yarn; bun.lock or bun.lockb → bun.
+        #      Files from two managers at once is a contradiction only the
+        #      repo can resolve — fail loudly rather than guess, because the
+        #      guess that loses writes the wrong lockfile.
+        #   3. No signal at all (a bare package.json): skip the install with
+        #      a note naming the fix. Installing on a guess here is the exact
+        #      defect this block replaces, and a skipped install is visible
+        #      while a wrong lockfile is not.
+        node_pm=""
+        pm_decl=""
+        if [ -f "$tree/package.json" ]; then
+            # tr collapses the whole file to one line, so sed emits at most
+            # one match and needs no `head` (whose early exit would race a
+            # SIGPIPE under pipefail).
+            pm_decl="$(tr -d '\n\r\t ' <"$tree/package.json" | sed -n 's/.*"packageManager":"\([^"]*\)".*/\1/p')"
+        fi
+        node_signals=""
+        if [ -f "$tree/pnpm-lock.yaml" ] || [ -f "$tree/pnpm-workspace.yaml" ]; then
+            node_signals="$node_signals pnpm"
+        fi
+        if [ -f "$tree/package-lock.json" ] || [ -f "$tree/npm-shrinkwrap.json" ]; then
+            node_signals="$node_signals npm"
+        fi
+        if [ -f "$tree/yarn.lock" ]; then
+            node_signals="$node_signals yarn"
+        fi
+        if [ -f "$tree/bun.lock" ] || [ -f "$tree/bun.lockb" ]; then
+            node_signals="$node_signals bun"
+        fi
+        if [ -n "$pm_decl" ]; then
+            node_pm=${pm_decl%%@*}
+            case "$node_pm" in
+            pnpm | npm | yarn | bun) ;;
+            *) die "package.json declares packageManager '$pm_decl', which this script does not support (pnpm, npm, yarn, bun) — install dependencies with it yourself, or re-run with --no-install" ;;
+            esac
+            if [ -n "$node_signals" ]; then
+                case " $node_signals " in
+                *" $node_pm "*) : ;;
+                *) die "package.json declares packageManager '$pm_decl' but the tree carries other managers' files (${node_signals# }) and none of $node_pm's — remove the stale file(s), or install and commit $node_pm's lockfile in the main checkout, then re-run (or use --no-install)" ;;
+                esac
+            fi
+        else
+            node_pm_count=0
+            for node_pm_candidate in $node_signals; do
+                node_pm_count=$((node_pm_count + 1))
+                node_pm=$node_pm_candidate
+            done
+            if [ "$node_pm_count" -gt 1 ]; then
+                die "conflicting Node package-manager signals in this tree:$node_signals — remove the stale manager's file(s) or declare \"packageManager\" in package.json, then re-run"
+            fi
+        fi
+        if [ -n "$node_pm" ]; then
+            have "$node_pm" || die "this repo's Node package manager is $node_pm but it is not installed — install $node_pm (for pnpm, 'task bootstrap' does) and re-run"
+            # Honor a numeric major in the declaration's version pin
+            # (challenge round 2): a drifted major can rewrite the committed
+            # lockfile in a fresh tree. A corepack-shimmed binary reports the
+            # pinned version itself, so corepack-managed repos pass; a pin
+            # with no numeric major (or none at all) leaves nothing to
+            # verify and skips — signal-selected managers carry no pin.
+            pm_pin=""
+            case "$pm_decl" in
+            *@*)
+                pm_pin=${pm_decl#*@}
+                pm_pin=${pm_pin%%+*}
+                ;;
+            esac
+            pm_pin_major=${pm_pin%%.*}
+            case "$pm_pin_major" in
+            '' | *[!0-9]*) : ;;
+            *)
+                installed_ver="$("$node_pm" --version 2>/dev/null || true)"
+                installed_ver=${installed_ver#v}
+                installed_major=${installed_ver%%.*}
+                case "$installed_major" in
+                '' | *[!0-9]*) die "packageManager pins $node_pm@$pm_pin but the installed $node_pm's version could not be read — reinstall $node_pm and re-run (or use --no-install)" ;;
+                *) [ "$installed_major" = "$pm_pin_major" ] || die "packageManager pins $node_pm@$pm_pin but $node_pm $installed_ver is installed — a different major can rewrite the committed lockfile; install the pinned major (corepack does this) or update the declaration, then re-run (or use --no-install)" ;;
+                esac
+                ;;
+            esac
+            # When the selected manager's own lockfile is present, install in
+            # its immutable mode (challenge round 3): a plain install can
+            # legally REWRITE a committed lockfile — npm 11 upgrades a
+            # lockfileVersion-1 file in place — and a provisioning step must
+            # fail and roll back on drift, not report a dirty tree as ready.
+            # The devcontainer post-checkout hook set this precedent (npm ci,
+            # --frozen-lockfile). With no lockfile — a workspace-file-only
+            # root, or a declaration with no manager files yet — plain
+            # install remains: there is nothing to preserve, and the first
+            # install legitimately creates the lockfile.
+            node_pm_args=("install")
+            case "$node_pm" in
+            pnpm)
+                if [ -f "$tree/pnpm-lock.yaml" ]; then
+                    node_pm_args=("install" "--frozen-lockfile")
+                fi
+                ;;
+            npm)
+                if [ -f "$tree/package-lock.json" ] || [ -f "$tree/npm-shrinkwrap.json" ]; then
+                    node_pm_args=("ci")
+                fi
+                ;;
+            yarn)
+                # Classic (1.x) spells the immutable mode --frozen-lockfile;
+                # Berry spells it --immutable. Version-split rather than
+                # relying on Berry's deprecated alias.
+                if [ -f "$tree/yarn.lock" ]; then
+                    yarn_ver="$(yarn --version 2>/dev/null || true)"
+                    case "${yarn_ver%%.*}" in
+                    1) node_pm_args=("install" "--frozen-lockfile") ;;
+                    '' | *[!0-9]*) die "yarn.lock is present but yarn's version could not be read — reinstall yarn and re-run (or use --no-install)" ;;
+                    *) node_pm_args=("install" "--immutable") ;;
+                    esac
+                fi
+                ;;
+            bun)
+                if [ -f "$tree/bun.lock" ] || [ -f "$tree/bun.lockb" ]; then
+                    node_pm_args=("install" "--frozen-lockfile")
+                fi
+                ;;
+            esac
+            echo "==> Installing Node dependencies ($node_pm ${node_pm_args[*]}) in the new tree"
+            (cd "$tree" && "$node_pm" "${node_pm_args[@]}")
+        else
+            echo "==> Note: package.json carries no package-manager signal (no packageManager field, no lockfile) — skipping the Node install; declare \"packageManager\" in package.json, or install dependencies in the tree yourself"
+        fi
     fi
     if [ -f "$tree/pyproject.toml" ]; then
         have uv || die "pyproject.toml is present but uv is not installed — run 'task bootstrap' (or install uv) and re-run"

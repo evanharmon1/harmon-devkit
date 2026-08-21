@@ -16,7 +16,6 @@ bash .devcontainer/scripts/post-create-common.sh
 # this so a human gets the normal prompt-on-action default.
 bash .devcontainer/scripts/enable-claude-bypass.sh
 bash .devcontainer/scripts/enable-codex-bypass.sh
-bash .devcontainer/scripts/enable-codex-bypass.sh
 
 # Opted-in bot profile: run Antigravity without permission prompts too. The
 # helper preserves unrelated settings and records prior policy for rollback.

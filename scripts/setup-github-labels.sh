@@ -71,6 +71,12 @@ done
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 renderer="$script_dir/label-registry-render.mjs"
+OUTPUT_FD=2
+# shellcheck source=scripts/lib/output.sh
+. "$script_dir/lib/output.sh"
+
+action_banner setup "GitHub labels" "Registry-driven taxonomy with non-destructive updates"
+kv "Repository" "$repo"
 
 render_args=(labels)
 if [ "$foreman" = 1 ]; then
@@ -85,10 +91,16 @@ fi
 # reaches GitHub, so a bad vocabulary never half-provisions.
 labels="$(node "$renderer" "${render_args[@]}")"
 
-printf '%s\n' "$labels" | while IFS='|' read -r name color desc; do
+while IFS='|' read -r name color desc; do
     [ -z "$name" ] && continue
-    echo "==> label: $name"
-    gh label create "$name" --repo "$repo" --color "$color" --description "$desc" --force
-done
+    if gh label create "$name" --repo "$repo" --color "$color" --description "$desc" --force >/dev/null; then
+        checkline ok "Label" "$name"
+    else
+        rc=$?
+        checkline no "Label" "$name (exit $rc)"
+        exit "$rc"
+    fi
+done < <(printf '%s\n' "$labels")
 
-echo "==> Done — starter labels on $repo (existing labels left as-is)"
+output_summary "Label provisioning"
+output_done "Starter labels are ready on $repo (existing labels left as-is)"

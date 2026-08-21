@@ -296,7 +296,7 @@
       "values": [
         {
           "value": "ci",
-          "description": "GitHub Actions workflows and CI plumbing"
+          "description": "Repository-wide CI workflows and plumbing; subsystem workflows belong to that subsystem's area"
         },
         {
           "value": "docs",
@@ -304,19 +304,19 @@
         },
         {
           "value": "deps",
-          "description": "Renovate, version pins, dependency bumps"
+          "description": "Cross-cutting dependency automation and bumps; subsystem dependencies belong to its area"
         },
         {
           "value": "build",
-          "description": "Build system and artifacts"
+          "description": "Shared build system and artifacts; subsystem builds belong to that subsystem's area"
         },
         {
           "value": "tests",
-          "description": "The shared test suite and gate assertions; a skill's own tests belong to that skill's area"
+          "description": "The shared test suite and gates; a subsystem's own tests belong to its area"
         },
         {
           "value": "tasks",
-          "description": "Taskfile targets and scripts/ glue without a more specific area; security targets are area:security"
+          "description": "Taskfile targets and scripts/ glue without a more specific area"
         },
         {
           "value": "release",
@@ -332,7 +332,7 @@
         },
         {
           "value": "skills",
-          "description": "The skills sync, shared skill conventions, and skills without a dedicated area"
+          "description": "Shared agent skills and skills sync; subsystem workflow skills belong to that subsystem's area"
         },
         {
           "value": "gauntlet",
@@ -422,10 +422,10 @@
       "source": "inline",
       "writers": ["human"],
       "writer_note": "humans, at triage or planning — never an agent on itself",
-      "readers": "humans and agents — informational until the tier resolution config ships",
+      "readers": "humans and agents — resolved to a model via `.devflow.toml` `[tier]` (ADR 0006)",
       "lifecycle": "durable",
-      "lifecycle_note": "set when the default tier would be wrong; strongest-wins resolution once semantics ship",
-      "trust_note": "provisioned; **informational** — classifies only until resolution semantics ship; arms nothing",
+      "lifecycle_note": "set when the default tier would be wrong; strongest-wins resolution per ADR 0006",
+      "trust_note": "provisioned; **advisory** — resolved to a concrete value via `.devflow.toml`; arms nothing",
       "exclusive": false,
       "provision": true,
       "color": "7057FF",
@@ -464,10 +464,10 @@
       "source": "inline",
       "writers": ["human"],
       "writer_note": "humans, at triage or planning — never an agent on itself",
-      "readers": "humans and agents — informational until the method resolution config ships",
+      "readers": "humans and agents — resolved to a topology via `.devflow.toml` `default_method`/`[method]` (ADR 0006)",
       "lifecycle": "durable",
-      "lifecycle_note": "set when the default method would be wrong; config-backed rank resolution once semantics ship",
-      "trust_note": "provisioned; **informational** — classifies only until resolution semantics ship; arms nothing",
+      "lifecycle_note": "set when the default method would be wrong; config-backed rank resolution per ADR 0006",
+      "trust_note": "provisioned; **advisory** — resolved to a concrete value via `.devflow.toml`; arms nothing",
       "exclusive": false,
       "provision": true,
       "color": "BF3989",

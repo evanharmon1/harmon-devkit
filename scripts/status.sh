@@ -21,14 +21,12 @@ NETWORK_TIMEOUT="${NETWORK_TIMEOUT:-5}"
 # shellcheck source=scripts/gh-scopes.sh
 . "${REPO_ROOT}/scripts/gh-scopes.sh"
 
-# ── Tool detection ──────────────────────────────────────────────────────────
+# Shared presentation primitives. NO_COLOR turns off gum and ANSI, making the
+# board plain, stable text for logs and scripts/test-status.sh.
+# shellcheck source=scripts/lib/output.sh
+. "${REPO_ROOT}/scripts/lib/output.sh"
 
-# NO_COLOR (https://no-color.org/) turns off gum styling as well as ANSI, which
-# makes the board's output plain, stable text — greppable, diffable, and
-# assertable by scripts/test-status.sh without matching around escape sequences
-# or box drawing.
-HAS_GUM=false
-[[ -z "${NO_COLOR:-}" ]] && command -v gum &>/dev/null && HAS_GUM=true
+# ── Tool detection ──────────────────────────────────────────────────────────
 
 # Network probes below are bounded so a hung `gh` call cannot wedge the board.
 # Stock macOS ships no `timeout` — it comes from coreutils, which also provides
@@ -79,133 +77,8 @@ run_timeout() {
     fi
 }
 
-# ── Formatting helpers ──────────────────────────────────────────────────────
-
-# Every `gum` call goes through here, because gum asks the TERMINAL for its
-# background colour (OSC 11) whenever its own stdout is one — and waits 5s for
-# an answer. A terminal that replies to neither that nor the cursor-position
-# probe gum falls back on pays the full 5s, EVERY invocation; a board renders
-# a dozen of them, which is the minutes-long hang of harmon-init#865 on a
-# devcontainer terminal. (Terminals that answer either probe were always fast,
-# which is why this never reproduced on a Mac.)
-#
-# Piping stdout removes the terminal from gum's view, so it does not ask.
-# `CLICOLOR_FORCE` then restores the colour gum drops for a non-terminal
-# stdout: with stderr still on the terminal the output is BYTE-IDENTICAL to
-# what an answering terminal produced before this change, 256-colour included.
-# Where stderr is redirected too, gum cannot read the depth and falls back to
-# 16 colours — not a regression, since gum emitted no colour at all into that
-# case before.
-gum_style() {
-    CLICOLOR_FORCE=1 gum style "$@" | cat
-}
-
-section_header() {
-    local title="$1"
-    if $HAS_GUM; then
-        gum_style --bold --foreground 212 --border-foreground 240 \
-            --border rounded --padding "0 1" -- "$title"
-    else
-        echo ""
-        echo "==> ${title}"
-        echo "────────────────────────────────────────"
-    fi
-}
-
-section_box() {
-    local content
-    content="$(cat)"
-    if $HAS_GUM; then
-        echo "$content" | gum_style --border rounded \
-            --border-foreground 240 --padding "0 1" --margin "0 0"
-    else
-        echo "$content"
-        echo ""
-    fi
-}
-
-kv() {
-    local key="$1" val="$2"
-    if $HAS_GUM; then
-        printf "  %s  %s\n" "$(gum_style --bold --foreground 39 "$key:")" "$val"
-    else
-        printf "  %-20s %s\n" "$key:" "$val"
-    fi
-}
-
 should_show() {
     [[ -z "${SECTION}" || "${SECTION}" == "$1" ]]
-}
-
-# ── Setup-check helpers ─────────────────────────────────────────────────────
-
-# Color is on when stdout is a TTY or gum is present (gum forces color anyway).
-# ANSI only — no extra dependency. Detected here at top level because inside the
-# section's `| section_box` pipe, stdout reads as a non-TTY.
-USE_COLOR=false
-[[ -z "${NO_COLOR:-}" ]] && { [ -t 1 ] || $HAS_GUM; } && USE_COLOR=true
-
-# c SGR TEXT — wrap TEXT in an ANSI SGR sequence when color is enabled.
-c() {
-    if $USE_COLOR; then printf '\033[%sm%s\033[0m' "$1" "$2"; else printf '%s' "$2"; fi
-}
-
-# Status glyphs: colored Unicode when color is on, plain ASCII otherwise.
-if $USE_COLOR; then
-    I_OK="$(c '1;32' '✓')"
-    I_NO="$(c '1;31' '✗')"
-    I_UNKNOWN="$(c '1;33' '?')"
-    I_NA="$(c '2' '–')"
-    I_INFO="$(c '1;36' '•')"
-else
-    I_OK='[x]'
-    I_NO='[ ]'
-    I_UNKNOWN='[?]'
-    I_NA='[-]'
-    I_INFO=' * '
-fi
-
-# subhead TEXT — a colored group header inside a section.
-subhead() {
-    printf '\n  %s\n' "$(c '1;36' "▸ $1")"
-}
-
-# bar PERCENT — a 20-cell Unicode progress bar (green fill on a dim track).
-bar() {
-    local pct="$1" width=20 i=0 fill="" track=""
-    local filled=$((pct * width / 100))
-    [ "${filled}" -gt "${width}" ] && filled="${width}"
-    [ "${filled}" -lt 0 ] && filled=0
-    while [ "${i}" -lt "${width}" ]; do
-        if [ "${i}" -lt "${filled}" ]; then fill="${fill}█"; else track="${track}░"; fi
-        i=$((i + 1))
-    done
-    printf '%s%s' "$(c '32' "${fill}")" "$(c '2' "${track}")"
-}
-
-SETUP_OK=0
-SETUP_NO=0
-SETUP_UNKNOWN=0
-SETUP_NA=0
-
-# checkline STATUS LABEL [DETAIL]
-#   STATUS in: ok | no | unknown | na | info
-# Counters mutate in the caller's subshell, so the summary line MUST be emitted
-# from the same { ... } group as the checks (see the Setup section).
-checkline() {
-    local status="$1" label="$2" detail="${3:-}" icon=""
-    case "$status" in
-    ok) icon="$I_OK" && SETUP_OK=$((SETUP_OK + 1)) ;;
-    no) icon="$I_NO" && SETUP_NO=$((SETUP_NO + 1)) ;;
-    unknown) icon="$I_UNKNOWN" && SETUP_UNKNOWN=$((SETUP_UNKNOWN + 1)) ;;
-    na) icon="$I_NA" && SETUP_NA=$((SETUP_NA + 1)) ;;
-    info) icon="$I_INFO" ;;
-    esac
-    if [ -n "$detail" ]; then
-        printf '  %s %s — %s\n' "$icon" "$label" "$detail"
-    else
-        printf '  %s %s\n' "$icon" "$label"
-    fi
 }
 
 # has_cred FILE NAME — true if NAME appears in FILE, where FILE is the output of
@@ -404,10 +277,12 @@ done
 # ── Header ──────────────────────────────────────────────────────────────────
 
 if [[ -z "${SECTION}" ]]; then
-    if $HAS_GUM; then
-        gum_style --bold --foreground 212 --border double \
+    styled_header=""
+    if $HAS_GUM && output_is_tty &&
+        styled_header="$(gum_style --bold --foreground 212 --border double \
             --border-foreground 99 --padding "0 2" --margin "1 0" \
-            -- "${PROJECT_NAME}"
+            -- "${PROJECT_NAME}")"; then
+        printf '%s\n' "${styled_header}"
     else
         echo ""
         echo "=== ${PROJECT_NAME} ==="

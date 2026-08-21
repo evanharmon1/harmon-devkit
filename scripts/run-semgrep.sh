@@ -5,7 +5,7 @@ set -euo pipefail
 # failed during TLS-store initialization on macOS, and uv gives local + CI the
 # same explicitly pinned build.
 # renovate: datasource=pypi depName=semgrep
-SEMGREP_VERSION=1.172.0
+SEMGREP_VERSION=1.173.0
 
 # Semgrep defaults to the current directory when no target is provided. Do not
 # append one here: callers can scope local scans with `task security:sast -- <path>`.

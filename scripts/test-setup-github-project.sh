@@ -37,6 +37,9 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
     [ -n "${STUB_SCOPES:-}" ] && echo "  - Token scopes: ${STUB_SCOPES}"
     exit 0
 fi
+if [ "$1" = "variable" ] && [ "$2" = "set" ]; then
+    exit "${STUB_VARIABLE_RC:-0}"
+fi
 q=""
 for a in "$@"; do case "$a" in query=*) q="${a#query=}" ;; esac; done
 case "$q" in
@@ -48,7 +51,7 @@ case "$q" in
         cat "$STUB_FIELDS_FILE"
     fi
     ;;
-*repositoryOwner*__typename*) echo '{"data":{"repositoryOwner":{"__typename":"User","id":"U_1"}}}' ;;
+*repositoryOwner*__typename*) printf '{"data":{"repositoryOwner":{"__typename":"%s","id":"U_1"}}}\n' "${STUB_OWNER_TYPE:-User}" ;;
 *projectsV2*) echo '{"data":{"repositoryOwner":{"projectsV2":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"P_1","number":7,"title":"Test Project"}]}}}}' ;;
 *ProjectV2Field*) printf '%s\n' "$q" >>"$MUTATIONS"; echo '{"data":{}}' ;;
 *) echo "fake gh: unexpected query: $q" >&2; exit 1 ;;
@@ -64,6 +67,7 @@ MUTATIONS="$tmp/mutations"
 STUB_FIELDS_FILE="$tmp/fields.json"
 STUB_FIELDS_FILE2="$tmp/fields2.json"
 export MUTATIONS STUB_FIELDS_FILE STUB_FIELDS_FILE2
+export STUB_OWNER_TYPE STUB_VARIABLE_RC
 
 # run_with FIELDS_JSON — run the script against that project snapshot.
 run_with() {
@@ -107,6 +111,35 @@ echo "==> a re-run against an already-synced project writes nothing"
 run_with "$complete"
 [ "$(updates)" = 0 ] || fail "expected no mutations on an unchanged project, got $(updates)"
 grep -q "leaving it as-is" "$tmp/out" || fail "expected 'leaving it as-is' output"
+grep -q "DONE: GitHub Project is ready" "$tmp/out" || fail "expected an explicit ready outcome"
+
+echo "==> visual progress stays on one ordered stream under Task grouping"
+printf '%s' "$complete" >"$STUB_FIELDS_FILE"
+rm -f "$tmp_seen"
+: >"$MUTATIONS"
+NO_COLOR=1 "$script" --owner someuser --title "Test Project" \
+    >"$tmp/stdout" 2>"$tmp/stderr" || fail "ordered-stream run exited non-zero"
+[ ! -s "$tmp/stdout" ] || fail "action progress leaked onto Task's buffered stdout"
+banner_line="$(grep -n '== SETUP :: GitHub Project ==' "$tmp/stderr" | cut -d: -f1 || true)"
+progress_line="$(grep -n "Resolving owner 'someuser'" "$tmp/stderr" | cut -d: -f1 || true)"
+done_line="$(grep -n 'DONE: GitHub Project is ready' "$tmp/stderr" | cut -d: -f1 || true)"
+[ -n "$banner_line" ] && [ -n "$progress_line" ] && [ -n "$done_line" ] ||
+    fail "ordered stream is missing its banner, progress, or final outcome"
+[ "$banner_line" -lt "$progress_line" ] && [ "$progress_line" -lt "$done_line" ] ||
+    fail "action stream did not preserve banner -> progress -> outcome chronology"
+
+echo "==> a failed ORG_PROJECT_ID write degrades the final outcome"
+STUB_OWNER_TYPE=Organization
+STUB_VARIABLE_RC=19
+run_with "$complete"
+grep -q "ORG_PROJECT_ID was not written" "$tmp/out" ||
+    fail "expected the failed org-variable write in the outcome rows"
+grep -q "WARN: GitHub Project needs attention" "$tmp/out" ||
+    fail "expected a warning final outcome after the org-variable write failed"
+! grep -q "DONE: GitHub Project is ready" "$tmp/out" ||
+    fail "failed org-variable write claimed the project was ready"
+STUB_OWNER_TYPE=User
+STUB_VARIABLE_RC=0
 
 echo "==> the retired Agent field is never created"
 # The fixture above deliberately has no Agent field, so any mutation naming one
@@ -171,6 +204,10 @@ grep -q "field 'Status' already exists as TEXT" "$tmp/out" ||
     fail "expected a data-type warning naming Status and its actual type"
 grep -q "Status (is TEXT, wanted SINGLE_SELECT)" "$tmp/out" ||
     fail "expected Status in the end-of-run incompatible summary"
+grep -q "WARN: GitHub Project needs attention" "$tmp/out" ||
+    fail "expected a warning final outcome for incomplete reconciliation"
+! grep -q "DONE: GitHub Project is ready" "$tmp/out" ||
+    fail "incomplete reconciliation claimed the project was ready"
 
 echo "==> a field at the option cap warns instead of attempting an oversized write"
 capped=$(printf '%s' "$complete" | jq -c '
@@ -182,6 +219,18 @@ capped=$(printf '%s' "$complete" | jq -c '
 run_with "$capped"
 [ "$(updates)" = 0 ] || fail "an over-capacity append must be skipped, not attempted"
 grep -q "cannot fit Low" "$tmp/out" || fail "expected a capacity warning naming the missing option"
+grep -q "WARN: GitHub Project needs attention" "$tmp/out" ||
+    fail "expected a warning final outcome at the option cap"
+
+echo "==> a field deleted during reconciliation cannot produce a ready outcome"
+without_status=$(printf '%s' "$complete" | jq -c '
+    .data.node.fields.nodes |= map(select(.name != "Status"))')
+run_with "$complete" "$without_status"
+grep -q "field 'Status' disappeared" "$tmp/out" || fail "expected a concurrent-disappearance warning"
+grep -q "WARN: GitHub Project needs attention" "$tmp/out" ||
+    fail "expected a warning final outcome after a field disappeared"
+! grep -q "DONE: GitHub Project is ready" "$tmp/out" ||
+    fail "a skipped field reconciliation claimed the project was ready"
 
 echo "==> an option added after the startup snapshot survives the append"
 # The re-read immediately before the write is what saves it: the replacement is
