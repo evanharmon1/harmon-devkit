@@ -31,6 +31,7 @@ status="./scripts/status.sh"
 # status.sh sources the required-scope list from its sibling; every fixture root
 # below therefore needs both files, not just the script under test.
 scopes_lib="./scripts/gh-scopes.sh"
+output_lib="./scripts/lib/output.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
@@ -50,9 +51,10 @@ trap 'rm -rf "${TMP}"' EXIT
 #   org-repo    — an ORG repo (github_org != the author's account), which
 #                 renders the issue-types setup and therefore needs admin:org.
 for fixture in with-board no-board skills-only with-codex creds-board org-repo; do
-    mkdir -p "${TMP}/${fixture}/scripts"
+    mkdir -p "${TMP}/${fixture}/scripts/lib"
     cp "${status}" "${TMP}/${fixture}/scripts/status.sh"
     cp "${scopes_lib}" "${TMP}/${fixture}/scripts/gh-scopes.sh"
+    cp "${output_lib}" "${TMP}/${fixture}/scripts/lib/output.sh"
 done
 # The markers status.sh feature-detects on. Contents are never read.
 : >"${TMP}/with-board/scripts/setup-github-project.sh"
@@ -66,9 +68,10 @@ mkdir -p "${TMP}/skills-only/.claude/skills/track-work/assets"
 
 # A board repo whose remote is a GitHub Enterprise host, and which exports no
 # GH_HOST — the case where forcing github.com disowns a valid login.
-mkdir -p "${TMP}/enterprise/scripts"
+mkdir -p "${TMP}/enterprise/scripts/lib"
 cp "${status}" "${TMP}/enterprise/scripts/status.sh"
 cp "${scopes_lib}" "${TMP}/enterprise/scripts/gh-scopes.sh"
+cp "${output_lib}" "${TMP}/enterprise/scripts/lib/output.sh"
 : >"${TMP}/enterprise/scripts/setup-github-project.sh"
 git -C "${TMP}/enterprise" init -q
 git -C "${TMP}/enterprise" remote add origin git@ghe.example.com:owner/repo.git
@@ -749,7 +752,7 @@ echo "==> gh's own credential line reports the state the section already probed"
 # From the one bounded probe at the top of the script — no second `gh auth
 # status` call, which is why this line survives a logged-out gh at all.
 case "$out" in
-*"[ ] GitHub CLI (gh) — gh auth login"*) ;;
+*"[ ] GitHub CLI (gh) - gh auth login"*) ;;
 *) fail "expected the gh credential line to name its remedy, got: ${out}" ;;
 esac
 
@@ -766,7 +769,7 @@ make_codex_stub out
 out="$(run_setup_section unauthenticated)"
 case "$out" in
 *"[x] Codex CLI"*) fail "a logged-out codex must not read as ok: ${out}" ;;
-*"[ ] Codex CLI — codex login"*) ;;
+*"[ ] Codex CLI - codex login"*) ;;
 *) fail "expected a logged-out codex to name its remedy, got: ${out}" ;;
 esac
 
@@ -819,8 +822,8 @@ make_stub unauthenticated
 make_codex_stub in
 out="$(run_setup_without gh)"
 case "$out" in
-*"GitHub CLI (gh) — gh auth login"*) fail "an absent gh must not be told to log in: ${out}" ;;
-*"[ ] GitHub CLI (gh) — brew install gh"*) ;;
+*"GitHub CLI (gh) - gh auth login"*) fail "an absent gh must not be told to log in: ${out}" ;;
+*"[ ] GitHub CLI (gh) - brew install gh"*) ;;
 *) fail "expected an install remedy for a missing gh, got: ${out}" ;;
 esac
 # The rest of the run must still behave: an absent gh is not an authenticated
@@ -1066,7 +1069,7 @@ echo "==> status:creds reports a logged-out gh with the login remedy"
 make_codex_stub in
 out="$(run_creds_section unauthenticated)"
 case "$out" in
-*"[ ] GitHub CLI (gh) — gh auth login"*) ;;
+*"[ ] GitHub CLI (gh) - gh auth login"*) ;;
 *) fail "expected a missing-login line from status:creds, got: ${out}" ;;
 esac
 
@@ -1104,7 +1107,7 @@ make_codex_stub out
 out="$(run_creds_section project)"
 case "$out" in
 *"[x] Codex CLI"*) fail "a logged-out codex must not read as ok: ${out}" ;;
-*"[ ] Codex CLI — codex login"*) ;;
+*"[ ] Codex CLI - codex login"*) ;;
 *) fail "expected a logged-out codex line from status:creds, got: ${out}" ;;
 esac
 
@@ -1116,7 +1119,7 @@ make_claude_stub out
 out="$(run_creds_section project)"
 case "$out" in
 *"[x] Claude Code CLI"*) fail "a logged-out claude must not read as ok: ${out}" ;;
-*"[ ] Claude Code CLI — claude auth login"*) ;;
+*"[ ] Claude Code CLI - claude auth login"*) ;;
 *) fail "expected a logged-out claude line, got: ${out}" ;;
 esac
 
@@ -1163,8 +1166,8 @@ make_codex_stub in
 make_isolated_bin gh
 out="$(PATH="${TMP}/bin-iso" NO_COLOR=1 "${WITH_CODEX}" creds 2>&1)"
 case "$out" in
-*"GitHub CLI (gh) — gh auth login"*) fail "an absent gh must not be told to log in: ${out}" ;;
-*"[ ] GitHub CLI (gh) — brew install gh"*) ;;
+*"GitHub CLI (gh) - gh auth login"*) fail "an absent gh must not be told to log in: ${out}" ;;
+*"[ ] GitHub CLI (gh) - brew install gh"*) ;;
 *) fail "expected an install remedy for a missing gh, got: ${out}" ;;
 esac
 
@@ -1271,12 +1274,16 @@ echo "==> every gum call keeps its stdout off the terminal"
 # in every test above because they all run under NO_COLOR with no terminal at
 # all. gum_style is the single place that keeps stdout off the terminal; a call
 # site that bypasses it reintroduces the stall on exactly the terminals that
-# cannot answer, which are the ones nobody develops on.
-grep -qF 'CLICOLOR_FORCE=1 gum style "$@" | cat' "${status}" ||
-    fail "gum_style no longer pipes gum's stdout with CLICOLOR_FORCE — the terminal probe and the colour both depend on it"
+# cannot answer, which are the ones nobody develops on. Command substitution
+# also preserves gum's failure status so this optional renderer can fall back.
+grep -qF 'styled="$(CLICOLOR_FORCE=1 gum style "$@")"' "${output_lib}" ||
+    fail "gum_style no longer captures gum's stdout with CLICOLOR_FORCE — the terminal probe, colour, and fallback depend on it"
 grep -q 'gum_style ' "${status}" ||
     fail "nothing calls gum_style — the check below would pass vacuously"
-stray="$(grep -nE '(^|[^_[:alnum:]])gum[[:space:]]+style' "${status}" |
+stray="$({
+    grep -nE '(^|[^_[:alnum:]])gum[[:space:]]+style' "${status}"
+    grep -nE '(^|[^_[:alnum:]])gum[[:space:]]+style' "${output_lib}"
+} |
     grep -vF 'CLICOLOR_FORCE=1 gum style' |
     grep -vE '^[0-9]+:[[:space:]]*#' || true)"
 [ -z "${stray}" ] ||

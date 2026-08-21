@@ -83,6 +83,9 @@ fi
 # the one the warning was about still under-scoped.
 REQUEST_LIST="$(gh_scopes_request_list)"
 
+# shellcheck source=scripts/lib/output.sh
+. "${REPO_ROOT}/scripts/lib/output.sh"
+
 # gh_auth_status_active — `gh auth status` narrowed to the ONE credential this
 # task refreshes. `gh auth refresh` updates only the ACTIVE account, while a
 # bare `--hostname` read reports every account on that host: concatenating
@@ -188,11 +191,11 @@ github_pat_* | ghs_* | ghu_*)
 esac
 unset active_token
 
-echo "==> Host:            ${HOSTNAME_ARG}"
-echo "==> Current scopes:  ${scopes_before:-<none reported>}"
-echo "==> Required:        $(gh_scopes_human "${GH_REQUIRED_SCOPES}")"
-echo "==> Requesting:      ${REQUEST_LIST}"
-echo ""
+action_banner setup "GitHub CLI scopes" "Interactive credential upgrade with post-refresh verification"
+kv "Host" "${HOSTNAME_ARG}"
+kv "Current scopes" "${scopes_before:-<none reported>}"
+kv "Required" "$(gh_scopes_human "${GH_REQUIRED_SCOPES}")"
+kv "Requesting" "${REQUEST_LIST}"
 
 # Nothing to do? Say so and stop, WITHOUT opening a browser. `gh auth refresh`
 # is an interactive OAuth flow even when it would change nothing, so an
@@ -201,7 +204,9 @@ echo ""
 # re-run repeats it. The docs promise this requests the MISSING scopes; this is
 # that promise kept.
 if [ -z "$(gh_scopes_missing_requested "${scopes_before}")" ]; then
-    echo "Already complete — no refresh needed."
+    checkline na "OAuth refresh" "already complete; no browser flow needed"
+    output_summary "Scope setup"
+    output_done "GitHub CLI scopes are already ready"
     exit 0
 fi
 
@@ -215,8 +220,7 @@ verify_out="$(gh_auth_status_active)" ||
     die "post-refresh 'gh auth status' failed — the credential may be broken."
 scopes_after="$(printf '%s\n' "${verify_out}" | grep -i 'token scopes:' || true)"
 
-echo ""
-echo "==> New scopes:      ${scopes_after:-<none reported>}"
+kv "New scopes" "${scopes_after:-<none reported>}"
 
 case "${scopes_after}" in
 *"'"*) ;;
@@ -237,5 +241,6 @@ if [ -n "${missing}" ]; then
   them (Settings → Third-party access)."
 fi
 
-echo ""
-echo "All requested scopes present: $(gh_scopes_request_list)"
+checkline ok "OAuth scopes" "$(gh_scopes_request_list)"
+output_summary "Scope setup"
+output_done "All requested GitHub CLI scopes are present"

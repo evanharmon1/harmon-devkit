@@ -52,6 +52,25 @@ jobs:
       - run: task test:agent-skill-links
       - run: task validate
       - run: task test:tasks
+      # These run in local `verify` and must run here too, or CI is strictly
+      # weaker than the local gate (harmon-init#962). Each is a unit test
+      # needing no container, network, or credential.
+      #
+      # NOT here, deliberately: `validate` and `test`. Both are in `verify`
+      # unconditionally, but CI only invokes them from the build-test job,
+      # which is gated on use_node. So a repo with
+      # `(include_terraform or include_ansible) and not use_node` runs real
+      # terraform/ansible checks locally and none in CI. Adding them here is
+      # not a one-liner — `terraform validate` needs an init step CI does not
+      # have — so it is tracked as harmon-init#978 rather than fixed in the
+      # same breath as these.
+      - run: task audit:agent-instructions
+      - run: task test:agent-instructions-size
+      - run: task test:agent-skill-links
+      - run: task test:output
+      - run: task test:meta-install
+      - run: task test:session-cleanup
+      - run: task test:setup-github
       - run: task test:agent-registry
       - run: task test:registry-drift
       - run: task test:registry-docs
@@ -79,6 +98,10 @@ jobs:
       - run: task test:independence
       - run: task test:statusline
       - run: task test:devcontainer:permissions
+      # Same devcontainer gate their `verify` entries carry (#962).
+      - run: task test:link-claude-json
+      - run: task test:image-staleness
+      - run: task test:open-devcontainer
 
   security:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered

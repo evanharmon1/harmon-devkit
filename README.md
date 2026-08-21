@@ -6,7 +6,7 @@ Author: Evan Harmon
 
 [![Build & Validate](https://github.com/evanharmon1/harmon-devkit/actions/workflows/build.yml/badge.svg)](https://github.com/evanharmon1/harmon-devkit/actions/workflows/build.yml)
 [![Devcontainer Build](https://github.com/evanharmon1/harmon-devkit/actions/workflows/devcontainer-build.yml/badge.svg)](https://github.com/evanharmon1/harmon-devkit/actions/workflows/devcontainer-build.yml)
-[![Open in Dev Containers](https://img.shields.io/static/v1?label=Dev%20Containers&message=Open&color=blue&logo=visualstudiocode)](https://vscode.dev/redirect?url=vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/evanharmon1/harmon-devkit)
+[![Clone in Local Dev Container](https://img.shields.io/static/v1?label=Local%20Dev%20Container&message=Clone&color=blue&logo=visualstudiocode)](https://vscode.dev/redirect?url=vscode%3A//ms-vscode-remote.remote-containers/cloneInVolume%3Furl%3Dhttps%3A//github.com/evanharmon1/harmon-devkit)
 [![Latest Release](https://img.shields.io/github/v/release/evanharmon1/harmon-devkit?sort=semver)](https://github.com/evanharmon1/harmon-devkit/releases)
 [![Renovate](https://img.shields.io/badge/maintained%20with-renovate-blue?logo=renovatebot)](https://github.com/apps/renovate)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)

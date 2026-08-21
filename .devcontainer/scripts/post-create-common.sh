@@ -141,8 +141,9 @@ gh auth status || true
 echo "==> Fixing ownership of persistent volume dirs..."
 for dir in /home/vscode/.codex /home/vscode/.claude /home/vscode/.gemini \
     /home/vscode/.agent-deck /home/vscode/.shell-history \
-    /home/vscode/.config /home/vscode/.config/herdr \
-    /home/vscode/.local /home/vscode/.local/share /home/vscode/.local/share/zoxide; do
+    /home/vscode/.config /home/vscode/.config/herdr /home/vscode/.config/opencode \
+    /home/vscode/.local /home/vscode/.local/share /home/vscode/.local/share/opencode \
+    /home/vscode/.local/share/zoxide; do
     sudo mkdir -p "$dir"
     sudo chown vscode:vscode "$dir"
     chmod 700 "$dir"
@@ -191,6 +192,7 @@ if [ "${CODER:-}" = "true" ] && [ -d "/home/vscode/.persistent" ]; then
         rm -rf "${HOME:?}/.config/herdr"
     fi
     ln -sfn "/home/vscode/.persistent/herdr" "$HOME/.config/herdr"
+    bash .devcontainer/scripts/persist-opencode.sh /home/vscode/.persistent
 fi
 
 # --- Persist ~/.claude.json into the ~/.claude volume ---
@@ -227,7 +229,7 @@ fi
 # the pinned shared image may predate the herdr binary, and a failed install
 # only degrades resume back to fresh shells — never block the container on it.
 if command -v herdr >/dev/null 2>&1; then
-    for agent in claude codex; do
+    for agent in claude codex opencode; do
         herdr integration install "$agent" ||
             echo "WARN: herdr integration install $agent failed (non-fatal)" >&2
     done

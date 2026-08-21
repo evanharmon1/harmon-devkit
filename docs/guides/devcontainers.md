@@ -6,7 +6,7 @@ which secrets and capabilities they allow.
 
 | Profile | Path | For | GitHub auth | Tailscale |
 |---|---|---|---|---|
-| **Bot** | `.devcontainer/devcontainer.json` | AI agents (Claude Code, Codex, Gemini) | the bot's PAT via `GH_TOKEN` | no |
+| **Bot** | `.devcontainer/devcontainer.json` | AI agents (Claude Code, Codex, Gemini, OpenCode) | the bot's PAT via `GH_TOKEN` | no |
 | **Dev** | `.devcontainer/dev/devcontainer.json` | humans | the operator's own `gh auth login` | yes (`TS_AUTHKEY`, `--device=/dev/net/tun`) |
 
 Each profile authenticates as the identity it commits as, and the omissions are
@@ -40,17 +40,32 @@ there is no nested sandbox or interactive prompt inside Docker. Repository
 instructions, hooks, GitHub token scope, mounted volumes, and Docker itself
 remain the bot's boundaries.
 
-**Antigravity autonomy is enabled for the bot profile.** It applies
-`always-proceed`, always accepts artifact reviews, allows non-workspace access,
-disables Antigravity's inner terminal sandbox, and trusts the current container
-workspace. The human profile keeps Antigravity's normal prompts. Run `agy`
-interactively once to complete Google sign-in; the pinned CLI falls back to
-file-backed credentials when the headless container has no D-Bus keyring, and
-the `~/.gemini` named volume persists that login. A checksum-verified
-compatibility installer covers the interval before the shared-image pin
-advances, then becomes a network-free no-op. The settings helper backs up the
-four policy keys it owns and tracks its workspace-trust entry, so turning the
-Copier option off restores both while preserving unrelated settings.
+**Antigravity autonomy is enabled.** Two profiles, two policies:
+
+- **Bot profile — full autonomy.** It applies `always-proceed`, always accepts
+  artifact reviews, allows non-workspace access, disables Antigravity's inner
+  terminal sandbox, configures the devcontainer status line renderer, and trusts
+  the current container workspace — the container is the isolation boundary.
+  Interactive `agy` honors that policy directly; **headless `agy -p …` ignores
+  settings allow-rules and auto-denies**, so a bot-only shell wrapper
+  (`config/agy-autonomy.sh`, active when `FOREMAN_DEVCONTAINER=bot`) injects
+  `--dangerously-skip-permissions` for agent runs. A programmatic launcher that
+  never sources a login shell must pass that flag itself.
+- **Dev (human) profile — balanced.** It auto-accepts edits/artifacts and an
+  allowlist of common commands (`task`, `git`, `gh`, linters, test runners, …)
+  so routine work is prompt-free, but still asks before anything unlisted and
+  keeps Antigravity's workspace and sandbox boundaries. Tune the allowlist in
+  `.devcontainer/config/antigravity-settings-dev.json`.
+
+Run `agy` interactively once to complete Google sign-in — Antigravity has no
+API-key environment variable, so even a disposable container needs that one
+human login; the pinned CLI falls back to file-backed credentials when the
+headless container has no D-Bus keyring, and the `~/.gemini` named volume
+persists the login across rebuilds. A checksum-verified compatibility installer
+covers the interval before the shared-image pin advances, then becomes a
+network-free no-op. The settings helper backs up the six policy keys it owns and
+tracks its workspace-trust entry, so turning the Copier option off restores them
+while preserving unrelated settings.
 
 ## Run it locally
 
@@ -286,6 +301,20 @@ a `TERM=… docker exec` prefix changes only the client's environment. Ask for t
 terminal you want with `-e`:
 `docker exec -e TERM=xterm-256color -it <container> bash`.
 
+## OpenCode
+
+The shared image installs the stable `opencode` CLI with no repository or user
+configuration layered on top. Start it with `opencode`, then use `/connect` (or
+`opencode auth login`) to choose and authenticate a provider. OpenCode continues
+to read this repository's `AGENTS.md` as its project instructions.
+
+Both its user config (`~/.config/opencode`) and application data
+(`~/.local/share/opencode`, including authentication and conversations) use
+profile-specific named volumes; Coder maps the same paths into
+`~/.persistent`. Rebuilding the container therefore keeps future custom config,
+provider logins, and sessions. The image disables OpenCode's self-updater so the
+pinned, tested version remains stable until the shared image is rebuilt.
+
 ## Persistent agent sessions (Herdr)
 
 **Herdr** is the agent-session runtime in both profiles: it owns the panes your
@@ -327,12 +356,12 @@ state survives a rebuild: snapshot restore brings the workspace shape back —
 tabs, panes, cwds, layout — as fresh shells. Whether an agent *conversation*
 resumes inside its restored pane is a separate mechanism:
 `resume_agents_on_restore` only works for agents whose Herdr integration has
-recorded a native session reference. post-create installs the Claude Code and
-Codex integrations automatically (`herdr integration install`, idempotent) —
-Gemini has no resume integration in v0.8. The
+recorded a native session reference. post-create installs the Claude Code,
+Codex, and OpenCode integrations automatically (`herdr integration install`,
+idempotent) — Gemini has no resume integration in v0.8. The
 conversations themselves persist regardless, in the `~/.claude`, `~/.codex`,
-and `~/.gemini` volumes, so a pane that restores as a plain shell can still
-resume its agent by hand (e.g. `claude --resume`).
+`~/.gemini`, and `~/.local/share/opencode` volumes, so a pane that restores as a
+plain shell can still resume its agent by hand (e.g. `claude --resume`).
 
 The default session's server socket deliberately does **not** live in that
 volume. The image sets `HERDR_SOCKET_PATH=/tmp/herdr.sock` container-wide, so a
@@ -388,6 +417,16 @@ login above asks for exactly what the check demands — including profile-specif
 additions such as `admin:org` in an organization repo. Outside a checkout, use
 the literal `--scopes "workflow,project"` and then run `task setup:gh-scopes`
 once you have cloned, which adds anything missing and verifies it landed.
+
+The human profile sets `GH_BROWSER` to a small host-browser bridge. In a remote
+VS Code session, it uses the server's `bin/helpers/browser.sh` handoff; with a
+desktop CLI, it uses `code --open-url` only when that CLI advertises the option.
+On Coder, the plain CLI, or a disconnected VS Code session where neither handoff
+is available, the bridge prints the exact URL to open manually. It deliberately
+never tries `w3m`, `lynx`, or generic browser discovery, so an installed terminal
+browser cannot capture the flow. Both the initial `gh auth login --web` and the
+browser flow used by `task setup:gh-scopes` inherit this behavior from
+`GH_BROWSER`.
 
 `--scopes` is *additive* to gh's defaults (`repo`, `read:org`, `gist`). `project`
 is what Projects V2 writes need — without it `task status:gh` reports the board
@@ -653,6 +692,28 @@ about which layer makes the *container* hop. The extension path, concretely:
    `alias devbox='~/bin/open-devcontainer <repo-match>'`, a Raycast script
    command, a Shortcuts action — remembering that it can only replay an entry
    that exists, so step 3 is still how a repo gets its first one.
+
+   The README's **Coder Dev Container** badge is the same recommendation in a
+   clickable surface. Its target must be captured from VS Code rather than
+   reconstructed: run `~/bin/open-devcontainer` with no arguments, choose the
+   matching `[token]`, then print the exact launch without opening it:
+
+   ```sh
+   OPEN_DEVCONTAINER_DRY_RUN=1 ~/bin/open-devcontainer <token>
+   ```
+
+   Copy the `vscode-remote://dev-container+…` value after `--folder-uri` into
+   the template's `devcontainer_coder_folder_uri` answer. The README converts
+   that internal folder URI to VS Code's registered
+   `vscode://vscode-remote/…` protocol form before routing it through
+   `vscode.dev/redirect`. Before publishing the README, first round-trip the
+   captured value with `code --folder-uri '<captured-uri>'`, then click the
+   rendered badge from the README; only keep it if both paths open this repo's
+   dev profile through the currently installed Dev Containers extension. The
+   hex payload is an extension implementation detail, so repeat this capture
+   and validation whenever an extension update invalidates the link. Leaving
+   the answer empty omits the personal Coder badge and retains the clearly
+   labeled **Local Dev Container** clone-in-volume fallback.
 5. **Rebuilds** happen from the same window: "Dev Containers: Rebuild
    Container".
 

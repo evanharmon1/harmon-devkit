@@ -79,4 +79,16 @@ echo "==> an empty payload degrades instead of blanking"
 out=$(render '')
 [ -n "$out" ] || fail "an empty payload produced no output at all"
 
+echo "==> Antigravity payload (conversation_id, model, headroom)"
+out=$(render '{"workspace":{"current_dir":"/"},"context_window":{"used_percentage":25,"context_window_size":1000000},"model":{"display_name":"Gemini 3.1 Pro (High)"},"conversation_id":"34ee01b6-2f37-4fe7"}')
+case "$out" in *' 25%'*) ;; *) fail "expected 25%, got: $out" ;; esac
+case "$out" in *'750k left'*) ;; *) fail "expected '750k left', got: $out" ;; esac
+case "$out" in *'Gemini 3.1 Pro (High)'*) ;; *) fail "expected model name, got: $out" ;; esac
+case "$out" in *'34ee01b6'*) ;; *) fail "expected session id, got: $out" ;; esac
+
+echo "==> scalar-shaped fields (model, effort, cost as string/numbers) do not crash jq"
+out=$(render '{"workspace":"/","model":"gemini-pro","effort":"high","cost":0.12,"thinking":true,"conversation_id":"34ee01b6-2f37-4fe7"}')
+case "$out" in *'gemini-pro'*) ;; *) fail "expected scalar model name, got: $out" ;; esac
+case "$out" in *'34ee01b6'*) ;; *) fail "expected session id, got: $out" ;; esac
+
 echo "statusline: all cases passed"

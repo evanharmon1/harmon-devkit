@@ -36,7 +36,19 @@
 #   cannot be told apart from here (default container hostnames differ,
 #   which is the intended guard). An acquirer that crashes inside the
 #   two-statement claim window leaves an ownerless entry needing the
-#   manual remedy its refusal message names.
+#   manual remedy its refusal message names. And an operation spawned into
+#   its wrapper's process group (a non-job-control shell, a CI/task
+#   runner) records that INHERITED pgid: kill the operation alone and the
+#   surviving wrapper keeps the group non-empty, so the lock reads alive
+#   and refuses with the manual remedy instead of self-breaking
+#   (harmon-init#916). Accepted, in the fail-closed direction: a group
+#   survivor cannot be told apart from the operation's own still-running
+#   children post-mortem — children reparent but keep their pgid, and the
+#   dead pid's ancestry is gone — so breaking there is a data-loss path;
+#   and taking a dedicated process group instead would detach the
+#   operation from terminal job control, so a caller's Ctrl-C no longer
+#   reaches it and the "stuck live lock" this would fix is reproduced by
+#   the fix itself.
 # - Lock entries live in the COMMON git dir (shared across linked
 #   worktrees; `--git-path` would resolve per-worktree). `/` in names is
 #   encoded as `%` and entry suffixes use `+`; both characters are outside
@@ -44,16 +56,20 @@
 lock_root="$(git rev-parse --path-format=absolute --git-common-dir)/worktree-locks"
 lock_host="$(hostname)"
 lock_uid="$(id -u)"
-held_excl=""
+# An operation can hold more than one exclusive lock — its worktree-path
+# leaf plus a branch-namespace lock (acquire_branch_lock below) — so the
+# held set is an array; a scalar slot would let the second acquisition
+# orphan the first at release.
+held_excl=()
 # Marker paths are ABSOLUTE and the repository path may contain whitespace,
 # so held markers live in a bash array — a space-joined scalar would split
 # one path into several words at release and remove nothing.
 held_shared=()
 release_locks() {
-    if [ -n "$held_excl" ]; then
-        rm -rf "$lock_root/$held_excl+lock"
-        held_excl=""
-    fi
+    for _held_x in ${held_excl[@]+"${held_excl[@]}"}; do
+        rm -rf "$lock_root/$_held_x+lock"
+    done
+    held_excl=()
     # The holders directory itself is deliberately never removed: an rmdir
     # here races a sibling's marker publication (mkdir -p sees the dir,
     # rmdir empties it away, the marker write then fails spuriously). An
@@ -224,7 +240,7 @@ acquire_excl() {
         die "another worktree operation holds '$2' (${_excl_owner:-owner not yet recorded}; lock $_excl) — if that process is gone, remove the lock directory and re-run"
     done
     lock_stamp >"$_excl/owner"
-    held_excl="$1"
+    held_excl=(${held_excl[@]+"${held_excl[@]}"} "$1")
     # Exclusive also means: no live descendant operation may be holding
     # this path shared. Dead holders are pruned; a live one refuses (the
     # EXIT trap releases the exclusive lock just taken).
@@ -263,6 +279,31 @@ acquire_shared() {
         fi
         lock_try_break "$_shared_excl" "$_shared_owner" || true
     fi
+}
+acquire_branch_lock() {
+    # $1 = branch name. Serializes branch-ref publication and attachment
+    # across operations whose PATH locks never contend — `new x --branch b`
+    # and `new y --branch b` lock the paths x and y, yet both write or
+    # attach the one branch b, and without this lock the loser's rollback
+    # can delete the ref out from under the winner's checked-out worktree
+    # (harmon-init#916, challenge round 2). The key lives in a namespace no
+    # path key can produce: path components cannot contain '=', so
+    # 'branch=<name>' never collides with a worktree-path lock. Lowercased
+    # and length-clamped exactly as path keys are, for the same reasons.
+    _bl_enc="$(printf 'branch=%s' "$1" | tr '/' '%' | tr '[:upper:]' '[:lower:]')"
+    # Measured in BYTES, not characters: branch names are not charset-
+    # restricted the way worktree names are, so a multibyte name can pass a
+    # character count while its flattened basename exceeds NAME_MAX
+    # (review r1). Path keys need no such care — their charset is ASCII.
+    if [ "$(printf '%s' "$_bl_enc" | wc -c | tr -d ' ')" -gt 200 ]; then
+        # The hashed form KEEPS the 'branch=' prefix: a bare 'h<cksum>' key
+        # lands in the path-key namespace, where the creation whitelist
+        # admits a worktree literally named that string — the operation
+        # would then contend with its own path lock and refuse itself
+        # (PR #932 cloud review).
+        _bl_enc="branch=h$(printf '%s' "$_bl_enc" | cksum | tr ' \t' '--')"
+    fi
+    acquire_excl "$_bl_enc" "branch '$1'"
 }
 acquire_path_locks() {
     _lock_rest="$1"

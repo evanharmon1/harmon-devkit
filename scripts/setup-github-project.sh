@@ -57,6 +57,18 @@ for tool in gh jq; do
     fi
 done
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+# Task buffers stdout in grouped mode. Keep legacy progress and the visual
+# outcome on one live stream so their chronology cannot be reversed.
+exec 1>&2
+OUTPUT_FD=2
+# shellcheck source=scripts/lib/output.sh
+. "$script_dir/lib/output.sh"
+
+action_banner setup "GitHub Project" "Board, delivery pipeline, and planning fields"
+kv "Owner" "$owner"
+kv "Project" "$title"
+
 # ── Scope preflight ─────────────────────────────────────────────────────────
 # Every mutation below needs the 'project' scope, which `gh auth login` does not
 # grant by default. Without it the run still fails — `gh api graphql` exits
@@ -244,14 +256,20 @@ fi
 # at all, and the workflows' title-lookup fallback resolves to that same
 # half-reconciled board. Reconciliation is additive and re-runnable, so the
 # remedy for a partial run is to re-run this script either way.
+org_variable_problem=""
 if [ "$owner_type" = "Organization" ]; then
     echo "==> Recording project id in the ORG_PROJECT_ID org variable"
     if ! gh variable set ORG_PROJECT_ID --org "$owner" --visibility all --body "$project_id"; then
+        org_variable_problem="ORG_PROJECT_ID was not written"
         echo "WARNING: could not set the ORG_PROJECT_ID org variable (needs org admin)." >&2
         echo "         Set it by hand: gh variable set ORG_PROJECT_ID --org \"$owner\" --body \"$project_id\"" >&2
+        checkline unknown "Organization variable" "ORG_PROJECT_ID was not written; set it manually"
+    else
+        checkline ok "Organization variable" "ORG_PROJECT_ID points to project #$project_number"
     fi
 else
     echo "==> Owner is a user account — skipping ORG_PROJECT_ID (no user-level variable scope; personal status automation is a separate follow-up)"
+    checkline na "Organization variable" "not available for personal accounts"
 fi
 
 # ── Snapshot current fields (reused for existence checks; re-read immediately
@@ -311,6 +329,9 @@ incompatible=""
 # Fields that are missing a starter option but have no room left for it.
 at_capacity=""
 
+# Fields that vanished between the discovery snapshot and their guarded write.
+disappeared=""
+
 # GitHub's cap on options in one single-select field.
 max_options=50
 
@@ -346,6 +367,19 @@ report_incompatible() {
     fi
 }
 
+finish_project() {
+    if [ -n "$incompatible" ] || [ -n "$at_capacity" ] || [ -n "$disappeared" ] ||
+        [ -n "$org_variable_problem" ]; then
+        checkline unknown "Project" "#$project_number / $title: reconciliation needs attention"
+        output_summary "Project reconciliation"
+        output_warning "GitHub Project needs attention; resolve the warnings above and re-run"
+    else
+        checkline ok "Project" "#$project_number / $title"
+        output_summary "Project reconciliation"
+        output_done "GitHub Project is ready"
+    fi
+}
+
 # append_options NAME STARTERS — reconcile one existing single-select field: add
 # whatever starter option it lacks, keep everything else exactly as it is, and
 # write nothing when there is nothing to add. Used for Status and the custom
@@ -363,6 +397,7 @@ append_options() {
     refresh_fields
     if [ -z "$(field_id "$name")" ]; then
         echo "    WARNING: field '$name' disappeared while this script was running — skipping" >&2
+        disappeared="${disappeared}${disappeared:+, }$name"
         return 0
     fi
     existing=$(existing_options "$name")
@@ -485,7 +520,7 @@ create_number "Size"
 if [ "$owner_type" = "Organization" ]; then
     echo "==> Other metadata are org issue fields (Priority/Effort built-ins, left at their defaults; run setup-github-issue-fields.sh for Product)"
     report_incompatible
-    echo "==> Done — project #$project_number: $title"
+    finish_project
     exit 0
 fi
 
@@ -507,4 +542,4 @@ create_text "Product"
 # are the only surface now. See docs/project-management.md, "Label or field?".
 
 report_incompatible
-echo "==> Done — project #$project_number: $title"
+finish_project

@@ -34,6 +34,17 @@ fi
 command -v gh >/dev/null 2>&1 || fail "gh CLI is required"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+# Task buffers stdout in grouped mode. Keep legacy progress and the visual
+# outcome on one live stream so their chronology cannot be reversed.
+exec 1>&2
+OUTPUT_FD=2
+# shellcheck source=scripts/lib/output.sh
+. "$script_dir/lib/output.sh"
+action_banner secret "GitHub Actions secret" "Encrypted write from stdin; the value is never displayed"
+kv "Repository" "$repo"
+kv "Secret" "$name"
+
 # Read + validate stdin BEFORE gh runs: in a plain pipeline, `gh secret set`
 # starts consuming stdin before the producer's empty-check can fail, so an
 # empty pipe could write an empty secret and only error afterwards. python3 is
@@ -53,5 +64,8 @@ sys.stdout.buffer.write(data)
 ')" || fail "stdin secret is empty"
 
 printf '%s' "$secret" | gh secret set "$name" --repo "$repo" >/dev/null
+unset secret
 
-echo "Updated GitHub secret '$name' in '$repo'."
+checkline ok "Repository secret" "$name updated on $repo"
+output_summary "Secret write"
+output_done "GitHub secret updated"

@@ -455,7 +455,17 @@ the taxonomy table below is generated from) and the starter set is created by
 - **Work type** — what kind of work the issue is, on personal-account repos
   where native issue Type is unavailable; the issue forms apply it, and org
   repos use native Type with no work-type label
-- **Rigor** — which round-cap tier in [`.devflow.toml`](../.devflow.toml) an
+- **Area** — which codebase subsystem the work lives in (the *solution*
+  space). At most one each of `area:`/`domain:`/`layer:` per issue. On these
+  exclusive axes, a generic bucket defers to the most specific matching value;
+  write that single-owner boundary into the value's registry description
+  rather than leaving it implicit
+- **Tier** — which model-routing stratum should work the issue — advisory,
+  human-written, and inert until a consumer resolves it under its own trust
+  model
+- **Method** — the execution topology to work the issue under — advisory,
+  like `tier:`
+- **Rigor** — which round-cap level in [`.devflow.toml`](../.devflow.toml) an
   agent works the issue under (AGENTS.md, "Round caps are resolved, not stated
   here"). An agent reads it and never self-applies one. It is advisory rather
   than an authenticated gate: nothing verifies who applied it, and the
@@ -495,9 +505,12 @@ so provisioning and documentation cannot fork from each other.
 > into new repos; a repo carrying neither family tracks a claim by assignee
 > and claim comment alone.
 
-The `layer:` and `domain:` families are the *only* surface for this
+The `layer:`, `domain:`, and `area:` families are the *only* surface for this
 taxonomy (see Fields) — there is no more paired project/issue field to keep
-in step with, so extend the label lists alone as the product grows.
+in step with, so extend the label lists alone as the product grows. `domain:`
+(problem space) and `area:` (solution space) are both per-repository
+vocabulary whose starter values are a floor; `layer:` is product-independent
+and normally needs no edits.
 
 `suggest:*` and `claim:*` name the model **intelligence**, not the harness that
 runs it — Claude Code vs. the `@claude` Action vs. the codex CLI is operational
@@ -614,8 +627,8 @@ deliberately leaves it alone.
 | `domain:platform` (**retired**) | nobody — retired | humans, `gh issue list --label` | retired — split across this repo's own domains; no longer provisioned | re-label its issues to the repo-specific domains, then delete the live label |
 | `area:{ci,docs,deps,build,tests,tasks,release,devcontainer,pm,skills,gauntlet,templates,agents,security,scripts,shepherd,triage,track-work,standardize-repo,design,session-flow,foreman}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; area = solution space, domain = problem space, layer = stack slice |
 | `rigor:{light,standard,deep}` | humans, at triage — **never an agent on itself** | agents, when entering the Dev Loop | provisioned; **read by agents** — selects a round-cap level, arms nothing | set when the default budget is wrong for the change; survives the work |
-| `tier:{local,economy,standard,frontier,apex,adaptive}` | humans, at triage or planning — never an agent on itself | humans and agents — informational until the tier resolution config ships | provisioned; **informational** — classifies only until resolution semantics ship; arms nothing | set when the default tier would be wrong; strongest-wins resolution once semantics ship |
-| `method:{oneshot,plan,plan-approved,orchestrate,council,human-led}` | humans, at triage or planning — never an agent on itself | humans and agents — informational until the method resolution config ships | provisioned; **informational** — classifies only until resolution semantics ship; arms nothing | set when the default method would be wrong; config-backed rank resolution once semantics ship |
+| `tier:{local,economy,standard,frontier,apex,adaptive}` | humans, at triage or planning — never an agent on itself | humans and agents — resolved to a model via `.devflow.toml` `[tier]` (ADR 0006) | provisioned; **advisory** — resolved to a concrete value via `.devflow.toml`; arms nothing | set when the default tier would be wrong; strongest-wins resolution per ADR 0006 |
+| `method:{oneshot,plan,plan-approved,orchestrate,council,human-led}` | humans, at triage or planning — never an agent on itself | humans and agents — resolved to a topology via `.devflow.toml` `default_method`/`[method]` (ADR 0006) | provisioned; **advisory** — resolved to a concrete value via `.devflow.toml`; arms nothing | set when the default method would be wrong; config-backed rank resolution per ADR 0006 |
 | `suggest:<family>` | humans or agents, at planning | humans, the Agent queue view | provisioned from the registry (family level only); advisory — arms nothing | set at planning; survives the work and is never rewritten by a claim |
 | `suggest:<family>:<model>` | humans or agents, at planning | humans | **tool-owned, created on demand** — seeding every model would be an unbounded roster | refines the family label; apply both |
 | `claim:<family>` | the agent itself — a vendored claim skill, or a Claude Actions run | humans; the Claude Actions claim gate; `claim-release.yml` where the repo ships it | provisioned from the registry; a **gate**, never a trigger | added at claim, removed at release — by the workflow's `always()` step, or by `claim-release.yml` on close where the repo ships it |
@@ -931,7 +944,8 @@ queue up and displace legitimate runs.
 
 ## Milestones
 
-A milestone has **one job — "when it ships"** — and nothing else. Four things
+A milestone has **one job — "which finite, shippable batch is this part of?"** —
+and nothing else. Four things
 could all masquerade as milestones, so keep the lanes clean:
 
 - **Type** — what kind of work (Bug / Feature / Task / Research)
@@ -939,41 +953,37 @@ could all masquerade as milestones, so keep the lanes clean:
 - **Labels** — orthogonal, cross-cutting concerns
 - **Sub-issues** — hierarchy
 
-None of those answers *"which dated, shippable batch does this belong to, and how
-done is that batch?"* — that's the milestone's unique contribution: a
-release/launch container with a **due date** and a **live completion bar**. Labels
-for classification, milestones for goal tracking. The moment you're making a
-milestone that isn't a dated, shippable batch, it's really a label or a saved
-view.
+None of those answers *"which shippable batch does this belong to, and how done
+is that batch?"* — that's the milestone's unique contribution: a finite
+delivery container with a **live completion bar** and, when useful, a due date.
+Labels are for classification; milestones are for goal tracking. An open-ended
+concern with no completion condition is still a label or saved view.
 
-**Name milestones after release versions** — the milestone title *equals* the git
-tag (`v1.0.0`, `v1.1.0`). Then the milestone list doubles as a release-history /
-changelog skeleton, and closing a milestone on publish needs no special plumbing.
-This dovetails with **release-please** because they run at different times and
-never overlap:
+Use one of two explicit milestone naming modes:
 
-- The **milestone** is the *pre-ship planning* artifact — "what must land before
-  we cut `v1.1.0`."
-- **release-please** is the *post-merge machine* that calculates and cuts the
-  actual version from your conventional commits (see
-  [conventions.md](conventions.md)).
+- **Version milestone** — for a product release planned as a version, make the
+  title equal the git tag (`v1.0.0`, `v1.1.0`). The milestone is the pre-ship
+  "what must land before this version" artifact; release-please is the post-merge
+  machine that calculates and cuts the actual version from conventional commits
+  (see [conventions.md](conventions.md)). The shipped
+  `close-milestone-on-release.yml` Action closes the milestone matching a
+  published tag, and the release PR can carry it too.
+- **Scope-batch milestone** — for a rolling-release or tooling repo where
+  versions are outputs rather than planning inputs, name the finite outcome
+  (`Issue strategy overhaul`, `Runner hardening`). It may span several releases;
+  close it when its scoped issues are complete. Release-please continues to
+  version each shipped increment independently, and the tag-matching Action
+  intentionally does not close a non-version milestone.
 
-Naming them identically makes the two legible to each other — the shipped
-`close-milestone-on-release.yml` Action closes the milestone matching a published
-tag (when release-please is on) — without making them one system. Since PRs and
-issues share the milestone namespace, the release PR itself
-can carry the milestone, so the shipped batch is fully self-documenting.
+Do not mix the two modes in one title or invent a version for work whose version
+is not known yet. **Carry one active delivery milestone per stream** — create it
+when it has real scope, close it when that scope ships, and open the next only as
+needed rather than keeping speculative batches in competition.
 
-**One active release milestone at a time (rolling).** Carry one open milestone per
-release line — created when it has real scope and a date, closed when it ships,
-the next opened only as needed. Not five speculative open milestones competing for
-attention.
-
-**Due dates are signals, not gates.** A milestone's due date doesn't block a merge
-or a close and triggers nothing — it's a communication tool; update it honestly
-when the plan slips. That's where milestones earn their keep on a team: the dated
-milestone is the shared artifact that tells collaborators what's shipping and
-roughly when — worth more with others in the loop than in pure solo work.
+**Due dates are signals, not gates.** A milestone's due date is optional, does
+not block a merge or close, and triggers nothing. Add one when a collaborator
+needs a timing signal and update it honestly when the plan slips; the milestone's
+scope and completion bar remain useful without a fabricated date.
 
 ## Milestones over iterations
 
@@ -1002,8 +1012,9 @@ giant "Launch." A tightly-scoped milestone with a target date is a chunk of valu
 with an expectation attached, doing three jobs at once: coordination (toward
 shippable scope), commitment (to that scope; date as signal), and incremental
 delivery (frequent small releases). It's literally the release-please flow —
-**small frequent milestones == frequent small releases** — so it's one rhythm, not
-two.
+**small frequent milestones == frequent delivery batches** — so it's one rhythm,
+not two, even when a rolling-release repo cuts several versions inside one
+scope-batch milestone.
 
 **Get the forcing-function from tools you already have,** not a sprint clock: a
 **WIP limit** on `In Progress`, sub-issues **sized to one PR**, and continuous
@@ -1029,7 +1040,7 @@ Ready + priority*. Iteration is a human-cadence concept your agents don't have.
 
 There's **no Epic type, by design.** The "big initiative" role splits cleanly
 into two natives — **sub-issues** carry the *hierarchy* axis and **milestones**
-carry the *release* axis — and GitHub stitches them together for you: a
+carry the *delivery-batch* axis — and GitHub stitches them together for you: a
 **sub-issue inherits its parent's Project and Milestone by default** (shipped
 2025-09). Assign them once on the parent and the child tree picks them up — no
 per-child bookkeeping.
@@ -1046,15 +1057,17 @@ the sub-issue's job, and only that. Once that's clear, the rest is just sizing a
 deciding what metadata rides on the parent vs. the leaves.
 
 **The three-tier shape (replaces Epic → Story → Task with natives):** a
-**milestone** (the dated release batch — possibly-unrelated work) contains parent
+**milestone** (the cross-feature shippable batch — possibly-unrelated work)
+contains parent
 **Feature** issues (each a cohesive capability), each of which contains **Task**
 sub-issues (mergeable slices). Full hierarchy, no synthetic Epic.
 
 The boundary that trips people up: **a milestone is a flat batch of unrelated
-features targeting a date; a parent issue is one cohesive thing decomposed.** So
+features targeting one delivery outcome; a parent issue is one cohesive thing
+decomposed.** So
 don't build a giant "Launch" parent with 40 sub-issues spanning unrelated features
 — that's exactly what the milestone is for. Milestone for the cross-feature
-release; the parent-issue tree for a single feature.
+batch; the parent-issue tree for a single feature.
 
 **Where metadata lives — parent vs. leaf.** The **parent** holds the durable
 context: the spec (your Given/When/Then acceptance criteria), the "why," the

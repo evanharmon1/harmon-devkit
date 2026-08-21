@@ -267,7 +267,47 @@ for category in SSH_KEY SSHKEY; do
     fi
 done
 
-echo "==> tasks whose script demands a TTY are marked interactive, in both twins"
+echo "==> secret helpers print styled outcomes without echoing secret values"
+secret_value='sensitive-value-must-not-appear'
+rm -f "$op_edit_called"
+out=$(printf '%s' "$secret_value" |
+    PATH="${op_bin}:${PATH}" OP_FIXTURE_CATEGORY=LOGIN \
+        OP_EDIT_CALLED="$op_edit_called" VAULT=test ITEM=test FIELD=password \
+        ./scripts/secret-set-1p.sh 2>&1) || fail "secret:set:1p success fixture failed: $out"
+[ -e "$op_edit_called" ] || fail "secret:set:1p success fixture never edited the item"
+case "$out" in
+*'DONE: 1Password secret updated'*) ;;
+*) fail "secret:set:1p omitted its final outcome: $out" ;;
+esac
+case "$out" in
+*"$secret_value"*) fail "secret:set:1p printed the secret value" ;;
+esac
+
+gh_bin="${test_tmp}/gh-bin"
+gh_secret_capture="${test_tmp}/gh-secret"
+mkdir -p "$gh_bin"
+cat >"${gh_bin}/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-} ${2:-}" = "secret set" ] || exit 1
+cat >"${GH_SECRET_CAPTURE:?}"
+EOF
+chmod +x "${gh_bin}/gh"
+out=$(printf '%s' "$secret_value" |
+    PATH="${gh_bin}:${PATH}" GH_SECRET_CAPTURE="$gh_secret_capture" \
+        NAME=DEPLOY_TOKEN REPO=owner/repo ./scripts/secret-set-gh.sh 2>&1) ||
+    fail "secret:set:gh success fixture failed: $out"
+[ "$(cat "$gh_secret_capture")" = "$secret_value" ] ||
+    fail "secret:set:gh changed the secret value sent to gh"
+case "$out" in
+*'DONE: GitHub secret updated'*) ;;
+*) fail "secret:set:gh omitted its final outcome: $out" ;;
+esac
+case "$out" in
+*"$secret_value"*) fail "secret:set:gh printed the secret value" ;;
+esac
+
+echo "==> terminal-aware tasks stay interactive through Task grouping, in both twins"
 # A run-time-only regression, and a total one: this Taskfile sets `output:
 # group` GLOBALLY, so Task pipes each task's stdout. A script guarding on
 # `[ -t 1 ]` then sees a pipe and refuses even in a real terminal, which made
@@ -283,12 +323,14 @@ echo "==> tasks whose script demands a TTY are marked interactive, in both twins
 #
 # Keyed to a fatal `-t 1` check specifically. A `-t 0` guard (secret:set:*,
 # codex:gate:disable) is untouched by output grouping, which redirects stdout
-# only, and status.sh's `-t 1` merely selects colour and never refuses.
+# only. The status tasks do not refuse without a TTY, but their intentionally
+# visual dashboard would otherwise lose color, Unicode, and gum through its
+# documented Task entrypoints.
 # Both layers where they exist. A GENERATED repo has only the first — it is the
 # rendered output, with no template/ of its own — so a missing file is skipped
 # rather than failed, and the counter below keeps "skipped everything" from
 # passing silently.
-tty_gated_tasks="setup:gh-scopes"
+tty_gated_tasks="setup:gh-scopes status status:git status:gh status:creds status:code status:env status:setup"
 checked_taskfiles=0
 for taskfile in Taskfile.yml template/Taskfile.yml.jinja; do
     [ -f "$taskfile" ] || continue
@@ -307,7 +349,7 @@ for taskfile in Taskfile.yml template/Taskfile.yml.jinja; do
         printf '%s\n' "$block" |
             grep -vE '^[[:space:]]*#' |
             grep -qE '^[[:space:]]*interactive:[[:space:]]*true[[:space:]]*$' ||
-            fail "${taskfile}: ${t} lacks 'interactive: true' — global 'output: group' pipes its stdout, so its TTY guard refuses in a real terminal"
+            fail "${taskfile}: ${t} lacks 'interactive: true' — global 'output: group' hides its terminal from the script"
     done
 done
 
@@ -327,6 +369,25 @@ awk '
     END { exit(found ? 0 : 1) }
 ' Taskfile.yml ||
     fail "Taskfile.yml no longer selects 'output: group' — re-derive whether the interactive: true assertion above still describes a real hazard"
+
+echo "==> setup:github delegates action logic to the tested script in both twins"
+checked_setup_tasks=0
+for taskfile in Taskfile.yml template/Taskfile.yml.jinja; do
+    [ -f "$taskfile" ] || continue
+    checked_setup_tasks=$((checked_setup_tasks + 1))
+    block="$(awk '
+        $0 == "  setup:github:" { inblock = 1; next }
+        inblock && /^  [a-zA-Z0-9]/ { inblock = 0 }
+        inblock { print }
+    ' "$taskfile")"
+    [ -n "$block" ] || fail "${taskfile}: setup:github task not found"
+    printf '%s\n' "$block" | grep -Fq './scripts/setup-github.sh --repo "{{.REPO}}"' ||
+        fail "${taskfile}: setup:github does not delegate to scripts/setup-github.sh"
+    if printf '%s\n' "$block" | grep -Eq 'gh api|^[[:space:]]*-[[:space:]]*\|'; then
+        fail "${taskfile}: setup:github contains inline action logic instead of a trivial script command"
+    fi
+done
+[ "$checked_setup_tasks" -gt 0 ] || fail "no Taskfile setup:github wiring was checked"
 
 if [ -x ./scripts/test-terraform-provider-locks.sh ]; then
     echo "==> Terraform provider locks cover developer and CI platforms"

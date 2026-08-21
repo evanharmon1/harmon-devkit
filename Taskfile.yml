@@ -76,6 +76,7 @@ tasks:
       - task: test:label-registry
       - task: test:tasks
       - task: test:ci-results
+      - task: test:output
       - task: test:status
       - task: test:gh-scopes
       - task: test:meta-install
@@ -87,9 +88,11 @@ tasks:
       - task: test:lint-hygiene
       - task: test:release-title
       - task: test:notify-release
+      - task: test:setup-github
       - task: test:setup-github-project
       - task: test:sync-devkit-release
       - task: test:worktree
+      - task: test:session-cleanup
       - task: test:hooks
       - task: test:statusline
       - task: test:devcontainer:permissions
@@ -323,6 +326,11 @@ tasks:
     cmds:
       - ./scripts/test-worktree.sh
 
+  test:session-cleanup:
+    desc: Behavioral test for audit:session-artifacts / clean:branches / clean:worktree-records (evidence-gated deletion + negative controls, in a throwaway fixture repo)
+    cmds:
+      - ./scripts/test-session-cleanup.sh
+
   test:agent-instructions-size:
     desc: Unit-test the non-blocking AGENTS.md size advisory
     cmds:
@@ -370,6 +378,11 @@ tasks:
     desc: Unit-test the fail-closed CI aggregate result helper
     cmds:
       - ./scripts/test-ci-results.sh
+
+  test:output:
+    desc: Unit-test shared color/Unicode fallbacks and spinner cleanup
+    cmds:
+      - ./scripts/test-output.sh
 
   test:status:
     desc: Unit-test the status board-writes + local-credential checks (stubbed CLIs, no network)
@@ -425,6 +438,11 @@ tasks:
     desc: Unit-test the harmon-init release dispatch (offline, stubbed gh)
     cmds:
       - ./scripts/test-notify-devkit-release.sh
+
+  test:setup-github:
+    desc: Unit-test repository-setting outcomes and failure propagation (stubbed gh, no network)
+    cmds:
+      - ./scripts/test-setup-github.sh
 
   test:track-work:
     desc: Unit-test the track-work skill's issue/PR tracking checks (offline)
@@ -667,6 +685,18 @@ tasks:
       - lefthook install
 
   # ── GitHub setup ───────────────────────────────────────────────
+  # One-time, idempotent repo settings applied via gh (safe to re-run); run once
+  # the repo exists on GitHub. The remaining setup steps need a browser or a real
+  # credential and stay manual — see docs/CHECKLIST.md (branch ruleset import,
+  # Renovate/optional third-party app installs, Actions secrets, the CI GitHub App).
+  setup:github:
+    desc: >-
+      Apply idempotent GitHub repo settings via gh (Dependabot alerts, private
+      vulnerability reporting)
+    vars:
+      REPO: "evanharmon1/harmon-devkit"
+    cmds:
+      - ./scripts/setup-github.sh --repo "{{.REPO}}"
   setup:github-project:
     desc: >-
       Idempotently create/sync the owner's GitHub Project V2 board + Status
@@ -702,24 +732,6 @@ tasks:
   # the repo exists on GitHub. The remaining setup steps need a browser or a real
   # credential and stay manual — see docs/CHECKLIST.md (branch ruleset import,
   # Renovate/optional third-party app installs, Actions secrets, the CI GitHub App).
-  setup:github:
-    desc: >-
-      Apply idempotent GitHub repo settings via gh (Dependabot alerts, private
-      vulnerability reporting)
-    vars:
-      REPO: "evanharmon1/harmon-devkit"
-    cmds:
-      - gh api "repos/{{.REPO}}/vulnerability-alerts" --method PUT
-      # Private vulnerability reporting is a public-repo-only feature; harmon-init
-      # creates repos --private, so guard on visibility to avoid a 404 that would
-      # abort the task. Applies cleanly if the repo is later made public.
-      - |
-        if [ "$(gh api "repos/{{.REPO}}" --jq '.private')" = "false" ]; then
-          gh api "repos/{{.REPO}}/private-vulnerability-reporting" --method PUT
-        else
-          echo "Skipping private vulnerability reporting ({{.REPO}} is private; public-repo-only feature)."
-        fi
-
   # ── Release ────────────────────────────────────────────────────
   # Releases are intentional via release-please (.github/workflows/release.yml):
   # merge the rolling release PR to cut a release. release:init seeds the first
@@ -804,34 +816,67 @@ tasks:
     cmds:
       - rm -rf .task
 
+  # ── Session cleanup ────────────────────────────────────────────
+  # audit:* reports, clean:* acts — and deletion only ever runs on positive
+  # evidence (a PR merged into the default branch at exactly the local tip,
+  # or verified-fresh ancestry into the remote default), because squash-merge
+  # makes ancestry blind to delivered branches. Every deletion is a guarded
+  # compare-and-delete against the verified tip. Dry run by default; never a
+  # force flag; never touches a worktree or a remote branch.
+  audit:session-artifacts:
+    desc: "Report session leftovers (unpushed branches, gone upstreams vs merged PRs, other worktrees, review sidecars) — mutates nothing"
+    cmds:
+      - ./scripts/audit-session-artifacts.sh
+
+  clean:branches:
+    desc: "Delete local branches only on positive merge evidence (dry run; 'task clean:branches -- --delete' to act)"
+    cmds:
+      - ./scripts/clean-branches.sh {{.CLI_ARGS}}
+
+  clean:remote-refs:
+    desc: Prune remote-tracking refs whose remote branch is gone, on every remote (git fetch --all --prune)
+    cmds:
+      - git fetch --all --prune
+
+  clean:worktree-records:
+    desc: Prune stale worktree admin records only — pins a detached commit before its record goes (human settles the pin); never removes a worktree directory
+    cmds:
+      - ./scripts/clean-worktree-records.sh
+
   # ── Status ─────────────────────────────────────────────────────
   status:
     desc: Project status dashboard
+    interactive: true
     cmds:
       - ./scripts/status.sh
 
   status:git:
     desc: Git status section
+    interactive: true
     cmds:
       - ./scripts/status.sh git
 
   status:gh:
     desc: GitHub status section
+    interactive: true
     cmds:
       - ./scripts/status.sh gh
 
   status:creds:
     desc: Credential section (gh, Codex, Claude Code logins + gh token scopes — local probes plus one bounded scope check; STATUS_NO_NETWORK=1 skips it)
+    interactive: true
     cmds:
       - ./scripts/status.sh creds
 
   status:code:
     desc: Codebase stats section
+    interactive: true
     cmds:
       - ./scripts/status.sh code
 
   status:env:
     desc: Environment info section
+    interactive: true
     cmds:
       - ./scripts/status.sh env
 
@@ -842,6 +887,7 @@ tasks:
 
   status:setup:
     desc: Setup completeness audit (GitHub, toolchain, devcontainer, dev env)
+    interactive: true
     cmds:
       - ./scripts/status.sh setup
 

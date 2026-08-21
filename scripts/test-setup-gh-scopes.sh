@@ -31,14 +31,17 @@ unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_HOST
 
 script="./scripts/setup-gh-scopes.sh"
 scopes_lib="./scripts/gh-scopes.sh"
+output_lib="./scripts/lib/output.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
 # A board-carrying fixture, so the required list includes the Projects scopes.
 mkdir -p "${TMP}/repo/scripts"
+mkdir -p "${TMP}/repo/scripts/lib"
 cp "${script}" "${TMP}/repo/scripts/setup-gh-scopes.sh"
 cp "${scopes_lib}" "${TMP}/repo/scripts/gh-scopes.sh"
+cp "${output_lib}" "${TMP}/repo/scripts/lib/output.sh"
 : >"${TMP}/repo/scripts/setup-github-project.sh"
 SUT="${TMP}/repo/scripts/setup-gh-scopes.sh"
 
@@ -315,7 +318,7 @@ if [ "${PTY_OK}" = true ]; then
     echo "==> succeeds when the refresh lands, naming the scopes"
     out="$(run_sut_pty lands-after-refresh GH_HOST=github.com)"
     case "$out" in
-    *"All requested scopes present"*) ;;
+    *"All requested GitHub CLI scopes are present"*) ;;
     *) fail "expected success after a landed refresh, got: ${out}" ;;
     esac
 
@@ -336,7 +339,7 @@ if [ "${PTY_OK}" = true ]; then
     # host would let an unrelated login satisfy the requirement.
     out="$(run_sut_pty inactive-has-scope GH_HOST=github.com)"
     case "$out" in
-    *"All requested scopes present"*) fail "an inactive account's scopes verified the active one: ${out}" ;;
+    *"All requested GitHub CLI scopes are present"*) fail "an inactive account's scopes verified the active one: ${out}" ;;
     *"did not grant"*) ;;
     *) fail "expected the active account's missing scopes to be reported, got: ${out}" ;;
     esac
@@ -348,7 +351,7 @@ if [ "${PTY_OK}" = true ]; then
     # read grant leaves board writes broken while satisfying the alternation.
     out="$(run_sut_pty read-only-grant GH_HOST=github.com)"
     case "$out" in
-    *"All requested scopes present"*) fail "a read-only grant was reported as success: ${out}" ;;
+    *"All requested GitHub CLI scopes are present"*) fail "a read-only grant was reported as success: ${out}" ;;
     *"did not grant"*"project"*) ;;
     *) fail "expected the missing write scope to be reported, got: ${out}" ;;
     esac
@@ -376,7 +379,7 @@ if [ "${PTY_OK}" = true ]; then
     fi
     unset STUB_CALLS
     case "$out" in
-    *"Already complete"*) ;;
+    *"GitHub CLI scopes are already ready"*) ;;
     *) fail "expected the no-op path to say so, got: ${out}" ;;
     esac
     [ "$(rc_pty_of lands GH_HOST=github.com)" = 0 ] ||

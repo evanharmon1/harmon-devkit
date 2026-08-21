@@ -8,14 +8,19 @@
 # subscription detection and remote-control resume. So every case here asserts
 # the same invariant from a different angle: the VOLUME COPY IS NEVER LOST.
 #
-# No container and no network: the helper only reads $HOME, so each case is a
-# throwaway fake home plus file assertions. Run via `task test:link-claude-json`.
+# No container and no network: the helpers operate on throwaway fake homes plus
+# file assertions. Run via `task test:link-claude-json`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 helper=".devcontainer/scripts/link-claude-json.sh"
+opencode_helper=".devcontainer/scripts/persist-opencode.sh"
 
 [ -r "$helper" ] || {
     echo "TEST FAIL: $helper not found" >&2
+    exit 1
+}
+[ -r "$opencode_helper" ] || {
+    echo "TEST FAIL: $opencode_helper not found" >&2
     exit 1
 }
 command -v jq >/dev/null 2>&1 || {
@@ -172,7 +177,47 @@ if [ ! -f "$home/.claude.json" ] || [ -L "$home/.claude.json" ]; then
 fi
 [ ! -e "$home/.claude" ] || fail "the helper created ~/.claude — that would strand state outside the volume"
 
-# ---- 6. post-create ordering: Coder persistence before helper before seed ----
+# ---- 6. OpenCode Coder migration: preserve, link, fail closed ----
+
+echo "==> OpenCode config and data migrate without loss and remain idempotent"
+home="${tmp_root}/home-opencode"
+persistent="${tmp_root}/persistent-opencode"
+mkdir -p "$home/.config/opencode" "$home/.local/share/opencode"
+printf '%s' '{"theme":"system"}' >"$home/.config/opencode/opencode.json"
+printf '%s' '{"provider":{"type":"oauth"}}' >"$home/.local/share/opencode/auth.json"
+HOME="$home" bash "$opencode_helper" "$persistent"
+HOME="$home" bash "$opencode_helper" "$persistent"
+[ -L "$home/.config/opencode" ] || fail "OpenCode config was not linked after migration"
+[ -L "$home/.local/share/opencode" ] || fail "OpenCode data was not linked after migration"
+[ "$(cat "$persistent/opencode-config/opencode.json")" = '{"theme":"system"}' ] ||
+    fail "OpenCode config was lost during migration"
+[ "$(cat "$persistent/opencode-data/auth.json")" = '{"provider":{"type":"oauth"}}' ] ||
+    fail "OpenCode auth data was lost during migration"
+
+echo "==> a failed OpenCode copy leaves the source state untouched"
+home="${tmp_root}/home-opencode-fail"
+persistent="${tmp_root}/persistent-opencode-fail"
+mkdir -p "$home/.config/opencode" "$home/.local/share/opencode"
+printf '%s' 'must-survive' >"$home/.config/opencode/opencode.json"
+fail_bin="${tmp_root}/opencode-fail-bin"
+mkdir -p "$fail_bin"
+for cmd in mkdir ln rm; do
+    ln -sf "$(command -v "$cmd")" "$fail_bin/$cmd"
+done
+cat >"$fail_bin/cp" <<'SH'
+#!/bin/sh
+exit 1
+SH
+chmod +x "$fail_bin/cp"
+if HOME="$home" PATH="$fail_bin" "$(command -v bash)" "$opencode_helper" "$persistent" >/dev/null 2>&1; then
+    fail "OpenCode migration succeeded despite a failed copy"
+fi
+[ -f "$home/.config/opencode/opencode.json" ] ||
+    fail "OpenCode migration deleted the source after a failed copy"
+[ "$(cat "$home/.config/opencode/opencode.json")" = 'must-survive' ] ||
+    fail "OpenCode migration changed the source after a failed copy"
+
+# ---- 7. post-create ordering: Coder persistence before helper before seed ----
 # On Coder, persistence is wired by SYMLINK inside post-create itself, not by a
 # mount that predates it. If the helper or the onboarding seed runs before the
 # Coder block, they populate the container-local ~/.claude and the block's
@@ -184,10 +229,13 @@ echo "==> post-create wires Coder persistence before the helper and the seed"
 post_create=".devcontainer/scripts/post-create-common.sh"
 line_of() { grep -n "$1" "$post_create" | head -1 | cut -d: -f1; }
 coder_line="$(line_of 'Coder persistent volume symlinks')"
+opencode_line="$(line_of 'persist-opencode\.sh')"
 helper_line="$(line_of 'link-claude-json\.sh$')"
 seed_line="$(line_of 'hasCompletedOnboarding')"
-[ -n "$coder_line" ] && [ -n "$helper_line" ] && [ -n "$seed_line" ] ||
-    fail "could not locate the Coder block, helper call, or onboarding seed in $post_create"
+[ -n "$coder_line" ] && [ -n "$opencode_line" ] && [ -n "$helper_line" ] && [ -n "$seed_line" ] ||
+    fail "could not locate the Coder block, persistence helpers, or onboarding seed in $post_create"
+[ "$coder_line" -lt "$opencode_line" ] && [ "$opencode_line" -lt "$helper_line" ] ||
+    fail "post-create does not run OpenCode persistence inside the Coder block before link-claude-json.sh"
 [ "$coder_line" -lt "$helper_line" ] ||
     fail "post-create runs link-claude-json.sh (line $helper_line) before the Coder persistence symlinks (line $coder_line) — on Coder the helper would populate the container-local ~/.claude"
 [ "$helper_line" -lt "$seed_line" ] ||

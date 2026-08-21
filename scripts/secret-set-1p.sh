@@ -38,6 +38,18 @@ fi
 command -v op >/dev/null 2>&1 || fail "op CLI is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+# Task buffers stdout in grouped mode. Keep legacy progress and the visual
+# outcome on one live stream so their chronology cannot be reversed.
+exec 1>&2
+OUTPUT_FD=2
+# shellcheck source=scripts/lib/output.sh
+. "$script_dir/lib/output.sh"
+action_banner secret "1Password field" "The secret stays on stdin and is never displayed"
+kv "Vault" "$vault"
+kv "Item" "$item"
+kv "Field" "${section:+$section / }$field"
+
 # Keep the caller's stdin available to jq as a raw file while jq reads the
 # 1Password item JSON from the pipeline.
 exec 3<&0
@@ -97,4 +109,6 @@ printf '%s\n' "$updated_item" |
     op item edit "$item" --vault "$vault" >/dev/null
 unset updated_item
 
-echo "Updated 1Password item '$item' field '$field'."
+checkline ok "Secret field" "$item / ${section:+$section / }$field updated"
+output_summary "Secret write"
+output_done "1Password secret updated"

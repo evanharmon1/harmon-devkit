@@ -222,11 +222,14 @@ changed_paths_z() {
 }
 
 # assert_expected_scope DEST — fail closed unless every changed path is one of
-# the manifest, the provenance stamp, or a vendored skill the sync owns.
-# The owned set is the UNION of the pre-sync (HEAD) and post-sync `# managed:`
-# lines: a skill the new pin dropped appears only in the old list, one it added
-# only in the new. Anything else — a local skill, an unrelated file — is an
-# unexpected write and aborts the run before anything is committed or pushed.
+# the manifest, a provenance stamp, a vendored skill/agent the sync owns, or a
+# portable `.agents/skills/` compatibility symlink that
+# scripts/link-agent-skills.sh maintains as the second command of
+# `task sync:skills`. The owned set is the UNION of the pre-sync (HEAD) and
+# post-sync `# managed:` lines: a skill the new pin dropped appears only in the
+# old list, one it added only in the new. Anything else — a local skill's
+# contents, an unrelated file — is an unexpected write and aborts the run before
+# anything is committed or pushed.
 # managed_from_stamp PROV — the `# managed:` names recorded on a provenance
 # stamp, taken from BOTH the committed and working-tree copies so a name the
 # sync just added or just removed is allowed either way.
@@ -277,6 +280,51 @@ assert_expected_scope() {
     _aes_allow="$(
         managed_from_stamp "$_aes_prov"
     )"
+    # scripts/link-agent-skills.sh (the second command in `task sync:skills`)
+    # writes a `.agents/skills/<name>` compatibility symlink for EVERY Claude
+    # skill — managed or local — so the same skills are visible through the
+    # cross-harness .agents standard. That dest is not in the manifest; it is
+    # link-agent-skills.sh's own, resolved the same way here. An unsafe value
+    # (absolute, or with a `..` component) disarms the allowance rather than
+    # trusting it: portable links then read as rogue writes and abort, which is
+    # the safe failure.
+    _aes_pdir="${AGENT_SKILLS_DIR:-.agents/skills}"
+    # Normalize the spelling before matching it against git's canonical changed
+    # paths: strip a leading "./", collapse "//" (empty components), and drop a
+    # trailing "/" so an equivalent repo-relative value (./.agents/skills,
+    # .agents/skills/, .agents//skills) matches as it should. "." and ".."
+    # components are left for the safety case below — a `..` traversal must stay
+    # rejected, not be normalized away.
+    while case "$_aes_pdir" in ./*) true ;; *) false ;; esac do
+        _aes_pdir="${_aes_pdir#./}"
+    done
+    while case "$_aes_pdir" in *//*) true ;; *) false ;; esac do
+        _aes_pdir="${_aes_pdir//\/\//\/}"
+    done
+    while case "$_aes_pdir" in */) true ;; *) false ;; esac do
+        _aes_pdir="${_aes_pdir%/}"
+    done
+    case "$_aes_pdir" in
+    "" | "/" | "." | ".." | /* | ../* | */../* | */..) _aes_pdir="" ;;
+    esac
+    # An AGENT_SKILLS_DIR overlapping the skills or agents dest would route the
+    # portable-link allowance inside a tree the sync promises never to touch
+    # (or, containing a dest, approve paths the dest's own block already
+    # rejected), so disarm it: those paths then read as rogue writes and abort
+    # — fail-closed. Both directions matter: pdir inside a dest, and a dest
+    # inside pdir.
+    if [ -n "$_aes_pdir" ]; then
+        case "$_aes_pdir" in "$_aes_dest" | "$_aes_dest"/*) _aes_pdir="" ;; esac
+    fi
+    if [ -n "$_aes_pdir" ]; then
+        case "$_aes_dest" in "$_aes_pdir" | "$_aes_pdir"/*) _aes_pdir="" ;; esac
+    fi
+    if [ -n "$_aes_pdir" ] && [ -n "$_aes_adest" ]; then
+        case "$_aes_pdir" in "$_aes_adest" | "$_aes_adest"/*) _aes_pdir="" ;; esac
+    fi
+    if [ -n "$_aes_pdir" ] && [ -n "$_aes_adest" ]; then
+        case "$_aes_adest" in "$_aes_pdir" | "$_aes_pdir"/*) _aes_pdir="" ;; esac
+    fi
     # Delimited membership test (no `grep` subprocess): a pipeline whose reader
     # exits early can report SIGPIPE under `pipefail` and reject a legitimate
     # path.
@@ -320,13 +368,50 @@ assert_expected_scope() {
                 ;;
             esac
         fi
+        # A portable `.agents/skills/<name>` symlink that link-agent-skills.sh
+        # creates as part of `task sync:skills`. Without this allowance every
+        # NEW managed skill's symlink reads as a rogue write and aborts the
+        # pin-bump PR — latent until a devkit release adds skills the repo never
+        # vendored before (v0.34.0 added three at once, breaking the sync).
+        # Allowed when <name> is managed (a dropped skill's removed symlink
+        # passes too: the name survives on the HEAD stamp) OR a matching skill
+        # directory still exists under the skills dest — a local skill the sync
+        # must never touch, but whose compatibility link is still the sync's to
+        # maintain. A native portable skill at the same path would already have
+        # aborted the run in the link step's divergent-name check.
+        if [ "$_aes_ok" -eq 0 ] && [ -n "$_aes_pdir" ]; then
+            case "$_aes_p" in
+            "$_aes_pdir"/*)
+                _aes_pname="${_aes_p#"$_aes_pdir"/}"
+                # Only a flat .agents/skills/<name> symlink is the link step's
+                # output. A nested path beneath a managed name is not something
+                # it writes — and an entry replaced with a directory or an
+                # arbitrary-target symlink is a rogue object the link step's
+                # divergent-name check does not catch for a dropped skill — so
+                # do not blanket-approve <name>/anything: leave _aes_ok at 0
+                # and let it read as a rogue write (fail-closed).
+                case "$_aes_pname" in
+                */*) ;; # nested path → not a flat symlink → reject
+                "" | "." | "..") ;;
+                *)
+                    case "$_aes_haystack" in
+                    *"${LF}${_aes_pname}${LF}"*) _aes_ok=1 ;;
+                    esac
+                    if [ "$_aes_ok" -eq 0 ] && [ -d "$_aes_dest/$_aes_pname" ]; then
+                        _aes_ok=1
+                    fi
+                    ;;
+                esac
+                ;;
+            esac
+        fi
         [ "$_aes_ok" -eq 1 ] || _aes_bad="${_aes_bad}  - ${_aes_p}${LF}"
     done < <(changed_paths_z)
 
     if [ -n "$_aes_bad" ]; then
         echo "sync-devkit-release: the sync wrote paths it does not own:" >&2
         printf '%s' "$_aes_bad" >&2
-        die "expected only the skills-sync manifest, the provenance stamps, managed skills under $_aes_dest/, and managed agents under ${_aes_adest:-<none>}/ — inspect by hand"
+        die "expected only the skills-sync manifest, the provenance stamps, managed skills under $_aes_dest/, managed agents under ${_aes_adest:-<none>}/, and portable skill links under ${_aes_pdir:-<none>}/ — inspect by hand"
     fi
 }
 
