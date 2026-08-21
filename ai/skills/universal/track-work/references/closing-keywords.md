@@ -90,14 +90,14 @@ The issue body listed the survivors as task-list items:
 ## But 3 of its 14 items are still open
 
 - [ ] **sommerlawn-site: `links-online.yml` pinned to `arduino/setup-task@b91d5d2c` (v2.0.0).**
-- [ ] **harmon-infra: `validate.yml:51` reinstalls lint tools inline** …
+- [ ] **platform-infra: `validate.yml:51` reinstalls lint tools inline** …
 - [ ] **sommerlawn-site: `sommer-lawn` naming residue.** …
 ```
 
 and closed with an explicit instruction to whoever picked it up:
 
 > They live in other repos — either fix them during the next standardization
-> sweep of sommerlawn-site / harmon-infra, or split them into per-repo issues.
+> sweep of sommerlawn-site / platform-infra, or split them into per-repo issues.
 > Delete `docs/sourceRepoFollowUps.md` **once they are recorded somewhere
 > durable.**
 
@@ -108,7 +108,7 @@ and closed with an explicit instruction to whoever picked it up:
 **The result.** #335 merged on 2026-07-21. GitHub closed #329 as *completed*.
 The three items are still unticked inside it today — in a closed issue, on
 nobody's backlog, in **harmon-init**, which owns none of the work. Two belong to
-sommerlawn-site and one to harmon-infra.
+sommerlawn-site and one to platform-infra.
 
 The commit message asserted that the file's deletion "loses nothing" because the
 items were recorded in #329. That sentence was true when written and false the
@@ -119,7 +119,7 @@ moment the PR merged.
 
 **What should have happened**, in order:
 
-1. File three issues — two in `sommerlawn-site`, one in `harmon-infra` — each
+1. File three issues — two in `sommerlawn-site`, one in `platform-infra` — each
    carrying provenance back to #329.
 2. Tick the three boxes in #329, now that they are recorded somewhere durable,
    which is exactly the condition the issue itself set.
