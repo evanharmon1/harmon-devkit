@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.34.3](https://github.com/evanharmon1/harmon-devkit/compare/v0.34.2...v0.34.3) (2026-08-21)
+
+
+### Bug Fixes
+
+* **track-work:** anonymize sibling-repo name in closing-keywords example ([#567](https://github.com/evanharmon1/harmon-devkit/issues/567)) ([640ebb3](https://github.com/evanharmon1/harmon-devkit/commit/640ebb3e0d91d7b459001e0bee316702ba1a7cc8))
+
 ## [0.34.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.34.1...v0.34.2) (2026-08-21)
 
 
