@@ -182,6 +182,26 @@ command -v git >/dev/null 2>&1 || {
 
 marker_name="answers-confirmed"
 
+# The marker is the gate's only durable state, so the directory holding it must
+# be this user's and not writable by anyone else: a shared or group/world-
+# writable dir would let another local process pre-forge a confirmation. The
+# recipes use mktemp -d (0700) — this check makes the asset enforce what they
+# merely practise. Checked on --confirm AND --check.
+require_private_state_dir() {
+    [ -d "$state_dir" ] || {
+        echo "FAIL: no such state directory: $state_dir" >&2
+        exit 2
+    }
+    [ -O "$state_dir" ] || {
+        echo "FAIL: state directory is not owned by the current user: $state_dir" >&2
+        exit 2
+    }
+    if find "$state_dir" -maxdepth 0 \( -perm -g+w -o -perm -o+w \) -print 2>/dev/null | grep -q .; then
+        echo "FAIL: state directory is group- or world-writable; use a private (0700) directory: $state_dir" >&2
+        exit 2
+    fi
+}
+
 # ── --check ────────────────────────────────────────────────────────────
 not_confirmed() {
     echo "FAIL: resolved answers not confirmed; rerun confirm-answers.sh, present the set, obtain explicit approval, then --confirm" >&2
@@ -221,6 +241,7 @@ if [ "$mode" = check ]; then
         echo "FAIL: no such recorded answers file: $recorded" >&2
         exit 2
     fi
+    require_private_state_dir
     marker="$state_dir/$marker_name"
     [ -f "$marker" ] || not_confirmed "no confirmation marker at $marker"
     marker_data_oid="$(awk '$1 == "data-file-oid" { print $2 }' "$marker")"
@@ -279,10 +300,7 @@ if [ "$mode" = confirm ]; then
         echo "FAIL: --confirm requires --template-commit so the confirmation binds the template whose _tasks will run" >&2
         exit 2
     }
-    [ -d "$state_dir" ] || {
-        echo "FAIL: no such state directory: $state_dir" >&2
-        exit 2
-    }
+    require_private_state_dir
 fi
 
 work="$(mktemp -d)"
@@ -326,6 +344,13 @@ if [ -n "$active_keys" ]; then
 else
     cut -f1 "$work/template.tsv" >"$work/keys"
 fi
+# --confirm binds the WHOLE data file, so every key in it must be on the
+# table: a data-file answer outside the active set would otherwise be approved
+# unseen. Report such keys as UNREVIEWED and refuse to confirm while any exist
+# (the caller widens --active-keys or drops the answer from the data file).
+cut -f1 "$work/data.tsv" | LC_ALL=C sort -u >"$work/data-keys"
+LC_ALL=C sort -u "$work/keys" >"$work/keys.sorted"
+LC_ALL=C comm -23 "$work/data-keys" "$work/keys.sorted" >"$work/unreviewed"
 
 field() { # file key column -> value ("" when absent)
     awk -F '\t' -v k="$2" -v c="$3" '$1 == k { print $c; exit }' "$1"
@@ -334,7 +359,7 @@ has_key() {
     awk -F '\t' -v k="$2" '$1 == k { found = 1; exit } END { exit found ? 0 : 1 }' "$1"
 }
 is_listed_sensitive() {
-    printf '%s' "$SENSITIVE_KEYS" | grep -qxF "$1"
+    printf '%s' "$SENSITIVE_KEYS" | grep -qxF -- "$1"
 }
 
 : >"$work/changed"
@@ -384,8 +409,14 @@ while IFS= read -r key; do
             ;;
         esac
     else
-        value="<no default — copier will prompt or fail>"
+        # No answer anywhere and no default: under --defaults copier resolves
+        # this to an empty value rather than prompting. The printed string is a
+        # placeholder, not what copier will use, so it is unresolved for the
+        # same reason a templated default is — and a SENSITIVE one blocks
+        # --confirm until the data file states it.
+        value="<no answer and no default — copier --defaults resolves this empty>"
         source="unanswered"
+        unresolved=true
     fi
 
     flags=""
@@ -412,7 +443,7 @@ while IFS= read -r key; do
     if [ -z "$active_keys" ] && [ "$(field "$work/template.tsv" "$key" 4)" = true ]; then
         note="$note (may be inactive — \`when:\`-gated)"
     fi
-    if grep -qxF "$key" "$work/secret-keys" 2>/dev/null; then
+    if grep -qxF -- "$key" "$work/secret-keys" 2>/dev/null; then
         value="<secret>"
     fi
 
@@ -431,7 +462,8 @@ print_block() { # title file
 print_block "CHANGED (differs from the recorded .copier-answers.yml)" "$work/changed"
 print_block "NEW (no recorded value — includes questions the template just added)" "$work/new"
 print_block "SENSITIVE (grants trust, names principals, or has a side effect)" "$work/sensitive"
-print_block "UNRESOLVED (templated default this gate cannot evaluate — pass an explicit value to see it)" "$work/unresolved"
+print_block "UNRESOLVED (templated default or no default — pass an explicit value to see what copier will use)" "$work/unresolved"
+print_block "UNREVIEWED (in the data file but outside the active question set — never shown above, yet bound by --confirm)" "$work/unreviewed"
 
 cat <<'NOTE'
 
@@ -449,9 +481,16 @@ your behalf: it prints this set, stops, and returns it.
 NOTE
 
 if [ "$mode" = confirm ]; then
+    if [ -s "$work/unreviewed" ]; then
+        echo >&2
+        echo "FAIL: refusing to confirm — these data-file answers are outside the active question set and were never shown:" >&2
+        sed 's/^/  - /' "$work/unreviewed" >&2
+        echo "  widen --active-keys to cover them (or remove them from the data file), re-present the set, then --confirm" >&2
+        exit 1
+    fi
     if [ -s "$work/unresolved-sensitive" ]; then
         echo >&2
-        echo "FAIL: refusing to confirm — these SENSITIVE questions resolve to a templated default this gate cannot evaluate:" >&2
+        echo "FAIL: refusing to confirm — these SENSITIVE questions have a templated default or no default, so the value copier will use is not on the table:" >&2
         sed 's/^/  - /' "$work/unresolved-sensitive" >&2
         echo "  state each one explicitly in the data file (the value copier would derive stays hidden otherwise), re-present the set, then --confirm" >&2
         exit 1

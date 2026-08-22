@@ -106,6 +106,9 @@ use_coderabbit:
   type: bool
   help: "CODERABBIT: opt into the CodeRabbit bot reviewer"
   default: false
+foreman_additional_trusted_actors:
+  type: str
+  help: "FOREMAN TRUST: logins Foreman may trust. Security-sensitive."
 _secret_questions:
   - project_name
 YAML
@@ -122,7 +125,11 @@ use_antigravity_cli: true
 ordinary_thing: plain
 project_slug: my-project
 code_owner: someone
+foreman_additional_trusted_actors: ""
 YAML
+# Same answers minus the sensitive question that has NO default: copier
+# --defaults would resolve it empty, which the human never saw.
+grep -v '^foreman_additional_trusted_actors:' "$FIX/data.yml" >"$FIX/data-unanswered.yml"
 # Same answers minus the explicit code_owner: its Jinja default then stays
 # unresolved, and because code_owner names a principal, --confirm must refuse.
 grep -v '^code_owner:' "$FIX/data.yml" >"$FIX/data-unresolved.yml"
@@ -192,8 +199,20 @@ expect_ok "an explicit active-keys file is honored" \
     render_to "$ACTIVE_TABLE" --template-copier "$FIX/copier.yml" \
     --recorded "$FIX/recorded.yml" --data-file "$FIX/data.yml" \
     --active-keys "$FIX/active-keys"
-expect_fail "an inactive question is not listed" grep -q '^ordinary_thing ' "$ACTIVE_TABLE"
+expect_fail "an inactive question is not listed as a row" grep -q '^ordinary_thing ' "$ACTIVE_TABLE"
 expect_ok "an active question is listed" grep -q '^use_antigravity_cli ' "$ACTIVE_TABLE"
+# ...but a data-file answer outside that set is still bound by --confirm, so it
+# must surface as UNREVIEWED and block confirmation rather than vanish.
+expect_ok "a data-file key outside the active set is reported UNREVIEWED" \
+    sh -c 'awk "/^== UNREVIEWED/ { inblock = 1; next } /^== / { inblock = 0 } inblock && /ordinary_thing/ { found = 1 } END { exit found ? 0 : 1 }" "$1"' \
+    sh "$ACTIVE_TABLE"
+expect_fail_contains "--confirm refuses while a data-file key is outside the active set" \
+    "outside the active question set" \
+    run_asset --template-copier "$FIX/copier.yml" --recorded "$FIX/recorded.yml" \
+    --data-file "$FIX/data.yml" --active-keys "$FIX/active-keys" \
+    --template-commit deadbeef --state-dir "$FIX/state" --confirm
+expect_fail "an unreviewed data-file key left no marker behind" \
+    test -f "$FIX/state/answers-confirmed"
 
 # recorded=none: every answer is NEW, nothing is CHANGED.
 NONE_TABLE="$TMPROOT/none.txt"
@@ -220,6 +239,29 @@ expect_fail_contains "--confirm refuses while a sensitive default is unresolved"
     --state-dir "$FIX/state" --confirm
 expect_fail "an unresolved sensitive default left no marker behind" \
     test -f "$FIX/state/answers-confirmed"
+UNANSWERED_TABLE="$TMPROOT/unanswered.txt"
+expect_ok "print mode renders a set with an unanswered sensitive question" \
+    render_to "$UNANSWERED_TABLE" --template-copier "$FIX/copier.yml" \
+    --recorded "$FIX/recorded.yml" --data-file "$FIX/data-unanswered.yml"
+expect_row "a sensitive question with no answer and no default is SENSITIVE UNRESOLVED" \
+    '^foreman_additional_trusted_actors +unanswered .*SENSITIVE UNRESOLVED' "$UNANSWERED_TABLE"
+expect_fail_contains "--confirm refuses while a sensitive question has no answer and no default" \
+    "refusing to confirm" \
+    run_asset --template-copier "$FIX/copier.yml" --recorded "$FIX/recorded.yml" \
+    --data-file "$FIX/data-unanswered.yml" --template-commit deadbeef \
+    --state-dir "$FIX/state" --confirm
+# The state dir is the only durable state: it must be private to the caller.
+SHARED_STATE="$TMPROOT/shared-state"
+mkdir -p "$SHARED_STATE" && chmod 0777 "$SHARED_STATE"
+expect_fail_contains "--confirm refuses a group/world-writable state dir" \
+    "group- or world-writable" \
+    run_asset --template-copier "$FIX/copier.yml" --recorded "$FIX/recorded.yml" \
+    --data-file "$FIX/data.yml" --template-commit deadbeef \
+    --state-dir "$SHARED_STATE" --confirm
+expect_fail_contains "--check refuses a group/world-writable state dir" \
+    "group- or world-writable" \
+    run_asset --check --data-file "$FIX/data.yml" --state-dir "$SHARED_STATE" \
+    --recorded "$FIX/recorded.yml" --template-commit deadbeef
 expect_fail_contains "--check fails before any confirmation" \
     "resolved answers not confirmed" \
     run_asset --check --data-file "$FIX/data.yml" --state-dir "$FIX/state" \
