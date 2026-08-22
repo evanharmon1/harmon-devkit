@@ -41,11 +41,13 @@ Usage:
 USAGE
 }
 
-# Security-sensitive questions. harmon-init's copier.yml carries NO
-# machine-readable sensitivity marker today, so this list is maintained here and
-# widened by a `help:` text match (see sensitivity_of). NEW keys are flagged
-# separately precisely so an unknown addition still gets reviewed rather than
-# silently passing as ordinary config.
+# Security-sensitive questions: answers that grant trust to a principal or a
+# bot (Foreman trusted actors, the Claude allowlist, CODEOWNERS, the Codex
+# cloud / CodeRabbit bot reviewers), enable an autonomous agent, or fire a side
+# effect. harmon-init's copier.yml carries NO machine-readable sensitivity marker
+# today, so this list is maintained here and widened by a `help:` text match.
+# NEW keys are flagged separately precisely so an unknown addition still gets
+# reviewed rather than silently passing as ordinary config.
 SENSITIVE_KEYS="
 foreman_additional_trusted_actors
 use_antigravity_cli
@@ -53,6 +55,8 @@ claude_authorized_members
 code_owner
 use_alternative_claude_providers
 use_foreman
+use_coderabbit
+use_codex_cloud_review
 github_remote_create
 github_release_init
 bunch_add
@@ -295,6 +299,8 @@ is_listed_sensitive() {
 : >"$work/changed"
 : >"$work/new"
 : >"$work/sensitive"
+: >"$work/unresolved"
+: >"$work/unresolved-sensitive"
 
 echo "Resolved copier answers — review every row before any \`copier … --trust\` run"
 echo "  template copier.yml : $template_copier"
@@ -314,6 +320,7 @@ while IFS= read -r key; do
     value=""
     source=""
     note=""
+    unresolved=false
     if has_key "$work/data.tsv" "$key"; then
         value="$(field "$work/data.tsv" "$key" 2)"
         source="data-file"
@@ -324,7 +331,16 @@ while IFS= read -r key; do
         value="$(field "$work/template.tsv" "$key" 2)"
         source="template-default"
         case "$value" in
-        *'[['* | *'[%'* | *'{{'* | *'{%'*) note="$note (templated default)" ;;
+        *'[['* | *'[%'* | *'{{'* | *'{%'*)
+            # A Jinja default is resolved by copier against the OTHER answers
+            # at run time. This gate never renders the template, so it cannot
+            # show that value — it shows the expression and says so. For a
+            # SENSITIVE question that is not good enough (the principal the
+            # human is approving would stay hidden), so --confirm refuses
+            # below until the data file states the value explicitly.
+            note="$note (templated default — copier resolves this at run time)"
+            unresolved=true
+            ;;
         esac
     else
         value="<no default — copier will prompt or fail>"
@@ -340,10 +356,17 @@ while IFS= read -r key; do
         printf '%s\n' "$key" >>"$work/changed"
     fi
     help_json="$(field "$work/template.tsv" "$key" 3)"
+    sensitive=false
     if is_listed_sensitive "$key" ||
         printf '%s' "$help_json" | grep -Eqi "$SENSITIVE_HELP_RE"; then
         flags="$flags SENSITIVE"
+        sensitive=true
         printf '%s\n' "$key" >>"$work/sensitive"
+    fi
+    if [ "$unresolved" = true ]; then
+        flags="$flags UNRESOLVED"
+        printf '%s\n' "$key" >>"$work/unresolved"
+        [ "$sensitive" != true ] || printf '%s\n' "$key" >>"$work/unresolved-sensitive"
     fi
     if [ -z "$active_keys" ] && [ "$(field "$work/template.tsv" "$key" 4)" = true ]; then
         note="$note (may be inactive — \`when:\`-gated)"
@@ -367,19 +390,31 @@ print_block() { # title file
 print_block "CHANGED (differs from the recorded .copier-answers.yml)" "$work/changed"
 print_block "NEW (no recorded value — includes questions the template just added)" "$work/new"
 print_block "SENSITIVE (grants trust, names principals, or has a side effect)" "$work/sensitive"
+print_block "UNRESOLVED (templated default this gate cannot evaluate — pass an explicit value to see it)" "$work/unresolved"
 
 cat <<'NOTE'
 
 The next step executes the template's `_tasks` under `--trust`. Claude Code
 auto-mode's classifier may deny `copier update --trust` / `copier copy --trust`
 for exactly that reason; the earlier `--skip-tasks` discovery/audit renders are
-denied by the same classifier. THIS is the checkpoint where you either approve
-the run when prompted, or add a `Bash(copier update:*)` / `Bash(copier copy:*)`
-permission rule yourself. Agents never self-grant permissions, and a parallel
-worker never confirms on your behalf: it prints this set, stops, and returns it.
+denied by the same classifier. THIS is the checkpoint where you settle that.
+Prefer approving the single run when prompted: that approval covers this
+command, this data file, this template commit. A `Bash(copier update:*)` /
+`Bash(copier copy:*)` permission rule is the broader alternative — it is a
+standing, prefix-wide grant that also authorizes every later trusted copier
+run, for any template, with no further prompt — so add one only deliberately.
+Agents never self-grant permissions, and a parallel worker never confirms on
+your behalf: it prints this set, stops, and returns it.
 NOTE
 
 if [ "$mode" = confirm ]; then
+    if [ -s "$work/unresolved-sensitive" ]; then
+        echo >&2
+        echo "FAIL: refusing to confirm — these SENSITIVE questions resolve to a templated default this gate cannot evaluate:" >&2
+        sed 's/^/  - /' "$work/unresolved-sensitive" >&2
+        echo "  state each one explicitly in the data file (the value copier would derive stays hidden otherwise), re-present the set, then --confirm" >&2
+        exit 1
+    fi
     marker="$state_dir/$marker_name"
     candidate="$(mktemp "$state_dir/$marker_name.XXXXXX")" ||
         {

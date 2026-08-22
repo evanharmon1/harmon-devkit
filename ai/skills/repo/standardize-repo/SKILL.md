@@ -131,10 +131,15 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
   run on `--check`. The asset never runs copier. In the interactive new-repo
   form copier's own prompts are that checkpoint. Claude Code auto-mode's
   classifier may deny `copier … --trust` outright (it also denies the
-  `--skip-tasks` discovery renders): this checkpoint is where the user approves
-  the run or adds a `Bash(copier update:*)` / `Bash(copier copy:*)` permission
-  rule. **Agents never self-grant permissions**, and a parallel worker prints
-  the set, stops, and returns it to the parent/human instead of confirming.
+  `--skip-tasks` discovery renders): this checkpoint is where the user settles
+  that — preferably by approving the single run at the prompt, or by adding a
+  `Bash(copier update:*)` / `Bash(copier copy:*)` permission rule, knowing it
+  is a standing, prefix-wide grant that also authorizes every later trusted
+  copier run. **Agents never self-grant permissions**, and a parallel worker
+  prints the set, stops, and returns it to the parent/human instead of
+  confirming. Questions whose default is a Jinja expression (`code_owner`,
+  `claude_authorized_members`) show as `UNRESOLVED` — the gate never renders —
+  and a sensitive one must be stated explicitly before `--confirm` accepts.
 
 - **Validate after every apply.** Re-running `copier` or changing answers can churn
   files — confirm the result with the verification step below before committing.

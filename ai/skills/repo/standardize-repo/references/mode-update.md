@@ -1820,15 +1820,24 @@ assets/confirm-answers.sh \
   --template-copier "$GUARDED_STATE/target-copier.yml" \
   --recorded "$GUARDED_STATE/original-answers.yml" \
   --data-file "$REVIEWED_DATA" \
-  --active-keys "$GUARDED_STATE/reviewed-keys" \
+  --active-keys "$GUARDED_STATE/active-target-questions" \
   --template-commit "$HARMON_INIT_COMMIT" \
   --state-dir "$GUARDED_STATE"
 ```
 
 **Stop here and present that table.** It is the complete resolved question →
-answer set this run will pass, with every answer that differs from the recorded
-`.copier-answers.yml` marked `CHANGED`, every answer with no recorded value
-marked `NEW`, and every security-sensitive answer marked `SENSITIVE` — the three
+answer set this run will pass — **every active question**, not only the
+reviewed subset: `copier update` merges the reviewed data file over the
+recorded `.copier-answers.yml`, so `active-target-questions` (the full active
+set the discovery render converged on) is the key list, the reviewed keys show
+`data-file` as their source, and every other active answer — including the
+standing `claude_authorized_members`, `code_owner`, `use_antigravity_cli`, or
+`run_task_install` values the update will re-apply — shows `recorded`.
+`reviewed-keys` is deliberately **not** the list here: it holds only the new
+questions plus the capability subset, and a table over it would hide exactly
+the standing sensitive answers this checkpoint exists to surface. Every answer
+that differs from the recorded file is marked `CHANGED`, every answer with no
+recorded value `NEW`, and every security-sensitive answer `SENSITIVE` — the
 classes repeated as their own summary blocks so they cannot be scrolled past.
 Nothing is written and no Copier process starts: the asset only reads YAML and
 hashes files.
@@ -1862,8 +1871,11 @@ approval again, then `--confirm`.
 
 `copier … --trust` is exactly the command Claude Code auto-mode's classifier
 denies, because it executes arbitrary template code. This checkpoint is where
-that is settled: approve the run at the prompt, or add a
-`Bash(copier update:*)` permission rule. Agents never self-grant permissions.
+that is settled. Prefer approving the single run at the prompt — that approval
+covers this command, this data file, this commit. A `Bash(copier update:*)`
+permission rule is the broader alternative: a standing, prefix-wide grant that
+also authorizes every later trusted `copier update`, for any template, with no
+further prompt — add one only deliberately. Agents never self-grant permissions.
 The discovery and audit renders earlier in this mode pass `--trust` too (with
 `--skip-tasks`, into scratch directories) and can be denied by the same
 classifier, so the permission decision made here covers them as well — but the

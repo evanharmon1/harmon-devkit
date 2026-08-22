@@ -959,6 +959,19 @@ for guarded_mode in mode-update mode-adopt-existing mode-new-repo; do
     expect_ok "$guarded_mode names the permission rule the user may add" \
         grep -Eq 'Bash\(copier (update|copy):\*\)' "$guarded_doc"
 done
+expect_ok "mode-update presents every active question, not the reviewed subset" \
+    grep -qF -- '--active-keys "$GUARDED_STATE/active-target-questions"' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_fail "mode-update never narrows the confirmation table to reviewed-keys" \
+    grep -qF -- '--active-keys "$GUARDED_STATE/reviewed-keys"' \
+    "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "mode-adopt-existing compares a re-adopt against the stale recorded answers" \
+    sh -c 'grep -qF "RECORDED_ANSWERS=.copier-answers.yml" "$1" &&
+        grep -qF -- "--recorded \"\$RECORDED_ANSWERS\"" "$1"' sh \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
+expect_ok "mode-adopt-existing serializes the slug instead of interpolating YAML" \
+    grep -qF ".project_slug = strenv(PROJECT_SLUG)" \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
 expect_ok "mode-update checks the confirmation before the --pretend rehearsal" \
     sh -c 'awk "/assets\/confirm-answers.sh --check/ { seen = 1 } /run_guarded_copier update --trust --defaults --pretend/ { exit seen ? 0 : 1 }" "$1"' \
     sh "$STANDARDIZE_REFS/mode-update.md"

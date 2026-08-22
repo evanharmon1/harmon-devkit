@@ -77,8 +77,9 @@ to the hidden defaults. **Those prompts are the confirmation checkpoint in this
 form** — the user sees and answers every asked question before any `_tasks` run,
 so no separate presentation is owed. What is still owed is the permission note
 below: `copier copy --trust` may be denied by Claude Code auto-mode's
-classifier, and the prompts are where the user approves the run or adds a
-`Bash(copier copy:*)` rule. Agents never self-grant permissions.
+classifier, and the prompts are where the user approves the single run — or,
+deliberately, adds a `Bash(copier copy:*)` rule, a standing prefix-wide grant
+that also covers every later trusted copy. Agents never self-grant permissions.
 
 ## 3. Generate — non-interactive form
 
@@ -116,6 +117,8 @@ project_name: "My Project"
 project_slug: "my-project"
 project_description: "One-line description of the project"
 github_org: "evanharmon1"
+code_owner: "evanharmon1"
+claude_authorized_members: "evanharmon1"
 project_type: "general"
 include_terraform: false
 include_ansible: false
@@ -164,7 +167,9 @@ the check fails closed.
 
 `copier copy --trust` executes the template's `_tasks`, which is why Claude Code
 auto-mode's classifier may deny it. The confirmation checkpoint is where the
-user approves the run or adds a `Bash(copier copy:*)` permission rule — agents
+user settles that: preferably by approving the single run at the prompt, or by
+adding a `Bash(copier copy:*)` permission rule — a standing, prefix-wide grant
+that also authorizes every later trusted copy, so add one deliberately. Agents
 never self-grant permissions, and a parallel worker prints the set, stops, and
 returns it rather than passing `--confirm` itself.
 

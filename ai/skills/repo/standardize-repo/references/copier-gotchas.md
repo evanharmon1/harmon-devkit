@@ -330,9 +330,12 @@ instead of silently reusing it.
 **`copier … --trust` is denied by Claude Code auto-mode's classifier**, and
 correctly so — it executes arbitrary template code. An agent that discovers the
 block mid-run is stuck: it cannot self-grant the permission, and it must not.
-The confirmation checkpoint is the natural place to settle it — the user
-approves the run at the prompt, or adds a `Bash(copier update:*)` /
-`Bash(copier copy:*)` permission rule. The `--skip-tasks` discovery and audit
+The confirmation checkpoint is the natural place to settle it — preferably the
+user approves the single run at the prompt; the alternative, a
+`Bash(copier update:*)` / `Bash(copier copy:*)` permission rule, is a standing,
+prefix-wide grant that also authorizes every later trusted copier run for any
+template with no further prompt, so it is added deliberately, never as the
+default. The `--skip-tasks` discovery and audit
 renders pass `--trust` too and hit the same classifier, so the decision covers
 them; the hard gate stays on the runs that execute `_tasks` or mutate the
 target.

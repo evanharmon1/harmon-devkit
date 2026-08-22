@@ -98,6 +98,14 @@ gated_thing:
   help: "GATED: only asked when antigravity is on"
   default: "[[ project_slug ]]-gated"
   when: "[[ use_antigravity_cli ]]"
+code_owner:
+  type: str
+  help: "CODE OWNER: GitHub user/team for CODEOWNERS"
+  default: "[[ author_git_provider_username ]]"
+use_coderabbit:
+  type: bool
+  help: "CODERABBIT: opt into the CodeRabbit bot reviewer"
+  default: false
 _secret_questions:
   - project_name
 YAML
@@ -113,7 +121,11 @@ project_name: Old Project
 use_antigravity_cli: true
 ordinary_thing: plain
 project_slug: my-project
+code_owner: someone
 YAML
+# Same answers minus the explicit code_owner: its Jinja default then stays
+# unresolved, and because code_owner names a principal, --confirm must refuse.
+grep -v '^code_owner:' "$FIX/data.yml" >"$FIX/data-unresolved.yml"
 
 run_asset() { "$ASSET" "$@"; }
 # Render the table into a file so the assertions can grep it. Keeping the
@@ -149,9 +161,19 @@ expect_row "a secret question prints <secret>, never its value" \
 expect_fail "the secret answer value never reaches stdout" \
     grep -qF 'Old Project' "$TABLE"
 expect_row "a template default is sourced and marked as templated" \
-    '^gated_thing +template-default .*\(templated default\)' "$TABLE"
+    '^gated_thing +template-default .*\(templated default' "$TABLE"
 expect_row "a when:-gated question is marked possibly inactive" \
     '^gated_thing .*may be inactive' "$TABLE"
+expect_row "an unresolved templated default is flagged UNRESOLVED" \
+    '^gated_thing +template-default .*UNRESOLVED' "$TABLE"
+expect_row "an explicitly stated principal is resolved, NEW and SENSITIVE" \
+    '^code_owner +data-file +"someone" NEW SENSITIVE$' "$TABLE"
+expect_row "a bot-trust toggle is flagged SENSITIVE" \
+    '^use_coderabbit .*SENSITIVE' "$TABLE"
+expect_ok "the summary calls out UNRESOLVED separately" \
+    grep -q '^== UNRESOLVED' "$TABLE"
+expect_ok "the guidance prefers a one-time approval over a standing rule" \
+    grep -qF 'standing, prefix-wide grant' "$TABLE"
 expect_ok "the summary calls out CHANGED separately" \
     grep -q '^== CHANGED' "$TABLE"
 expect_ok "the summary calls out SENSITIVE separately" \
@@ -185,6 +207,19 @@ expect_ok "with no recorded answers the CHANGED block is empty" \
 
 # ── 2. the --check gate ───────────────────────────────────────────────
 echo "==> confirmation gate"
+UNRESOLVED_TABLE="$TMPROOT/unresolved.txt"
+expect_ok "print mode still renders a set with an unresolved sensitive default" \
+    render_to "$UNRESOLVED_TABLE" --template-copier "$FIX/copier.yml" \
+    --recorded "$FIX/recorded.yml" --data-file "$FIX/data-unresolved.yml"
+expect_row "the unresolved principal is flagged SENSITIVE UNRESOLVED" \
+    '^code_owner +template-default .*SENSITIVE UNRESOLVED' "$UNRESOLVED_TABLE"
+expect_fail_contains "--confirm refuses while a sensitive default is unresolved" \
+    "refusing to confirm" \
+    run_asset --template-copier "$FIX/copier.yml" --recorded "$FIX/recorded.yml" \
+    --data-file "$FIX/data-unresolved.yml" --template-commit deadbeef \
+    --state-dir "$FIX/state" --confirm
+expect_fail "an unresolved sensitive default left no marker behind" \
+    test -f "$FIX/state/answers-confirmed"
 expect_fail_contains "--check fails before any confirmation" \
     "resolved answers not confirmed" \
     run_asset --check --data-file "$FIX/data.yml" --state-dir "$FIX/state" \
