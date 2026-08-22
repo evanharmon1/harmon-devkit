@@ -73,7 +73,13 @@ with `--vcs-ref=HEAD` into a disposable destination. That preview can contain a
 Copier-created throwaway commit and must not be promoted as a production scaffold.
 
 Copier prompts for each asked question. Answer them; everything else falls back
-to the hidden defaults.
+to the hidden defaults. **Those prompts are the confirmation checkpoint in this
+form** — the user sees and answers every asked question before any `_tasks` run,
+so no separate presentation is owed. What is still owed is the permission note
+below: `copier copy --trust` may be denied by Claude Code auto-mode's
+classifier, and the prompts are where the user approves the single run — or,
+deliberately, adds a `Bash(copier copy:*)` rule, a standing prefix-wide grant
+that also covers every later trusted copy. Agents never self-grant permissions.
 
 ## 3. Generate — non-interactive form
 
@@ -104,29 +110,69 @@ git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
 git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_codex_cloud_review:' ||
   { echo "HARMON_INIT_REF does not support the Codex cloud review choice" >&2; exit 1; }
+NEW_REPO_STATE="$(mktemp -d)" ||
+  { echo "failed to create the scaffold state directory" >&2; exit 1; }
+cat >"$NEW_REPO_STATE/new-repo-data.yml" <<'YAML' || { echo "failed to write the scaffold answers" >&2; exit 1; }
+project_name: "My Project"
+project_slug: "my-project"
+project_description: "One-line description of the project"
+github_org: "evanharmon1"
+code_owner: "evanharmon1"
+claude_authorized_members: "evanharmon1"
+project_type: "general"
+include_terraform: false
+include_ansible: false
+use_codeql: false
+use_codex_cloud_review: false
+use_coderabbit: false
+ci_runner: "ubuntu-latest"
+license: "mit"
+use_release_please: true
+devcontainer: true
+git_init: true
+github_remote_create: false
+github_release_init: false
+bunch_add: false
+obsidian_project_add: false
+run_task_install: false
+YAML
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml \
+  >"$NEW_REPO_STATE/target-copier.yml" ||
+  { echo "failed to extract the target copier.yml" >&2; exit 1; }
+assets/confirm-answers.sh \
+  --template-copier "$NEW_REPO_STATE/target-copier.yml" \
+  --recorded none \
+  --data-file "$NEW_REPO_STATE/new-repo-data.yml" \
+  --template-commit "$HARMON_INIT_COMMIT" \
+  --state-dir "$NEW_REPO_STATE"
+# Present that table, get explicit approval, then rerun the SAME command with
+# --confirm appended. Only then may the trusted copy below run.
+assets/confirm-answers.sh --check \
+  --data-file "$NEW_REPO_STATE/new-repo-data.yml" \
+  --recorded none \
+  --template-commit "$HARMON_INIT_COMMIT" \
+  --state-dir "$NEW_REPO_STATE" ||
+  { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }
 copier copy "$HARMON_INIT_SOURCE" <dest> \
   --trust --vcs-ref="$HARMON_INIT_COMMIT" --defaults \
-  --data project_name="My Project" \
-  --data project_slug="my-project" \
-  --data project_description="One-line description of the project" \
-  --data github_org="evanharmon1" \
-  --data project_type="general" \
-  --data include_terraform=false \
-  --data include_ansible=false \
-  --data use_codeql=false \
-  --data use_codex_cloud_review=false \
-  --data use_coderabbit=false \
-  --data ci_runner="ubuntu-latest" \
-  --data license="mit" \
-  --data use_release_please=true \
-  --data devcontainer=true \
-  --data git_init=true \
-  --data github_remote_create=false \
-  --data github_release_init=false \
-  --data bunch_add=false \
-  --data obsidian_project_add=false \
-  --data run_task_install=false
+  --data-file "$NEW_REPO_STATE/new-repo-data.yml"
 ```
+
+**There are no prompts in this form, so the confirmation is explicit.** The
+answers live in a data file, the asset prints the complete resolved set with
+`NEW` on every key (a brand-new scaffold has no recorded answers) and
+`SENSITIVE` on the ones that grant trust, name a principal, or fire a side
+effect, and the trusted `copier copy` is gated on a `--check` bound to that
+file's object ID and to `HARMON_INIT_COMMIT`. Edit an answer after approving and
+the check fails closed.
+
+`copier copy --trust` executes the template's `_tasks`, which is why Claude Code
+auto-mode's classifier may deny it. The confirmation checkpoint is where the
+user settles that: preferably by approving the single run at the prompt, or by
+adding a `Bash(copier copy:*)` permission rule — a standing, prefix-wide grant
+that also authorizes every later trusted copy, so add one deliberately. Agents
+never self-grant permissions, and a parallel worker prints the set, stops, and
+returns it rather than passing `--confirm` itself.
 
 The `use_codex_cloud_review` and `use_coderabbit` answers are introduced by
 companion harmon-init changes.

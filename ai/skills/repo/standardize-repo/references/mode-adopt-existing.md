@@ -171,22 +171,81 @@ git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
 git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_codex_cloud_review:' ||
   { echo "HARMON_INIT_REF does not support the Codex cloud review choice" >&2; exit 1; }
+ADOPT_STATE="$(mktemp -d)" ||
+  { echo "failed to create the adoption state directory" >&2; exit 1; }
+cat >"$ADOPT_STATE/adopt-data.yml" <<YAML || { echo "failed to write the adoption answers" >&2; exit 1; }
+project_type: "$PROJECT_TYPE"
+project_name: "<Formal Project Name>"
+github_org: "<org-or-user>"
+code_owner: "<github-user-or-org/team>"
+claude_authorized_members: "<comma-separated-logins>"
+use_codeql: $USE_CODEQL
+codeql_languages: $CODEQL_LANGUAGES
+use_codex_cloud_review: false
+use_coderabbit: false
+git_init: false
+github_remote_create: false
+github_release_init: false
+bunch_add: false
+obsidian_project_add: false
+run_task_install: false
+YAML
+# ↑ pass EVERY side effect =false (see §1). On a v2 RE-adopt copier seeds
+#   defaults from the stale .copier-answers.yml, so they do NOT "default to no".
+# The slug is the directory name, which may hold characters YAML would
+# reinterpret inside a quoted scalar — serialize it, never interpolate it.
+PROJECT_SLUG="$(basename "$(pwd)")" yq -i \
+  '.project_slug = strenv(PROJECT_SLUG)' "$ADOPT_STATE/adopt-data.yml" ||
+  { echo "failed to record the project slug" >&2; exit 1; }
+# code_owner and claude_authorized_members default to a Jinja expression the
+# gate cannot evaluate; they name authorization principals, so state them.
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml \
+  >"$ADOPT_STATE/target-copier.yml" ||
+  { echo "failed to extract the target copier.yml" >&2; exit 1; }
+# A v2 RE-adopt still has the stale .copier-answers.yml that copier seeds its
+# defaults from; the table must compare against it, or every omitted key shows
+# the template default while copier consumes the recorded value.
+RECORDED_ANSWERS=none
+test ! -f .copier-answers.yml || RECORDED_ANSWERS=.copier-answers.yml
+assets/confirm-answers.sh \
+  --template-copier "$ADOPT_STATE/target-copier.yml" \
+  --recorded "$RECORDED_ANSWERS" \
+  --data-file "$ADOPT_STATE/adopt-data.yml" \
+  --template-commit "$HARMON_INIT_COMMIT" \
+  --state-dir "$ADOPT_STATE"
+# Present that table, get explicit approval, then rerun the SAME command with
+# --confirm appended. Only then may the trusted copy below run.
+assets/confirm-answers.sh --check \
+  --data-file "$ADOPT_STATE/adopt-data.yml" \
+  --recorded "$RECORDED_ANSWERS" \
+  --template-commit "$HARMON_INIT_COMMIT" \
+  --state-dir "$ADOPT_STATE" ||
+  { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }
 copier copy --trust "$HARMON_INIT_SOURCE" . \
   --vcs-ref="$HARMON_INIT_COMMIT" --defaults --overwrite \
-  --data project_type="$PROJECT_TYPE" \
-  --data project_name="<Formal Project Name>" \
-  --data project_slug="$(basename "$(pwd)")" \
-  --data github_org="<org-or-user>" \
-  --data use_codeql="$USE_CODEQL" \
-  --data codeql_languages="$CODEQL_LANGUAGES" \
-  --data use_codex_cloud_review=false \
-  --data use_coderabbit=false \
-  --data git_init=false \
-  --data github_remote_create=false --data github_release_init=false \
-  --data bunch_add=false --data obsidian_project_add=false --data run_task_install=false
-  # ↑ pass EVERY side effect =false (see §1). On a v2 RE-adopt copier seeds
-  #   defaults from the stale .copier-answers.yml, so they do NOT "default to no".
+  --data-file "$ADOPT_STATE/adopt-data.yml"
 ```
+
+**The answers go through a data file so they can be reviewed as a set.** A
+fresh Path B adoption has no `.copier-answers.yml` to compare against, so
+`--recorded none` marks every answer `NEW` — the honest reading: nothing here
+was previously agreed to. A v2 re-adopt **does** have one, and copier seeds
+defaults from it, so the recipe passes it as `--recorded`: omitted keys then show
+the recorded value copier will actually consume, not the template default — and
+the confirmation binds that file's object ID too, so a recorded answer edited
+after approval fails `--check` exactly as an edited data-file answer does. Security-sensitive answers are still called out as
+`SENSITIVE`, and the side-effect answers this recipe pins to `false` are in that
+class precisely so a stray `true` cannot pass unnoticed. Confirmation is bound to
+the data file's object ID and to `HARMON_INIT_COMMIT`; editing an answer
+afterwards invalidates it and the `--check` fails closed.
+
+`copier copy --trust` is what Claude Code auto-mode's classifier denies, because
+it executes the template's `_tasks`. This checkpoint is where the user settles
+that: preferably by approving the single run at the prompt, or by adding a
+`Bash(copier copy:*)` permission rule — a standing, prefix-wide grant that also
+authorizes every later trusted copy, so add one deliberately. Agents
+never self-grant permissions, and a parallel worker prints the set, stops, and
+returns it to the parent/human rather than passing `--confirm` itself.
 
 The `use_codex_cloud_review` and `use_coderabbit` answers are introduced by
 companion harmon-init changes.
