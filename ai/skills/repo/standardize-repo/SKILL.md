@@ -121,6 +121,21 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
   This is only the command shape; run the release-tag validation and derive
   `HARMON_INIT_COMMIT` in `references/mode-new-repo.md` before executing it.
 
+- **Confirm the resolved answers before any `--trust` run.** `--trust` executes
+  the template's `_tasks`, so every non-interactive mode (update,
+  adopt-existing, new-repo) first prints the complete resolved question →
+  answer set with `assets/confirm-answers.sh` — `CHANGED` against the recorded
+  `.copier-answers.yml`, `NEW` where nothing is recorded, `SENSITIVE` where the
+  answer grants trust, names a principal, or fires a side effect — waits for
+  explicit human approval, records it with `--confirm`, and gates the trusted
+  run on `--check`. The asset never runs copier. In the interactive new-repo
+  form copier's own prompts are that checkpoint. Claude Code auto-mode's
+  classifier may deny `copier … --trust` outright (it also denies the
+  `--skip-tasks` discovery renders): this checkpoint is where the user approves
+  the run or adds a `Bash(copier update:*)` / `Bash(copier copy:*)` permission
+  rule. **Agents never self-grant permissions**, and a parallel worker prints
+  the set, stops, and returns it to the parent/human instead of confirming.
+
 - **Validate after every apply.** Re-running `copier` or changing answers can churn
   files — confirm the result with the verification step below before committing.
 - **Optimize for regular rolling updates, not every historical migration path.**

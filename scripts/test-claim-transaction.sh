@@ -385,8 +385,9 @@ echo "==> a newer trusted claim before publication prevents a stale record commi
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 concurrent_record="$tmp/concurrent-record.md"
-cp "$record" "$concurrent_record"
-sed -i 's/test-session/concurrent-session/g' "$concurrent_record"
+# Rewrite via the copy rather than `sed -i`: BSD and GNU `sed -i` take
+# different arguments, and the bare form fails on macOS.
+sed 's/test-session/concurrent-session/g' "$record" >"$concurrent_record"
 result="$(RUN_MUTATE_COMMENTS_ON_READ=2 RUN_CONCURRENT_RECORD="$concurrent_record" RUN_CONCURRENT_LOGIN=evanharmon1 \
     run_claim --claim-label claim:gpt)"
 [ "$result" = 6 ] || fail "a changed predecessor before publication must exit 6: $(cat "$err")"

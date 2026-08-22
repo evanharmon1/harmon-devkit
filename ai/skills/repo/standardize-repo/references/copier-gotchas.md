@@ -307,6 +307,41 @@ everything it reports is by definition a path the baseline ships —
 
 ---
 
+## 10. `--trust` executes template code — confirm the answers, expect a classifier denial
+
+`copier copy --trust` and `copier update --trust` run the template's `_tasks`.
+Two consequences, and both bite in the same place.
+
+**The answer set has to be reviewed before the run, not after.** A re-render is
+where `use_antigravity_cli=true` (an autonomous agent whose bot profile injects
+`--dangerously-skip-permissions`) or
+`foreman_additional_trusted_actors=<login>` (Foreman arming plus comment/review
+trust for a GitHub login) gets applied — as one `--data` among twenty, with no
+prompt and no diff. `assets/confirm-answers.sh` renders the complete resolved
+question → answer set from the frozen `copier.yml`, the reviewed data file, and
+the recorded `.copier-answers.yml`, flagging `CHANGED`, `NEW`, and `SENSITIVE`
+rows and repeating those three classes as summary blocks. It reads YAML and
+hashes files; it never runs copier, so it is safe to run before any trusted
+execution. `--confirm` records the approval against the data file's object ID
+and the template commit, and every trusted run is preceded by a fail-closed
+`--check`. Editing an answer after approval invalidates the confirmation
+instead of silently reusing it.
+
+**`copier … --trust` is denied by Claude Code auto-mode's classifier**, and
+correctly so — it executes arbitrary template code. An agent that discovers the
+block mid-run is stuck: it cannot self-grant the permission, and it must not.
+The confirmation checkpoint is the natural place to settle it — the user
+approves the run at the prompt, or adds a `Bash(copier update:*)` /
+`Bash(copier copy:*)` permission rule. The `--skip-tasks` discovery and audit
+renders pass `--trust` too and hit the same classifier, so the decision covers
+them; the hard gate stays on the runs that execute `_tasks` or mutate the
+target.
+
+**Rule:** no trusted render before a presented, approved answer set — and never
+an agent-granted permission to get past the denial.
+
+---
+
 ## Quick checklist when touching the template
 
 - Rendering local WIP to test? → `--vcs-ref=HEAD`.
@@ -323,4 +358,8 @@ everything it reports is by definition a path the baseline ships —
   path listed under `_skip_if_exists`, and any path the render's own
   `.gitignore` covers. A file added upstream *after* your baseline is not a
   carve-out — it is target-only, and the update creates it in the ordinary way.
+- About to run `copier … --trust`? → present the resolved answers with
+  `assets/confirm-answers.sh`, get explicit approval, `--confirm`, then gate the
+  run on `--check` (gotcha 10). A classifier denial is approved by the user or
+  by a permission rule they add — never by the agent.
 - After any `copier.yml` / `template/**` change → `task test:template:all` must pass.

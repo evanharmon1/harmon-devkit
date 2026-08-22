@@ -315,6 +315,7 @@ tasks:
       - test:triage-skill
       - test:skill-index-lifecycle
       - test:independence
+      - test:confirm-answers
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -540,6 +541,11 @@ tasks:
     desc: Unit-test the shipped-output independence guard (offline, temp repos)
     cmds:
       - ./scripts/test-independence.sh
+
+  test:confirm-answers:
+    desc: Unit-test the standardize-repo copier answer confirmation gate (offline)
+    cmds:
+      - ./scripts/test-confirm-answers.sh
 
   # ── Second-model review (Codex) ───────────────────────────────
   # Optional second AI model (the OpenAI Codex CLI) reviewing the current

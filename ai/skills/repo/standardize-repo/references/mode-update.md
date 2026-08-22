@@ -1813,10 +1813,61 @@ else
   printf '%s\n' "$REVIEWED_DATA_OID" >"$GUARDED_STATE/reviewed-data-oid" ||
     { echo "failed to freeze reviewed data" >&2; exit 1; }
 fi
+git -C "$GUARDED_TEMPLATE" show "$HARMON_INIT_COMMIT":copier.yml \
+  >"$GUARDED_STATE/target-copier.yml" ||
+  { echo "failed to extract the target copier.yml" >&2; exit 1; }
+assets/confirm-answers.sh \
+  --template-copier "$GUARDED_STATE/target-copier.yml" \
+  --recorded "$GUARDED_STATE/original-answers.yml" \
+  --data-file "$REVIEWED_DATA" \
+  --active-keys "$GUARDED_STATE/reviewed-keys" \
+  --template-commit "$HARMON_INIT_COMMIT" \
+  --state-dir "$GUARDED_STATE"
+```
+
+**Stop here and present that table.** It is the complete resolved question →
+answer set this run will pass, with every answer that differs from the recorded
+`.copier-answers.yml` marked `CHANGED`, every answer with no recorded value
+marked `NEW`, and every security-sensitive answer marked `SENSITIVE` — the three
+classes repeated as their own summary blocks so they cannot be scrolled past.
+Nothing is written and no Copier process starts: the asset only reads YAML and
+hashes files.
+
+Only after the human has seen that set and explicitly approved it, record the
+confirmation by rerunning the same command with `--confirm` appended. An agent
+never confirms on its own behalf, and in the parallel-worker topology a worker
+prints the set, stops, and returns it to the parent/human rather than passing
+`--confirm` itself.
+
+The next two Copier runs execute the template's `_tasks` under `--trust`, so
+each is preceded by a fail-closed `--check`:
+
+```bash
+assets/confirm-answers.sh --check \
+  --data-file "$REVIEWED_DATA" \
+  --template-commit "$HARMON_INIT_COMMIT" \
+  --state-dir "$GUARDED_STATE" ||
+  { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }
 run_guarded_copier update --trust --defaults --pretend \
   --vcs-ref="$HARMON_INIT_COMMIT" \
   --data-file="$REVIEWED_DATA"
 ```
+
+The confirmation is bound to the reviewed data file's object ID and to
+`HARMON_INIT_COMMIT`, which is the same freeze discipline the
+`reviewed-data-oid` record already enforces: editing an answer after the
+approval, or repointing the run at another template commit, invalidates the
+confirmation instead of silently reusing it. Rerun the presentation, obtain
+approval again, then `--confirm`.
+
+`copier … --trust` is exactly the command Claude Code auto-mode's classifier
+denies, because it executes arbitrary template code. This checkpoint is where
+that is settled: approve the run at the prompt, or add a
+`Bash(copier update:*)` permission rule. Agents never self-grant permissions.
+The discovery and audit renders earlier in this mode pass `--trust` too (with
+`--skip-tasks`, into scratch directories) and can be denied by the same
+classifier, so the permission decision made here covers them as well — but the
+hard gate is on the two runs that execute `_tasks` or mutate the target.
 
 The existing Foreman answer is the starting point, not an instruction to retain
 it blindly. Review that substantial per-repo choice and override `USE_FOREMAN`
@@ -2011,6 +2062,11 @@ write_guarded_phase() {
   echo "failed to persist guarded apply phase" >&2
   return 1
 }
+assets/confirm-answers.sh --check \
+  --data-file "$REVIEWED_DATA" \
+  --template-commit "$HARMON_INIT_COMMIT" \
+  --state-dir "$GUARDED_STATE" ||
+  { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }
 write_guarded_phase applying ||
   { echo "Copier was not started" >&2; exit 1; }
 if run_guarded_copier update --trust --defaults \
@@ -2028,7 +2084,11 @@ fi
 ```
 
 Use the same frozen reviewed-data file in the preview and real invocation; do
-not retype or omit answers between those two steps. The `applying` phase is
+not retype or omit answers between those two steps. The `--check` above is
+re-run immediately before the mutating call for the same reason the OID freeze
+is re-verified: an answer edited between the rehearsal and the apply is an
+unconfirmed answer, and the gate fails closed rather than trusting the earlier
+approval. The `applying` phase is
 atomically recorded before Copier can mutate the worktree. `applied` records a
 normal return, but promotion does not trust either phase by itself: it validates
 the complete resulting state below. After a crash or nonzero return, never

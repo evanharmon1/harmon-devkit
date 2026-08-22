@@ -930,6 +930,43 @@ CLAIM_SKILL="$repo/ai/skills/universal/claim/SKILL.md"
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
     grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
 
+# ── the copier answer-confirmation gate (issue #568) ──────────────────
+# Every mode that runs `copier … --trust` non-interactively must present the
+# resolved answers and gate the trusted run on the recorded confirmation.
+# Executable, and executable in git's index once it is tracked — a mode bit that
+# only exists in the working tree does not reach the repos that vendor it.
+expect_ok "the confirmation asset is executable (and 100755 in the index)" \
+    sh -c 'a=ai/skills/repo/standardize-repo/assets/confirm-answers.sh
+        test -x "$1/$a" || exit 1
+        m="$(git -C "$1" ls-files -s -- "$a" | cut -d" " -f1)"
+        test -z "$m" || test "$m" = 100755' \
+    sh "$repo"
+# It reads YAML and hashes files; copier is never a command it runs, which is
+# what makes it safe to call before the trusted execution it gates.
+expect_ok "the confirmation asset never invokes copier as a command" \
+    sh -c '! grep -Eq "^[[:space:]]*(sudo[[:space:]]+)?copier[[:space:]]" "$1/confirm-answers.sh"' \
+    sh "$STANDARDIZE_ASSETS"
+for guarded_mode in mode-update mode-adopt-existing mode-new-repo; do
+    guarded_doc="$STANDARDIZE_REFS/$guarded_mode.md"
+    expect_ok "$guarded_mode gates its trusted run on confirm-answers.sh --check" \
+        grep -qF 'assets/confirm-answers.sh --check' "$guarded_doc"
+    expect_ok "$guarded_mode presents the resolved answers before confirming" \
+        grep -qF -- '--template-copier' "$guarded_doc"
+    expect_ok "$guarded_mode names the auto-mode classifier denial" \
+        grep -qF "auto-mode's" "$guarded_doc"
+    expect_ok "$guarded_mode forbids agents self-granting the permission" \
+        grep -qF 'never self-grant permissions' "$guarded_doc"
+    expect_ok "$guarded_mode names the permission rule the user may add" \
+        grep -Eq 'Bash\(copier (update|copy):\*\)' "$guarded_doc"
+done
+expect_ok "mode-update checks the confirmation before the --pretend rehearsal" \
+    sh -c 'awk "/assets\/confirm-answers.sh --check/ { seen = 1 } /run_guarded_copier update --trust --defaults --pretend/ { exit seen ? 0 : 1 }" "$1"' \
+    sh "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "copier-gotchas carries the trust/classifier gotcha" \
+    grep -qF '`--trust` executes template code' "$STANDARDIZE_REFS/copier-gotchas.md"
+expect_ok "SKILL.md states the confirmation checkpoint" \
+    grep -qF 'Confirm the resolved answers before any `--trust` run' "$STANDARDIZE_SKILL"
+
 for rest_doc in \
     "$STANDARDIZE_REFS/mode-audit.md" \
     "$STANDARDIZE_REFS/post-generation-checklist.md" \

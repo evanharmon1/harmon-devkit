@@ -171,22 +171,61 @@ git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
 git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_codex_cloud_review:' ||
   { echo "HARMON_INIT_REF does not support the Codex cloud review choice" >&2; exit 1; }
+ADOPT_STATE="$(mktemp -d)" ||
+  { echo "failed to create the adoption state directory" >&2; exit 1; }
+cat >"$ADOPT_STATE/adopt-data.yml" <<YAML || { echo "failed to write the adoption answers" >&2; exit 1; }
+project_type: "$PROJECT_TYPE"
+project_name: "<Formal Project Name>"
+project_slug: "$(basename "$(pwd)")"
+github_org: "<org-or-user>"
+use_codeql: $USE_CODEQL
+codeql_languages: $CODEQL_LANGUAGES
+use_codex_cloud_review: false
+use_coderabbit: false
+git_init: false
+github_remote_create: false
+github_release_init: false
+bunch_add: false
+obsidian_project_add: false
+run_task_install: false
+YAML
+# ↑ pass EVERY side effect =false (see §1). On a v2 RE-adopt copier seeds
+#   defaults from the stale .copier-answers.yml, so they do NOT "default to no".
+git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml \
+  >"$ADOPT_STATE/target-copier.yml" ||
+  { echo "failed to extract the target copier.yml" >&2; exit 1; }
+assets/confirm-answers.sh \
+  --template-copier "$ADOPT_STATE/target-copier.yml" \
+  --recorded none \
+  --data-file "$ADOPT_STATE/adopt-data.yml" \
+  --template-commit "$HARMON_INIT_COMMIT" \
+  --state-dir "$ADOPT_STATE"
+# Present that table, get explicit approval, then rerun the SAME command with
+# --confirm appended. Only then may the trusted copy below run.
+assets/confirm-answers.sh --check \
+  --data-file "$ADOPT_STATE/adopt-data.yml" \
+  --template-commit "$HARMON_INIT_COMMIT" \
+  --state-dir "$ADOPT_STATE" ||
+  { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }
 copier copy --trust "$HARMON_INIT_SOURCE" . \
   --vcs-ref="$HARMON_INIT_COMMIT" --defaults --overwrite \
-  --data project_type="$PROJECT_TYPE" \
-  --data project_name="<Formal Project Name>" \
-  --data project_slug="$(basename "$(pwd)")" \
-  --data github_org="<org-or-user>" \
-  --data use_codeql="$USE_CODEQL" \
-  --data codeql_languages="$CODEQL_LANGUAGES" \
-  --data use_codex_cloud_review=false \
-  --data use_coderabbit=false \
-  --data git_init=false \
-  --data github_remote_create=false --data github_release_init=false \
-  --data bunch_add=false --data obsidian_project_add=false --data run_task_install=false
-  # ↑ pass EVERY side effect =false (see §1). On a v2 RE-adopt copier seeds
-  #   defaults from the stale .copier-answers.yml, so they do NOT "default to no".
+  --data-file "$ADOPT_STATE/adopt-data.yml"
 ```
+
+**The answers go through a data file so they can be reviewed as a set.** Path B
+has no `.copier-answers.yml` to compare against, so `--recorded none` marks every
+answer `NEW` — which is the honest reading of a fresh adoption: nothing here was
+previously agreed to. Security-sensitive answers are still called out as
+`SENSITIVE`, and the side-effect answers this recipe pins to `false` are in that
+class precisely so a stray `true` cannot pass unnoticed. Confirmation is bound to
+the data file's object ID and to `HARMON_INIT_COMMIT`; editing an answer
+afterwards invalidates it and the `--check` fails closed.
+
+`copier copy --trust` is what Claude Code auto-mode's classifier denies, because
+it executes the template's `_tasks`. This checkpoint is where the user approves
+the run at the prompt or adds a `Bash(copier copy:*)` permission rule; agents
+never self-grant permissions, and a parallel worker prints the set, stops, and
+returns it to the parent/human rather than passing `--confirm` itself.
 
 The `use_codex_cloud_review` and `use_coderabbit` answers are introduced by
 companion harmon-init changes.
