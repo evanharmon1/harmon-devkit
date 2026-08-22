@@ -43,7 +43,7 @@ jobs:
           # yq comes from the setup action above (lint-tools: "true") — do not
           # re-install it here.
           # renovate: datasource=pypi depName=copier
-          COPIER_VERSION=9.16.0
+          COPIER_VERSION=9.17.2
           python -m pip install "copier==${COPIER_VERSION}"
       - name: Lint
         run: task check

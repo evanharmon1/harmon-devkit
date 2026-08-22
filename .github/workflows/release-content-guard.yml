@@ -42,7 +42,7 @@ jobs:
       - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
-          version: 3.51.1
+          version: 3.53.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Require a releasing title for release-worthy content changes
         # PR title/body are untrusted input — pass them through the environment
