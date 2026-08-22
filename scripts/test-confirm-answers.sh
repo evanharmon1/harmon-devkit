@@ -223,7 +223,7 @@ expect_fail "an unresolved sensitive default left no marker behind" \
 expect_fail_contains "--check fails before any confirmation" \
     "resolved answers not confirmed" \
     run_asset --check --data-file "$FIX/data.yml" --state-dir "$FIX/state" \
-    --template-commit deadbeef
+    --recorded "$FIX/recorded.yml" --template-commit deadbeef
 expect_ok "--confirm records the marker" \
     render_to "$TMPROOT/confirm.txt" --template-copier "$FIX/copier.yml" \
     --recorded "$FIX/recorded.yml" --data-file "$FIX/data.yml" \
@@ -231,19 +231,31 @@ expect_ok "--confirm records the marker" \
 expect_ok "the marker exists" test -f "$FIX/state/answers-confirmed"
 expect_ok "--check passes after confirmation" \
     run_asset --check --data-file "$FIX/data.yml" --state-dir "$FIX/state" \
-    --template-commit deadbeef
+    --recorded "$FIX/recorded.yml" --template-commit deadbeef
 expect_fail_contains "--check fails when the template commit moved" \
     "template commit changed after confirmation" \
     run_asset --check --data-file "$FIX/data.yml" --state-dir "$FIX/state" \
-    --template-commit cafebabe
+    --recorded "$FIX/recorded.yml" --template-commit cafebabe
 
+# The recorded answers are an answer source too (copier --defaults fills omitted
+# questions from them), so editing that file after approval also fails closed.
+cp "$FIX/recorded.yml" "$FIX/recorded-edited.yml"
+printf '%s\n' 'use_antigravity_cli: true' >>"$FIX/recorded-edited.yml"
+expect_fail_contains "--check fails once the recorded answers change" \
+    "recorded answers changed after confirmation" \
+    run_asset --check --data-file "$FIX/data.yml" --state-dir "$FIX/state" \
+    --recorded "$FIX/recorded-edited.yml" --template-commit deadbeef
+expect_fail_contains "--check fails when a confirmation bound to recorded answers is checked with none" \
+    "recorded answers changed after confirmation" \
+    run_asset --check --data-file "$FIX/data.yml" --state-dir "$FIX/state" \
+    --recorded none --template-commit deadbeef
 # Mutating the reviewed data invalidates the confirmation: the approval was for
 # the answers the user actually saw, not for the file path.
 printf '%s\n' 'ordinary_thing: tampered' >>"$FIX/data.yml"
 expect_fail_contains "--check fails once the data file changes" \
     "data file changed after confirmation" \
     run_asset --check --data-file "$FIX/data.yml" --state-dir "$FIX/state" \
-    --template-commit deadbeef
+    --recorded "$FIX/recorded.yml" --template-commit deadbeef
 
 # ── 3. argument handling ──────────────────────────────────────────────
 echo "==> argument handling"
@@ -254,6 +266,13 @@ expect_fail_contains "--confirm requires a state dir" "--confirm requires --stat
     --data-file "$FIX/data.yml" --confirm
 expect_fail_contains "--check requires a state dir" "--check requires --state-dir" \
     run_asset --check --data-file "$FIX/data.yml"
+expect_fail_contains "--check requires the template commit" "--check requires --template-commit" \
+    run_asset --check --data-file "$FIX/data.yml" --state-dir "$FIX/state" --recorded none
+expect_fail_contains "--check requires the recorded answers binding" "--check requires --recorded" \
+    run_asset --check --data-file "$FIX/data.yml" --state-dir "$FIX/state" --template-commit deadbeef
+expect_fail_contains "--confirm requires the template commit" "--confirm requires --template-commit" \
+    run_asset --template-copier "$FIX/copier.yml" --recorded none \
+    --data-file "$FIX/data.yml" --state-dir "$FIX/state" --confirm
 expect_fail_contains "--confirm and --check are exclusive" "exclusive" \
     run_asset --check --confirm --data-file "$FIX/data.yml" --state-dir "$FIX/state"
 expect_fail_contains "an unknown flag is rejected" "unknown argument" \

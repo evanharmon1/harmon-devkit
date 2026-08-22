@@ -217,6 +217,7 @@ assets/confirm-answers.sh \
 # --confirm appended. Only then may the trusted copy below run.
 assets/confirm-answers.sh --check \
   --data-file "$ADOPT_STATE/adopt-data.yml" \
+  --recorded "$RECORDED_ANSWERS" \
   --template-commit "$HARMON_INIT_COMMIT" \
   --state-dir "$ADOPT_STATE" ||
   { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }
@@ -230,7 +231,9 @@ fresh Path B adoption has no `.copier-answers.yml` to compare against, so
 `--recorded none` marks every answer `NEW` — the honest reading: nothing here
 was previously agreed to. A v2 re-adopt **does** have one, and copier seeds
 defaults from it, so the recipe passes it as `--recorded`: omitted keys then show
-the recorded value copier will actually consume, not the template default. Security-sensitive answers are still called out as
+the recorded value copier will actually consume, not the template default — and
+the confirmation binds that file's object ID too, so a recorded answer edited
+after approval fails `--check` exactly as an edited data-file answer does. Security-sensitive answers are still called out as
 `SENSITIVE`, and the side-effect answers this recipe pins to `false` are in that
 class precisely so a stray `true` cannot pass unnoticed. Confirmation is bound to
 the data file's object ID and to `HARMON_INIT_COMMIT`; editing an answer

@@ -1854,6 +1854,7 @@ each is preceded by a fail-closed `--check`:
 ```bash
 assets/confirm-answers.sh --check \
   --data-file "$REVIEWED_DATA" \
+  --recorded "$GUARDED_STATE/original-answers.yml" \
   --template-commit "$HARMON_INIT_COMMIT" \
   --state-dir "$GUARDED_STATE" ||
   { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }
@@ -1862,11 +1863,13 @@ run_guarded_copier update --trust --defaults --pretend \
   --data-file="$REVIEWED_DATA"
 ```
 
-The confirmation is bound to the reviewed data file's object ID and to
+The confirmation is bound to the reviewed data file's object ID, to the
+recorded answers snapshot (`original-answers.yml` — `copier update` fills every
+non-reviewed question from it, so it is an answer source too), and to
 `HARMON_INIT_COMMIT`, which is the same freeze discipline the
 `reviewed-data-oid` record already enforces: editing an answer after the
-approval, or repointing the run at another template commit, invalidates the
-confirmation instead of silently reusing it. Rerun the presentation, obtain
+approval, a changed recorded file, or repointing the run at another template
+commit, each invalidates the confirmation instead of silently reusing it. Rerun the presentation, obtain
 approval again, then `--confirm`.
 
 `copier … --trust` is exactly the command Claude Code auto-mode's classifier
@@ -2076,6 +2079,7 @@ write_guarded_phase() {
 }
 assets/confirm-answers.sh --check \
   --data-file "$REVIEWED_DATA" \
+  --recorded "$GUARDED_STATE/original-answers.yml" \
   --template-commit "$HARMON_INIT_COMMIT" \
   --state-dir "$GUARDED_STATE" ||
   { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }

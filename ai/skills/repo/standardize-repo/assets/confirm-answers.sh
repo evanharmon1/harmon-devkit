@@ -9,7 +9,13 @@
 #                      [--active-keys <file>] [--template-commit <sha>]
 #                      [--state-dir <dir>] [--confirm]
 #   confirm-answers.sh --check --data-file <answers.yml> --state-dir <dir>
-#                      [--template-commit <sha>]
+#                      --recorded <.copier-answers.yml|none> --template-commit <sha>
+#
+# The confirmation binds THREE inputs — the data file, the recorded answers
+# file (copier --defaults fills omitted questions from it, so it is an answer
+# source too), and the template commit — and --check verifies all three.
+# --template-commit and --recorded are optional for a plain print, mandatory
+# for --confirm and --check.
 #
 # Three modes:
 #   (default)  print the resolved table and exit 0. Nothing is written.
@@ -37,7 +43,7 @@ Usage:
                      [--active-keys <file>] [--template-commit <sha>] \
                      [--state-dir <dir>] [--confirm]
   confirm-answers.sh --check --data-file <answers.yml> --state-dir <dir> \
-                     [--template-commit <sha>]
+                     --recorded <.copier-answers.yml|none> --template-commit <sha>
 USAGE
 }
 
@@ -183,25 +189,55 @@ not_confirmed() {
     exit 1
 }
 
+# The recorded answers file is an answer source in its own right: copier
+# --defaults fills every omitted question from it, so a confirmation that did
+# not bind it could be satisfied while the values copier will actually consume
+# change underneath it. "none" is a legitimate binding (fresh adopt / new repo).
+recorded_answers_oid() {
+    if [ "$recorded" = none ]; then
+        printf 'none'
+    else
+        git hash-object "$recorded"
+    fi
+}
+
 if [ "$mode" = check ]; then
     [ -n "$state_dir" ] || {
         usage
         echo "FAIL: --check requires --state-dir" >&2
         exit 2
     }
+    [ -n "$template_commit" ] || {
+        usage
+        echo "FAIL: --check requires --template-commit (the marker binds the template commit; an unchecked commit could authorize another template's _tasks)" >&2
+        exit 2
+    }
+    [ -n "$recorded" ] || {
+        usage
+        echo "FAIL: --check requires --recorded (a path, or 'none'); the recorded answers are an answer source the marker binds" >&2
+        exit 2
+    }
+    if [ "$recorded" != none ] && [ ! -f "$recorded" ]; then
+        echo "FAIL: no such recorded answers file: $recorded" >&2
+        exit 2
+    fi
     marker="$state_dir/$marker_name"
     [ -f "$marker" ] || not_confirmed "no confirmation marker at $marker"
-    recorded_oid="$(awk '$1 == "data-file-oid" { print $2 }' "$marker")"
-    recorded_commit="$(awk '$1 == "template-commit" { print $2 }' "$marker")"
+    marker_data_oid="$(awk '$1 == "data-file-oid" { print $2 }' "$marker")"
+    marker_recorded_oid="$(awk '$1 == "recorded-oid" { print $2 }' "$marker")"
+    marker_commit="$(awk '$1 == "template-commit" { print $2 }' "$marker")"
     current_oid="$(git hash-object "$data_file")"
-    [ -n "$recorded_oid" ] || not_confirmed "marker records no data-file OID"
-    [ "$recorded_oid" = "$current_oid" ] ||
-        not_confirmed "the data file changed after confirmation ($recorded_oid -> $current_oid)"
-    if [ -n "$template_commit" ]; then
-        [ "$recorded_commit" = "$template_commit" ] ||
-            not_confirmed "the template commit changed after confirmation ($recorded_commit -> $template_commit)"
-    fi
-    echo "confirmed: $data_file ($current_oid) against template commit ${recorded_commit:-<unrecorded>}"
+    current_recorded_oid="$(recorded_answers_oid)"
+    [ -n "$marker_data_oid" ] || not_confirmed "marker records no data-file OID"
+    [ "$marker_data_oid" = "$current_oid" ] ||
+        not_confirmed "the data file changed after confirmation ($marker_data_oid -> $current_oid)"
+    [ -n "$marker_recorded_oid" ] || not_confirmed "marker records no recorded-answers binding"
+    [ "$marker_recorded_oid" = "$current_recorded_oid" ] ||
+        not_confirmed "the recorded answers changed after confirmation ($marker_recorded_oid -> $current_recorded_oid)"
+    [ -n "$marker_commit" ] || not_confirmed "marker records no template commit"
+    [ "$marker_commit" = "$template_commit" ] ||
+        not_confirmed "the template commit changed after confirmation ($marker_commit -> $template_commit)"
+    echo "confirmed: $data_file ($current_oid), recorded answers ($current_recorded_oid), template commit $marker_commit"
     exit 0
 fi
 
@@ -236,6 +272,11 @@ if [ "$mode" = confirm ]; then
     [ -n "$state_dir" ] || {
         usage
         echo "FAIL: --confirm requires --state-dir" >&2
+        exit 2
+    }
+    [ -n "$template_commit" ] || {
+        usage
+        echo "FAIL: --confirm requires --template-commit so the confirmation binds the template whose _tasks will run" >&2
         exit 2
     }
     [ -d "$state_dir" ] || {
@@ -423,6 +464,7 @@ if [ "$mode" = confirm ]; then
         }
     if {
         printf 'data-file-oid %s\n' "$(git hash-object "$data_file")"
+        printf 'recorded-oid %s\n' "$(recorded_answers_oid)"
         printf 'template-commit %s\n' "$template_commit"
     } >"$candidate"; then
         mv "$candidate" "$marker" || {

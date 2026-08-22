@@ -972,6 +972,13 @@ expect_ok "mode-adopt-existing compares a re-adopt against the stale recorded an
 expect_ok "mode-adopt-existing serializes the slug instead of interpolating YAML" \
     grep -qF ".project_slug = strenv(PROJECT_SLUG)" \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
+expect_ok "every mode's --check binds the recorded answers too" \
+    sh -c 'for d in mode-update mode-adopt-existing mode-new-repo; do
+        awk "/assets\/confirm-answers.sh --check/ { inblock = 1; next }
+             inblock && /--recorded/ { found++ }
+             inblock && /--state-dir/ { inblock = 0 }
+             END { exit found > 0 ? 0 : 1 }" "$1/$d.md" || exit 1
+    done' sh "$STANDARDIZE_REFS"
 expect_ok "mode-update checks the confirmation before the --pretend rehearsal" \
     sh -c 'awk "/assets\/confirm-answers.sh --check/ { seen = 1 } /run_guarded_copier update --trust --defaults --pretend/ { exit seen ? 0 : 1 }" "$1"' \
     sh "$STANDARDIZE_REFS/mode-update.md"

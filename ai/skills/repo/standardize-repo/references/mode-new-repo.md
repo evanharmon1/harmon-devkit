@@ -149,6 +149,7 @@ assets/confirm-answers.sh \
 # --confirm appended. Only then may the trusted copy below run.
 assets/confirm-answers.sh --check \
   --data-file "$NEW_REPO_STATE/new-repo-data.yml" \
+  --recorded none \
   --template-commit "$HARMON_INIT_COMMIT" \
   --state-dir "$NEW_REPO_STATE" ||
   { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }
