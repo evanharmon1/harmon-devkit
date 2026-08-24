@@ -175,7 +175,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: anthropics/claude-code-action@d40ddef4c030e508327d6e35a9c45f3368482c50 # v1.0.195
+      - uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
         # Step-level cap. A JOB timeout kills the runner outright and the
         # always() release below never runs; a STEP timeout fails only this
         # step and lets the cleanup run, so the claim is still released. The
