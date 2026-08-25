@@ -91,7 +91,11 @@ P0/P1 still open in the stage it ends is carried, **unchecked**, into the PR
 body's `## Deferred findings` with the override recorded as the reason it was
 carried — not as a disposition, so the shepherd stage still owes it a normal
 fix / decline-with-evidence / file-as-follow-up — and the ledger records the
-override as the reason for the transition. A one-step task that touches a single stage owes no ledger.
+override as the reason for the transition. Before leaving a stage under an
+override, append every still-open P0/P1 to the git-directory
+`deferred-findings` sidecar once as an unchecked `override-carried` entry; §10
+transfers those entries with the P2 sidecar into the PR body so the override
+cannot lose them across a handoff. A one-step task that touches a single stage owes no ledger.
 
 **The repository's own policy outranks this file.** Where its `AGENTS.md`
 states a different shepherd cap or exit condition, follow `AGENTS.md` — it is
@@ -1399,10 +1403,11 @@ loops indefinitely:
 
    **Ready-stop ledger.** Immediately after the readiness gate confirms the
    ready-for-review transition, post the fixed stage-ledger table in your own
-   commentary before cleanup and stopping. Fill `Stage` with `🚢 shepherd`,
-   the final `round n/cap`, `Round` with `🏁 stage converged` and the green
-   readiness result, and `Next` with human review followed by the maintainer's
-   merge decision.
+   commentary before cleanup and stopping. If the resolved shepherd cap is 0
+   and no round ran, omit `round n/cap` and write `skipped (cap 0)` in `Stage`;
+   otherwise fill `Stage` with `🚢 shepherd`, the final `round n/cap`, `Round`
+   with `🏁 stage converged` and the green readiness result, and `Next` with
+   human review followed by the maintainer's merge decision.
 
    If the PR was already non-draft (the gate's `pr-not-draft` failure),
    promotion is idempotently complete
@@ -1492,10 +1497,12 @@ loops indefinitely:
 
 **Blocked-stop ledger.** Immediately after a cap-reached, no-progress, or
 maintainer-blocked stop, post the fixed stage-ledger table in your own
-commentary before the blocker report. Fill `Stage` with `🚢 shepherd`, the
-current `round n/cap`, `Round` with `⛔ blocked/escalating`, and `Next` with
-the maintainer action that unblocks or decides the work. This requirement also
-covers the timeline-guard stop that necessarily leaves a promoted PR ready.
+commentary before the blocker report. If the resolved shepherd cap is 0 and no
+round ran, omit `round n/cap` and write `skipped (cap 0)` in `Stage`; otherwise
+fill `Stage` with `🚢 shepherd`, the current `round n/cap`, `Round` with
+`⛔ blocked/escalating`, and `Next` with the maintainer action that unblocks or
+decides the work. This requirement also covers the timeline-guard stop that
+necessarily leaves a promoted PR ready.
 
 One stop cannot leave the PR draft: §2's timeline guard blocking a second undo
 stops on a PR somebody else promoted, and undoing it is the very act the guard

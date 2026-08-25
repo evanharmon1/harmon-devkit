@@ -964,7 +964,11 @@ P0/P1 still open in the stage it ends is carried, **unchecked**, into the PR
 body\x27s `## Deferred findings` with the override recorded as the reason it was
 carried — not as a disposition, so the shepherd stage still owes it a normal
 fix / decline-with-evidence / file-as-follow-up — and the ledger records the
-override as the reason for the transition. A one-step task that touches a single stage owes no ledger.'
+override as the reason for the transition. Before leaving a stage under an
+override, append every still-open P0/P1 to the git-directory
+`deferred-findings` sidecar once as an unchecked `override-carried` entry; §10
+transfers those entries with the P2 sidecar into the PR body so the override
+cannot lose them across a handoff. A one-step task that touches a single stage owes no ledger.'
 
 ledger_table() {
     awk '
@@ -1006,6 +1010,7 @@ assert_ledger_contract() {
     [ "$legend" = "$LEDGER_LEGEND_EXPECTED" ] || return 1
     [ "$trigger" = "$LEDGER_TRIGGER_EXPECTED" ] || return 1
     grep -qF "distinct from the gauntlet's private adjudication ledger" "$file" || return 1
+    grep -qF 'append every still-open P0/P1 to the git-directory' "$file" || return 1
     grep -qF 'write `skipped (cap 0)` in `Stage`' "$file" || return 1
     grep -qF 'instead of inventing' "$file" || return 1
     grep -qF '`round 0/0`' "$file" || return 1
@@ -1032,6 +1037,7 @@ assert_gauntlet_ledger_hooks() {
     grep -qF 'Before starting every challenge round, post' "$file" || return 1
     grep -qF 'Before starting every review round, post' "$file" || return 1
     grep -qF 'Immediately after a challenge or review' "$file" || return 1
+    grep -qF 'keep `Next` naming the next concrete gate or action' "$file" || return 1
     grep -qF '⛔ blocked/escalating' "$file"
 }
 
@@ -1052,7 +1058,10 @@ assert_shepherd_ledger_hooks() {
     grep -qF 'Immediately after the readiness gate confirms' "$file" || return 1
     grep -qF '**Blocked-stop ledger.**' "$file" || return 1
     grep -qF 'cap-reached, no-progress, or' "$file" || return 1
-    grep -qF 'timeline-guard stop' "$file"
+    grep -qF 'timeline-guard stop' "$file" || return 1
+    grep -qF 'resolved shepherd cap is 0' "$file" || return 1
+    grep -qF 'and no round ran, omit `round n/cap`' "$file" || return 1
+    [ "$(grep -cF 'skipped (cap 0)' "$file")" -ge 3 ]
 }
 
 expect_ok "gauntlet carries the canonical ledger rows and glyph legend" \

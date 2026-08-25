@@ -83,7 +83,11 @@ P0/P1 still open in the stage it ends is carried, **unchecked**, into the PR
 body's `## Deferred findings` with the override recorded as the reason it was
 carried — not as a disposition, so the shepherd stage still owes it a normal
 fix / decline-with-evidence / file-as-follow-up — and the ledger records the
-override as the reason for the transition. A one-step task that touches a single stage owes no ledger.
+override as the reason for the transition. Before leaving a stage under an
+override, append every still-open P0/P1 to the git-directory
+`deferred-findings` sidecar once as an unchecked `override-carried` entry; §10
+transfers those entries with the P2 sidecar into the PR body so the override
+cannot lose them across a handoff. A one-step task that touches a single stage owes no ledger.
 
 ## 1. Entry gate
 
@@ -491,7 +495,7 @@ you may stop, not a ceiling on what they can order.
 **Stage-exit and escalation ledger.** Immediately after a challenge or review
 stage satisfies an exit condition, post the fixed stage-ledger table in your
 own commentary before moving to the next stage. Use `🏁 stage converged` in
-`Round`/`Next` when the stage exits cleanly. If adjudicated P0/P1 findings
+`Round`; keep `Next` naming the next concrete gate or action. If adjudicated P0/P1 findings
 persist at the cap, post the same table immediately with `⛔
 blocked/escalating`, the current `round n/cap`, and `Next` naming the
 maintainer escalation; do not start another stage or open the PR.
