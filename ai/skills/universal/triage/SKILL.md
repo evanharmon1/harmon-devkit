@@ -2,11 +2,12 @@
 name: triage
 description: >-
   Classify the GitHub issue backlog against the repo's label taxonomy: apply
-  area/layer/domain, work-type (personal repos only), and needs-triage labels
-  where the rules allow, and upsert everything else into one rolling report
-  issue. Use when asked to "triage the backlog", "classify issues", "label
-  the backlog", or "update the triage report". Dry-run by default; writes go
-  only through the skill's own scripts. Invoke as /triage.
+  area/layer/domain, work-type (personal repos) or native Issue Type (org
+  repos), and needs-triage where the rules allow, and upsert everything else
+  into one rolling report issue. Use when asked to "triage the backlog",
+  "classify issues", "label the backlog", or "update the triage report".
+  Dry-run by default; writes go only through the skill's own scripts. Invoke
+  as /triage.
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh repo view:*), Bash(gh label list:*), Bash(./ai/skills/universal/triage/assets/triage-scan.sh:*), Bash(./ai/skills/universal/triage/assets/triage-apply.sh:*), Bash(./ai/skills/universal/triage/assets/triage-report.sh:*), Bash(./.agents/skills/triage/assets/triage-scan.sh:*), Bash(./.agents/skills/triage/assets/triage-apply.sh:*), Bash(./.agents/skills/triage/assets/triage-report.sh:*), Bash(./.claude/skills/triage/assets/triage-scan.sh:*), Bash(./.claude/skills/triage/assets/triage-apply.sh:*), Bash(./.claude/skills/triage/assets/triage-report.sh:*)
 ---
@@ -24,14 +25,15 @@ it in the summary; never work around it).
 
 ## The contract
 
-- **Writes go ONLY through the scripts.** `triage-apply.sh` for labels,
-  `triage-report.sh sync` for the report. Never run `gh issue edit`,
+- **Writes go ONLY through the scripts.** `triage-apply.sh` for classification
+  metadata, `triage-report.sh sync` for the report. Never run `gh issue edit`,
   `gh issue comment`, `gh issue close`, `gh label`, or any other writing
   command yourself.
 - **You may write only:** classification-axis labels (the axes the scan
   lists — `area:*` / `layer:*` / `domain:*` on a default taxonomy); a
   work-type label (`bug`, `feature`, `task`, `research`, `documentation`,
-  `question`) on personal-account repos only; and `needs-triage`.
+  `question`) on personal-account repos only; one enabled native Issue Type
+  on organization repos only; and `needs-triage`.
 - **You may remove only:** `needs-triage`, and only when classification is
   complete. The script checks completeness; you supply the labels and, where
   an axis truly does not apply, an `--inapplicable` attestation.
@@ -114,15 +116,18 @@ nothing):
 
 ```sh
 "$DIR/assets/triage-apply.sh" label --repo "$REPO" --issue <n> \
-  [--add <label>]... [--remove needs-triage] [--inapplicable <axis>]...
+  [--add <label>]... [--native-type <Type>] [--remove needs-triage] \
+  [--inapplicable <axis>]...
 ```
 
 In EXECUTE mode append `--execute`. Record every line the script prints.
 
-### 2a — Work-type (skip entirely when `owner_type` is `Organization`)
+### 2a — Work classification
 
-If `work_type` is empty, read the title (and body if the title is not enough:
-`gh issue view <n> --repo "$REPO"`), and pick **at most one** value:
+When the personal repo's `work_type` is empty, or an organization repo's
+`native_type` is `none` (or `null` after the bounded per-issue read), read the
+title — and body if the title is not enough — then choose **at most one**
+classification using this decision table:
 
 | Pick            | When the issue clearly...                                |
 | --------------- | -------------------------------------------------------- |
@@ -133,7 +138,12 @@ If `work_type` is empty, read the title (and body if the title is not enough:
 | `research`      | asks for an investigation, comparison, or decision       |
 | `question`      | asks a question and requests no change                   |
 
-If two rows seem possible, or none clearly fits: **add nothing**.
+If two rows seem possible, or none clearly fits: **add nothing**. On a
+personal repo, add the table value as the work-type label. On an organization
+repo, choose the enabled native Issue Type matching that row and pass it as
+`--native-type <Type>` in the same apply call; the script validates it against
+the organization's enabled Types and refuses a personal-repo Type, an invalid
+Type, or a disabled Type. Do not add a work-type label on an organization.
 
 ### 2b — Axes (the scan's `axes` list)
 
@@ -168,7 +178,8 @@ active taxonomy — a retired or misspelled label a human must resolve).
     Type — the scan's `native_type`, which must not be `none`; only when it
     is `null` check with
     `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`,
-    which must not print `none`), and
+    which must not print `none`; a `--native-type <Type>` selected in this
+    same apply call also satisfies this requirement), and
   - every axis in `axes` has exactly one recognized label, **or** you attest
     `--inapplicable <axis>` for it. Attest only when no value of that axis
     could ever describe this issue (example: a pure question has no stack
@@ -198,7 +209,7 @@ a finding):
 | `aging-needs-candidate`              | nothing — the flag is the finding                    | always                                                                     |
 | `axis-conflict:*`                    | nothing — the flag is the finding                    | always; name both labels and, only if the body states one, the right one   |
 | `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
-| `missing-work-type` on an org repo   | the scan's `native_type`; `native-type` (see 2c) only when it is `null` | it is/prints `none` (v1 cannot write Type — a human must set it)           |
+| `missing-work-type` on an org repo   | the scan's `native_type`; `native-type` (see 2c) only when it is `null` | it remains `none` after 2a because no enabled Type is clearly applicable or its enabled-Type lookup was unavailable; state why it was not set |
 | `legacy-work-type-label` (org only)  | the scan's `native_type`; `native-type` (see 2c) only when it is `null` | it is/prints `none` — the label is legacy there and proves nothing; mention the label itself for cleanup |
 | `closed_flagged` state `completed`   | nothing — `unticked_criteria` is the finding         | always; note the unticked count                                            |
 | `closed_flagged` state `duplicate`   | `gh issue view <n> --repo "$REPO" --comments`        | no comment points at the surviving issue (`#<number>`)                     |
