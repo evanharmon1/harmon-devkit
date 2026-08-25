@@ -744,16 +744,18 @@ Treat a claim as information rather than a mutex.
 
 When an orchestrator dispatches a subagent to an issue, the claim belongs to
 the **orchestrating session**, made before dispatch through the ordinary
-`/claim` contract — which means under the ordinary write boundary above: the
-user invokes `/claim`, or gives the go-ahead for that claim in conversation.
-Delegating work never authorizes a claim write on its own. Subagents never
+`/claim` contract — and `/claim` is user-invocable only, so the route is the
+user typing `/claim` for that issue; ask for it before dispatching. Neither a
+decision to delegate nor a conversational go-ahead authorizes the claim
+writes on their own. Subagents never
 claim: a brief is not a slash command, shared GitHub identities cannot
 distinguish their claims, and only the orchestrator knows when the work is
-done. The subagent's report-back ends the *dispatch*, not the claim: the
-claim is released by the ordinary lifecycle (`/shepherd`'s stop-at-green,
-the close event, or `/wrap`) once nothing is in flight, and the orchestrator
-hands the issue back early only when the report leaves no work in flight —
-partial or blocked, with no PR open. See
+done. The subagent's report-back ends the *dispatch*, not the claim, which
+follows the ordinary lifecycle: `/shepherd` retires the `claim:*` label at
+ready-for-review, and the close event or `/wrap` releases the claim itself
+once nothing is in flight. The orchestrator hands the issue back early only
+when the report leaves no work in flight — partial or blocked, with no PR
+open. See
 [orchestrated work](references/orchestrated-work.md) for the dispatch brief
 and report-back contract.
 
