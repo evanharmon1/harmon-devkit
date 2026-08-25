@@ -425,7 +425,11 @@ cat >"$fallback/labels.json" <<'JSON'
   {"name":"claim:gpt","description":"Claim"},
   {"name":"Claim:claude","description":"Case-varied claim"},
   {"name":"agent:codex","description":"Legacy claim"},
-  {"name":"Foreman:approved","description":"Case-varied arm"}
+  {"name":"Foreman:approved","description":"Case-varied arm"},
+  {"name":"strategy:plan","description":"Execution topology"},
+  {"name":"rigor:standard","description":"Round-cap level"},
+  {"name":"Tier:frontier","description":"Case-varied model tier"},
+  {"name":"method:oneshot","description":"Retired execution topology"}
 ]
 JSON
 fallback_output="$(discover "$fallback")"
@@ -436,7 +440,12 @@ if jq -e '
 ' <<<"$fallback_output" >/dev/null; then
     ok "missing registry leaves bounded live labels semantically unclassified"
 else
-    bad "missing registry leaves bounded live labels semantically unclassified"
+    bad "missing registry leaves bounded live labels semantically unclassified: $fallback_output"
+fi
+if grep -qi '"name": *"strategy:\|"name": *"rigor:\|"name": *"tier:\|"name": *"method:' <<<"$fallback_output"; then
+    bad "the no-registry live-label fallback must exclude execution-control labels (strategy/rigor/tier/method), case-insensitively, same as the registry path"
+else
+    ok "the no-registry live-label fallback excludes strategy/rigor/tier/method labels case-insensitively, same as the registry path"
 fi
 
 empty="$tmproot/empty"

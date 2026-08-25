@@ -8,7 +8,7 @@ description: >-
   the backlog", or "update the triage report". Dry-run by default; writes go
   only through the skill's own scripts. Invoke as /triage.
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh repo view:*), Bash(./ai/skills/universal/triage/assets/triage-scan.sh:*), Bash(./ai/skills/universal/triage/assets/triage-apply.sh:*), Bash(./ai/skills/universal/triage/assets/triage-report.sh:*), Bash(./.agents/skills/triage/assets/triage-scan.sh:*), Bash(./.agents/skills/triage/assets/triage-apply.sh:*), Bash(./.agents/skills/triage/assets/triage-report.sh:*), Bash(./.claude/skills/triage/assets/triage-scan.sh:*), Bash(./.claude/skills/triage/assets/triage-apply.sh:*), Bash(./.claude/skills/triage/assets/triage-report.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh repo view:*), Bash(gh label list:*), Bash(./ai/skills/universal/triage/assets/triage-scan.sh:*), Bash(./ai/skills/universal/triage/assets/triage-apply.sh:*), Bash(./ai/skills/universal/triage/assets/triage-report.sh:*), Bash(./.agents/skills/triage/assets/triage-scan.sh:*), Bash(./.agents/skills/triage/assets/triage-apply.sh:*), Bash(./.agents/skills/triage/assets/triage-report.sh:*), Bash(./.claude/skills/triage/assets/triage-scan.sh:*), Bash(./.claude/skills/triage/assets/triage-apply.sh:*), Bash(./.claude/skills/triage/assets/triage-report.sh:*)
 ---
 
 # Triage
@@ -244,10 +244,19 @@ the entries file, no entry keys):
   finding missing from this report may simply be outside it rather than
   resolved.
 - `## Tier/strategy proposals` — only if, while reading an issue, you are
-  confident a `tier:*` (optionally scoped, e.g. `tier:implementer:<value>`) or
-  `strategy:*` value fits it far better than the default. One bullet with the
-  issue, the value, and one line of reasoning. Never apply such labels
-  yourself.
+  confident a `tier:*` (optionally scoped, e.g. `tier:implementer:<value>`)
+  or execution-topology value fits it far better than the default. **Which
+  execution-topology prefix to propose is discovered, never assumed**: a
+  repo may be mid-migration (harmon-init#1047 `method:*` → `strategy:*`) and
+  still carry only the retired family. Check once per run, before writing
+  any such proposal: `gh label list --repo "$REPO" --limit 1000 --json name
+  -q '.[].name' | grep -iE '^(strategy|method):'`. Propose from whichever
+  family the check actually finds live — prefer `strategy:*` when both are
+  present (it is the non-retired one), fall back to `method:*` only when
+  `strategy:*` is entirely absent, and propose **nothing** if the check
+  finds neither: a value from a family the repo does not have is not a
+  usable proposal. One bullet with the issue, the value, and one line of
+  reasoning. Never apply such labels yourself.
 
 If there are no findings at all, create the file empty (`: > entries.md`).
 

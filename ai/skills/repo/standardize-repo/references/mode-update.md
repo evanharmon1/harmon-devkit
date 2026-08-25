@@ -3519,134 +3519,81 @@ project automation quietly keeps a stale variable that can point at the wrong
 board. If the project task already ran without the scope, re-run it once granted.
 
 **Rename any retired label family before this line reprovisions its
-replacement.** A prefix rename in the manifest — the harmon-init#1047
-`method:*` → `strategy:*` execution-topology rename is the first instance
-(see catalog §1.13's `.devflow.toml` entry) — must happen **before**
-`task setup:github-labels` below, not after. That task is `gh label create
---force`: the first run **creates** `strategy:<value>` fresh, and GitHub
-label names are unique (case-insensitively — `Method:Plan` and `method:plan`
-collide), so once that name exists `gh label edit method:<value> --name
-strategy:<value>` is rejected as a name collision — a rename can't land on an
-occupied name, the same way `mv` refuses a destination that already exists.
-Run it too late and the repo ends up with two disconnected labels (an
-orphaned old `method:<value>` plus an empty new `strategy:<value>`) instead
-of one renamed label. `setup-github-labels.sh` itself never renames or
-removes anything — it sees only an unrelated new family (`strategy`) and an
-unrelated retired one (`method`, per the manifest's retirement note) — so
-this rename is entirely on you, first.
+replacement — with `assets/migrate-label-family.sh`, not inline shell.**
+This exact recipe earned a P1 finding three review rounds running while the
+mechanism stayed prose here: a `gh api -f` call that silently flips GitHub's
+default method to POST, a six-value inventory loop with no fail-fast on a
+broken page, `--paginate --slurp` misread as a flat item array when it is
+actually an array of *pages* (so a naive reader of it processes nothing and
+a completion check built on it is vacuously "clean"). Every one of those is
+a mechanical mistake a test catches immediately and prose cannot — the
+script (`scripts/test-migrate-label-family.sh`) is where that test lives
+now; this section keeps only why and when to run it.
 
-**Resolve any issue carrying more than one `method:*` label before renaming
-anything.** The retired family had no `exclusive` constraint — GitHub labels
-never enforce that — but `[method].rank` gave every consumer a deterministic
-way to pick one value when an issue carried several; `strategy` is exclusive
-and, per ADR 0006, a conflict between its values has **no rank** — it is
-simply ambiguous. A rename does not know this: it moves `method:plan` →
-`strategy:plan` and `method:council` → `strategy:council` independently, so
-an issue that carried both ends up with two `strategy:*` labels instead of
-the single winner the old rank would have picked. Find them first, issues and
-PRs both (labels apply to either).
+**Why the ordering matters.** That task below is `gh label create --force`:
+the first run **creates** `strategy:<value>` fresh, and GitHub label names
+are unique (case-insensitively), so once that name exists a rename onto it
+is rejected as a collision, leaving the repo with two disconnected labels —
+an orphaned old one and an empty new one — instead of one renamed label.
+`setup-github-labels.sh` itself never renames or removes anything (see
+catalog §1.13's `.devflow.toml` entry), so the rename is entirely on you,
+first.
 
-**`gh issue list`/`gh pr list --search` cannot do this safely: GitHub's
-Search API caps at 1,000 results total, no matter what `--limit` asks for**
-— unlike the label-listing truncation guard elsewhere in this recipe, there
-is no larger `--limit` to retry a capped search with, so a repo near or past
-that many matching issues silently drops the rest. Use a genuinely paginated
-REST traversal per value instead — no such ceiling, and it returns PRs in the
-same call (a `pull_request` key on the returned object is the only
-difference from an issue):
+**Why the multi-label check matters.** The retired `method` family had no
+`exclusive` constraint — GitHub labels never enforce that — but
+`[method].rank` gave every consumer a deterministic way to pick one value
+when an issue carried several. `strategy` is exclusive and, per ADR 0006, a
+conflict between its values has **no rank** — it is simply ambiguous. A
+rename does not know this: an issue carrying two `method:*` labels ends up
+with two `strategy:*` labels instead of the single winner the old rank
+would have picked.
+
+Run, once per value the repo actually has (the six shipped values are
+`oneshot`/`plan`/`plan-approved`/`orchestrate`/`council`/`human-led`):
 
 ```bash
-for value in oneshot plan plan-approved orchestrate council human-led; do
-  gh api --paginate --slurp -f labels="method:$value" -f state=all \
-    "/repos/<owner>/<repo>/issues" |
-    jq --arg v "$value" '.[] | {number, is_pr: (.pull_request != null), value: $v}'
-done | jq -s 'group_by(.number) | map(select(length > 1))' >multi-labeled.json
+assets/migrate-label-family.sh inventory method --repo <owner>/<repo>
 ```
 
-(`--slurp` merges every page into one array before `jq` sees it — `gh api`
-refuses `--slurp` combined with `--jq` for exactly that reason, and without
-it `--paginate` is not page-safe.) **Refuse to proceed past this point unless
-all six calls exit 0** — a failed page mid-traversal is an incomplete
-inventory, not "nothing left," and resolving conflicts against one lets a
-real conflict go undetected.
-
-For every match in `multi-labeled.json`, resolve to the value
+This refuses (exit 3) while any issue or PR carries more than one
+`method:*` label, naming each one — resolve every conflict to the value
 `[method].rank` would have picked (`human-led` > `plan-approved` > `council`
 > `orchestrate` > `plan` > `oneshot`, most human oversight first — the fixed
-order in the pre-#1047 `.devflow.toml`) and remove the rest — `gh issue edit
-<n> --remove-label method:<loser>` (`gh pr edit` for a PR) — so every issue
-and PR carries at most one `method:*` label before its turn in the rename
-below.
-
-Rename each remaining value in place: `gh label edit method:<value> --name
-strategy:<value>` for every value the repo actually has, which preserves
-every label association; the six shipped values are `oneshot`/`plan`/
-`plan-approved`/`orchestrate`/`council`/`human-led`.
-
-Both the discovery read (which values does the repo actually have) and the
-later "none left" confirmation go through the same call, and it needs two
-guards. **Match case-insensitively** — `grep -i '^method:'`, since GitHub
-label identity is case-insensitive — not the plain `grep '^method:'` a
-case-sensitive habit would reach for. **And check for truncation**: `gh label
-list --repo <owner>/<repo> --limit 1000 --json name -q '. | length'` first; a
-result of **exactly 1000** is a truncation signal, not proof the repo has no
-more — the same signal `triage-apply.sh`'s `live_labels()` refuses on rather
-than derive from a possibly-partial set. Here the fix is to widen instead of
-refuse: re-run with a larger `--limit` (double it; repeat if that also lands
-on the limit) until the count comes back under it, *then* run `gh label list
---repo <owner>/<repo> --limit <that-limit> --json name -q '.[].name' | grep
--i '^method:'` against the confirmed-complete list — for both the rename pass
-and the completion check after. Skipping this on the completion check is the
-dangerous direction: a truncated read can hide a straggler past the first
-1000 and falsely declare the repo clean.
-
-**Recovering when the ordering hazard already happened.** If
-`task setup:github-labels` already ran and `strategy:<value>` already exists
-as its own empty label, `gh label edit` is rejected — see above — and
-hand-porting is the only way out; do the multi-label resolution above first
-if you have not, or transferring more than one `method:*` label onto an issue
-just recreates the same ambiguity on the `strategy:*` side. Then, for each
-`method:<value>` still live, transfer every association instead of renaming.
-
-Find them the same paginated way, and for the same reason — this is exactly
-the search-vs-paginate hazard above, on one value instead of six:
+order in the pre-#1047 `.devflow.toml`) and remove the rest by hand before
+continuing. Once it reports clean, rename each value in place — this
+preserves every label association, since a rename is not a
+delete-and-recreate:
 
 ```bash
-gh api --paginate --slurp -f labels="method:<value>" -f state=all \
-  "/repos/<owner>/<repo>/issues" >method-value.json
+assets/migrate-label-family.sh rename method:<value> strategy:<value> \
+  --repo <owner>/<repo> --execute
 ```
 
-**Refuse to delete the source label below unless this command exits 0.** A
-failed page mid-traversal is an incomplete inventory, not "no more results,"
-and deleting `method:<value>` against an incomplete inventory strands
-whichever issues and PRs the traversal never reached.
-
-Add the destination to every number in `method-value.json` and confirm it
-landed before touching the source — dispatching `issue` vs `pr` per object,
-since the fetch above returns both:
+**If a prior run already provisioned `strategy:<value>` before this ran**,
+`rename` refuses the collision by name and points here: transfer instead.
+It adds `strategy:<value>` to every item carrying `method:<value>`, verifies
+each addition individually (not just the write call's own exit code — a
+verification catches a write that reports success but never actually
+lands), and only then deletes `method:<value>`, aborting without deleting on
+the first failure of either step:
 
 ```bash
-jq -r '.[] | "\(.number) \(if .pull_request then "pr" else "issue" end)"' method-value.json |
-  while read -r n kind; do
-    gh "$kind" edit "$n" --add-label strategy:<value>
-    gh "$kind" view "$n" --json labels -q '.labels[].name' | grep -qx strategy:<value> ||
-      { echo "transfer failed for #$n" >&2; exit 1; }
-  done
+assets/migrate-label-family.sh transfer method:<value> strategy:<value> \
+  --repo <owner>/<repo> --execute
 ```
 
-Only once **every** number in `method-value.json` carries the matching
-`strategy:<value>` — and the fetch above exited 0 — delete the now-orphaned
-source label: `gh label delete method:<value>`. Deleting a label removes it
-from everything still attached to it, so doing this before every association
-is confirmed transferred, or before the inventory itself is known complete,
-loses data instead of migrating it.
+Confirm the migration is done — no live label still matches `method:*`:
+
+```bash
+assets/migrate-label-family.sh verify method --repo <owner>/<repo>
+```
 
 The same release also expanded `rigor:*` from three levels
 (`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/
-`thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so it
-has no name-collision hazard and needs no ordering: `task setup:github-labels`
-below seeds it on the first run, ordinary and additive like everything else in
-this section.
+`thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so
+it has no name-collision hazard and needs no script: `task
+setup:github-labels` below seeds it on the first run, ordinary and additive
+like everything else in this section.
 
 ```bash
 task setup:github-project      # board + Status pipeline + the Size number field; on a

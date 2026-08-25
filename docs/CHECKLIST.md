@@ -210,14 +210,16 @@ environment — against the items below
       `strategy:<value>` fresh, and GitHub label names are unique, so a
       rename attempted after that line runs is rejected as a name collision —
       leaving an orphaned old label beside an empty new one instead of one
-      migrated label. Follow the rename recipe in
-      [`mode-update.md`](../ai/skills/repo/standardize-repo/references/mode-update.md)
-      §6b end to end (start with `gh label list --limit 1000 --json name -q
-      '.[].name' | grep -i '^method:'`, same 1000-cap-means-widen rule as the
-      `agent:*` item below, and resolve any issue carrying more than one
-      `method:*` label to a single value before renaming — the old family had
-      no `exclusive` constraint, the new one does), including its recovery
-      path for a repo where `strategy:*` already exists.
+      migrated label. Use
+      [`assets/migrate-label-family.sh`](../ai/skills/repo/standardize-repo/assets/migrate-label-family.sh)
+      (the mechanism `mode-update.md` §6b walks through) — `inventory method`
+      first (refuses while any issue/PR carries more than one `method:*`
+      label; the old family had no `exclusive` constraint, the new one does),
+      then `rename method:<value> strategy:<value> --execute` for each of the
+      six values, then `verify method` to confirm none remain. If a value's
+      `strategy:*` destination already exists live, `rename` refuses and
+      points at `transfer` instead, which adds-and-verifies onto every item
+      before deleting the source.
 - [ ] **[human-only] Retire any legacy `agent:*` claim labels** — needed only
       where `gh label list --limit 1000` still shows the harness-named family
       (`agent:claude-code`, `agent:gemini-cli`, …) a pre-registry harmon-init

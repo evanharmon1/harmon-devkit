@@ -565,7 +565,17 @@ for (const label of liveLabels) {
 }
 
 if (!defaultPaths.has('label-registry.json')) {
-  const excludedPrefixes = ['claim:', 'agent:', 'foreman:']
+  // Same execution-control exclusion as the registry path's safe() (see its
+  // definition for why: track-work's check-issue-metadata.sh rejects these
+  // at authoring time unconditionally, so no registry is no license to
+  // recommend them either), plus claim/agent/foreman — live ownership and
+  // dispatch controls with no registry to declare them by axis at all here.
+  const excludedPrefixes = [
+    'claim:',
+    'agent:',
+    'foreman:',
+    ...[...executionControlPrefixes].map((prefix) => `${prefix}:`)
+  ]
   const labels = liveLabels
     .filter((label) => {
       const normalized = normalizeLabelName(label.name)
