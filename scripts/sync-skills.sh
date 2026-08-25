@@ -23,12 +23,13 @@
 #   sync-skills.sh verify-offline  [MANIFEST]   # fast offline ref check (no network)
 #   sync-skills.sh status          [--offline] [MANIFEST] # report vendoring state
 #
-# `status` exit codes (the line on stdout is always machine-readable):
+# `status` state exit codes (stdout is one machine-readable state line):
 #   0  in-sync
-#   2  invalid status arguments (or another usage error)
 #   10 never-vendored
 #   11 pin-moved
 #   12 upstream-newer
+# Invalid status arguments (or another usage error) exit 2 and write usage to
+# stderr; they are not vendoring states.
 #
 # MANIFEST defaults to .skills-sync.yaml. Depends on: git, yq, diff, awk.
 #
