@@ -934,9 +934,134 @@ echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
+GAUNTLET_SKILL="$repo/ai/skills/universal/gauntlet/SKILL.md"
 SHEPHERD_SKILL="$repo/ai/skills/universal/shepherd/SKILL.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 CLAIM_SKILL="$repo/ai/skills/universal/claim/SKILL.md"
+
+# The fixed table and wrapped legend are copied byte-for-byte from the
+# harmon-init AGENTS.md stage-ledger contract. Keep this expectation local so
+# the skills-source tests stay hermetic and catch drift between the two skills.
+LEDGER_TABLE_EXPECTED='| 📍 Ledger | |
+|---|---|
+| **Stage** | ⚔️ challenge · **round 2/4** · local (`task challenge`) |
+| **Round** | 🔴 1 P1 open · 🟡 2 P2 deferred · ⚪ 1 P3 noted · ✅ verify green |
+| **Next** | fix P1 → `task verify` → ⚔️ challenge round 3 |'
+LEDGER_LEGEND_EXPECTED='Stage glyphs: 🔨 implement · 🧪 verify · ⚔️ challenge · 🔍 review · 🏗️ ci ·
+🚢 shepherd. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
+⚪ P3 noted · ⏳ waiting on CI or a reviewer · ⛔ blocked/escalating · 🏁 stage
+converged.'
+LEDGER_TRIGGER_EXPECTED=$'Post it at every
+stage transition, when a round begins or ends, as the concise progress tick
+during a long wait (no re-dumping unchanged command output), and
+**immediately after a maintainer changes the requested workflow** — the latest
+instruction overrides the default transition at once, a terminal one ("go
+straight to review", "no more challenge rounds") is reflected in the ledger
+before any tool call starts the next stage, and silently returning to the
+default sequence is forbidden. An override is an attributable human decision
+and is followed, but it redirects the loop rather than erasing findings: any
+P0/P1 still open in the stage it ends is carried, **unchecked**, into the PR
+body\x27s `## Deferred findings` with the override recorded as the reason it was
+carried — not as a disposition, so the shepherd stage still owes it a normal
+fix / decline-with-evidence / file-as-follow-up — and the ledger records the
+override as the reason for the transition. A one-step task that touches a single stage owes no ledger.'
+
+ledger_table() {
+    awk '
+        /^\| 📍 Ledger \| \|$/ { capture = 1 }
+        capture { print }
+        capture && /^\| \*\*Next\*\* \|/ { exit }
+    ' "$1"
+}
+
+ledger_legend() {
+    awk '
+        /^Stage glyphs:/ {
+            print
+            getline
+            print
+            getline
+            print
+            getline
+            print
+            exit
+        }
+    ' "$1"
+}
+
+ledger_trigger() {
+    awk '
+        /^Post it at every$/ { capture = 1 }
+        capture { print }
+        capture && /A one-step task that touches a single stage owes no ledger\.$/ { exit }
+    ' "$1"
+}
+
+assert_ledger_contract() {
+    local file="$1" table legend trigger
+    table="$(ledger_table "$file")"
+    legend="$(ledger_legend "$file")"
+    trigger="$(ledger_trigger "$file")"
+    [ "$table" = "$LEDGER_TABLE_EXPECTED" ] || return 1
+    [ "$legend" = "$LEDGER_LEGEND_EXPECTED" ] || return 1
+    [ "$trigger" = "$LEDGER_TRIGGER_EXPECTED" ] || return 1
+    grep -qF "distinct from the gauntlet's private adjudication ledger" "$file" || return 1
+    grep -qF '`round n/cap`' "$file"
+}
+
+assert_shared_ledger() {
+    local first="$1" second="$2"
+    assert_ledger_contract "$first" || return 1
+    assert_ledger_contract "$second" || return 1
+    [ "$(ledger_table "$first")" = "$(ledger_table "$second")" ] || return 1
+    [ "$(ledger_legend "$first")" = "$(ledger_legend "$second")" ] || return 1
+    [ "$(ledger_trigger "$first")" = "$(ledger_trigger "$second")" ]
+}
+
+assert_gauntlet_ledger_hooks() {
+    local file="$1"
+    awk '
+        /\*\*Challenge round-entry ledger\.\*\*/ { challenge = NR }
+        /\*\*Review round-entry ledger\.\*\*/ { review = NR }
+        /\*\*Stage-exit and escalation ledger\.\*\*/ { stage_exit = NR }
+        END { exit !(challenge && review && stage_exit && challenge < review && review < stage_exit) }
+    ' "$file" || return 1
+    grep -qF 'Before starting every challenge round, post' "$file" || return 1
+    grep -qF 'Before starting every review round, post' "$file" || return 1
+    grep -qF 'Immediately after a challenge or review' "$file" || return 1
+    grep -qF '⛔ blocked/escalating' "$file"
+}
+
+assert_shepherd_ledger_hooks() {
+    local file="$1"
+    awk '
+        /\*\*Shepherd round-entry ledger\.\*\*/ { entry = NR }
+        /\*\*Codex-cycle result ledger\.\*\*/ { cycle = NR }
+        /\*\*Ready-stop ledger\.\*\*/ { ready = NR }
+        END { exit !(entry && cycle && ready && entry < cycle && cycle < ready) }
+    ' "$file" || return 1
+    grep -qF 'Immediately after every successful' "$file" || return 1
+    grep -qF 'fix push, post the fixed' "$file" || return 1
+    grep -qF 'stage-ledger table in your own commentary' "$file" || return 1
+    grep -qF 'regardless of whether it is clean, findings, pending, retry, escalation,' "$file" || return 1
+    grep -qF 'closed, or indeterminate, post' "$file" || return 1
+    grep -qF 'Immediately after the readiness gate confirms' "$file" || return 1
+    grep -qF '**Blocked-stop ledger.**' "$file" || return 1
+    grep -qF 'cap-reached, no-progress, or' "$file" || return 1
+    grep -qF 'timeline-guard stop' "$file"
+}
+
+expect_ok "gauntlet carries the canonical ledger rows and glyph legend" \
+    assert_ledger_contract "$GAUNTLET_SKILL"
+expect_ok "shepherd carries the canonical ledger rows and glyph legend" \
+    assert_ledger_contract "$SHEPHERD_SKILL"
+expect_ok "gauntlet and shepherd ledger contracts are byte-identical" \
+    assert_shared_ledger "$GAUNTLET_SKILL" "$SHEPHERD_SKILL"
+expect_ok "gauntlet hooks ledger entry and exit/escalation events" \
+    assert_gauntlet_ledger_hooks "$GAUNTLET_SKILL"
+expect_ok "shepherd hooks round, push, Codex result, and ready events" \
+    assert_shepherd_ledger_hooks "$SHEPHERD_SKILL"
+
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
     grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
 
