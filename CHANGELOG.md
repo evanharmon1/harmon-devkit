@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.36.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.35.0...v0.36.0) (2026-08-25)
+
+
+### Features
+
+* **skills:** resolve Dev Loop caps through rigor review policies; method → strategy ([#601](https://github.com/evanharmon1/harmon-devkit/issues/601)) ([9417db5](https://github.com/evanharmon1/harmon-devkit/commit/9417db591fd3dfb2587869a921dfa2a2fb76045f))
+* **skills:** sync Matt Pocock skills ([#598](https://github.com/evanharmon1/harmon-devkit/issues/598)) ([2255b1d](https://github.com/evanharmon1/harmon-devkit/commit/2255b1d87461334461107fb80fc820aae6625b6d))
+* **skills:** vendor Matt Pocock implement/tdd/code-review skills ([#599](https://github.com/evanharmon1/harmon-devkit/issues/599)) ([4479ef7](https://github.com/evanharmon1/harmon-devkit/commit/4479ef7bab00bddb1a19cec284d4314c10bf3d9e))
+
+
+### Bug Fixes
+
+* **gauntlet:** support macOS Bash 3.2 ([#596](https://github.com/evanharmon1/harmon-devkit/issues/596)) ([ba89fc4](https://github.com/evanharmon1/harmon-devkit/commit/ba89fc49318e03e966d45792284d25d05e8c9630))
+* **skills:** sync Matt Pocock skills to current upstream ([#600](https://github.com/evanharmon1/harmon-devkit/issues/600)) ([10d7550](https://github.com/evanharmon1/harmon-devkit/commit/10d7550bda85cff9adb1333252b86cd590172548))
+
 ## [0.35.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.34.3...v0.35.0) (2026-08-22)
 
 
