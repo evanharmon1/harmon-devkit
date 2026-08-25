@@ -489,7 +489,10 @@ Never approve or run a silently inferred or substituted target.
   family. A pre-existing assignee is recorded as `no` and is never removed by
   the helper.
 - **Label** — the `claim:<family>[:<model>]` family names *which* intelligence
-  has it. Claim at the family level (`claim:<family>`). A trusted session may
+  has it: always the claiming session's own host-attested family, never a
+  delegate's (an orchestrator dispatching another family claims as itself
+  and records the delegate in `dispatched to`). Claim at the family level
+  (`claim:<family>`). A trusted session may
   deliberately request a provisioned `claim:<family>:<model>` refinement; the
   resolver requires its family marker to coexist and never treats that marker
   as a takeover conflict. The harness that ran it is

@@ -10,7 +10,9 @@ Several subagents can share one GitHub identity, and only the orchestrator
 knows when the delegated work is complete.
 
 The `claim:<family>` label names the family **accountable for the claim and
-its release** — the orchestrator's — not the delegate executing the work. A
+its release** — the orchestrator's — not the delegate executing the work; the
+claim tooling pins the label to the claiming host's attested family, so a
+delegate's family cannot be written there by construction. A
 Claude session dispatching a Codex implementer still claims `claim:claude`;
 the delegate is recorded in the claim record's informational `dispatched to`
 line, which is where a reader looks for who was handed the work. That line

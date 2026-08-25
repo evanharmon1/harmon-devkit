@@ -764,7 +764,7 @@ plus the durable claim comment make the work discoverable:
 
 | Marker | Says | Visible in |
 | --- | --- | --- |
-| `claim:<family>` label | *which* intelligence is working it right now | `gh issue list --label`, the issue page, and every owner type |
+| `claim:<family>` label | *which* intelligence holds it right now — the claiming session's own family (its resolver pins the label to the host-attested family), which under delegation is the orchestrator, with the delegate in the record's `dispatched to` line | `gh issue list --label`, the issue page, and every owner type |
 | assignee | a human-shaped "taken" | notifications, `gh issue list --assignee` |
 
 **The retired `Agent` field is not one of them, and a claim must never write
