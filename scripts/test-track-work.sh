@@ -16,6 +16,7 @@ rot="./ai/skills/universal/track-work/assets/check-issue-rot.sh"
 metadata="$PWD/ai/skills/universal/track-work/assets/check-issue-metadata.sh"
 guidance="$PWD/ai/skills/universal/track-work/assets/discover-label-guidance.sh"
 tick="$PWD/ai/skills/universal/track-work/assets/tick-criteria.sh"
+completed_tick="$PWD/ai/skills/universal/track-work/assets/tick-completed-criteria.sh"
 status_sh="./ai/skills/universal/track-work/assets/set-issue-status.sh"
 repo="evanharmon1/harmon-devkit"
 
@@ -1975,9 +1976,22 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
     STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
     STUB_STATE_REASON="COMPLETED" STUB_ASSIGNEES="" \
-    "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
+    "$completed_tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "a completed closed issue with --closed-ok should tick (got $_rc)"
 [ -f "$tmp/edited" ] || fail "a completed closed issue should be written only with --closed-ok"
+
+echo "==> a direct --closed-ok call is refused outside the approved entry point"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    STUB_STATE_REASON="COMPLETED" STUB_ASSIGNEES="" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a direct --closed-ok call should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "a direct --closed-ok call must not write"
 
 echo "==> --closed-ok is refused on an open issue"
 printf '%s' "$body_three" >"$tmp/b1"

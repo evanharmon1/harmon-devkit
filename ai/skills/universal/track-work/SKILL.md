@@ -12,7 +12,7 @@ description: >-
   `gh project`/Projects V2 field writes, and PR bodies alike,
   and applies to issues in other repos as much as this one. Trigger it even if
   the user doesn't say the word "skill".
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/discover-label-guidance.sh:*), Bash(./.agents/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.agents/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/discover-label-guidance.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/discover-label-guidance.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.agents/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.agents/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.agents/skills/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
 ---
 
 # Track Work
@@ -163,14 +163,17 @@ post-merge criterion may be ticked only after you re-read the issue and confirm
 and receive explicit go-ahead for the write. Then use the separate flag:
 
 ```sh
-<skill-dir>/assets/tick-criteria.sh --repo <owner/repo> --issue <n> \
-  --closed-ok --match '<distinctive words from the post-merge criterion>'
+<skill-dir>/assets/tick-completed-criteria.sh --repo <owner/repo> --issue <n> \
+  --match '<distinctive words from the post-merge criterion>'
 ```
 
-`--closed-ok` is not a way to finish ordinary implementation criteria after an
-issue closed, nor a bypass for `NOT_PLANNED` or `DUPLICATE` issues. It denotes
-one explicitly authorised post-merge tick on a completed issue; the normal
-open-issue command and its blanket approval do not apply.
+`tick-completed-criteria.sh` is deliberately not allowlisted, and is the only
+entry point that enables `tick-criteria.sh --closed-ok`. It therefore receives
+the ordinary explicit write approval. `--closed-ok` is not a way to finish
+ordinary implementation criteria after an issue closed, nor a bypass for
+`NOT_PLANNED` or `DUPLICATE` issues. It denotes one explicitly authorised
+post-merge tick on a completed issue; the normal open-issue command and its
+blanket approval do not apply.
 
 `--index K` addresses the K-th *unticked* item instead, `--dry-run` shows what
 would change, and both selectors repeat to tick several at once. The script
@@ -200,16 +203,14 @@ unless every selector resolves to exactly one unticked item, the new body
 differs only on those lines and only by the marker, and the body is
 byte-identical to what it read. Exit 0 ticked, 1 refused, 2 usage.
 
-**The blanket path ticks only an open issue assigned to you.** A permission
-allowlist cannot constrain arguments, so the ticker itself is deliberately not
-allowlisted: the explicit implementation go-ahead authorises its ordinary open
-write, while the command still receives the normal write approval boundary.
-The assignment scopes that ordinary path further: claiming an issue is an
-ordinary write needing its own go-ahead (`/claim` step 5, using the markers in
-§6), so a human has authorised work on that specific issue before a tick can
-land on it. Unassigned, closed, or unclaimed issues are outside this path, and
-the script checks the open claim again immediately before the write, since a
-claim can lapse mid-run.
+**The blanket path ticks only an open issue assigned to you.** The allowlisted
+`tick-criteria.sh` rejects `--closed-ok`; it is the narrowly scoped,
+implementation-authorised open path. The assignment scopes that ordinary path
+further: claiming an issue is an ordinary write needing its own go-ahead
+(`/claim` step 5, using the markers in §6), so a human has authorised work on
+that specific issue before a tick can land on it. Unassigned, closed, or
+unclaimed issues are outside this path, and the script checks the open claim
+again immediately before the write, since a claim can lapse mid-run.
 
 `--closed-ok` does not inherit that assignment-backed pre-approval. It is
 available only for a `CLOSED`/`COMPLETED` issue's verified post-merge criterion,

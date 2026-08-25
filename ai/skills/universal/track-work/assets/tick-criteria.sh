@@ -30,9 +30,10 @@
 # A failed edit is read back before it is reported, because GitHub can apply one
 # and lose the response, and a retry would then find nothing left to tick.
 #
-# The issue must be assigned to the authenticated account. Being pre-approved,
-# nothing in the permission layer scopes this command to the issue the user
-# asked about — the claim is what scopes it.
+# Ordinary open ticks must target an issue assigned to the authenticated account:
+# the allowlisted implementation path relies on that claim as its scope. Closed
+# ticks use the separate, non-allowlisted tick-completed-criteria.sh entry point
+# and therefore do not depend on a claim the close workflow releases.
 #
 # Usage:
 #   tick-criteria.sh --repo owner/repo --issue N [--match TEXT]... [--index K]...
@@ -62,6 +63,7 @@ repo="${GH_REPO:-}"
 issue=""
 dry_run=""
 closed_ok=""
+closed_entrypoint="${TICK_CRITERIA_CLOSED_ENTRYPOINT:-}"
 selectors=""
 
 # Selectors are accumulated into a newline-delimited stream of `kind:value`
@@ -196,6 +198,10 @@ assert_claimed() {
     CLOSED | closed)
         [ -n "$closed_ok" ] || {
             echo "tick-criteria: $repo#$issue is closed — pass --closed-ok only for a completed post-merge tick" >&2
+            exit 1
+        }
+        [ "$closed_entrypoint" = 1 ] || {
+            echo "tick-criteria: use tick-completed-criteria.sh for a closed post-merge tick" >&2
             exit 1
         }
         case "$_state_reason" in
