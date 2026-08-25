@@ -463,7 +463,7 @@ the taxonomy table below is generated from) and the starter set is created by
 - **Tier** — which model-routing stratum should work the issue — advisory,
   human-written, and inert until a consumer resolves it under its own trust
   model
-- **Method** — the execution topology to work the issue under — advisory,
+- **Strategy** — the execution topology to work the issue under — advisory,
   like `tier:`
 - **Rigor** — which round-cap level in [`.devflow.toml`](../.devflow.toml) an
   agent works the issue under (AGENTS.md, "Round caps are resolved, not stated

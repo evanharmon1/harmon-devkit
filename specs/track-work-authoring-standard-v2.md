@@ -40,8 +40,8 @@ Ship one portable issue-authoring contract in `track-work` that:
 - Apply labels, create issues, choose milestones, assign people, or mutate a
   project board; the checker is read-only and pre-create.
 - Replace GitHub issue forms or the triage skill.
-- Write `claim:*`, `suggest:*`, `foreman:*`, `rigor:*`, `tier:*`, or `method:*`
-  labels during authoring.
+- Write `claim:*`, `suggest:*`, `foreman:*`, `rigor:*`, `tier:*`,
+  `tier:<role>:*`, or `strategy:*` labels during authoring.
 - Add a second label taxonomy or duplicate `label-registry.json` parsing rules
   in documentation.
 - Close harmon-init#853 or perform the downstream skills-sync pin bump; those

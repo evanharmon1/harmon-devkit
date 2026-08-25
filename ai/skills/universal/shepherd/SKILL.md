@@ -3,8 +3,9 @@ name: shepherd
 description: >-
   Shepherd a draft PR to ready for review — watch CI and incoming bot/human reviews,
   treat findings as hypotheses (verify, fix only what's confirmed, explain
-  rejections in per-thread replies), push, and re-watch, for at most 4
-  rounds. Invoke as /shepherd [PR # or URL].
+  rejections in per-thread replies), push, and re-watch, under the resolved
+  shepherd cap (0-6, from .devflow.toml's review policy). Invoke as
+  /shepherd [PR # or URL].
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*)
 ---
@@ -15,7 +16,8 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-curr
 
 Opening a draft PR is not the end. Shepherd it: watch CI **and** incoming
 bot/human reviews, adjudicate what lands, fix what's confirmed, and re-watch
-— for at most **4 rounds**. Both signals matter and both must end green: a
+— under the resolved **shepherd cap** (see "The repository's own policy
+outranks this file" below). Both signals matter and both must end green: a
 PR is not done until CI/CD workflows pass *and* no unresolved review findings
 remain. This cap is independent of any other loop caps used earlier in the
 dev flow.
@@ -55,6 +57,24 @@ in a repo whose `AGENTS.md` still says three, and stops being correct the
 moment that file says otherwise — including in repos that have not yet adopted
 the P0/P1-gating dev flow.
 
+**Absent a repo-specific override, the shepherd cap is the resolved rigor
+level's review policy's `shepherd` value — not a literal 4.** It is read the
+same way the gauntlet skill's challenge/review caps are: `.devflow.toml`,
+`[rigor.<level>].review` names a policy, `[review.<that policy>].shepherd` is
+the cap; a `rigor:*` label conflict resolves to the single strongest level by
+`rigor_order`, never a per-stage maximum; and an edit to `.devflow.toml`
+itself resolves every parameter from the merge-base copy. Shipped policies
+range the shepherd cap 0–6. Announce the resolved value the way gauntlet
+announces its caps, and disclose it in the PR body when it is off-default.
+
+**A resolved cap of 0 does not skip the readiness gate.** It means: spend no
+shepherd round — the watch/adjudicate/fix/push loop in steps 2–5 never
+runs — and go straight to step 6, evaluating the gate exactly as written
+against whatever head exists on entry. A pass promotes normally; anything
+else is stop condition 2 (**cap reached**), with zero rounds spent. Cap 0
+disables the fix loop, never the deterministic checks that decide whether the
+PR was already ready.
+
 **This stage settles the low-priority findings.** Where the earlier dev-flow
 loops gate only on high-priority findings (in repos that run a
 severity-labelled second-model review, that is P0/P1), the ones they deferred
@@ -66,7 +86,8 @@ follow-up issue.
 **Round accounting (read this first):** one round = one fix push, **or**
 one no-change adjudication cycle (everything rejected/external — replies
 posted, nothing to fix — then back to watching). Count rounds explicitly
-(say "round 2 of 4") — the counter only ever increases, every wait below is
+(say "round 2 of `<cap>`", using the resolved shepherd cap above) — the
+counter only ever increases, every wait below is
 bounded, and every path ends in one of the stop conditions in step 6, so
 the loop cannot run forever.
 
@@ -1342,7 +1363,9 @@ loops indefinitely:
    event releases the rest.`
    Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
-   4 rounds: stop.
+   the resolved shepherd cap's rounds: stop. A resolved cap of 0 reaches this
+   condition on the spot, having spent zero rounds — see the cap-resolution
+   note above.
 3. **No progress** — the same failure signature or finding survives two
    consecutive rounds unchanged **and** it is the sole remaining blocker
    (or the rounds made no material progress overall): stop early; burning

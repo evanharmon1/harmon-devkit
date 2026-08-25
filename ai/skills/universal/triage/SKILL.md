@@ -36,8 +36,9 @@ it in the summary; never work around it).
   complete. The script checks completeness; you supply the labels and, where
   an axis truly does not apply, an `--inapplicable` attestation.
 - **Never touch** (the scripts refuse these too): `foreman:*`, `rigor:*`,
-  `tier:*`, `method:*`, `claim:*`, `suggest:*`, `agent:*`, milestones, close
-  states, assignees, issue bodies or titles.
+  `tier:*` (including scoped `tier:<role>:*`), `strategy:*`, `claim:*`,
+  `suggest:*`, `agent:*`, milestones, close states, assignees, issue bodies or
+  titles.
 - **Dry-run is the default.** Pass `--execute` to a script only when your
   runner said the mode is EXECUTE.
 - **When unsure, do nothing.** A skipped label costs nothing — the issue keeps
@@ -241,10 +242,11 @@ the entries file, no entry keys):
   `truncated_closed`: one line saying which window was truncated, so a
   finding missing from this report may simply be outside it rather than
   resolved.
-- `## Tier/method proposals` — only if, while reading an issue, you are
-  confident a `tier:*` or `method:*` value fits it far better than the
-  default. One bullet with the issue, the value, and one line of reasoning.
-  Never apply such labels yourself.
+- `## Tier/strategy proposals` — only if, while reading an issue, you are
+  confident a `tier:*` (optionally scoped, e.g. `tier:implementer:<value>`) or
+  `strategy:*` value fits it far better than the default. One bullet with the
+  issue, the value, and one line of reasoning. Never apply such labels
+  yourself.
 
 If there are no findings at all, create the file empty (`: > entries.md`).
 

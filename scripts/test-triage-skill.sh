@@ -6,8 +6,9 @@
 # What this keeps honest (issue #455's [CI] criteria):
 #   - the write-allowlist is computed from label-registry.json (agent-writable,
 #     v1 scope, retired excluded) with the gh-label fallback
-#   - the never-list refuses foreman:/rigor:/tier:/method:/claim:/suggest:/
-#     agent:* even when a hostile manifest grants them
+#   - the never-list refuses foreman:/rigor:/tier: (including scoped
+#     tier:<role>:*)/strategy:/claim:/suggest:/agent:* even when a hostile
+#     manifest grants them
 #   - work-type labels are refused on org repos (native Type owns them there)
 #   - needs-triage is removed only when classification is complete
 #   - --execute is inert without the wrapper-owned TRIAGE_EXECUTE=1 env gate
@@ -396,8 +397,8 @@ JSON
 echo "==> label: never-list refuses even what a hostile manifest grants"
 [ "$(run "$apply" label --repo "$repo" --issue 10 --add rigor:deep \
     --manifest "$evil")" = 4 ] || fail "rigor:deep must exit 4"
-for l in foreman:approved tier:apex method:plan claim:claude suggest:claude \
-    agent:claude-code; do
+for l in foreman:approved tier:apex tier:implementer:frontier strategy:plan \
+    claim:claude suggest:claude agent:claude-code; do
     [ "$(run "$apply" label --repo "$repo" --issue 10 --add "$l" \
         --manifest "$manifest")" = 4 ] || fail "$l must exit 4"
 done

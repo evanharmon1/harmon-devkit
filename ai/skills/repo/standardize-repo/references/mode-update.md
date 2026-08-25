@@ -3521,7 +3521,7 @@ board. If the project task already ran without the scope, re-run it once granted
 ```bash
 task setup:github-project      # board + Status pipeline + the Size number field; on a
                                # personal account also Priority/Product/Agent/Domain/Layer
-task setup:github-labels       # this repo's five label families
+task setup:github-labels       # this repo's full label-registry.json-driven taxonomy
 
 # org-owned repos only (github_org != author_git_provider_username):
 task setup:github-issue-fields # org Product/Agent/Domain/Layer issue fields
@@ -3545,7 +3545,7 @@ reset to the template's — reconcile those first if the repo has any.
 
 6b is **additive**. Both field scripts append whatever starter options an
 existing single-select lacks — `Status` and the custom `Domain`/`Layer`/`Agent`
-fields alike — and neither ever removes anything. That leaves four residues an
+fields alike — and neither ever removes anything. That leaves five residues an
 update can create, none of which any script closes:
 
 - **Options the scripts skipped and warned about.** The scripts warn-and-continue
@@ -3570,6 +3570,23 @@ update can create, none of which any script closes:
   fields: an option the template dropped survives on the project (personal) or
   the org issue field. Remove it only after re-mapping — deleting an option that
   items are assigned to **clears those values**.
+- **Renamed label families.** A prefix rename in the manifest — the
+  harmon-init#1047 `method:*` → `strategy:*` execution-topology rename is the
+  first instance (see catalog §1.13's `.devflow.toml` entry) — is not a
+  delete-and-recreate to `setup-github-labels.sh`: it sees an unrelated new
+  family (`strategy`) and an unrelated retired one (`method`, which it never
+  provisions, per the manifest's retirement note), so old `method:*` labels
+  survive untouched on every issue/PR that carried them. Rename each in place
+  — `gh label edit method:<value> --name strategy:<value>` for every value the
+  repo actually has (`gh label list --limit 1000 | grep '^method:'`; the six
+  shipped values are `oneshot`/`plan`/`plan-approved`/`orchestrate`/`council`/
+  `human-led`) — which preserves every label association, since a GitHub
+  rename is not a delete-and-recreate. Then re-run `task setup:github-labels`
+  (6b) to seed the family's current shape. The same release also expanded
+  `rigor:*` from three levels (`light`/`standard`/`deep`) to six
+  (`trivial`/`minimal`/`light`/`standard`/`thorough`/`deep`); that half needs
+  no rename, only the ordinary additive reseed. Confirm the migration is done
+  with `gh label list --limit 1000 | grep '^method:'` returning nothing.
 
 Check against the vocabulary in [`standards-catalog.md`](./standards-catalog.md)
 §1.13. Query each field's **data type and full option list**, not just its name —

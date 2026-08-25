@@ -199,7 +199,7 @@ environment — against the items below
       so run it in each repo; org default labels (org Settings → Repository,
       UI-only) only seed new repos.
 - [ ] **After a `copier update` that adds label families** (e.g. `tier:*` /
-      `method:*`), re-run `task setup:github-labels` to provision the new
+      `strategy:*`), re-run `task setup:github-labels` to provision the new
       labels here — it is additive and never deletes, so existing labels and
       the issues they sit on are untouched — then classify open issues with the
       added families.

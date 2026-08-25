@@ -411,7 +411,16 @@ H/J and the bootstrap/idempotency class: any **template-owned** file (the set in
 [`assets/template-owned-files.txt`](../assets/template-owned-files.txt) —
 `Taskfile.yml`, `scripts/*.sh`, lint configs, the standard `.github/workflows/*`,
 devcontainer files) that no longer matches a fresh render is potentially missing
-template improvements. Detect it mechanically — this is how the audit "checks
+template improvements. Singleton config the manifest deliberately omits —
+`.devflow.toml` (catalog §1.13; the `rigor`/`strategy`/`tier` round-cap and
+model-routing config), `label-registry.json`, `agent-registry.json` — is still
+caught: it is just a rendered path the repo also has, so the uncurated sweep
+below reports its drift too, tagged `(uncurated)` rather than plain `DRIFT`.
+Read an uncurated `.devflow.toml` diff with the manifest's own caveat in mind —
+a repo retuning its round caps ("Retuning these is expected", per the file's
+own header) is customization, not a regression to restore; a `[rigor.*]`/
+`[strategy.*]` table dropped entirely, or the `[tier.*]` ladder itself edited,
+is worth a closer look. Detect it mechanically — this is how the audit "checks
 everything" instead of eyeballing each file:
 
 ```bash

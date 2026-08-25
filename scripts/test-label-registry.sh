@@ -99,7 +99,8 @@ case "${1:-} ${2:-}" in
       {"name":"foreman:claude","description":"Dispatch control"},
       {"name":"Rigor:deep","description":"Execution budget"},
       {"name":"tier:frontier","description":"Model routing"},
-      {"name":"method:plan","description":"Execution topology"},
+      {"name":"tier:implementer:frontier","description":"Scoped model routing"},
+      {"name":"strategy:plan","description":"Execution topology"},
       {"name":"type:patch","description":"Foreman override"},
       {"name":"autorelease: pending","description":"Release automation state"}
     ]'
@@ -116,7 +117,7 @@ printf '%s\n' "$manifest_guidance" |
     jq -se 'any(.[]; . == {record: "guidance", label: "area:track-work", description: "The track-work skill: issue authoring standards and PR/commit linkage; claims are session-flow", family: "area", purpose: "Codebase subsystem the work lives in (solution space); at most one per issue."})' >/dev/null ||
     fail "manifest-backed guidance should include value description and family purpose"
 if printf '%s\n' "$manifest_guidance" |
-    jq -e 'select(.label | test("^(claim|suggest|agent|foreman|rigor|tier|method):"; "i"))' >/dev/null; then
+    jq -e 'select(.label | test("^(claim|suggest|agent|foreman|rigor|tier|strategy):"; "i"))' >/dev/null; then
     fail "guidance must exclude claim, suggestion, legacy-agent, Foreman, and execution controls"
 fi
 printf '%s\n' "$manifest_guidance" |

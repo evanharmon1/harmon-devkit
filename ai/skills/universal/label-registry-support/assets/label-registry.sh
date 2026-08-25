@@ -171,7 +171,7 @@ if [ "$command" = guidance ] && [ "$manifest_present" -eq 0 ]; then
           def description:
             if (.description? == null) then "" else .description end;
           def control_namespace:
-            ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+            ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|type|autorelease):");
           def authorable_label:
             test("[,|\\r\\n]") | not;
           if type != "array"
@@ -202,7 +202,7 @@ if [ "$command" = guidance ]; then
     # self-contained.
     open_family_count="$(jq -r '
       def control_namespace:
-        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|type|autorelease):");
       [.families[]
        | select((.retired // false) | not)
        | select(.source != "agent-registry" and .source != "tool-owned")
@@ -225,7 +225,7 @@ if [ "$command" = guidance ]; then
     fi
     jq -c --slurpfile live "$live_labels_file" '
       def control_namespace:
-        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|type|autorelease):");
       def authorable_label:
         test("[,|\\r\\n]") | not;
       def authoring_family:

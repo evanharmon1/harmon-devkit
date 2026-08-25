@@ -128,22 +128,35 @@ so in the announcement — resolution then falls through to `default_rigor`,
 and the announcement must name "no issue bound" as the source so a stricter
 label cannot be silently skipped.
 
-**Resolution order**, highest precedence first:
+**Caps come from the resolved rigor level's review policy, not straight off
+`[rigor.<level>]`.** A rigor level names a policy in its `review` field;
+`[review.<policy>]` is where `challenge`, `review`, `shepherd`, and
+`min_rounds` actually live as one bundle, so two rigor levels that point at
+the same policy share one set of numbers. Resolve the **level** first, then
+look up its policy:
 
 1. an explicit instruction in this session;
-2. a `rigor:*` label on the issue, **per stage, taking the highest cap
-   present — and the highest `min_rounds` floor present, under the same
-   principle** — labels are multi-select, so a conflict can only ever buy
-   more review, never less, in caps and floor alike. A `rigor:` value naming
-   no level in the file is ignored, not guessed at;
+2. a `rigor:*` label on the issue — **conflicts resolve to the single
+   strongest level by `rigor_order`** (the weakest-to-strongest list at the
+   top of the file), never to a per-stage maximum across the labels present.
+   A `rigor:` value naming no level in the file is ignored, not guessed at;
 3. `default_rigor` in the file;
-4. the built-in fallback **4 / 4 / 4** (challenge / review / shepherd) if the
-   file is absent.
+4. the built-in fallback if the file is absent — **the standard review
+   policy: challenge ≤3, review ≤3, shepherd 4, min_rounds 1** — i.e. the
+   same numbers `standard` resolves to, not a separately memorized constant.
 
-**When the change under review edits `.devflow.toml` itself, resolve from the
-merge-base copy**, not the branch copy — otherwise a branch can lower the very
-gate that is reviewing it, and dropping every level together would evade the
-disclosure below by leaving nothing to be below:
+Take the resolved level's `review` value, look up `[review.<that policy>]`,
+and read `challenge`/`review`/`shepherd`/`min_rounds` from there together.
+
+**When the change under review edits `.devflow.toml` itself, resolve every
+parameter — not just the caps — from the merge-base copy**, not the branch
+copy: `rigor_order`, every `[rigor.*]` entry's `review` pointer, every
+`[review.*]` bundle, `default_rigor`, and (see the tier/strategy note below)
+the `[tier.*]` maps, every role tier, `[strategy.*]`, and `default_strategy`.
+Otherwise a branch can lower the very gate that is reviewing it —
+retargeting a level's `review` pointer at a weaker policy is exactly as
+effective at this as editing the numbers directly — and dropping every level
+together would evade the disclosure below by leaving nothing to be below:
 
 ```sh
 base="$(git merge-base HEAD "$base_ref")"          # $base_ref from §1
@@ -151,46 +164,71 @@ git show "$base:.devflow.toml"                     # absent at the merge base?
 ```
 
 A merge base that predates `.devflow.toml` — the branch introduces it — is
-the absent-file case of the resolution order: the built-in 4 / 4 / 4 and a
-floor of 1, not an error and not the branch's own copy.
+the absent-file case of the resolution order above, not an error and not the
+branch's own copy.
 
 An explicit human instruction still overrides that.
 
-**`min_rounds` — the floor.** A level may define `min_rounds` (an integer, 1 or
-2 — the two-consecutive exit ends a stage at round 2 whatever the floor says,
-so larger values cannot bind; repos that validate the config reject them). In
-a repo where nothing validates the file, do not interpret an out-of-range or
-non-integer value: clamp it **fail-safe** — every non-numeric value reads as
-2, and a numeric one reads as 2 when greater than 1, else 1 — so ambiguity
-always buys more review, never less; say so in the announcement, so a typo
-retunes the budget visibly rather than silently. It is the minimum
-number of rounds a stage must run before the **empty-round instant exit** in §5
-may be taken, so a deeper level can require independent confirmation even when
-round 1 comes back clean. **Tolerate its absence: a level that does not define
-it has a floor of 1**, which is the historical behaviour. Note what follows
-from the arithmetic — the two-consecutive-clean exit and the capped-clean exit
-both consume at least two rounds, so **any floor ≤ 2 is satisfied by
-construction** on those paths, and the floor only ever bites the empty-round
-shortcut.
+**`min_rounds` — the floor.** Read it exactly as the resolved policy states
+it: **0 is a legal value** and means no floor at all — the **empty-round
+instant exit** in §5 may then fire on round 1. This skill does not clamp,
+guess at, or reject an out-of-range value; a `.devflow.toml` whose
+`min_rounds` exceeds that policy's own caps is a config bug for the repo that
+validates it to catch (harmon-init's own validator enforces
+`min_rounds <= caps`), not something this skill re-derives defensively.
+**Tolerate its absence: a policy that does not define it has a floor of 1**,
+the historical behaviour. The arithmetic still holds regardless — the
+two-consecutive-clean exit and the capped-clean exit both consume at least
+two rounds, so **any floor ≤ 2 is satisfied by construction** on those paths,
+and the floor only ever binds the empty-round shortcut.
 
-**Announce the resolved budget on entering the stage**, filled in from the file:
+**A cap of 0 skips that stage outright.** Do not run `task challenge` (or
+`task review`) at all when its resolved cap is 0 — move straight to the next
+stage. Skipping a heuristic stage never skips a **deterministic** one:
+`task verify`, `task ci`, and every adjudication/recording obligation another
+enabled stage still owes (the ledger, the sidecar, the §10 PR-body transfer)
+are unchanged. Say so plainly in the announcement (e.g. "challenge ≤0 —
+skipped") so a later round or a different session does not read a missing
+round-1 report as an oversight.
+
+**A cap of 1 is a single pass.** Round 1 is also the capped final round: an
+adjudicated-clean round 1 ends the stage immediately under §5's capped-clean
+exit, with no second round owed.
+
+**Announce the resolved budget on entering the stage**, filled in from the
+file — this is the contract's line, not a paraphrase:
 
 ```text
-rigor: standard (default_rigor) → challenge ≤3, review ≤3, shepherd 4, min_rounds 1
+rigor: standard (default) → review standard: challenge ≤3, review ≤3, shepherd 4, min_rounds 1 · tiers orch/impl/rev = frontier/standard/frontier · budget standard · strategy: plan (default)
 ```
 
-Name a **level** only when one level supplied every number; two retuned levels can
-yield a combination belonging to no single level, so what you announce is the
-caps. Carry the same line into the PR body in §10, so a later round or a
-different session can see which budget it is spending instead of inferring one.
+Name a **level** or a **policy** only when one of them supplied every number
+in its segment; a role tier refined away from its rigor profile by a
+`tier:<role>:*` label means the tiers segment no longer names a single
+profile either — what you announce is always the resolved **values**. Carry
+the same line into the PR body in §10, so a later round or a different
+session can see which budget it is spending instead of inferring one.
 
-**Disclose a reduced budget.** Whenever any resolved cap **or floor** is
-**below what `default_rigor` would give**, say so in the announcement and in
-the PR body. A
-`rigor:*` label is applied by people and verified by nothing — GitHub's triage
-role can apply one with no push access at all — so a budget can be retuned by
-someone who could not edit `.devflow.toml`. **An agent never applies one to
-itself.**
+**Tier and strategy resolve and disclose alongside the caps, through the
+same per-`.devflow.toml` mechanism — this skill does not re-derive their
+mechanics beyond what the announcement line needs.** Where the repository's
+own policy (`AGENTS.md`) states the resolution order, conflict rule, or
+disclosure requirement for either axis, follow it; it is the authority this
+skill already defers to (see the top of this file). Both **arm nothing**:
+naming a tier or a strategy never itself invokes a model or starts a
+workflow.
+
+**Disclose every off-default and off-profile choice.** Whenever any resolved
+cap **or floor** is different from what `default_rigor` would give — above or
+below — say so in the announcement and in the PR body. A `rigor:*` label is
+applied by people and verified by nothing — GitHub's triage role can apply
+one with no push access at all — so a budget can be retuned by someone who
+could not edit `.devflow.toml`, in either direction. The same goes for a role
+tier: when a `tier:<role>:*` label (or an unqualified `tier:*`, which refines
+**implementer** only) leaves a role's tier **below what the resolved rigor
+profile would give it**, disclose that too, as an off-profile decision,
+distinct from an off-default rigor cap. **An agent never applies a `rigor:*`,
+`tier:*`, or `strategy:*` label to itself.**
 
 Caps are **ceilings, not quotas**. A stage that meets an exit condition on
 round 1 is done, whatever the level allowed. Nothing here obliges a round to run.
@@ -634,7 +672,8 @@ In order:
    heading, one unchecked task-list item each — `- [ ] <file:line> —
    <finding>` — with enough detail to adjudicate later. The body also carries
    what/why/how-it-was-verified (name the gates you actually ran) and the
-   budget line from §2, including the reduced-budget disclosure if one applies.
+   budget line from §2, including any off-default or off-profile disclosure
+   it carries.
 5. **Re-check ownership immediately before creating.** A claim is not a
    lock: re-read the bound issue and list its linked/open PRs — another
    worker may have opened one during the rounds. On §2's no-issue-bound
