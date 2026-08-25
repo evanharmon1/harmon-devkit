@@ -556,6 +556,7 @@ Never approve or run a silently inferred or substituted target.
   - family: <the resolver's literal `family` value>
   - runtime environment: <host|devcontainer|coder|codespace|github-actions|unknown>
   - session: <the `/kickoff` session name, or "unknown">
+  - dispatched to: <subagent name or role and its family/model, e.g. "implementer (codex gpt-5.6-terra)" | none>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
   - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
@@ -594,14 +595,16 @@ Never approve or run a silently inferred or substituted target.
   tool running this claim (for example, Claude Code or Codex CLI), `model`
   copies the exact model identifier the harness exposes, `family` copies the
   literal trusted value emitted by `resolve-claim-label.sh`, `runtime
-  environment` copies the portable helper result above, and `session` copies
-  `/kickoff`'s session name. Never infer family from issue text or a label, and
-  never publish a raw hostname, workspace name, or machine identifier. Write
-  `unknown` when the model identifier or session name is unavailable. If any
-  free-form operational value contains a line break, record `unknown` instead;
-  every field is a single-line record. These fields help a maintainer find,
-  stop, or resume the worker; they are informational and must never steer
-  cleanup writes. Older records may omit any of them and remain valid.
+  environment` copies the portable helper result above, `session` copies
+  `/kickoff`'s session name, and `dispatched to` names the orchestrator's
+  subagent role and family/model (or is `none`). Never infer family from issue
+  text or a label, and never publish a raw hostname, workspace name, or machine
+  identifier. Write `unknown` when the model identifier or session name is
+  unavailable. If any free-form operational value contains a line break, record
+  `unknown` instead; every field is a single-line record. These fields help a
+  maintainer find, stop, or resume the worker; they are informational and must
+  never steer cleanup writes. Older records may omit any of them and remain
+  valid.
   Pass the trusted family and portable runtime values to the transaction
   helper as shown: it requires any corresponding record line to match exactly
   before the first write, but never uses either value to choose a marker,
@@ -613,9 +616,9 @@ Never approve or run a silently inferred or substituted target.
   field stays on one line and values use the template above. The model-label
   fields are an optional paired extension for older records; new records write
   both, using `no` when no model refinement is owned. The optional
-  operational fields (`harness`, `model`, `family`, `runtime environment`, and
-  `session`) are not release authority; parsers accept records with or without
-  them. The label fields name the **actual label** (`claim:<family>`,
+  operational fields (`harness`, `model`, `family`, `runtime environment`,
+  `session`, and `dispatched to`) are not release authority; parsers accept
+  records with or without them. The label fields name the **actual label** (`claim:<family>`,
   not `yes`) so the
   release does not have to guess which label to remove, and every value stays
   on its own single line. The parser anchors on `label added by this claim:`

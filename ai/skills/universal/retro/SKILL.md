@@ -77,6 +77,10 @@ rather than reporting both as loose ends:
   cleanup — the workflow has no Projects permission by design — so report
   it as a pending `/wrap` chore, not a workflow failure. These are §2
   loose ends.
+- **Freshly filed follow-up** — an issue an agent filed during this session as
+  follow-up work is expected to be open, unassigned, and without a claim.
+  Report it under "filed," not as a loose end. It becomes a loose end only if
+  this session said it would work the follow-up and did not.
 
 Keep each reference's repository identity: a bare `#123` from another repo
 must be verified with `--repo owner/repo` (or by its full URL), never against

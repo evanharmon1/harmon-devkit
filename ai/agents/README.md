@@ -53,6 +53,8 @@ ignores the frontmatter.
 - **Discover the skill, don't require it.** Check the conventional path, fall
   back to a glob, and degrade to `AGENTS.md` plus the brief when there is
   nothing to read. A consumer that vendors no skills still gets a working agent.
+- **For delegated issue work, use the orchestrated-work brief contract.** See
+  [`track-work`'s reference](../skills/universal/track-work/references/orchestrated-work.md).
 - **Don't name tools in prose.** Say what to do, not which tool does it — tool
   names are the least portable thing in the file.
 - **The repo's policy outranks the agent.** State it, the way the skills do:

@@ -106,6 +106,7 @@ in the claim record, never in the label.
   - family: <the trusted acting-family resolver output>
   - runtime environment: <host|devcontainer|coder|codespace|github-actions|unknown>
   - session: <the `/kickoff` session name, or "unknown">
+  - dispatched to: <subagent name or role and its family/model, e.g. "implementer (codex gpt-5.6-terra)" | none>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact family or legacy label applied | no | n/a>
   - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
@@ -116,10 +117,12 @@ in the claim record, never in the label.
   - `claim:` label displaced by this claim chain: <the exact displaced family/model or legacy label | none>
   ```
 
-- `harness`, `model`, `family`, `runtime environment`, and `session` are
-  optional, informational fields. New claims write all five; legacy records
-  that omit any of them remain valid. `family` is copied from the trusted
-  acting-family resolver output, never inferred from issue text or labels.
+- `harness`, `model`, `family`, `runtime environment`, `session`, and
+  `dispatched to` are optional, informational fields. New claims write all six;
+  legacy records that omit any of them remain valid. `family` is copied from
+  the trusted acting-family resolver output, never inferred from issue text or
+  labels. `dispatched to` identifies an orchestrator's subagent dispatch, or
+  is `none`; it is never release authority or cleanup input.
   `runtime environment` is one portable value (`host`, `devcontainer`,
   `coder`, `codespace`, `github-actions`, or `unknown`); it never contains a
   raw hostname or workspace identifier. A claim writes `unknown` instead of

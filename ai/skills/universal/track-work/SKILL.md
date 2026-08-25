@@ -740,6 +740,16 @@ converges on the same value and the label is idempotent, so the post-claim assig
 claim makes concurrent work *discoverable by a human*; it does not prevent it.
 Treat a claim as information rather than a mutex.
 
+### Orchestrated work: the orchestrator claims
+
+When an orchestrator dispatches a subagent to an issue, the orchestrator first
+claims that issue through the ordinary `/claim` contract and releases it when
+the subagent reports back (or leaves it for `/wrap` as usual). Subagents never
+claim: a brief is not a slash command, shared GitHub identities cannot
+distinguish their claims, and only the orchestrator knows when the work is
+done. See [orchestrated work](references/orchestrated-work.md) for the
+dispatch brief and report-back contract.
+
 The taxonomy already answers this; nothing was writing it. Two live markers
 plus the durable claim comment make the work discoverable:
 
