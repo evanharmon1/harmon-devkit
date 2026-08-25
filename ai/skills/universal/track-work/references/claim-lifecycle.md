@@ -106,7 +106,7 @@ in the claim record, never in the label.
   - family: <the trusted acting-family resolver output>
   - runtime environment: <host|devcontainer|coder|codespace|github-actions|unknown>
   - session: <the `/kickoff` session name, or "unknown">
-  - dispatched to: <subagent name or role and its family/model, e.g. "implementer (codex gpt-5.6-terra)" | none>
+  - dispatched to: <subagent name or role and its family/model, e.g. "implementer (family gpt, model gpt-5.6-terra)" | none>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact family or legacy label applied | no | n/a>
   - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
@@ -123,7 +123,9 @@ in the claim record, never in the label.
   the trusted acting-family resolver output, never inferred from issue text or
   labels. `dispatched to` identifies an orchestrator's subagent dispatch, or
   is `none`; it is never release authority or cleanup input. It is
-  **dispatch-time history, not live state**: a record is never edited when
+  **dispatch history, not live state**: written at claim, immediately before
+  the dispatch, it names the intended delegate (a dispatch that fails or is
+  aborted owes a refresh record saying `none`); a record is never edited when
   the delegate returns, so the value means "was dispatched to" and a later
   record (an ordinary refresh) supersedes it — readers take the latest record
   and judge whether the delegate is still active from the work in flight.

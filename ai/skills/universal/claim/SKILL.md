@@ -556,7 +556,7 @@ Never approve or run a silently inferred or substituted target.
   - family: <the resolver's literal `family` value>
   - runtime environment: <host|devcontainer|coder|codespace|github-actions|unknown>
   - session: <the `/kickoff` session name, or "unknown">
-  - dispatched to: <subagent name or role and its family/model, e.g. "implementer (codex gpt-5.6-terra)" | none>
+  - dispatched to: <subagent name or role and its family/model, e.g. "implementer (family gpt, model gpt-5.6-terra)" | none>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact label applied — claim:<family>, a model-pinned claim:<family>:<model>, or a registry-declared family-owned legacy agent:* label | no | n/a>
   - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
@@ -596,8 +596,9 @@ Never approve or run a silently inferred or substituted target.
   copies the exact model identifier the harness exposes, `family` copies the
   literal trusted value emitted by `resolve-claim-label.sh`, `runtime
   environment` copies the portable helper result above, `session` copies
-  `/kickoff`'s session name, and `dispatched to` names the orchestrator's
-  subagent role and family/model (or is `none`). Never infer family from issue
+  `/kickoff`'s session name, and `dispatched to` names the delegate an
+  orchestrator is about to dispatch — its role plus `claim:`-family and model
+  — or is `none`. Never infer family from issue
   text or a label, and never publish a raw hostname, workspace name, or machine
   identifier. Write `unknown` when the model identifier or session name is
   unavailable. If any free-form operational value contains a line break, record
