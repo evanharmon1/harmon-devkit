@@ -179,14 +179,19 @@ pointers, every `[review.*]` bundle, **every `[budget.*]` table**,
 `default_rigor`, and (see the tier/strategy note below) the `[tier.*]` maps,
 every role tier, `[strategy.*]`, and `default_strategy`. Otherwise a branch
 can lower the very gate that is reviewing it — retargeting a level's
-`review` pointer at a weaker policy, or its `budget` pointer at a looser
-envelope (a higher `max_agent_runs` or `max_parallel_agents`, a longer
-`wall_clock_min`, `allow_tier_escalation` flipped on where it wasn't), is
-exactly as effective at this as editing the numbers directly, so a branch
-cannot buy itself more run budget, more parallelism, more wall clock, or
-tier escalation any more than it can buy itself a looser review cap — and
-dropping every level together would evade the disclosure below by leaving
-nothing to be below:
+`review` pointer at a weaker policy — or misstate its own budget the same
+way: retargeting the `budget` pointer at a looser envelope (a higher
+`max_agent_runs` or `max_parallel_agents`, a longer `wall_clock_min`,
+`allow_tier_escalation` flipped on where it wasn't) is exactly as effective
+at that as editing the numbers directly. **This skill announces the budget
+envelope; it does not enforce it** — enforcement, where a consumer can do it
+at all, is theirs (Foreman intersects a resolved envelope with its own
+ceilings; an interactive session reports one it cannot measure as
+unenforced rather than claiming to meter it, per ADR 0007), so reading
+`budget` from the merge-base copy protects that announcement's honesty, not
+a limit this skill itself meters or stops on. Dropping every level together
+would evade the disclosure below the same way, by leaving nothing to be
+below:
 
 ```sh
 base="$(git merge-base HEAD "$base_ref")"          # $base_ref from §1

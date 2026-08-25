@@ -246,17 +246,35 @@ the entries file, no entry keys):
 - `## Tier/strategy proposals` — only if, while reading an issue, you are
   confident a `tier:*` (optionally scoped, e.g. `tier:implementer:<value>`)
   or execution-topology value fits it far better than the default. **Which
-  execution-topology prefix to propose is discovered, never assumed**: a
-  repo may be mid-migration (harmon-init#1047 `method:*` → `strategy:*`) and
-  still carry only the retired family. Check once per run, before writing
-  any such proposal: `gh label list --repo "$REPO" --limit 1000 --json name
-  -q '.[].name' | grep -iE '^(strategy|method):'`. Propose from whichever
-  family the check actually finds live — prefer `strategy:*` when both are
-  present (it is the non-retired one), fall back to `method:*` only when
-  `strategy:*` is entirely absent, and propose **nothing** if the check
-  finds neither: a value from a family the repo does not have is not a
-  usable proposal. One bullet with the issue, the value, and one line of
-  reasoning. Never apply such labels yourself.
+  prefix — and, for tier, whether scoped or bare — to propose is
+  discovered, never assumed**: a repo may be mid-migration (harmon-init#1047
+  `method:*` → `strategy:*`) and still carry only the retired family, and
+  scoped `tier:<role>:*` labels are tool-owned/created on demand — never
+  pre-seeded — so a repo that has never used one has no live label to
+  discover at all.
+
+  Check once per run, before writing any such proposal:
+  `gh label list --repo "$REPO" --limit 1000 --json name -q '.[].name'`.
+  This read is **indeterminate, not just possibly incomplete, when it
+  returns exactly 1000 names** — the same signal `triage-apply.sh`'s
+  `live_labels()` refuses on rather than derive from a possibly-partial
+  set. Fail closed the same way: omit `## Tier/strategy proposals` from
+  this run's report entirely rather than propose from a vocabulary you
+  cannot prove is complete.
+
+  From a confirmed-complete list: propose an execution-topology value from
+  whichever family it actually contains — prefer `strategy:*` when both
+  `strategy:*` and `method:*` are present (it is the non-retired one), fall
+  back to `method:*` only when `strategy:*` is entirely absent, and propose
+  **nothing** on this axis if it contains neither. Separately, propose a
+  **scoped** `tier:<role>:*` value only when the list already contains at
+  least one live `tier:<role>:*` label (two colons after the prefix) —
+  otherwise propose a bare `tier:<value>` only, or nothing on this axis if
+  the list contains no `tier:*` at all. A value from a family or a scoping
+  the repo has never used is not a usable proposal.
+
+  One bullet with the issue, the value, and one line of reasoning. Never
+  apply such labels yourself.
 
 If there are no findings at all, create the file empty (`: > entries.md`).
 

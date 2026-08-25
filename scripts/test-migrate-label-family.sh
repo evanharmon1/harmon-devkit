@@ -523,6 +523,49 @@ grep -q '#6' "$tmproot/stderr" ||
     bad "transfer must not delete the source when current membership drifted from the snapshot" ||
     ok "a concurrent drift (#6 joining the source label after the snapshot) aborts the delete without losing #5's transfer"
 
+echo "==> transfer refuses when old and new resolve to the same live label"
+new_fixture "same-label"
+cat >"$fixture/labels-pages.json" <<'JSON'
+[[{"name":"Method:OneShot","color":"BF3989"}]]
+JSON
+write_issue_page "Method:OneShot" '[[{"number":5,"pull_request":null}]]'
+rc="$(run migrate transfer method:oneshot METHOD:ONESHOT --repo o/r --execute)"
+[ "$rc" = 2 ] || bad "transfer should exit 2 when old and new resolve to the same live label, case-insensitively (got $rc)"
+grep -qi 'same live label' "$tmproot/stderr" ||
+    bad "transfer's refusal should say old and new resolve to the same label: $(cat "$tmproot/stderr")"
+[ -f "$fixture/state/issue-5.labels" ] && [ -s "$fixture/state/issue-5.labels" ] &&
+    bad "transfer must not add anything when old and new resolve to the same live label" ||
+    true
+[ -f "$fixture/state/deleted-Method:OneShot" ] &&
+    bad "transfer must never delete a label that is also its own destination" ||
+    ok "transfer refuses old/new resolving to the same live label, before any write"
+
+echo "==> rename refuses an item that already carries a DIFFERENT destination-prefix value"
+new_fixture "rename-conflict"
+cat >"$fixture/labels-pages.json" <<'JSON'
+[[{"name":"method:plan","color":"BF3989"},{"name":"strategy:council","color":"BF3989"}]]
+JSON
+write_issue_page "method:plan" '[[{"number":9,"pull_request":null}]]'
+printf 'strategy:council\n' >"$fixture/state/issue-9.labels"
+rc="$(run migrate rename method:plan strategy:plan --repo o/r --execute)"
+[ "$rc" = 3 ] || bad "rename should exit 3 when an item already carries a conflicting strategy:* value (got $rc)"
+grep -q '#9' "$tmproot/stderr" && grep -q 'strategy:council' "$tmproot/stderr" ||
+    bad "rename's refusal should name the conflicting item and its existing value: $(cat "$tmproot/stderr")"
+[ -f "$fixture/state/renamed-method:plan" ] &&
+    bad "rename must not call gh label edit when a destination-prefix conflict exists on any item" ||
+    ok "rename refuses (without renaming anything) when an item already carries a different value of the destination's prefix"
+
+echo "==> rename's destination-prefix conflict check also runs, and blocks, in dry-run"
+new_fixture "rename-conflict-dry-run"
+cat >"$fixture/labels-pages.json" <<'JSON'
+[[{"name":"method:plan","color":"BF3989"},{"name":"strategy:council","color":"BF3989"}]]
+JSON
+write_issue_page "method:plan" '[[{"number":9,"pull_request":null}]]'
+printf 'strategy:council\n' >"$fixture/state/issue-9.labels"
+rc="$(run migrate rename method:plan strategy:plan --repo o/r)"
+[ "$rc" = 3 ] || bad "rename's destination-prefix conflict must block dry-run too, before --execute would discover it (got $rc)"
+ok "rename's destination-prefix conflict check runs (and blocks) in dry-run, not only under --execute"
+
 if [ "$fail" -gt 0 ]; then
     echo "test-migrate-label-family: $fail failure(s), $pass passing." >&2
     exit 1

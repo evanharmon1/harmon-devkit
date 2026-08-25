@@ -243,8 +243,11 @@ level allowed.
 **Tier and strategy — which model stratum, per role, and which topology —
 resolve and disclose the same way the caps do, and which rules govern them
 depends on `.devflow.toml`'s shape** (see "Check the file's shape before
-resolving a conflict" above) — this axis migrates on its own schedule, not
-necessarily in lockstep with the caps.
+resolving a conflict" above) — the **same** shape check, not a second one:
+`.devflow.toml` is a single file that a copier update replaces whole, as a
+verbatim twin, so the shape is detected once per file and applies to every
+axis in it alike. A mixed state — caps migrated while tier/strategy are
+not, or vice versa — is not a configuration this file can be in.
 
 **Under a migrated shape**, two advisory axes classify an issue: **tier**
 (the model stratum that works it, per role — the ladder `local → economy →

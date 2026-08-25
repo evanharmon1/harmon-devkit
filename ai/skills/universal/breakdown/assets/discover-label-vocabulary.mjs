@@ -650,7 +650,19 @@ const resultFamilies = new Map()
 const candidateOwners = new Map()
 const declaredOwners = new Map()
 const knownConcrete = new Set()
-const reservedConcretePrefixes = ['claim:', 'agent:', 'foreman:']
+// claim:/agent:/foreman: are live ownership/dispatch controls; the
+// execution-control prefixes (see safe()'s definition) belong here too — a
+// prefix-less family (family.prefix === null, so safe()'s own check never
+// sees them) can still enumerate a VALUE that renders to a reserved-looking
+// concrete name (e.g. a value literally "strategy:plan" on a family with no
+// prefix), and that must be refused exactly like a family that declares the
+// prefix directly.
+const reservedConcretePrefixes = [
+  'claim:',
+  'agent:',
+  'foreman:',
+  ...[...executionControlPrefixes].map((prefix) => `${prefix}:`)
+]
 
 function isModelSuggestion(name) {
   const [prefix, family, model, ...rest] = name.split(':')

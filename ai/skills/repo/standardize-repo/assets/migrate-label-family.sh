@@ -33,11 +33,17 @@
 #
 # rename <old> <new>      Case-insensitive discovery, then an
 #                         association-preserving `gh label edit --name`.
-#                         Refuses if <new> already exists live — that is a
-#                         name collision `gh label edit` would itself
-#                         reject; use `transfer` instead. A no-op (exit 0)
-#                         if <old> is not live: already renamed, or never
-#                         existed.
+#                         Refuses (exit 2) if <new> already exists live —
+#                         that is a name collision `gh label edit` would
+#                         itself reject, and also the case where <old> and
+#                         <new> resolve to the same live label; use
+#                         `transfer` instead. Refuses (exit 3, nothing
+#                         touched) if any item carrying <old> already
+#                         carries a DIFFERENT concrete value of <new>'s own
+#                         prefix — after the rename it would carry both,
+#                         the same exclusivity conflict `transfer` guards
+#                         against. A no-op (exit 0) if <old> is not live:
+#                         already renamed, or never existed.
 #
 # transfer <old> <new>    For the partial state where <new> already exists
 #                         (typically because a provisioning task created it
@@ -71,10 +77,10 @@
 #                         `<old-prefix>:*`, case-insensitively. Exit 4 if
 #                         any remain.
 #
-# rename/transfer dry-run by default; pass --execute to write (transfer's
-# destination-resolution and conflict refusals still run in dry-run, so a
-# blocker is visible before --execute rather than discovered by it).
-# inventory and verify are always read-only.
+# rename/transfer dry-run by default; pass --execute to write (both
+# subcommands' destination-resolution and conflict refusals still run in
+# dry-run, so a blocker is visible before --execute rather than discovered
+# by it). inventory and verify are always read-only.
 #
 # Every GitHub read goes through --method GET, pinned explicitly — request
 # fields (`-f`/`-F`) are never used, because their mere presence flips gh
@@ -90,11 +96,12 @@
 #   1 = a write failed, or transfer's pre-delete recheck found current
 #       membership had drifted from what was transferred (either way,
 #       nothing was deleted; a failed rename means nothing was renamed)
-#   2 = usage/environment error, rename found the destination already live,
-#       or transfer found the destination not live at all
+#   2 = usage/environment error, rename found the destination already live
+#       (including <old> and <new> resolving to the same live label), or
+#       transfer found the destination not live at all
 #   3 = a family-exclusivity conflict: inventory found item(s) carrying more
-#       than one <old-prefix> label, or transfer found an item already
-#       carrying a different concrete value of <new>'s own prefix
+#       than one <old-prefix> label, or rename/transfer found an item that
+#       already carries a different concrete value of <new>'s own prefix
 #   4 = verify found live label(s) still matching <old-prefix>
 #
 # Portable to macOS bash 3.2 (no mapfile, no associative arrays).
@@ -215,6 +222,31 @@ conflicting_prefix_labels() {
         )'
 }
 
+# For every {number, is_pr} item in snapshot file $1, write a "  #N (kind):
+# existing, existing2" line to report file $2 when that item already
+# carries some OTHER concrete value of prefix $3 besides $4 (exact — need
+# not be live yet: rename calls this before the destination is created, so
+# every $3:* label an item has is necessarily a conflict there). Used by
+# both rename and transfer — an item that will end up with the destination
+# label (renamed onto it, or added to it) must not end up carrying a second,
+# different value of that label's own prefix: the family is exclusive and,
+# unlike the retired method family, has no rank to resolve a conflict by.
+check_prefix_conflicts() {
+    local snapshot="$1" report="$2" prefix="$3" exact="$4" repo="$5"
+    local number is_pr kind other
+    : >"$report"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        number="$(printf '%s' "$line" | jq -r '.number')"
+        is_pr="$(printf '%s' "$line" | jq -r '.is_pr')"
+        kind="$(gh_kind "$is_pr")"
+        other="$(conflicting_prefix_labels "$prefix" "$kind" "$number" "$repo" "$exact")"
+        [ -z "$other" ] ||
+            printf '  #%s (%s): already carries %s\n' "$number" "$kind" \
+                "$(printf '%s\n' "$other" | paste -sd ', ' -)" >>"$report"
+    done <"$snapshot"
+}
+
 cmd_inventory() {
     local prefix="" repo=""
     while [ "$#" -gt 0 ]; do
@@ -315,6 +347,28 @@ cmd_rename() {
         die 2 "refused: '$new_exact' already exists live — a rename onto it" \
             "would collide; run 'transfer $old $new --repo $repo' instead"
     fi
+    local new_prefix="${new%%:*}"
+
+    # Refuse before touching anything if any item carrying $old_exact
+    # already carries a DIFFERENT concrete value of the destination's own
+    # prefix. After the rename every such item carries $new (same label
+    # object, new name) — one that already had, say, strategy:council would
+    # then carry both it and the freshly-renamed strategy:plan: the same
+    # ambiguity transfer's and inventory's equivalent checks exist to catch,
+    # just reached by `gh label edit` instead. $new is not live yet, so
+    # every $new_prefix:* label an item already has is necessarily a
+    # conflict here — checked in dry-run too, so it is visible before
+    # --execute, not discovered by it.
+    tmp="$scratch_dir/rename-snapshot"
+    fetch_items_for_label "$repo" "$old_exact" >"$tmp"
+    local conflicts
+    conflicts="$scratch_dir/rename-conflicts"
+    check_prefix_conflicts "$tmp" "$conflicts" "$new_prefix" "$new" "$repo"
+    if [ -s "$conflicts" ]; then
+        echo "migrate-label-family: refusing to rename — the following already carry a different $new_prefix:* value:" >&2
+        cat "$conflicts" >&2
+        exit 3
+    fi
 
     if [ "$execute" -eq 0 ]; then
         echo "DRY-RUN would rename '$old_exact' to '$new' in $repo"
@@ -370,6 +424,9 @@ cmd_transfer() {
         die 2 "refused: destination '$new' is not live — transfer moves" \
             "associations onto an EXISTING label; create it first, or use" \
             "'rename' if '$old' is the only one of the two that exists"
+    [ "$old_exact" != "$new_exact" ] ||
+        die 2 "refused: '$old' and '$new' both resolve to the same live" \
+            "label ('$old_exact') — nothing to transfer"
     local new_prefix="${new_exact%%:*}"
 
     tmp="$scratch_dir/transfer-snapshot"
@@ -384,19 +441,9 @@ cmd_transfer() {
     # exactly the ambiguity `inventory` exists to catch, just introduced by
     # this command instead of a naive rename. Checked in dry-run too, so
     # the conflict is visible before --execute, not discovered by it.
-    local conflicts number is_pr kind other
+    local conflicts number is_pr kind
     conflicts="$scratch_dir/transfer-conflicts"
-    : >"$conflicts"
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        number="$(printf '%s' "$line" | jq -r '.number')"
-        is_pr="$(printf '%s' "$line" | jq -r '.is_pr')"
-        kind="$(gh_kind "$is_pr")"
-        other="$(conflicting_prefix_labels "$new_prefix" "$kind" "$number" "$repo" "$new_exact")"
-        [ -z "$other" ] ||
-            printf '  #%s (%s): already carries %s\n' "$number" "$kind" \
-                "$(printf '%s\n' "$other" | paste -sd ', ' -)" >>"$conflicts"
-    done <"$tmp"
+    check_prefix_conflicts "$tmp" "$conflicts" "$new_prefix" "$new_exact" "$repo"
     if [ -s "$conflicts" ]; then
         echo "migrate-label-family: refusing to transfer — the following already carry a different $new_prefix:* value:" >&2
         cat "$conflicts" >&2

@@ -647,6 +647,31 @@ else
     bad "unpaired model-shaped suggestions fail closed with a diagnostic"
 fi
 
+# A prefix-less family's rendered name is just its bare value — so a value
+# that happens to spell out an execution-control label (no family.prefix
+# for safe()'s own check to see) must be caught on the RENDERED name, same
+# as claim:/agent:/foreman: already are just above.
+execution_control_concrete="$tmproot/execution-control-concrete"
+mkdir -p "$execution_control_concrete"
+write_agent_registry "$execution_control_concrete"
+write_registry "$execution_control_concrete" api
+write_labels "$execution_control_concrete" api
+jq '.families += [{
+    "family":"safe-strategy-model", "prefix":null, "purpose":"Unpaired execution-control label",
+    "axis":"meta", "source":"inline", "writers":["agent"], "readers":"agents",
+    "lifecycle":"durable", "exclusive":false, "provision":false,
+    "values":[{"value":"strategy:plan"}]
+}]' "$execution_control_concrete/label-registry.json" >"$execution_control_concrete/registry.json"
+mv "$execution_control_concrete/registry.json" "$execution_control_concrete/label-registry.json"
+if discover "$execution_control_concrete" >"$execution_control_concrete/output" 2>"$execution_control_concrete/error"; then
+    bad "a prefix-less family cannot smuggle an execution-control-shaped concrete label past the reserved-prefix check"
+elif [ ! -s "$execution_control_concrete/output" ] &&
+    grep -q 'reserved label strategy:plan' "$execution_control_concrete/error"; then
+    ok "a prefix-less family's execution-control-shaped concrete value is refused, not only family.prefix"
+else
+    bad "an execution-control-shaped concrete label from a prefix-less family should fail closed with a diagnostic: $(cat "$execution_control_concrete/error")"
+fi
+
 agent_version="$tmproot/agent-version"
 mkdir -p "$agent_version"
 write_agent_registry "$agent_version"
