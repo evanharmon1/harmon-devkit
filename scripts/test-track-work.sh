@@ -1677,10 +1677,9 @@ done
 
 # --- tick-criteria.sh -------------------------------------------------------
 #
-# The guarantee under test is narrowness: this is the one write the skill
-# pre-approves, so every path that could turn a tick into an arbitrary body
-# rewrite has to refuse instead. Fixtures double as the write destination when
-# $ISSUE_BODY_DIR is set, so the round trip stays offline.
+# The guarantee under test is narrowness: every path that could turn a tick
+# into an arbitrary body rewrite has to refuse. Fixtures double as the write
+# destination when $ISSUE_BODY_DIR is set, so the round trip stays offline.
 
 ticks="$fixtures/ticks"
 mkdir -p "$ticks"
@@ -1935,8 +1934,7 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
 [ "$_rc" = 2 ] || fail "an unreadable issue should exit 2 (got $_rc)"
 
 echo "==> a tick is refused on an issue this account has not claimed"
-# The allowlist cannot constrain arguments, so the claim is what scopes the
-# pre-approved write to work a human actually authorised.
+# The claim scopes the ordinary open-issue path to work a human authorised.
 printf '%s' "$body_three" >"$tmp/b1"
 cp "$tmp/b1" "$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -1976,10 +1974,22 @@ _rc=0
 env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
     STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
-    STUB_STATE_REASON="COMPLETED" \
+    STUB_STATE_REASON="COMPLETED" STUB_ASSIGNEES="" \
     "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "a completed closed issue with --closed-ok should tick (got $_rc)"
 [ -f "$tmp/edited" ] || fail "a completed closed issue should be written only with --closed-ok"
+
+echo "==> --closed-ok is refused on an open issue"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="OPEN" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "--closed-ok on an open issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "--closed-ok on an open issue must not write"
 
 for reason in NOT_PLANNED DUPLICATE; do
     echo "==> a closed $reason issue is refused even with --closed-ok"

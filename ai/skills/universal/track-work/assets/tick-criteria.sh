@@ -163,26 +163,15 @@ read_body_or_die() {
     }
 }
 
-# The allowlist entry that makes this command pre-approved cannot constrain its
-# arguments, so nothing in the permission layer ties a tick to the issue the
-# user actually asked for — and issue text is untrusted input that must never be
-# able to redirect a write. Bind it here instead: tick only an issue this
-# account has claimed. Claiming is an ordinary write and still needs its own
-# go-ahead (`/claim` step 5 does it), so the assignment is a record that a
-# human authorised work on this specific issue.
+# An explicit implementation go-ahead authorises an ordinary open tick, but
+# issue text is untrusted input that must never redirect a write. Bind the
+# open path to the issue this account has claimed. Claiming is an ordinary
+# write and still needs its own go-ahead (`/claim` step 5 does it), so the
+# assignment records that a human authorised work on this specific issue. A
+# completed closed post-merge tick is separately authorised by the command's
+# normal write boundary and deliberately does not require a released claim.
 assert_claimed() {
     [ -n "$fixture" ] && return 0
-    # Each lookup keeps its exit status: swallowed with `|| true`, an expired
-    # token or a network blip reads as "unassigned" and the caller is told to
-    # claim an issue they already hold.
-    _me="$(gh api user --jq '.login' 2>/dev/null)" || {
-        echo "tick-criteria: could not resolve the authenticated user" >&2
-        exit 2
-    }
-    [ -n "$_me" ] || {
-        echo "tick-criteria: could not resolve the authenticated user" >&2
-        exit 2
-    }
     _state_and_reason="$(gh issue view "$issue" --repo "$repo" --json state,stateReason \
         --template '{{.state}}:{{.stateReason}}' 2>/dev/null)" || {
         echo "tick-criteria: could not read the state of $repo#$issue" >&2
@@ -198,7 +187,12 @@ assert_claimed() {
     _state="${_state_and_reason%%:*}"
     _state_reason="${_state_and_reason#*:}"
     case "$_state" in
-    OPEN | open) ;;
+    OPEN | open)
+        [ -z "$closed_ok" ] || {
+            echo "tick-criteria: --closed-ok is only valid for a CLOSED issue with state reason COMPLETED" >&2
+            exit 1
+        }
+        ;;
     CLOSED | closed)
         [ -n "$closed_ok" ] || {
             echo "tick-criteria: $repo#$issue is closed — pass --closed-ok only for a completed post-merge tick" >&2
@@ -225,6 +219,20 @@ assert_claimed() {
         exit 1
         ;;
     esac
+    case "$_state" in
+    CLOSED | closed) return 0 ;;
+    esac
+    # Each lookup keeps its exit status: swallowed with `|| true`, an expired
+    # token or a network blip reads as "unassigned" and the caller is told to
+    # claim an issue they already hold.
+    _me="$(gh api user --jq '.login' 2>/dev/null)" || {
+        echo "tick-criteria: could not resolve the authenticated user" >&2
+        exit 2
+    }
+    [ -n "$_me" ] || {
+        echo "tick-criteria: could not resolve the authenticated user" >&2
+        exit 2
+    }
     _assignees="$(gh issue view "$issue" --repo "$repo" --json assignees \
         --jq '[.assignees[].login] | join(" ")' 2>/dev/null)" || {
         echo "tick-criteria: could not read the assignees of $repo#$issue" >&2
