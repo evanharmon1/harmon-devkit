@@ -143,8 +143,8 @@ personal repo, add the table value as the work-type label. On an organization
 repo, first list the enabled names with
 `"$DIR/assets/triage-apply.sh" native-types --repo "$REPO"`, then choose the
 native Issue Type matching that row and pass it as `--native-type <Type>` in
-the same apply call; the script validates it against
-the organization's enabled Types and refuses a personal-repo Type, an invalid
+the same apply call; the script validates it against the enabled Types
+available in that target repository and refuses a personal-repo Type, an invalid
 Type, or a disabled Type. Do not add a work-type label on an organization.
 
 ### 2b — Axes (the scan's `axes` list)

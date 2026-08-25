@@ -380,24 +380,24 @@ native_type_read() {
     fi
 }
 
-# Print enabled organization issue Type names, one per line. The organization
-# owns this vocabulary, not its label registry, so validate it directly before
-# allowing gh issue edit --type to receive a caller-provided value.
+# Print Type names available in the target repository, one per line. Types are
+# organization-owned, but a repository can expose only a subset, so validate
+# against the issue's actual target rather than the broader org vocabulary.
 enabled_native_types() {
     local repo="$1" types
     types="$(gh api graphql \
-        -f query='query($o: String!) {
-            organization(login: $o) {
+        -f query='query($o: String!, $r: String!) {
+            repository(owner: $o, name: $r) {
               issueTypes(first: 100) {
                 totalCount
                 nodes { name isEnabled }
               }
             }
           }' \
-        -f o="${repo%%/*}" \
-        -q 'if .data.organization.issueTypes.totalCount > 100
+        -f o="${repo%%/*}" -f r="${repo#*/}" \
+        -q 'if .data.repository.issueTypes.totalCount > 100
             then error("native issue Type result exceeds the validation limit")
-            else .data.organization.issueTypes.nodes[] |
+            else .data.repository.issueTypes.nodes[] |
                  select(.isEnabled == true) | .name
             end' 2>/dev/null)" || return 1
     printf '%s\n' "$types"
@@ -747,6 +747,10 @@ cmd_label() {
             [ "$current_native_type" = "$effective_native_type" ] ||
                 die 1 "write failed: $repo#$issue native issue Type did not become" \
                     "'$effective_native_type'"
+            # This is deliberately before the independent label edit below:
+            # if that later mutation fails, stdout still records the durable
+            # Type change rather than falsely implying the apply was inert.
+            echo "APPLIED native issue Type '$effective_native_type' to $repo#$issue"
         fi
     fi
     local args=()
@@ -765,9 +769,6 @@ cmd_label() {
     if [ "${#args[@]}" -gt 0 ]; then
         gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null ||
             die 1 "write failed: gh issue edit $repo#$issue"
-    fi
-    if [ -n "$effective_native_type" ]; then
-        echo "APPLIED native issue Type '$effective_native_type' to $repo#$issue"
     fi
     for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
         echo "APPLIED add '$l' to $repo#$issue"

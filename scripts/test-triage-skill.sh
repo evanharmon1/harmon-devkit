@@ -65,10 +65,12 @@ case "${1:-} ${2:-}" in
     printf '%s\n' "${GH_STUB_VIEWER:-testowner}"
     ;;
 "api graphql")
-    if printf '%s' "$*" | grep -q 'organization(login:'; then
+    if printf '%s' "$*" | grep -q 'issueTypes(first:'; then
         [ "${GH_STUB_ENABLED_NATIVE_TYPES:-}" = "ERROR" ] && exit 1
         if [ -n "${GH_STUB_ENABLED_NATIVE_TYPES_JSON:-}" ]; then
-            printf '%s\n' "$GH_STUB_ENABLED_NATIVE_TYPES_JSON" | jq -r "$q"
+            printf '%s\n' "$GH_STUB_ENABLED_NATIVE_TYPES_JSON" |
+                jq '.data.repository = .data.organization | del(.data.organization)' |
+                jq -r "$q"
         else
             printf '%s\n' "${GH_STUB_ENABLED_NATIVE_TYPES:-Bug}"
         fi
@@ -119,6 +121,10 @@ api\ repos/*)
     fi
     [ -t 0 ] || cat >/dev/null
     [ "${GH_STUB_EDIT_FAIL:-0}" = 0 ] || exit 1
+    if [ "${GH_STUB_EDIT_FAIL_ON_REMOVE:-0}" = 1 ] &&
+        printf '%s\n' "$*" | grep -q -- '--remove-label'; then
+        exit 1
+    fi
     if [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
         prev=""
         for a in "$@"; do
@@ -484,6 +490,8 @@ export GH_STUB_ENABLED_NATIVE_TYPES_JSON='{"data":{"organization":{"issueTypes":
     fail "native-types should list enabled Types: $(cat "$tmp/out")"
 grep -qx 'Bug' "$tmp/out" || fail "native-types must include enabled Bug"
 grep -qx 'Task' "$tmp/out" && fail "native-types must exclude disabled Task"
+grep -q 'repository(owner: \$o, name: \$r)' "$GH_STUB_LOG" ||
+    fail "native-types must query the target repository's available Types"
 GH_STUB_OWNER_TYPE="User"
 unset GH_STUB_ENABLED_NATIVE_TYPES_JSON
 
@@ -678,6 +686,19 @@ grep -q "APPLIED native issue Type" "$tmp/out" &&
     fail "failed native Type mutation must not report success"
 grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
     fail "failed native Type mutation must not remove needs-triage"
+
+echo "==> label: a later label failure discloses the already-applied Type"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_EDIT_FAIL_ON_REMOVE=1 "$apply" label --repo "$repo" --issue 13 \
+    --native-type Bug --remove needs-triage --inapplicable layer \
+    --inapplicable domain --execute --manifest "$manifest")" = 1 ] ||
+    fail "later label failure must exit 1"
+grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
+    fail "later label failure must disclose the applied Type"
+grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" ||
+    fail "later label failure must attempt the label mutation after Type success"
 
 echo "==> label: a concurrent Type change refuses before any mutation"
 : >"$GH_STUB_LOG"
