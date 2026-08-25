@@ -16,7 +16,9 @@
 #       complete
 #   v1 NEVER writes: foreman:*, rigor:*, tier:* (including scoped
 #   tier:<role>:* — tier:orchestrator:*/tier:implementer:*/tier:reviewer:*),
-#   strategy:*, claim:*, suggest:*, agent:* (legacy claims), milestones,
+#   strategy:*, method:* (the retired prefix strategy:* replaces — stays
+#   reserved so a stale or hostile manifest cannot redefine it as
+#   agent-writable), claim:*, suggest:*, agent:* (legacy claims), milestones,
 #   closes, assignees, body/title edits. This script contains no code path for
 #   any of those — the never-list is a regex refusal on top of the structural
 #   absence.
@@ -62,7 +64,7 @@
 #       6 = refused: needs-triage removal while classification is incomplete
 set -euo pipefail
 
-NEVER_RE='^(foreman:|rigor:|tier:|strategy:|claim:|suggest:|agent:)'
+NEVER_RE='^(foreman:|rigor:|tier:|strategy:|method:|claim:|suggest:|agent:)'
 # Fallback vocabulary, used only when no manifest exists — a hard-coded copy of
 # the harmon-init template's default label registry, so triage still applies
 # reasonable labels on an unregistered repo. The manifest wins where present.
@@ -103,7 +105,7 @@ render_manifest() {
         awk -F '|' '$1 == "family" && $4 == "classification" &&
             $9 == "false" &&
             ($3 == "" || $8 == "true" ||
-             $3 ~ /^(foreman|rigor|tier|strategy|claim|suggest|agent)$/) {
+             $3 ~ /^(foreman|rigor|tier|strategy|method|claim|suggest|agent)$/) {
                 print $2
             }' | paste -sd ', ' -)"
     [ -z "$bad" ] ||

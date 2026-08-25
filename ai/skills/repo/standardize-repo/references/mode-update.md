@@ -3578,15 +3578,28 @@ update can create, none of which any script closes:
   provisions, per the manifest's retirement note), so old `method:*` labels
   survive untouched on every issue/PR that carried them. Rename each in place
   — `gh label edit method:<value> --name strategy:<value>` for every value the
-  repo actually has (`gh label list --limit 1000 | grep '^method:'`; the six
-  shipped values are `oneshot`/`plan`/`plan-approved`/`orchestrate`/`council`/
-  `human-led`) — which preserves every label association, since a GitHub
-  rename is not a delete-and-recreate. Then re-run `task setup:github-labels`
-  (6b) to seed the family's current shape. The same release also expanded
-  `rigor:*` from three levels (`light`/`standard`/`deep`) to six
-  (`trivial`/`minimal`/`light`/`standard`/`thorough`/`deep`); that half needs
-  no rename, only the ordinary additive reseed. Confirm the migration is done
-  with `gh label list --limit 1000 | grep '^method:'` returning nothing.
+  repo actually has, which preserves every label association since a GitHub
+  rename is not a delete-and-recreate; the six shipped values are
+  `oneshot`/`plan`/`plan-approved`/`orchestrate`/`council`/`human-led`.
+
+  **Both the discovery read and the later "none left" confirmation go through
+  the same truncatable call** — `gh label list --repo <owner>/<repo> --limit
+  1000 --json name -q '.[].name' | grep '^method:'` — and a repo can carry
+  1000+ labels. Check the unfiltered count first (`gh label list --repo
+  <owner>/<repo> --limit 1000 --json name -q '. | length'`); a result of
+  **exactly 1000** is a truncation signal, not proof the repo has no more —
+  the same signal `triage-apply.sh`'s `live_labels()` refuses on rather than
+  derive from a possibly-partial set. Here the fix is to widen instead of
+  refuse: re-run with a larger `--limit` (double it; repeat if that also lands
+  on the limit) until the count comes back under it, *then* run the
+  `grep '^method:'` read against that confirmed-complete list — for both the
+  rename pass and the completion check. Skipping this on the completion check
+  is the dangerous direction: a truncated read can hide a straggler past the
+  first 1000 and falsely declare the repo clean. Then re-run
+  `task setup:github-labels` (6b) to seed the family's current shape. The same
+  release also expanded `rigor:*` from three levels (`light`/`standard`/
+  `deep`) to six (`trivial`/`minimal`/`light`/`standard`/`thorough`/`deep`);
+  that half needs no rename, only the ordinary additive reseed.
 
 Check against the vocabulary in [`standards-catalog.md`](./standards-catalog.md)
 §1.13. Query each field's **data type and full option list**, not just its name —

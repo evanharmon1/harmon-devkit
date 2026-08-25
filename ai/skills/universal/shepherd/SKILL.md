@@ -57,15 +57,25 @@ in a repo whose `AGENTS.md` still says three, and stops being correct the
 moment that file says otherwise — including in repos that have not yet adopted
 the P0/P1-gating dev flow.
 
-**Absent a repo-specific override, the shepherd cap is the resolved rigor
-level's review policy's `shepherd` value — not a literal 4.** It is read the
-same way the gauntlet skill's challenge/review caps are: `.devflow.toml`,
-`[rigor.<level>].review` names a policy, `[review.<that policy>].shepherd` is
-the cap; a `rigor:*` label conflict resolves to the single strongest level by
-`rigor_order`, never a per-stage maximum; and an edit to `.devflow.toml`
-itself resolves every parameter from the merge-base copy. Shipped policies
-range the shepherd cap 0–6. Announce the resolved value the way gauntlet
-announces its caps, and disclose it in the PR body when it is off-default.
+**Absent a repo-specific override, the shepherd cap is resolved the same way
+gauntlet resolves its challenge/review caps — check the config shape first**
+(gauntlet's `SKILL.md` §2 "Config shape" step; not a literal 4 either way,
+under either shape). `.devflow.toml` ships in two shapes, and skills-sync and
+the harmon-init copier update run on independent cadences, so a repo can have
+this skill before its file has migrated. Under the **migrated shape** (a
+top-level `rigor_order` exists and `[rigor.<level>]` names its caps through a
+`review` pointer), the cap is `[review.<the resolved policy>].shepherd`, and
+a `rigor:*` label conflict resolves to the single strongest level by
+`rigor_order`. Under the **legacy shape** (`[rigor.<level>]` carries
+`challenge`, `review`, `shepherd`, and `min_rounds` directly — no `review`
+pointer, no `[review.*]` tables, no `rigor_order`), the cap is that resolved
+level's own `shepherd` field, and a label conflict instead resolves **per
+stage, to the highest cap present**. Either way, an edit to `.devflow.toml`
+itself resolves every parameter from the merge-base copy. Shipped
+migrated-shape policies range the shepherd cap 0–6; a legacy-shape repo's own
+levels may or may not share one fixed value across levels — read them, don't
+assume. Announce the resolved value the way gauntlet announces its caps, and
+disclose it in the PR body when it is off-default.
 
 **A resolved cap of 0 does not skip the readiness gate.** It means: spend no
 shepherd round — the watch/adjudicate/fix/push loop in steps 2–5 never

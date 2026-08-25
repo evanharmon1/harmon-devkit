@@ -196,7 +196,19 @@ the very gate it is changing — the floor included, since a self-lowered
 `min_rounds` buys an earlier empty-round exit, and dropping every level together evades the below-default disclosure
 because nothing is left to be below. An explicit human instruction still
 overrides.
-Labels are multi-select and nothing stops an issue carrying two, so resolution
+**Check the file's shape before resolving a conflict.** `.devflow.toml` ships
+in two shapes, and skills-sync (which updates the vendored skills) and the
+harmon-init copier update (which updates this file) run on independent
+cadences, so do not assume the newer skill implies the newer file. A
+**legacy** file — what this repo currently has — carries `challenge`,
+`review`, `shepherd`, and `min_rounds` directly on each `[rigor.<level>]`,
+with no `review` pointer, no `[review.*]` tables, and no top-level
+`rigor_order`; a **migrated** file adds all three, and each level names its
+caps through a `review` pointer into `[review.*]` instead of stating them
+itself.
+
+Labels are multi-select and nothing stops an issue carrying two, so **under
+the legacy shape**, resolution
 is **per stage, taking the highest cap present**: a conflict can then only ever
 buy more review, never less, and no ranking of the level names has to be agreed
 on anywhere. `min_rounds` resolves under the same principle — the highest
@@ -205,7 +217,11 @@ either. Because that is per stage, two retuned levels can yield caps
 belonging to no single level — so what you announce is the **caps**, naming a
 level only when one supplied all of them — the floor included — and the
 disclosure below compares caps
-rather than level names. A `rigor:` value naming no level in the file is ignored
+rather than level names. **Under a migrated shape**, a conflict instead
+resolves to the single strongest level by `rigor_order` (weakest-to-strongest,
+read from the file) — never a per-stage maximum — and that level's `review`
+pointer names the one `[review.*]` policy every cap and the floor come from
+together. A `rigor:` value naming no level in the file is ignored
 rather than guessed at. Treat the label as advisory: it is applied by people and
 verified by nothing, and GitHub's **triage** role can label an issue with no
 push access at all — so a budget can be retuned by someone who could not edit
@@ -511,10 +527,14 @@ off-profile decision distinct from an off-default rigor cap.
   to move on to the next stage either — escalate and wait, do not open the PR
   anyway.
   If checks still fail or findings remain at the shepherd cap,
-  stop and summarize what's unresolved on the PR for the maintainer. That cap
-  does not vary by rigor level — it bounds other people's findings, not your
-  own work, so lowering it would abandon unanswered reviews rather than save
-  effort. Where a
+  stop and summarize what's unresolved on the PR for the maintainer. Whether
+  that cap varies by rigor level depends on `.devflow.toml`'s shape (see
+  "Round caps are resolved" above): under the **legacy shape this repo
+  currently has**, it does not — the cap is fixed at every level, because it
+  bounds other people's findings, not your own work, so lowering it would
+  abandon unanswered reviews rather than save effort. Under a **migrated
+  shape**, the cap instead comes from the resolved rigor level's review
+  policy and does vary. Where a
   **vendored** skill (`/shepherd`) states a different cap or exit condition,
   **this file wins** — vendored skills are synced on their own release
   cadence and can lag a policy change made here.

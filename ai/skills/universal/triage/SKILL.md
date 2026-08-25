@@ -36,7 +36,8 @@ it in the summary; never work around it).
   complete. The script checks completeness; you supply the labels and, where
   an axis truly does not apply, an `--inapplicable` attestation.
 - **Never touch** (the scripts refuse these too): `foreman:*`, `rigor:*`,
-  `tier:*` (including scoped `tier:<role>:*`), `strategy:*`, `claim:*`,
+  `tier:*` (including scoped `tier:<role>:*`), `strategy:*`, `method:*` (the
+  retired prefix `strategy:*` replaces — still reserved), `claim:*`,
   `suggest:*`, `agent:*`, milestones, close states, assignees, issue bodies or
   titles.
 - **Dry-run is the default.** Pass `--execute` to a script only when your

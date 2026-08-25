@@ -170,8 +170,12 @@ if [ "$command" = guidance ] && [ "$manifest_present" -eq 0 ]; then
         jq -c '
           def description:
             if (.description? == null) then "" else .description end;
+          # method: is retired (strategy: replaced it) but stays listed here
+          # alongside it — a retired execution-control prefix must stay
+          # reserved so a stale or hostile manifest cannot redefine it as
+          # agent-writable.
           def control_namespace:
-            ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|type|autorelease):");
+            ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|method|type|autorelease):");
           def authorable_label:
             test("[,|\\r\\n]") | not;
           if type != "array"
@@ -202,7 +206,7 @@ if [ "$command" = guidance ]; then
     # self-contained.
     open_family_count="$(jq -r '
       def control_namespace:
-        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|type|autorelease):");
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|method|type|autorelease):");
       [.families[]
        | select((.retired // false) | not)
        | select(.source != "agent-registry" and .source != "tool-owned")
@@ -225,7 +229,7 @@ if [ "$command" = guidance ]; then
     fi
     jq -c --slurpfile live "$live_labels_file" '
       def control_namespace:
-        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|type|autorelease):");
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|method|type|autorelease):");
       def authorable_label:
         test("[,|\\r\\n]") | not;
       def authoring_family:

@@ -128,6 +128,25 @@ so in the announcement — resolution then falls through to `default_rigor`,
 and the announcement must name "no issue bound" as the source so a stricter
 label cannot be silently skipped.
 
+**Config shape — check before resolving anything.** `.devflow.toml` ships in
+two shapes, and skills-sync (which updates this skill) and the harmon-init
+copier update (which updates the file) run on independent cadences — a repo
+can have this skill before it has the file shape this section assumes. Detect
+which shape is actually present, then apply the matching rule below wherever
+this section branches on it:
+
+- **Migrated shape** — a top-level `rigor_order` array exists and each
+  `[rigor.<level>]` names its caps through a `review` field pointing at
+  `[review.<policy>]`. The rest of this section is written for this shape.
+- **Legacy shape** — `[rigor.<level>]` carries `challenge`, `review`,
+  `shepherd`, and `min_rounds` directly; no `review` pointer, no
+  `[review.*]` tables, no `rigor_order`. Read the caps straight off the
+  resolved level (no policy to look up); resolve a `rigor:*` label conflict
+  **per stage, to the highest cap present** — and the highest `min_rounds`
+  floor present, same principle — never `rigor_order`; and take the
+  shepherd cap as that level's own `shepherd` field. The merge-base rule
+  below still applies — it just reads whichever fields this shape has.
+
 **Caps come from the resolved rigor level's review policy, not straight off
 `[rigor.<level>]`.** A rigor level names a policy in its `review` field;
 `[review.<policy>]` is where `challenge`, `review`, `shepherd`, and
@@ -136,17 +155,22 @@ the same policy share one set of numbers. Resolve the **level** first, then
 look up its policy:
 
 1. an explicit instruction in this session;
-2. a `rigor:*` label on the issue — **conflicts resolve to the single
-   strongest level by `rigor_order`** (the weakest-to-strongest list at the
-   top of the file), never to a per-stage maximum across the labels present.
-   A `rigor:` value naming no level in the file is ignored, not guessed at;
+2. a `rigor:*` label on the issue — under the **migrated shape**,
+   **conflicts resolve to the single strongest level by `rigor_order`** (the
+   weakest-to-strongest list at the top of the file), never to a per-stage
+   maximum across the labels present; under the **legacy shape**, see the
+   config-shape step above instead. A `rigor:` value naming no level in the
+   file is ignored, not guessed at;
 3. `default_rigor` in the file;
 4. the built-in fallback if the file is absent — **the standard review
    policy: challenge ≤3, review ≤3, shepherd 4, min_rounds 1** — i.e. the
    same numbers `standard` resolves to, not a separately memorized constant.
 
-Take the resolved level's `review` value, look up `[review.<that policy>]`,
-and read `challenge`/`review`/`shepherd`/`min_rounds` from there together.
+Under the migrated shape, take the resolved level's `review` value, look up
+`[review.<that policy>]`, and read `challenge`/`review`/`shepherd`/
+`min_rounds` from there together — under the legacy shape this is already
+done: those fields sat directly on the level the config-shape step above
+resolved.
 
 **When the change under review edits `.devflow.toml` itself, resolve every
 parameter — not just the caps — from the merge-base copy**, not the branch
@@ -169,8 +193,8 @@ branch's own copy.
 
 An explicit human instruction still overrides that.
 
-**`min_rounds` — the floor.** Read it exactly as the resolved policy states
-it: **0 is a legal value** and means no floor at all — the **empty-round
+**`min_rounds` — the floor.** Read it exactly as the resolved level or
+policy states it (per the config shape above): **0 is a legal value** and means no floor at all — the **empty-round
 instant exit** in §5 may then fire on round 1. This skill does not clamp,
 guess at, or reject an out-of-range value; a `.devflow.toml` whose
 `min_rounds` exceeds that policy's own caps is a config bug for the repo that
