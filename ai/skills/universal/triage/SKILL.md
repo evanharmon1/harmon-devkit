@@ -316,6 +316,7 @@ End with exactly this shape:
 Triage run — <DRY-RUN | EXECUTE> over <repo>
 - issues scanned: <open_total> open (<n> processed, <n> skipped), <n> closed flagged
 - labels: <n> applied|would-apply (<list them: #issue +label ...>)
+- native Issue Types: <n> applied|would-apply (<list them: #issue Type ... | none>)
 - needs-triage: <n> added, <n> removed (attestations: <axis@#issue ... | none>)
 - report: <n> entries → <created #N | updated #N | would create | would update #N>
 - refused by scripts: <list each refusal line, or "none">

@@ -81,7 +81,7 @@ if [ "$mode" = "execute" ]; then
     # makes skipping the review a deliberate act rather than a default.
     [ -t 0 ] && [ -t 1 ] ||
         die "--execute needs an interactive terminal — supervised runs only"
-    printf 'triage: EXECUTE will write labels and the rolling report in %s.\n' \
+    printf 'triage: EXECUTE will write labels, native Issue Types, and the rolling report in %s.\n' \
         "$repo"
     printf 'triage: review a dry-run first if you have not. Type "yes": '
     IFS= read -r reply

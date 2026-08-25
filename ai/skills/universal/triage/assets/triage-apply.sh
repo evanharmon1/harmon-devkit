@@ -708,6 +708,14 @@ cmd_label() {
         echo "attested inapplicable: $axis"
     done
 
+    # Dry-run promises the execute outcome it would attempt. Probe the CLI
+    # capability before printing a native-Type mutation so an old gh cannot
+    # make dry-run appear executable when --execute would refuse.
+    if [ -n "$effective_native_type" ]; then
+        gh_supports_native_type_write ||
+            die 2 "gh issue edit --type requires GitHub CLI 2.98 or newer"
+    fi
+
     if [ "$execute" -eq 0 ]; then
         if [ -n "$effective_native_type" ]; then
             echo "DRY-RUN would set native issue Type '$effective_native_type' on $repo#$issue"
@@ -729,8 +737,6 @@ cmd_label() {
     # Keep the Type in a verified first step so a failed Type write cannot
     # remove needs-triage (or add any other label) first.
     if [ -n "$effective_native_type" ]; then
-        gh_supports_native_type_write ||
-            die 2 "gh issue edit --type requires GitHub CLI 2.98 or newer"
         # A person may have classified the issue after the first preflight.
         # Re-read immediately before the non-conditional GitHub write and
         # refuse a conflicting human Type before touching any labels.

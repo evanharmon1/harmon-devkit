@@ -654,7 +654,16 @@ GH_STUB_OWNER_TYPE="Organization"
     --manifest "$manifest")" = 0 ] || fail "native Type dry-run failed: $(cat "$tmp/out")"
 grep -q "DRY-RUN would set native issue Type 'Bug'" "$tmp/out" ||
     fail "native Type dry-run must describe the mutation"
-grep -q "issue edit" "$GH_STUB_LOG" && fail "native Type dry-run must not edit"
+grep -q '^issue edit 13 ' "$GH_STUB_LOG" &&
+    fail "native Type dry-run must not mutate an issue"
+
+echo "==> label: native Type dry-run refuses an old gh before promising a write"
+: >"$GH_STUB_LOG"
+[ "$(run env GH_STUB_NO_TYPE_FLAG=1 "$apply" label --repo "$repo" --issue 13 \
+    --native-type Bug --manifest "$manifest")" = 2 ] ||
+    fail "old gh native Type dry-run must exit 2"
+grep -q "DRY-RUN would set native issue Type" "$tmp/out" &&
+    fail "old gh dry-run must not promise an unavailable Type write"
 
 echo "==> label: native Type precedes and verifies needs-triage removal"
 : >"$GH_STUB_LOG"
@@ -1242,6 +1251,11 @@ grep -qE "ARGS: .*(Glob|Grep)" "$GH_STUB_LOG" &&
     fail "worker must not be granted Glob/Grep"
 grep -q -- "--tools Read,Write,Bash" "$GH_STUB_LOG" ||
     fail "worker must run with a restricted built-in tool set"
+grep -q 'labels, native Issue Types, and the rolling report' "$wrapper" ||
+    fail "execute confirmation must disclose native Issue Type writes"
+grep -q 'native Issue Types: <n> applied|would-apply' \
+    ai/skills/universal/triage/SKILL.md ||
+    fail "final summary must account for native Issue Type writes"
 
 echo "==> wrapper: --execute without a terminal is refused"
 [ "$(run "$wrapper" --execute)" = 2 ] ||
