@@ -11,6 +11,17 @@ if [ "${GAUNTLET_TEST_CHILD:-}" != 1 ]; then
         echo "==> gauntlet push suite with init.defaultBranch=${default_branch}"
         GAUNTLET_TEST_CHILD=1 GAUNTLET_TEST_DEFAULT_BRANCH="$default_branch" "$0"
     done
+    case "$BASH_VERSION" in
+    3.2.*) ;;
+    *)
+        if [ -x /bin/bash ] &&
+            /bin/bash -c 'case "$BASH_VERSION" in 3.2.*) exit 0 ;; *) exit 1 ;; esac'; then
+            echo "==> gauntlet push suite with macOS Bash 3.2"
+            GAUNTLET_TEST_CHILD=1 GAUNTLET_TEST_DEFAULT_BRANCH=main \
+                /bin/bash "$0"
+        fi
+        ;;
+    esac
     echo "gauntlet push-round helper: PASS"
     exit 0
 fi
