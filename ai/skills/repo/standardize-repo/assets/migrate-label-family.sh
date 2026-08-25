@@ -41,11 +41,29 @@
 #
 # transfer <old> <new>    For the partial state where <new> already exists
 #                         (typically because a provisioning task created it
-#                         before the rename ran). Adds <new> to every item
-#                         that carries <old>, verifies each addition, and
-#                         ONLY THEN deletes <old> — which removes it from
-#                         every item still attached, so doing that before
-#                         every addition is confirmed would lose data
+#                         before the rename ran). Resolves <new>'s canonical
+#                         live spelling case-insensitively up front and
+#                         refuses (exit 2) if it is not live — transfer only
+#                         ever moves associations onto an EXISTING label.
+#                         Refuses (exit 3, nothing touched) if any item
+#                         already carries a DIFFERENT concrete value of
+#                         <new>'s own prefix: that value's family is
+#                         exclusive with no rank to resolve a second one by
+#                         (see mode-update.md), so adding would recreate the
+#                         same ambiguity `inventory` exists to catch.
+#                         Otherwise adds <new> to every item that carries
+#                         <old>, verifies each addition individually (not
+#                         just the write call's own exit code — a write can
+#                         report success without landing), then re-reads
+#                         <old>'s CURRENT membership immediately before
+#                         deleting it and refuses (exit 1, nothing deleted)
+#                         unless every current member already carries <new>
+#                         — catching both an item that joined <old> after
+#                         the initial snapshot (never went through the add
+#                         loop) and one that lost <new> again since. Only
+#                         once every current member verifies does it delete
+#                         <old>, which removes it from everything still
+#                         attached — deleting before that would lose data
 #                         instead of migrating it. Aborts (exit 1) without
 #                         deleting on the first failed add or verification.
 #
@@ -53,8 +71,10 @@
 #                         `<old-prefix>:*`, case-insensitively. Exit 4 if
 #                         any remain.
 #
-# rename/transfer dry-run by default; pass --execute to write. inventory and
-# verify are always read-only.
+# rename/transfer dry-run by default; pass --execute to write (transfer's
+# destination-resolution and conflict refusals still run in dry-run, so a
+# blocker is visible before --execute rather than discovered by it).
+# inventory and verify are always read-only.
 #
 # Every GitHub read goes through --method GET, pinned explicitly — request
 # fields (`-f`/`-F`) are never used, because their mere presence flips gh
@@ -67,22 +87,30 @@
 #
 # Exit codes:
 #   0 = succeeded, or dry-run / read resolved cleanly
-#   1 = a write failed (transfer: nothing deleted; rename: nothing renamed)
-#   2 = usage/environment error, or rename found the destination already live
-#   3 = inventory found item(s) carrying more than one <old-prefix> label
+#   1 = a write failed, or transfer's pre-delete recheck found current
+#       membership had drifted from what was transferred (either way,
+#       nothing was deleted; a failed rename means nothing was renamed)
+#   2 = usage/environment error, rename found the destination already live,
+#       or transfer found the destination not live at all
+#   3 = a family-exclusivity conflict: inventory found item(s) carrying more
+#       than one <old-prefix> label, or transfer found an item already
+#       carrying a different concrete value of <new>'s own prefix
 #   4 = verify found live label(s) still matching <old-prefix>
 #
 # Portable to macOS bash 3.2 (no mapfile, no associative arrays).
 set -euo pipefail
 
-# A single scratch file, reused by whichever one subcommand this process
-# runs. `trap ... EXIT` set INSIDE a function registers a script-wide
-# handler, not a function-local one — it fires when the whole script exits,
-# by which point a `local` variable from the function that set it is long
-# out of scope (unbound under `set -u`). Declaring `tmp` here, and trapping
-# it once here, keeps the variable the trap references always in scope.
-tmp=""
-trap 'rm -f "$tmp"' EXIT
+# One scratch directory, reused by whichever one subcommand this process
+# runs, for however many named scratch files it needs. `trap ... EXIT` set
+# INSIDE a function registers a script-wide handler, not a function-local
+# one — it fires when the whole script exits, by which point a `local`
+# variable from the function that set it is long out of scope (unbound
+# under `set -u`). Declaring $scratch_dir here, and trapping it once here,
+# keeps the variable the trap references always in scope, and a single
+# `rm -rf` covers every file any subcommand creates without a matching
+# `rm -f` at every one of its exit paths (including every `die` call).
+scratch_dir="$(mktemp -d)"
+trap 'rm -rf "$scratch_dir"' EXIT
 
 usage() {
     cat >&2 <<'USAGE'
@@ -165,6 +193,28 @@ gh_kind() {
     [ "$1" = "true" ] && echo pr || echo issue
 }
 
+# The current live label names of issue/PR $2 (kind $1) in repo $3, one per
+# line. Always a fresh read — never cached — because every caller uses it
+# to answer "is this true right now", not "was this true when the item was
+# first discovered".
+item_labels() {
+    local kind="$1" number="$2" repo="$3"
+    gh "$kind" view "$number" --repo "$repo" --json labels -q '.labels[].name'
+}
+
+# Every label on item $2/$3/$4 (kind/number/repo) that starts with
+# <prefix>: (case-insensitively, $1) and is not $5 itself (case-
+# insensitively) — i.e. a DIFFERENT concrete value of the same family. One
+# per line; empty if none.
+conflicting_prefix_labels() {
+    local prefix="$1" kind="$2" number="$3" repo="$4" exact="$5"
+    item_labels "$kind" "$number" "$repo" | jq -Rr --arg prefix "$prefix" --arg exact "$exact" '
+        select(length > 0) | select(
+            (ascii_downcase | startswith(($prefix | ascii_downcase) + ":")) and
+            (ascii_downcase != ($exact | ascii_downcase))
+        )'
+}
+
 cmd_inventory() {
     local prefix="" repo=""
     while [ "$#" -gt 0 ]; do
@@ -196,7 +246,7 @@ cmd_inventory() {
         return 0
     fi
 
-    tmp="$(mktemp)"
+    tmp="$scratch_dir/inventory-$prefix"
     local value
     while IFS= read -r value; do
         [ -n "$value" ] || continue
@@ -303,43 +353,107 @@ cmd_transfer() {
     done
     [ -n "$old" ] && [ -n "$new" ] && [ -n "$repo" ] || usage
 
-    local labels old_exact
+    local labels old_exact new_exact
     labels="$(list_labels "$repo")"
     old_exact="$(find_label_exact "$labels" "$old")"
     if [ -z "$old_exact" ]; then
         echo "migrate-label-family: $old is not live — nothing to transfer"
         return 0
     fi
+    # GitHub returns the canonical live spelling, which may differ in case
+    # from what the caller typed. Resolve it once and use $new_exact for
+    # every add and verification below — an add under the caller's spelling
+    # could land under a different case than what a later exact-match read
+    # returns, misreading a successful add as a verification failure.
+    new_exact="$(find_label_exact "$labels" "$new")"
+    [ -n "$new_exact" ] ||
+        die 2 "refused: destination '$new' is not live — transfer moves" \
+            "associations onto an EXISTING label; create it first, or use" \
+            "'rename' if '$old' is the only one of the two that exists"
+    local new_prefix="${new_exact%%:*}"
 
-    tmp="$(mktemp)"
+    tmp="$scratch_dir/transfer-snapshot"
     fetch_items_for_label "$repo" "$old_exact" >"$tmp"
     local count
     count="$(wc -l <"$tmp" | tr -d ' ')"
 
-    if [ "$execute" -eq 0 ]; then
-        echo "DRY-RUN would transfer $count item(s) from '$old_exact' to '$new', then delete '$old_exact'"
-        return 0
-    fi
-
-    local number is_pr kind
+    # Refuse before touching anything if any item already carries a
+    # DIFFERENT concrete value of the destination's own prefix. strategy
+    # conflicts are ambiguous — no rank, unlike the retired method family
+    # (see mode-update.md) — so adding a second one here would recreate
+    # exactly the ambiguity `inventory` exists to catch, just introduced by
+    # this command instead of a naive rename. Checked in dry-run too, so
+    # the conflict is visible before --execute, not discovered by it.
+    local conflicts number is_pr kind other
+    conflicts="$scratch_dir/transfer-conflicts"
+    : >"$conflicts"
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         number="$(printf '%s' "$line" | jq -r '.number')"
         is_pr="$(printf '%s' "$line" | jq -r '.is_pr')"
         kind="$(gh_kind "$is_pr")"
-        gh "$kind" edit "$number" --repo "$repo" --add-label "$new" >/dev/null ||
-            die 1 "transfer aborted, nothing deleted: could not add '$new' to" \
+        other="$(conflicting_prefix_labels "$new_prefix" "$kind" "$number" "$repo" "$new_exact")"
+        [ -z "$other" ] ||
+            printf '  #%s (%s): already carries %s\n' "$number" "$kind" \
+                "$(printf '%s\n' "$other" | paste -sd ', ' -)" >>"$conflicts"
+    done <"$tmp"
+    if [ -s "$conflicts" ]; then
+        echo "migrate-label-family: refusing to transfer — the following already carry a different $new_prefix:* value:" >&2
+        cat "$conflicts" >&2
+        exit 3
+    fi
+
+    if [ "$execute" -eq 0 ]; then
+        echo "DRY-RUN would transfer $count item(s) from '$old_exact' to '$new_exact', then delete '$old_exact'"
+        return 0
+    fi
+
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        number="$(printf '%s' "$line" | jq -r '.number')"
+        is_pr="$(printf '%s' "$line" | jq -r '.is_pr')"
+        kind="$(gh_kind "$is_pr")"
+        gh "$kind" edit "$number" --repo "$repo" --add-label "$new_exact" >/dev/null ||
+            die 1 "transfer aborted, nothing deleted: could not add '$new_exact' to" \
                 "$kind #$number"
-        gh "$kind" view "$number" --repo "$repo" --json labels -q '.labels[].name' |
-            grep -qxF "$new" ||
-            die 1 "transfer aborted, nothing deleted: '$new' did not verify on" \
+        item_labels "$kind" "$number" "$repo" | grep -qxF "$new_exact" ||
+            die 1 "transfer aborted, nothing deleted: '$new_exact' did not verify on" \
                 "$kind #$number after the add reported success"
     done <"$tmp"
 
+    # Re-read the OLD label's CURRENT membership immediately before
+    # deleting it, and require every current member to already carry the
+    # destination — not just every member of the snapshot taken above. GitHub
+    # gives no lock between that snapshot and this delete: an item that
+    # gained '$old_exact' in between never went through the add loop and
+    # would be silently orphaned by the delete below, and one the add loop
+    # verified could in principle have lost '$new_exact' again since. This
+    # is the only way to catch either without a lock GitHub does not offer.
+    local final missing
+    final="$scratch_dir/transfer-final"
+    fetch_items_for_label "$repo" "$old_exact" >"$final"
+    missing="$scratch_dir/transfer-missing"
+    : >"$missing"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        number="$(printf '%s' "$line" | jq -r '.number')"
+        is_pr="$(printf '%s' "$line" | jq -r '.is_pr')"
+        kind="$(gh_kind "$is_pr")"
+        item_labels "$kind" "$number" "$repo" | grep -qxF "$new_exact" ||
+            printf '  #%s (%s)\n' "$number" "$kind" >>"$missing"
+    done <"$final"
+    if [ -s "$missing" ]; then
+        echo "migrate-label-family: refusing to delete '$old_exact' — the following" \
+            "currently carry it but not '$new_exact' (joined since the initial" \
+            "read, or lost the addition since):" >&2
+        cat "$missing" >&2
+        die 1 "transfer aborted before delete: current membership of '$old_exact' drifted from what was transferred"
+    fi
+
     gh label delete "$old_exact" --repo "$repo" --yes ||
-        die 1 "every item was transferred to '$new' but deleting '$old_exact'" \
+        die 1 "every item was transferred to '$new_exact' but deleting '$old_exact'" \
             "failed — remove it by hand"
-    echo "migrate-label-family: transferred $count item(s) from '$old_exact' to '$new' and deleted '$old_exact'"
+    echo "migrate-label-family: transferred $count item(s) from '$old_exact' to '$new_exact' and deleted '$old_exact'"
 }
 
 cmd_verify() {

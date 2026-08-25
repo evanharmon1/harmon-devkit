@@ -87,19 +87,18 @@ happens either. What that implies for the gate depends on what `AGENTS.md`'s
 Readiness Gate actually says:
 
 - **Where `AGENTS.md` states that a resolved shepherd cap of 0 drops the
-  current-head Codex condition** (a migrated harmon-init policy) — pass the
-  gate `--codex-disabled` for this run, exactly as that policy directs, and
-  evaluate the rest of the gate normally.
+  current-head Codex condition** — pass the gate `--codex-disabled` for this
+  run, exactly as that wording directs, and evaluate the rest of the gate
+  normally.
 - **Where `AGENTS.md` still requires a terminal, clean current-head Codex
-  cycle with no cap exception** (the legacy policy this repo has today) —
-  that requirement does not lapse because no round is available to satisfy
-  it. **Never pass `--codex-disabled` to claim the reviewer is off when it is
-  not** — that would falsely declare a configured reviewer disabled to force
-  a pass. If no terminal clean result already exists for this head, the
-  Codex condition reads indeterminate — a failed condition, not a
-  pass — so the PR stays draft with a blocker report naming it: no automated
-  path promotes this PR until a clean result exists by some means outside
-  this budget.
+  cycle with no cap exception** — that requirement does not lapse because no
+  round is available to satisfy it. **Never pass `--codex-disabled` to claim
+  the reviewer is off when it is not** — that would falsely declare a
+  configured reviewer disabled to force a pass. If no terminal clean result
+  already exists for this head, the Codex condition reads indeterminate — a
+  failed condition, not a pass — so the PR stays draft with a blocker report
+  naming it: no automated path promotes this PR until a clean result exists
+  by some means outside this budget.
 
 CI still has to be green, and any human review finding already on the PR
 still has to be answered, for the gate to pass — those are checks against

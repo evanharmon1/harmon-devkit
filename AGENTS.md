@@ -597,7 +597,14 @@ its current `headRefOid`:
   to run.
 - The current-head Codex cycle above is terminal and clean — including clean
   by way of dispositions recorded with `settle`, or the recorded-comment
-  equivalent where the checker is absent.
+  equivalent where the checker is absent. **This condition drops out when
+  the resolved shepherd cap is 0**, the same as where Codex cloud review is
+  not enabled at all — a 0 cap grants no round to trigger or wait out a
+  cycle, so requiring one would deadlock every review policy that ships it.
+  Dropping this one condition never waives the others: CI must still be
+  green, and any human review finding — already on the PR, or arriving
+  while the gate is evaluated — still has to be answered before the PR can
+  leave draft.
 - Every review finding is fixed, declined with evidence, or filed as follow-up
   work.
 - Every inline review comment has its required per-thread reply.

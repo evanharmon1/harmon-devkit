@@ -60,6 +60,8 @@ refuse() {
 # Every failing-page value this fixture wants to simulate, one per line:
 # "<endpoint-substring>" — a GET whose endpoint contains it fails outright.
 fail_on_file="$fixture/fail-on-endpoint"
+state_dir="$fixture/state"
+mkdir -p "$state_dir"
 
 if [ "$1" = "api" ]; then
     shift
@@ -98,7 +100,18 @@ if [ "$1" = "api" ]; then
     */issues\?labels=*)
         label="$(printf '%s' "$endpoint" | sed -n 's/.*labels=\([^&]*\)&.*/\1/p')"
         safe="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_-' '_')"
+        # Sequential responses: fixture "issues-<safe>-2.json", if present,
+        # answers the SECOND and every later call to this exact endpoint —
+        # simulating live state drifting between an initial snapshot and a
+        # later re-read of the same query (concurrent-drift tests).
+        count_file="$state_dir/calls-issues-$safe"
+        call_number=1
+        [ -f "$count_file" ] && call_number="$(($(cat "$count_file") + 1))"
+        echo "$call_number" >"$count_file"
         file="$fixture/issues-$safe.json"
+        if [ "$call_number" -ge 2 ] && [ -f "$fixture/issues-$safe-2.json" ]; then
+            file="$fixture/issues-$safe-2.json"
+        fi
         if [ -f "$file" ]; then
             cat "$file"
         else
@@ -112,9 +125,6 @@ if [ "$1" = "api" ]; then
     esac
     exit 0
 fi
-
-state_dir="$fixture/state"
-mkdir -p "$state_dir"
 
 if [ "$1" = "label" ]; then
     sub="$2"
@@ -428,6 +438,90 @@ rc="$(run migrate inventory method --repo o/r)"
 grep -qi 'clean' "$tmproot/stdout" 2>/dev/null &&
     bad "inventory must not report 'clean' when it could not complete the fetch" ||
     ok "a failed page aborts inventory outright — it is never reported as clean or as a conflict"
+
+echo "==> transfer refuses when the destination is not live (before touching anything)"
+new_fixture "destination-absent"
+cat >"$fixture/labels-pages.json" <<'JSON'
+[[{"name":"method:oneshot","color":"BF3989"}]]
+JSON
+write_issue_page "method:oneshot" '[[{"number":5,"pull_request":null}]]'
+rc="$(run migrate transfer method:oneshot strategy:oneshot --repo o/r --execute)"
+[ "$rc" = 2 ] || bad "transfer should exit 2 when the destination is not live at all (got $rc)"
+grep -qi 'not live' "$tmproot/stderr" ||
+    bad "transfer's refusal should say the destination is not live: $(cat "$tmproot/stderr")"
+[ -f "$fixture/state/issue-5.labels" ] && [ -s "$fixture/state/issue-5.labels" ] &&
+    bad "transfer must not touch any item when the destination itself is missing" ||
+    ok "transfer refuses cleanly when the destination is not live, before adding or deleting anything"
+
+echo "==> transfer resolves the destination's canonical case-insensitive spelling"
+new_fixture "destination-case-variant"
+cat >"$fixture/labels-pages.json" <<'JSON'
+[[{"name":"method:oneshot","color":"BF3989"},{"name":"STRATEGY:ONESHOT","color":"BF3989"}]]
+JSON
+write_issue_page "method:oneshot" '[[{"number":5,"pull_request":null}]]'
+[ "$(run migrate transfer method:oneshot strategy:oneshot --repo o/r --execute)" = 0 ] ||
+    bad "transfer should succeed, resolving 'strategy:oneshot' to the live 'STRATEGY:ONESHOT': $(cat "$tmproot/stderr")"
+[ "$(cat "$fixture/state/issue-5.labels" 2>/dev/null)" = "STRATEGY:ONESHOT" ] ||
+    bad "transfer should add the destination's CANONICAL live spelling, not the caller's casing (got: $(cat "$fixture/state/issue-5.labels" 2>/dev/null))"
+[ -f "$fixture/state/deleted-method:oneshot" ] ||
+    bad "transfer should still delete the source once the case-insensitively-resolved destination verifies"
+if [ "$(cat "$fixture/state/issue-5.labels" 2>/dev/null)" = "STRATEGY:ONESHOT" ] &&
+    [ -f "$fixture/state/deleted-method:oneshot" ]; then
+    ok "transfer resolves the destination's canonical case-insensitive spelling and uses it throughout"
+fi
+
+echo "==> transfer refuses an item that already carries a DIFFERENT destination-prefix value"
+new_fixture "destination-conflict"
+cat >"$fixture/labels-pages.json" <<'JSON'
+[[{"name":"method:oneshot","color":"BF3989"},{"name":"strategy:oneshot","color":"BF3989"},{"name":"strategy:council","color":"BF3989"}]]
+JSON
+write_issue_page "method:oneshot" '[[{"number":7,"pull_request":null}]]'
+# Seed #7 as already carrying a different strategy:* value, simulating a
+# repo where some issues were manually classified before the migration ran.
+printf 'strategy:council\n' >"$fixture/state/issue-7.labels"
+rc="$(run migrate transfer method:oneshot strategy:oneshot --repo o/r --execute)"
+[ "$rc" = 3 ] || bad "transfer should exit 3 when an item already carries a conflicting strategy:* value (got $rc)"
+grep -q '#7' "$tmproot/stderr" && grep -q 'strategy:council' "$tmproot/stderr" ||
+    bad "transfer's refusal should name the conflicting item and its existing value: $(cat "$tmproot/stderr")"
+[ "$(cat "$fixture/state/issue-7.labels" 2>/dev/null)" = "strategy:council" ] ||
+    bad "transfer must not add strategy:oneshot to #7 once a conflict is detected — its labels must be untouched"
+[ -f "$fixture/state/deleted-method:oneshot" ] &&
+    bad "transfer must not delete the source when a destination-prefix conflict blocked it" ||
+    ok "transfer refuses (and touches nothing) when an item already carries a different value of the destination's prefix"
+
+echo "==> transfer's destination-prefix conflict check also runs, and blocks, in dry-run"
+new_fixture "destination-conflict-dry-run"
+cat >"$fixture/labels-pages.json" <<'JSON'
+[[{"name":"method:oneshot","color":"BF3989"},{"name":"strategy:oneshot","color":"BF3989"},{"name":"strategy:council","color":"BF3989"}]]
+JSON
+write_issue_page "method:oneshot" '[[{"number":7,"pull_request":null}]]'
+printf 'strategy:council\n' >"$fixture/state/issue-7.labels"
+rc="$(run migrate transfer method:oneshot strategy:oneshot --repo o/r)"
+[ "$rc" = 3 ] || bad "the destination-prefix conflict must block dry-run too, before --execute would discover it (got $rc)"
+ok "the destination-prefix conflict check runs (and blocks) in dry-run, not only under --execute"
+
+echo "==> transfer aborts before deleting when an item joins the source label after the snapshot"
+new_fixture "concurrent-drift"
+cat >"$fixture/labels-pages.json" <<'JSON'
+[[{"name":"method:oneshot","color":"BF3989"},{"name":"strategy:oneshot","color":"BF3989"}]]
+JSON
+# First read of method:oneshot (the snapshot the add loop transfers): #5
+# only. Second read (the pre-delete recheck): #5 AND #6 — #6 "joined"
+# method:oneshot after the snapshot was taken and never went through the
+# add loop, so it has no strategy:oneshot.
+write_issue_page "method:oneshot" '[[{"number":5,"pull_request":null}]]'
+cat >"$fixture/issues-method_oneshot-2.json" <<'JSON'
+[[{"number":5,"pull_request":null},{"number":6,"pull_request":null}]]
+JSON
+rc="$(run migrate transfer method:oneshot strategy:oneshot --repo o/r --execute)"
+[ "$rc" = 1 ] || bad "transfer should exit 1 when current membership drifted since the snapshot (got $rc)"
+grep -q '#6' "$tmproot/stderr" ||
+    bad "transfer's abort should name the item that joined since the snapshot: $(cat "$tmproot/stderr")"
+[ "$(cat "$fixture/state/issue-5.labels" 2>/dev/null)" = "strategy:oneshot" ] ||
+    bad "the item present at snapshot time (#5) should still have been transferred before the drift was caught"
+[ -f "$fixture/state/deleted-method:oneshot" ] &&
+    bad "transfer must not delete the source when current membership drifted from the snapshot" ||
+    ok "a concurrent drift (#6 joining the source label after the snapshot) aborts the delete without losing #5's transfer"
 
 if [ "$fail" -gt 0 ]; then
     echo "test-migrate-label-family: $fail failure(s), $pass passing." >&2
