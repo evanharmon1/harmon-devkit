@@ -66,6 +66,9 @@ never combined; implement, verify, and ci have no cap and carry no round —
 and says whether a round is a local `task challenge`/`task review` run or a cloud
 PR-shepherd review cycle. `Next` names the next concrete gate or action,
 including the `task verify` a fix owes before the next round.
+When a cap of 0 skips a stage outright, there is no round to number: omit
+`round n/cap` and write `skipped (cap 0)` in `Stage` instead of inventing
+`round 0/0`.
 
 Post it at every
 stage transition, when a round begins or ends, as the concise progress tick

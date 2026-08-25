@@ -74,6 +74,9 @@ never combined; implement, verify, and ci have no cap and carry no round —
 and says whether a round is a local `task challenge`/`task review` run or a cloud
 PR-shepherd review cycle. `Next` names the next concrete gate or action,
 including the `task verify` a fix owes before the next round.
+When a cap of 0 skips a stage outright, there is no round to number: omit
+`round n/cap` and write `skipped (cap 0)` in `Stage` instead of inventing
+`round 0/0`.
 
 Post it at every
 stage transition, when a round begins or ends, as the concise progress tick
@@ -802,7 +805,7 @@ you rather than the bot):
   closed, or indeterminate, post the fixed stage-ledger table in your own
   commentary before replying, settling, re-triggering, or stopping. Fill
   `Stage` with `🚢 shepherd` and the current `round n/cap`; use the matching
-  status glyph (`✅`, `🔴`, `🟡`, `⏳`, or `⛔`) and make `Next` name the exact
+  status glyph (`✅`, `🔴`, `🟡`, `⚪`, `⏳`, or `⛔`) and make `Next` name the exact
   follow-up.
 
   `show --state "$state"` prints the state file back unchanged. It decides

@@ -1006,6 +1006,9 @@ assert_ledger_contract() {
     [ "$legend" = "$LEDGER_LEGEND_EXPECTED" ] || return 1
     [ "$trigger" = "$LEDGER_TRIGGER_EXPECTED" ] || return 1
     grep -qF "distinct from the gauntlet's private adjudication ledger" "$file" || return 1
+    grep -qF 'write `skipped (cap 0)` in `Stage`' "$file" || return 1
+    grep -qF 'instead of inventing' "$file" || return 1
+    grep -qF '`round 0/0`' "$file" || return 1
     grep -qF '`round n/cap`' "$file"
 }
 
@@ -1045,6 +1048,7 @@ assert_shepherd_ledger_hooks() {
     grep -qF 'stage-ledger table in your own commentary' "$file" || return 1
     grep -qF 'regardless of whether it is clean, findings, pending, retry, escalation,' "$file" || return 1
     grep -qF 'closed, or indeterminate, post' "$file" || return 1
+    grep -qF '`✅`, `🔴`, `🟡`, `⚪`, `⏳`, or `⛔`' "$file" || return 1
     grep -qF 'Immediately after the readiness gate confirms' "$file" || return 1
     grep -qF '**Blocked-stop ledger.**' "$file" || return 1
     grep -qF 'cap-reached, no-progress, or' "$file" || return 1
