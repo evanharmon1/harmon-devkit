@@ -2,7 +2,7 @@
 
 - Original author: Matt Pocock
 - Source: https://github.com/mattpocock/skills
-- Imported commit: `068b6e0c62393147daf03530149cdce209c93da8`
+- Imported commit: `6654f6b60cd9d5be8b54c6fafe44346dabeb3b76`
 - Upstream path: `skills/engineering/triage`
 - License: MIT; see [LICENSE.upstream](LICENSE.upstream)
 

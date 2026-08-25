@@ -92,6 +92,11 @@ from [mattpocock/skills](https://github.com/mattpocock/skills). The upstream
 existing universal `triage` skill; its internal invocation and setup references
 are adapted accordingly.
 
+The selection includes `grill-me` and its `grilling` dependency, along with
+`grill-with-docs` and its `grilling` and `domain-modeling` dependencies. It
+also includes `handoff`, `matt-triage`, `prototype`, `research`,
+`setup-matt-pocock-skills`, `to-spec`, `to-tickets`, and `wayfinder`.
+
 ## The unique-name rule
 
 Categories are **flattened** when vendored (a consumer's `.agents/skills/` holds

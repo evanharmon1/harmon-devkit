@@ -130,6 +130,13 @@ expect_ok "triage owns a canonical scoped rolling-report title" \
 expect_ok "the configured GitHub tracker requires scoped issue titles" \
     grep -qF '(<free-form scope>): <imperative outcome>' \
     "$repo/ai/skills/matt-pocock/setup-matt-pocock-skills/issue-tracker-github.md"
+expect_ok "the Matt Pocock selection includes user-facing grill-me" \
+    test -f "$repo/ai/skills/matt-pocock/grill-me/SKILL.md"
+expect_ok "grill-me declares its grilling dependency" \
+    grep -qF 'the `grilling` skill' "$repo/ai/skills/matt-pocock/grill-me/SKILL.md"
+expect_ok "grill-me provenance pins the current upstream import" \
+    grep -qF '6654f6b60cd9d5be8b54c6fafe44346dabeb3b76' \
+    "$repo/ai/skills/matt-pocock/grill-me/UPSTREAM.md"
 
 git_commit_all() {
     git -C "$1" add -A
