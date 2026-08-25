@@ -360,7 +360,9 @@ jq -n -L "$title_module_dir" \
                 (if ($have_wt | length) == 0 and ($nt == null or $nt == "none")
                  then "missing-work-type" else empty end),
                 ($ax | to_entries[]
-                 | select(.value == "none") | "axis-missing:\(.key)"),
+                 | select(.value == "none"
+                         and (axis_optional_when_absent(.key) | not))
+                 | "axis-missing:\(.key)"),
                 ($ax | to_entries[]
                  | select(.value == "conflict") | "axis-conflict:\(.key)"),
                 # Unknown values flag independently of the axis state: a

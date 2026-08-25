@@ -986,7 +986,8 @@ jq -e '.open[] | select(.number == 15)
        | (.axis_state.layer == "none")
          and (.flags | index("needs-triage-removable") != null)
          and (.flags | index("partially-classified") == null)
-         and (.flags | index("missing-needs-triage") == null)' \
+         and (.flags | index("missing-needs-triage") == null)
+         and (.flags | index("axis-missing:layer") == null)' \
     "$scan_out" >/dev/null || fail "no-layer classification must be removable"
 
 echo "==> scan: missing area or domain remains incomplete"

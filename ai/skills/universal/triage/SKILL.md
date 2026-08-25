@@ -169,9 +169,11 @@ active taxonomy — a retired or misspelled label a human must resolve).
     is `null` check with
     `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`,
     which must not print `none`), and
-  - `area` and `domain` each have exactly one recognized label, **or** you
-    attest `--inapplicable <axis>` only when no value of that axis could ever
-    describe this issue. They remain required classification axes.
+  - When active, `area` and `domain` each have exactly one recognized label,
+    **or** you attest `--inapplicable <axis>` only when no value of that axis
+    could ever describe this issue. They remain required classification axes
+    whenever the repository provisions them; never assume an axis absent from
+    `axes`.
   - `layer`, when it is active, has exactly one recognized label **or is
     absent**. Do not add a rote `--inapplicable layer` just to clear an absent
     layer: the stack slice is optional when absent. A present layer conflict or
