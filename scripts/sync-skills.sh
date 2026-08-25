@@ -204,6 +204,7 @@ prov_field() {
 # incomplete stamp is reported as not fully vendored rather than repaired.
 status_prov_ref() {
     [ -f "$1" ] || return 0
+    grep -q '^# managed:' "$1" || return 0
     prov_field "$1" "ref" | sed 's/ (.*//'
 }
 

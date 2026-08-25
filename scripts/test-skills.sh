@@ -1050,12 +1050,13 @@ status_probe_count() {
     wc -l <"$STATUS_GIT_LOG" | tr -d '[:space:]'
 }
 
-expect_ok "status exit codes are documented" \
+expect_ok "status state and usage exit codes are documented" \
     sh -c 'grep -qF "#   0  in-sync" "$1" &&
-        grep -qF "#   2  invalid status arguments" "$1" &&
         grep -qF "#   10 never-vendored" "$1" &&
         grep -qF "#   11 pin-moved" "$1" &&
-        grep -qF "#   12 upstream-newer" "$1"' sh "$SCRIPTS/sync-skills.sh"
+        grep -qF "#   12 upstream-newer" "$1" &&
+        grep -qF "# Invalid status arguments (or another usage error) exit 2 and write usage to" "$1" &&
+        grep -qF "# stderr; they are not vendoring states." "$1"' sh "$SCRIPTS/sync-skills.sh"
 
 reset_status_probe
 expect_status "status reports never-vendored" 10 \
@@ -1208,6 +1209,15 @@ expect_status "agents with both stamps report in-sync offline" 0 \
     "$STATUS_AGENTS/.skills-sync.yaml" "$STATUS_AGENTS_ROOT" "$STATUS_AGENTS_PROV" \
     run_status_at "$STATUS_AGENTS" status --offline
 expect_ok "agents in-sync offline makes zero upstream probes" test "$(status_probe_count)" = 0
+sed -i.bak '/^# managed:/d' "$STATUS_AGENTS/vendored/agents/.AGENTS_PROVENANCE"
+reset_status_probe
+expect_status "agents require a complete provenance stamp" 10 \
+    "state=never-vendored pinned=v1.2.3 vendored=none latest=unknown" \
+    "" \
+    "$STATUS_AGENTS/.skills-sync.yaml" "$STATUS_AGENTS_ROOT" "$STATUS_AGENTS_PROV" \
+    run_status_at "$STATUS_AGENTS" status
+expect_ok "damaged-agents-stamp status makes zero upstream probes" test "$(status_probe_count)" = 0
+cp "$STATUS_AGENTS_AGENTS_STAMP" "$STATUS_AGENTS/vendored/agents/.AGENTS_PROVENANCE"
 rm "$STATUS_AGENTS/vendored/skills/.SKILLS_PROVENANCE"
 reset_status_probe
 expect_status "agents require the skills provenance stamp" 10 \
