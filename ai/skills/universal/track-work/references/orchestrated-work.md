@@ -1,18 +1,31 @@
 # Orchestrated work
 
 The rule: **the orchestrator claims; subagents never do.** Before dispatching
-an issue, the orchestrating session follows
+an issue, the orchestrating session claims it under
 [`track-work` §6](../SKILL.md#6-making-an-agents-work-visible-while-it-happens)
-to claim it itself. Several subagents can share one GitHub identity, and only
-the orchestrator knows when the delegated work is complete.
+— and under that skill's write boundary: the user invokes `/claim` or gives
+the go-ahead for that claim in conversation; a decision to delegate never
+authorizes the write by itself. Several subagents can share one GitHub
+identity, and only the orchestrator knows when the delegated work is complete.
+
+The `claim:<family>` label names the family **accountable for the claim and
+its release** — the orchestrator's — not the delegate executing the work. A
+Claude session dispatching a Codex implementer still claims `claim:claude`;
+the delegate is recorded in the claim record's informational `dispatched to`
+line, which is where a reader looks for who is executing.
 
 ## Sequence
 
-1. Claim the issue under the orchestrator's own identity and claim family.
+1. Claim the issue under the orchestrator's own identity and claim family
+   (with the user's invocation or go-ahead).
 2. Dispatch the subagent with a self-contained brief.
 3. Collect the subagent's report.
-4. Release the claim, or leave it for `/wrap`, exactly as the orchestrator
-   would for its own work.
+4. Carry on exactly as for the orchestrator's own work. The report ends the
+   dispatch, not the claim: while review, CI, the PR, or another delegate is
+   still in flight the claim stays live, and it is released by the ordinary
+   lifecycle — `/shepherd`'s stop-at-green, the close event, or `/wrap`.
+   Hand the issue back early only when the report leaves nothing in flight:
+   `partial` or `blocked` with no PR open.
 
 Use this copy-pasteable brief addition for any delegated issue work:
 
