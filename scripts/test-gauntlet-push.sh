@@ -159,6 +159,12 @@ echo "  -> usage errors are distinct"
 run
 assert_rc 2
 
+echo "  -> empty transport overrides stay structurally safe on Bash 3.2"
+grep -F -- 'if [ "$git_arg_count" -gt 0 ]; then' "$helper" >/dev/null ||
+    fail "git argument expansion must be guarded by the separate count"
+[ "$(grep -F -c -- '"${git_args[@]}"' "$helper")" -eq 1 ] ||
+    fail "git_args must be expanded only in its non-empty guarded branch"
+
 echo "  -> skill call sites propagate failure and force untracked-file checks"
 [ "$(grep -F -c -- '--gate-token "$token" || exit' "$skill")" -eq 2 ] ||
     fail "both documented helper calls must stop on failure"
