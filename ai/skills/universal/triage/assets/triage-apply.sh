@@ -55,9 +55,12 @@
 # for a supervised run, so a model cannot promote itself to write mode by
 # adding a flag.
 #
-# --native-type TYPE fills an unset enabled organization Type. It is refused on
-# personal repos and is validated before dry-run output or an execute mutation;
-# a different existing Type is never overwritten.
+# --native-type TYPE is a best-effort fill of an observed-unset enabled
+# organization Type. It is refused on personal repos and is validated before
+# dry-run output or an execute mutation. The script re-reads immediately before
+# writing and refuses an observed conflict, but GitHub exposes no conditional
+# Type mutation: a concurrent writer in that final read-to-write window cannot
+# be protected from an overwrite.
 #
 # --inapplicable AXIS (area|layer|domain) attests that the axis genuinely does
 # not apply to the issue; it is consumed by the needs-triage removal gate and

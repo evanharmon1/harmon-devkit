@@ -147,6 +147,12 @@ the same apply call; the script validates it against the enabled Types
 available in that target repository and refuses a personal-repo Type, an invalid
 Type, or a disabled Type. Do not add a work-type label on an organization.
 
+`--native-type` is a best-effort fill, not a compare-and-set operation. It
+refuses a different Type it observes immediately before writing, but GitHub
+does not expose a conditional Type mutation; a human change in the final
+read-to-write window can still be overwritten. Use it only where that residual
+concurrent-writer risk is acceptable; otherwise leave the Type for a human.
+
 ### 2b — Axes (the scan's `axes` list)
 
 For each axis in `axes` whose `axis_state` is `none`: look through

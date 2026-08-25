@@ -710,6 +710,15 @@ echo "==> label: a concurrent Type change refuses before any mutation"
 [ "$(grep -c '^issue edit ' "$GH_STUB_LOG")" = 1 ] ||
     fail "concurrent Type change must stop before the Type mutation"
 
+echo "==> label: native Type contract states the remaining non-CAS race"
+grep -q 'best-effort fill' "$apply" ||
+    fail "native Type script contract must state best-effort behavior"
+grep -q 'does not expose a conditional Type mutation' \
+    ./ai/skills/universal/triage/SKILL.md ||
+    fail "triage skill must disclose the non-CAS Type write window"
+grep -q 'never overwritten' "$apply" &&
+    fail "native Type script must not promise absolute overwrite prevention"
+
 echo "==> label: an old gh without --type refuses before mutation"
 : >"$GH_STUB_LOG"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NO_TYPE_FLAG=1 "$apply" \
