@@ -176,8 +176,12 @@ helpers. For vendoring and its checks, use only `task sync:skills`,
 `task verify:skills`, `task verify:skills:offline`, and (in the in-sync case)
 `git ls-remote --tags SOURCE_REPO`.
 
-Read `.skills-sync.yaml` and its destination provenance, then report one of these
-states and take only its matching action:
+Read `.skills-sync.yaml` and its destination provenance. **If the manifest is
+absent** — the repo opted out of skills sync (e.g. `use_skills_sync=false`, as
+general and IaC scaffolds and skills-source repos may) — there is nothing to
+vendor: record `Vendored skills: not configured` in the summary and skip the rest
+of this step. Otherwise report one of these states and take only its matching
+action:
 
 1. **Never vendored.** The manifest exists but the skills destination has no
    `# managed:` provenance line — or, when the manifest has an `agents:` block,
