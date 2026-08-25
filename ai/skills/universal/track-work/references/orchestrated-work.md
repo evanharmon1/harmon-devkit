@@ -29,13 +29,20 @@ record plus the work in flight.
 
 ## Sequence
 
-1. Claim the issue under the orchestrator's own identity and claim family —
-   the user types `/claim` for it.
-2. Prepare the branch **before** dispatching: a feature branch off the
-   default branch (or a worktree on one) with a clean checkout. The shipped
-   implementer refuses to edit on the default branch and never creates a
-   branch itself, so a dispatch from the default branch produces nothing. If
-   the branch the claim record names changes, post a refresh record.
+1. Claim **every** issue the brief covers under the orchestrator's own
+   identity and claim family — the user types `/claim` for each — before
+   any dispatch. A brief that spans issues leaves none of them unclaimed.
+2. Prepare the checkout **before** dispatching: a feature branch off the
+   default branch with a clean tree. The shipped implementer refuses to edit
+   on the default branch and never creates a branch itself, so a dispatch
+   from the default branch produces nothing. A single delegate may share the
+   orchestrator's checkout only while the orchestrator makes no edits of its
+   own; **each concurrent delegate gets its own worktree**
+   (`task worktree:new -- <name>` where the repo provides it) — the
+   implementer requires a clean tree and commits as it goes, so two workers
+   in one checkout collide through the shared index or stop on each other's
+   uncommitted edits. If the branch the claim record names changes, post a
+   refresh record.
 3. Dispatch the subagent with a self-contained brief.
 4. Collect the subagent's report.
 5. Carry on exactly as for the orchestrator's own work. The report ends the
