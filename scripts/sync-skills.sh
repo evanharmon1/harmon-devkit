@@ -8,7 +8,7 @@
 # The destination is SHARED with the repo's own local skills. The sync manages
 # ONLY the skill directories it vendored — recorded on the provenance
 # `# managed:` line. Any other directory in dest is a local skill: create,
-# edit, and delete it like any normal `.agents/skills/<name>` — the sync and
+# edit, and delete it like any normal `.claude/skills/<name>` — the sync and
 # both verify modes never touch or report it. If a local directory's name
 # collides with an incoming vendored skill, the sync dies before deleting
 # anything (rename the local skill or drop the category from the manifest).
@@ -21,6 +21,14 @@
 #   sync-skills.sh sync            [MANIFEST]   # vendor the pinned skills
 #   sync-skills.sh verify          [MANIFEST]   # authoritative drift check (clones)
 #   sync-skills.sh verify-offline  [MANIFEST]   # fast offline ref check (no network)
+#   sync-skills.sh status          [--offline] [MANIFEST] # report vendoring state
+#
+# `status` exit codes (the line on stdout is always machine-readable):
+#   0  in-sync
+#   2  invalid status arguments (or another usage error)
+#   10 never-vendored
+#   11 pin-moved
+#   12 upstream-newer
 #
 # MANIFEST defaults to .skills-sync.yaml. Depends on: git, yq, diff, awk.
 #
@@ -30,7 +38,7 @@
 #     ref: v1.2.0            # pinned tag (or branch) — NOT a bare SHA
 #     path: ai/skills        # optional; where skills live in the source (default)
 #   categories: [universal, backend, frontend]
-#   dest: .agents/skills     # shared with local skills; sync manages only what it vendored
+#   dest: .claude/skills     # shared with local skills; sync manages only what it vendored
 #   agents:                  # OPTIONAL — omit the block entirely and nothing changes
 #     names: [implementer]   # explicit list, or ["*"] for every agent at the pin
 #     path: ai/agents        # optional; where agents live in the source (default)
@@ -38,7 +46,7 @@
 #
 # Agents ride the SAME manifest and therefore the same pinned ref as skills.
 # That is deliberate: a shared agent is thin and defers to a skill by reading it
-# (`.agents/skills/<name>/SKILL.md`), so a version skew between the two would
+# (`.claude/skills/<name>/SKILL.md`), so a version skew between the two would
 # leave an agent following a procedure that no longer exists. One ref, one
 # `task sync:skills`, both kinds of asset.
 #
@@ -49,6 +57,10 @@
 set -euo pipefail
 
 MANIFEST="${2:-.skills-sync.yaml}"
+
+STATUS_NEVER_VENDORED=10
+STATUS_PIN_MOVED=11
+STATUS_UPSTREAM_NEWER=12
 
 WORKDIR=""
 # Keep the trap's own exit status at 0 — when WORKDIR is unset (the
@@ -184,6 +196,140 @@ list_skill_dirs() {
 # prov_field PROV FIELD — value of a `# FIELD: …` provenance header line.
 prov_field() {
     sed -n "s/^# $2:[[:space:]]*//p" "$1" | head -n 1
+}
+
+# status_prov_ref PROV — the ref recorded by a provenance stamp, or empty when
+# the required stamp/ref is absent. Status is read-only, so a malformed or
+# incomplete stamp is reported as not fully vendored rather than repaired.
+status_prov_ref() {
+    [ -f "$1" ] || return 0
+    prov_field "$1" "ref" | sed 's/ (.*//'
+}
+
+# status_version_parse TAG — validate a stable v<major>.<minor>.<patch> tag and
+# expose its decimal components. This mirrors sync-devkit-release.sh's
+# stable-tag shape gate: suffixes and malformed extra components are not release
+# tags. Non-release refs return non-zero, so status can report latest=unknown
+# without guessing about a branch or other manifest ref.
+status_version_parse() {
+    _svp_tag="$1"
+    case "$_svp_tag" in
+    v*) ;;
+    *) return 1 ;;
+    esac
+    _svp_rest="${_svp_tag#v}"
+    case "$_svp_rest" in
+    "" | *[!0-9.]*) return 1 ;;
+    esac
+    case "$_svp_rest" in
+    *..*) return 1 ;;
+    esac
+    _svp_dots="${_svp_rest//[!.]/}"
+    [ "${#_svp_dots}" -eq 2 ] || return 1
+    _svp_major="${_svp_rest%%.*}"
+    _svp_tail="${_svp_rest#*.}"
+    _svp_minor="${_svp_tail%%.*}"
+    _svp_patch="${_svp_tail#*.}"
+    for _svp_part in "$_svp_major" "$_svp_minor" "$_svp_patch"; do
+        case "$_svp_part" in
+        "" | *[!0-9]*) return 1 ;;
+        esac
+    done
+    STATUS_VERSION_MAJOR="$_svp_major"
+    STATUS_VERSION_MINOR="$_svp_minor"
+    STATUS_VERSION_PATCH="$_svp_patch"
+}
+
+# status_decimal_order LEFT RIGHT — print 1 when two non-negative decimal
+# strings compare as LEFT > RIGHT, 0 when equal, and -1 when LEFT < RIGHT.
+# Leading zeros are removed as strings; no version component is converted to an
+# integer, so the comparison works for components of any practical size.
+status_decimal_order() {
+    _sdo_left="$1"
+    _sdo_right="$2"
+    while [ "${#_sdo_left}" -gt 1 ]; do
+        case "$_sdo_left" in
+        0*) _sdo_left="${_sdo_left#0}" ;;
+        *) break ;;
+        esac
+    done
+    while [ "${#_sdo_right}" -gt 1 ]; do
+        case "$_sdo_right" in
+        0*) _sdo_right="${_sdo_right#0}" ;;
+        *) break ;;
+        esac
+    done
+    if [ "${#_sdo_left}" -gt "${#_sdo_right}" ]; then
+        printf '1\n'
+    elif [ "${#_sdo_left}" -lt "${#_sdo_right}" ]; then
+        printf '%s\n' '-1'
+    elif [ "$_sdo_left" = "$_sdo_right" ]; then
+        printf '0\n'
+    elif (
+        LC_ALL=C
+        [[ "$_sdo_left" > "$_sdo_right" ]]
+    ); then
+        printf '1\n'
+    else
+        printf '%s\n' '-1'
+    fi
+}
+
+# status_version_newer LEFT RIGHT — compare two stable release tags by their
+# semantic major, minor, and patch components. Invalid tags are never newer.
+status_version_newer() {
+    _svn_left="$1"
+    _svn_right="$2"
+    status_version_parse "$_svn_left" || return 1
+    _svn_left_major="$STATUS_VERSION_MAJOR"
+    _svn_left_minor="$STATUS_VERSION_MINOR"
+    _svn_left_patch="$STATUS_VERSION_PATCH"
+    status_version_parse "$_svn_right" || return 1
+    _svn_right_major="$STATUS_VERSION_MAJOR"
+    _svn_right_minor="$STATUS_VERSION_MINOR"
+    _svn_right_patch="$STATUS_VERSION_PATCH"
+
+    _svn_order="$(status_decimal_order "$_svn_left_major" "$_svn_right_major")"
+    case "$_svn_order" in
+    1) return 0 ;;
+    -1) return 1 ;;
+    esac
+    _svn_order="$(status_decimal_order "$_svn_left_minor" "$_svn_right_minor")"
+    case "$_svn_order" in
+    1) return 0 ;;
+    -1) return 1 ;;
+    esac
+    _svn_order="$(status_decimal_order "$_svn_left_patch" "$_svn_right_patch")"
+    [ "$_svn_order" = 1 ]
+}
+
+# status_latest_tag REPO — inspect the remote's release tags exactly once and
+# set STATUS_LATEST_TAG. The caller decides whether it is newer than the pinned
+# ref. `git ls-remote` is deliberately the only network operation in status.
+status_latest_tag() {
+    _slt_repo="$1"
+    STATUS_LATEST_TAG=""
+    # Status remains useful when the single upstream probe is unavailable: the
+    # caller must not invent an upstream-newer result from an indeterminate
+    # read, and the promised line reports latest=unknown instead.
+    if ! _slt_tags="$(git ls-remote --tags "$_slt_repo" 2>/dev/null)"; then
+        return 0
+    fi
+    while IFS= read -r _slt_line; do
+        [ -n "$_slt_line" ] || continue
+        _slt_tag="${_slt_line##*refs/tags/}"
+        [ "$_slt_tag" != "$_slt_line" ] || continue
+        _slt_tag="${_slt_tag%\^\{\}}"
+        if ! status_version_parse "$_slt_tag" 2>/dev/null; then
+            continue
+        fi
+        if [ -z "$STATUS_LATEST_TAG" ] ||
+            status_version_newer "$_slt_tag" "$STATUS_LATEST_TAG"; then
+            STATUS_LATEST_TAG="$_slt_tag"
+        fi
+    done <<EOF
+$_slt_tags
+EOF
 }
 
 # prov_list PROV FIELD — a comma-separated provenance field as a sorted
@@ -862,12 +1008,109 @@ cmd_verify_offline() {
 
 }
 
+status_usage() {
+    echo "usage: sync-skills.sh status [--offline] [MANIFEST]" >&2
+}
+
+cmd_status() {
+    _cs_offline=0
+    _cs_manifest=".skills-sync.yaml"
+    _cs_have_manifest=0
+    shift
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --offline)
+            if [ "$_cs_offline" -ne 0 ]; then
+                status_usage
+                return 2
+            fi
+            _cs_offline=1
+            ;;
+        --)
+            shift
+            if [ "$#" -gt 1 ]; then
+                status_usage
+                return 2
+            fi
+            if [ "$#" -eq 1 ]; then
+                _cs_manifest="$1"
+                _cs_have_manifest=1
+            fi
+            break
+            ;;
+        -*)
+            status_usage
+            return 2
+            ;;
+        *)
+            if [ "$_cs_have_manifest" -ne 0 ]; then
+                status_usage
+                return 2
+            fi
+            _cs_manifest="$1"
+            _cs_have_manifest=1
+            ;;
+        esac
+        shift
+    done
+    MANIFEST="$_cs_manifest"
+    require_tools
+
+    _cs_dest="$(manifest_get '.dest')"
+    assert_safe_dest "$_cs_dest" "skills"
+    _cs_pinned="$(manifest_get '.source.ref')"
+    [ -n "$_cs_pinned" ] && [ "$_cs_pinned" != "null" ] ||
+        die "manifest: .source.ref is required"
+
+    _cs_skills_ref="$(status_prov_ref "$_cs_dest/.SKILLS_PROVENANCE")"
+    _cs_vendored="$_cs_skills_ref"
+    _cs_never=0
+    [ -n "$_cs_skills_ref" ] || _cs_never=1
+    _cs_agents_ref=""
+    if agents_enabled; then
+        _cs_agents_dest="$(agents_dest)"
+        _cs_agents_ref="$(status_prov_ref "$_cs_agents_dest/.AGENTS_PROVENANCE")"
+        [ -n "$_cs_agents_ref" ] || _cs_never=1
+    fi
+
+    _cs_state="in-sync"
+    _cs_latest="unknown"
+    _cs_status=0
+    if [ "$_cs_never" -ne 0 ]; then
+        _cs_state="never-vendored"
+        _cs_vendored="none"
+        _cs_status="$STATUS_NEVER_VENDORED"
+    elif [ "$_cs_skills_ref" != "$_cs_pinned" ] ||
+        { agents_enabled && [ "$_cs_agents_ref" != "$_cs_pinned" ]; }; then
+        _cs_state="pin-moved"
+        _cs_status="$STATUS_PIN_MOVED"
+    elif [ "$_cs_offline" -eq 0 ] &&
+        status_version_parse "$_cs_pinned" 2>/dev/null; then
+        _cs_source_repo="$(manifest_get '.source.repo')"
+        [ -n "$_cs_source_repo" ] && [ "$_cs_source_repo" != "null" ] ||
+            die "manifest: .source.repo is required"
+        status_latest_tag "$_cs_source_repo"
+        [ -z "$STATUS_LATEST_TAG" ] || _cs_latest="$STATUS_LATEST_TAG"
+        if [ -n "$STATUS_LATEST_TAG" ] &&
+            status_version_newer "$STATUS_LATEST_TAG" "$_cs_pinned"; then
+            _cs_state="upstream-newer"
+            _cs_status="$STATUS_UPSTREAM_NEWER"
+        fi
+    fi
+
+    printf 'state=%s pinned=%s vendored=%s latest=%s\n' \
+        "$_cs_state" "$_cs_pinned" "$_cs_vendored" "$_cs_latest"
+    return "$_cs_status"
+}
+
 case "${1:-}" in
 sync) cmd_sync ;;
 verify) cmd_verify ;;
 verify-offline) cmd_verify_offline ;;
+status) cmd_status "$@" ;;
 *)
-    echo "usage: sync-skills.sh {sync|verify|verify-offline} [MANIFEST]" >&2
+    echo "usage: sync-skills.sh {sync|verify|verify-offline|status} [MANIFEST]" >&2
+    echo "       sync-skills.sh status [--offline] [MANIFEST]" >&2
     exit 2
     ;;
 esac
