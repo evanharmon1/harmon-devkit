@@ -1028,7 +1028,8 @@ cmd_status() {
             ;;
         --)
             shift
-            if [ "$#" -gt 1 ]; then
+            if [ "$#" -gt 1 ] ||
+                { [ "$#" -eq 1 ] && [ "$_cs_have_manifest" -ne 0 ]; }; then
                 status_usage
                 return 2
             fi

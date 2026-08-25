@@ -1178,7 +1178,8 @@ STATUS_GIT_FAIL=0
 for invalid_args in \
     "status --offline --offline" \
     "status --not-a-status-option" \
-    "status first-manifest second-manifest"; do
+    "status first-manifest second-manifest" \
+    "status first-manifest -- second-manifest"; do
     reset_status_probe
     # Each row is an intentional argument vector.
     # shellcheck disable=SC2086
