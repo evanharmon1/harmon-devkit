@@ -36,10 +36,12 @@
 #
 # Usage:
 #   tick-criteria.sh --repo owner/repo --issue N [--match TEXT]... [--index K]...
-#                    [--dry-run]
+#                    [--closed-ok] [--dry-run]
 #
 #   --match TEXT   tick the one unticked item containing TEXT (case-insensitive)
 #   --index K      tick the K-th unticked item, counting from 1
+#   --closed-ok    permit a closed issue only when GitHub records it as
+#                  CLOSED with stateReason COMPLETED
 #   --dry-run      print what would be ticked; write nothing
 #
 # Set $ISSUE_BODY_DIR to read (and, in that mode, write) issue bodies as
@@ -52,13 +54,14 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --repo owner/repo --issue N [--match TEXT]... [--index K]... [--dry-run]" >&2
+    echo "Usage: $0 --repo owner/repo --issue N [--match TEXT]... [--index K]... [--closed-ok] [--dry-run]" >&2
     exit 2
 }
 
 repo="${GH_REPO:-}"
 issue=""
 dry_run=""
+closed_ok=""
 selectors=""
 
 # Selectors are accumulated into a newline-delimited stream of `kind:value`
@@ -103,6 +106,10 @@ while [ "$#" -gt 0 ]; do
         reject_multiline --index "$2"
         selectors="${selectors}index:$2"$'\n'
         shift 2
+        ;;
+    --closed-ok)
+        closed_ok=1
+        shift
         ;;
     --dry-run)
         dry_run=1
@@ -176,13 +183,43 @@ assert_claimed() {
         echo "tick-criteria: could not resolve the authenticated user" >&2
         exit 2
     }
-    _state="$(gh issue view "$issue" --repo "$repo" --json state \
-        --jq '.state' 2>/dev/null)" || {
+    _state_and_reason="$(gh issue view "$issue" --repo "$repo" --json state,stateReason \
+        --template '{{.state}}:{{.stateReason}}' 2>/dev/null)" || {
         echo "tick-criteria: could not read the state of $repo#$issue" >&2
         exit 2
     }
+    case "$_state_and_reason" in
+    *:*) ;;
+    *)
+        echo "tick-criteria: could not read the state reason of $repo#$issue" >&2
+        exit 2
+        ;;
+    esac
+    _state="${_state_and_reason%%:*}"
+    _state_reason="${_state_and_reason#*:}"
     case "$_state" in
     OPEN | open) ;;
+    CLOSED | closed)
+        [ -n "$closed_ok" ] || {
+            echo "tick-criteria: $repo#$issue is closed — pass --closed-ok only for a completed post-merge tick" >&2
+            exit 1
+        }
+        case "$_state_reason" in
+        COMPLETED) ;;
+        NOT_PLANNED)
+            echo "tick-criteria: $repo#$issue was closed as NOT_PLANNED, not completed — refusing to tick it" >&2
+            exit 1
+            ;;
+        DUPLICATE)
+            echo "tick-criteria: $repo#$issue was closed as DUPLICATE, not completed — refusing to tick it" >&2
+            exit 1
+            ;;
+        *)
+            echo "tick-criteria: $repo#$issue is closed with state reason '${_state_reason:-unknown}', not COMPLETED — refusing to tick it" >&2
+            exit 1
+            ;;
+        esac
+        ;;
     *)
         echo "tick-criteria: $repo#$issue is $_state, not open — nothing to tick during implementation" >&2
         exit 1

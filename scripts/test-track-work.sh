@@ -1836,7 +1836,7 @@ if [ "${1:-}" = "api" ] && [ "${2:-}" = "user" ]; then
     exit 0
 fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json state'; then
-    printf '%s' "${STUB_STATE_NAME:-OPEN}"
+    printf '%s:%s' "${STUB_STATE_NAME:-OPEN}" "${STUB_STATE_REASON:-}"
     exit 0
 fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json assignees'; then
@@ -1880,7 +1880,7 @@ run_tick_live() {
     echo "$_rc"
 }
 
-echo "==> the live path sends the ticked body to gh issue edit"
+echo "==> an open claimed issue remains tickable through the live path"
 printf '%s' "$body_three" >"$tmp/b1"
 printf '%s' "$body_three" >"$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -1957,7 +1957,7 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "a co-assigned issue should tick (got $_rc)"
 
-echo "==> a closed issue is not tickable"
+echo "==> a closed issue needs the explicit opt-in"
 printf '%s' "$body_three" >"$tmp/b1"
 cp "$tmp/b1" "$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -1965,9 +1965,48 @@ _rc=0
 env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
     STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    STUB_STATE_REASON="COMPLETED" \
     "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
-[ "$_rc" = 1 ] || fail "a closed issue should exit 1 (got $_rc)"
+[ "$_rc" = 1 ] || fail "a completed closed issue without --closed-ok should exit 1 (got $_rc)"
 [ ! -f "$tmp/edited" ] || fail "a closed issue must not be written to"
+
+echo "==> a closed COMPLETED issue is tickable only with --closed-ok"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    STUB_STATE_REASON="COMPLETED" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "a completed closed issue with --closed-ok should tick (got $_rc)"
+[ -f "$tmp/edited" ] || fail "a completed closed issue should be written only with --closed-ok"
+
+for reason in NOT_PLANNED DUPLICATE; do
+    echo "==> a closed $reason issue is refused even with --closed-ok"
+    printf '%s' "$body_three" >"$tmp/b1"
+    cp "$tmp/b1" "$tmp/b2"
+    rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+    _rc=0
+    env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+        STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+        STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+        STUB_STATE_REASON="$reason" \
+        "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
+    [ "$_rc" = 1 ] || fail "a $reason issue should exit 1 (got $_rc)"
+    [ ! -f "$tmp/edited" ] || fail "a $reason issue must not be written to"
+done
+
+echo "==> a closed issue without a completion reason is refused even with --closed-ok"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a closed issue without COMPLETED should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "a closed issue without COMPLETED must not be written to"
 
 echo "==> a multiline selector value cannot smuggle in a second selector"
 write_issue 36 "$body_three"
