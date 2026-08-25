@@ -9,7 +9,13 @@ set -euo pipefail
 if [ "${GAUNTLET_TEST_CHILD:-}" != 1 ]; then
     for default_branch in main master; do
         echo "==> gauntlet push suite with init.defaultBranch=${default_branch}"
-        GAUNTLET_TEST_CHILD=1 GAUNTLET_TEST_DEFAULT_BRANCH="$default_branch" "$0"
+        case "$BASH_VERSION" in
+        3.2.*)
+            GAUNTLET_TEST_CHILD=1 GAUNTLET_TEST_DEFAULT_BRANCH="$default_branch" \
+                GAUNTLET_TEST_FORCE_BASH32=1 /bin/bash "$0"
+            ;;
+        *) GAUNTLET_TEST_CHILD=1 GAUNTLET_TEST_DEFAULT_BRANCH="$default_branch" "$0" ;;
+        esac
     done
     case "$BASH_VERSION" in
     3.2.*) ;;
