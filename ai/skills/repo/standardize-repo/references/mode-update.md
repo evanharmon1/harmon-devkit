@@ -3544,29 +3544,39 @@ simply ambiguous. A rename does not know this: it moves `method:plan` →
 `strategy:plan` and `method:council` → `strategy:council` independently, so
 an issue that carried both ends up with two `strategy:*` labels instead of
 the single winner the old rank would have picked. Find them first, issues and
-PRs both (labels apply to either):
+PRs both (labels apply to either).
+
+**`gh issue list`/`gh pr list --search` cannot do this safely: GitHub's
+Search API caps at 1,000 results total, no matter what `--limit` asks for**
+— unlike the label-listing truncation guard elsewhere in this recipe, there
+is no larger `--limit` to retry a capped search with, so a repo near or past
+that many matching issues silently drops the rest. Use a genuinely paginated
+REST traversal per value instead — no such ceiling, and it returns PRs in the
+same call (a `pull_request` key on the returned object is the only
+difference from an issue):
 
 ```bash
-gh issue list --repo <owner>/<repo> --state all --limit 1000 --json number,labels \
-  --search 'label:"method:oneshot","method:plan","method:plan-approved","method:orchestrate","method:council","method:human-led"'
-gh pr list --repo <owner>/<repo> --state all --limit 1000 --json number,labels \
-  --search 'label:"method:oneshot","method:plan","method:plan-approved","method:orchestrate","method:council","method:human-led"'
+for value in oneshot plan plan-approved orchestrate council human-led; do
+  gh api --paginate --slurp -f labels="method:$value" -f state=all \
+    "/repos/<owner>/<repo>/issues" |
+    jq --arg v "$value" '.[] | {number, is_pr: (.pull_request != null), value: $v}'
+done | jq -s 'group_by(.number) | map(select(length > 1))' >multi-labeled.json
 ```
 
-(the same truncation guard as below applies to each — a match count of exactly
-1000 means widen `--limit` and re-run), then filter locally:
+(`--slurp` merges every page into one array before `jq` sees it — `gh api`
+refuses `--slurp` combined with `--jq` for exactly that reason, and without
+it `--paginate` is not page-safe.) **Refuse to proceed past this point unless
+all six calls exit 0** — a failed page mid-traversal is an incomplete
+inventory, not "nothing left," and resolving conflicts against one lets a
+real conflict go undetected.
 
-```bash
-jq '[.[] | {number, method_labels: [.labels[].name | select(test("^method:";"i"))]}
-     | select(.method_labels | length > 1)]'
-```
-
-For every match, resolve to the value `[method].rank` would have picked
-(`human-led` > `plan-approved` > `council` > `orchestrate` > `plan` >
-`oneshot`, most human oversight first — the fixed order in the pre-#1047
-`.devflow.toml`) and remove the rest — `gh issue edit <n> --remove-label
-method:<loser>` (`gh pr edit` for a PR) — so every issue and PR carries at
-most one `method:*` label before its turn in the rename below.
+For every match in `multi-labeled.json`, resolve to the value
+`[method].rank` would have picked (`human-led` > `plan-approved` > `council`
+> `orchestrate` > `plan` > `oneshot`, most human oversight first — the fixed
+order in the pre-#1047 `.devflow.toml`) and remove the rest — `gh issue edit
+<n> --remove-label method:<loser>` (`gh pr edit` for a PR) — so every issue
+and PR carries at most one `method:*` label before its turn in the rename
+below.
 
 Rename each remaining value in place: `gh label edit method:<value> --name
 strategy:<value>` for every value the repo actually has, which preserves
@@ -3597,29 +3607,39 @@ hand-porting is the only way out; do the multi-label resolution above first
 if you have not, or transferring more than one `method:*` label onto an issue
 just recreates the same ambiguity on the `strategy:*` side. Then, for each
 `method:<value>` still live, transfer every association instead of renaming.
-Find them:
+
+Find them the same paginated way, and for the same reason — this is exactly
+the search-vs-paginate hazard above, on one value instead of six:
 
 ```bash
-gh issue list --repo <owner>/<repo> --state all --limit 1000 --json number \
-  --search 'label:"method:<value>"'
-gh pr list --repo <owner>/<repo> --state all --limit 1000 --json number \
-  --search 'label:"method:<value>"'
+gh api --paginate --slurp -f labels="method:<value>" -f state=all \
+  "/repos/<owner>/<repo>/issues" >method-value.json
 ```
 
-(the same truncation guard applies), add the destination to every returned
-number, and confirm it landed before touching the source:
+**Refuse to delete the source label below unless this command exits 0.** A
+failed page mid-traversal is an incomplete inventory, not "no more results,"
+and deleting `method:<value>` against an incomplete inventory strands
+whichever issues and PRs the traversal never reached.
+
+Add the destination to every number in `method-value.json` and confirm it
+landed before touching the source — dispatching `issue` vs `pr` per object,
+since the fetch above returns both:
 
 ```bash
-gh issue edit <n> --add-label strategy:<value>   # gh pr edit for a PR
-gh issue view <n> --json labels -q '.labels[].name' | grep -qx strategy:<value>
+jq -r '.[] | "\(.number) \(if .pull_request then "pr" else "issue" end)"' method-value.json |
+  while read -r n kind; do
+    gh "$kind" edit "$n" --add-label strategy:<value>
+    gh "$kind" view "$n" --json labels -q '.labels[].name' | grep -qx strategy:<value> ||
+      { echo "transfer failed for #$n" >&2; exit 1; }
+  done
 ```
 
-Only once **every** `method:<value>` issue and PR carries the matching
-`strategy:<value>` — re-run the discovery read above and diff the two number
-sets — delete the now-orphaned source label: `gh label delete
-method:<value>`. Deleting a label removes it from everything still attached
-to it, so doing this before every association is confirmed transferred loses
-data instead of migrating it.
+Only once **every** number in `method-value.json` carries the matching
+`strategy:<value>` — and the fetch above exited 0 — delete the now-orphaned
+source label: `gh label delete method:<value>`. Deleting a label removes it
+from everything still attached to it, so doing this before every association
+is confirmed transferred, or before the inventory itself is known complete,
+loses data instead of migrating it.
 
 The same release also expanded `rigor:*` from three levels
 (`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/

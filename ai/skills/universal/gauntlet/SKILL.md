@@ -207,10 +207,17 @@ guess at, or reject an out-of-range value; a `.devflow.toml` whose
 validates it to catch (harmon-init's own validator enforces
 `min_rounds <= caps`), not something this skill re-derives defensively.
 **Tolerate its absence: a policy that does not define it has a floor of 1**,
-the historical behaviour. The arithmetic still holds regardless — the
-two-consecutive-clean exit and the capped-clean exit both consume at least
-two rounds, so **any floor ≤ 2 is satisfied by construction** on those paths,
-and the floor only ever binds the empty-round shortcut.
+the historical behaviour. The arithmetic still holds **when the cap is at
+least 2** — the two-consecutive-clean exit and the capped-clean exit both
+consume at least two rounds there, so **any floor ≤ 2 is satisfied by
+construction** on those paths, and the floor only ever binds the empty-round
+shortcut. **At a cap of 1 this construction does not apply**: the
+capped-clean exit consumes exactly one round (it *is* round 1 — see "A cap
+of 1 is a single pass" below), so it satisfies only a floor ≤ 1 by
+construction. This is not a gap in practice — a validated `.devflow.toml`
+keeps `min_rounds <= caps`, so a floor of 2 can never coexist with a cap of
+1 in the first place — but the claim itself must not overreach past what the
+cap actually guarantees.
 
 **A cap of 0 skips that stage outright.** Do not run `task challenge` (or
 `task review`) at all when its resolved cap is 0 — move straight to the next
@@ -243,18 +250,18 @@ actually configures, never every axis regardless of what the file defines.**
 
 - **Legacy shape** — announce only what the file defines: the caps and the
   floor. Do not invent tier or budget or strategy segments to match the
-  migrated-shape line's look; say plainly that they are absent instead:
+  migrated-shape line's look; say plainly that this line carries none
+  instead:
 
   ```text
-  rigor: standard (default) → challenge ≤3, review ≤3, shepherd 4, min_rounds 1 · tiers/strategy: not configured (legacy .devflow.toml shape)
+  rigor: standard (default) → challenge ≤3, review ≤3, shepherd 4, min_rounds 1 · tiers/strategy: no segment under the legacy shape (resolved separately, see below)
   ```
 
-  A `tier:*` or `method:*` label on the issue is then **advisory
-  information only — note it, never resolve it.** The legacy shape has no
-  per-role tier profile on `[rigor.<level>]` and no `[strategy.*]`/`[method]`
-  indirection this recipe is written to resolve, so computing a "resolved
-  tier" or "resolved strategy" value from such a label here would fabricate
-  a resolution the file does not support.
+  A `tier:*` or `method:*` label on the issue is **still resolved — by the
+  legacy rules, not by this line.** What the legacy shape lacks is only the
+  rich per-role/budget/strategy segment the migrated-shape line carries,
+  never the resolution itself; see the legacy branch just below for what
+  those rules are.
 
 Carry the same line into the PR body in §10, so a later round or a different
 session can see which budget it is spending instead of inferring one.
@@ -266,8 +273,16 @@ Where the repository's own policy (`AGENTS.md`) states the resolution order,
 conflict rule, or disclosure requirement for either axis, follow it; it is
 the authority this skill already defers to (see the top of this file). Both
 **arm nothing**: naming a tier or a strategy never itself invokes a model or
-starts a workflow. **Under the legacy shape, this paragraph does not apply**
-— see the legacy-shape announcement above.
+starts a workflow.
+
+**Under the legacy shape, tier and method resolve too — by the legacy
+rules, which this skill only names rather than restates:** `tier:*`
+resolves against `default_tier`/`[tier.*]`, strongest-wins on conflict;
+`method:*` resolves against `default_method`/`[method].rank`, the
+config-backed rank order — never `strategy`'s ambiguous-conflict rule, which
+only exists once the file has migrated. `AGENTS.md`'s legacy-shape tier and
+method rules are the authority for the mechanics; this skill's announcement
+line simply has no segment to carry the result in until the file migrates.
 
 **Disclose every off-default and off-profile choice.** Whenever any resolved
 cap **or floor** is different from what `default_rigor` would give — above or
@@ -280,10 +295,12 @@ tier: when a `tier:<role>:*` label (or an unqualified `tier:*`, which refines
 **implementer** only) leaves a role's tier **below what the resolved rigor
 profile would give it**, disclose that too, as an off-profile decision,
 distinct from an off-default rigor cap. **Under the legacy shape there is no
-rigor profile for a tier to fall below**, so this off-profile disclosure does
-not apply — a `tier:*` label there is the advisory-only case above. **An
-agent never applies a `rigor:*`, `tier:*`, or `strategy:*` label to
-itself.**
+rigor profile for a tier to fall below**, so this specific off-profile
+disclosure does not apply — but the general off-default disclosure still
+does: a resolved tier or method different from `default_tier`/
+`default_method` is disclosed the same way a reduced rigor cap is. **An
+agent never applies a `rigor:*`, `tier:*`, `strategy:*`, or `method:*` label
+to itself.**
 
 Caps are **ceilings, not quotas**. A stage that meets an exit condition on
 round 1 is done, whatever the level allowed. Nothing here obliges a round to run.

@@ -77,13 +77,30 @@ levels may or may not share one fixed value across levels — read them, don't
 assume. Announce the resolved value the way gauntlet announces its caps, and
 disclose it in the PR body when it is off-default.
 
-**A resolved cap of 0 does not skip the readiness gate — but it does drop
-the current-head Codex-cycle condition from it.** It means: spend no
-shepherd round — the watch/adjudicate/fix/push loop in steps 2–5 never
-runs, so triggering `@codex review` and waiting out its cycle (itself active
-engagement this budget cannot afford) never happens either — and go straight
-to step 6, passing the gate `--codex-disabled` exactly as a repo with Codex
-cloud review turned off would, whether or not it is actually enabled here.
+**A resolved cap of 0 does not skip the readiness gate — and whether it
+drops the current-head Codex-cycle condition from that gate is a *policy*
+question, answered by the repository's own `AGENTS.md`, never assumed
+here.** It means: spend no shepherd round — the watch/adjudicate/fix/push
+loop in steps 2–5 never runs, so triggering `@codex review` and waiting out
+its cycle (itself active engagement this budget cannot afford) never
+happens either. What that implies for the gate depends on what `AGENTS.md`'s
+Readiness Gate actually says:
+
+- **Where `AGENTS.md` states that a resolved shepherd cap of 0 drops the
+  current-head Codex condition** (a migrated harmon-init policy) — pass the
+  gate `--codex-disabled` for this run, exactly as that policy directs, and
+  evaluate the rest of the gate normally.
+- **Where `AGENTS.md` still requires a terminal, clean current-head Codex
+  cycle with no cap exception** (the legacy policy this repo has today) —
+  that requirement does not lapse because no round is available to satisfy
+  it. **Never pass `--codex-disabled` to claim the reviewer is off when it is
+  not** — that would falsely declare a configured reviewer disabled to force
+  a pass. If no terminal clean result already exists for this head, the
+  Codex condition reads indeterminate — a failed condition, not a
+  pass — so the PR stays draft with a blocker report naming it: no automated
+  path promotes this PR until a clean result exists by some means outside
+  this budget.
+
 CI still has to be green, and any human review finding already on the PR
 still has to be answered, for the gate to pass — those are checks against
 state that already exists, not rounds this budget has to spend. If a human
@@ -1181,12 +1198,17 @@ loops indefinitely:
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
      --codex-state "$state"   # §2's attempt-state file; pass
                               # --codex-disabled instead where Codex cloud
-                              # review is not enabled, OR where the resolved
-                              # shepherd cap is 0 (the cap-0 note above,
-                              # whether or not Codex review is otherwise
-                              # enabled) — one of the two is always
+                              # review is not enabled, or where a resolved
+                              # shepherd cap of 0 AND AGENTS.md's own
+                              # readiness gate both say the Codex condition
+                              # drops out at that cap (the cap-0 note
+                              # above) — never pass it merely because the
+                              # cap is 0 while Codex review is actually
+                              # enabled and AGENTS.md still requires the
+                              # cycle: one of the two flags is always
                               # required, so the Codex condition can never
-                              # be skipped by silence
+                              # be skipped by silence, and it can never be
+                              # skipped by a false claim either
    ```
 
    `--head` is the head whose CI, Codex result, comments, and deferred

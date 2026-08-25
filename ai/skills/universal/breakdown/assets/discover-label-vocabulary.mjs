@@ -418,13 +418,30 @@ function validateAgentRegistry(registry) {
   return { families, adapters }
 }
 
+// Execution-control families, whatever a manifest claims about their
+// writers. track-work's check-issue-metadata.sh rejects these at
+// authoring time unconditionally (FORBIDDEN_RE, plus an axis backstop for
+// strategy/foreman/model families under any other prefix) — planning
+// vocabulary that the next gate always refuses is not planning-safe. Prefix,
+// not axis: axis "model" is shared with the legitimately plannable
+// suggest-model/claim-model refinement families, so axis alone would
+// over-exclude.
+const executionControlPrefixes = new Set(['strategy', 'rigor', 'tier', 'method'])
+
 function safe(family, value = {}) {
   const writers = value.writers ?? family.writers
   const lifecycle = value.lifecycle ?? family.lifecycle
   const retired = family.retired === true || value.retired === true
   const arming = family.arming === true || value.arming === true
   const gated = Object.hasOwn(family, 'gate')
-  return writers.includes('agent') && lifecycle === 'durable' && !retired && !arming && !gated
+  return (
+    writers.includes('agent') &&
+    lifecycle === 'durable' &&
+    !retired &&
+    !arming &&
+    !gated &&
+    !executionControlPrefixes.has(family.prefix)
+  )
 }
 
 function outputFamily(family) {

@@ -205,6 +205,9 @@ JSON
 # from .devflow.toml (source: devflow, same enumerated-value shape as inline),
 # a retired method family (the strategy:* rename leaves it in place, unused),
 # and an agent-registry family to force the schema_version-3 fetch path.
+# strategy/tier deliberately declare writers including "agent" (unlike their
+# real-world human-only policy) so their exclusion below is attributable to
+# the execution-control prefix filter and not just an absent "agent" writer.
 write_migrated_label_registry() {
     local fixture="$1" area="$2"
     jq '(.["$defs"].family.properties.source.enum) += ["devflow"]' \
@@ -236,6 +239,12 @@ write_migrated_label_registry() {
       "family":"method","prefix":"method","purpose":"Retired execution topology","axis":"strategy",
       "source":"devflow","writers":[],"readers":"humans",
       "lifecycle":"durable","exclusive":true,"provision":false,"retired":true,"values":[]
+    },
+    {
+      "family":"tier","prefix":"tier","purpose":"Model-routing stratum","axis":"model",
+      "source":"devflow","writers":["human","agent"],"readers":"humans",
+      "lifecycle":"durable","exclusive":true,"provision":true,"color":"7057FF",
+      "values":[{"value":"frontier","description":"Opus-class"}]
     },
     {
       "family":"suggest","prefix":"suggest","purpose":"Advisory family routing","axis":"model",
@@ -270,7 +279,8 @@ write_migrated_labels() {
 [
   {"name":"area:$area","description":"Live area"},
   {"name":"rigor:standard","description":"Default budget"},
-  {"name":"strategy:plan","description":"Agent plans then implements"}
+  {"name":"strategy:plan","description":"Agent plans then implements"},
+  {"name":"tier:frontier","description":"Opus-class"}
 ]
 JSON
 }
@@ -839,15 +849,20 @@ else
     bad "a devflow-sourced human-only family (rigor) is filtered the same as an inline one"
 fi
 
-if jq -e '
-    .families[] | select(.family == "strategy") |
-    .source == "devflow" and .exclusive == true and
-    .labels[0].name == "strategy:plan"
-' <<<"$migrated_output" >/dev/null; then
-    ok "the renamed strategy family (devflow-sourced, exclusive) is discovered"
-else
-    bad "the renamed strategy family (devflow-sourced, exclusive) is discovered"
-fi
+# strategy/rigor/tier/method are execution-control families: track-work's
+# check-issue-metadata.sh rejects them unconditionally at authoring time
+# (FORBIDDEN_RE, regardless of what a manifest's writers say), so breakdown
+# must never emit them as planning candidates — even devflow-sourced,
+# exclusive, and (for strategy/tier here) declaring "agent" as a writer.
+for excluded_family in strategy rigor tier; do
+    if jq -e --arg family "$excluded_family" \
+        '[.families[].family] | index($family) | not' \
+        <<<"$migrated_output" >/dev/null; then
+        ok "the execution-control $excluded_family family is never emitted as planning vocabulary"
+    else
+        bad "the execution-control $excluded_family family is never emitted as planning vocabulary"
+    fi
+done
 
 if ! grep -q '"name":"method:' <<<"$migrated_output" &&
     ! grep -q '"name": "method:' <<<"$migrated_output"; then
