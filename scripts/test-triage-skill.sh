@@ -77,6 +77,7 @@ case "${1:-} ${2:-}" in
     else
         [ "${GH_STUB_NATIVE_TYPE:-}" = "ERROR" ] && exit 1
         if [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
+            [ "$(cat "$GH_STUB_NATIVE_TYPE_FILE")" = "ERROR" ] && exit 1
             cat "$GH_STUB_NATIVE_TYPE_FILE"
         else
             printf '%s\n' "${GH_STUB_NATIVE_TYPE:-}"
@@ -125,11 +126,19 @@ api\ repos/*)
         printf '%s\n' "$*" | grep -q -- '--remove-label'; then
         exit 1
     fi
+    if [ "${GH_STUB_EDIT_FAIL_ON_ADD:-0}" = 1 ] &&
+        printf '%s\n' "$*" | grep -q -- '--add-label'; then
+        exit 1
+    fi
     if [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
         prev=""
         for a in "$@"; do
             if [ "$prev" = "--type" ]; then
-                printf '%s\n' "$a" >"$GH_STUB_NATIVE_TYPE_FILE"
+                if [ "${GH_STUB_NATIVE_TYPE_UNREADABLE_AFTER_TYPE_WRITE:-0}" = 1 ]; then
+                    printf '%s\n' ERROR >"$GH_STUB_NATIVE_TYPE_FILE"
+                else
+                    printf '%s\n' "$a" >"$GH_STUB_NATIVE_TYPE_FILE"
+                fi
                 break
             fi
             prev="$a"
@@ -708,6 +717,32 @@ grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
     fail "later label failure must disclose the applied Type"
 grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" ||
     fail "later label failure must attempt the label mutation after Type success"
+
+echo "==> label: a failed add preserves needs-triage after Type success"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_EDIT_FAIL_ON_ADD=1 "$apply" label --repo "$repo" --issue 13 \
+    --native-type Bug --add domain:auth --remove needs-triage \
+    --inapplicable layer --execute --manifest "$manifest")" = 1 ] ||
+    fail "failed add after Type success must exit 1"
+grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
+    fail "failed add must disclose the applied Type"
+grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
+    fail "failed add must preserve needs-triage"
+
+echo "==> label: an unreadable post-Type verification is indeterminate"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_NATIVE_TYPE_UNREADABLE_AFTER_TYPE_WRITE=1 "$apply" label --repo "$repo" \
+    --issue 13 --native-type Bug --add domain:auth --remove needs-triage \
+    --inapplicable layer --execute --manifest "$manifest")" = 2 ] ||
+    fail "unreadable post-Type verification must be indeterminate"
+grep -q 'write indeterminate: native issue Type may have applied' "$tmp/out" ||
+    fail "indeterminate Type write must be surfaced"
+grep -q -- '--add-label\|--remove-label' "$GH_STUB_LOG" &&
+    fail "indeterminate Type write must not mutate labels"
 
 echo "==> label: a concurrent Type change refuses before any mutation"
 : >"$GH_STUB_LOG"

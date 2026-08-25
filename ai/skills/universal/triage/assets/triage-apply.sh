@@ -383,6 +383,21 @@ native_type_read() {
     fi
 }
 
+# A successful Type mutation can be followed by a transient GraphQL read
+# failure. Reconcile with a small bounded retry budget; callers must still
+# treat exhaustion as indeterminate rather than assuming the write rolled back.
+native_type_reconcile() {
+    local repo="$1" issue="$2" attempts=0 native
+    while [ "$attempts" -lt 3 ]; do
+        native="$(native_type_read "$repo" "$issue")" && {
+            printf '%s\n' "$native"
+            return 0
+        }
+        attempts=$((attempts + 1))
+    done
+    return 1
+}
+
 # Print Type names available in the target repository, one per line. Types are
 # organization-owned, but a repository can expose only a subset, so validate
 # against the issue's actual target rather than the broader org vocabulary.
@@ -751,8 +766,10 @@ cmd_label() {
             gh issue edit "$issue" --repo "$repo" --type "$effective_native_type" \
                 >/dev/null </dev/null ||
                 die 1 "write failed: gh issue edit --type $repo#$issue"
-            current_native_type="$(native_type_read "$repo" "$issue")" ||
-                die 2 "could not verify the native issue Type written to $repo#$issue"
+            current_native_type="$(native_type_reconcile "$repo" "$issue")" ||
+                die 2 "write indeterminate: native issue Type may have applied to" \
+                    "$repo#$issue but could not be verified after 3 reads;" \
+                    "no labels or needs-triage removal were attempted"
             [ "$current_native_type" = "$effective_native_type" ] ||
                 die 1 "write failed: $repo#$issue native issue Type did not become" \
                     "'$effective_native_type'"
@@ -762,17 +779,14 @@ cmd_label() {
             echo "APPLIED native issue Type '$effective_native_type' to $repo#$issue"
         fi
     fi
+    # Keep adds and needs-triage removal in separate edits. A failed add must
+    # leave needs-triage visible, while a Type failure above still prevents all
+    # label edits.
     local args=()
     if [ "${#effective_adds[@]}" -gt 0 ]; then
         args+=(--add-label "$(
             IFS=,
             echo "${effective_adds[*]}"
-        )")
-    fi
-    if [ "${#removes[@]}" -gt 0 ]; then
-        args+=(--remove-label "$(
-            IFS=,
-            echo "${removes[*]}"
         )")
     fi
     if [ "${#args[@]}" -gt 0 ]; then
@@ -782,6 +796,13 @@ cmd_label() {
     for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
         echo "APPLIED add '$l' to $repo#$issue"
     done
+    if [ "${#removes[@]}" -gt 0 ]; then
+        gh issue edit "$issue" --repo "$repo" --remove-label "$(
+            IFS=,
+            echo "${removes[*]}"
+        )" >/dev/null </dev/null ||
+            die 1 "write failed: gh issue edit $repo#$issue"
+    fi
     for l in "${removes[@]+"${removes[@]}"}"; do
         echo "APPLIED remove '$l' from $repo#$issue"
     done
