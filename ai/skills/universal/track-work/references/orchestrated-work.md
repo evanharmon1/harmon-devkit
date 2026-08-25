@@ -10,9 +10,9 @@ Several subagents can share one GitHub identity, and only the orchestrator
 knows when the delegated work is complete.
 
 The `claim:<family>` label names the family **accountable for the claim and
-its release** — the orchestrator's — not the delegate executing the work; the
-claim tooling pins the label to the claiming host's attested family, so a
-delegate's family cannot be written there by construction. A
+its release** — the orchestrator's — not the delegate executing the work;
+the claim tooling pins the label to the claiming host's attested family, so
+a delegate's family cannot be written there by construction. A
 Claude session dispatching a Codex implementer still claims `claim:claude`;
 the delegate is recorded in the claim record's informational `dispatched to`
 line, which is where a reader looks for who was handed the work. That line
@@ -28,9 +28,14 @@ record plus the work in flight.
 
 1. Claim the issue under the orchestrator's own identity and claim family —
    the user types `/claim` for it.
-2. Dispatch the subagent with a self-contained brief.
-3. Collect the subagent's report.
-4. Carry on exactly as for the orchestrator's own work. The report ends the
+2. Prepare the branch **before** dispatching: a feature branch off the
+   default branch (or a worktree on one) with a clean checkout. The shipped
+   implementer refuses to edit on the default branch and never creates a
+   branch itself, so a dispatch from the default branch produces nothing. If
+   the branch the claim record names changes, post a refresh record.
+3. Dispatch the subagent with a self-contained brief.
+4. Collect the subagent's report.
+5. Carry on exactly as for the orchestrator's own work. The report ends the
    dispatch, not the claim: while review, CI, the PR, or another delegate is
    still in flight the claim stays live and follows the ordinary lifecycle:
    `/shepherd` retires the `claim:*` label at ready-for-review, and the close
@@ -49,6 +54,13 @@ Report back with:
 - commit SHAs on the branch
 - delivery status: delivered (every acceptance criterion met) | partial
   (list what remains) | blocked (why)
-- follow-up issues filed: <owner/repo#n>; these carry no claim and that is
-  expected
+- follow-up work discovered: none | a draft per follow-up (title, body,
+  target repository), or <owner/repo#n> only where this brief authorized
+  filing it
 ```
+
+The follow-up line accepts a draft because a delegate cannot ask for the
+go-ahead an issue write needs mid-task: the orchestrator files the draft (or
+delegates filing with the full delegated-creation contract from `track-work`
+§5) after the report. A follow-up filed either way carries no claim, and that
+is expected.
