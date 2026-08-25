@@ -43,7 +43,10 @@ specifically, either — `/claim` treats a missing `claim:*`/`agent:*` family as
 and claims anyway, so demanding it would miss every claim in an older repo or
 one with `project_management: none`, which are exactly the repos where the
 label cannot exist. Report it as "open — claimed,
-in progress", then check it is still true: a claim with no open PR and no work
+in progress" — and when the claim record carries a `dispatched to` line, say
+so ("claimed, dispatched to …" with the recorded delegate): the work is with a background
+subagent the orchestrator owns, and that line is the only place the tracker
+records it. Then check it is still true: a claim with no open PR and no work
 in flight is a loose end for §2, not a status. `/wrap` offers the commands to
 hand it back.
 

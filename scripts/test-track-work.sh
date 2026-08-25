@@ -2772,7 +2772,7 @@ claim_lifecycle="./ai/skills/universal/track-work/references/claim-lifecycle.md"
 implement_skill="./ai/skills/universal/implement/SKILL.md"
 wrap_skill="./ai/skills/universal/wrap/SKILL.md"
 shepherd_skill="./ai/skills/universal/shepherd/SKILL.md"
-for field in harness model family 'runtime environment' session; do
+for field in harness model family 'runtime environment' session 'dispatched to'; do
     grep -Fq -- "  - $field:" "$claim_skill" ||
         fail "/claim must write the $field field"
     grep -Fq -- "  - $field:" "$claim_lifecycle" ||
@@ -2780,6 +2780,10 @@ for field in harness model family 'runtime environment' session; do
 done
 grep -Fq 'optional `harness`, `model`, `family`, `runtime' "$wrap_skill" ||
     fail "/wrap must accept the optional operational fields"
+grep -Fq '`dispatched to`' "$wrap_skill" ||
+    fail "/wrap must accept the optional dispatched-to field"
+grep -Fq '`dispatched to`' "./ai/skills/universal/retro/SKILL.md" ||
+    fail "/retro must surface the dispatched-to field"
 grep -Fq -- '<track-work-dir>/assets/release-claim.sh' "$wrap_skill" ||
     fail "/wrap must delegate release writes to the lineage-validating helper"
 grep -Fq -- '--remove-label <the model label the claim record names' "$shepherd_skill" ||
