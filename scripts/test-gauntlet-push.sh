@@ -18,6 +18,7 @@ if [ "${GAUNTLET_TEST_CHILD:-}" != 1 ]; then
             /bin/bash -c 'case "$BASH_VERSION" in 3.2.*) exit 0 ;; *) exit 1 ;; esac'; then
             echo "==> gauntlet push suite with macOS Bash 3.2"
             GAUNTLET_TEST_CHILD=1 GAUNTLET_TEST_DEFAULT_BRANCH=main \
+                GAUNTLET_TEST_FORCE_BASH32=1 \
                 /bin/bash "$0"
         fi
         ;;
@@ -81,7 +82,11 @@ run() {
 
     test_bare="$(git config --get gauntlet.testBare 2>/dev/null || true)"
     set +e
-    if [ "$#" -gt 0 ]; then
+    if [ "${GAUNTLET_TEST_FORCE_BASH32:-}" = 1 ] && [ "$#" -gt 0 ]; then
+        out="$(GAUNTLET_TEST_BARE="$test_bare" /bin/bash "$helper" "$@" 2>"${test_tmp}/stderr")"
+    elif [ "${GAUNTLET_TEST_FORCE_BASH32:-}" = 1 ]; then
+        out="$(GAUNTLET_TEST_BARE="$test_bare" /bin/bash "$helper" 2>"${test_tmp}/stderr")"
+    elif [ "$#" -gt 0 ]; then
         out="$(GAUNTLET_TEST_BARE="$test_bare" "$helper" "$@" 2>"${test_tmp}/stderr")"
     else
         out="$(GAUNTLET_TEST_BARE="$test_bare" "$helper" 2>"${test_tmp}/stderr")"
