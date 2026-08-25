@@ -66,12 +66,15 @@ rc=0
 out=
 err=
 run() {
-    local args=("$@")
     local test_bare=
 
     test_bare="$(git config --get gauntlet.testBare 2>/dev/null || true)"
     set +e
-    out="$(GAUNTLET_TEST_BARE="$test_bare" "$helper" "${args[@]}" 2>"${test_tmp}/stderr")"
+    if [ "$#" -gt 0 ]; then
+        out="$(GAUNTLET_TEST_BARE="$test_bare" "$helper" "$@" 2>"${test_tmp}/stderr")"
+    else
+        out="$(GAUNTLET_TEST_BARE="$test_bare" "$helper" 2>"${test_tmp}/stderr")"
+    fi
     rc=$?
     set -e
     err="$(cat "${test_tmp}/stderr")"

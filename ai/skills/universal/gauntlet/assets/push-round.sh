@@ -95,6 +95,18 @@ expect=
 gate_file=
 gate_token=
 git_args=()
+git_arg_count=0
+
+# Bash 3.2 treats an empty indexed-array expansion as an unbound variable
+# under `set -u`. Track the count separately so the helper never expands an
+# empty array when no transport overrides are needed.
+git_with_args() {
+    if [ "$git_arg_count" -gt 0 ]; then
+        git "${git_args[@]}" "$@"
+    else
+        git "$@"
+    fi
+}
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -153,6 +165,7 @@ while [ "$#" -gt 0 ]; do
         *) refuse "-c '$config_name' is not an approved transport-only override" ;;
         esac
         git_args+=("-c" "$2")
+        git_arg_count=$((git_arg_count + 2))
         shift 2
         ;;
     -h | --help)
@@ -204,7 +217,7 @@ resolve_push_url() {
     # and push. In particular, get-url renders an insteadOf rewrite, so the URL
     # validated below is the effective destination rather than the configured
     # spelling that transport may later redirect.
-    output="$(git "${git_args[@]}" remote get-url --push --all "$remote" 2>/dev/null)" || rc=$?
+    output="$(git_with_args remote get-url --push --all "$remote" 2>/dev/null)" || rc=$?
     [ "$rc" -eq 0 ] || refuse "the named remote has no readable push destination"
     [ -n "$output" ] || refuse "the named remote has no push destination"
     case "$output" in
@@ -274,7 +287,7 @@ read_remote_head() {
     remote_head=
     remote_error=
     rc=0
-    output="$(git "${git_args[@]}" ls-remote "$push_url" "refs/heads/${branch}" 2>/dev/null)" || rc=$?
+    output="$(git_with_args ls-remote "$push_url" "refs/heads/${branch}" 2>/dev/null)" || rc=$?
     if [ "$rc" -ne 0 ]; then
         remote_error="git ls-remote failed (exit ${rc}); the remote head is unknown"
         return 1
@@ -397,7 +410,7 @@ else
     lease="--force-with-lease=refs/heads/${branch}:"
 fi
 
-if ! git "${git_args[@]}" push --no-follow-tags \
+if ! git_with_args push --no-follow-tags \
     "$remote" "${resolved}:refs/heads/${branch}" "$lease"; then
     exit 4
 fi
