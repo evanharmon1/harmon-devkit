@@ -1085,10 +1085,12 @@ artifacts; the prose rules are guidance, not lint):
   `project_management: github` like the other setup tasks. A repo updating
   through the harmon-init release that ships the `method:*`→`strategy:*`
   rename needs the **live-label migration recipe** in
-  [`mode-update.md`](./mode-update.md) §6c — `setup-github-labels.sh` only
-  ever adds, so a repo's old live `method:*` labels (and their issue
-  associations) survive the file update untouched until renamed or deleted by
-  hand.
+  [`mode-update.md`](./mode-update.md) §6b, run **before** that section's
+  `task setup:github-labels` line — `setup-github-labels.sh` only ever adds,
+  and GitHub label names are unique, so a repo's old live `method:*` labels
+  (and their issue associations) survive the file update untouched, and a
+  rename attempted after that line already created `strategy:*` is rejected
+  as a name collision.
 - **Milestones** — named after release versions (title == git tag), small +
   rolling, preferred over iterations pre-launch.
   `.github/workflows/close-milestone-on-release.yml` closes the matching milestone

@@ -220,39 +220,64 @@ adjudicated-clean round 1 ends the stage immediately under §5's capped-clean
 exit, with no second round owed.
 
 **Announce the resolved budget on entering the stage**, filled in from the
-file — this is the contract's line, not a paraphrase:
+file — **the recipe is shape-conditional: announce only the axes the file
+actually configures, never every axis regardless of what the file defines.**
 
-```text
-rigor: standard (default) → review standard: challenge ≤3, review ≤3, shepherd 4, min_rounds 1 · tiers orch/impl/rev = frontier/standard/frontier · budget standard · strategy: plan (default)
-```
+- **Migrated shape** — announce the full contract line, exactly as the
+  contract states it, not a paraphrase:
 
-Name a **level** or a **policy** only when one of them supplied every number
-in its segment; a role tier refined away from its rigor profile by a
-`tier:<role>:*` label means the tiers segment no longer names a single
-profile either — what you announce is always the resolved **values**. Carry
-the same line into the PR body in §10, so a later round or a different
+  ```text
+  rigor: standard (default) → review standard: challenge ≤3, review ≤3, shepherd 4, min_rounds 1 · tiers orch/impl/rev = frontier/standard/frontier · budget standard · strategy: plan (default)
+  ```
+
+  Name a **level** or a **policy** only when one of them supplied every
+  number in its segment; a role tier refined away from its rigor profile by
+  a `tier:<role>:*` label means the tiers segment no longer names a single
+  profile either — what you announce is always the resolved **values**.
+
+- **Legacy shape** — announce only what the file defines: the caps and the
+  floor. Do not invent tier or budget or strategy segments to match the
+  migrated-shape line's look; say plainly that they are absent instead:
+
+  ```text
+  rigor: standard (default) → challenge ≤3, review ≤3, shepherd 4, min_rounds 1 · tiers/strategy: not configured (legacy .devflow.toml shape)
+  ```
+
+  A `tier:*` or `method:*` label on the issue is then **advisory
+  information only — note it, never resolve it.** The legacy shape has no
+  per-role tier profile on `[rigor.<level>]` and no `[strategy.*]`/`[method]`
+  indirection this recipe is written to resolve, so computing a "resolved
+  tier" or "resolved strategy" value from such a label here would fabricate
+  a resolution the file does not support.
+
+Carry the same line into the PR body in §10, so a later round or a different
 session can see which budget it is spending instead of inferring one.
 
-**Tier and strategy resolve and disclose alongside the caps, through the
-same per-`.devflow.toml` mechanism — this skill does not re-derive their
-mechanics beyond what the announcement line needs.** Where the repository's
-own policy (`AGENTS.md`) states the resolution order, conflict rule, or
-disclosure requirement for either axis, follow it; it is the authority this
-skill already defers to (see the top of this file). Both **arm nothing**:
-naming a tier or a strategy never itself invokes a model or starts a
-workflow.
+**Under the migrated shape, tier and strategy resolve and disclose alongside
+the caps, through the same per-`.devflow.toml` mechanism — this skill does
+not re-derive their mechanics beyond what the announcement line needs.**
+Where the repository's own policy (`AGENTS.md`) states the resolution order,
+conflict rule, or disclosure requirement for either axis, follow it; it is
+the authority this skill already defers to (see the top of this file). Both
+**arm nothing**: naming a tier or a strategy never itself invokes a model or
+starts a workflow. **Under the legacy shape, this paragraph does not apply**
+— see the legacy-shape announcement above.
 
 **Disclose every off-default and off-profile choice.** Whenever any resolved
 cap **or floor** is different from what `default_rigor` would give — above or
 below — say so in the announcement and in the PR body. A `rigor:*` label is
 applied by people and verified by nothing — GitHub's triage role can apply
 one with no push access at all — so a budget can be retuned by someone who
-could not edit `.devflow.toml`, in either direction. The same goes for a role
+could not edit `.devflow.toml`, in either direction. **Under the migrated
+shape**, the same goes for a role
 tier: when a `tier:<role>:*` label (or an unqualified `tier:*`, which refines
 **implementer** only) leaves a role's tier **below what the resolved rigor
 profile would give it**, disclose that too, as an off-profile decision,
-distinct from an off-default rigor cap. **An agent never applies a `rigor:*`,
-`tier:*`, or `strategy:*` label to itself.**
+distinct from an off-default rigor cap. **Under the legacy shape there is no
+rigor profile for a tier to fall below**, so this off-profile disclosure does
+not apply — a `tier:*` label there is the advisory-only case above. **An
+agent never applies a `rigor:*`, `tier:*`, or `strategy:*` label to
+itself.**
 
 Caps are **ceilings, not quotas**. A stage that meets an exit condition on
 round 1 is done, whatever the level allowed. Nothing here obliges a round to run.

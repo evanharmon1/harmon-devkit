@@ -331,9 +331,14 @@ off-profile decision distinct from an off-default rigor cap.
   empty round is the old rule's clean re-run, so neither a trivial change nor
   a clean post-fix re-run pays for a confirmation pass, but a level that sets a
   floor buys the rounds it asked for before that shortcut opens. The other two
-  exits satisfy any floor of 2 or less by construction — two consecutive clean
-  rounds *are* two rounds, and a capped final round is at least the cap, which
-  is never below 2 — so `min_rounds` binds the empty-round path and nothing
+  exits satisfy any floor of 2 or less by construction **under the legacy
+  shape**, whose shipped caps are never below 2 — two consecutive clean
+  rounds *are* two rounds, and a capped final round is at least the cap.
+  **Under a migrated review policy this can differ**: a cap of 0 disables
+  that stage outright (no round runs), and a cap of 1 is a single pass ending
+  on round 1 as the capped-clean round — so at a cap that low, `min_rounds`
+  is bounded by the cap itself rather than by this two-round arithmetic.
+  Elsewhere, `min_rounds` binds the empty-round path and nothing
   else. Fixing the findings is still not the exit
   condition; adjudicated-clean rounds are. The exit carries one
   precondition: every P2 you deferred during the stage must already be in the
@@ -823,8 +828,12 @@ the old rule's clean re-run, so neither a trivial change nor a clean post-fix
 re-run pays for a confirmation pass, and the floor only stops that shortcut
 being taken before the level's minimum work has happened. Say plainly what
 follows: the other two exits satisfy any floor of 2 or less **by
-construction** — the two-consecutive exit runs two rounds by definition, and
-the capped-clean exit runs the cap, which is never below 2 — so `min_rounds`
+construction under the legacy shape**, whose shipped caps are never below
+2 — the two-consecutive exit runs two rounds by definition, and the
+capped-clean exit runs the cap. **Under a migrated review policy**, a cap of
+0 disables the stage outright and a cap of 1 is a single pass ending on the
+capped-clean round — so at those caps `min_rounds` is bounded by the cap
+itself, not by this two-round arithmetic. Elsewhere, `min_rounds`
 constrains the empty-round exit alone and needs no separate check on the
 other two. And a **capped final round** that adjudicates to zero
 P0/P1 also ends the stage by itself: the confirmation it would otherwise owe

@@ -3518,6 +3518,50 @@ Whatever is needed must be in place **before** the first task. On an org,
 project automation quietly keeps a stale variable that can point at the wrong
 board. If the project task already ran without the scope, re-run it once granted.
 
+**Rename any retired label family before this line reprovisions its
+replacement.** A prefix rename in the manifest — the harmon-init#1047
+`method:*` → `strategy:*` execution-topology rename is the first instance
+(see catalog §1.13's `.devflow.toml` entry) — must happen **before**
+`task setup:github-labels` below, not after. That task is `gh label create
+--force`: the first run **creates** `strategy:<value>` fresh, and GitHub
+label names are unique (case-insensitively — `Method:Plan` and `method:plan`
+collide), so once that name exists `gh label edit method:<value> --name
+strategy:<value>` is rejected as a name collision — a rename can't land on an
+occupied name, the same way `mv` refuses a destination that already exists.
+Run it too late and the repo ends up with two disconnected labels (an
+orphaned old `method:<value>` plus an empty new `strategy:<value>`) instead
+of one renamed label. `setup-github-labels.sh` itself never renames or
+removes anything — it sees only an unrelated new family (`strategy`) and an
+unrelated retired one (`method`, per the manifest's retirement note) — so
+this rename is entirely on you, first: `gh label edit method:<value> --name
+strategy:<value>` for every value the repo actually has, which preserves
+every label association; the six shipped values are `oneshot`/`plan`/
+`plan-approved`/`orchestrate`/`council`/`human-led`.
+
+Both the discovery read (which values does the repo actually have) and the
+later "none left" confirmation go through the same call, and it needs two
+guards. **Match case-insensitively** — `grep -i '^method:'`, since GitHub
+label identity is case-insensitive — not the plain `grep '^method:'` a
+case-sensitive habit would reach for. **And check for truncation**: `gh label
+list --repo <owner>/<repo> --limit 1000 --json name -q '. | length'` first; a
+result of **exactly 1000** is a truncation signal, not proof the repo has no
+more — the same signal `triage-apply.sh`'s `live_labels()` refuses on rather
+than derive from a possibly-partial set. Here the fix is to widen instead of
+refuse: re-run with a larger `--limit` (double it; repeat if that also lands
+on the limit) until the count comes back under it, *then* run `gh label list
+--repo <owner>/<repo> --limit <that-limit> --json name -q '.[].name' | grep
+-i '^method:'` against the confirmed-complete list — for both the rename pass
+and the completion check after. Skipping this on the completion check is the
+dangerous direction: a truncated read can hide a straggler past the first
+1000 and falsely declare the repo clean.
+
+The same release also expanded `rigor:*` from three levels
+(`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/
+`thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so it
+has no name-collision hazard and needs no ordering: `task setup:github-labels`
+below seeds it on the first run, ordinary and additive like everything else in
+this section.
+
 ```bash
 task setup:github-project      # board + Status pipeline + the Size number field; on a
                                # personal account also Priority/Product/Agent/Domain/Layer
@@ -3545,7 +3589,7 @@ reset to the template's — reconcile those first if the repo has any.
 
 6b is **additive**. Both field scripts append whatever starter options an
 existing single-select lacks — `Status` and the custom `Domain`/`Layer`/`Agent`
-fields alike — and neither ever removes anything. That leaves five residues an
+fields alike — and neither ever removes anything. That leaves four residues an
 update can create, none of which any script closes:
 
 - **Options the scripts skipped and warned about.** The scripts warn-and-continue
@@ -3570,36 +3614,12 @@ update can create, none of which any script closes:
   fields: an option the template dropped survives on the project (personal) or
   the org issue field. Remove it only after re-mapping — deleting an option that
   items are assigned to **clears those values**.
-- **Renamed label families.** A prefix rename in the manifest — the
-  harmon-init#1047 `method:*` → `strategy:*` execution-topology rename is the
-  first instance (see catalog §1.13's `.devflow.toml` entry) — is not a
-  delete-and-recreate to `setup-github-labels.sh`: it sees an unrelated new
-  family (`strategy`) and an unrelated retired one (`method`, which it never
-  provisions, per the manifest's retirement note), so old `method:*` labels
-  survive untouched on every issue/PR that carried them. Rename each in place
-  — `gh label edit method:<value> --name strategy:<value>` for every value the
-  repo actually has, which preserves every label association since a GitHub
-  rename is not a delete-and-recreate; the six shipped values are
-  `oneshot`/`plan`/`plan-approved`/`orchestrate`/`council`/`human-led`.
 
-  **Both the discovery read and the later "none left" confirmation go through
-  the same truncatable call** — `gh label list --repo <owner>/<repo> --limit
-  1000 --json name -q '.[].name' | grep '^method:'` — and a repo can carry
-  1000+ labels. Check the unfiltered count first (`gh label list --repo
-  <owner>/<repo> --limit 1000 --json name -q '. | length'`); a result of
-  **exactly 1000** is a truncation signal, not proof the repo has no more —
-  the same signal `triage-apply.sh`'s `live_labels()` refuses on rather than
-  derive from a possibly-partial set. Here the fix is to widen instead of
-  refuse: re-run with a larger `--limit` (double it; repeat if that also lands
-  on the limit) until the count comes back under it, *then* run the
-  `grep '^method:'` read against that confirmed-complete list — for both the
-  rename pass and the completion check. Skipping this on the completion check
-  is the dangerous direction: a truncated read can hide a straggler past the
-  first 1000 and falsely declare the repo clean. Then re-run
-  `task setup:github-labels` (6b) to seed the family's current shape. The same
-  release also expanded `rigor:*` from three levels (`light`/`standard`/
-  `deep`) to six (`trivial`/`minimal`/`light`/`standard`/`thorough`/`deep`);
-  that half needs no rename, only the ordinary additive reseed.
+A renamed label family (harmon-init#1047's `method:*` → `strategy:*`) is
+**not** one of these residues — it is a precondition 6b assumes you already
+handled, in 6b itself, before its `task setup:github-labels` line runs and
+forecloses the rename by creating the destination name first. If that step
+was skipped, see 6b above rather than continuing here.
 
 Check against the vocabulary in [`standards-catalog.md`](./standards-catalog.md)
 §1.13. Query each field's **data type and full option list**, not just its name —
