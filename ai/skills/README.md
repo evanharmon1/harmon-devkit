@@ -87,10 +87,19 @@ category flattening into consumer repos. Each imported skill includes:
 - A short attribution notice in `SKILL.md`.
 
 The `matt-pocock` category currently vendors a dependency-complete selection
-from [mattpocock/skills](https://github.com/mattpocock/skills). The upstream
-`triage` skill is distributed as `matt-triage` to avoid colliding with the
-existing universal `triage` skill; its internal invocation and setup references
-are adapted accordingly.
+from [mattpocock/skills](https://github.com/mattpocock/skills), all imported at
+one pinned upstream commit (recorded in each skill's `UPSTREAM.md`). Two skills
+are redistributed under a `matt-`-prefixed name so they don't shadow a local
+name, with their internal invocation and setup references adapted accordingly:
+
+- The upstream `triage` skill is distributed as `matt-triage` to avoid
+  colliding with the existing universal `triage` skill.
+- The upstream `implement` skill is distributed as `matt-implement`, reserving
+  the `implement` name for local use. It composes with the `tdd` and
+  `code-review` skills (also vendored here); `tdd` in turn draws its
+  deep-module vocabulary from the vendored `codebase-design` skill. Cross-skill
+  calls are rephrased to load the target skill through the harness's native
+  skill mechanism rather than a hardcoded slash command.
 
 ## The unique-name rule
 
