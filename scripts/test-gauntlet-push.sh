@@ -9,8 +9,26 @@ set -euo pipefail
 if [ "${GAUNTLET_TEST_CHILD:-}" != 1 ]; then
     for default_branch in main master; do
         echo "==> gauntlet push suite with init.defaultBranch=${default_branch}"
-        GAUNTLET_TEST_CHILD=1 GAUNTLET_TEST_DEFAULT_BRANCH="$default_branch" "$0"
+        case "$BASH_VERSION" in
+        3.2.*)
+            GAUNTLET_TEST_CHILD=1 GAUNTLET_TEST_DEFAULT_BRANCH="$default_branch" \
+                GAUNTLET_TEST_FORCE_BASH32=1 /bin/bash "$0"
+            ;;
+        *) GAUNTLET_TEST_CHILD=1 GAUNTLET_TEST_DEFAULT_BRANCH="$default_branch" "$0" ;;
+        esac
     done
+    case "$BASH_VERSION" in
+    3.2.*) ;;
+    *)
+        if [ -x /bin/bash ] &&
+            /bin/bash -c 'case "$BASH_VERSION" in 3.2.*) exit 0 ;; *) exit 1 ;; esac'; then
+            echo "==> gauntlet push suite with macOS Bash 3.2"
+            GAUNTLET_TEST_CHILD=1 GAUNTLET_TEST_DEFAULT_BRANCH=main \
+                GAUNTLET_TEST_FORCE_BASH32=1 \
+                /bin/bash "$0"
+        fi
+        ;;
+    esac
     echo "gauntlet push-round helper: PASS"
     exit 0
 fi
@@ -66,12 +84,19 @@ rc=0
 out=
 err=
 run() {
-    local args=("$@")
     local test_bare=
 
     test_bare="$(git config --get gauntlet.testBare 2>/dev/null || true)"
     set +e
-    out="$(GAUNTLET_TEST_BARE="$test_bare" "$helper" "${args[@]}" 2>"${test_tmp}/stderr")"
+    if [ "${GAUNTLET_TEST_FORCE_BASH32:-}" = 1 ] && [ "$#" -gt 0 ]; then
+        out="$(GAUNTLET_TEST_BARE="$test_bare" /bin/bash "$helper" "$@" 2>"${test_tmp}/stderr")"
+    elif [ "${GAUNTLET_TEST_FORCE_BASH32:-}" = 1 ]; then
+        out="$(GAUNTLET_TEST_BARE="$test_bare" /bin/bash "$helper" 2>"${test_tmp}/stderr")"
+    elif [ "$#" -gt 0 ]; then
+        out="$(GAUNTLET_TEST_BARE="$test_bare" "$helper" "$@" 2>"${test_tmp}/stderr")"
+    else
+        out="$(GAUNTLET_TEST_BARE="$test_bare" "$helper" 2>"${test_tmp}/stderr")"
+    fi
     rc=$?
     set -e
     err="$(cat "${test_tmp}/stderr")"
@@ -155,6 +180,12 @@ run_push() {
 echo "  -> usage errors are distinct"
 run
 assert_rc 2
+
+echo "  -> empty transport overrides stay structurally safe on Bash 3.2"
+grep -F -- 'if [ "$git_arg_count" -gt 0 ]; then' "$helper" >/dev/null ||
+    fail "git argument expansion must be guarded by the separate count"
+[ "$(grep -F -c -- '"${git_args[@]}"' "$helper")" -eq 1 ] ||
+    fail "git_args must be expanded only in its non-empty guarded branch"
 
 echo "  -> skill call sites propagate failure and force untracked-file checks"
 [ "$(grep -F -c -- '--gate-token "$token" || exit' "$skill")" -eq 2 ] ||
