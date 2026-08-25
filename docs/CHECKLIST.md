@@ -198,11 +198,28 @@ environment — against the items below
       is product-independent and normally needs no edits. Labels are per-repo,
       so run it in each repo; org default labels (org Settings → Repository,
       UI-only) only seed new repos.
-- [ ] **After a `copier update` that adds label families** (e.g. `tier:*` /
-      `method:*`), re-run `task setup:github-labels` to provision the new
-      labels here — it is additive and never deletes, so existing labels and
-      the issues they sit on are untouched — then classify open issues with the
-      added families.
+- [ ] **After a `copier update` that adds a genuinely new label family**
+      (e.g. `tier:<role>:*`), re-run `task setup:github-labels` to provision
+      it here — it is additive and never deletes, so existing labels and the
+      issues they sit on are untouched — then classify open issues with the
+      added family.
+- [ ] **[human-only] `strategy:*` is not a new family — it is `method:*`
+      renamed (harmon-init#1047).** If this repo has no live `method:*`
+      labels, the plain additive step above is enough. If it does,
+      **rename before provisioning**: `task setup:github-labels` creates
+      `strategy:<value>` fresh, and GitHub label names are unique, so a
+      rename attempted after that line runs is rejected as a name collision —
+      leaving an orphaned old label beside an empty new one instead of one
+      migrated label. Use
+      [`assets/migrate-label-family.sh`](../ai/skills/repo/standardize-repo/assets/migrate-label-family.sh)
+      (the mechanism `mode-update.md` §6b walks through) — `inventory method`
+      first (refuses while any issue/PR carries more than one `method:*`
+      label; the old family had no `exclusive` constraint, the new one does),
+      then `rename method:<value> strategy:<value> --execute` for each of the
+      six values, then `verify method` to confirm none remain. If a value's
+      `strategy:*` destination already exists live, `rename` refuses and
+      points at `transfer` instead, which adds-and-verifies onto every item
+      before deleting the source.
 - [ ] **[human-only] Retire any legacy `agent:*` claim labels** — needed only
       where `gh label list --limit 1000` still shows the harness-named family
       (`agent:claude-code`, `agent:gemini-cli`, …) a pre-registry harmon-init

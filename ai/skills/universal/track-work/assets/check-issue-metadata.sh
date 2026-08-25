@@ -5,7 +5,7 @@
 # manifest exists, and never calls a GitHub write endpoint.
 set -euo pipefail
 
-FORBIDDEN_RE='^(foreman:|rigor:|tier:|method:|claim:|suggest:|agent:)'
+FORBIDDEN_RE='^(foreman:|rigor:|tier:|strategy:|method:|claim:|suggest:|agent:)'
 asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
 title_module_dir="$asset_dir/../../issue-title-support/assets"
 

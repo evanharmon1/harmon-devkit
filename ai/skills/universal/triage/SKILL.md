@@ -8,7 +8,7 @@ description: >-
   the backlog", or "update the triage report". Dry-run by default; writes go
   only through the skill's own scripts. Invoke as /triage.
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh repo view:*), Bash(./ai/skills/universal/triage/assets/triage-scan.sh:*), Bash(./ai/skills/universal/triage/assets/triage-apply.sh:*), Bash(./ai/skills/universal/triage/assets/triage-report.sh:*), Bash(./.agents/skills/triage/assets/triage-scan.sh:*), Bash(./.agents/skills/triage/assets/triage-apply.sh:*), Bash(./.agents/skills/triage/assets/triage-report.sh:*), Bash(./.claude/skills/triage/assets/triage-scan.sh:*), Bash(./.claude/skills/triage/assets/triage-apply.sh:*), Bash(./.claude/skills/triage/assets/triage-report.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh repo view:*), Bash(gh label list:*), Bash(./ai/skills/universal/triage/assets/triage-scan.sh:*), Bash(./ai/skills/universal/triage/assets/triage-apply.sh:*), Bash(./ai/skills/universal/triage/assets/triage-report.sh:*), Bash(./.agents/skills/triage/assets/triage-scan.sh:*), Bash(./.agents/skills/triage/assets/triage-apply.sh:*), Bash(./.agents/skills/triage/assets/triage-report.sh:*), Bash(./.claude/skills/triage/assets/triage-scan.sh:*), Bash(./.claude/skills/triage/assets/triage-apply.sh:*), Bash(./.claude/skills/triage/assets/triage-report.sh:*)
 ---
 
 # Triage
@@ -36,8 +36,10 @@ it in the summary; never work around it).
   complete. The script checks completeness; you supply the labels and, where
   an axis truly does not apply, an `--inapplicable` attestation.
 - **Never touch** (the scripts refuse these too): `foreman:*`, `rigor:*`,
-  `tier:*`, `method:*`, `claim:*`, `suggest:*`, `agent:*`, milestones, close
-  states, assignees, issue bodies or titles.
+  `tier:*` (including scoped `tier:<role>:*`), `strategy:*`, `method:*` (the
+  retired prefix `strategy:*` replaces — still reserved), `claim:*`,
+  `suggest:*`, `agent:*`, milestones, close states, assignees, issue bodies or
+  titles.
 - **Dry-run is the default.** Pass `--execute` to a script only when your
   runner said the mode is EXECUTE.
 - **When unsure, do nothing.** A skipped label costs nothing — the issue keeps
@@ -241,10 +243,38 @@ the entries file, no entry keys):
   `truncated_closed`: one line saying which window was truncated, so a
   finding missing from this report may simply be outside it rather than
   resolved.
-- `## Tier/method proposals` — only if, while reading an issue, you are
-  confident a `tier:*` or `method:*` value fits it far better than the
-  default. One bullet with the issue, the value, and one line of reasoning.
-  Never apply such labels yourself.
+- `## Tier/strategy proposals` — only if, while reading an issue, you are
+  confident a `tier:*` (optionally scoped, e.g. `tier:implementer:<value>`)
+  or execution-topology value fits it far better than the default. **Which
+  prefix — and, for tier, whether scoped or bare — to propose is
+  discovered, never assumed**: a repo may be mid-migration (harmon-init#1047
+  `method:*` → `strategy:*`) and still carry only the retired family, and
+  scoped `tier:<role>:*` labels are tool-owned/created on demand — never
+  pre-seeded — so a repo that has never used one has no live label to
+  discover at all.
+
+  Check once per run, before writing any such proposal:
+  `gh label list --repo "$REPO" --limit 1000 --json name -q '.[].name'`.
+  This read is **indeterminate, not just possibly incomplete, when it
+  returns exactly 1000 names** — the same signal `triage-apply.sh`'s
+  `live_labels()` refuses on rather than derive from a possibly-partial
+  set. Fail closed the same way: omit `## Tier/strategy proposals` from
+  this run's report entirely rather than propose from a vocabulary you
+  cannot prove is complete.
+
+  From a confirmed-complete list: propose an execution-topology value from
+  whichever family it actually contains — prefer `strategy:*` when both
+  `strategy:*` and `method:*` are present (it is the non-retired one), fall
+  back to `method:*` only when `strategy:*` is entirely absent, and propose
+  **nothing** on this axis if it contains neither. Separately, propose a
+  **scoped** `tier:<role>:*` value only when the list already contains at
+  least one live `tier:<role>:*` label (two colons after the prefix) —
+  otherwise propose a bare `tier:<value>` only, or nothing on this axis if
+  the list contains no `tier:*` at all. A value from a family or a scoping
+  the repo has never used is not a usable proposal.
+
+  One bullet with the issue, the value, and one line of reasoning. Never
+  apply such labels yourself.
 
 If there are no findings at all, create the file empty (`: > entries.md`).
 

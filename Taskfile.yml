@@ -316,6 +316,7 @@ tasks:
       - test:skill-index-lifecycle
       - test:independence
       - test:confirm-answers
+      - test:migrate-label-family
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -546,6 +547,11 @@ tasks:
     desc: Unit-test the standardize-repo copier answer confirmation gate (offline)
     cmds:
       - ./scripts/test-confirm-answers.sh
+
+  test:migrate-label-family:
+    desc: Unit-test the standardize-repo label-family rename/transfer script (offline)
+    cmds:
+      - ./scripts/test-migrate-label-family.sh
 
   # ── Second-model review (Codex) ───────────────────────────────
   # Optional second AI model (the OpenAI Codex CLI) reviewing the current

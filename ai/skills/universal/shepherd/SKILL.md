@@ -3,8 +3,9 @@ name: shepherd
 description: >-
   Shepherd a draft PR to ready for review — watch CI and incoming bot/human reviews,
   treat findings as hypotheses (verify, fix only what's confirmed, explain
-  rejections in per-thread replies), push, and re-watch, for at most 4
-  rounds. Invoke as /shepherd [PR # or URL].
+  rejections in per-thread replies), push, and re-watch, under the resolved
+  shepherd cap (0-6, from .devflow.toml's review policy). Invoke as
+  /shepherd [PR # or URL].
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*)
 ---
@@ -15,7 +16,8 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-curr
 
 Opening a draft PR is not the end. Shepherd it: watch CI **and** incoming
 bot/human reviews, adjudicate what lands, fix what's confirmed, and re-watch
-— for at most **4 rounds**. Both signals matter and both must end green: a
+— under the resolved **shepherd cap** (see "The repository's own policy
+outranks this file" below). Both signals matter and both must end green: a
 PR is not done until CI/CD workflows pass *and* no unresolved review findings
 remain. This cap is independent of any other loop caps used earlier in the
 dev flow.
@@ -55,6 +57,58 @@ in a repo whose `AGENTS.md` still says three, and stops being correct the
 moment that file says otherwise — including in repos that have not yet adopted
 the P0/P1-gating dev flow.
 
+**Absent a repo-specific override, the shepherd cap is resolved the same way
+gauntlet resolves its challenge/review caps — check the config shape first**
+(gauntlet's `SKILL.md` §2 "Config shape" step; not a literal 4 either way,
+under either shape). `.devflow.toml` ships in two shapes, and skills-sync and
+the harmon-init copier update run on independent cadences, so a repo can have
+this skill before its file has migrated. Under the **migrated shape** (a
+top-level `rigor_order` exists and `[rigor.<level>]` names its caps through a
+`review` pointer), the cap is `[review.<the resolved policy>].shepherd`, and
+a `rigor:*` label conflict resolves to the single strongest level by
+`rigor_order`. Under the **legacy shape** (`[rigor.<level>]` carries
+`challenge`, `review`, `shepherd`, and `min_rounds` directly — no `review`
+pointer, no `[review.*]` tables, no `rigor_order`), the cap is that resolved
+level's own `shepherd` field, and a label conflict instead resolves **per
+stage, to the highest cap present**. Either way, an edit to `.devflow.toml`
+itself resolves every parameter from the merge-base copy. Shipped
+migrated-shape policies range the shepherd cap 0–6; a legacy-shape repo's own
+levels may or may not share one fixed value across levels — read them, don't
+assume. Announce the resolved value the way gauntlet announces its caps, and
+disclose it in the PR body when it is off-default.
+
+**A resolved cap of 0 does not skip the readiness gate — and whether it
+drops the current-head Codex-cycle condition from that gate is a *policy*
+question, answered by the repository's own `AGENTS.md`, never assumed
+here.** It means: spend no shepherd round — the watch/adjudicate/fix/push
+loop in steps 2–5 never runs, so triggering `@codex review` and waiting out
+its cycle (itself active engagement this budget cannot afford) never
+happens either. What that implies for the gate depends on what `AGENTS.md`'s
+Readiness Gate actually says:
+
+- **Where `AGENTS.md` states that a resolved shepherd cap of 0 drops the
+  current-head Codex condition** — pass the gate `--codex-disabled` for this
+  run, exactly as that wording directs, and evaluate the rest of the gate
+  normally.
+- **Where `AGENTS.md` still requires a terminal, clean current-head Codex
+  cycle with no cap exception** — that requirement does not lapse because no
+  round is available to satisfy it. **Never pass `--codex-disabled` to claim
+  the reviewer is off when it is not** — that would falsely declare a
+  configured reviewer disabled to force a pass. If no terminal clean result
+  already exists for this head, the Codex condition reads indeterminate — a
+  failed condition, not a pass — so the PR stays draft with a blocker report
+  naming it: no automated path promotes this PR until a clean result exists
+  by some means outside this budget.
+
+CI still has to be green, and any human review finding already on the PR
+still has to be answered, for the gate to pass — those are checks against
+state that already exists, not rounds this budget has to spend. If a human
+finding is outstanding — unanswered already, or one that arrives while this
+stage evaluates — and the gate is not otherwise clean, that is stop
+condition 2 (**cap reached**) on the spot: leave the PR draft with a
+blocker report naming it, **never an agent fix round** — there is no round
+to spend on it. A pass otherwise promotes normally.
+
 **This stage settles the low-priority findings.** Where the earlier dev-flow
 loops gate only on high-priority findings (in repos that run a
 severity-labelled second-model review, that is P0/P1), the ones they deferred
@@ -66,7 +120,8 @@ follow-up issue.
 **Round accounting (read this first):** one round = one fix push, **or**
 one no-change adjudication cycle (everything rejected/external — replies
 posted, nothing to fix — then back to watching). Count rounds explicitly
-(say "round 2 of 4") — the counter only ever increases, every wait below is
+(say "round 2 of `<cap>`", using the resolved shepherd cap above) — the
+counter only ever increases, every wait below is
 bounded, and every path ends in one of the stop conditions in step 6, so
 the loop cannot run forever.
 
@@ -1142,9 +1197,17 @@ loops indefinitely:
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
      --codex-state "$state"   # §2's attempt-state file; pass
                               # --codex-disabled instead where Codex cloud
-                              # review is not enabled — one of the two is
-                              # required, so the Codex condition cannot be
-                              # skipped by silence
+                              # review is not enabled, or where a resolved
+                              # shepherd cap of 0 AND AGENTS.md's own
+                              # readiness gate both say the Codex condition
+                              # drops out at that cap (the cap-0 note
+                              # above) — never pass it merely because the
+                              # cap is 0 while Codex review is actually
+                              # enabled and AGENTS.md still requires the
+                              # cycle: one of the two flags is always
+                              # required, so the Codex condition can never
+                              # be skipped by silence, and it can never be
+                              # skipped by a false claim either
    ```
 
    `--head` is the head whose CI, Codex result, comments, and deferred
@@ -1342,7 +1405,9 @@ loops indefinitely:
    event releases the rest.`
    Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
-   4 rounds: stop.
+   the resolved shepherd cap's rounds: stop. A resolved cap of 0 reaches this
+   condition on the spot, having spent zero rounds — see the cap-resolution
+   note above.
 3. **No progress** — the same failure signature or finding survives two
    consecutive rounds unchanged **and** it is the sole remaining blocker
    (or the rounds made no material progress overall): stop early; burning

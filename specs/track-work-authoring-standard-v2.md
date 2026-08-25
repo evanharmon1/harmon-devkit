@@ -40,7 +40,8 @@ Ship one portable issue-authoring contract in `track-work` that:
 - Apply labels, create issues, choose milestones, assign people, or mutate a
   project board; the checker is read-only and pre-create.
 - Replace GitHub issue forms or the triage skill.
-- Write `claim:*`, `suggest:*`, `foreman:*`, `rigor:*`, `tier:*`, or `method:*`
+- Write `claim:*`, `suggest:*`, `foreman:*`, `rigor:*`, `tier:*`,
+  `tier:<role>:*`, `strategy:*`, or the retired-but-reserved `method:*`
   labels during authoring.
 - Add a second label taxonomy or duplicate `label-registry.json` parsing rules
   in documentation.

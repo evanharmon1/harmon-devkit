@@ -3518,10 +3518,87 @@ Whatever is needed must be in place **before** the first task. On an org,
 project automation quietly keeps a stale variable that can point at the wrong
 board. If the project task already ran without the scope, re-run it once granted.
 
+**Rename any retired label family before this line reprovisions its
+replacement — with `assets/migrate-label-family.sh`, not inline shell.**
+This exact recipe earned a P1 finding three review rounds running while the
+mechanism stayed prose here: a `gh api -f` call that silently flips GitHub's
+default method to POST, a six-value inventory loop with no fail-fast on a
+broken page, `--paginate --slurp` misread as a flat item array when it is
+actually an array of *pages* (so a naive reader of it processes nothing and
+a completion check built on it is vacuously "clean"). Every one of those is
+a mechanical mistake a test catches immediately and prose cannot — the
+script (`scripts/test-migrate-label-family.sh`) is where that test lives
+now; this section keeps only why and when to run it.
+
+**Why the ordering matters.** That task below is `gh label create --force`:
+the first run **creates** `strategy:<value>` fresh, and GitHub label names
+are unique (case-insensitively), so once that name exists a rename onto it
+is rejected as a collision, leaving the repo with two disconnected labels —
+an orphaned old one and an empty new one — instead of one renamed label.
+`setup-github-labels.sh` itself never renames or removes anything (see
+catalog §1.13's `.devflow.toml` entry), so the rename is entirely on you,
+first.
+
+**Why the multi-label check matters.** The retired `method` family had no
+`exclusive` constraint — GitHub labels never enforce that — but
+`[method].rank` gave every consumer a deterministic way to pick one value
+when an issue carried several. `strategy` is exclusive and, per ADR 0006, a
+conflict between its values has **no rank** — it is simply ambiguous. A
+rename does not know this: an issue carrying two `method:*` labels ends up
+with two `strategy:*` labels instead of the single winner the old rank
+would have picked.
+
+Run, once per value the repo actually has (the six shipped values are
+`oneshot`/`plan`/`plan-approved`/`orchestrate`/`council`/`human-led`):
+
+```bash
+assets/migrate-label-family.sh inventory method --repo <owner>/<repo>
+```
+
+This refuses (exit 3) while any issue or PR carries more than one
+`method:*` label, naming each one — resolve every conflict to the value
+`[method].rank` would have picked (`human-led` > `plan-approved` > `council`
+> `orchestrate` > `plan` > `oneshot`, most human oversight first — the fixed
+order in the pre-#1047 `.devflow.toml`) and remove the rest by hand before
+continuing. Once it reports clean, rename each value in place — this
+preserves every label association, since a rename is not a
+delete-and-recreate:
+
+```bash
+assets/migrate-label-family.sh rename method:<value> strategy:<value> \
+  --repo <owner>/<repo> --execute
+```
+
+**If a prior run already provisioned `strategy:<value>` before this ran**,
+`rename` refuses the collision by name and points here: transfer instead.
+It adds `strategy:<value>` to every item carrying `method:<value>`, verifies
+each addition individually (not just the write call's own exit code — a
+verification catches a write that reports success but never actually
+lands), and only then deletes `method:<value>`, aborting without deleting on
+the first failure of either step:
+
+```bash
+assets/migrate-label-family.sh transfer method:<value> strategy:<value> \
+  --repo <owner>/<repo> --execute
+```
+
+Confirm the migration is done — no live label still matches `method:*`:
+
+```bash
+assets/migrate-label-family.sh verify method --repo <owner>/<repo>
+```
+
+The same release also expanded `rigor:*` from three levels
+(`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/
+`thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so
+it has no name-collision hazard and needs no script: `task
+setup:github-labels` below seeds it on the first run, ordinary and additive
+like everything else in this section.
+
 ```bash
 task setup:github-project      # board + Status pipeline + the Size number field; on a
                                # personal account also Priority/Product/Agent/Domain/Layer
-task setup:github-labels       # this repo's five label families
+task setup:github-labels       # this repo's full label-registry.json-driven taxonomy
 
 # org-owned repos only (github_org != author_git_provider_username):
 task setup:github-issue-fields # org Product/Agent/Domain/Layer issue fields
@@ -3570,6 +3647,12 @@ update can create, none of which any script closes:
   fields: an option the template dropped survives on the project (personal) or
   the org issue field. Remove it only after re-mapping — deleting an option that
   items are assigned to **clears those values**.
+
+A renamed label family (harmon-init#1047's `method:*` → `strategy:*`) is
+**not** one of these residues — it is a precondition 6b assumes you already
+handled, in 6b itself, before its `task setup:github-labels` line runs and
+forecloses the rename by creating the destination name first. If that step
+was skipped, see 6b above rather than continuing here.
 
 Check against the vocabulary in [`standards-catalog.md`](./standards-catalog.md)
 §1.13. Query each field's **data type and full option list**, not just its name —

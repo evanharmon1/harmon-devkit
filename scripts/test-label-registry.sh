@@ -99,7 +99,9 @@ case "${1:-} ${2:-}" in
       {"name":"foreman:claude","description":"Dispatch control"},
       {"name":"Rigor:deep","description":"Execution budget"},
       {"name":"tier:frontier","description":"Model routing"},
-      {"name":"method:plan","description":"Execution topology"},
+      {"name":"tier:implementer:frontier","description":"Scoped model routing"},
+      {"name":"strategy:plan","description":"Execution topology"},
+      {"name":"method:plan","description":"Retired execution topology"},
       {"name":"type:patch","description":"Foreman override"},
       {"name":"autorelease: pending","description":"Release automation state"}
     ]'
@@ -116,7 +118,7 @@ printf '%s\n' "$manifest_guidance" |
     jq -se 'any(.[]; . == {record: "guidance", label: "area:track-work", description: "The track-work skill: issue authoring standards and PR/commit linkage; claims are session-flow", family: "area", purpose: "Codebase subsystem the work lives in (solution space); at most one per issue."})' >/dev/null ||
     fail "manifest-backed guidance should include value description and family purpose"
 if printf '%s\n' "$manifest_guidance" |
-    jq -e 'select(.label | test("^(claim|suggest|agent|foreman|rigor|tier|method):"; "i"))' >/dev/null; then
+    jq -e 'select(.label | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|method):"; "i"))' >/dev/null; then
     fail "guidance must exclude claim, suggestion, legacy-agent, Foreman, and execution controls"
 fi
 printf '%s\n' "$manifest_guidance" |
@@ -370,6 +372,70 @@ rejects "a per-value provision switched on" 'per-value-provision-true' \
     'must equal false'
 rejects "a closed inline family with no values" 'closed-family-without-values' \
     'closed inline family'
+
+echo "==> migrated registry: devflow-sourced rigor/strategy + a retired method family"
+# harmon-init#1047's target shape: rigor and the renamed strategy family are
+# source: devflow (values still enumerated inline, same rules as source:
+# inline — .devflow.toml is documentation of intent, not a second data
+# source), and the retired method family keeps its record (empty values,
+# provision: false) rather than being deleted outright.
+migrated_manifest="$mutation_tmp/migrated-label-registry.json"
+cat >"$migrated_manifest" <<'JSON'
+{
+  "$schema": "./label-registry.schema.json",
+  "schema_version": 1,
+  "families": [
+    {
+      "family":"rigor","prefix":"rigor","purpose":"Dev Loop round-cap level","axis":"strategy",
+      "source":"devflow","writers":["human"],"readers":"humans","lifecycle":"durable",
+      "exclusive":true,"provision":true,"color":"D4C5F9",
+      "values":[
+        {"value":"trivial","description":"Trivial, low-blast-radius work"},
+        {"value":"standard","description":"The default budget"}
+      ]
+    },
+    {
+      "family":"strategy","prefix":"strategy","purpose":"Execution topology","axis":"strategy",
+      "source":"devflow","writers":["human","agent"],"readers":"humans","lifecycle":"durable",
+      "exclusive":true,"provision":true,"color":"BF3989",
+      "values":[
+        {"value":"plan","description":"Agent plans then implements"},
+        {"value":"oneshot","description":"Single agent, no separate plan phase"}
+      ]
+    },
+    {
+      "family":"method","prefix":"method","purpose":"Retired execution topology","axis":"strategy",
+      "source":"devflow","writers":[],"readers":"humans","lifecycle":"durable",
+      "exclusive":true,"provision":false,"retired":true,"values":[]
+    }
+  ]
+}
+JSON
+if ! "$guidance_helper" validate "$migrated_manifest" >/dev/null 2>&1; then
+    fail "validate should accept source: devflow with the same enumerated-value rules as inline"
+fi
+migrated_records="$("$guidance_helper" render "$migrated_manifest")" ||
+    fail "render should render a migrated (devflow-sourced) manifest"
+printf '%s\n' "$migrated_records" |
+    grep -qxF 'value|strategy:plan|strategy|strategy|strategy|human,agent|true|devflow|false|false|false' ||
+    fail "render should surface a devflow-sourced value exactly like an inline one"
+printf '%s\n' "$migrated_records" |
+    grep -qxF 'value|rigor:standard|rigor|rigor|strategy|human|true|devflow|false|false|false' ||
+    fail "render should surface a devflow-sourced rigor value exactly like an inline one"
+if printf '%s\n' "$migrated_records" | grep -q '^value|method:'; then
+    fail "the retired method family must not render any value records"
+fi
+printf '%s\n' "$migrated_records" |
+    grep -qxF 'family|method|method|strategy||true|devflow|false|true' ||
+    fail "the retired method family record itself should still render (retired: true, values empty)"
+
+# A devflow-sourced family follows the same closed-family rule as inline: no
+# values, not open, not retired is still a validation error.
+jq '(.families[] | select(.family == "strategy")).values = []' \
+    "$migrated_manifest" >"$mutation_tmp/migrated-empty-strategy.json"
+if "$guidance_helper" validate "$mutation_tmp/migrated-empty-strategy.json" >/dev/null 2>&1; then
+    fail "a closed devflow family with no values should be rejected, same as source: inline"
+fi
 
 # ── 2. cross-file checks ───────────────────────────────────────────────────
 # rigor values ↔ .devflow.toml levels: the label selects a [rigor.*] table, so

@@ -133,7 +133,7 @@ const axes = new Set([
   'release',
   'meta'
 ])
-const sources = new Set(['inline', 'agent-registry', 'tool-owned'])
+const sources = new Set(['inline', 'devflow', 'agent-registry', 'tool-owned'])
 const registrySets = new Set(['suggest', 'claim', 'foreman-adapters'])
 const registrySetPrefixes = new Map([
   ['suggest', 'suggest'],
@@ -303,12 +303,12 @@ function validateRegistry(registry) {
       die(`${where}.placeholder requires open_values or an agent-registry source`)
     }
     if (
-      family.source === 'inline' &&
+      (family.source === 'inline' || family.source === 'devflow') &&
       family.open_values !== true &&
       family.retired !== true &&
       family.values.length === 0
     ) {
-      die(`${where} closed inline families need at least one value`)
+      die(`${where} closed inline/devflow families need at least one value`)
     }
     if (family.arming === true && family.prefix !== 'foreman') {
       die(`${where} arming is only valid in the foreman namespace`)
@@ -370,8 +370,8 @@ function validateAgentRegistry(registry) {
   if (registry.$schema !== './agent-registry.schema.json') {
     die('agent-registry.json has an unsupported $schema')
   }
-  if (registry.schema_version !== 2) {
-    die(`agent-registry.json schema_version must be 2 (got ${registry.schema_version})`)
+  if (registry.schema_version !== 2 && registry.schema_version !== 3) {
+    die(`agent-registry.json schema_version must be 2 or 3 (got ${registry.schema_version})`)
   }
   for (const namespace of ['suggest', 'claim']) {
     const contract = registry.labels?.[namespace]
@@ -418,13 +418,30 @@ function validateAgentRegistry(registry) {
   return { families, adapters }
 }
 
+// Execution-control families, whatever a manifest claims about their
+// writers. track-work's check-issue-metadata.sh rejects these at
+// authoring time unconditionally (FORBIDDEN_RE, plus an axis backstop for
+// strategy/foreman/model families under any other prefix) — planning
+// vocabulary that the next gate always refuses is not planning-safe. Prefix,
+// not axis: axis "model" is shared with the legitimately plannable
+// suggest-model/claim-model refinement families, so axis alone would
+// over-exclude.
+const executionControlPrefixes = new Set(['strategy', 'rigor', 'tier', 'method'])
+
 function safe(family, value = {}) {
   const writers = value.writers ?? family.writers
   const lifecycle = value.lifecycle ?? family.lifecycle
   const retired = family.retired === true || value.retired === true
   const arming = family.arming === true || value.arming === true
   const gated = Object.hasOwn(family, 'gate')
-  return writers.includes('agent') && lifecycle === 'durable' && !retired && !arming && !gated
+  return (
+    writers.includes('agent') &&
+    lifecycle === 'durable' &&
+    !retired &&
+    !arming &&
+    !gated &&
+    !executionControlPrefixes.has(family.prefix)
+  )
 }
 
 function outputFamily(family) {
@@ -548,7 +565,17 @@ for (const label of liveLabels) {
 }
 
 if (!defaultPaths.has('label-registry.json')) {
-  const excludedPrefixes = ['claim:', 'agent:', 'foreman:']
+  // Same execution-control exclusion as the registry path's safe() (see its
+  // definition for why: track-work's check-issue-metadata.sh rejects these
+  // at authoring time unconditionally, so no registry is no license to
+  // recommend them either), plus claim/agent/foreman — live ownership and
+  // dispatch controls with no registry to declare them by axis at all here.
+  const excludedPrefixes = [
+    'claim:',
+    'agent:',
+    'foreman:',
+    ...[...executionControlPrefixes].map((prefix) => `${prefix}:`)
+  ]
   const labels = liveLabels
     .filter((label) => {
       const normalized = normalizeLabelName(label.name)
@@ -623,7 +650,19 @@ const resultFamilies = new Map()
 const candidateOwners = new Map()
 const declaredOwners = new Map()
 const knownConcrete = new Set()
-const reservedConcretePrefixes = ['claim:', 'agent:', 'foreman:']
+// claim:/agent:/foreman: are live ownership/dispatch controls; the
+// execution-control prefixes (see safe()'s definition) belong here too — a
+// prefix-less family (family.prefix === null, so safe()'s own check never
+// sees them) can still enumerate a VALUE that renders to a reserved-looking
+// concrete name (e.g. a value literally "strategy:plan" on a family with no
+// prefix), and that must be refused exactly like a family that declares the
+// prefix directly.
+const reservedConcretePrefixes = [
+  'claim:',
+  'agent:',
+  'foreman:',
+  ...[...executionControlPrefixes].map((prefix) => `${prefix}:`)
+]
 
 function isModelSuggestion(name) {
   const [prefix, family, model, ...rest] = name.split(':')

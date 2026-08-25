@@ -1062,6 +1062,35 @@ artifacts; the prose rules are guidance, not lint):
   pinned Foreman release are provisionable; test-only `mock` is not. Detailed
   dispatch and input-trust enforcement belong to Foreman and the selected
   target's configuration, not a second procedure in this catalog.
+- **`.devflow.toml` — Dev Loop rigor/strategy/tier config.** Root-level TOML
+  parameterizing the Dev Loop stages in `AGENTS.md`: `[rigor.*]` round-cap
+  levels (`trivial`/`minimal`/`light`/`standard`/`thorough`/`deep`), the
+  `[strategy.*]` execution-topology family (`oneshot`/`plan`/`plan-approved`/
+  `orchestrate`/`council`/`human-led` — harmon-init#1047 renamed the retired
+  `method:*`/`[method]` family to `strategy:*`/`[strategy.*]`), and the
+  `[tier.*]` model-routing ladder consumed by unscoped `tier:*` (implementer
+  role only) and scoped `tier:orchestrator:*`/`tier:implementer:*`/
+  `tier:reviewer:*` labels. **[copier]** — harmon-init keeps its own root copy
+  and `template/.devflow.toml` byte-identical, so a freshly generated repo's
+  copy is a verbatim copy of the template's; like `Taskfile.yml` it is then
+  customizable in place ("Retuning these is expected", per its own header
+  comment), so audit its drift the same way. It is deliberately **not** on
+  [`template-owned-files.txt`](../assets/template-owned-files.txt) — a repo's
+  resolved caps are expected to diverge from the template's, same reasoning as
+  `label-registry.json`/`agent-registry.json` — so `diff-template.sh` (§3 drift
+  class K, [`mode-audit.md`](./mode-audit.md)) still catches its drift, tagged
+  `(uncurated)` rather than plain `DRIFT`. The `rigor:*`/`strategy:*`
+  **labels** are a separate axis from the file: provisioned by
+  `task setup:github-labels` from `label-registry.json` (above), gated on
+  `project_management: github` like the other setup tasks. A repo updating
+  through the harmon-init release that ships the `method:*`→`strategy:*`
+  rename needs the **live-label migration recipe** in
+  [`mode-update.md`](./mode-update.md) §6b, run **before** that section's
+  `task setup:github-labels` line — `setup-github-labels.sh` only ever adds,
+  and GitHub label names are unique, so a repo's old live `method:*` labels
+  (and their issue associations) survive the file update untouched, and a
+  rename attempted after that line already created `strategy:*` is rejected
+  as a name collision.
 - **Milestones** — named after release versions (title == git tag), small +
   rolling, preferred over iterations pre-launch.
   `.github/workflows/close-milestone-on-release.yml` closes the matching milestone

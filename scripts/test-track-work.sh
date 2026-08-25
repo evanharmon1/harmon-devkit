@@ -1515,7 +1515,7 @@ echo "==> metadata: owner type controls work classification"
     --label domain:fixture)" = 1 ] || fail "unknown native Issue Type should fail"
 
 echo "==> metadata: authoring-time strategy, routing, claim, and Foreman labels are forbidden"
-for label in rigor:deep tier:apex method:plan suggest:gpt claim:gpt foreman:approved agent:codex; do
+for label in rigor:deep tier:apex tier:implementer:frontier strategy:plan method:plan suggest:gpt claim:gpt foreman:approved agent:codex; do
     [ "$(run_personal 'Reject authoring-time control labels' "$valid_body" --label "$label")" = 1 ] ||
         fail "$label should be forbidden during authoring"
     grep -qF "$label" "$tmp/metadata.out" || fail "the rejection should name $label"

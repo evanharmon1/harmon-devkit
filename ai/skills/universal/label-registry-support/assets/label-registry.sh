@@ -107,7 +107,7 @@ validate() {
         and (.axis | IN("classification", "strategy", "model", "work-type",
                         "concern", "workflow", "provenance", "foreman",
                         "release", "meta"))
-        and (.source | IN("inline", "agent-registry", "tool-owned"))
+        and (.source | IN("inline", "devflow", "agent-registry", "tool-owned"))
         and (.writers | writers)
         and ((.retired // false) or (.writers | length > 0))
         and optional_string("writer_note"; 10000)
@@ -136,7 +136,8 @@ validate() {
                and has("placeholder")
              else has("registry_set") | not end)
         and (if .source == "tool-owned" then (.provision | not) else true end)
-        and (if .source == "inline" and ((.open_values // false) | not)
+        and (if (.source == "inline" or .source == "devflow")
+                and ((.open_values // false) | not)
                 and ((.retired // false) | not)
              then (.values | length > 0) else true end)
         and (if (.open_values // false) then has("placeholder") else true end)
@@ -170,8 +171,12 @@ if [ "$command" = guidance ] && [ "$manifest_present" -eq 0 ]; then
         jq -c '
           def description:
             if (.description? == null) then "" else .description end;
+          # method: is retired (strategy: replaced it) but stays listed here
+          # alongside it — a retired execution-control prefix must stay
+          # reserved so a stale or hostile manifest cannot redefine it as
+          # agent-writable.
           def control_namespace:
-            ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+            ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|method|type|autorelease):");
           def authorable_label:
             test("[,|\\r\\n]") | not;
           if type != "array"
@@ -202,7 +207,7 @@ if [ "$command" = guidance ]; then
     # self-contained.
     open_family_count="$(jq -r '
       def control_namespace:
-        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|method|type|autorelease):");
       [.families[]
        | select((.retired // false) | not)
        | select(.source != "agent-registry" and .source != "tool-owned")
@@ -225,7 +230,7 @@ if [ "$command" = guidance ]; then
     fi
     jq -c --slurpfile live "$live_labels_file" '
       def control_namespace:
-        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|method|type|autorelease):");
+        ascii_downcase | test("^(claim|suggest|agent|foreman|rigor|tier|strategy|method|type|autorelease):");
       def authorable_label:
         test("[,|\\r\\n]") | not;
       def authoring_family:
