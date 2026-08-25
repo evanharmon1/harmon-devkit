@@ -3533,7 +3533,42 @@ orphaned old `method:<value>` plus an empty new `strategy:<value>`) instead
 of one renamed label. `setup-github-labels.sh` itself never renames or
 removes anything — it sees only an unrelated new family (`strategy`) and an
 unrelated retired one (`method`, per the manifest's retirement note) — so
-this rename is entirely on you, first: `gh label edit method:<value> --name
+this rename is entirely on you, first.
+
+**Resolve any issue carrying more than one `method:*` label before renaming
+anything.** The retired family had no `exclusive` constraint — GitHub labels
+never enforce that — but `[method].rank` gave every consumer a deterministic
+way to pick one value when an issue carried several; `strategy` is exclusive
+and, per ADR 0006, a conflict between its values has **no rank** — it is
+simply ambiguous. A rename does not know this: it moves `method:plan` →
+`strategy:plan` and `method:council` → `strategy:council` independently, so
+an issue that carried both ends up with two `strategy:*` labels instead of
+the single winner the old rank would have picked. Find them first, issues and
+PRs both (labels apply to either):
+
+```bash
+gh issue list --repo <owner>/<repo> --state all --limit 1000 --json number,labels \
+  --search 'label:"method:oneshot","method:plan","method:plan-approved","method:orchestrate","method:council","method:human-led"'
+gh pr list --repo <owner>/<repo> --state all --limit 1000 --json number,labels \
+  --search 'label:"method:oneshot","method:plan","method:plan-approved","method:orchestrate","method:council","method:human-led"'
+```
+
+(the same truncation guard as below applies to each — a match count of exactly
+1000 means widen `--limit` and re-run), then filter locally:
+
+```bash
+jq '[.[] | {number, method_labels: [.labels[].name | select(test("^method:";"i"))]}
+     | select(.method_labels | length > 1)]'
+```
+
+For every match, resolve to the value `[method].rank` would have picked
+(`human-led` > `plan-approved` > `council` > `orchestrate` > `plan` >
+`oneshot`, most human oversight first — the fixed order in the pre-#1047
+`.devflow.toml`) and remove the rest — `gh issue edit <n> --remove-label
+method:<loser>` (`gh pr edit` for a PR) — so every issue and PR carries at
+most one `method:*` label before its turn in the rename below.
+
+Rename each remaining value in place: `gh label edit method:<value> --name
 strategy:<value>` for every value the repo actually has, which preserves
 every label association; the six shipped values are `oneshot`/`plan`/
 `plan-approved`/`orchestrate`/`council`/`human-led`.
@@ -3554,6 +3589,37 @@ on the limit) until the count comes back under it, *then* run `gh label list
 and the completion check after. Skipping this on the completion check is the
 dangerous direction: a truncated read can hide a straggler past the first
 1000 and falsely declare the repo clean.
+
+**Recovering when the ordering hazard already happened.** If
+`task setup:github-labels` already ran and `strategy:<value>` already exists
+as its own empty label, `gh label edit` is rejected — see above — and
+hand-porting is the only way out; do the multi-label resolution above first
+if you have not, or transferring more than one `method:*` label onto an issue
+just recreates the same ambiguity on the `strategy:*` side. Then, for each
+`method:<value>` still live, transfer every association instead of renaming.
+Find them:
+
+```bash
+gh issue list --repo <owner>/<repo> --state all --limit 1000 --json number \
+  --search 'label:"method:<value>"'
+gh pr list --repo <owner>/<repo> --state all --limit 1000 --json number \
+  --search 'label:"method:<value>"'
+```
+
+(the same truncation guard applies), add the destination to every returned
+number, and confirm it landed before touching the source:
+
+```bash
+gh issue edit <n> --add-label strategy:<value>   # gh pr edit for a PR
+gh issue view <n> --json labels -q '.labels[].name' | grep -qx strategy:<value>
+```
+
+Only once **every** `method:<value>` issue and PR carries the matching
+`strategy:<value>` — re-run the discovery read above and diff the two number
+sets — delete the now-orphaned source label: `gh label delete
+method:<value>`. Deleting a label removes it from everything still attached
+to it, so doing this before every association is confirmed transferred loses
+data instead of migrating it.
 
 The same release also expanded `rigor:*` from three levels
 (`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/

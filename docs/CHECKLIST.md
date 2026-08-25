@@ -198,11 +198,26 @@ environment — against the items below
       is product-independent and normally needs no edits. Labels are per-repo,
       so run it in each repo; org default labels (org Settings → Repository,
       UI-only) only seed new repos.
-- [ ] **After a `copier update` that adds label families** (e.g. `tier:*` /
-      `strategy:*`), re-run `task setup:github-labels` to provision the new
-      labels here — it is additive and never deletes, so existing labels and
-      the issues they sit on are untouched — then classify open issues with the
-      added families.
+- [ ] **After a `copier update` that adds a genuinely new label family**
+      (e.g. `tier:<role>:*`), re-run `task setup:github-labels` to provision
+      it here — it is additive and never deletes, so existing labels and the
+      issues they sit on are untouched — then classify open issues with the
+      added family.
+- [ ] **[human-only] `strategy:*` is not a new family — it is `method:*`
+      renamed (harmon-init#1047).** If this repo has no live `method:*`
+      labels, the plain additive step above is enough. If it does,
+      **rename before provisioning**: `task setup:github-labels` creates
+      `strategy:<value>` fresh, and GitHub label names are unique, so a
+      rename attempted after that line runs is rejected as a name collision —
+      leaving an orphaned old label beside an empty new one instead of one
+      migrated label. Follow the rename recipe in
+      [`mode-update.md`](../ai/skills/repo/standardize-repo/references/mode-update.md)
+      §6b end to end (start with `gh label list --limit 1000 --json name -q
+      '.[].name' | grep -i '^method:'`, same 1000-cap-means-widen rule as the
+      `agent:*` item below, and resolve any issue carrying more than one
+      `method:*` label to a single value before renaming — the old family had
+      no `exclusive` constraint, the new one does), including its recovery
+      path for a repo where `strategy:*` already exists.
 - [ ] **[human-only] Retire any legacy `agent:*` claim labels** — needed only
       where `gh label list --limit 1000` still shows the harness-named family
       (`agent:claude-code`, `agent:gemini-cli`, …) a pre-registry harmon-init

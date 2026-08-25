@@ -133,7 +133,7 @@ const axes = new Set([
   'release',
   'meta'
 ])
-const sources = new Set(['inline', 'agent-registry', 'tool-owned'])
+const sources = new Set(['inline', 'devflow', 'agent-registry', 'tool-owned'])
 const registrySets = new Set(['suggest', 'claim', 'foreman-adapters'])
 const registrySetPrefixes = new Map([
   ['suggest', 'suggest'],
@@ -303,12 +303,12 @@ function validateRegistry(registry) {
       die(`${where}.placeholder requires open_values or an agent-registry source`)
     }
     if (
-      family.source === 'inline' &&
+      (family.source === 'inline' || family.source === 'devflow') &&
       family.open_values !== true &&
       family.retired !== true &&
       family.values.length === 0
     ) {
-      die(`${where} closed inline families need at least one value`)
+      die(`${where} closed inline/devflow families need at least one value`)
     }
     if (family.arming === true && family.prefix !== 'foreman') {
       die(`${where} arming is only valid in the foreman namespace`)
@@ -370,8 +370,8 @@ function validateAgentRegistry(registry) {
   if (registry.$schema !== './agent-registry.schema.json') {
     die('agent-registry.json has an unsupported $schema')
   }
-  if (registry.schema_version !== 2) {
-    die(`agent-registry.json schema_version must be 2 (got ${registry.schema_version})`)
+  if (registry.schema_version !== 2 && registry.schema_version !== 3) {
+    die(`agent-registry.json schema_version must be 2 or 3 (got ${registry.schema_version})`)
   }
   for (const namespace of ['suggest', 'claim']) {
     const contract = registry.labels?.[namespace]

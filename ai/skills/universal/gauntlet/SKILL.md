@@ -174,13 +174,19 @@ resolved.
 
 **When the change under review edits `.devflow.toml` itself, resolve every
 parameter — not just the caps — from the merge-base copy**, not the branch
-copy: `rigor_order`, every `[rigor.*]` entry's `review` pointer, every
-`[review.*]` bundle, `default_rigor`, and (see the tier/strategy note below)
-the `[tier.*]` maps, every role tier, `[strategy.*]`, and `default_strategy`.
-Otherwise a branch can lower the very gate that is reviewing it —
-retargeting a level's `review` pointer at a weaker policy is exactly as
-effective at this as editing the numbers directly — and dropping every level
-together would evade the disclosure below by leaving nothing to be below:
+copy: `rigor_order`, every `[rigor.*]` entry's `review` **and `budget`**
+pointers, every `[review.*]` bundle, **every `[budget.*]` table**,
+`default_rigor`, and (see the tier/strategy note below) the `[tier.*]` maps,
+every role tier, `[strategy.*]`, and `default_strategy`. Otherwise a branch
+can lower the very gate that is reviewing it — retargeting a level's
+`review` pointer at a weaker policy, or its `budget` pointer at a looser
+envelope (a higher `max_agent_runs` or `max_parallel_agents`, a longer
+`wall_clock_min`, `allow_tier_escalation` flipped on where it wasn't), is
+exactly as effective at this as editing the numbers directly, so a branch
+cannot buy itself more run budget, more parallelism, more wall clock, or
+tier escalation any more than it can buy itself a looser review cap — and
+dropping every level together would evade the disclosure below by leaving
+nothing to be below:
 
 ```sh
 base="$(git merge-base HEAD "$base_ref")"          # $base_ref from §1

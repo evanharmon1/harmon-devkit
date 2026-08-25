@@ -107,7 +107,7 @@ validate() {
         and (.axis | IN("classification", "strategy", "model", "work-type",
                         "concern", "workflow", "provenance", "foreman",
                         "release", "meta"))
-        and (.source | IN("inline", "agent-registry", "tool-owned"))
+        and (.source | IN("inline", "devflow", "agent-registry", "tool-owned"))
         and (.writers | writers)
         and ((.retired // false) or (.writers | length > 0))
         and optional_string("writer_note"; 10000)
@@ -136,7 +136,8 @@ validate() {
                and has("placeholder")
              else has("registry_set") | not end)
         and (if .source == "tool-owned" then (.provision | not) else true end)
-        and (if .source == "inline" and ((.open_values // false) | not)
+        and (if (.source == "inline" or .source == "devflow")
+                and ((.open_values // false) | not)
                 and ((.retired // false) | not)
              then (.values | length > 0) else true end)
         and (if (.open_values // false) then has("placeholder") else true end)

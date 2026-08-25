@@ -201,6 +201,80 @@ write_labels() {
 JSON
 }
 
+# A harmon-init#1047-migrated registry pair: rigor/strategy families sourced
+# from .devflow.toml (source: devflow, same enumerated-value shape as inline),
+# a retired method family (the strategy:* rename leaves it in place, unused),
+# and an agent-registry family to force the schema_version-3 fetch path.
+write_migrated_label_registry() {
+    local fixture="$1" area="$2"
+    jq '(.["$defs"].family.properties.source.enum) += ["devflow"]' \
+        "$repo/label-registry.schema.json" >"$fixture/label-registry.schema.json"
+    cat >"$fixture/label-registry.json" <<JSON
+{
+  "\$schema": "./label-registry.schema.json",
+  "schema_version": 1,
+  "families": [
+    {
+      "family":"area","prefix":"area","purpose":"Repository areas","axis":"classification",
+      "source":"inline","writers":["human","agent"],"readers":"humans",
+      "lifecycle":"durable","exclusive":true,"provision":true,"color":"123456",
+      "values":[{"value":"$area","description":"Area"}]
+    },
+    {
+      "family":"rigor","prefix":"rigor","purpose":"Dev Loop round-cap level","axis":"strategy",
+      "source":"devflow","writers":["human"],"readers":"humans",
+      "lifecycle":"durable","exclusive":true,"provision":true,"color":"D4C5F9",
+      "values":[{"value":"standard","description":"Default budget"}]
+    },
+    {
+      "family":"strategy","prefix":"strategy","purpose":"Execution topology","axis":"strategy",
+      "source":"devflow","writers":["human","agent"],"readers":"humans",
+      "lifecycle":"durable","exclusive":true,"provision":true,"color":"BF3989",
+      "values":[{"value":"plan","description":"Agent plans then implements"}]
+    },
+    {
+      "family":"method","prefix":"method","purpose":"Retired execution topology","axis":"strategy",
+      "source":"devflow","writers":[],"readers":"humans",
+      "lifecycle":"durable","exclusive":true,"provision":false,"retired":true,"values":[]
+    },
+    {
+      "family":"suggest","prefix":"suggest","purpose":"Advisory family routing","axis":"model",
+      "source":"agent-registry","registry_set":"suggest","writers":["human","agent"],
+      "readers":"humans","lifecycle":"durable","exclusive":false,"provision":true,
+      "placeholder":"suggest:<family>","color":"BFD4F2","values":[]
+    }
+  ]
+}
+JSON
+}
+
+# schema_version 3 (harnesses gain a roles array) — a real post-#1047
+# harmon-init agent-registry.json/schema.json pair, simulated by mutating this
+# repo's own (still schema_version 2) copies.
+write_migrated_agent_registry() {
+    local fixture="$1"
+    jq '.schema_version = 3 | .harnesses[0].roles = ["implement"]' \
+        "$repo/agent-registry.json" >"$fixture/agent-registry.json"
+    jq '.properties.schema_version.const = 3
+        | (.["$defs"].harness.properties.roles) = {
+            "type": "array",
+            "items": {"type": "string", "enum": ["orchestrate", "implement", "review"]},
+            "uniqueItems": true
+          }' \
+        "$repo/agent-registry.schema.json" >"$fixture/agent-registry.schema.json"
+}
+
+write_migrated_labels() {
+    local fixture="$1" area="$2"
+    cat >"$fixture/labels.json" <<JSON
+[
+  {"name":"area:$area","description":"Live area"},
+  {"name":"rigor:standard","description":"Default budget"},
+  {"name":"strategy:plan","description":"Agent plans then implements"}
+]
+JSON
+}
+
 discover() {
     local fixture="$1"
     BREAKDOWN_LABEL_FIXTURE="$fixture" PATH="$tmproot/bin:$PATH" \
@@ -559,13 +633,15 @@ mkdir -p "$agent_version"
 write_agent_registry "$agent_version"
 write_registry "$agent_version" api
 write_labels "$agent_version" api
-jq '.schema_version = 3' "$agent_version/agent-registry.json" >"$agent_version/agent-registry-updated.json"
+# 2 and 3 are both supported (harmon-init#1047 bumped harnesses' schema to 3);
+# 4 stays genuinely unsupported and exercises the same fail-closed path.
+jq '.schema_version = 4' "$agent_version/agent-registry.json" >"$agent_version/agent-registry-updated.json"
 mv "$agent_version/agent-registry-updated.json" "$agent_version/agent-registry.json"
-jq '.properties.schema_version.const = 3' "$agent_version/agent-registry.schema.json" >"$agent_version/agent-schema-updated.json"
+jq '.properties.schema_version.const = 4' "$agent_version/agent-registry.schema.json" >"$agent_version/agent-schema-updated.json"
 mv "$agent_version/agent-schema-updated.json" "$agent_version/agent-registry.schema.json"
 if discover "$agent_version" >"$agent_version/output" 2>"$agent_version/error"; then
     bad "unsupported agent-registry versions cannot be certified"
-elif [ ! -s "$agent_version/output" ] && grep -q 'schema_version must be 2' "$agent_version/error"; then
+elif [ ! -s "$agent_version/output" ] && grep -q 'schema_version must be 2 or 3' "$agent_version/error"; then
     ok "unsupported agent-registry contracts fail closed after schema validation"
 else
     bad "unsupported agent-registry contract fails with a semantic diagnostic"
@@ -742,6 +818,42 @@ if grep -qF 'On an organization-owned repository, choose exactly one valid nativ
     ok "breakdown enforces exactly one repository-appropriate work classification"
 else
     bad "breakdown enforces exactly one repository-appropriate work classification"
+fi
+
+echo "==> migrated registry (harmon-init#1047: devflow source, schema_version 3)"
+migrated="$tmproot/migrated"
+mkdir -p "$migrated"
+write_migrated_agent_registry "$migrated"
+write_migrated_label_registry "$migrated" api
+write_migrated_labels "$migrated" api
+if migrated_output="$(discover "$migrated" 2>"$migrated/error")"; then
+    ok "a devflow-sourced registry with an agent-registry schema_version-3 pair is accepted"
+else
+    bad "a devflow-sourced registry with an agent-registry schema_version-3 pair is accepted: $(cat "$migrated/error")"
+    migrated_output='{}'
+fi
+
+if jq -e '[.families[].family] | index("rigor") | not' <<<"$migrated_output" >/dev/null; then
+    ok "a devflow-sourced human-only family (rigor) is filtered the same as an inline one"
+else
+    bad "a devflow-sourced human-only family (rigor) is filtered the same as an inline one"
+fi
+
+if jq -e '
+    .families[] | select(.family == "strategy") |
+    .source == "devflow" and .exclusive == true and
+    .labels[0].name == "strategy:plan"
+' <<<"$migrated_output" >/dev/null; then
+    ok "the renamed strategy family (devflow-sourced, exclusive) is discovered"
+else
+    bad "the renamed strategy family (devflow-sourced, exclusive) is discovered"
+fi
+
+if ! grep -q '"name":"method:' <<<"$migrated_output" &&
+    ! grep -q '"name": "method:' <<<"$migrated_output"; then
+    ok "the retired method family contributes no labels"
+else
+    bad "the retired method family contributes no labels"
 fi
 
 if [ "$fail" -gt 0 ]; then

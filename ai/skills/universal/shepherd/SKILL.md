@@ -77,13 +77,21 @@ levels may or may not share one fixed value across levels — read them, don't
 assume. Announce the resolved value the way gauntlet announces its caps, and
 disclose it in the PR body when it is off-default.
 
-**A resolved cap of 0 does not skip the readiness gate.** It means: spend no
+**A resolved cap of 0 does not skip the readiness gate — but it does drop
+the current-head Codex-cycle condition from it.** It means: spend no
 shepherd round — the watch/adjudicate/fix/push loop in steps 2–5 never
-runs — and go straight to step 6, evaluating the gate exactly as written
-against whatever head exists on entry. A pass promotes normally; anything
-else is stop condition 2 (**cap reached**), with zero rounds spent. Cap 0
-disables the fix loop, never the deterministic checks that decide whether the
-PR was already ready.
+runs, so triggering `@codex review` and waiting out its cycle (itself active
+engagement this budget cannot afford) never happens either — and go straight
+to step 6, passing the gate `--codex-disabled` exactly as a repo with Codex
+cloud review turned off would, whether or not it is actually enabled here.
+CI still has to be green, and any human review finding already on the PR
+still has to be answered, for the gate to pass — those are checks against
+state that already exists, not rounds this budget has to spend. If a human
+finding is outstanding — unanswered already, or one that arrives while this
+stage evaluates — and the gate is not otherwise clean, that is stop
+condition 2 (**cap reached**) on the spot: leave the PR draft with a
+blocker report naming it, **never an agent fix round** — there is no round
+to spend on it. A pass otherwise promotes normally.
 
 **This stage settles the low-priority findings.** Where the earlier dev-flow
 loops gate only on high-priority findings (in repos that run a
@@ -1173,9 +1181,12 @@ loops indefinitely:
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
      --codex-state "$state"   # §2's attempt-state file; pass
                               # --codex-disabled instead where Codex cloud
-                              # review is not enabled — one of the two is
-                              # required, so the Codex condition cannot be
-                              # skipped by silence
+                              # review is not enabled, OR where the resolved
+                              # shepherd cap is 0 (the cap-0 note above,
+                              # whether or not Codex review is otherwise
+                              # enabled) — one of the two is always
+                              # required, so the Codex condition can never
+                              # be skipped by silence
    ```
 
    `--head` is the head whose CI, Codex result, comments, and deferred
