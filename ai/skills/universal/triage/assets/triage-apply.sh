@@ -39,6 +39,7 @@
 #   triage-apply.sh axis-values [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh work-types [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh native-type --repo owner/repo --issue N
+#   triage-apply.sh native-types --repo owner/repo
 #   triage-apply.sh label --repo owner/repo --issue N
 #                   [--add LABEL]... [--native-type TYPE]
 #                   [--remove needs-triage]
@@ -86,6 +87,7 @@ usage() {
     echo "       $0 axes [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 axis-values [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 work-types [--repo owner/repo] [--manifest PATH]" >&2
+    echo "       $0 native-types --repo owner/repo" >&2
     echo "       $0 label --repo owner/repo --issue N [--add LABEL]..." >&2
     echo "           [--native-type TYPE]" >&2
     echo "           [--remove needs-triage] [--inapplicable AXIS]..." >&2
@@ -424,6 +426,31 @@ cmd_native_type() {
         die 2 "could not read the native issue Type of $repo#$issue"
 }
 
+cmd_native_types() {
+    local repo="" owner_type
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --repo)
+            [ "$#" -ge 2 ] || usage
+            repo="$2"
+            shift 2
+            ;;
+        *) usage ;;
+        esac
+    done
+    [ -n "$repo" ] || usage
+    owner_type="$(gh api "repos/$repo" -q .owner.type)" ||
+        die 2 "could not read the owner type of $repo"
+    [ "$owner_type" = "Organization" ] ||
+        die 5 "refused: native issue Types are available only on organization repos"
+    enabled_native_types "$repo" ||
+        die 2 "could not list enabled native issue Types of $repo"
+}
+
+gh_supports_native_type_write() {
+    gh issue edit --help 2>/dev/null | grep -q -- '--type'
+}
+
 cmd_label() {
     local repo="" issue="" manifest="./label-registry.json" execute=0
     local native_type="" native_type_seen=0
@@ -695,10 +722,34 @@ cmd_label() {
         die 2 "--execute requires TRIAGE_EXECUTE=1 in the environment" \
             "(set by the task triage wrapper for supervised runs)"
 
-    local args=()
+    # GitHub CLI applies label edits before its deferred issue-Type mutation.
+    # Keep the Type in a verified first step so a failed Type write cannot
+    # remove needs-triage (or add any other label) first.
     if [ -n "$effective_native_type" ]; then
-        args+=(--type "$effective_native_type")
+        gh_supports_native_type_write ||
+            die 2 "gh issue edit --type requires GitHub CLI 2.98 or newer"
+        # A person may have classified the issue after the first preflight.
+        # Re-read immediately before the non-conditional GitHub write and
+        # refuse a conflicting human Type before touching any labels.
+        current_native_type="$(native_type_read "$repo" "$issue")" ||
+            die 2 "could not re-read the current native issue Type of $repo#$issue"
+        if [ "$current_native_type" != "none" ]; then
+            [ "$current_native_type" = "$effective_native_type" ] ||
+                die 4 "refused: $repo#$issue was classified as native issue Type" \
+                    "'$current_native_type' while triage was preparing its write"
+            effective_native_type=""
+        else
+            gh issue edit "$issue" --repo "$repo" --type "$effective_native_type" \
+                >/dev/null </dev/null ||
+                die 1 "write failed: gh issue edit --type $repo#$issue"
+            current_native_type="$(native_type_read "$repo" "$issue")" ||
+                die 2 "could not verify the native issue Type written to $repo#$issue"
+            [ "$current_native_type" = "$effective_native_type" ] ||
+                die 1 "write failed: $repo#$issue native issue Type did not become" \
+                    "'$effective_native_type'"
+        fi
     fi
+    local args=()
     if [ "${#effective_adds[@]}" -gt 0 ]; then
         args+=(--add-label "$(
             IFS=,
@@ -711,8 +762,10 @@ cmd_label() {
             echo "${removes[*]}"
         )")
     fi
-    gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null ||
-        die 1 "write failed: gh issue edit $repo#$issue"
+    if [ "${#args[@]}" -gt 0 ]; then
+        gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null ||
+            die 1 "write failed: gh issue edit $repo#$issue"
+    fi
     if [ -n "$effective_native_type" ]; then
         echo "APPLIED native issue Type '$effective_native_type' to $repo#$issue"
     fi
@@ -733,6 +786,7 @@ axes) cmd_axes "$@" ;;
 axis-values) cmd_axis_values "$@" ;;
 work-types) cmd_work_types "$@" ;;
 native-type) cmd_native_type "$@" ;;
+native-types) cmd_native_types "$@" ;;
 label) cmd_label "$@" ;;
 *) usage ;;
 esac

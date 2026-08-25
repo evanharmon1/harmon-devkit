@@ -74,7 +74,11 @@ case "${1:-} ${2:-}" in
         fi
     else
         [ "${GH_STUB_NATIVE_TYPE:-}" = "ERROR" ] && exit 1
-        printf '%s\n' "${GH_STUB_NATIVE_TYPE:-}"
+        if [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
+            cat "$GH_STUB_NATIVE_TYPE_FILE"
+        else
+            printf '%s\n' "${GH_STUB_NATIVE_TYPE:-}"
+        fi
     fi
     ;;
 api\ repos/*/issues/*)
@@ -103,8 +107,28 @@ api\ repos/*)
 # so a stubbed read call inside a caller's while-read loop cannot eat the
 # loop's remaining input or hang on a never-closing stdin.
 "issue edit")
+    if printf '%s\n' "$*" | grep -qx 'issue edit --help'; then
+        if [ "${GH_STUB_NO_TYPE_FLAG:-0}" = 0 ]; then
+            printf '%s\n' '  --type string   Set the issue type by name'
+        fi
+        if [ -n "${GH_STUB_TYPE_CHANGES_BEFORE_WRITE:-}" ] &&
+            [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
+            printf '%s\n' "$GH_STUB_TYPE_CHANGES_BEFORE_WRITE" >"$GH_STUB_NATIVE_TYPE_FILE"
+        fi
+        exit 0
+    fi
     [ -t 0 ] || cat >/dev/null
     [ "${GH_STUB_EDIT_FAIL:-0}" = 0 ] || exit 1
+    if [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
+        prev=""
+        for a in "$@"; do
+            if [ "$prev" = "--type" ]; then
+                printf '%s\n' "$a" >"$GH_STUB_NATIVE_TYPE_FILE"
+                break
+            fi
+            prev="$a"
+        done
+    fi
     ;;
 "issue create")
     [ -t 0 ] || cat >/dev/null
@@ -453,6 +477,16 @@ export GH_STUB_ENABLED_NATIVE_TYPES_JSON='{"data":{"organization":{"issueTypes":
 unset GH_STUB_ENABLED_NATIVE_TYPES_JSON
 GH_STUB_OWNER_TYPE="User"
 
+echo "==> native-types: lists enabled organization Types for classification"
+GH_STUB_OWNER_TYPE="Organization"
+export GH_STUB_ENABLED_NATIVE_TYPES_JSON='{"data":{"organization":{"issueTypes":{"totalCount":2,"nodes":[{"name":"Bug","isEnabled":true},{"name":"Task","isEnabled":false}]}}}}'
+[ "$(run "$apply" native-types --repo "$repo")" = 0 ] ||
+    fail "native-types should list enabled Types: $(cat "$tmp/out")"
+grep -qx 'Bug' "$tmp/out" || fail "native-types must include enabled Bug"
+grep -qx 'Task' "$tmp/out" && fail "native-types must exclude disabled Task"
+GH_STUB_OWNER_TYPE="User"
+unset GH_STUB_ENABLED_NATIVE_TYPES_JSON
+
 echo "==> label: native Type fills an empty slot but never replaces one"
 GH_STUB_OWNER_TYPE="Organization"
 export GH_STUB_ENABLED_NATIVE_TYPES_JSON='{"data":{"organization":{"issueTypes":{"totalCount":2,"nodes":[{"name":"Bug","isEnabled":true},{"name":"Feature","isEnabled":true}]}}}}'
@@ -614,9 +648,12 @@ grep -q "DRY-RUN would set native issue Type 'Bug'" "$tmp/out" ||
     fail "native Type dry-run must describe the mutation"
 grep -q "issue edit" "$GH_STUB_LOG" && fail "native Type dry-run must not edit"
 
-echo "==> label: native Type and needs-triage removal share one mutation"
+echo "==> label: native Type precedes and verifies needs-triage removal"
 : >"$GH_STUB_LOG"
-[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 13 \
+native_type_file="$tmp/native-type"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    "$apply" label --repo "$repo" --issue 13 \
     --native-type Bug --remove needs-triage --inapplicable layer \
     --inapplicable domain --execute --manifest "$manifest")" = 0 ] ||
     fail "combined native Type/removal failed: $(cat "$tmp/out")"
@@ -624,19 +661,41 @@ grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
     fail "combined mutation must report the Type"
 grep -q "APPLIED remove 'needs-triage'" "$tmp/out" ||
     fail "combined mutation must report removal"
-[ "$(grep -c '^issue edit ' "$GH_STUB_LOG")" = 1 ] ||
-    fail "combined mutation must issue exactly one edit"
-grep -q -- "--type Bug" "$GH_STUB_LOG" || fail "combined edit missing --type"
-grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" ||
-    fail "combined edit missing removal"
+[ "$(grep -c '^issue edit ' "$GH_STUB_LOG")" = 3 ] ||
+    fail "combined mutation must check support then issue separate Type/removal edits"
+grep -n -- "--type Bug" "$GH_STUB_LOG" | cut -d: -f1 >"$tmp/type-line"
+grep -n -- "--remove-label needs-triage" "$GH_STUB_LOG" | cut -d: -f1 >"$tmp/remove-line"
+[ "$(cat "$tmp/type-line")" -lt "$(cat "$tmp/remove-line")" ] ||
+    fail "Type must be written before needs-triage removal"
 
-echo "==> label: a native Type mutation failure reports no success"
+echo "==> label: a native Type mutation failure cannot remove needs-triage"
 : >"$GH_STUB_LOG"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL=1 "$apply" \
-    label --repo "$repo" --issue 13 --native-type Bug --execute \
+    label --repo "$repo" --issue 13 --native-type Bug --remove needs-triage \
+    --inapplicable layer --inapplicable domain --execute \
     --manifest "$manifest")" = 1 ] || fail "native Type mutation failure must exit 1"
 grep -q "APPLIED native issue Type" "$tmp/out" &&
     fail "failed native Type mutation must not report success"
+grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
+    fail "failed native Type mutation must not remove needs-triage"
+
+echo "==> label: a concurrent Type change refuses before any mutation"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_TYPE_CHANGES_BEFORE_WRITE=Feature "$apply" label --repo "$repo" \
+    --issue 13 --native-type Bug --execute --manifest "$manifest")" = 4 ] ||
+    fail "concurrent Type change must refuse"
+[ "$(grep -c '^issue edit ' "$GH_STUB_LOG")" = 1 ] ||
+    fail "concurrent Type change must stop before the Type mutation"
+
+echo "==> label: an old gh without --type refuses before mutation"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NO_TYPE_FLAG=1 "$apply" \
+    label --repo "$repo" --issue 13 --native-type Bug --execute \
+    --manifest "$manifest")" = 2 ] || fail "old gh must exit 2"
+[ "$(grep -c '^issue edit ' "$GH_STUB_LOG")" = 1 ] ||
+    fail "old gh must only receive the help probe"
 GH_STUB_OWNER_TYPE="User"
 
 echo "==> label: --execute is inert without TRIAGE_EXECUTE=1"
