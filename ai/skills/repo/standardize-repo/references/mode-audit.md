@@ -11,6 +11,11 @@ for maintaining the template). The per-area checklist lives in
 authoritative list of what "standardized" means; this file is the **procedure** for
 walking it against a target and fixing gaps.
 
+When audit remediation applies or updates the template, complete the shared
+**Vendored skills** step in `SKILL.md`. Any vendored skills and agents it produces
+ride in the standardize PR; they are part of the deliverable, not scratch output to
+discard or split off.
+
 ---
 
 ## 1. Running the audit

@@ -8,6 +8,10 @@ standardize an *existing* repo instead, use the apply/update mode, not this one.
 The source of truth is `harmon-init/copier.yml`. Do not invent questions, task
 names, or defaults — they are derived from that file below.
 
+After this mode applies the template, complete the shared **Vendored skills** step
+in `SKILL.md`. Any vendored skills and agents it produces ride in the standardize
+PR; they are part of the deliverable, not scratch output to discard or split off.
+
 ## 1. Preconditions
 
 Verify before running anything:

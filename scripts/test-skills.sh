@@ -3495,9 +3495,11 @@ expect_ok "skill keeps credential writes human-only" \
 expect_ok "update guidance requires a deletion audit" \
     grep -qF 'Deletion audit — justify every removed pre-existing path.' \
     "$STANDARDIZE_REFS/mode-update.md"
-expect_ok "skill always refreshes enabled skills sync" \
-    grep -qF 'After a template apply or update, if `.skills-sync.yaml` exists' \
-    "$STANDARDIZE_SKILL"
+expect_ok "skill routes vendored skills through every provenance state" \
+    sh -c 'grep -qF "## Vendored skills" "$1" &&
+        grep -qF "**Never vendored.**" "$1" &&
+        grep -qF "**Pin moved.**" "$1" &&
+        grep -qF "**In sync.**" "$1"' sh "$STANDARDIZE_SKILL"
 expect_ok "skill completion requires green CI and review adjudication" \
     grep -qF 'watch every required check to a terminal green result' \
     "$STANDARDIZE_SKILL"
@@ -3905,6 +3907,43 @@ git_init "$AGG_TARGET"
 git_commit_all "$AGG_TARGET" "record aggregate fixture"
 expect_ok "verify-applied accepts exact build and devcontainer result contracts" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+
+# A rendered skills-sync manifest starts inert until its managed provenance is
+# materialized. That is advisory: surface the first-vendor decision, then go
+# quiet once both requested asset kinds carry their managed stamps.
+cat >"$AGG_TARGET/.skills-sync.yaml" <<'EOF'
+source:
+  repo: https://github.com/evanharmon1/harmon-devkit.git
+  ref: v0.0.0-test
+categories:
+  - universal
+dest: vendored/skills
+agents:
+  names: [implementer]
+  dest: vendored/agents
+EOF
+expect_ok_contains "verify-applied warns when a skills-sync manifest was never vendored" \
+    "WARN: .skills-sync.yaml is never vendored: skills and agents have no # managed: provenance; run 'task sync:skills' to materialize them." \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+mkdir -p "$AGG_TARGET/vendored/skills" "$AGG_TARGET/vendored/agents"
+printf '%s\n' '# managed: gauntlet, shepherd' \
+    >"$AGG_TARGET/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok_contains "verify-applied warns when only skills-sync agents lack provenance" \
+    "WARN: .skills-sync.yaml is never vendored: agents have no # managed: provenance; run 'task sync:skills' to materialize them." \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+printf '%s\n' '# managed: implementer' \
+    >"$AGG_TARGET/vendored/agents/.AGENTS_PROVENANCE"
+rm -f "$AGG_TARGET/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok_contains "verify-applied warns when only skills-sync skills lack provenance" \
+    "WARN: .skills-sync.yaml is never vendored: skills have no # managed: provenance; run 'task sync:skills' to materialize them." \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+printf '%s\n' '# managed: gauntlet, shepherd' \
+    >"$AGG_TARGET/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "verify-applied stays silent about never-vendored skills with provenance" \
+    bash -c '
+        output="$(bash "$1" "$2" 2>&1)" || exit $?
+        ! printf "%s\\n" "$output" | grep -qF ".skills-sync.yaml is never vendored"
+    ' _ "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 write_required_results_helper generic
 expect_fail "verify-applied rejects a generic success-or-skipped result helper" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"

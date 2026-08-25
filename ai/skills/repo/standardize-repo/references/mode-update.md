@@ -35,6 +35,10 @@ is guarded on `run_task_install` alone — unlike every other entry, it carries 
 `_copier_operation == 'copy'` guard — so an update on a repo that answered yes
 re-runs brew deps and `lefthook install`. See §2.)
 
+After this mode updates the template, complete the shared **Vendored skills** step
+in `SKILL.md`. Any vendored skills and agents it produces ride in the standardize
+PR; they are part of the deliverable, not scratch output to discard or split off.
+
 **How to run the snippets below.** They are written to survive `bash -eu`: the
 load-bearing steps carry an explicit `|| { …; exit 1; }` handler so the failure
 names itself, and a command without one still stops the run under errexit, just

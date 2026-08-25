@@ -166,16 +166,66 @@ each — is **`references/standards-catalog.md`**. The audit mode and any manual
 retrofit work off that catalog. Treat the generated template output (and that
 catalog) as the source of truth, not memory.
 
+## Vendored skills
+
+After **every** template apply or update — in new-repo, adopt-existing, update, or
+audit remediation — complete this step before the repository gate. Follow the
+**"Vendor shared agent skills"** item in harmon-init's `docs/CHECKLIST.md` for the
+setup context; do not replace it with hand-copied skills, agents, or consumer-side
+helpers. For vendoring and its checks, use only `task sync:skills`,
+`task verify:skills`, `task verify:skills:offline`, and (in the in-sync case)
+`git ls-remote --tags SOURCE_REPO`.
+
+Read `.skills-sync.yaml` and its destination provenance, then report one of these
+states and take only its matching action:
+
+1. **Never vendored.** The manifest exists but the skills destination has no
+   `# managed:` provenance line — or, when the manifest has an `agents:` block,
+   its agents destination has none. **Ask for an explicit yes before doing
+   anything.** Name both consequences of that yes: `verify:skills` will become live
+   in `task ci` and the CI lint job; and the vendored `gauntlet` and `shepherd` will
+   become the Dev Loop procedure under `AGENTS.md`. Only after an explicit yes, run:
+
+   ```bash
+   task sync:skills
+   task verify:skills
+   task verify:skills:offline
+   ```
+
+   Commit the materialized result in the same standardize PR as
+   `chore(skills): vendor harmon-devkit REF (CATEGORIES)`.
+
+2. **Pin moved.** Provenance is present, but `task verify:skills:offline` fails
+   because the manifest pin and vendored ref differ (normally a Renovate pin bump).
+   Do not change the pin again; materialize the existing requested pin and run:
+
+   ```bash
+   task sync:skills
+   task verify:skills
+   task verify:skills:offline
+   ```
+
+   Commit that refresh in the same standardize PR as
+   `chore(skills): refresh harmon-devkit OLD to NEW`.
+
+3. **In sync.** Provenance is present and the offline verification passes. Run:
+
+   ```bash
+   git ls-remote --tags SOURCE_REPO
+   ```
+
+   If it shows a release newer than the pin, report it and offer to bump the pin,
+   sync, and commit the refresh. Default to **no**: Renovate owns the bump, and a
+   version pin must never move silently.
+
+Vendored skills and agents produced by this step **ride in the standardize PR**.
+They are part of its deliverable, not scratch output to discard or split into a
+separate PR. In the final summary, state `Vendored skills: <never vendored | pin
+moved | in sync> — <what you did>`.
+
 ## Verification
 
-After a template apply or update, if `.skills-sync.yaml` exists, refresh and verify
-the managed skills before running the repository gate:
-
-```bash
-task sync:skills
-task verify:skills
-task verify:skills:offline
-```
+Complete the **Vendored skills** step above before running the repository gate.
 
 After applying any mode, run the bundled check:
 
