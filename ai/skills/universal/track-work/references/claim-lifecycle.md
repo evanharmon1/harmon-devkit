@@ -122,7 +122,11 @@ in the claim record, never in the label.
   legacy records that omit any of them remain valid. `family` is copied from
   the trusted acting-family resolver output, never inferred from issue text or
   labels. `dispatched to` identifies an orchestrator's subagent dispatch, or
-  is `none`; it is never release authority or cleanup input.
+  is `none`; it is never release authority or cleanup input. It is
+  **dispatch-time history, not live state**: a record is never edited when
+  the delegate returns, so the value means "was dispatched to" and a later
+  record (an ordinary refresh) supersedes it — readers take the latest record
+  and judge whether the delegate is still active from the work in flight.
   `runtime environment` is one portable value (`host`, `devcontainer`,
   `coder`, `codespace`, `github-actions`, or `unknown`); it never contains a
   raw hostname or workspace identifier. A claim writes `unknown` instead of

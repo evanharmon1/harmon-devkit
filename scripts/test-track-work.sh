@@ -3062,6 +3062,7 @@ body_extended="$(printf '%s' "$body_v2" | awk '
         print "- harness: Codex CLI"
         print "- model: gpt-5"
         print "- session: claim-record-fields-450"
+        print "- dispatched to: implementer (codex gpt-5.6-terra)"
     }
 ')"
 issue_closed_claim='{"state":"closed","labels":[{"name":"bug"},{"name":"claim:claude"}],"assignees":[{"login":"evanharmon1"}]}'

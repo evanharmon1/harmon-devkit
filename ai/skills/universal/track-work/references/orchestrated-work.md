@@ -12,7 +12,11 @@ The `claim:<family>` label names the family **accountable for the claim and
 its release** — the orchestrator's — not the delegate executing the work. A
 Claude session dispatching a Codex implementer still claims `claim:claude`;
 the delegate is recorded in the claim record's informational `dispatched to`
-line, which is where a reader looks for who is executing.
+line, which is where a reader looks for who was handed the work. That line is
+written once, at dispatch: the record is not edited when the delegate returns
+or is replaced — a redelegation posts a new claim record (the ordinary
+refresh), and a reader wanting the current state looks at the latest record
+plus the work in flight.
 
 ## Sequence
 
