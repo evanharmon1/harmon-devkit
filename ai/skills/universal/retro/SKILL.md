@@ -26,10 +26,10 @@ have dropped, and note that the tables may be incomplete. Do not trust
 remembered status — re-verify each one live:
 
 - `gh pr view <n> --json state,isDraft,mergedAt,reviewDecision,statusCheckRollup,url,title`
-- `gh issue view <n> --json state,stateReason,assignees,labels,url,title`
-- `gh issue view <n> --json comments` — the claim comments the marker check
-  below reads (including any `dispatched to` line); the state read above
-  carries no comment bodies
+- `gh issue view <n> --json state,stateReason,assignees,labels,url,title,comments`
+  — one response, so the marker check below reads labels and the claim
+  comments (including any `dispatched to` line) from a single snapshot; a
+  second call could pair pre-release markers with a post-release comment
 
 **Read the claim off the markers, not off the issue.** A live claim is an
 `claim:*` (or legacy `agent:*`) label, a card at `In Progress`, or the

@@ -19,8 +19,11 @@ line, which is where a reader looks for who was handed the work. That line
 names the delegate the orchestrator is **about to dispatch** — the claim is
 written immediately before the dispatch, so the value is the intended
 delegate, and a dispatch that then fails or is aborted owes a refresh record
-saying `none` (or an early hand-back). The record is never edited when the
-delegate returns or is replaced: a redelegation posts a new claim record (the
+saying `none` (or an early hand-back). With several delegates on one issue
+at once, the line is the **complete set**, comma-separated on the one line,
+and every refresh rewrites the whole set as it stands — adding a delegate
+never drops one still active. The record is never edited when a delegate
+returns or is replaced: a redelegation posts a new claim record (the
 ordinary refresh), and a reader wanting the current state looks at the latest
 record plus the work in flight.
 
@@ -41,7 +44,10 @@ record plus the work in flight.
    `/shepherd` retires the `claim:*` label at ready-for-review, and the close
    event or `/wrap` releases the claim itself.
    Hand the issue back early only when the report leaves nothing in flight:
-   `partial` or `blocked` with no PR open.
+   no PR open **and** no commits kept on the branch — a `partial` or
+   `blocked` report whose commits stay on a feature branch is unfinished
+   work, and the claim stays live until that branch is abandoned (deleted or
+   explicitly parked in the hand-back) or carried to a PR.
 
 Use this copy-pasteable brief addition for any delegated issue work:
 
