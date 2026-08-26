@@ -1071,6 +1071,26 @@ expect_ok "status fixture syncs at its stable pin" run_sync_at "$STATUS" sync
 mkdir -p "$STATUS_DEST/local-only/assets"
 printf '%s\n' local >"$STATUS_DEST/local-only/assets/note.txt"
 
+# The status contract deliberately uses the managed-set marker to distinguish
+# a current vendoring stamp from the legacy wholesale-managed format. Sync can
+# still upgrade that legacy format, but status reports it as not yet vendored
+# under the current contract until the upgrade writes `# managed:`.
+STATUS_LEGACY="$TMPROOT/consumer-status-legacy"
+mkdir -p "$STATUS_LEGACY"
+write_manifest_at "$STATUS_LEGACY" v1.2.3 universal
+run_sync_at "$STATUS_LEGACY" sync >/dev/null
+STATUS_LEGACY_DEST="$STATUS_LEGACY/vendored/skills"
+STATUS_LEGACY_PROV="$STATUS_LEGACY_DEST/.SKILLS_PROVENANCE"
+make_legacy_stamp "$STATUS_LEGACY_PROV" v1.2.3 universal
+reset_status_probe
+expect_status "status requires managed provenance after a legacy skills sync" 10 \
+    "state=never-vendored pinned=v1.2.3 vendored=none latest=unknown" \
+    "" \
+    "$STATUS_LEGACY/.skills-sync.yaml" "$STATUS_LEGACY_DEST" "$STATUS_LEGACY_PROV" \
+    run_status_at "$STATUS_LEGACY" status --offline
+expect_ok "legacy-provenance status makes zero upstream probes" \
+    test "$(status_probe_count)" = 0
+
 # The invalid tags above are ignored, so the one applicable probe reports the
 # stable pin as latest and leaves an unmanaged entry untouched.
 reset_status_probe
