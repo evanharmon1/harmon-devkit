@@ -77,6 +77,10 @@ including the `task verify` a fix owes before the next round.
 When a cap of 0 skips a stage outright, there is no round to number: omit
 `round n/cap` and write `skipped (cap 0)` in `Stage` instead of inventing
 `round 0/0`.
+Before a capped stage has begun its first round, a stage-entry or pending-wait
+ledger omits `round n/cap` and writes `waiting (no round yet)` in `Stage`;
+waiting, checks, and reviewer latency do not spend a round. Once a finding or
+no-change adjudication cycle begins, use the concrete `round n/cap` again.
 
 Post it at every
 stage transition, when a round begins or ends, as the concise progress tick
@@ -907,6 +911,25 @@ you rather than the bot):
   green and no unresolved findings means the candidate head may proceed to
   step 6's readiness gate; **do not stop or report a handoff here**. Never
   merge — merging is always the maintainer's decision.
+
+**Shepherd-stage override transfer.** This stage starts after the draft PR
+exists, so the shared Stage-ledger paragraph's `§10` transfer describes the
+gauntlet's pre-PR handoff and cannot be the shepherd path. If a maintainer
+ends or redirects shepherd while a P0/P1 remains open, complete the shared
+trigger contract in the PR itself before stopping or changing stages:
+
+1. Immediately after recording the override in the commentary ledger, re-read
+   the open PR's `state,isDraft,headRefOid,body` and confirm it is still the
+   draft/head this round is working on.
+2. In the existing `## Deferred findings` section, add every still-open P0/P1
+   once, matched by location plus substance, as an unchecked entry such as
+   `- [ ] <file:line> — override-carried: <finding>; override: <reason>`.
+   Preserve all existing entries and record the override as why the finding was
+   carried, never as a disposition.
+3. Update the body with `gh pr edit <n> --repo "$repo" --body-file <file>`,
+   then re-read it and confirm every override-carried entry landed before
+   leaving the stage. Do not rely on the git-directory sidecar alone: this
+   PR already exists and shepherd has no later §10 transfer step.
 
 ## 3. Adjudicate findings (hypotheses, not authority)
 

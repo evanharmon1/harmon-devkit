@@ -69,6 +69,10 @@ including the `task verify` a fix owes before the next round.
 When a cap of 0 skips a stage outright, there is no round to number: omit
 `round n/cap` and write `skipped (cap 0)` in `Stage` instead of inventing
 `round 0/0`.
+Before a capped stage has begun its first round, a stage-entry or pending-wait
+ledger omits `round n/cap` and writes `waiting (no round yet)` in `Stage`;
+waiting, checks, and reviewer latency do not spend a round. Once a finding or
+no-change adjudication cycle begins, use the concrete `round n/cap` again.
 
 Post it at every
 stage transition, when a round begins or ends, as the concise progress tick

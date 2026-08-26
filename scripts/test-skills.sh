@@ -1001,6 +1001,18 @@ ledger_trigger() {
     ' "$1"
 }
 
+ledger_section() {
+    # The shared contract ends at its fixed final sentence. Shepherd has
+    # additional policy prose before its numbered section, so stopping at the
+    # next top-level heading would compare unrelated layout rather than the
+    # complete shared ledger contract.
+    awk '
+        /^## Stage ledger$/ { capture = 1 }
+        capture { print }
+        capture && /A one-step task that touches a single stage owes no ledger\.$/ { exit }
+    ' "$1"
+}
+
 assert_ledger_contract() {
     local file="$1" table legend trigger
     table="$(ledger_table "$file")"
@@ -1014,7 +1026,10 @@ assert_ledger_contract() {
     grep -qF 'write `skipped (cap 0)` in `Stage`' "$file" || return 1
     grep -qF 'instead of inventing' "$file" || return 1
     grep -qF '`round 0/0`' "$file" || return 1
-    grep -qF '`round n/cap`' "$file"
+    grep -qF '`round n/cap`' "$file" || return 1
+    grep -qF 'stage-entry or pending-wait' "$file" || return 1
+    grep -qF '`waiting (no round yet)`' "$file" || return 1
+    grep -qF 'waiting, checks, and reviewer latency do not spend a round' "$file"
 }
 
 assert_shared_ledger() {
@@ -1023,7 +1038,8 @@ assert_shared_ledger() {
     assert_ledger_contract "$second" || return 1
     [ "$(ledger_table "$first")" = "$(ledger_table "$second")" ] || return 1
     [ "$(ledger_legend "$first")" = "$(ledger_legend "$second")" ] || return 1
-    [ "$(ledger_trigger "$first")" = "$(ledger_trigger "$second")" ]
+    [ "$(ledger_trigger "$first")" = "$(ledger_trigger "$second")" ] || return 1
+    [ "$(ledger_section "$first")" = "$(ledger_section "$second")" ]
 }
 
 assert_gauntlet_ledger_hooks() {
@@ -1061,7 +1077,11 @@ assert_shepherd_ledger_hooks() {
     grep -qF 'timeline-guard stop' "$file" || return 1
     grep -qF 'resolved shepherd cap is 0' "$file" || return 1
     grep -qF 'and no round ran, omit `round n/cap`' "$file" || return 1
-    [ "$(grep -cF 'skipped (cap 0)' "$file")" -ge 3 ]
+    [ "$(grep -cF 'skipped (cap 0)' "$file")" -ge 3 ] || return 1
+    grep -qF 'Shepherd-stage override transfer.' "$file" || return 1
+    grep -qF 'This stage starts after the draft PR' "$file" || return 1
+    grep -qF 'override-carried' "$file" || return 1
+    grep -qF 'gh pr edit <n> --repo "$repo" --body-file <file>' "$file"
 }
 
 expect_ok "gauntlet carries the canonical ledger rows and glyph legend" \
