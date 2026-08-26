@@ -38,7 +38,9 @@ record plus the work in flight.
    from the default branch produces nothing. A single delegate may share the
    orchestrator's checkout only while the orchestrator makes no edits of its
    own; **each concurrent delegate gets its own worktree**
-   (`task worktree:new -- <name>` where the repo provides it) — the
+   (`task worktree:new -- <name> --base origin/<default>` where the repo
+   provides it — without `--base` the new branch forks from the main
+   worktree's HEAD, which may be another feature branch) — the
    implementer requires a clean tree and commits as it goes, so two workers
    in one checkout collide through the shared index or stop on each other's
    uncommitted edits. If the branch the claim record names changes, post a
@@ -49,7 +51,11 @@ record plus the work in flight.
    dispatch, not the claim: while review, CI, the PR, or another delegate is
    still in flight the claim stays live and follows the ordinary lifecycle:
    `/shepherd` retires the `claim:*` label at ready-for-review, and the close
-   event or `/wrap` releases the claim itself.
+   event or `/wrap` releases the claim itself. With several delegates on one
+   issue, do not take any of its PRs through `/shepherd`'s ready-for-review
+   stop until every delegate for that issue has reported — that stop retires
+   the label, and "implementing right now" is still true while another
+   delegate runs.
    Hand the issue back early only when the report leaves nothing in flight:
    no PR open **and** no commits kept on the branch — a `partial` or
    `blocked` report whose commits stay on a feature branch is unfinished
