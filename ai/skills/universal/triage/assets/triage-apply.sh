@@ -732,10 +732,18 @@ cmd_label() {
     fi
 
     if [ "$execute" -eq 0 ]; then
+        if [ -n "$effective_native_type" ] &&
+            in_list needs-triage "$(printf '%s\n' \
+                "${effective_adds[@]+"${effective_adds[@]}"}")"; then
+            echo "DRY-RUN would add 'needs-triage' to $repo#$issue"
+        fi
         if [ -n "$effective_native_type" ]; then
             echo "DRY-RUN would set native issue Type '$effective_native_type' on $repo#$issue"
         fi
         for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
+            if [ -n "$effective_native_type" ] && [ "$l" = "needs-triage" ]; then
+                continue
+            fi
             echo "DRY-RUN would add '$l' to $repo#$issue"
         done
         for l in "${removes[@]+"${removes[@]}"}"; do

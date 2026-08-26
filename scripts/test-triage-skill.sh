@@ -712,6 +712,17 @@ grep -q "DRY-RUN would set native issue Type 'Bug'" "$tmp/out" ||
 grep -q '^issue edit 13 ' "$GH_STUB_LOG" &&
     fail "native Type dry-run must not mutate an issue"
 
+echo "==> label: native Type dry-run reports marker-first execution order"
+[ "$(run "$apply" label --repo "$repo" --issue 20 --native-type Bug \
+    --add needs-triage --manifest "$manifest")" = 0 ] ||
+    fail "marker-first native Type dry-run failed: $(cat "$tmp/out")"
+grep -n "DRY-RUN would add 'needs-triage'" "$tmp/out" | cut -d: -f1 \
+    >"$tmp/marker-line"
+grep -n "DRY-RUN would set native issue Type 'Bug'" "$tmp/out" | cut -d: -f1 \
+    >"$tmp/type-line"
+[ "$(cat "$tmp/marker-line")" -lt "$(cat "$tmp/type-line")" ] ||
+    fail "dry-run must report the visibility marker before the native Type"
+
 echo "==> label: native Type dry-run refuses an old gh before promising a write"
 : >"$GH_STUB_LOG"
 [ "$(run env GH_STUB_NO_TYPE_FLAG=1 "$apply" label --repo "$repo" --issue 13 \
