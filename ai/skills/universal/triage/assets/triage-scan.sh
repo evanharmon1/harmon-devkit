@@ -22,10 +22,10 @@
 #     (self-exclusion — the report never scans itself)
 #
 # Org native Type: newer gh bulk-reads it (`--json issueType`), and where that
-# works every open issue carries a `native_type` ("none" when unset) and no
-# per-issue check is needed. Where it does not (older gh), `native_type` is
-# null, `native_type_mode` says "per-issue", and the skill checks native Type
-# per issue (triage-apply.sh native-type) before reporting one missing.
+# works every open issue carries `native_type_state` (`set` or `unset`) plus
+# the exact `native_type` name only when set. Where it does not (older gh),
+# state is `unknown`, `native_type` is null, and the skill checks per issue
+# (triage-apply.sh native-type) before reporting one missing.
 #
 # By default only issues needing attention (any flag) are emitted; --all emits
 # every open issue. Thresholds (days): TRIAGE_CLAIM_STALE_DAYS (default 14),
@@ -288,10 +288,13 @@ jq -n -L "$title_module_dir" \
             as $days
         | ($ls | map(select(. as $l | $wt | index($l) != null)))
             as $have_wt
-        # Bulk native Type where the scan could read it: the issue Type name,
-        # "none" when unset, null when unavailable (personal repo, old gh).
+        # State and name are separate so a real custom Type named "none" or
+        # "null" can never collide with an unset/unavailable sentinel.
         | (if $native_type_mode == "bulk"
-           then (.issueType.name // "none") else null end) as $nt
+           then (if .issueType == null then "unset" else "set" end)
+           elif $owner_type == "Organization" then "unknown"
+           else "n/a" end) as $nts
+        | (if $nts == "set" then .issueType.name else null end) as $nt
         | ($axes | map({key: ., value: axis_state($ls; .)})
            | from_entries) as $ax
         | ($ls | map(select(startswith("needs-")))) as $needs
@@ -303,8 +306,8 @@ jq -n -L "$title_module_dir" \
         # legacy-labeled, natively-untyped issue must not read removable
         # when the apply gate would refuse it. Personal repos, and org
         # repos the bulk read could not cover, still read the labels.
-        | (if $owner_type == "Organization" and $nt != null
-           then ($nt != "none")
+        | (if $owner_type == "Organization" and $nts != "unknown"
+           then ($nts == "set")
            else (($have_wt | length) > 0) end)
             as $typed
         # A stray unrecognized label also blocks completeness — the apply
@@ -319,8 +322,8 @@ jq -n -L "$title_module_dir" \
         # missing axis is not enough: a removed needs-triage may rest on an
         # --inapplicable attestation, which no label records, and re-adding
         # would churn every legitimately attested issue forever. Org repos
-        # are exempt from the work-type trigger too — the bulk scan cannot
-        # see native issue Type, so an empty label set proves nothing there.
+        # remain exempt when native Type state is unknown — an empty label
+        # set proves nothing there until the bounded per-issue read runs.
         # The absent layer axis is optional for completeness; a present layer
         # conflict or unknown value still requeues needs-triage below.
         # An unknown value requeues too — checked independently of the axis
@@ -333,13 +336,14 @@ jq -n -L "$title_module_dir" \
            or ($owner_type == "User" and ($have_wt | length) == 0)
            # Bulk-resolved orgs requeue on a definitively unset Type too;
            # the exemption stays only where native Type is unreadable.
-           or ($owner_type == "Organization" and $nt == "none"))
+           or ($owner_type == "Organization" and $nts == "unset"))
             as $needs_triage_worthy
         | {number, title, updatedAt,
            days_since_update: $days,
            labels: $ls,
            assignees: [.assignees[].login],
            work_type: $have_wt,
+           native_type_state: $nts,
            native_type: $nt,
            axis_state: $ax,
            axis_labels: ($axes | map({key: ., value: axis_labels($ls; .)})
@@ -354,10 +358,11 @@ jq -n -L "$title_module_dir" \
            needs_labels: $needs,
            claim_labels: $claims,
            flags:
-             ([ # With a bulk-read native Type ($nt non-null), a typed org
+             ([ # With a bulk-read native Type state, a typed org
                 # issue needs no work-type attention at all — the flag fires
                 # only where the Type is genuinely unset or unreadable.
-                (if ($have_wt | length) == 0 and ($nt == null or $nt == "none")
+                (if ($have_wt | length) == 0
+                    and ($owner_type == "User" or $nts != "set")
                  then "missing-work-type" else empty end),
                 ($ax | to_entries[]
                  | select(.value == "none"
@@ -382,7 +387,7 @@ jq -n -L "$title_module_dir" \
                 # bug-labeled org issue with complete axes goes quiet and its
                 # missing native Type is never noticed.
                 (if $owner_type == "Organization" and ($have_wt | length) > 0
-                    and ($nt == null or $nt == "none")
+                    and $nts != "set"
                  then "legacy-work-type-label" else empty end),
                 (if $incomplete and (($ls | index("needs-triage")) != null)
                  then "partially-classified" else empty end),

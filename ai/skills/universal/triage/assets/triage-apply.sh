@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# triage-apply.sh — the triage skill's ONLY label write path.
+# triage-apply.sh — the triage skill's ONLY issue-mutation path.
 #
 # Why a script: the triage skill is designed to be executed by cheap, simple
 # models. Every rule that can be enforced mechanically is enforced here, so the
 # model supplies classification judgment and nothing else. The skill contract
 # (issue #455 / specs/issue-strategy.md in harmon-init) is:
 #
-#   v1 WRITES ONLY labels, and only these:
+#   v1 WRITES ONLY classification metadata, and only these:
 #     - classification-axis labels (the manifest's `classification` families —
 #       area:*/layer:*/domain:* on a default registry; whatever axes the
 #       repo's registry declares otherwise)
 #     - a work-type label (bug/feature/task/...) on PERSONAL-account repos only
-#       (org repos use native issue Type, which v1 cannot write)
+#       (org repos use native issue Type instead)
+#     - a native issue Type on ORGANIZATION repos only, selected from the
+#       organization's enabled Types
 #     - needs-triage — added freely, removed only when classification is
 #       complete
 #   v1 NEVER writes: foreman:*, rigor:*, tier:* (including scoped
@@ -37,19 +39,28 @@
 #   triage-apply.sh axis-values [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh work-types [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh native-type --repo owner/repo --issue N
+#   triage-apply.sh native-types --repo owner/repo
 #   triage-apply.sh label --repo owner/repo --issue N
-#                   [--add LABEL]... [--remove needs-triage]
+#                   [--add LABEL]... [--native-type TYPE]
+#                   [--remove needs-triage]
 #                   [--inapplicable AXIS]... [--manifest PATH] [--execute]
 #
-# `native-type` is a read: it prints the issue's native GitHub issue Type name,
-# or "none". It exists so the classifying model never needs raw `gh api`
-# access — org-repo Type checks go through here.
+# `native-type` is a read: it prints JSON with an explicit `state` (`set` or
+# `unset`) and the exact Type `name` when set. It exists so the classifying
+# model never needs raw `gh api` access — org-repo Type checks go through here.
 #
 # Dry-run is the DEFAULT: without --execute the script prints exactly what it
 # would write and writes nothing. --execute additionally requires
 # TRIAGE_EXECUTE=1 in the environment — the `task triage` wrapper sets it only
 # for a supervised run, so a model cannot promote itself to write mode by
 # adding a flag.
+#
+# --native-type TYPE is a best-effort fill of an observed-unset enabled
+# organization Type. It is refused on personal repos and is validated before
+# dry-run output or an execute mutation. The script re-reads immediately before
+# writing and refuses an observed conflict, but GitHub exposes no conditional
+# Type mutation: a concurrent writer in that final read-to-write window cannot
+# be protected from an overwrite.
 #
 # --inapplicable AXIS (area|layer|domain) attests that the axis genuinely does
 # not apply to the issue; it is consumed by the needs-triage removal gate and
@@ -60,7 +71,8 @@
 #       2 = usage/environment error (bad flags, --execute without the env gate,
 #           could not verify something the gate needs)
 #       4 = refused: never-list, allowlist, or exclusive-axis conflict
-#       5 = refused: work-type label on an org repo (native Type owns it there)
+#       5 = refused: work-type label on an org repo, or native Type on a
+#           personal repo
 #       6 = refused: needs-triage removal while classification is incomplete
 set -euo pipefail
 
@@ -78,7 +90,9 @@ usage() {
     echo "       $0 axes [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 axis-values [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 work-types [--repo owner/repo] [--manifest PATH]" >&2
+    echo "       $0 native-types --repo owner/repo" >&2
     echo "       $0 label --repo owner/repo --issue N [--add LABEL]..." >&2
+    echo "           [--native-type TYPE]" >&2
     echo "           [--remove needs-triage] [--inapplicable AXIS]..." >&2
     echo "           [--manifest PATH] [--execute]" >&2
     exit 2
@@ -351,26 +365,68 @@ in_list() {
     printf '%s\n' "$2" | grep -qxF -- "$1"
 }
 
-# Print the native issue Type name, or "none". Non-zero when it cannot be read
-# (missing scope, old GitHub, network) — callers must treat that as unknown,
-# never as absent.
-native_type_read() {
+# Print an unambiguous internal state: "unset" or "set:<name>". A prefix is
+# required because organization-defined Type names may themselves be "none"
+# or "null"; those names must never collide with the empty-slot sentinel.
+# Non-zero means the state could not be read (missing scope, old GitHub,
+# network), which callers must treat as unknown, never as absent.
+native_type_state_read() {
     local repo="$1" issue="$2" native
     native="$(gh api graphql \
         -f query='query($o: String!, $r: String!, $n: Int!) {
             repository(owner: $o, name: $r) {
               issue(number: $n) { issueType { name } } } }' \
         -f o="${repo%%/*}" -f r="${repo#*/}" -F n="$issue" \
-        -q '.data.repository.issue.issueType.name' 2>/dev/null)" || return 1
-    if [ -z "$native" ] || [ "$native" = "null" ]; then
-        echo "none"
-    else
-        echo "$native"
-    fi
+        -q 'if .data.repository.issue.issueType == null
+            then "unset"
+            else "set:\(.data.repository.issue.issueType.name)"
+            end' 2>/dev/null)" || return 1
+    case "$native" in
+    unset | set:*) printf '%s\n' "$native" ;;
+    *) return 1 ;;
+    esac
+}
+
+# A successful Type mutation can be followed by a transient GraphQL read
+# failure. Reconcile with a small bounded retry budget; callers must still
+# treat exhaustion as indeterminate rather than assuming the write rolled back.
+native_type_reconcile() {
+    local repo="$1" issue="$2" attempts=0 native
+    while [ "$attempts" -lt 3 ]; do
+        native="$(native_type_state_read "$repo" "$issue")" && {
+            printf '%s\n' "$native"
+            return 0
+        }
+        attempts=$((attempts + 1))
+    done
+    return 1
+}
+
+# Print Type names available in the target repository, one per line. Types are
+# organization-owned, but a repository can expose only a subset, so validate
+# against the issue's actual target rather than the broader org vocabulary.
+enabled_native_types() {
+    local repo="$1" types
+    types="$(gh api graphql \
+        -f query='query($o: String!, $r: String!) {
+            repository(owner: $o, name: $r) {
+              issueTypes(first: 100) {
+                totalCount
+                nodes { name isEnabled }
+              }
+            }
+          }' \
+        -f o="${repo%%/*}" -f r="${repo#*/}" \
+        -q 'if .data.repository.issueTypes.totalCount > 100
+            then error("native issue Type result exceeds the validation limit")
+            else .data.repository.issueTypes.nodes[] |
+                 select(.isEnabled == true) | .name
+            end' 2>/dev/null)" || return 1
+    printf '%s\n' "$types"
 }
 
 cmd_native_type() {
-    local repo="" issue=""
+    local repo="" issue="" state
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --repo)
@@ -388,12 +444,43 @@ cmd_native_type() {
     done
     [ -n "$repo" ] && [ -n "$issue" ] || usage
     guard_issue_number "$issue"
-    native_type_read "$repo" "$issue" ||
+    state="$(native_type_state_read "$repo" "$issue")" ||
         die 2 "could not read the native issue Type of $repo#$issue"
+    if [ "$state" = "unset" ]; then
+        printf '%s\n' '{"state":"unset","name":null}'
+    else
+        jq -cn --arg name "${state#set:}" '{state:"set", name:$name}'
+    fi
+}
+
+cmd_native_types() {
+    local repo="" owner_type
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --repo)
+            [ "$#" -ge 2 ] || usage
+            repo="$2"
+            shift 2
+            ;;
+        *) usage ;;
+        esac
+    done
+    [ -n "$repo" ] || usage
+    owner_type="$(gh api "repos/$repo" -q .owner.type)" ||
+        die 2 "could not read the owner type of $repo"
+    [ "$owner_type" = "Organization" ] ||
+        die 5 "refused: native issue Types are available only on organization repos"
+    enabled_native_types "$repo" ||
+        die 2 "could not list enabled native issue Types of $repo"
+}
+
+gh_supports_native_type_write() {
+    gh issue edit --help 2>/dev/null | grep -q -- '--type'
 }
 
 cmd_label() {
     local repo="" issue="" manifest="./label-registry.json" execute=0
+    local native_type="" native_type_seen=0
     local adds=() removes=() inapplicable=()
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -410,6 +497,15 @@ cmd_label() {
         --add)
             [ "$#" -ge 2 ] || usage
             adds+=("$2")
+            shift 2
+            ;;
+        --native-type)
+            [ "$#" -ge 2 ] || usage
+            [ "$native_type_seen" -eq 0 ] ||
+                die 2 "--native-type may be passed only once"
+            [ -n "$2" ] || die 2 "--native-type requires a non-empty Type name"
+            native_type="$2"
+            native_type_seen=1
             shift 2
             ;;
         --remove)
@@ -441,7 +537,8 @@ cmd_label() {
             "repository '$TRIAGE_REPO'"
     fi
     [ "${#adds[@]}" -gt 0 ] || [ "${#removes[@]}" -gt 0 ] ||
-        die 2 "nothing requested — pass --add and/or --remove"
+        [ -n "$native_type" ] ||
+        die 2 "nothing requested — pass --add, --native-type, and/or --remove"
 
     local l axis axes
     axes="$(axes_active "$repo" "$manifest")"
@@ -510,6 +607,26 @@ cmd_label() {
                 die 2 "could not read the owner type of $repo"
         fi
     }
+
+    local current_native_type="" effective_native_type="$native_type"
+    if [ -n "$native_type" ]; then
+        need_owner_type
+        [ "$owner_type" = "Organization" ] ||
+            die 5 "refused: --native-type is available only on organization repos"
+        local enabled_types
+        enabled_types="$(enabled_native_types "$repo")" ||
+            die 2 "could not list enabled native issue Types of $repo"
+        in_list "$native_type" "$enabled_types" ||
+            die 4 "refused: native issue Type '$native_type' is not enabled on $repo"
+        current_native_type="$(native_type_state_read "$repo" "$issue")" ||
+            die 2 "could not read the current native issue Type of $repo#$issue"
+        if [ "$current_native_type" != "unset" ]; then
+            [ "$current_native_type" = "set:$native_type" ] ||
+                die 4 "refused: $repo#$issue already has native issue Type" \
+                    "'${current_native_type#set:}' — triage only fills an unset Type"
+            effective_native_type=""
+        fi
+    fi
 
     local wt_count=0
     for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
@@ -582,9 +699,13 @@ cmd_label() {
         need_owner_type
         if [ "$owner_type" = "Organization" ]; then
             local native
-            native="$(native_type_read "$repo" "$issue")" ||
-                die 6 "refused: could not verify the native issue Type"
-            [ "$native" != "none" ] ||
+            if [ -n "$native_type" ]; then
+                native="set:$native_type"
+            else
+                native="$(native_type_state_read "$repo" "$issue")" ||
+                    die 6 "refused: could not verify the native issue Type"
+            fi
+            [ "$native" != "unset" ] ||
                 die 6 "refused: no native issue Type set —" \
                     "classification is incomplete (report the missing Type)"
         else
@@ -601,7 +722,8 @@ cmd_label() {
         fi
     fi
 
-    if [ "${#effective_adds[@]}" -eq 0 ] && [ "${#removes[@]}" -eq 0 ]; then
+    if [ "${#effective_adds[@]}" -eq 0 ] && [ "${#removes[@]}" -eq 0 ] &&
+        [ -z "$effective_native_type" ]; then
         echo "triage-apply: nothing to do — requested labels already present"
         return 0
     fi
@@ -610,8 +732,27 @@ cmd_label() {
         echo "attested inapplicable: $axis"
     done
 
+    # Dry-run promises the execute outcome it would attempt. Probe the CLI
+    # capability before printing a native-Type mutation so an old gh cannot
+    # make dry-run appear executable when --execute would refuse.
+    if [ -n "$effective_native_type" ]; then
+        gh_supports_native_type_write ||
+            die 2 "gh issue edit --type requires GitHub CLI 2.98 or newer"
+    fi
+
     if [ "$execute" -eq 0 ]; then
+        if [ -n "$effective_native_type" ] &&
+            in_list needs-triage "$(printf '%s\n' \
+                "${effective_adds[@]+"${effective_adds[@]}"}")"; then
+            echo "DRY-RUN would add 'needs-triage' to $repo#$issue"
+        fi
+        if [ -n "$effective_native_type" ]; then
+            echo "DRY-RUN would set native issue Type '$effective_native_type' on $repo#$issue"
+        fi
         for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
+            if [ -n "$effective_native_type" ] && [ "$l" = "needs-triage" ]; then
+                continue
+            fi
             echo "DRY-RUN would add '$l' to $repo#$issue"
         done
         for l in "${removes[@]+"${removes[@]}"}"; do
@@ -624,24 +765,87 @@ cmd_label() {
         die 2 "--execute requires TRIAGE_EXECUTE=1 in the environment" \
             "(set by the task triage wrapper for supervised runs)"
 
+    # When this call establishes both the visibility marker and a native Type,
+    # establish the marker first. Otherwise a successful Type write followed
+    # by a failed marker add would leave an untyped-looking issue invisible to
+    # triage. The remaining classification adds wait for the verified Type;
+    # a failed Type write therefore cannot make them (or a later removal).
+    local establish_needs_triage=0
+    local post_type_adds=()
+    if [ -n "$effective_native_type" ]; then
+        for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
+            if [ "$l" = "needs-triage" ]; then
+                establish_needs_triage=1
+            else
+                post_type_adds+=("$l")
+            fi
+        done
+    else
+        post_type_adds=("${effective_adds[@]+"${effective_adds[@]}"}")
+    fi
+    if [ "$establish_needs_triage" -eq 1 ]; then
+        gh issue edit "$issue" --repo "$repo" --add-label needs-triage \
+            >/dev/null </dev/null ||
+            die 1 "write failed: gh issue edit $repo#$issue"
+        echo "APPLIED add 'needs-triage' to $repo#$issue"
+    fi
+
+    # GitHub CLI applies label edits before its deferred issue-Type mutation.
+    # The only label intentionally established before Type is needs-triage
+    # above, which keeps an otherwise untyped issue visible if its Type write
+    # fails. All other labels wait for the verified Type.
+    if [ -n "$effective_native_type" ]; then
+        # A person may have classified the issue after the first preflight.
+        # Re-read immediately before the non-conditional GitHub write and
+        # refuse a conflicting human Type before touching any labels.
+        current_native_type="$(native_type_state_read "$repo" "$issue")" ||
+            die 2 "could not re-read the current native issue Type of $repo#$issue"
+        if [ "$current_native_type" != "unset" ]; then
+            [ "$current_native_type" = "set:$effective_native_type" ] ||
+                die 4 "refused: $repo#$issue was classified as native issue Type" \
+                    "'${current_native_type#set:}' while triage was preparing its write"
+            effective_native_type=""
+        else
+            gh issue edit "$issue" --repo "$repo" --type "$effective_native_type" \
+                >/dev/null </dev/null ||
+                die 1 "write failed: gh issue edit --type $repo#$issue"
+            current_native_type="$(native_type_reconcile "$repo" "$issue")" ||
+                die 2 "write indeterminate: native issue Type may have applied to" \
+                    "$repo#$issue but could not be verified after 3 reads;" \
+                    "no remaining labels or needs-triage removal were attempted"
+            [ "$current_native_type" = "set:$effective_native_type" ] ||
+                die 1 "write failed: $repo#$issue native issue Type did not become" \
+                    "'$effective_native_type'"
+            # This is deliberately before the independent label edit below:
+            # if that later mutation fails, stdout still records the durable
+            # Type change rather than falsely implying the apply was inert.
+            echo "APPLIED native issue Type '$effective_native_type' to $repo#$issue"
+        fi
+    fi
+    # Keep adds and needs-triage removal in separate edits. A failed add must
+    # leave needs-triage visible, while a Type failure above still prevents all
+    # label edits.
     local args=()
-    if [ "${#effective_adds[@]}" -gt 0 ]; then
+    if [ "${#post_type_adds[@]}" -gt 0 ]; then
         args+=(--add-label "$(
             IFS=,
-            echo "${effective_adds[*]}"
+            echo "${post_type_adds[*]}"
         )")
     fi
-    if [ "${#removes[@]}" -gt 0 ]; then
-        args+=(--remove-label "$(
-            IFS=,
-            echo "${removes[*]}"
-        )")
+    if [ "${#args[@]}" -gt 0 ]; then
+        gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null ||
+            die 1 "write failed: gh issue edit $repo#$issue"
     fi
-    gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null ||
-        die 1 "write failed: gh issue edit $repo#$issue"
-    for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
+    for l in "${post_type_adds[@]+"${post_type_adds[@]}"}"; do
         echo "APPLIED add '$l' to $repo#$issue"
     done
+    if [ "${#removes[@]}" -gt 0 ]; then
+        gh issue edit "$issue" --repo "$repo" --remove-label "$(
+            IFS=,
+            echo "${removes[*]}"
+        )" >/dev/null </dev/null ||
+            die 1 "write failed: gh issue edit $repo#$issue"
+    fi
     for l in "${removes[@]+"${removes[@]}"}"; do
         echo "APPLIED remove '$l' from $repo#$issue"
     done
@@ -656,6 +860,7 @@ axes) cmd_axes "$@" ;;
 axis-values) cmd_axis_values "$@" ;;
 work-types) cmd_work_types "$@" ;;
 native-type) cmd_native_type "$@" ;;
+native-types) cmd_native_types "$@" ;;
 label) cmd_label "$@" ;;
 *) usage ;;
 esac

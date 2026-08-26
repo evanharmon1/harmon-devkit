@@ -9,7 +9,8 @@
 #   - the never-list refuses foreman:/rigor:/tier: (including scoped
 #     tier:<role>:*)/strategy:/method: (retired, still reserved)/claim:/
 #     suggest:/agent:* even when a hostile manifest grants them
-#   - work-type labels are refused on org repos (native Type owns them there)
+#   - native issue Types are org-only, enabled-Type validated, dry-run by
+#     default, execute-gated, and can complete needs-triage removal
 #   - needs-triage is removed only when classification is complete
 #   - --execute is inert without the wrapper-owned TRIAGE_EXECUTE=1 env gate
 #   - the rolling report is idempotent, upserts only its marker-carrying
@@ -64,8 +65,29 @@ case "${1:-} ${2:-}" in
     printf '%s\n' "${GH_STUB_VIEWER:-testowner}"
     ;;
 "api graphql")
-    [ "${GH_STUB_NATIVE_TYPE:-}" = "ERROR" ] && exit 1
-    printf '%s\n' "${GH_STUB_NATIVE_TYPE:-}"
+    if printf '%s' "$*" | grep -q 'issueTypes(first:'; then
+        [ "${GH_STUB_ENABLED_NATIVE_TYPES:-}" = "ERROR" ] && exit 1
+        if [ -n "${GH_STUB_ENABLED_NATIVE_TYPES_JSON:-}" ]; then
+            printf '%s\n' "$GH_STUB_ENABLED_NATIVE_TYPES_JSON" |
+                jq '.data.repository = .data.organization | del(.data.organization)' |
+                jq -r "$q"
+        else
+            printf '%s\n' "${GH_STUB_ENABLED_NATIVE_TYPES:-Bug}"
+        fi
+    else
+        [ "${GH_STUB_NATIVE_TYPE:-}" = "ERROR" ] && exit 1
+        if [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
+            [ "$(cat "$GH_STUB_NATIVE_TYPE_FILE")" = "ERROR" ] && exit 1
+            native_type="$(cat "$GH_STUB_NATIVE_TYPE_FILE")"
+        else
+            native_type="${GH_STUB_NATIVE_TYPE:-}"
+        fi
+        if [ -n "$native_type" ]; then
+            printf 'set:%s\n' "$native_type"
+        else
+            printf '%s\n' unset
+        fi
+    fi
     ;;
 api\ repos/*/issues/*)
     n="${2##*/}"
@@ -92,7 +114,42 @@ api\ repos/*)
 # Only the body-carrying writes read stdin (--body-file -): drain just there,
 # so a stubbed read call inside a caller's while-read loop cannot eat the
 # loop's remaining input or hang on a never-closing stdin.
-"issue edit") [ -t 0 ] || cat >/dev/null ;;
+"issue edit")
+    if printf '%s\n' "$*" | grep -qx 'issue edit --help'; then
+        if [ "${GH_STUB_NO_TYPE_FLAG:-0}" = 0 ]; then
+            printf '%s\n' '  --type string   Set the issue type by name'
+        fi
+        if [ -n "${GH_STUB_TYPE_CHANGES_BEFORE_WRITE:-}" ] &&
+            [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
+            printf '%s\n' "$GH_STUB_TYPE_CHANGES_BEFORE_WRITE" >"$GH_STUB_NATIVE_TYPE_FILE"
+        fi
+        exit 0
+    fi
+    [ -t 0 ] || cat >/dev/null
+    [ "${GH_STUB_EDIT_FAIL:-0}" = 0 ] || exit 1
+    if [ "${GH_STUB_EDIT_FAIL_ON_REMOVE:-0}" = 1 ] &&
+        printf '%s\n' "$*" | grep -q -- '--remove-label'; then
+        exit 1
+    fi
+    if [ "${GH_STUB_EDIT_FAIL_ON_ADD:-0}" = 1 ] &&
+        printf '%s\n' "$*" | grep -q -- '--add-label'; then
+        exit 1
+    fi
+    if [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
+        prev=""
+        for a in "$@"; do
+            if [ "$prev" = "--type" ]; then
+                if [ "${GH_STUB_NATIVE_TYPE_UNREADABLE_AFTER_TYPE_WRITE:-0}" = 1 ]; then
+                    printf '%s\n' ERROR >"$GH_STUB_NATIVE_TYPE_FILE"
+                else
+                    printf '%s\n' "$a" >"$GH_STUB_NATIVE_TYPE_FILE"
+                fi
+                break
+            fi
+            prev="$a"
+        done
+    fi
+    ;;
 "issue create")
     [ -t 0 ] || cat >/dev/null
     printf '%s\n' "https://github.com/stub/stub/issues/321"
@@ -415,6 +472,9 @@ cat >"$stub_dir/issue-19.json" <<'JSON'
             {"name": "area:ci"}, {"name": "domain:auth"},
             {"name": "layer:legacy"}], "body": "plain"}
 JSON
+cat >"$stub_dir/issue-20.json" <<'JSON'
+{"labels": [], "body": "plain"}
+JSON
 
 echo "==> label: never-list refuses even what a hostile manifest grants"
 [ "$(run "$apply" label --repo "$repo" --issue 10 --add rigor:deep \
@@ -443,6 +503,68 @@ GH_STUB_OWNER_TYPE="Organization"
     --manifest "$manifest")" = 5 ] || fail "org work-type must exit 5"
 [ "$(run "$apply" label --repo "$repo" --issue 10 --add area:ci \
     --manifest "$manifest")" = 0 ] || fail "org axis add must pass"
+GH_STUB_OWNER_TYPE="User"
+
+echo "==> label: native Type is refused on a personal repo"
+[ "$(run "$apply" label --repo "$repo" --issue 10 --native-type Bug \
+    --manifest "$manifest")" = 5 ] ||
+    fail "personal native Type must exit 5"
+
+echo "==> label: native Type validates enabled organization Types"
+GH_STUB_OWNER_TYPE="Organization"
+export GH_STUB_ENABLED_NATIVE_TYPES_JSON='{"data":{"organization":{"issueTypes":{"totalCount":2,"nodes":[{"name":"Bug","isEnabled":true},{"name":"Task","isEnabled":false}]}}}}'
+[ "$(run "$apply" label --repo "$repo" --issue 10 --native-type Feature \
+    --manifest "$manifest")" = 4 ] ||
+    fail "invalid native Type must exit 4"
+[ "$(run "$apply" label --repo "$repo" --issue 10 --native-type Task \
+    --manifest "$manifest")" = 4 ] ||
+    fail "disabled native Type must exit 4"
+unset GH_STUB_ENABLED_NATIVE_TYPES_JSON
+GH_STUB_OWNER_TYPE="User"
+
+echo "==> native-types: lists enabled organization Types for classification"
+GH_STUB_OWNER_TYPE="Organization"
+export GH_STUB_ENABLED_NATIVE_TYPES_JSON='{"data":{"organization":{"issueTypes":{"totalCount":2,"nodes":[{"name":"Bug","isEnabled":true},{"name":"Task","isEnabled":false}]}}}}'
+[ "$(run "$apply" native-types --repo "$repo")" = 0 ] ||
+    fail "native-types should list enabled Types: $(cat "$tmp/out")"
+grep -qx 'Bug' "$tmp/out" || fail "native-types must include enabled Bug"
+grep -qx 'Task' "$tmp/out" && fail "native-types must exclude disabled Task"
+grep -q 'repository(owner: \$o, name: \$r)' "$GH_STUB_LOG" ||
+    fail "native-types must query the target repository's available Types"
+GH_STUB_OWNER_TYPE="User"
+unset GH_STUB_ENABLED_NATIVE_TYPES_JSON
+
+echo "==> label: native Type fills an empty slot but never replaces one"
+GH_STUB_OWNER_TYPE="Organization"
+export GH_STUB_ENABLED_NATIVE_TYPES_JSON='{"data":{"organization":{"issueTypes":{"totalCount":4,"nodes":[{"name":"Bug","isEnabled":true},{"name":"Feature","isEnabled":true},{"name":"none","isEnabled":true},{"name":"null","isEnabled":true}]}}}}'
+export GH_STUB_NATIVE_TYPE="Bug"
+: >"$GH_STUB_LOG"
+[ "$(run "$apply" label --repo "$repo" --issue 10 --native-type Feature \
+    --manifest "$manifest")" = 4 ] ||
+    fail "existing Bug must not be replaced with Feature"
+grep -q "issue edit" "$GH_STUB_LOG" &&
+    fail "a rejected native Type replacement must not edit"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 10 \
+    --native-type Bug --execute --manifest "$manifest")" = 0 ] ||
+    fail "matching native Type must be an idempotent no-op: $(cat "$tmp/out")"
+grep -q "nothing to do" "$tmp/out" ||
+    fail "matching native Type must report no work"
+grep -q "issue edit" "$GH_STUB_LOG" &&
+    fail "matching native Type must not edit"
+for sentinel_name in none null; do
+    export GH_STUB_NATIVE_TYPE="$sentinel_name"
+    : >"$GH_STUB_LOG"
+    [ "$(run "$apply" label --repo "$repo" --issue 10 --native-type Bug \
+        --manifest "$manifest")" = 4 ] ||
+        fail "existing custom Type '$sentinel_name' must not be treated as unset"
+    grep -q "issue edit" "$GH_STUB_LOG" &&
+        fail "custom Type '$sentinel_name' must not be overwritten"
+    [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 10 \
+        --native-type "$sentinel_name" --execute --manifest "$manifest")" = 0 ] ||
+        fail "matching custom Type '$sentinel_name' must be an idempotent no-op"
+done
+unset GH_STUB_ENABLED_NATIVE_TYPES_JSON GH_STUB_NATIVE_TYPE
 GH_STUB_OWNER_TYPE="User"
 
 echo "==> label: a second work-type label is refused (triage fills, never stacks)"
@@ -594,10 +716,172 @@ export GH_STUB_NATIVE_TYPE="Bug"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
     --inapplicable layer --inapplicable domain \
     --manifest "$manifest")" = 0 ] || fail "org with Type should pass"
+export GH_STUB_NATIVE_TYPE="none"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
+    --inapplicable layer --inapplicable domain \
+    --manifest "$manifest")" = 0 ] ||
+    fail "org with a custom Type named none should pass"
 unset GH_STUB_NATIVE_TYPE
 GH_STUB_OWNER_TYPE="User"
 
+echo "==> label: native Type dry-run is inert and reports its mutation"
+GH_STUB_OWNER_TYPE="Organization"
+: >"$GH_STUB_LOG"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --native-type Bug \
+    --manifest "$manifest")" = 0 ] || fail "native Type dry-run failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would set native issue Type 'Bug'" "$tmp/out" ||
+    fail "native Type dry-run must describe the mutation"
+grep -q '^issue edit 13 ' "$GH_STUB_LOG" &&
+    fail "native Type dry-run must not mutate an issue"
+
+echo "==> label: native Type dry-run reports marker-first execution order"
+[ "$(run "$apply" label --repo "$repo" --issue 20 --native-type Bug \
+    --add needs-triage --manifest "$manifest")" = 0 ] ||
+    fail "marker-first native Type dry-run failed: $(cat "$tmp/out")"
+grep -n "DRY-RUN would add 'needs-triage'" "$tmp/out" | cut -d: -f1 \
+    >"$tmp/marker-line"
+grep -n "DRY-RUN would set native issue Type 'Bug'" "$tmp/out" | cut -d: -f1 \
+    >"$tmp/type-line"
+[ "$(cat "$tmp/marker-line")" -lt "$(cat "$tmp/type-line")" ] ||
+    fail "dry-run must report the visibility marker before the native Type"
+
+echo "==> label: native Type dry-run refuses an old gh before promising a write"
+: >"$GH_STUB_LOG"
+[ "$(run env GH_STUB_NO_TYPE_FLAG=1 "$apply" label --repo "$repo" --issue 13 \
+    --native-type Bug --manifest "$manifest")" = 2 ] ||
+    fail "old gh native Type dry-run must exit 2"
+grep -q "DRY-RUN would set native issue Type" "$tmp/out" &&
+    fail "old gh dry-run must not promise an unavailable Type write"
+
+echo "==> label: native Type precedes and verifies needs-triage removal"
+: >"$GH_STUB_LOG"
+native_type_file="$tmp/native-type"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    "$apply" label --repo "$repo" --issue 13 \
+    --native-type Bug --remove needs-triage --inapplicable layer \
+    --inapplicable domain --execute --manifest "$manifest")" = 0 ] ||
+    fail "combined native Type/removal failed: $(cat "$tmp/out")"
+grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
+    fail "combined mutation must report the Type"
+grep -q "APPLIED remove 'needs-triage'" "$tmp/out" ||
+    fail "combined mutation must report removal"
+[ "$(grep -c '^issue edit ' "$GH_STUB_LOG")" = 3 ] ||
+    fail "combined mutation must check support then issue separate Type/removal edits"
+grep -n -- "--type Bug" "$GH_STUB_LOG" | cut -d: -f1 >"$tmp/type-line"
+grep -n -- "--remove-label needs-triage" "$GH_STUB_LOG" | cut -d: -f1 >"$tmp/remove-line"
+[ "$(cat "$tmp/type-line")" -lt "$(cat "$tmp/remove-line")" ] ||
+    fail "Type must be written before needs-triage removal"
+
+echo "==> label: a native Type mutation failure cannot remove needs-triage"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL=1 "$apply" \
+    label --repo "$repo" --issue 13 --native-type Bug --remove needs-triage \
+    --inapplicable layer --inapplicable domain --execute \
+    --manifest "$manifest")" = 1 ] || fail "native Type mutation failure must exit 1"
+grep -q "APPLIED native issue Type" "$tmp/out" &&
+    fail "failed native Type mutation must not report success"
+grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
+    fail "failed native Type mutation must not remove needs-triage"
+
+echo "==> label: a later label failure discloses the already-applied Type"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_EDIT_FAIL_ON_REMOVE=1 "$apply" label --repo "$repo" --issue 13 \
+    --native-type Bug --remove needs-triage --inapplicable layer \
+    --inapplicable domain --execute --manifest "$manifest")" = 1 ] ||
+    fail "later label failure must exit 1"
+grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
+    fail "later label failure must disclose the applied Type"
+grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" ||
+    fail "later label failure must attempt the label mutation after Type success"
+
+echo "==> label: a failed add preserves needs-triage after Type success"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_EDIT_FAIL_ON_ADD=1 "$apply" label --repo "$repo" --issue 13 \
+    --native-type Bug --add domain:auth --remove needs-triage \
+    --inapplicable layer --execute --manifest "$manifest")" = 1 ] ||
+    fail "failed add after Type success must exit 1"
+grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
+    fail "failed add must disclose the applied Type"
+grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
+    fail "failed add must preserve needs-triage"
+
+echo "==> label: a failed needs-triage add prevents a native Type write"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_EDIT_FAIL_ON_ADD=1 "$apply" label --repo "$repo" --issue 20 \
+    --native-type Bug --add needs-triage --execute --manifest "$manifest")" = 1 ] ||
+    fail "failed needs-triage add must exit 1"
+grep -q -- "--add-label needs-triage" "$GH_STUB_LOG" ||
+    fail "an untyped marker-free issue must attempt needs-triage before Type"
+grep -q -- "--type Bug" "$GH_STUB_LOG" &&
+    fail "a failed needs-triage add must prevent the Type write"
+[ ! -s "$native_type_file" ] ||
+    fail "a failed needs-triage add must leave the native Type unset"
+
+echo "==> label: an unreadable post-Type verification is indeterminate"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_NATIVE_TYPE_UNREADABLE_AFTER_TYPE_WRITE=1 "$apply" label --repo "$repo" \
+    --issue 13 --native-type Bug --add domain:auth --remove needs-triage \
+    --inapplicable layer --execute --manifest "$manifest")" = 2 ] ||
+    fail "unreadable post-Type verification must be indeterminate"
+grep -q 'write indeterminate: native issue Type may have applied' "$tmp/out" ||
+    fail "indeterminate Type write must be surfaced"
+grep -q -- '--add-label\|--remove-label' "$GH_STUB_LOG" &&
+    fail "indeterminate Type write must not mutate labels"
+
+echo "==> label: an indeterminate Type write reports an established visibility marker"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_NATIVE_TYPE_UNREADABLE_AFTER_TYPE_WRITE=1 "$apply" label --repo "$repo" \
+    --issue 20 --native-type Bug --add needs-triage --execute \
+    --manifest "$manifest")" = 2 ] ||
+    fail "indeterminate Type write after marker add must exit 2"
+grep -q "APPLIED add 'needs-triage'" "$tmp/out" ||
+    fail "indeterminate Type write must disclose the established marker"
+grep -q 'no remaining labels or needs-triage removal were attempted' "$tmp/out" ||
+    fail "indeterminate Type write must distinguish the earlier marker add"
+[ "$(grep -c -- '--add-label needs-triage' "$GH_STUB_LOG")" = 1 ] ||
+    fail "indeterminate Type path must establish the marker exactly once"
+
+echo "==> label: a concurrent Type change refuses before any mutation"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_TYPE_CHANGES_BEFORE_WRITE=Feature "$apply" label --repo "$repo" \
+    --issue 13 --native-type Bug --execute --manifest "$manifest")" = 4 ] ||
+    fail "concurrent Type change must refuse"
+[ "$(grep -c '^issue edit ' "$GH_STUB_LOG")" = 1 ] ||
+    fail "concurrent Type change must stop before the Type mutation"
+
+echo "==> label: native Type contract states the remaining non-CAS race"
+grep -q 'best-effort fill' "$apply" ||
+    fail "native Type script contract must state best-effort behavior"
+grep -q 'does not expose a conditional Type mutation' \
+    ./ai/skills/universal/triage/SKILL.md ||
+    fail "triage skill must disclose the non-CAS Type write window"
+grep -q 'never overwritten' "$apply" &&
+    fail "native Type script must not promise absolute overwrite prevention"
+
+echo "==> label: an old gh without --type refuses before mutation"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NO_TYPE_FLAG=1 "$apply" \
+    label --repo "$repo" --issue 13 --native-type Bug --execute \
+    --manifest "$manifest")" = 2 ] || fail "old gh must exit 2"
+[ "$(grep -c '^issue edit ' "$GH_STUB_LOG")" = 1 ] ||
+    fail "old gh must only receive the help probe"
+GH_STUB_OWNER_TYPE="User"
+
 echo "==> label: --execute is inert without TRIAGE_EXECUTE=1"
+: >"$GH_STUB_LOG"
 [ "$(run "$apply" label --repo "$repo" --issue 10 --add area:ci --execute \
     --manifest "$manifest")" = 2 ] || fail "--execute without env must exit 2"
 grep -q "issue edit" "$GH_STUB_LOG" && fail "gated execute must not edit"
@@ -610,11 +894,20 @@ echo "==> label: --execute with the env gate edits and reports APPLIED"
 grep -q "APPLIED add 'area:ci'" "$tmp/out" || fail "missing APPLIED"
 grep -q -- "--add-label area:ci" "$GH_STUB_LOG" || fail "edit not issued"
 
-echo "==> native-type: prints none for an unset Type"
+echo "==> native-type: keeps state separate from sentinel-shaped names"
 export GH_STUB_NATIVE_TYPE=""
 [ "$(run "$apply" native-type --repo "$repo" --issue 10)" = 0 ] ||
     fail "native-type failed"
-grep -qx "none" "$tmp/out" || fail "expected none"
+jq -e '.state == "unset" and .name == null' "$tmp/out" >/dev/null ||
+    fail "unset native Type must return explicit state"
+for sentinel_name in none null; do
+    export GH_STUB_NATIVE_TYPE="$sentinel_name"
+    [ "$(run "$apply" native-type --repo "$repo" --issue 10)" = 0 ] ||
+        fail "native-type failed for custom Type '$sentinel_name'"
+    jq -e --arg name "$sentinel_name" \
+        '.state == "set" and .name == $name' "$tmp/out" >/dev/null ||
+        fail "custom Type '$sentinel_name' must remain distinct from unset"
+done
 unset GH_STUB_NATIVE_TYPE
 
 # ── report ───────────────────────────────────────────────────────────────────
@@ -723,12 +1016,13 @@ grep -q -- "--title (triage): Track backlog findings" "$GH_STUB_LOG" ||
 
 echo "==> report sync: a malformed requested report title is refused"
 : >"$GH_STUB_LOG"
+nbsp="$(printf '\302\240')"
 invalid_report_titles=(
     'Legacy triage report'
-    $'(\u00a0scope): Repair metadata'
-    $'(scope\u00a0): Repair metadata'
-    $'(scope): \u00a0Repair metadata'
-    $'(scope): Repair metadata\u00a0'
+    "(${nbsp}scope): Repair metadata"
+    "(scope${nbsp}): Repair metadata"
+    "(scope): ${nbsp}Repair metadata"
+    "(scope): Repair metadata${nbsp}"
     $'(scope): Repair\tmetadata'
     $'(scope): Repair\001metadata'
 )
@@ -746,7 +1040,7 @@ standalone_report="$standalone_triage/triage/assets/triage-report.sh"
     --entries-file "$entries")" = 0 ] ||
     fail "standalone report should resolve its shared title module"
 [ "$(run "$standalone_report" sync --repo "$repo" \
-    --entries-file "$entries" --title $'(scope):\u00a0Repair metadata')" = 2 ] ||
+    --entries-file "$entries" --title "(scope): ${nbsp}Repair metadata")" = 2 ] ||
     fail "standalone report must enforce Unicode boundary whitespace"
 
 echo "==> report sync: --execute without the env gate is refused"
@@ -1083,24 +1377,29 @@ jq -e '.native_type_mode == "per-issue"' "$tmp/out" >/dev/null ||
 echo "==> scan: bulk native Type quiets natively-typed org issues"
 # The bulk read rides in the same list request as the issues (one snapshot,
 # no join), so the fixture is the open list plus issueType per issue.
-jq 'map(.issueType = (if .number == 23 or .number == 26
-                      then {name: "Bug"} else null end))' \
+jq 'map(.issueType = (if .number == 23 then {name: "none"}
+                      elif .number == 26 then {name: "null"}
+                      else null end))' \
     "$stub_dir/issues-open.json" >"$stub_dir/issues-open-types.json"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
     fail "org bulk scan failed: $(cat "$tmp/out")"
 jq -e '.native_type_mode == "bulk"' "$tmp/out" >/dev/null ||
     fail "bulk-capable gh must report bulk mode"
-jq -e '.open[] | select(.number == 23) | .native_type == "Bug"' \
-    "$tmp/out" >/dev/null || fail "native_type must carry the bulk-read Type"
+jq -e '.open[] | select(.number == 23)
+       | .native_type_state == "set" and .native_type == "none"' \
+    "$tmp/out" >/dev/null ||
+    fail "native_type must carry a sentinel-shaped bulk-read Type"
 jq -e '.open[] | select(.number == 23) | .flags
        | index("legacy-work-type-label") == null' "$tmp/out" >/dev/null ||
     fail "a natively-typed issue must not read as legacy-labeled"
-jq -e '.open[] | select(.number == 24) | .native_type == "none"
-       and (.flags | index("legacy-work-type-label") != null)' \
+jq -e '.open[] | select(.number == 24)
+       | .native_type_state == "unset" and .native_type == null
+         and (.flags | index("legacy-work-type-label") != null)' \
     "$tmp/out" >/dev/null ||
     fail "an untyped org issue with a work-type label stays flagged"
 jq -e '.open[] | select(.number == 26)
-       | (.flags | index("needs-triage-removable") != null)
+       | .native_type_state == "set" and .native_type == "null"
+         and (.flags | index("needs-triage-removable") != null)
          and (.flags | index("partially-classified") == null)' \
     "$tmp/out" >/dev/null ||
     fail "a natively-typed issue with finished axes must read removable"
@@ -1173,6 +1472,11 @@ grep -qE "ARGS: .*(Glob|Grep)" "$GH_STUB_LOG" &&
     fail "worker must not be granted Glob/Grep"
 grep -q -- "--tools Read,Write,Bash" "$GH_STUB_LOG" ||
     fail "worker must run with a restricted built-in tool set"
+grep -q 'labels, native Issue Types, and the rolling report' "$wrapper" ||
+    fail "execute confirmation must disclose native Issue Type writes"
+grep -q 'native Issue Types: <n> applied|would-apply' \
+    ai/skills/universal/triage/SKILL.md ||
+    fail "final summary must account for native Issue Type writes"
 
 echo "==> wrapper: --execute without a terminal is refused"
 [ "$(run "$wrapper" --execute)" = 2 ] ||
