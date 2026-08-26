@@ -748,9 +748,35 @@ cmd_label() {
         die 2 "--execute requires TRIAGE_EXECUTE=1 in the environment" \
             "(set by the task triage wrapper for supervised runs)"
 
+    # When this call establishes both the visibility marker and a native Type,
+    # establish the marker first. Otherwise a successful Type write followed
+    # by a failed marker add would leave an untyped-looking issue invisible to
+    # triage. The remaining classification adds wait for the verified Type;
+    # a failed Type write therefore cannot make them (or a later removal).
+    local establish_needs_triage=0
+    local post_type_adds=()
+    if [ -n "$effective_native_type" ]; then
+        for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
+            if [ "$l" = "needs-triage" ]; then
+                establish_needs_triage=1
+            else
+                post_type_adds+=("$l")
+            fi
+        done
+    else
+        post_type_adds=("${effective_adds[@]+"${effective_adds[@]}"}")
+    fi
+    if [ "$establish_needs_triage" -eq 1 ]; then
+        gh issue edit "$issue" --repo "$repo" --add-label needs-triage \
+            >/dev/null </dev/null ||
+            die 1 "write failed: gh issue edit $repo#$issue"
+        echo "APPLIED add 'needs-triage' to $repo#$issue"
+    fi
+
     # GitHub CLI applies label edits before its deferred issue-Type mutation.
-    # Keep the Type in a verified first step so a failed Type write cannot
-    # remove needs-triage (or add any other label) first.
+    # The only label intentionally established before Type is needs-triage
+    # above, which keeps an otherwise untyped issue visible if its Type write
+    # fails. All other labels wait for the verified Type.
     if [ -n "$effective_native_type" ]; then
         # A person may have classified the issue after the first preflight.
         # Re-read immediately before the non-conditional GitHub write and
@@ -783,17 +809,17 @@ cmd_label() {
     # leave needs-triage visible, while a Type failure above still prevents all
     # label edits.
     local args=()
-    if [ "${#effective_adds[@]}" -gt 0 ]; then
+    if [ "${#post_type_adds[@]}" -gt 0 ]; then
         args+=(--add-label "$(
             IFS=,
-            echo "${effective_adds[*]}"
+            echo "${post_type_adds[*]}"
         )")
     fi
     if [ "${#args[@]}" -gt 0 ]; then
         gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null ||
             die 1 "write failed: gh issue edit $repo#$issue"
     fi
-    for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
+    for l in "${post_type_adds[@]+"${post_type_adds[@]}"}"; do
         echo "APPLIED add '$l' to $repo#$issue"
     done
     if [ "${#removes[@]}" -gt 0 ]; then

@@ -445,6 +445,9 @@ cat >"$stub_dir/issue-13.json" <<'JSON'
 {"labels": [{"name": "needs-triage"}, {"name": "bug"}, {"name": "area:ci"}],
  "body": "plain"}
 JSON
+cat >"$stub_dir/issue-15.json" <<'JSON'
+{"labels": [], "body": "plain"}
+JSON
 
 echo "==> label: never-list refuses even what a hostile manifest grants"
 [ "$(run "$apply" label --repo "$repo" --issue 10 --add rigor:deep \
@@ -730,6 +733,20 @@ grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
     fail "failed add must disclose the applied Type"
 grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
     fail "failed add must preserve needs-triage"
+
+echo "==> label: a failed needs-triage add prevents a native Type write"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_EDIT_FAIL_ON_ADD=1 "$apply" label --repo "$repo" --issue 15 \
+    --native-type Bug --add needs-triage --execute --manifest "$manifest")" = 1 ] ||
+    fail "failed needs-triage add must exit 1"
+grep -q -- "--add-label needs-triage" "$GH_STUB_LOG" ||
+    fail "an untyped marker-free issue must attempt needs-triage before Type"
+grep -q -- "--type Bug" "$GH_STUB_LOG" &&
+    fail "a failed needs-triage add must prevent the Type write"
+[ ! -s "$native_type_file" ] ||
+    fail "a failed needs-triage add must leave the native Type unset"
 
 echo "==> label: an unreadable post-Type verification is indeterminate"
 : >"$GH_STUB_LOG"
