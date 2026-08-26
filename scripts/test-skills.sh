@@ -1029,9 +1029,6 @@ assert_ledger_contract() {
     grep -qF '`round n/cap`' "$file" || return 1
     grep -qF 'stage-entry or pending-wait' "$file" || return 1
     grep -qF '`waiting (no round yet)`' "$file" || return 1
-    grep -qF 'Before the round-start fetch establishes a' "$file" || return 1
-    grep -qF 'ordinary clean/pending watch spend no round' "$file" || return 1
-    grep -qF 'post the table again before adjudicating' "$file" || return 1
     grep -qF 'waiting, checks, and reviewer latency do not spend a round' "$file"
 }
 
@@ -1076,6 +1073,9 @@ assert_shepherd_ledger_hooks() {
     grep -qF 'before a finding or no-change adjudication cycle' "$file" || return 1
     grep -qF 'has begun, omit `round n/cap`' "$file" || return 1
     grep -qF '`waiting (no round yet)`' "$file" || return 1
+    grep -qF 'Before the round-start fetch establishes a' "$file" || return 1
+    grep -qF 'ordinary clean/pending watch spend no round' "$file" || return 1
+    grep -qF 'post the table again before adjudicating' "$file" || return 1
     grep -qF 'cap-zero stage uses `skipped (cap 0)`' "$file" || return 1
     grep -qF '**No-change round-end ledger.**' "$file" || return 1
     grep -qF 'immediately after the final reply/settle and before returning' "$file" || return 1
