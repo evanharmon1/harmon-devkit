@@ -81,6 +81,9 @@ Before a capped stage has begun its first round, a stage-entry or pending-wait
 ledger omits `round n/cap` and writes `waiting (no round yet)` in `Stage`;
 waiting, checks, and reviewer latency do not spend a round. Once a finding or
 no-change adjudication cycle begins, use the concrete `round n/cap` again.
+When a positive-cap stage terminates before any round began, there is still no
+round to number: write `completed (no round ran)` for a clean/converged stop or
+`stopped (no round ran)` for a blocked/escalating stop.
 
 Post it at every
 stage transition, when a round begins or ends, as the concise progress tick
@@ -96,10 +99,13 @@ body's `## Deferred findings` with the override recorded as the reason it was
 carried — not as a disposition, so the shepherd stage still owes it a normal
 fix / decline-with-evidence / file-as-follow-up — and the ledger records the
 override as the reason for the transition. Before leaving a stage under an
-override, append every still-open P0/P1 to the git-directory
-`deferred-findings` sidecar once as an unchecked `override-carried` entry; §10
-transfers those entries with the P2 sidecar into the PR body so the override
-cannot lose them across a handoff. A one-step task that touches a single stage owes no ledger.
+override before the PR exists, append every still-open P0/P1 to the
+git-directory `deferred-findings` sidecar once as an unchecked
+`override-carried` entry; §10 transfers those entries with the P2 sidecar into
+the PR body so the override cannot lose them across a handoff. When the PR
+already exists, write the entries directly into its `## Deferred findings`
+section under that stage's guarded body-update procedure and do not append a
+duplicate sidecar entry. A one-step task that touches a single stage owes no ledger.
 
 **The repository's own policy outranks this file.** Where its `AGENTS.md`
 states a different shepherd cap or exit condition, follow `AGENTS.md` — it is
@@ -938,11 +944,16 @@ trigger contract in the PR itself before stopping or changing stages:
    `- [ ] <file:line> — override-carried: <finding>; override: <reason>`.
    Preserve all existing entries and record the override as why the finding was
    carried, never as a disposition.
-3. Immediately before writing, fetch the PR body again and compare it with the
-   copy from step 1. If it changed, recompose the additions against the newer
-   body and repeat this comparison; a post-write read cannot detect a
-   concurrent edit that the replacement already erased.
-4. Update the body with `gh pr edit <n> --repo "$repo" --body-file <file>`,
+3. Immediately before writing, fetch `state,isDraft,headRefOid,body` together
+   again. Revalidate that the PR is still open and draft on the expected round
+   head; if any identity or lifecycle field moved, return to step 2's
+   reconciliation instead of editing. Compare the fresh body with the copy
+   used to compose the update; if it changed, recompose against the newer body
+   and repeat this complete fetch-and-validation. A post-write read cannot
+   detect a concurrent edit that the replacement already erased.
+4. This direct PR-body write replaces the shared pre-PR sidecar append: do not
+   create a duplicate shepherd `override-carried` sidecar entry.
+5. Update the body with `gh pr edit <n> --repo "$repo" --body-file <file>`,
    then re-read it and confirm every override-carried entry landed before
    leaving the stage. Do not rely on the git-directory sidecar alone: this
    PR already exists and shepherd has no later §10 transfer step.
@@ -1442,12 +1453,13 @@ loops indefinitely:
 
    **Ready-stop ledger.** Immediately after the readiness gate confirms the
    ready-for-review transition, post the fixed stage-ledger table in your own
-   commentary before cleanup and stopping. If the resolved shepherd cap is 0
-   and no round ran, omit `round n/cap` and write `skipped (cap 0)` in `Stage`,
-   but still write `Round` with `🏁 stage converged` and the green readiness
-   result; otherwise fill `Stage` with `🚢 shepherd`, the final `round n/cap`,
-   `Round` with `🏁 stage converged` and the green readiness result, and `Next`
-   with human review followed by the maintainer's merge decision.
+   commentary before cleanup and stopping. If no round ran, omit `round n/cap`:
+   write `skipped (cap 0)` when the cap is 0, or `completed (no round ran)` at
+   a positive cap. Still write `Round` with `🏁 stage converged` and the green
+   readiness result. Otherwise fill `Stage` with `🚢 shepherd`, the final
+   `round n/cap`, `Round` with `🏁 stage converged` and the green readiness
+   result, and `Next` with human review followed by the maintainer's merge
+   decision.
 
    If the PR was already non-draft (the gate's `pr-not-draft` failure),
    promotion is idempotently complete
@@ -1537,12 +1549,12 @@ loops indefinitely:
 
 **Blocked-stop ledger.** Immediately after a cap-reached, no-progress, or
 maintainer-blocked stop, post the fixed stage-ledger table in your own
-commentary before the blocker report. If the resolved shepherd cap is 0 and no
-round ran, omit `round n/cap` and write `skipped (cap 0)` in `Stage`; otherwise
-fill `Stage` with `🚢 shepherd`, the current `round n/cap`, `Round` with
-`⛔ blocked/escalating`, and `Next` with the maintainer action that unblocks or
-decides the work. This requirement also covers the timeline-guard stop that
-necessarily leaves a promoted PR ready.
+commentary before the blocker report. If no round ran, omit `round n/cap`:
+write `skipped (cap 0)` when the cap is 0, or `stopped (no round ran)` at a
+positive cap. Otherwise fill `Stage` with `🚢 shepherd`, the current
+`round n/cap`, `Round` with `⛔ blocked/escalating`, and `Next` with the
+maintainer action that unblocks or decides the work. This requirement also
+covers the timeline-guard stop that necessarily leaves a promoted PR ready.
 
 One stop cannot leave the PR draft: §2's timeline guard blocking a second undo
 stops on a PR somebody else promoted, and undoing it is the very act the guard

@@ -73,6 +73,9 @@ Before a capped stage has begun its first round, a stage-entry or pending-wait
 ledger omits `round n/cap` and writes `waiting (no round yet)` in `Stage`;
 waiting, checks, and reviewer latency do not spend a round. Once a finding or
 no-change adjudication cycle begins, use the concrete `round n/cap` again.
+When a positive-cap stage terminates before any round began, there is still no
+round to number: write `completed (no round ran)` for a clean/converged stop or
+`stopped (no round ran)` for a blocked/escalating stop.
 
 Post it at every
 stage transition, when a round begins or ends, as the concise progress tick
@@ -88,10 +91,13 @@ body's `## Deferred findings` with the override recorded as the reason it was
 carried — not as a disposition, so the shepherd stage still owes it a normal
 fix / decline-with-evidence / file-as-follow-up — and the ledger records the
 override as the reason for the transition. Before leaving a stage under an
-override, append every still-open P0/P1 to the git-directory
-`deferred-findings` sidecar once as an unchecked `override-carried` entry; §10
-transfers those entries with the P2 sidecar into the PR body so the override
-cannot lose them across a handoff. A one-step task that touches a single stage owes no ledger.
+override before the PR exists, append every still-open P0/P1 to the
+git-directory `deferred-findings` sidecar once as an unchecked
+`override-carried` entry; §10 transfers those entries with the P2 sidecar into
+the PR body so the override cannot lose them across a handoff. When the PR
+already exists, write the entries directly into its `## Deferred findings`
+section under that stage's guarded body-update procedure and do not append a
+duplicate sidecar entry. A one-step task that touches a single stage owes no ledger.
 
 ## 1. Entry gate
 
@@ -503,6 +509,14 @@ own commentary before moving to the next stage. Use `🏁 stage converged` in
 persist at the cap, post the same table immediately with `⛔
 blocked/escalating`, the current `round n/cap`, and `Next` naming the
 maintainer escalation; do not start another stage or open the PR.
+
+**Round-end ledger.** Immediately after every challenge or review round is
+adjudicated and its deferred findings are durable, post the fixed stage-ledger
+table for that completed `round n/cap` before evaluating the exit/cap test or
+starting another round. Put the round's disposition and verification result in
+`Round`, and make `Next` name the exit evaluation, required fix/verify work, or
+the next numbered round. The stage-exit/escalation post above remains a
+separate transition if that evaluation ends the stage.
 
 **Round accounting is council-ready.** A **round is one pass** — one run of the
 stage's reviewer over the whole branch, adjudicated as a unit — regardless of

@@ -965,10 +965,13 @@ body\x27s `## Deferred findings` with the override recorded as the reason it was
 carried — not as a disposition, so the shepherd stage still owes it a normal
 fix / decline-with-evidence / file-as-follow-up — and the ledger records the
 override as the reason for the transition. Before leaving a stage under an
-override, append every still-open P0/P1 to the git-directory
-`deferred-findings` sidecar once as an unchecked `override-carried` entry; §10
-transfers those entries with the P2 sidecar into the PR body so the override
-cannot lose them across a handoff. A one-step task that touches a single stage owes no ledger.'
+override before the PR exists, append every still-open P0/P1 to the
+git-directory `deferred-findings` sidecar once as an unchecked
+`override-carried` entry; §10 transfers those entries with the P2 sidecar into
+the PR body so the override cannot lose them across a handoff. When the PR
+already exists, write the entries directly into its `## Deferred findings`
+section under that stage\x27s guarded body-update procedure and do not append a
+duplicate sidecar entry. A one-step task that touches a single stage owes no ledger.'
 
 ledger_table() {
     awk '
@@ -1022,14 +1025,16 @@ assert_ledger_contract() {
     [ "$legend" = "$LEDGER_LEGEND_EXPECTED" ] || return 1
     [ "$trigger" = "$LEDGER_TRIGGER_EXPECTED" ] || return 1
     grep -qF "distinct from the gauntlet's private adjudication ledger" "$file" || return 1
-    grep -qF 'append every still-open P0/P1 to the git-directory' "$file" || return 1
+    grep -qF 'append every still-open P0/P1' "$file" || return 1
     grep -qF 'write `skipped (cap 0)` in `Stage`' "$file" || return 1
     grep -qF 'instead of inventing' "$file" || return 1
     grep -qF '`round 0/0`' "$file" || return 1
     grep -qF '`round n/cap`' "$file" || return 1
     grep -qF 'stage-entry or pending-wait' "$file" || return 1
     grep -qF '`waiting (no round yet)`' "$file" || return 1
-    grep -qF 'waiting, checks, and reviewer latency do not spend a round' "$file"
+    grep -qF 'waiting, checks, and reviewer latency do not spend a round' "$file" || return 1
+    grep -qF '`completed (no round ran)`' "$file" || return 1
+    grep -qF '`stopped (no round ran)`' "$file"
 }
 
 assert_shared_ledger() {
@@ -1048,12 +1053,15 @@ assert_gauntlet_ledger_hooks() {
         /\*\*Challenge round-entry ledger\.\*\*/ { challenge = NR }
         /\*\*Review round-entry ledger\.\*\*/ { review = NR }
         /\*\*Stage-exit and escalation ledger\.\*\*/ { stage_exit = NR }
-        END { exit !(challenge && review && stage_exit && challenge < review && review < stage_exit) }
+        /\*\*Round-end ledger\.\*\*/ { round_end = NR }
+        END { exit !(challenge && review && stage_exit && round_end && challenge < review && review < stage_exit && stage_exit < round_end) }
     ' "$file" || return 1
     grep -qF 'Before starting every challenge round, post' "$file" || return 1
     grep -qF 'Before starting every review round, post' "$file" || return 1
     grep -qF 'Immediately after a challenge or review' "$file" || return 1
     grep -qF 'keep `Next` naming the next concrete gate or action' "$file" || return 1
+    grep -qF 'Immediately after every challenge or review round is' "$file" || return 1
+    grep -qF 'before evaluating the exit/cap test or' "$file" || return 1
     grep -qF '⛔ blocked/escalating' "$file"
 }
 
@@ -1084,18 +1092,22 @@ assert_shepherd_ledger_hooks() {
     grep -qF '`✅`, `🔴`' "$file" || return 1
     grep -qF '`🟡`, `⚪`, `⏳`, or `⛔`' "$file" || return 1
     grep -qF 'Immediately after the readiness gate confirms' "$file" || return 1
-    grep -qF 'but still write `Round` with `🏁 stage converged` and the green readiness' "$file" || return 1
+    grep -qF 'Still write `Round` with `🏁 stage converged` and the green' "$file" || return 1
     grep -qF '**Blocked-stop ledger.**' "$file" || return 1
     grep -qF 'cap-reached, no-progress, or' "$file" || return 1
     grep -qF 'timeline-guard stop' "$file" || return 1
-    grep -qF 'resolved shepherd cap is 0' "$file" || return 1
-    grep -qF 'and no round ran, omit `round n/cap`' "$file" || return 1
+    grep -qF 'If no round ran, omit `round n/cap`' "$file" || return 1
+    grep -qF '`completed (no round ran)` at' "$file" || return 1
+    grep -qF '`stopped (no round ran)` at a' "$file" || return 1
     [ "$(grep -cF 'skipped (cap 0)' "$file")" -ge 3 ] || return 1
     grep -qF 'Shepherd-stage override transfer.' "$file" || return 1
     grep -qF 'This stage starts after the draft PR' "$file" || return 1
     grep -qF 'override-carried' "$file" || return 1
-    grep -qF 'Immediately before writing, fetch the PR body again and compare it' "$file" || return 1
-    grep -qF 'a post-write read cannot detect a' "$file" || return 1
+    grep -qF 'Immediately before writing, fetch `state,isDraft,headRefOid,body` together' "$file" || return 1
+    grep -qF 'Revalidate that the PR is still open and draft on the expected round' "$file" || return 1
+    grep -qF 'replaces the shared pre-PR sidecar append' "$file" || return 1
+    grep -qF 'A post-write read cannot' "$file" || return 1
+    grep -qF 'detect a concurrent edit that the replacement already erased' "$file" || return 1
     grep -qF 'gh pr edit <n> --repo "$repo" --body-file <file>' "$file"
 }
 
