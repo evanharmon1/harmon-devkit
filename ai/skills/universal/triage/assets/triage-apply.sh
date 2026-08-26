@@ -365,21 +365,37 @@ in_list() {
     printf '%s\n' "$2" | grep -qxF -- "$1"
 }
 
-# Print the native issue Type name, or "none". Non-zero when it cannot be read
-# (missing scope, old GitHub, network) — callers must treat that as unknown,
-# never as absent.
-native_type_read() {
+# Print an unambiguous internal state: "unset" or "set:<name>". A prefix is
+# required because organization-defined Type names may themselves be "none"
+# or "null"; those names must never collide with the empty-slot sentinel.
+# Non-zero means the state could not be read (missing scope, old GitHub,
+# network), which callers must treat as unknown, never as absent.
+native_type_state_read() {
     local repo="$1" issue="$2" native
     native="$(gh api graphql \
         -f query='query($o: String!, $r: String!, $n: Int!) {
             repository(owner: $o, name: $r) {
               issue(number: $n) { issueType { name } } } }' \
         -f o="${repo%%/*}" -f r="${repo#*/}" -F n="$issue" \
-        -q '.data.repository.issue.issueType.name' 2>/dev/null)" || return 1
-    if [ -z "$native" ] || [ "$native" = "null" ]; then
+        -q 'if .data.repository.issue.issueType == null
+            then "unset"
+            else "set:\(.data.repository.issue.issueType.name)"
+            end' 2>/dev/null)" || return 1
+    case "$native" in
+    unset | set:*) printf '%s\n' "$native" ;;
+    *) return 1 ;;
+    esac
+}
+
+# Public read contract: print the Type name, or "none" when unset. Mutation
+# decisions never consume this lossy display form; they use the state reader.
+native_type_read() {
+    local state
+    state="$(native_type_state_read "$1" "$2")" || return 1
+    if [ "$state" = "unset" ]; then
         echo "none"
     else
-        echo "$native"
+        printf '%s\n' "${state#set:}"
     fi
 }
 
@@ -389,7 +405,7 @@ native_type_read() {
 native_type_reconcile() {
     local repo="$1" issue="$2" attempts=0 native
     while [ "$attempts" -lt 3 ]; do
-        native="$(native_type_read "$repo" "$issue")" && {
+        native="$(native_type_state_read "$repo" "$issue")" && {
             printf '%s\n' "$native"
             return 0
         }
@@ -609,12 +625,12 @@ cmd_label() {
             die 2 "could not list enabled native issue Types of $repo"
         in_list "$native_type" "$enabled_types" ||
             die 4 "refused: native issue Type '$native_type' is not enabled on $repo"
-        current_native_type="$(native_type_read "$repo" "$issue")" ||
+        current_native_type="$(native_type_state_read "$repo" "$issue")" ||
             die 2 "could not read the current native issue Type of $repo#$issue"
-        if [ "$current_native_type" != "none" ]; then
-            [ "$current_native_type" = "$native_type" ] ||
+        if [ "$current_native_type" != "unset" ]; then
+            [ "$current_native_type" = "set:$native_type" ] ||
                 die 4 "refused: $repo#$issue already has native issue Type" \
-                    "'$current_native_type' — triage only fills an unset Type"
+                    "'${current_native_type#set:}' — triage only fills an unset Type"
             effective_native_type=""
         fi
     fi
@@ -691,12 +707,12 @@ cmd_label() {
         if [ "$owner_type" = "Organization" ]; then
             local native
             if [ -n "$native_type" ]; then
-                native="$native_type"
+                native="set:$native_type"
             else
-                native="$(native_type_read "$repo" "$issue")" ||
+                native="$(native_type_state_read "$repo" "$issue")" ||
                     die 6 "refused: could not verify the native issue Type"
             fi
-            [ "$native" != "none" ] ||
+            [ "$native" != "unset" ] ||
                 die 6 "refused: no native issue Type set —" \
                     "classification is incomplete (report the missing Type)"
         else
@@ -789,12 +805,12 @@ cmd_label() {
         # A person may have classified the issue after the first preflight.
         # Re-read immediately before the non-conditional GitHub write and
         # refuse a conflicting human Type before touching any labels.
-        current_native_type="$(native_type_read "$repo" "$issue")" ||
+        current_native_type="$(native_type_state_read "$repo" "$issue")" ||
             die 2 "could not re-read the current native issue Type of $repo#$issue"
-        if [ "$current_native_type" != "none" ]; then
-            [ "$current_native_type" = "$effective_native_type" ] ||
+        if [ "$current_native_type" != "unset" ]; then
+            [ "$current_native_type" = "set:$effective_native_type" ] ||
                 die 4 "refused: $repo#$issue was classified as native issue Type" \
-                    "'$current_native_type' while triage was preparing its write"
+                    "'${current_native_type#set:}' while triage was preparing its write"
             effective_native_type=""
         else
             gh issue edit "$issue" --repo "$repo" --type "$effective_native_type" \
@@ -804,7 +820,7 @@ cmd_label() {
                 die 2 "write indeterminate: native issue Type may have applied to" \
                     "$repo#$issue but could not be verified after 3 reads;" \
                     "no remaining labels or needs-triage removal were attempted"
-            [ "$current_native_type" = "$effective_native_type" ] ||
+            [ "$current_native_type" = "set:$effective_native_type" ] ||
                 die 1 "write failed: $repo#$issue native issue Type did not become" \
                     "'$effective_native_type'"
             # This is deliberately before the independent label edit below:

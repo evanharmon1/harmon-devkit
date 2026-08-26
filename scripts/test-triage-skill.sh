@@ -78,9 +78,14 @@ case "${1:-} ${2:-}" in
         [ "${GH_STUB_NATIVE_TYPE:-}" = "ERROR" ] && exit 1
         if [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
             [ "$(cat "$GH_STUB_NATIVE_TYPE_FILE")" = "ERROR" ] && exit 1
-            cat "$GH_STUB_NATIVE_TYPE_FILE"
+            native_type="$(cat "$GH_STUB_NATIVE_TYPE_FILE")"
         else
-            printf '%s\n' "${GH_STUB_NATIVE_TYPE:-}"
+            native_type="${GH_STUB_NATIVE_TYPE:-}"
+        fi
+        if [ -n "$native_type" ]; then
+            printf 'set:%s\n' "$native_type"
+        else
+            printf '%s\n' unset
         fi
     fi
     ;;
@@ -531,7 +536,7 @@ unset GH_STUB_ENABLED_NATIVE_TYPES_JSON
 
 echo "==> label: native Type fills an empty slot but never replaces one"
 GH_STUB_OWNER_TYPE="Organization"
-export GH_STUB_ENABLED_NATIVE_TYPES_JSON='{"data":{"organization":{"issueTypes":{"totalCount":2,"nodes":[{"name":"Bug","isEnabled":true},{"name":"Feature","isEnabled":true}]}}}}'
+export GH_STUB_ENABLED_NATIVE_TYPES_JSON='{"data":{"organization":{"issueTypes":{"totalCount":4,"nodes":[{"name":"Bug","isEnabled":true},{"name":"Feature","isEnabled":true},{"name":"none","isEnabled":true},{"name":"null","isEnabled":true}]}}}}'
 export GH_STUB_NATIVE_TYPE="Bug"
 : >"$GH_STUB_LOG"
 [ "$(run "$apply" label --repo "$repo" --issue 10 --native-type Feature \
@@ -547,6 +552,18 @@ grep -q "nothing to do" "$tmp/out" ||
     fail "matching native Type must report no work"
 grep -q "issue edit" "$GH_STUB_LOG" &&
     fail "matching native Type must not edit"
+for sentinel_name in none null; do
+    export GH_STUB_NATIVE_TYPE="$sentinel_name"
+    : >"$GH_STUB_LOG"
+    [ "$(run "$apply" label --repo "$repo" --issue 10 --native-type Bug \
+        --manifest "$manifest")" = 4 ] ||
+        fail "existing custom Type '$sentinel_name' must not be treated as unset"
+    grep -q "issue edit" "$GH_STUB_LOG" &&
+        fail "custom Type '$sentinel_name' must not be overwritten"
+    [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 10 \
+        --native-type "$sentinel_name" --execute --manifest "$manifest")" = 0 ] ||
+        fail "matching custom Type '$sentinel_name' must be an idempotent no-op"
+done
 unset GH_STUB_ENABLED_NATIVE_TYPES_JSON GH_STUB_NATIVE_TYPE
 GH_STUB_OWNER_TYPE="User"
 
@@ -699,6 +716,11 @@ export GH_STUB_NATIVE_TYPE="Bug"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
     --inapplicable layer --inapplicable domain \
     --manifest "$manifest")" = 0 ] || fail "org with Type should pass"
+export GH_STUB_NATIVE_TYPE="none"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
+    --inapplicable layer --inapplicable domain \
+    --manifest "$manifest")" = 0 ] ||
+    fail "org with a custom Type named none should pass"
 unset GH_STUB_NATIVE_TYPE
 GH_STUB_OWNER_TYPE="User"
 
