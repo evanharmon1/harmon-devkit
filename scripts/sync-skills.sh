@@ -317,10 +317,12 @@ status_latest_tag() {
     if ! _slt_tags="$(git ls-remote --tags "$_slt_repo" 2>/dev/null)"; then
         return 0
     fi
-    while IFS= read -r _slt_line; do
-        [ -n "$_slt_line" ] || continue
-        _slt_tag="${_slt_line##*refs/tags/}"
-        [ "$_slt_tag" != "$_slt_line" ] || continue
+    while IFS="$(printf '\t')" read -r _slt_oid _slt_ref; do
+        [ -n "$_slt_oid" ] && [ -n "$_slt_ref" ] || continue
+        case "$_slt_ref" in
+        refs/tags/*) _slt_tag="${_slt_ref#refs/tags/}" ;;
+        *) continue ;;
+        esac
         _slt_tag="${_slt_tag%\^\{\}}"
         if ! status_version_parse "$_slt_tag" 2>/dev/null; then
             continue

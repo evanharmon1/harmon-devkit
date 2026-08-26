@@ -1004,6 +1004,7 @@ git -C "$SRC" tag v99.0.0-rc.1
 git -C "$SRC" tag v99.0.0.1
 git -C "$SRC" tag v99.0
 git -C "$SRC" tag v99.0.0+build
+git -C "$SRC" tag archive/refs/tags/v99.0.0
 
 STATUS="$TMPROOT/consumer-status"
 mkdir -p "$STATUS"
