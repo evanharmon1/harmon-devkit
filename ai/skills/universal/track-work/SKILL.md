@@ -226,8 +226,8 @@ which agent is working and is not a record of authorisation.
 The remaining gap is deliberate and worth naming: an assignment records that
 someone authorised the work, not that *this* conversation did, so a misdirected
 invocation could still target another issue that is open and assigned to you.
-The normal command-approval boundary and the narrow body transformation are the
-additional safeguards; neither makes issue text a source of write authority.
+The assignment check and the narrow body transformation limit that risk; neither
+makes issue text a source of write authority.
 
 Three cautions it does **not** enforce for you:
 
