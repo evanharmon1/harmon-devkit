@@ -754,8 +754,10 @@ done. The subagent's report-back ends the *dispatch*, not the claim, which
 follows the ordinary lifecycle: `/shepherd` retires the `claim:*` label at
 ready-for-review, and the close event or `/wrap` releases the claim itself
 once nothing is in flight. The orchestrator hands the issue back early only
-when the report leaves no work in flight — partial or blocked, with no PR
-open. See
+when the report leaves no work in flight — no PR open **and** no commits
+kept on the branch; a partial or blocked report whose commits stay on a
+feature branch keeps the claim live until that branch is abandoned or
+carried to a PR. See
 [orchestrated work](references/orchestrated-work.md) for the dispatch brief
 and report-back contract.
 
