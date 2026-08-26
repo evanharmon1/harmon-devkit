@@ -740,12 +740,33 @@ converges on the same value and the label is idempotent, so the post-claim assig
 claim makes concurrent work *discoverable by a human*; it does not prevent it.
 Treat a claim as information rather than a mutex.
 
+### Orchestrated work: the orchestrator claims
+
+When an orchestrator dispatches a subagent to an issue, the claim belongs to
+the **orchestrating session**, made before dispatch through the ordinary
+`/claim` contract — and `/claim` is user-invocable only, so the route is the
+user typing `/claim` for that issue; ask for it before dispatching. Neither a
+decision to delegate nor a conversational go-ahead authorizes the claim
+writes on their own. Subagents never
+claim: a brief is not a slash command, shared GitHub identities cannot
+distinguish their claims, and only the orchestrator knows when the work is
+done. The subagent's report-back ends the *dispatch*, not the claim, which
+follows the ordinary lifecycle: `/shepherd` retires the `claim:*` label at
+ready-for-review, and the close event or `/wrap` releases the claim itself
+once nothing is in flight. The orchestrator hands the issue back early only
+when the report leaves no work in flight — no PR open **and** no commits
+kept on the branch; a partial or blocked report whose commits stay on a
+feature branch keeps the claim live until that branch is abandoned or
+carried to a PR. See
+[orchestrated work](references/orchestrated-work.md) for the dispatch brief
+and report-back contract.
+
 The taxonomy already answers this; nothing was writing it. Two live markers
 plus the durable claim comment make the work discoverable:
 
 | Marker | Says | Visible in |
 | --- | --- | --- |
-| `claim:<family>` label | *which* intelligence is working it right now | `gh issue list --label`, the issue page, and every owner type |
+| `claim:<family>` label | *which* intelligence holds it right now — the claiming session's own family (its resolver pins the label to the host-attested family), which under delegation is the orchestrator, with the delegate in the record's `dispatched to` line | `gh issue list --label`, the issue page, and every owner type |
 | assignee | a human-shaped "taken" | notifications, `gh issue list --assignee` |
 
 **The retired `Agent` field is not one of them, and a claim must never write

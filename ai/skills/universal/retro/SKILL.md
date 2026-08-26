@@ -26,7 +26,10 @@ have dropped, and note that the tables may be incomplete. Do not trust
 remembered status — re-verify each one live:
 
 - `gh pr view <n> --json state,isDraft,mergedAt,reviewDecision,statusCheckRollup,url,title`
-- `gh issue view <n> --json state,stateReason,assignees,labels,url,title`
+- `gh issue view <n> --json state,stateReason,assignees,labels,url,title,comments`
+  — one response, so the marker check below reads labels and the claim
+  comments (including any `dispatched to` line) from a single snapshot; a
+  second call could pair pre-release markers with a post-release comment
 
 **Read the claim off the markers, not off the issue.** A live claim is an
 `claim:*` (or legacy `agent:*`) label, a card at `In Progress`, or the
@@ -43,8 +46,14 @@ specifically, either — `/claim` treats a missing `claim:*`/`agent:*` family as
 and claims anyway, so demanding it would miss every claim in an older repo or
 one with `project_management: none`, which are exactly the repos where the
 label cannot exist. Report it as "open — claimed,
-in progress", then check it is still true: a claim with no open PR and no work
-in flight is a loose end for §2, not a status. `/wrap` offers the commands to
+in progress" — and when the latest claim record carries a `dispatched to`
+line whose value is not `none`, say so ("claimed, dispatched to …" with the
+recorded delegate). That line is dispatch-time history, not live state: it
+says the orchestrator handed the issue to a background subagent when the
+record was written, and it is the only place the tracker records that. Whether
+the delegate is still active is read from the work in flight, exactly as for
+any other claim. Then check it is still true: a claim with no open PR and no
+work in flight is a loose end for §2, not a status. `/wrap` offers the commands to
 hand it back.
 
 **Discovery trust is deliberately read-only and broader than cleanup trust.**
@@ -77,6 +86,10 @@ rather than reporting both as loose ends:
   cleanup — the workflow has no Projects permission by design — so report
   it as a pending `/wrap` chore, not a workflow failure. These are §2
   loose ends.
+- **Freshly filed follow-up** — an issue an agent filed during this session as
+  follow-up work is expected to be open, unassigned, and without a claim.
+  Report it under "filed," not as a loose end. It becomes a loose end only if
+  this session said it would work the follow-up and did not.
 
 Keep each reference's repository identity: a bare `#123` from another repo
 must be verified with `--repo owner/repo` (or by its full URL), never against
