@@ -82,10 +82,11 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
 - `allowlist` / `vocabulary` — every label you may apply, with descriptions.
 - `work_type_values` — the work-type vocabulary for this repo.
 - `open[]` — open issues that need attention, each with `axis_state` (one
-  entry per axis in `axes`), `work_type`, `native_type` (org repos on newer
-  gh: the native issue Type name, `"none"` when unset; `null` when the scan
-  could not read it), `needs_labels`, `claim_labels`, `days_since_update`,
-  and `flags`.
+  entry per axis in `axes`), `work_type`, `native_type_state` (`"set"` or
+  `"unset"` for a bulk-read organization Type, `"unknown"` when a per-issue
+  read is required, `"n/a"` on personal repos), `native_type` (the exact Type
+  name only when state is `"set"`, otherwise `null`), `needs_labels`,
+  `claim_labels`, `days_since_update`, and `flags`.
 - `closed_flagged[]` — closed issues for report step 3 only.
 - `report_issue` — the rolling report issue (already excluded from the lists;
   never label it, never add report entries about it).
@@ -125,9 +126,11 @@ In EXECUTE mode append `--execute`. Record every line the script prints.
 ### 2a — Work classification
 
 When the personal repo's `work_type` is empty, or an organization repo's
-`native_type` is `none` (or `null` after the bounded per-issue read), read the
-title — and body if the title is not enough — then choose **at most one**
-classification using this decision table:
+`native_type_state` is `"unset"`, read the title — and body if the title is
+not enough — then choose **at most one** classification using this decision
+table. When an organization scan reports `"unknown"`, first run the bounded
+per-issue `native-type` reader from step 2c; classify only when its JSON
+`state` is `"unset"`:
 
 | Pick            | When the issue clearly...                                |
 | --------------- | -------------------------------------------------------- |
@@ -170,12 +173,14 @@ active taxonomy — a retired or misspelled label a human must resolve).
 
 - If `flags` contains `missing-needs-triage`: add `needs-triage` (include it
   in the same apply call) — with one check first on `Organization` repos:
-  read the issue's `native_type` from the scan, and if it is anything other
-  than `none`, the issue is classified by its native Type — do not add
-  `needs-triage` for a missing work-type label there. Only when `native_type`
-  is `null` (the scan could not bulk-read Types) run
+  read the issue's `native_type_state` from the scan. State `"set"` means the
+  issue is classified by its exact `native_type` — do not add `needs-triage`
+  for a missing work-type label there. Only when state is `"unknown"` run
   `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`
-  instead — that per-issue check costs one read from the budget.
+  instead — that per-issue check costs one read from the budget and returns
+  JSON with `state` (`"set"` or `"unset"`) and `name` (exact when set, null
+  when unset). Branch only on `state`, never on the display spelling of a
+  Type name.
 - Do **not** re-add `needs-triage` for a merely missing axis the scan did not
   flag: an earlier run may have removed the label on an
   `--inapplicable` attestation, which no label records, and re-adding it
@@ -183,11 +188,11 @@ active taxonomy — a retired or misspelled label a human must resolve).
 - Remove `needs-triage` **only if**, after your adds from 2a/2b, all of this
   holds — the script re-checks every point and refuses otherwise:
   - a work type is present (personal: a work-type label; org: the native
-    Type — the scan's `native_type`, which must not be `none`; only when it
-    is `null` check with
+    Type — the scan's `native_type_state`, which must be `"set"`; only when it
+    is `"unknown"` check with
     `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`,
-    which must not print `none`; a `--native-type <Type>` selected in this
-    same apply call also satisfies this requirement), and
+    whose JSON `state` must be `"set"`; a `--native-type <Type>` selected in
+    this same apply call also satisfies this requirement), and
   - when active, `area` and `domain` each have exactly one recognized label,
     **or** you attest `--inapplicable <axis>` only when no value of that axis
     could ever describe this issue. They remain required classification axes
@@ -225,8 +230,8 @@ a finding):
 | `aging-needs-candidate`              | nothing — the flag is the finding                    | always                                                                     |
 | `axis-conflict:*`                    | nothing — the flag is the finding                    | always; name both labels and, only if the body states one, the right one   |
 | `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
-| `missing-work-type` on an org repo   | the scan's `native_type`; `native-type` (see 2c) only when it is `null` | it remains `none` after 2a because no enabled Type is clearly applicable or its enabled-Type lookup was unavailable; state why it was not set |
-| `legacy-work-type-label` (org only)  | the scan's `native_type`; `native-type` (see 2c) only when it is `null` | it is/prints `none` — the label is legacy there and proves nothing; mention the label itself for cleanup |
+| `missing-work-type` on an org repo   | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state remains `"unset"` after 2a because no enabled Type is clearly applicable or its enabled-Type lookup was unavailable; state why it was not set |
+| `legacy-work-type-label` (org only)  | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state is `"unset"` — the label is legacy there and proves nothing; mention the label itself for cleanup |
 | `closed_flagged` state `completed`   | nothing — `unticked_criteria` is the finding         | always; note the unticked count                                            |
 | `closed_flagged` state `duplicate`   | `gh issue view <n> --repo "$REPO" --comments`        | no comment points at the surviving issue (`#<number>`)                     |
 

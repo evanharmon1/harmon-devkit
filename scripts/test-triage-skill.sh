@@ -894,11 +894,20 @@ echo "==> label: --execute with the env gate edits and reports APPLIED"
 grep -q "APPLIED add 'area:ci'" "$tmp/out" || fail "missing APPLIED"
 grep -q -- "--add-label area:ci" "$GH_STUB_LOG" || fail "edit not issued"
 
-echo "==> native-type: prints none for an unset Type"
+echo "==> native-type: keeps state separate from sentinel-shaped names"
 export GH_STUB_NATIVE_TYPE=""
 [ "$(run "$apply" native-type --repo "$repo" --issue 10)" = 0 ] ||
     fail "native-type failed"
-grep -qx "none" "$tmp/out" || fail "expected none"
+jq -e '.state == "unset" and .name == null' "$tmp/out" >/dev/null ||
+    fail "unset native Type must return explicit state"
+for sentinel_name in none null; do
+    export GH_STUB_NATIVE_TYPE="$sentinel_name"
+    [ "$(run "$apply" native-type --repo "$repo" --issue 10)" = 0 ] ||
+        fail "native-type failed for custom Type '$sentinel_name'"
+    jq -e --arg name "$sentinel_name" \
+        '.state == "set" and .name == $name' "$tmp/out" >/dev/null ||
+        fail "custom Type '$sentinel_name' must remain distinct from unset"
+done
 unset GH_STUB_NATIVE_TYPE
 
 # ── report ───────────────────────────────────────────────────────────────────
@@ -1368,24 +1377,29 @@ jq -e '.native_type_mode == "per-issue"' "$tmp/out" >/dev/null ||
 echo "==> scan: bulk native Type quiets natively-typed org issues"
 # The bulk read rides in the same list request as the issues (one snapshot,
 # no join), so the fixture is the open list plus issueType per issue.
-jq 'map(.issueType = (if .number == 23 or .number == 26
-                      then {name: "Bug"} else null end))' \
+jq 'map(.issueType = (if .number == 23 then {name: "none"}
+                      elif .number == 26 then {name: "null"}
+                      else null end))' \
     "$stub_dir/issues-open.json" >"$stub_dir/issues-open-types.json"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
     fail "org bulk scan failed: $(cat "$tmp/out")"
 jq -e '.native_type_mode == "bulk"' "$tmp/out" >/dev/null ||
     fail "bulk-capable gh must report bulk mode"
-jq -e '.open[] | select(.number == 23) | .native_type == "Bug"' \
-    "$tmp/out" >/dev/null || fail "native_type must carry the bulk-read Type"
+jq -e '.open[] | select(.number == 23)
+       | .native_type_state == "set" and .native_type == "none"' \
+    "$tmp/out" >/dev/null ||
+    fail "native_type must carry a sentinel-shaped bulk-read Type"
 jq -e '.open[] | select(.number == 23) | .flags
        | index("legacy-work-type-label") == null' "$tmp/out" >/dev/null ||
     fail "a natively-typed issue must not read as legacy-labeled"
-jq -e '.open[] | select(.number == 24) | .native_type == "none"
-       and (.flags | index("legacy-work-type-label") != null)' \
+jq -e '.open[] | select(.number == 24)
+       | .native_type_state == "unset" and .native_type == null
+         and (.flags | index("legacy-work-type-label") != null)' \
     "$tmp/out" >/dev/null ||
     fail "an untyped org issue with a work-type label stays flagged"
 jq -e '.open[] | select(.number == 26)
-       | (.flags | index("needs-triage-removable") != null)
+       | .native_type_state == "set" and .native_type == "null"
+         and (.flags | index("needs-triage-removable") != null)
          and (.flags | index("partially-classified") == null)' \
     "$tmp/out" >/dev/null ||
     fail "a natively-typed issue with finished axes must read removable"

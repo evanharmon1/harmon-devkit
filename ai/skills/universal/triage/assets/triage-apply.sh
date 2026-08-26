@@ -45,9 +45,9 @@
 #                   [--remove needs-triage]
 #                   [--inapplicable AXIS]... [--manifest PATH] [--execute]
 #
-# `native-type` is a read: it prints the issue's native GitHub issue Type name,
-# or "none". It exists so the classifying model never needs raw `gh api`
-# access — org-repo Type checks go through here.
+# `native-type` is a read: it prints JSON with an explicit `state` (`set` or
+# `unset`) and the exact Type `name` when set. It exists so the classifying
+# model never needs raw `gh api` access — org-repo Type checks go through here.
 #
 # Dry-run is the DEFAULT: without --execute the script prints exactly what it
 # would write and writes nothing. --execute additionally requires
@@ -387,18 +387,6 @@ native_type_state_read() {
     esac
 }
 
-# Public read contract: print the Type name, or "none" when unset. Mutation
-# decisions never consume this lossy display form; they use the state reader.
-native_type_read() {
-    local state
-    state="$(native_type_state_read "$1" "$2")" || return 1
-    if [ "$state" = "unset" ]; then
-        echo "none"
-    else
-        printf '%s\n' "${state#set:}"
-    fi
-}
-
 # A successful Type mutation can be followed by a transient GraphQL read
 # failure. Reconcile with a small bounded retry budget; callers must still
 # treat exhaustion as indeterminate rather than assuming the write rolled back.
@@ -438,7 +426,7 @@ enabled_native_types() {
 }
 
 cmd_native_type() {
-    local repo="" issue=""
+    local repo="" issue="" state
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --repo)
@@ -456,8 +444,13 @@ cmd_native_type() {
     done
     [ -n "$repo" ] && [ -n "$issue" ] || usage
     guard_issue_number "$issue"
-    native_type_read "$repo" "$issue" ||
+    state="$(native_type_state_read "$repo" "$issue")" ||
         die 2 "could not read the native issue Type of $repo#$issue"
+    if [ "$state" = "unset" ]; then
+        printf '%s\n' '{"state":"unset","name":null}'
+    else
+        jq -cn --arg name "${state#set:}" '{state:"set", name:$name}'
+    fi
 }
 
 cmd_native_types() {
