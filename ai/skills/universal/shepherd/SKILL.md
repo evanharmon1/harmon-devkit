@@ -192,13 +192,15 @@ the current round and does not start another.
 
 **Shepherd round-entry ledger.** Before the round-start fetch establishes a
 finding or no-change adjudication cycle, post the fixed stage-ledger table in
-your own commentary with `waiting (no round yet)` in `Stage`; the fetch and an
-ordinary clean/pending watch spend no round. When that fetch does establish a
-watch/fix round, post the table again before adjudicating. Fill `Stage` with
-`🚢 shepherd`, the resolved current `round n/cap`, and the cloud (PR review
-cycle) marker; use `Round` for the current checks/review state and `Next` for
-the concrete action or bounded wait that follows. A no-change adjudication
-cycle follows the same numbered entry rule.
+your own commentary. Before the stage's first round, use
+`waiting (no round yet)` in `Stage`; after a round has completed, retain its
+completed `round n/cap` while polling instead of moving the counter backward.
+The fetch and an ordinary clean/pending watch spend no round. When that fetch
+does establish a watch/fix round, post the table again before adjudicating.
+Fill `Stage` with `🚢 shepherd`, the resolved current `round n/cap`, and the
+cloud (PR review cycle) marker; use `Round` for the current checks/review state
+and `Next` for the concrete action or bounded wait that follows. A no-change
+adjudication cycle follows the same numbered entry rule.
 
 Only write-incapable reads are pre-approved (`git log`/`diff`/`show` accept
 `--output=<file>`, `git fetch` accepts `--upload-pack=<cmd>` — those prompt),

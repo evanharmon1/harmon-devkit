@@ -385,9 +385,9 @@ Each round:
 **Challenge round-entry ledger.** Before starting every challenge round, post
 the fixed stage-ledger table in your own commentary. Fill `Stage` with
 `⚔️ challenge`, the resolved current `round n/cap`, and the local
-(`task challenge`) marker; use `Round` for the current adjudicated findings and
-`Next` for the concrete action that follows. This post is required before
-backgrounding the reviewer.
+(`task challenge`) marker; use `⏳ waiting on reviewer` in `Round` and name the
+reviewer run in `Next`. Adjudicated findings belong in the round-end post, not
+this pre-run entry. This post is required before backgrounding the reviewer.
 
 1. **Run it in the background and poll** (§8). A round is 5–15 minutes —
    past most agents' tool-call timeouts.
@@ -452,8 +452,9 @@ the two are capped separately even where the level gives them equal numbers.
 **Review round-entry ledger.** Before starting every review round, post the
 fixed stage-ledger table in your own commentary. Fill `Stage` with `🔍 review`,
 the resolved current `round n/cap`, and the local (`task review`) marker; use
-`Round` for the current adjudicated findings and `Next` for the concrete action
-that follows. This post is required before backgrounding the reviewer.
+`⏳ waiting on reviewer` in `Round` and name the reviewer run in `Next`.
+Adjudicated findings belong in the round-end post, not this pre-run entry. This
+post is required before backgrounding the reviewer.
 
 **Why serial, not interleaved.** Challenge findings are architectural: fixing
 them first avoids spending fine-grained review on code that is about to change.

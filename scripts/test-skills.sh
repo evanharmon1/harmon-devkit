@@ -1058,6 +1058,8 @@ assert_gauntlet_ledger_hooks() {
     ' "$file" || return 1
     grep -qF 'Before starting every challenge round, post' "$file" || return 1
     grep -qF 'Before starting every review round, post' "$file" || return 1
+    [ "$(grep -cF '`⏳ waiting on reviewer` in `Round`' "$file")" -eq 2 ] || return 1
+    [ "$(grep -cF 'Adjudicated findings belong in the round-end post' "$file")" -eq 2 ] || return 1
     grep -qF 'Immediately after a challenge or review' "$file" || return 1
     grep -qF 'keep `Next` naming the next concrete gate or action' "$file" || return 1
     grep -qF 'Immediately after every challenge or review round is' "$file" || return 1
@@ -1082,6 +1084,9 @@ assert_shepherd_ledger_hooks() {
     grep -qF 'has begun, omit `round n/cap`' "$file" || return 1
     grep -qF '`waiting (no round yet)`' "$file" || return 1
     grep -qF 'Before the round-start fetch establishes a' "$file" || return 1
+    grep -qF "Before the stage's first round, use" "$file" || return 1
+    grep -qF 'retain its' "$file" || return 1
+    grep -qF 'completed `round n/cap` while polling instead of moving the counter backward' "$file" || return 1
     grep -qF 'ordinary clean/pending watch spend no round' "$file" || return 1
     grep -qF 'post the table again before adjudicating' "$file" || return 1
     grep -qF 'cap-zero stage uses `skipped (cap 0)`' "$file" || return 1
