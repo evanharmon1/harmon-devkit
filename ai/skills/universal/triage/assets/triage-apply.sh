@@ -795,7 +795,7 @@ cmd_label() {
             current_native_type="$(native_type_reconcile "$repo" "$issue")" ||
                 die 2 "write indeterminate: native issue Type may have applied to" \
                     "$repo#$issue but could not be verified after 3 reads;" \
-                    "no labels or needs-triage removal were attempted"
+                    "no remaining labels or needs-triage removal were attempted"
             [ "$current_native_type" = "$effective_native_type" ] ||
                 die 1 "write failed: $repo#$issue native issue Type did not become" \
                     "'$effective_native_type'"

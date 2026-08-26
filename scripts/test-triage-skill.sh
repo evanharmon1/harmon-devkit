@@ -804,6 +804,21 @@ grep -q 'write indeterminate: native issue Type may have applied' "$tmp/out" ||
 grep -q -- '--add-label\|--remove-label' "$GH_STUB_LOG" &&
     fail "indeterminate Type write must not mutate labels"
 
+echo "==> label: an indeterminate Type write reports an established visibility marker"
+: >"$GH_STUB_LOG"
+: >"$native_type_file"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
+    GH_STUB_NATIVE_TYPE_UNREADABLE_AFTER_TYPE_WRITE=1 "$apply" label --repo "$repo" \
+    --issue 20 --native-type Bug --add needs-triage --execute \
+    --manifest "$manifest")" = 2 ] ||
+    fail "indeterminate Type write after marker add must exit 2"
+grep -q "APPLIED add 'needs-triage'" "$tmp/out" ||
+    fail "indeterminate Type write must disclose the established marker"
+grep -q 'no remaining labels or needs-triage removal were attempted' "$tmp/out" ||
+    fail "indeterminate Type write must distinguish the earlier marker add"
+[ "$(grep -c -- '--add-label needs-triage' "$GH_STUB_LOG")" = 1 ] ||
+    fail "indeterminate Type path must establish the marker exactly once"
+
 echo "==> label: a concurrent Type change refuses before any mutation"
 : >"$GH_STUB_LOG"
 : >"$native_type_file"
