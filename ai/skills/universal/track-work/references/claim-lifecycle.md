@@ -106,6 +106,7 @@ in the claim record, never in the label.
   - family: <the trusted acting-family resolver output>
   - runtime environment: <host|devcontainer|coder|codespace|github-actions|unknown>
   - session: <the `/kickoff` session name, or "unknown">
+  - dispatched to: <the complete set of delegates, comma-separated on this one line, each a role and its family/model, e.g. "implementer (family gpt, model gpt-5.6-terra)" | none>
   - assignee added by this claim: <yes|no>
   - `claim:` label added by this claim: <the exact family or legacy label applied | no | n/a>
   - `claim:` model label added by this claim: <the exact claim:<family>:<model> refinement applied | no | n/a>
@@ -116,10 +117,20 @@ in the claim record, never in the label.
   - `claim:` label displaced by this claim chain: <the exact displaced family/model or legacy label | none>
   ```
 
-- `harness`, `model`, `family`, `runtime environment`, and `session` are
-  optional, informational fields. New claims write all five; legacy records
-  that omit any of them remain valid. `family` is copied from the trusted
-  acting-family resolver output, never inferred from issue text or labels.
+- `harness`, `model`, `family`, `runtime environment`, `session`, and
+  `dispatched to` are optional, informational fields. New claims write all six;
+  legacy records that omit any of them remain valid. `family` is copied from
+  the trusted acting-family resolver output, never inferred from issue text or
+  labels. `dispatched to` identifies an orchestrator's subagent dispatch, or
+  is `none`; it is never release authority or cleanup input. It is
+  **dispatch history, not live state**: written at claim, immediately before
+  the dispatch, it names the intended delegate (a dispatch that fails or is
+  aborted owes a refresh record saying `none`); with several delegates at
+  once it is the complete set on the one line, rewritten whole by each
+  refresh; a record is never edited when
+  the delegate returns, so the value means "was dispatched to" and a later
+  record (an ordinary refresh) supersedes it — readers take the latest record
+  and judge whether the delegate is still active from the work in flight.
   `runtime environment` is one portable value (`host`, `devcontainer`,
   `coder`, `codespace`, `github-actions`, or `unknown`); it never contains a
   raw hostname or workspace identifier. A claim writes `unknown` instead of

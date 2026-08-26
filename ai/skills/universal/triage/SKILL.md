@@ -188,10 +188,18 @@ active taxonomy — a retired or misspelled label a human must resolve).
     `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`,
     which must not print `none`; a `--native-type <Type>` selected in this
     same apply call also satisfies this requirement), and
-  - every axis in `axes` has exactly one recognized label, **or** you attest
-    `--inapplicable <axis>` for it. Attest only when no value of that axis
-    could ever describe this issue (example: a pure question has no stack
-    layer). When in doubt, do not attest — leave `needs-triage` in place.
+  - when active, `area` and `domain` each have exactly one recognized label,
+    **or** you attest `--inapplicable <axis>` only when no value of that axis
+    could ever describe this issue. They remain required classification axes
+    whenever the repository provisions them; never assume an axis absent from
+    `axes`.
+  - `layer`, when it is active, has exactly one recognized label **or is
+    absent**. Do not add a rote `--inapplicable layer` just to clear an absent
+    layer: the stack slice is optional when absent. A present layer conflict or
+    unknown value still blocks removal and is reported by the scan.
+  - Any other active axis still has exactly one recognized label, **or** you
+    attest `--inapplicable <axis>` for it. When in doubt, do not attest — leave
+    `needs-triage` in place.
 
 ## Step 3 — Report entries
 

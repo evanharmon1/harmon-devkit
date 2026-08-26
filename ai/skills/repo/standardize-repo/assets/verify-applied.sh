@@ -173,6 +173,93 @@ if { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
     fi
 fi
 
+# ── 3a. Skills-sync never-vendored warning (advisory) ────────────────
+# A newly rendered manifest deliberately starts with no provenance so the
+# skills-sync gates can remain inert until a maintainer elects to vendor. That
+# decision changes the target's CI and Dev Loop, so make the state visible here
+# without turning it into a hard failure. The manifest's `dest` values, rather
+# than a fixed Claude/Codex path, are authoritative because consumers may choose
+# a different harness layout.
+skills_sync_manifest=".skills-sync.yaml"
+if [ -f "$skills_sync_manifest" ]; then
+    skills_sync_dest=""
+    skills_sync_agents_dest=""
+    skills_sync_agents_requested=false
+    if have yq; then
+        skills_sync_dest="$(yq -r '.dest // ""' "$skills_sync_manifest" 2>/dev/null || true)"
+        skills_sync_agents_dest="$(
+            yq -r '.agents.dest // ""' "$skills_sync_manifest" 2>/dev/null || true
+        )"
+        if [ "$(
+            yq -r 'has("agents")' "$skills_sync_manifest" 2>/dev/null || true
+        )" = "true" ]; then
+            skills_sync_agents_requested=true
+        fi
+    else
+        # `yq` is a standardize-repo precondition. Keep this deliberately small
+        # fallback for an otherwise-readable manifest: top-level `dest` and the
+        # nested agents destination are all this advisory check needs.
+        skills_sync_dest="$(
+            sed -n -E 's/^dest:[[:space:]]*([^#[:space:]]+).*$/\1/p' \
+                "$skills_sync_manifest" 2>/dev/null |
+                tail -n 1 |
+                sed -E "s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/" || true
+        )"
+        if grep -qE '^agents:[[:space:]]*($|#)' "$skills_sync_manifest"; then
+            skills_sync_agents_requested=true
+            skills_sync_agents_dest="$(
+                awk '
+                    /^agents:[[:space:]]*($|#)/ { in_agents = 1; next }
+                    /^[^[:space:]#]/ { in_agents = 0 }
+                    in_agents && /^[[:space:]]+dest:[[:space:]]*/ {
+                        sub(/^[[:space:]]*dest:[[:space:]]*/, "")
+                        sub(/[[:space:]]+#.*$/, "")
+                        sub(/[[:space:]]+$/, "")
+                        print
+                        exit
+                    }
+                ' "$skills_sync_manifest" 2>/dev/null |
+                    sed -E "s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/" || true
+            )"
+        fi
+    fi
+
+    skills_sync_managed=0
+    if [ -n "$skills_sync_dest" ] &&
+        grep -q '^# managed:' "$skills_sync_dest/.SKILLS_PROVENANCE" 2>/dev/null; then
+        skills_sync_managed=1
+    fi
+
+    skills_sync_agents_managed=0
+    if [ "$skills_sync_agents_requested" = false ]; then
+        skills_sync_agents_managed=1
+    elif [ -n "$skills_sync_agents_dest" ] &&
+        grep -q '^# managed:' \
+            "$skills_sync_agents_dest/.AGENTS_PROVENANCE" 2>/dev/null; then
+        skills_sync_agents_managed=1
+    fi
+
+    skills_sync_assets=""
+    if [ -n "$skills_sync_dest" ] && [ "$skills_sync_managed" -eq 0 ]; then
+        skills_sync_assets="skills"
+    fi
+    if [ "$skills_sync_agents_requested" = true ] &&
+        [ -n "$skills_sync_agents_dest" ] &&
+        [ "$skills_sync_agents_managed" -eq 0 ]; then
+        if [ -n "$skills_sync_assets" ]; then
+            skills_sync_assets="$skills_sync_assets and agents"
+        else
+            skills_sync_assets="agents"
+        fi
+    fi
+
+    if [ -n "$skills_sync_assets" ]; then
+        printf '%s%s\n' \
+            "WARN: .skills-sync.yaml is never vendored: $skills_sync_assets have no # managed: provenance; run " \
+            "'task sync:skills' to materialize them." >&2
+    fi
+fi
+
 # ── 3b. Required universal Taskfile targets are present ──────────────
 # Every standardized repo defines these regardless of project_type. A missing
 # one means the Taskfile drifted from (or predates) the current template — the

@@ -259,6 +259,11 @@ jq -n -L "$title_module_dir" \
       elif $n == 1 then "ok"
       elif (axis_unknown($ls; $a) | length) > 0 then "unknown"
       else "none" end;
+  def axis_optional_when_absent($a): $a == "layer";
+  def axis_incomplete($ls; $a):
+    axis_state($ls; $a) as $state
+    | ($state != "ok"
+       and ($state != "none" or (axis_optional_when_absent($a) | not)));
 
   {
     repo: $repo,
@@ -305,7 +310,8 @@ jq -n -L "$title_module_dir" \
         # A stray unrecognized label also blocks completeness — the apply
         # script refuses that removal (exit 6), so the scan must not badge
         # the same issue needs-triage-removable.
-        | (($typed | not) or ([$ax[]] | any(. != "ok"))
+        | (($typed | not)
+           or ([$axes[] | select(axis_incomplete($ls; .))] | length > 0)
            or ([$axes[] | axis_unknown($ls; .) | length] | any(. > 0)))
             as $incomplete
         # needs-triage is RE-ADDED only on a missing work type (personal
@@ -315,6 +321,8 @@ jq -n -L "$title_module_dir" \
         # would churn every legitimately attested issue forever. Org repos
         # are exempt from the work-type trigger too — the bulk scan cannot
         # see native issue Type, so an empty label set proves nothing there.
+        # The absent layer axis is optional for completeness; a present layer
+        # conflict or unknown value still requeues needs-triage below.
         # An unknown value requeues too — checked independently of the axis
         # state (mirroring $incomplete), because a stray label beside a
         # recognized one leaves the state "ok" while the issue still needs
@@ -352,7 +360,9 @@ jq -n -L "$title_module_dir" \
                 (if ($have_wt | length) == 0 and ($nt == null or $nt == "none")
                  then "missing-work-type" else empty end),
                 ($ax | to_entries[]
-                 | select(.value == "none") | "axis-missing:\(.key)"),
+                 | select(.value == "none"
+                         and (axis_optional_when_absent(.key) | not))
+                 | "axis-missing:\(.key)"),
                 ($ax | to_entries[]
                  | select(.value == "conflict") | "axis-conflict:\(.key)"),
                 # Unknown values flag independently of the axis state: a

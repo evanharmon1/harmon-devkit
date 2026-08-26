@@ -91,8 +91,8 @@ read it in the UI) — never guess.
   say exactly that; the user is present on this path.
 
   New records may also carry optional `harness`, `model`, `family`, `runtime
-  environment`, and `session` lines. Read them as operational context when
-  present, and accept older records that omit any or all of them. They are
+  environment`, `session`, and `dispatched to` lines. Read them as operational
+  context when present, and accept older records that omit any or all of them. They are
   single-line, informational values and never cleanup authority: do not use
   their values to select, construct, or suppress any write in any outcome
   below. In particular, family metadata does not replace the recorded label

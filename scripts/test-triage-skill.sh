@@ -214,7 +214,7 @@ cat >"$manifest" <<'JSON'
      "source": "inline", "writers": ["human", "agent"],
      "readers": "fixture", "lifecycle": "durable", "exclusive": true,
      "provision": false,
-     "values": [{"value": "ui"}]},
+     "values": [{"value": "ui"}, {"value": "api"}]},
     {"family": "domain", "prefix": "domain",
      "purpose": "Fixture domains", "axis": "classification",
      "source": "inline", "writers": ["human", "agent"],
@@ -248,7 +248,7 @@ echo "==> allowlist: manifest mode computes agent-writable v1 scope"
     fail "allowlist should succeed: $(cat "$tmp/out")"
 sort "$tmp/out" >"$tmp/got"
 printf '%s\n' area:ci area:tasks bug domain:auth domain:delivery feature \
-    layer:ui needs-triage | sort >"$tmp/want"
+    layer:api layer:ui needs-triage | sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 || fail "allowlist mismatch"
 
 echo "==> allowlist: triage works from a standalone vendored support bundle"
@@ -390,7 +390,7 @@ jq '.families |= map(if .family == "area"
 [ "$(run "$apply" axis-values --manifest "$tmp/retired-value.json")" = 0 ] ||
     fail "axis-values failed"
 sort "$tmp/out" >"$tmp/got"
-printf '%s\n' area:ci area:tasks domain:auth domain:delivery layer:ui |
+printf '%s\n' area:ci area:tasks domain:auth domain:delivery layer:api layer:ui |
     sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 || fail "axis-values mismatch"
 
@@ -446,6 +446,28 @@ cat >"$stub_dir/issue-13.json" <<'JSON'
  "body": "plain"}
 JSON
 cat >"$stub_dir/issue-15.json" <<'JSON'
+{"labels": [{"name": "needs-triage"}, {"name": "bug"},
+            {"name": "area:ci"}, {"name": "domain:auth"}], "body": "plain"}
+JSON
+cat >"$stub_dir/issue-16.json" <<'JSON'
+{"labels": [{"name": "needs-triage"}, {"name": "bug"},
+            {"name": "area:ci"}], "body": "plain"}
+JSON
+cat >"$stub_dir/issue-17.json" <<'JSON'
+{"labels": [{"name": "needs-triage"}, {"name": "bug"},
+            {"name": "domain:auth"}], "body": "plain"}
+JSON
+cat >"$stub_dir/issue-18.json" <<'JSON'
+{"labels": [{"name": "needs-triage"}, {"name": "bug"},
+            {"name": "area:ci"}, {"name": "domain:auth"},
+            {"name": "layer:ui"}, {"name": "layer:api"}], "body": "plain"}
+JSON
+cat >"$stub_dir/issue-19.json" <<'JSON'
+{"labels": [{"name": "needs-triage"}, {"name": "bug"},
+            {"name": "area:ci"}, {"name": "domain:auth"},
+            {"name": "layer:legacy"}], "body": "plain"}
+JSON
+cat >"$stub_dir/issue-20.json" <<'JSON'
 {"labels": [], "body": "plain"}
 JSON
 
@@ -621,6 +643,27 @@ grep -q "DRY-RUN would remove 'needs-triage'" "$tmp/out" ||
     fail "missing WOULD remove"
 grep -q "attested inapplicable: layer" "$tmp/out" || fail "missing attestation"
 
+echo "==> label: area and domain clear needs-triage without a layer"
+[ "$(run "$apply" label --repo "$repo" --issue 15 --remove needs-triage \
+    --manifest "$manifest")" = 0 ] ||
+    fail "area+domain without layer must pass: $(cat "$tmp/out")"
+grep -q "DRY-RUN would remove 'needs-triage'" "$tmp/out" ||
+    fail "missing no-layer removal"
+
+echo "==> label: missing domain or area still blocks removal"
+[ "$(run "$apply" label --repo "$repo" --issue 16 --remove needs-triage \
+    --manifest "$manifest")" = 6 ] || fail "missing domain must exit 6"
+[ "$(run "$apply" label --repo "$repo" --issue 17 --remove needs-triage \
+    --manifest "$manifest")" = 6 ] || fail "missing area must exit 6"
+
+echo "==> label: present layer conflicts and unknowns still block removal"
+[ "$(run "$apply" label --repo "$repo" --issue 18 --remove needs-triage \
+    --manifest "$manifest")" = 6 ] || fail "layer conflict must exit 6"
+[ "$(run "$apply" label --repo "$repo" --issue 19 --remove needs-triage \
+    --manifest "$manifest")" = 6 ] || fail "unknown layer must exit 6"
+grep -q "not in the active layer taxonomy" "$tmp/out" ||
+    fail "unknown layer refusal must name the layer"
+
 echo "==> label: an unknown axis value never satisfies the removal gate"
 cat >"$stub_dir/issue-14.json" <<'JSON'
 {"labels": [{"name": "needs-triage"}, {"name": "bug"},
@@ -738,7 +781,7 @@ echo "==> label: a failed needs-triage add prevents a native Type write"
 : >"$GH_STUB_LOG"
 : >"$native_type_file"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
-    GH_STUB_EDIT_FAIL_ON_ADD=1 "$apply" label --repo "$repo" --issue 15 \
+    GH_STUB_EDIT_FAIL_ON_ADD=1 "$apply" label --repo "$repo" --issue 20 \
     --native-type Bug --add needs-triage --execute --manifest "$manifest")" = 1 ] ||
     fail "failed needs-triage add must exit 1"
 grep -q -- "--add-label needs-triage" "$GH_STUB_LOG" ||
@@ -1020,6 +1063,38 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "labels": [{"name": "bug"}, {"name": "layer:ui"}, {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
+ {"number": 15, "title": "(classification): Complete without a stack layer",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "needs-triage"}, {"name": "bug"},
+             {"name": "area:ci"}, {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 16, "title": "(classification): Missing domain",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "needs-triage"}, {"name": "bug"},
+             {"name": "area:ci"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 17, "title": "(classification): Missing area",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "needs-triage"}, {"name": "bug"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 18, "title": "(classification): Conflicting stack layers",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "needs-triage"}, {"name": "bug"},
+             {"name": "area:ci"}, {"name": "domain:auth"},
+             {"name": "layer:ui"}, {"name": "layer:api"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 19, "title": "(classification): Unknown stack layer",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "needs-triage"}, {"name": "bug"},
+             {"name": "area:ci"}, {"name": "domain:auth"},
+             {"name": "layer:legacy"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
  {"number": 20, "title": "gauntlet: something is broken in the gate",
   "labels": [{"name": "claim:claude"}, {"name": "needs-triage"}],
   "createdAt": "2020-01-01T00:00:00Z", "updatedAt": "2020-01-02T00:00:00Z",
@@ -1142,6 +1217,38 @@ jq -e '.axes | sort == ["area", "domain", "layer"]' "$scan_out" >/dev/null ||
 jq -e '.open[] | select(.number == 23) | .axis_state
        | keys | sort == ["area", "domain", "layer"]' "$scan_out" >/dev/null ||
     fail "axis_state must be keyed by the active axes"
+
+echo "==> scan: area and domain with no layer are removable"
+jq -e '.open[] | select(.number == 15)
+       | (.axis_state.layer == "none")
+         and (.flags | index("needs-triage-removable") != null)
+         and (.flags | index("partially-classified") == null)
+         and (.flags | index("missing-needs-triage") == null)
+         and (.flags | index("axis-missing:layer") == null)' \
+    "$scan_out" >/dev/null || fail "no-layer classification must be removable"
+
+echo "==> scan: missing area or domain remains incomplete"
+jq -e '.open[] | select(.number == 16)
+       | (.axis_state.domain == "none")
+         and (.flags | index("partially-classified") != null)
+         and (.flags | index("needs-triage-removable") == null)' \
+    "$scan_out" >/dev/null || fail "missing domain must remain incomplete"
+jq -e '.open[] | select(.number == 17)
+       | (.axis_state.area == "none")
+         and (.flags | index("partially-classified") != null)
+         and (.flags | index("needs-triage-removable") == null)' \
+    "$scan_out" >/dev/null || fail "missing area must remain incomplete"
+
+echo "==> scan: present layer conflicts and unknowns remain incomplete"
+jq -e '.open[] | select(.number == 18)
+       | (.axis_state.layer == "conflict")
+         and (.flags | index("partially-classified") != null)' \
+    "$scan_out" >/dev/null || fail "layer conflict must remain incomplete"
+jq -e '.open[] | select(.number == 19)
+       | (.axis_state.layer == "unknown")
+         and (.flags | index("axis-unknown-value:layer") != null)
+         and (.flags | index("partially-classified") != null)' \
+    "$scan_out" >/dev/null || fail "unknown layer must remain incomplete"
 
 echo "==> scan: an unrecognized axis value reads unknown, never classified"
 jq -e '.open[] | select(.number == 24) | .axis_state.area == "unknown"' \

@@ -657,11 +657,11 @@ cmd_label() {
     done
 
     # needs-triage removal gate: classification must be COMPLETE — a work type
-    # in the owner-appropriate form, and each active axis either applied
-    # exactly once or attested inapplicable. A conflicted axis is never
-    # "applied", and neither is a label whose value the active taxonomy does
-    # not recognize (retired, misspelled) — prefix presence alone must not
-    # satisfy the gate.
+    # in the owner-appropriate form, every required active axis either applied
+    # exactly once or attested inapplicable, and the optional layer axis either
+    # applied once or absent. A conflicted axis is never "applied", and neither
+    # is a label whose value the active taxonomy does not recognize (retired,
+    # misspelled) — prefix presence alone must not satisfy the gate.
     if [ "${#removes[@]}" -gt 0 ]; then
         local recognized
         recognized="$(axis_values_recognized "$repo" "$manifest")"
@@ -680,7 +680,7 @@ cmd_label() {
                 die 6 "refused: $axis is conflicted ($count labels) —" \
                     "needs-triage stays; report the conflict"
             fi
-            if [ "$count" -eq 0 ]; then
+            if [ "$count" -eq 0 ] && [ "$axis" != "layer" ]; then
                 in_list "$axis" "$(printf '%s\n' \
                     "${inapplicable[@]+"${inapplicable[@]}"}")" ||
                     die 6 "refused: no $axis:* label and no --inapplicable" \
