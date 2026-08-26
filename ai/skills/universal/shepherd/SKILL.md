@@ -177,6 +177,13 @@ counter only ever increases, every wait below is
 bounded, and every path ends in one of the stop conditions in step 6, so
 the loop cannot run forever.
 
+**No-change round-end ledger.** When a no-change adjudication cycle completes
+— every finding is answered or settled and nothing needs a fix push — post the
+fixed table again immediately after the final reply/settle and before returning
+to watching. Keep the completed `round n/cap` in `Stage`, put the final
+disposition in `Round`, and name the next bounded wait in `Next`; this closes
+the current round and does not start another.
+
 **Shepherd round-entry ledger.** At the start of every watch/fix round,
 including a no-change adjudication cycle, post the fixed stage-ledger table in
 your own commentary before the round-start fetch. Fill `Stage` with
@@ -812,9 +819,11 @@ you rather than the bot):
   regardless of whether it is clean, findings, pending, retry, escalation,
   closed, or indeterminate, post the fixed stage-ledger table in your own
   commentary before replying, settling, re-triggering, or stopping. Fill
-  `Stage` with `🚢 shepherd` and the current `round n/cap`; use the matching
-  status glyph (`✅`, `🔴`, `🟡`, `⚪`, `⏳`, or `⛔`) and make `Next` name the exact
-  follow-up.
+  `Stage` with `🚢 shepherd`; before a finding or no-change adjudication cycle
+  has begun, omit `round n/cap` and write `waiting (no round yet)`, while a
+  cap-zero stage uses `skipped (cap 0)` as the shared rule requires. Otherwise
+  fill in the current `round n/cap`; use the matching status glyph (`✅`, `🔴`,
+  `🟡`, `⚪`, `⏳`, or `⛔`) and make `Next` name the exact follow-up.
 
   `show --state "$state"` prints the state file back unchanged. It decides
   nothing; it is the read for reconciling an interrupted cycle by hand.
@@ -1427,10 +1436,11 @@ loops indefinitely:
    **Ready-stop ledger.** Immediately after the readiness gate confirms the
    ready-for-review transition, post the fixed stage-ledger table in your own
    commentary before cleanup and stopping. If the resolved shepherd cap is 0
-   and no round ran, omit `round n/cap` and write `skipped (cap 0)` in `Stage`;
-   otherwise fill `Stage` with `🚢 shepherd`, the final `round n/cap`, `Round`
-   with `🏁 stage converged` and the green readiness result, and `Next` with
-   human review followed by the maintainer's merge decision.
+   and no round ran, omit `round n/cap` and write `skipped (cap 0)` in `Stage`,
+   but still write `Round` with `🏁 stage converged` and the green readiness
+   result; otherwise fill `Stage` with `🚢 shepherd`, the final `round n/cap`,
+   `Round` with `🏁 stage converged` and the green readiness result, and `Next`
+   with human review followed by the maintainer's merge decision.
 
    If the PR was already non-draft (the gate's `pr-not-draft` failure),
    promotion is idempotently complete

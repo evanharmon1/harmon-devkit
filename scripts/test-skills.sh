@@ -1070,8 +1070,18 @@ assert_shepherd_ledger_hooks() {
     grep -qF 'stage-ledger table in your own commentary' "$file" || return 1
     grep -qF 'regardless of whether it is clean, findings, pending, retry, escalation,' "$file" || return 1
     grep -qF 'closed, or indeterminate, post' "$file" || return 1
-    grep -qF '`✅`, `🔴`, `🟡`, `⚪`, `⏳`, or `⛔`' "$file" || return 1
+    grep -qF 'before a finding or no-change adjudication cycle' "$file" || return 1
+    grep -qF 'has begun, omit `round n/cap`' "$file" || return 1
+    grep -qF '`waiting (no round yet)`' "$file" || return 1
+    grep -qF 'cap-zero stage uses `skipped (cap 0)`' "$file" || return 1
+    grep -qF '**No-change round-end ledger.**' "$file" || return 1
+    grep -qF 'immediately after the final reply/settle and before returning' "$file" || return 1
+    grep -qF 'does not start another' "$file" || return 1
+    grep -qF 'use the matching status glyph' "$file" || return 1
+    grep -qF '`✅`, `🔴`' "$file" || return 1
+    grep -qF '`🟡`, `⚪`, `⏳`, or `⛔`' "$file" || return 1
     grep -qF 'Immediately after the readiness gate confirms' "$file" || return 1
+    grep -qF 'but still write `Round` with `🏁 stage converged` and the green readiness' "$file" || return 1
     grep -qF '**Blocked-stop ledger.**' "$file" || return 1
     grep -qF 'cap-reached, no-progress, or' "$file" || return 1
     grep -qF 'timeline-guard stop' "$file" || return 1
