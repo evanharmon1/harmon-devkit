@@ -89,6 +89,71 @@ expect_ok_contains() {
 
 git_init() { git init -q -b main "$1"; }
 
+# Snapshot file bytes under a fixture path. Status is read-only, so each status
+# assertion compares the manifest, destination tree, and provenance stamp
+# before and after the command.
+snapshot_path() {
+    local path="$1"
+    if [ ! -e "$path" ]; then
+        printf '%s\n' absent
+    elif [ -f "$path" ]; then
+        printf 'file %s %s\n' "$(basename "$path")" "$(git hash-object "$path")"
+    else
+        find "$path" -type f -print | LC_ALL=C sort | while IFS= read -r file; do
+            printf 'file %s %s\n' "${file#"$path"/}" "$(git hash-object "$file")"
+        done
+    fi
+}
+
+# expect_status DESC CODE STDOUT STDERR_NEEDLE MANIFEST DEST PROVENANCE COMMAND...
+expect_status() {
+    local desc="$1" expected="$2" expected_stdout="$3" stderr_needle="$4"
+    local manifest="$5" dest="$6" provenance="$7"
+    local before_manifest before_dest before_provenance stdout stderr actual
+    local stdout_file stderr_file stdout_lines
+    shift 7
+    before_manifest="$(snapshot_path "$manifest")"
+    before_dest="$(snapshot_path "$dest")"
+    before_provenance="$(snapshot_path "$provenance")"
+    stdout_file="$(mktemp "$TMPROOT/status-stdout.XXXXXX")"
+    stderr_file="$(mktemp "$TMPROOT/status-stderr.XXXXXX")"
+    set +e
+    "$@" >"$stdout_file" 2>"$stderr_file"
+    actual=$?
+    set -e
+    if [ "$actual" -ne "$expected" ]; then
+        bad "$desc (expected exit $expected, got $actual)"
+        [ ! -s "$stdout_file" ] || sed 's/^/      stdout: /' "$stdout_file" >&2
+        [ ! -s "$stderr_file" ] || sed 's/^/      stderr: /' "$stderr_file" >&2
+    else
+        stdout_lines="$(wc -l <"$stdout_file" | tr -d '[:space:]')"
+        stdout="$(cat "$stdout_file")"
+        stderr="$(cat "$stderr_file")"
+        if [ -n "$expected_stdout" ] &&
+            { [ "$stdout_lines" != 1 ] || [ "$stdout" != "$expected_stdout" ]; }; then
+            bad "$desc (stdout was not exactly one machine-readable line)"
+            [ ! -s "$stdout_file" ] || sed 's/^/      stdout: /' "$stdout_file" >&2
+            [ ! -s "$stderr_file" ] || sed 's/^/      stderr: /' "$stderr_file" >&2
+        elif [ -z "$expected_stdout" ] && [ -s "$stdout_file" ]; then
+            bad "$desc (unexpected stdout)"
+            sed 's/^/      stdout: /' "$stdout_file" >&2
+            [ ! -s "$stderr_file" ] || sed 's/^/      stderr: /' "$stderr_file" >&2
+        elif [ -n "$stderr_needle" ] && ! printf '%s\n' "$stderr" | grep -qF "$stderr_needle"; then
+            bad "$desc (missing stderr diagnostic: $stderr_needle)"
+            [ ! -s "$stdout_file" ] || sed 's/^/      stdout: /' "$stdout_file" >&2
+            [ ! -s "$stderr_file" ] || sed 's/^/      stderr: /' "$stderr_file" >&2
+        elif [ "$before_manifest" != "$(snapshot_path "$manifest")" ]; then
+            bad "$desc (status wrote the manifest)"
+        elif [ "$before_dest" != "$(snapshot_path "$dest")" ]; then
+            bad "$desc (status wrote the destination)"
+        elif [ "$before_provenance" != "$(snapshot_path "$provenance")" ]; then
+            bad "$desc (status wrote the provenance stamp)"
+        else
+            ok "$desc"
+        fi
+    fi
+}
+
 echo "==> portable skill layout"
 expect_ok "skills-sync example preserves the Claude-first migration-safe destination" \
     grep -q '^dest: \.claude/skills' "$repo/templates/skills-sync/.skills-sync.yaml"
@@ -928,6 +993,279 @@ expect_ok "agents: offline check passes after sync" run_sync_at "$CO" verify-off
 sed -i.bak 's/^# ref: .*/# ref: v9.9.9-absent (deadbeef)/' "$CO/vendored/agents/.AGENTS_PROVENANCE"
 expect_fail_contains "offline check catches an agents ref mismatch" "vendored agents ref" \
     run_sync_at "$CO" verify-offline
+
+# ── sync-skills.sh status ───────────────────────────────────────────────
+echo "==> sync-skills.sh (status)"
+
+# Stable tags are compared semantically; these deliberately malformed release
+# lookalikes must never become the reported latest tag.
+git -C "$SRC" tag v1.2.3
+git -C "$SRC" tag v99.0.0-rc.1
+git -C "$SRC" tag v99.0.0.1
+git -C "$SRC" tag v99.0
+git -C "$SRC" tag v99.0.0+build
+git -C "$SRC" tag archive/refs/tags/v99.0.0
+
+STATUS="$TMPROOT/consumer-status"
+mkdir -p "$STATUS"
+write_manifest_at "$STATUS" v1.2.3 universal
+STATUS_DEST="$STATUS/vendored/skills"
+STATUS_PROV="$STATUS_DEST/.SKILLS_PROVENANCE"
+STATUS_GIT_BIN="$TMPROOT/status-git-bin"
+STATUS_GIT_LOG="$TMPROOT/status-ls-remote.log"
+STATUS_REAL_GIT="$(command -v git)"
+mkdir -p "$STATUS_GIT_BIN"
+cat >"$STATUS_GIT_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = ls-remote ]; then
+    printf '%s\n' "$*" >>"$STATUS_GIT_LOG"
+    if [ "${STATUS_GIT_FAIL:-0}" = 1 ]; then
+        exit 97
+    fi
+    if [ "${STATUS_GIT_NO_TAGS:-0}" = 1 ]; then
+        printf '%s refs/tags/v99.0.0-rc.1\n' deadbeef
+        printf '%s refs/tags/v99.0.0.1\n' deadbeef
+        printf '%s refs/tags/v99.0\n' deadbeef
+        exit 0
+    fi
+fi
+exec "$STATUS_REAL_GIT" "$@"
+EOF
+chmod +x "$STATUS_GIT_BIN/git"
+export STATUS_GIT_BIN STATUS_GIT_LOG STATUS_REAL_GIT
+STATUS_GIT_FAIL=0
+STATUS_GIT_NO_TAGS=0
+export STATUS_GIT_FAIL STATUS_GIT_NO_TAGS
+
+run_status_at() {
+    local dir="$1"
+    shift
+    (cd "$dir" && PATH="$STATUS_GIT_BIN:$PATH" bash "$SCRIPTS/sync-skills.sh" "$@")
+}
+reset_status_probe() { : >"$STATUS_GIT_LOG"; }
+status_probe_count() {
+    [ -f "$STATUS_GIT_LOG" ] || {
+        echo 0
+        return
+    }
+    wc -l <"$STATUS_GIT_LOG" | tr -d '[:space:]'
+}
+
+expect_ok "status state and usage exit codes are documented" \
+    sh -c 'grep -qF "#   0  in-sync" "$1" &&
+        grep -qF "#   10 never-vendored" "$1" &&
+        grep -qF "#   11 pin-moved" "$1" &&
+        grep -qF "#   12 upstream-newer" "$1" &&
+        grep -qF "# Invalid status arguments (or another usage error) exit 2 and write usage to" "$1" &&
+        grep -qF "# stderr; they are not vendoring states." "$1"' sh "$SCRIPTS/sync-skills.sh"
+
+reset_status_probe
+expect_status "status reports never-vendored" 10 \
+    "state=never-vendored pinned=v1.2.3 vendored=none latest=unknown" \
+    "" \
+    "$STATUS/.skills-sync.yaml" "$STATUS_DEST" "$STATUS_PROV" \
+    run_status_at "$STATUS" status
+expect_ok "never-vendored status does not probe upstream" test "$(status_probe_count)" = 0
+
+expect_ok "status fixture syncs at its stable pin" run_sync_at "$STATUS" sync
+mkdir -p "$STATUS_DEST/local-only/assets"
+printf '%s\n' local >"$STATUS_DEST/local-only/assets/note.txt"
+
+# The status contract deliberately uses the managed-set marker to distinguish
+# a current vendoring stamp from the legacy wholesale-managed format. Sync can
+# still upgrade that legacy format, but status reports it as not yet vendored
+# under the current contract until the upgrade writes `# managed:`.
+STATUS_LEGACY="$TMPROOT/consumer-status-legacy"
+mkdir -p "$STATUS_LEGACY"
+write_manifest_at "$STATUS_LEGACY" v1.2.3 universal
+run_sync_at "$STATUS_LEGACY" sync >/dev/null
+STATUS_LEGACY_DEST="$STATUS_LEGACY/vendored/skills"
+STATUS_LEGACY_PROV="$STATUS_LEGACY_DEST/.SKILLS_PROVENANCE"
+make_legacy_stamp "$STATUS_LEGACY_PROV" v1.2.3 universal
+reset_status_probe
+expect_status "status requires managed provenance after a legacy skills sync" 10 \
+    "state=never-vendored pinned=v1.2.3 vendored=none latest=unknown" \
+    "" \
+    "$STATUS_LEGACY/.skills-sync.yaml" "$STATUS_LEGACY_DEST" "$STATUS_LEGACY_PROV" \
+    run_status_at "$STATUS_LEGACY" status --offline
+expect_ok "legacy-provenance status makes zero upstream probes" \
+    test "$(status_probe_count)" = 0
+
+# The invalid tags above are ignored, so the one applicable probe reports the
+# stable pin as latest and leaves an unmanaged entry untouched.
+reset_status_probe
+expect_status "status reports in-sync and ignores unmanaged entries" 0 \
+    "state=in-sync pinned=v1.2.3 vendored=v1.2.3 latest=v1.2.3" \
+    "" \
+    "$STATUS/.skills-sync.yaml" "$STATUS_DEST" "$STATUS_PROV" \
+    run_status_at "$STATUS" status
+expect_ok "in-sync status makes exactly one upstream probe" test "$(status_probe_count)" = 1
+
+write_manifest_at "$STATUS" v2.0.0 universal
+reset_status_probe
+expect_status "status reports a moved pin" 11 \
+    "state=pin-moved pinned=v2.0.0 vendored=v1.2.3 latest=unknown" \
+    "" \
+    "$STATUS/.skills-sync.yaml" "$STATUS_DEST" "$STATUS_PROV" \
+    run_status_at "$STATUS" status
+expect_ok "pin-moved status does not probe upstream" test "$(status_probe_count)" = 0
+
+write_manifest_at "$STATUS" v1.2.3 universal
+
+# Leading-zero components are the same semantic version values as their
+# canonical spellings, while the next patch component remains newer.
+STATUS_LEADING_PIN="v0000000001.0000000002.0000000003"
+STATUS_LEADING_NEW="v0000000001.0000000002.0000000004"
+git -C "$SRC" tag "$STATUS_LEADING_PIN"
+git -C "$SRC" tag "$STATUS_LEADING_NEW"
+STATUS_LEADING="$TMPROOT/consumer-status-leading"
+mkdir -p "$STATUS_LEADING"
+write_manifest_at "$STATUS_LEADING" "$STATUS_LEADING_PIN" universal
+run_sync_at "$STATUS_LEADING" sync >/dev/null
+STATUS_LEADING_DEST="$STATUS_LEADING/vendored/skills"
+STATUS_LEADING_PROV="$STATUS_LEADING_DEST/.SKILLS_PROVENANCE"
+reset_status_probe
+expect_status "status compares leading-zero components semantically" 12 \
+    "state=upstream-newer pinned=$STATUS_LEADING_PIN vendored=$STATUS_LEADING_PIN latest=$STATUS_LEADING_NEW" \
+    "" \
+    "$STATUS_LEADING/.skills-sync.yaml" "$STATUS_LEADING_DEST" "$STATUS_LEADING_PROV" \
+    run_status_at "$STATUS_LEADING" status
+expect_ok "leading-zero status makes exactly one upstream probe" test "$(status_probe_count)" = 1
+git -C "$SRC" tag -d "$STATUS_LEADING_PIN" "$STATUS_LEADING_NEW" >/dev/null
+
+# Stable version components may be arbitrarily large; compare their numeric
+# values rather than relying on a fixed-width lexical key.
+STATUS_LARGE_OLD=99999999999999999999
+STATUS_LARGE_NEW=100000000000000000000
+STATUS_LARGE_PIN="v${STATUS_LARGE_OLD}.0.0"
+STATUS_LARGE_LATEST="v${STATUS_LARGE_NEW}.0.0"
+git -C "$SRC" tag "$STATUS_LARGE_PIN"
+git -C "$SRC" tag "$STATUS_LARGE_LATEST"
+STATUS_LARGE="$TMPROOT/consumer-status-large"
+mkdir -p "$STATUS_LARGE"
+write_manifest_at "$STATUS_LARGE" "$STATUS_LARGE_PIN" universal
+run_sync_at "$STATUS_LARGE" sync >/dev/null
+STATUS_LARGE_DEST="$STATUS_LARGE/vendored/skills"
+STATUS_LARGE_PROV="$STATUS_LARGE_DEST/.SKILLS_PROVENANCE"
+reset_status_probe
+expect_status "status compares arbitrarily large components semantically" 12 \
+    "state=upstream-newer pinned=$STATUS_LARGE_PIN vendored=$STATUS_LARGE_PIN latest=$STATUS_LARGE_LATEST" \
+    "" \
+    "$STATUS_LARGE/.skills-sync.yaml" "$STATUS_LARGE_DEST" "$STATUS_LARGE_PROV" \
+    run_status_at "$STATUS_LARGE" status
+expect_ok "large-component status makes exactly one upstream probe" test "$(status_probe_count)" = 1
+git -C "$SRC" tag -d "$STATUS_LARGE_PIN" "$STATUS_LARGE_LATEST" >/dev/null
+
+git -C "$SRC" tag v1.10.0
+reset_status_probe
+expect_status "status reports an upstream-newer stable tag" 12 \
+    "state=upstream-newer pinned=v1.2.3 vendored=v1.2.3 latest=v1.10.0" \
+    "" \
+    "$STATUS/.skills-sync.yaml" "$STATUS_DEST" "$STATUS_PROV" \
+    run_status_at "$STATUS" status
+expect_ok "upstream-newer status makes exactly one upstream probe" test "$(status_probe_count)" = 1
+
+# Offline is both deterministic and network-free, even when a wrapper would
+# make the upstream probe fail.
+STATUS_GIT_FAIL=1
+reset_status_probe
+expect_status "offline status reports latest=unknown" 0 \
+    "state=in-sync pinned=v1.2.3 vendored=v1.2.3 latest=unknown" \
+    "" \
+    "$STATUS/.skills-sync.yaml" "$STATUS_DEST" "$STATUS_PROV" \
+    run_status_at "$STATUS" status --offline
+expect_ok "offline status makes zero upstream probes" test "$(status_probe_count)" = 0
+
+STATUS_GIT_FAIL=0
+STATUS_GIT_NO_TAGS=1
+reset_status_probe
+expect_status "status treats a successful no-tag probe as unknown" 0 \
+    "state=in-sync pinned=v1.2.3 vendored=v1.2.3 latest=unknown" \
+    "" \
+    "$STATUS/.skills-sync.yaml" "$STATUS_DEST" "$STATUS_PROV" \
+    run_status_at "$STATUS" status
+expect_ok "no-tag status makes exactly one upstream probe" test "$(status_probe_count)" = 1
+
+STATUS_GIT_NO_TAGS=0
+STATUS_GIT_FAIL=1
+reset_status_probe
+expect_status "status treats a failed probe as unknown" 0 \
+    "state=in-sync pinned=v1.2.3 vendored=v1.2.3 latest=unknown" \
+    "" \
+    "$STATUS/.skills-sync.yaml" "$STATUS_DEST" "$STATUS_PROV" \
+    run_status_at "$STATUS" status
+expect_ok "failed-probe status makes exactly one upstream probe" test "$(status_probe_count)" = 1
+STATUS_GIT_FAIL=0
+
+for invalid_args in \
+    "status --offline --offline" \
+    "status --not-a-status-option" \
+    "status first-manifest second-manifest" \
+    "status first-manifest -- second-manifest"; do
+    reset_status_probe
+    # Each row is an intentional argument vector.
+    # shellcheck disable=SC2086
+    expect_status "status rejects invalid arguments: $invalid_args" 2 "" "usage: sync-skills.sh status" \
+        "$STATUS/.skills-sync.yaml" "$STATUS_DEST" "$STATUS_PROV" \
+        run_status_at "$STATUS" $invalid_args
+done
+expect_ok "invalid status arguments make zero upstream probes" test "$(status_probe_count)" = 0
+
+# With agents enabled, either missing stamp means never-vendored. The parent
+# snapshot also proves status leaves both destinations and both stamps intact.
+STATUS_AGENTS="$TMPROOT/consumer-status-agents"
+mkdir -p "$STATUS_AGENTS"
+write_agents_manifest_at "$STATUS_AGENTS" v1.2.3 "[ag-one]"
+run_sync_at "$STATUS_AGENTS" sync >/dev/null
+STATUS_AGENTS_ROOT="$STATUS_AGENTS/vendored"
+STATUS_AGENTS_PROV="$STATUS_AGENTS/vendored/skills/.SKILLS_PROVENANCE"
+STATUS_AGENTS_SKILLS_STAMP="$TMPROOT/status-agents-skills-stamp"
+STATUS_AGENTS_AGENTS_STAMP="$TMPROOT/status-agents-agents-stamp"
+cp "$STATUS_AGENTS/vendored/skills/.SKILLS_PROVENANCE" "$STATUS_AGENTS_SKILLS_STAMP"
+cp "$STATUS_AGENTS/vendored/agents/.AGENTS_PROVENANCE" "$STATUS_AGENTS_AGENTS_STAMP"
+reset_status_probe
+expect_status "agents with both stamps report in-sync offline" 0 \
+    "state=in-sync pinned=v1.2.3 vendored=v1.2.3 latest=unknown" \
+    "" \
+    "$STATUS_AGENTS/.skills-sync.yaml" "$STATUS_AGENTS_ROOT" "$STATUS_AGENTS_PROV" \
+    run_status_at "$STATUS_AGENTS" status --offline
+expect_ok "agents in-sync offline makes zero upstream probes" test "$(status_probe_count)" = 0
+sed -i.bak '/^# managed:/d' "$STATUS_AGENTS/vendored/agents/.AGENTS_PROVENANCE"
+reset_status_probe
+expect_status "agents require a complete provenance stamp" 10 \
+    "state=never-vendored pinned=v1.2.3 vendored=none latest=unknown" \
+    "" \
+    "$STATUS_AGENTS/.skills-sync.yaml" "$STATUS_AGENTS_ROOT" "$STATUS_AGENTS_PROV" \
+    run_status_at "$STATUS_AGENTS" status
+expect_ok "damaged-agents-stamp status makes zero upstream probes" test "$(status_probe_count)" = 0
+cp "$STATUS_AGENTS_AGENTS_STAMP" "$STATUS_AGENTS/vendored/agents/.AGENTS_PROVENANCE"
+rm "$STATUS_AGENTS/vendored/skills/.SKILLS_PROVENANCE"
+reset_status_probe
+expect_status "agents require the skills provenance stamp" 10 \
+    "state=never-vendored pinned=v1.2.3 vendored=none latest=unknown" \
+    "" \
+    "$STATUS_AGENTS/.skills-sync.yaml" "$STATUS_AGENTS_ROOT" "$STATUS_AGENTS_PROV" \
+    run_status_at "$STATUS_AGENTS" status
+expect_ok "missing-skills-stamp status makes zero upstream probes" test "$(status_probe_count)" = 0
+cp "$STATUS_AGENTS_SKILLS_STAMP" "$STATUS_AGENTS/vendored/skills/.SKILLS_PROVENANCE"
+rm "$STATUS_AGENTS/vendored/agents/.AGENTS_PROVENANCE"
+reset_status_probe
+expect_status "agents require the agents provenance stamp" 10 \
+    "state=never-vendored pinned=v1.2.3 vendored=none latest=unknown" \
+    "" \
+    "$STATUS_AGENTS/.skills-sync.yaml" "$STATUS_AGENTS_ROOT" "$STATUS_AGENTS_PROV" \
+    run_status_at "$STATUS_AGENTS" status
+expect_ok "missing-agents-stamp status makes zero upstream probes" test "$(status_probe_count)" = 0
+cp "$STATUS_AGENTS_AGENTS_STAMP" "$STATUS_AGENTS/vendored/agents/.AGENTS_PROVENANCE"
+sed -i.bak 's/^# ref: .*/# ref: v1.2.2 (fixture)/' \
+    "$STATUS_AGENTS/vendored/agents/.AGENTS_PROVENANCE"
+reset_status_probe
+expect_status "agents provenance mismatch reports pin-moved" 11 \
+    "state=pin-moved pinned=v1.2.3 vendored=v1.2.3 latest=unknown" \
+    "" \
+    "$STATUS_AGENTS/.skills-sync.yaml" "$STATUS_AGENTS_ROOT" "$STATUS_AGENTS_PROV" \
+    run_status_at "$STATUS_AGENTS" status --offline
+expect_ok "agents pin-moved offline makes zero upstream probes" test "$(status_probe_count)" = 0
 
 # ── standardize-repo audit assets ─────────────────────────────────────
 echo "==> standardize-repo audit assets"
