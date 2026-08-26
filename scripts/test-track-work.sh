@@ -1956,7 +1956,7 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "a co-assigned issue should tick (got $_rc)"
 
-echo "==> a closed issue needs the explicit opt-in"
+echo "==> the allowlisted ticker refuses a closed issue"
 printf '%s' "$body_three" >"$tmp/b1"
 cp "$tmp/b1" "$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -1966,10 +1966,10 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
     STUB_STATE_REASON="COMPLETED" \
     "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
-[ "$_rc" = 1 ] || fail "a completed closed issue without --closed-ok should exit 1 (got $_rc)"
-[ ! -f "$tmp/edited" ] || fail "a closed issue must not be written to"
+[ "$_rc" = 1 ] || fail "the allowlisted ticker on a completed closed issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "the allowlisted ticker must not write a closed issue"
 
-echo "==> a closed COMPLETED issue is tickable only with --closed-ok"
+echo "==> a closed COMPLETED issue is tickable only through the approved entry point"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
 _rc=0
 env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
@@ -1977,10 +1977,10 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
     STUB_STATE_REASON="COMPLETED" STUB_ASSIGNEES="" \
     "$completed_tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
-[ "$_rc" = 0 ] || fail "a completed closed issue with --closed-ok should tick (got $_rc)"
-[ -f "$tmp/edited" ] || fail "a completed closed issue should be written only with --closed-ok"
+[ "$_rc" = 0 ] || fail "a completed closed issue through its entry point should tick (got $_rc)"
+[ -f "$tmp/edited" ] || fail "a completed closed issue should be written only through its entry point"
 
-echo "==> a direct --closed-ok call is refused outside the approved entry point"
+echo "==> the allowlisted ticker refuses a closed issue"
 printf '%s' "$body_three" >"$tmp/b1"
 cp "$tmp/b1" "$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -1989,11 +1989,24 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
     STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
     STUB_STATE_REASON="COMPLETED" STUB_ASSIGNEES="" \
-    "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
-[ "$_rc" = 1 ] || fail "a direct --closed-ok call should exit 1 (got $_rc)"
-[ ! -f "$tmp/edited" ] || fail "a direct --closed-ok call must not write"
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "the allowlisted ticker on a closed issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "the allowlisted ticker on a closed issue must not write"
 
-echo "==> --closed-ok is refused on an open issue"
+echo "==> a caller cannot select the completed mode through the allowlisted ticker"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    STUB_STATE_REASON="COMPLETED" STUB_ASSIGNEES="" \
+    "$tick" --mode closed --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "a caller-supplied completed mode should be usage error 2 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "a caller-supplied completed mode must not write"
+
+echo "==> the completed entry point refuses an open issue"
 printf '%s' "$body_three" >"$tmp/b1"
 cp "$tmp/b1" "$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -2001,12 +2014,12 @@ _rc=0
 env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
     STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="OPEN" \
-    "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
-[ "$_rc" = 1 ] || fail "--closed-ok on an open issue should exit 1 (got $_rc)"
-[ ! -f "$tmp/edited" ] || fail "--closed-ok on an open issue must not write"
+    "$completed_tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "the completed entry point on an open issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "the completed entry point on an open issue must not write"
 
 for reason in NOT_PLANNED DUPLICATE; do
-    echo "==> a closed $reason issue is refused even with --closed-ok"
+    echo "==> a closed $reason issue is refused by the completed entry point"
     printf '%s' "$body_three" >"$tmp/b1"
     cp "$tmp/b1" "$tmp/b2"
     rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -2015,12 +2028,12 @@ for reason in NOT_PLANNED DUPLICATE; do
         STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
         STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
         STUB_STATE_REASON="$reason" \
-        "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
+        "$completed_tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
     [ "$_rc" = 1 ] || fail "a $reason issue should exit 1 (got $_rc)"
     [ ! -f "$tmp/edited" ] || fail "a $reason issue must not be written to"
 done
 
-echo "==> a closed issue without a completion reason is refused even with --closed-ok"
+echo "==> a closed issue without a completion reason is refused by the completed entry point"
 printf '%s' "$body_three" >"$tmp/b1"
 cp "$tmp/b1" "$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -2028,7 +2041,7 @@ _rc=0
 env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
     STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
-    "$tick" --repo "$repo" --issue 30 --match 'first' --closed-ok >/dev/null 2>&1 || _rc=$?
+    "$completed_tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 1 ] || fail "a closed issue without COMPLETED should exit 1 (got $_rc)"
 [ ! -f "$tmp/edited" ] || fail "a closed issue without COMPLETED must not be written to"
 

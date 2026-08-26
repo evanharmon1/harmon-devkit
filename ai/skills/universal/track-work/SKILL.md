@@ -38,11 +38,11 @@ issue body told you to are all ordinary writes and still need their own
 go-ahead.
 
 A criterion that can only be verified after merge is different. On a
-`CLOSED` issue, `--closed-ok` is legitimate only when `stateReason` is
-`COMPLETED` and the selected criterion is genuinely post-merge. That is an
-ordinary write, not an extension of the exception: obtain explicit go-ahead
-for that tick before running it. An implementation go-ahead, an assignment,
-and the blanket tick-as-you-go pre-approval do not authorise it.
+`CLOSED` issue, the separate completed-tick command is legitimate only when
+`stateReason` is `COMPLETED` and the selected criterion is genuinely post-merge.
+That is an ordinary write, not an extension of the exception: obtain explicit
+go-ahead for that tick before running it. An implementation go-ahead, an
+assignment, and the blanket tick-as-you-go pre-approval do not authorise it.
 
 **Where the checks live.** `assets/` sits next to this file:
 `.agents/skills/track-work/assets/…` in a portable repo, then
@@ -138,7 +138,7 @@ The rules the check encodes:
   arrives at `gh pr create` already tick-complete, and a closing keyword is its
   **normal** outcome; `Refs` is for work that is genuinely partial. Do not
   close an issue and plan to reopen it. A criterion that is genuinely
-  post-merge is the narrow `--closed-ok` case below, with its own explicit
+  post-merge is the narrow completed-tick case below, with its own explicit
   write approval.
 - **Never close across repos.** Auto-close behaviour between repositories is not
   worth betting a backlog on, and the intent is ambiguous on its face. Use
@@ -160,20 +160,20 @@ what it should — tick that box on the open, assigned issue:
 **Post-merge criteria are not tick-as-you-go.** After the PR has merged, a
 post-merge criterion may be ticked only after you re-read the issue and confirm
 `state: CLOSED` with `stateReason: COMPLETED`, verify that particular criterion,
-and receive explicit go-ahead for the write. Then use the separate flag:
+and receive explicit go-ahead for the write. Then use the separate command:
 
 ```sh
 <skill-dir>/assets/tick-completed-criteria.sh --repo <owner/repo> --issue <n> \
   --match '<distinctive words from the post-merge criterion>'
 ```
 
-`tick-completed-criteria.sh` is deliberately not allowlisted, and is the only
-entry point that enables `tick-criteria.sh --closed-ok`. It therefore receives
-the ordinary explicit write approval. `--closed-ok` is not a way to finish
-ordinary implementation criteria after an issue closed, nor a bypass for
-`NOT_PLANNED` or `DUPLICATE` issues. It denotes one explicitly authorised
-post-merge tick on a completed issue; the normal open-issue command and its
-blanket approval do not apply.
+`tick-completed-criteria.sh` is deliberately not allowlisted. Its separate,
+fixed closed-mode implementation therefore receives the ordinary explicit write
+approval; the allowlisted `tick-criteria.sh` can only enter open mode. It is not
+a way to finish ordinary implementation criteria after an issue closed, nor a
+bypass for `NOT_PLANNED` or `DUPLICATE` issues. It denotes one explicitly
+authorised post-merge tick on a completed issue; the normal open-issue command
+and its blanket approval do not apply.
 
 `--index K` addresses the K-th *unticked* item instead, `--dry-run` shows what
 would change, and both selectors repeat to tick several at once. The script
@@ -204,7 +204,7 @@ differs only on those lines and only by the marker, and the body is
 byte-identical to what it read. Exit 0 ticked, 1 refused, 2 usage.
 
 **The blanket path ticks only an open issue assigned to you.** The allowlisted
-`tick-criteria.sh` rejects `--closed-ok`; it is the narrowly scoped,
+`tick-criteria.sh` rejects closed issues; it is the narrowly scoped,
 implementation-authorised open path. The assignment scopes that ordinary path
 further: claiming an issue is an ordinary write needing its own go-ahead
 (`/claim` step 5, using the markers in §6), so a human has authorised work on
@@ -212,9 +212,10 @@ that specific issue before a tick can land on it. Unassigned, closed, or
 unclaimed issues are outside this path, and the script checks the open claim
 again immediately before the write, since a claim can lapse mid-run.
 
-`--closed-ok` does not inherit that assignment-backed pre-approval. It is
-available only for a `CLOSED`/`COMPLETED` issue's verified post-merge criterion,
-and every invocation remains an ordinary write that needs explicit go-ahead.
+The completed-tick command does not inherit that assignment-backed
+pre-approval. It is available only for a `CLOSED`/`COMPLETED` issue's verified
+post-merge criterion, and every invocation remains an ordinary write that
+needs explicit go-ahead.
 
 Note which marker it reads. §6 calls a claim a signal rather than a lock, and
 that stands — the assignee here is not being used to arbitrate between two
