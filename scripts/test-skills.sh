@@ -1029,6 +1029,9 @@ assert_ledger_contract() {
     grep -qF '`round n/cap`' "$file" || return 1
     grep -qF 'stage-entry or pending-wait' "$file" || return 1
     grep -qF '`waiting (no round yet)`' "$file" || return 1
+    grep -qF 'Before the round-start fetch establishes a' "$file" || return 1
+    grep -qF 'ordinary clean/pending watch spend no round' "$file" || return 1
+    grep -qF 'post the table again before adjudicating' "$file" || return 1
     grep -qF 'waiting, checks, and reviewer latency do not spend a round' "$file"
 }
 
@@ -1091,6 +1094,8 @@ assert_shepherd_ledger_hooks() {
     grep -qF 'Shepherd-stage override transfer.' "$file" || return 1
     grep -qF 'This stage starts after the draft PR' "$file" || return 1
     grep -qF 'override-carried' "$file" || return 1
+    grep -qF 'Immediately before writing, fetch the PR body again and compare it' "$file" || return 1
+    grep -qF 'a post-write read cannot detect a' "$file" || return 1
     grep -qF 'gh pr edit <n> --repo "$repo" --body-file <file>' "$file"
 }
 

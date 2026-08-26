@@ -184,12 +184,15 @@ to watching. Keep the completed `round n/cap` in `Stage`, put the final
 disposition in `Round`, and name the next bounded wait in `Next`; this closes
 the current round and does not start another.
 
-**Shepherd round-entry ledger.** At the start of every watch/fix round,
-including a no-change adjudication cycle, post the fixed stage-ledger table in
-your own commentary before the round-start fetch. Fill `Stage` with
+**Shepherd round-entry ledger.** Before the round-start fetch establishes a
+finding or no-change adjudication cycle, post the fixed stage-ledger table in
+your own commentary with `waiting (no round yet)` in `Stage`; the fetch and an
+ordinary clean/pending watch spend no round. When that fetch does establish a
+watch/fix round, post the table again before adjudicating. Fill `Stage` with
 `🚢 shepherd`, the resolved current `round n/cap`, and the cloud (PR review
 cycle) marker; use `Round` for the current checks/review state and `Next` for
-the concrete action or bounded wait that follows.
+the concrete action or bounded wait that follows. A no-change adjudication
+cycle follows the same numbered entry rule.
 
 Only write-incapable reads are pre-approved (`git log`/`diff`/`show` accept
 `--output=<file>`, `git fetch` accepts `--upload-pack=<cmd>` — those prompt),
@@ -935,7 +938,11 @@ trigger contract in the PR itself before stopping or changing stages:
    `- [ ] <file:line> — override-carried: <finding>; override: <reason>`.
    Preserve all existing entries and record the override as why the finding was
    carried, never as a disposition.
-3. Update the body with `gh pr edit <n> --repo "$repo" --body-file <file>`,
+3. Immediately before writing, fetch the PR body again and compare it with the
+   copy from step 1. If it changed, recompose the additions against the newer
+   body and repeat this comparison; a post-write read cannot detect a
+   concurrent edit that the replacement already erased.
+4. Update the body with `gh pr edit <n> --repo "$repo" --body-file <file>`,
    then re-read it and confirm every override-carried entry landed before
    leaving the stage. Do not rely on the git-directory sidecar alone: this
    PR already exists and shepherd has no later §10 transfer step.
