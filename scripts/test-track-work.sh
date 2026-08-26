@@ -16,6 +16,7 @@ rot="./ai/skills/universal/track-work/assets/check-issue-rot.sh"
 metadata="$PWD/ai/skills/universal/track-work/assets/check-issue-metadata.sh"
 guidance="$PWD/ai/skills/universal/track-work/assets/discover-label-guidance.sh"
 tick="$PWD/ai/skills/universal/track-work/assets/tick-criteria.sh"
+completed_tick="$PWD/ai/skills/universal/track-work/assets/tick-completed-criteria.sh"
 status_sh="./ai/skills/universal/track-work/assets/set-issue-status.sh"
 repo="evanharmon1/harmon-devkit"
 
@@ -1677,10 +1678,9 @@ done
 
 # --- tick-criteria.sh -------------------------------------------------------
 #
-# The guarantee under test is narrowness: this is the one write the skill
-# pre-approves, so every path that could turn a tick into an arbitrary body
-# rewrite has to refuse instead. Fixtures double as the write destination when
-# $ISSUE_BODY_DIR is set, so the round trip stays offline.
+# The guarantee under test is narrowness: every path that could turn a tick
+# into an arbitrary body rewrite has to refuse. Fixtures double as the write
+# destination when $ISSUE_BODY_DIR is set, so the round trip stays offline.
 
 ticks="$fixtures/ticks"
 mkdir -p "$ticks"
@@ -1836,7 +1836,7 @@ if [ "${1:-}" = "api" ] && [ "${2:-}" = "user" ]; then
     exit 0
 fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json state'; then
-    printf '%s' "${STUB_STATE_NAME:-OPEN}"
+    printf '%s:%s' "${STUB_STATE_NAME:-OPEN}" "${STUB_STATE_REASON:-}"
     exit 0
 fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json assignees'; then
@@ -1880,7 +1880,7 @@ run_tick_live() {
     echo "$_rc"
 }
 
-echo "==> the live path sends the ticked body to gh issue edit"
+echo "==> an open claimed issue remains tickable through the live path"
 printf '%s' "$body_three" >"$tmp/b1"
 printf '%s' "$body_three" >"$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -1935,8 +1935,7 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
 [ "$_rc" = 2 ] || fail "an unreadable issue should exit 2 (got $_rc)"
 
 echo "==> a tick is refused on an issue this account has not claimed"
-# The allowlist cannot constrain arguments, so the claim is what scopes the
-# pre-approved write to work a human actually authorised.
+# The claim scopes the ordinary open-issue path to work a human authorised.
 printf '%s' "$body_three" >"$tmp/b1"
 cp "$tmp/b1" "$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -1957,7 +1956,7 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "a co-assigned issue should tick (got $_rc)"
 
-echo "==> a closed issue is not tickable"
+echo "==> the allowlisted ticker refuses a closed issue"
 printf '%s' "$body_three" >"$tmp/b1"
 cp "$tmp/b1" "$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
@@ -1965,9 +1964,86 @@ _rc=0
 env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
     STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    STUB_STATE_REASON="COMPLETED" \
     "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
-[ "$_rc" = 1 ] || fail "a closed issue should exit 1 (got $_rc)"
-[ ! -f "$tmp/edited" ] || fail "a closed issue must not be written to"
+[ "$_rc" = 1 ] || fail "the allowlisted ticker on a completed closed issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "the allowlisted ticker must not write a closed issue"
+
+echo "==> a closed COMPLETED issue is tickable only through the approved entry point"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    STUB_STATE_REASON="COMPLETED" STUB_ASSIGNEES="" \
+    "$completed_tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "a completed closed issue through its entry point should tick (got $_rc)"
+[ -f "$tmp/edited" ] || fail "a completed closed issue should be written only through its entry point"
+
+echo "==> the allowlisted ticker refuses a closed issue"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    STUB_STATE_REASON="COMPLETED" STUB_ASSIGNEES="" \
+    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "the allowlisted ticker on a closed issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "the allowlisted ticker on a closed issue must not write"
+
+echo "==> a caller cannot select the completed mode through the allowlisted ticker"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    STUB_STATE_REASON="COMPLETED" STUB_ASSIGNEES="" \
+    "$tick" --mode closed --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "a caller-supplied completed mode should be usage error 2 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "a caller-supplied completed mode must not write"
+
+echo "==> the completed entry point refuses an open issue"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="OPEN" \
+    "$completed_tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "the completed entry point on an open issue should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "the completed entry point on an open issue must not write"
+
+for reason in NOT_PLANNED DUPLICATE; do
+    echo "==> a closed $reason issue is refused by the completed entry point"
+    printf '%s' "$body_three" >"$tmp/b1"
+    cp "$tmp/b1" "$tmp/b2"
+    rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+    _rc=0
+    env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+        STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+        STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+        STUB_STATE_REASON="$reason" \
+        "$completed_tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+    [ "$_rc" = 1 ] || fail "a $reason issue should exit 1 (got $_rc)"
+    [ ! -f "$tmp/edited" ] || fail "a $reason issue must not be written to"
+done
+
+echo "==> a closed issue without a completion reason is refused by the completed entry point"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME="CLOSED" \
+    "$completed_tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "a closed issue without COMPLETED should exit 1 (got $_rc)"
+[ ! -f "$tmp/edited" ] || fail "a closed issue without COMPLETED must not be written to"
 
 echo "==> a multiline selector value cannot smuggle in a second selector"
 write_issue 36 "$body_three"
