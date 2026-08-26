@@ -934,9 +934,199 @@ echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
+GAUNTLET_SKILL="$repo/ai/skills/universal/gauntlet/SKILL.md"
 SHEPHERD_SKILL="$repo/ai/skills/universal/shepherd/SKILL.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 CLAIM_SKILL="$repo/ai/skills/universal/claim/SKILL.md"
+
+# The fixed table and wrapped legend are copied byte-for-byte from the
+# harmon-init AGENTS.md stage-ledger contract. Keep this expectation local so
+# the skills-source tests stay hermetic and catch drift between the two skills.
+LEDGER_TABLE_EXPECTED='| 📍 Ledger | |
+|---|---|
+| **Stage** | ⚔️ challenge · **round 2/4** · local (`task challenge`) |
+| **Round** | 🔴 1 P1 open · 🟡 2 P2 deferred · ⚪ 1 P3 noted · ✅ verify green |
+| **Next** | fix P1 → `task verify` → ⚔️ challenge round 3 |'
+LEDGER_LEGEND_EXPECTED='Stage glyphs: 🔨 implement · 🧪 verify · ⚔️ challenge · 🔍 review · 🏗️ ci ·
+🚢 shepherd. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
+⚪ P3 noted · ⏳ waiting on CI or a reviewer · ⛔ blocked/escalating · 🏁 stage
+converged.'
+LEDGER_TRIGGER_EXPECTED=$'Post it at every
+stage transition, when a round begins or ends, as the concise progress tick
+during a long wait (no re-dumping unchanged command output), and
+**immediately after a maintainer changes the requested workflow** — the latest
+instruction overrides the default transition at once, a terminal one ("go
+straight to review", "no more challenge rounds") is reflected in the ledger
+before any tool call starts the next stage, and silently returning to the
+default sequence is forbidden. An override is an attributable human decision
+and is followed, but it redirects the loop rather than erasing findings: any
+P0/P1 still open in the stage it ends is carried, **unchecked**, into the PR
+body\x27s `## Deferred findings` with the override recorded as the reason it was
+carried — not as a disposition, so the shepherd stage still owes it a normal
+fix / decline-with-evidence / file-as-follow-up — and the ledger records the
+override as the reason for the transition. Before leaving a stage under an
+override before the PR exists, append every still-open P0/P1 to the
+git-directory `deferred-findings` sidecar once as an unchecked
+`override-carried` entry; §10 transfers those entries with the P2 sidecar into
+the PR body so the override cannot lose them across a handoff. When the PR
+already exists, write the entries directly into its `## Deferred findings`
+section under that stage\x27s guarded body-update procedure and do not append a
+duplicate sidecar entry. A one-step task that touches a single stage owes no ledger.'
+
+ledger_table() {
+    awk '
+        /^\| 📍 Ledger \| \|$/ { capture = 1 }
+        capture { print }
+        capture && /^\| \*\*Next\*\* \|/ { exit }
+    ' "$1"
+}
+
+ledger_legend() {
+    awk '
+        /^Stage glyphs:/ {
+            print
+            getline
+            print
+            getline
+            print
+            getline
+            print
+            exit
+        }
+    ' "$1"
+}
+
+ledger_trigger() {
+    awk '
+        /^Post it at every$/ { capture = 1 }
+        capture { print }
+        capture && /A one-step task that touches a single stage owes no ledger\.$/ { exit }
+    ' "$1"
+}
+
+ledger_section() {
+    # The shared contract ends at its fixed final sentence. Shepherd has
+    # additional policy prose before its numbered section, so stopping at the
+    # next top-level heading would compare unrelated layout rather than the
+    # complete shared ledger contract.
+    awk '
+        /^## Stage ledger$/ { capture = 1 }
+        capture { print }
+        capture && /A one-step task that touches a single stage owes no ledger\.$/ { exit }
+    ' "$1"
+}
+
+assert_ledger_contract() {
+    local file="$1" table legend trigger
+    table="$(ledger_table "$file")"
+    legend="$(ledger_legend "$file")"
+    trigger="$(ledger_trigger "$file")"
+    [ "$table" = "$LEDGER_TABLE_EXPECTED" ] || return 1
+    [ "$legend" = "$LEDGER_LEGEND_EXPECTED" ] || return 1
+    [ "$trigger" = "$LEDGER_TRIGGER_EXPECTED" ] || return 1
+    grep -qF "distinct from the gauntlet's private adjudication ledger" "$file" || return 1
+    grep -qF 'append every still-open P0/P1' "$file" || return 1
+    grep -qF 'write `skipped (cap 0)` in `Stage`' "$file" || return 1
+    grep -qF 'instead of inventing' "$file" || return 1
+    grep -qF '`round 0/0`' "$file" || return 1
+    grep -qF '`round n/cap`' "$file" || return 1
+    grep -qF 'stage-entry or pending-wait' "$file" || return 1
+    grep -qF '`waiting (no round yet)`' "$file" || return 1
+    grep -qF 'waiting, checks, and reviewer latency do not spend a round' "$file" || return 1
+    grep -qF '`completed (no round ran)`' "$file" || return 1
+    grep -qF '`stopped (no round ran)`' "$file"
+}
+
+assert_shared_ledger() {
+    local first="$1" second="$2"
+    assert_ledger_contract "$first" || return 1
+    assert_ledger_contract "$second" || return 1
+    [ "$(ledger_table "$first")" = "$(ledger_table "$second")" ] || return 1
+    [ "$(ledger_legend "$first")" = "$(ledger_legend "$second")" ] || return 1
+    [ "$(ledger_trigger "$first")" = "$(ledger_trigger "$second")" ] || return 1
+    [ "$(ledger_section "$first")" = "$(ledger_section "$second")" ]
+}
+
+assert_gauntlet_ledger_hooks() {
+    local file="$1"
+    awk '
+        /\*\*Challenge round-entry ledger\.\*\*/ { challenge = NR }
+        /\*\*Review round-entry ledger\.\*\*/ { review = NR }
+        /\*\*Stage-exit and escalation ledger\.\*\*/ { stage_exit = NR }
+        /\*\*Round-end ledger\.\*\*/ { round_end = NR }
+        END { exit !(challenge && review && stage_exit && round_end && challenge < review && review < stage_exit && stage_exit < round_end) }
+    ' "$file" || return 1
+    grep -qF 'Before starting every challenge round, post' "$file" || return 1
+    grep -qF 'Before starting every review round, post' "$file" || return 1
+    [ "$(grep -cF '`⏳ waiting on reviewer` in `Round`' "$file")" -eq 2 ] || return 1
+    [ "$(grep -cF 'Adjudicated findings belong in the round-end post' "$file")" -eq 2 ] || return 1
+    grep -qF 'Immediately after a challenge or review' "$file" || return 1
+    grep -qF 'keep `Next` naming the next concrete gate or action' "$file" || return 1
+    grep -qF 'Immediately after every challenge or review round is' "$file" || return 1
+    grep -qF 'before evaluating the exit/cap test or' "$file" || return 1
+    grep -qF '⛔ blocked/escalating' "$file"
+}
+
+assert_shepherd_ledger_hooks() {
+    local file="$1"
+    awk '
+        /\*\*Shepherd round-entry ledger\.\*\*/ { entry = NR }
+        /\*\*Codex-cycle result ledger\.\*\*/ { cycle = NR }
+        /\*\*Ready-stop ledger\.\*\*/ { ready = NR }
+        END { exit !(entry && cycle && ready && entry < cycle && cycle < ready) }
+    ' "$file" || return 1
+    grep -qF 'Immediately after every successful' "$file" || return 1
+    grep -qF 'fix push, post the fixed' "$file" || return 1
+    grep -qF 'stage-ledger table in your own commentary' "$file" || return 1
+    grep -qF 'regardless of whether it is clean, findings, pending, retry, escalation,' "$file" || return 1
+    grep -qF 'closed, or indeterminate, post' "$file" || return 1
+    grep -qF 'before a finding or no-change adjudication cycle' "$file" || return 1
+    grep -qF 'has begun, omit `round n/cap`' "$file" || return 1
+    grep -qF '`waiting (no round yet)`' "$file" || return 1
+    grep -qF 'Before the round-start fetch establishes a' "$file" || return 1
+    grep -qF "Before the stage's first round, use" "$file" || return 1
+    grep -qF 'retain its' "$file" || return 1
+    grep -qF 'completed `round n/cap` while polling instead of moving the counter backward' "$file" || return 1
+    grep -qF 'ordinary clean/pending watch spend no round' "$file" || return 1
+    grep -qF 'post the table again before adjudicating' "$file" || return 1
+    grep -qF 'cap-zero stage uses `skipped (cap 0)`' "$file" || return 1
+    grep -qF '**No-change round-end ledger.**' "$file" || return 1
+    grep -qF 'immediately after the final reply/settle and before returning' "$file" || return 1
+    grep -qF 'does not start another' "$file" || return 1
+    grep -qF 'use the matching status glyph' "$file" || return 1
+    grep -qF '`✅`, `🔴`' "$file" || return 1
+    grep -qF '`🟡`, `⚪`, `⏳`, or `⛔`' "$file" || return 1
+    grep -qF 'Immediately after the readiness gate confirms' "$file" || return 1
+    grep -qF 'Still write `Round` with `🏁 stage converged` and the green' "$file" || return 1
+    grep -qF '**Blocked-stop ledger.**' "$file" || return 1
+    grep -qF 'cap-reached, no-progress, or' "$file" || return 1
+    grep -qF 'timeline-guard stop' "$file" || return 1
+    grep -qF 'If no round ran, omit `round n/cap`' "$file" || return 1
+    grep -qF '`completed (no round ran)` at' "$file" || return 1
+    grep -qF '`stopped (no round ran)` at a' "$file" || return 1
+    [ "$(grep -cF 'skipped (cap 0)' "$file")" -ge 3 ] || return 1
+    grep -qF 'Shepherd-stage override transfer.' "$file" || return 1
+    grep -qF 'This stage starts after the draft PR' "$file" || return 1
+    grep -qF 'override-carried' "$file" || return 1
+    grep -qF 'Immediately before writing, fetch `state,isDraft,headRefOid,body` together' "$file" || return 1
+    grep -qF 'Revalidate that the PR is still open and draft on the expected round' "$file" || return 1
+    grep -qF 'replaces the shared pre-PR sidecar append' "$file" || return 1
+    grep -qF 'A post-write read cannot' "$file" || return 1
+    grep -qF 'detect a concurrent edit that the replacement already erased' "$file" || return 1
+    grep -qF 'gh pr edit <n> --repo "$repo" --body-file <file>' "$file"
+}
+
+expect_ok "gauntlet carries the canonical ledger rows and glyph legend" \
+    assert_ledger_contract "$GAUNTLET_SKILL"
+expect_ok "shepherd carries the canonical ledger rows and glyph legend" \
+    assert_ledger_contract "$SHEPHERD_SKILL"
+expect_ok "gauntlet and shepherd ledger contracts are byte-identical" \
+    assert_shared_ledger "$GAUNTLET_SKILL" "$SHEPHERD_SKILL"
+expect_ok "gauntlet hooks ledger entry and exit/escalation events" \
+    assert_gauntlet_ledger_hooks "$GAUNTLET_SKILL"
+expect_ok "shepherd hooks round, push, Codex result, and ready events" \
+    assert_shepherd_ledger_hooks "$SHEPHERD_SKILL"
+
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
     grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
 
