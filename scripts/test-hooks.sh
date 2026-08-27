@@ -26,7 +26,10 @@ fi
 
 echo "==> format:file formats a file, including a path containing a space"
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+# Also covers the throwaway agy-adapter fixtures created below, which live
+# inside the repo tree (not tmpdir) since the adapter resolves hook paths
+# relative to it.
+trap 'rm -rf "$tmpdir" "$repo/.claude/hooks/test-hooks-agy-probe.sh" "$repo/some"' EXIT
 spaced="$tmpdir/with space.sh"
 printf 'f(){\necho hi\n}\n' >"$spaced"
 before="$(cat "$spaced")"
@@ -65,5 +68,41 @@ chmod +x "$cwd_mock"
 got="$(printf '%s' '{"cwd":"/tmp/codex-project"}' |
     bash "$repo/.devcontainer/config/codex-hooks/claude-compat.sh" "$cwd_mock")"
 [ "$got" = "/tmp/codex-project" ] || fail "Codex Bash adapter lost the session cwd"
+
+echo "==> agy adapter anchors CLAUDE_PROJECT_DIR on the worktree root, not a subdir Cwd"
+mkdir -p "$repo/.claude/hooks"
+agy_probe="$repo/.claude/hooks/test-hooks-agy-probe.sh"
+agy_log="$tmpdir/agy-probe.log"
+cat >"$agy_probe" <<EOF
+#!/usr/bin/env bash
+cat >/dev/null
+echo "PWD=\$PWD CPD=\${CLAUDE_PROJECT_DIR:-unset}" >>"$agy_log"
+EOF
+chmod +x "$agy_probe"
+mkdir -p "$repo/some/subdir"
+: >"$agy_log"
+printf '%s' "{\"toolCall\":{\"name\":\"run_command\",\"args\":{\"CommandLine\":\"ls\",\"Cwd\":\"$repo/some/subdir\"}}}" |
+    bash "$repo/.agents/agy-adapter.sh" ./.claude/hooks/test-hooks-agy-probe.sh PreToolUse >/dev/null
+got="$(cat "$agy_log")"
+[ "$got" = "PWD=$repo CPD=$repo" ] ||
+    fail "agy adapter did not anchor a subdir Cwd on the worktree root (got: $got)"
+
+echo "==> agy adapter never follows a Cwd into a foreign checkout"
+foreign="$tmpdir/foreign-repo"
+mkdir -p "$foreign/.claude/hooks"
+git init -q "$foreign"
+foreign_probe="$foreign/.claude/hooks/test-hooks-agy-probe.sh"
+cat >"$foreign_probe" <<EOF
+#!/usr/bin/env bash
+cat >/dev/null
+echo "FOREIGN PWD=\$PWD CPD=\${CLAUDE_PROJECT_DIR:-unset}" >>"$agy_log"
+EOF
+chmod +x "$foreign_probe"
+: >"$agy_log"
+printf '%s' "{\"toolCall\":{\"name\":\"run_command\",\"args\":{\"CommandLine\":\"ls\",\"Cwd\":\"$foreign\"}}}" |
+    bash "$repo/.agents/agy-adapter.sh" ./.claude/hooks/test-hooks-agy-probe.sh PreToolUse >/dev/null
+got="$(cat "$agy_log")"
+[ "$got" = "PWD=$repo CPD=unset" ] ||
+    fail "agy adapter followed a Cwd into a foreign checkout or ran its hook (got: $got)"
 
 echo "==> shared Claude/Codex hook adapters OK"

@@ -24,9 +24,22 @@ else
     claude_input="{}"
 fi
 
+# agy invokes hook commands from a cwd that is not the tool call's, so the
+# relative hook path we were handed (./.claude/hooks/*.sh) would resolve
+# against the wrong tree in a linked worktree. Anchor on the worktree ROOT
+# containing the call's Cwd — not the Cwd itself, which may be a
+# subdirectory where the same relative path is meaningless.
 cwd="$(echo "$input" | jq -r '.toolCall.args.Cwd // ""')"
-if [ -n "$cwd" ] && [ "$cwd" != "null" ]; then
-    export CLAUDE_PROJECT_DIR="$cwd"
+if [ -n "$cwd" ] && [ "$cwd" != "null" ] && [ -d "$cwd" ]; then
+    root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+    # Only follow a root that is a worktree of THIS repository: a Cwd inside
+    # some other checkout must not make its .claude/hooks/*.sh the hook we run.
+    self_repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    cwd_repo="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [ -n "$root" ] && [ -n "$self_repo" ] && [ "$cwd_repo" = "$self_repo" ]; then
+        export CLAUDE_PROJECT_DIR="$root"
+        cd "$root"
+    fi
 fi
 
 set +e
