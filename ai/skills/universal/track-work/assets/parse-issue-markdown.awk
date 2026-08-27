@@ -124,6 +124,55 @@ function structural_content(u) {
     # item carrying one is refused wherever it appears.
     return (u ~ /^(```|~~~)/ || atx(u) || u ~ /^>/)
 }
+function mask_code_spans(s,   res, len, i, j, k, ch, run_len, close_pos, close_len, span_len, spaces) {
+    # Replace balanced inline code spans with whitespace of equal length so that
+    # any angle-bracket placeholder or HTML-like token inside code is ignored,
+    # while leaving prose and unclosed/unbalanced spans intact (fail closed).
+    len = length(s)
+    if (index(s, "`") == 0 || len == 0) return s
+    res = ""
+    i = 1
+    while (i <= len) {
+        ch = substr(s, i, 1)
+        if (ch == "`") {
+            run_len = 1
+            while (i + run_len <= len && substr(s, i + run_len, 1) == "`") {
+                run_len++
+            }
+            close_pos = 0
+            j = i + run_len
+            while (j <= len) {
+                if (substr(s, j, 1) == "`") {
+                    close_len = 1
+                    while (j + close_len <= len && substr(s, j + close_len, 1) == "`") {
+                        close_len++
+                    }
+                    if (close_len == run_len) {
+                        close_pos = j
+                        break
+                    }
+                    j += close_len
+                } else {
+                    j++
+                }
+            }
+            if (close_pos > 0) {
+                span_len = (close_pos + run_len) - i
+                spaces = ""
+                for (k = 1; k <= span_len; k++) spaces = spaces " "
+                res = res spaces
+                i = close_pos + run_len
+            } else {
+                res = res substr(s, i, run_len)
+                i += run_len
+            }
+        } else {
+            res = res ch
+            i++
+        }
+    }
+    return res
+}
 function refuse(reason) {
     nbad++
     bad[nbad] = "line " NR ": " reason
@@ -197,11 +246,12 @@ BEGIN {
         refuse("tab in indentation or list padding - indent with spaces")
         next
     }
-    if (index(line, "<!") || index(line, "-->") || index(line, "<?")) {
+    prose_line = mask_code_spans(line)
+    if (index(prose_line, "<!") || index(prose_line, "-->") || index(prose_line, "<?")) {
         refuse("HTML comment or declaration - remove it, or move the example into a fenced code block")
         next
     }
-    if (line ~ /<\/?[A-Za-z][A-Za-z0-9-]*([ \t\/>]|$)/) {
+    if (prose_line ~ /<\/?[A-Za-z][A-Za-z0-9-]*([ \t\/>]|$)/) {
         refuse("raw HTML tag - GitHub may hide or reflow its contents; move the example into a fenced code block")
         next
     }
