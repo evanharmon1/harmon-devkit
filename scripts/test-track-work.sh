@@ -1041,6 +1041,75 @@ BODY
     "$tmp/metadata-html-container-end.md")" = 1 ] ||
     fail "raw HTML whose extent depends on containers must be refused: $(cat "$tmp/metadata.out")"
 
+cat >"$tmp/metadata-backticked-placeholders.md" <<'BODY'
+## Problem
+
+Fix placeholders in `fixed in <sha>`, `tier:<role>:*`, and `[role.<slug>]`.
+
+## Acceptance criteria
+
+- [ ] [CI] `parse-issue-markdown.awk` accepts `<sha>` inside backticks
+
+## Provenance
+
+Authored for an inline placeholder test.
+BODY
+[ "$(run_personal 'Accept backticked placeholders' "$tmp/metadata-backticked-placeholders.md")" = 0 ] ||
+    fail "backticked angle-bracket placeholders should pass: $(cat "$tmp/metadata.out")"
+
+cat >"$tmp/metadata-fenced-placeholder.md" <<'BODY'
+## Problem
+
+```text
+git diff <merge-base>..HEAD
+```
+
+## Acceptance criteria
+
+- [ ] [CI] The checker accepts fenced placeholders
+BODY
+[ "$(run_personal 'Accept fenced placeholders' "$tmp/metadata-fenced-placeholder.md")" = 0 ] ||
+    fail "placeholders in fenced code blocks should pass: $(cat "$tmp/metadata.out")"
+
+cat >"$tmp/metadata-bare-details-tag.md" <<'BODY'
+## Problem
+
+<details>
+<summary>Details</summary>
+Hidden text
+</details>
+
+## Acceptance criteria
+
+- [ ] [CI] Criterion
+BODY
+[ "$(run_personal 'Refuse bare details tag' "$tmp/metadata-bare-details-tag.md")" = 1 ] ||
+    fail "a bare details tag in prose must fail"
+
+cat >"$tmp/metadata-bold-in-prose.md" <<'BODY'
+## Problem
+
+This is <b>bold</b> text in prose.
+
+## Acceptance criteria
+
+- [ ] [CI] Criterion
+BODY
+[ "$(run_personal 'Refuse bold tag in prose' "$tmp/metadata-bold-in-prose.md")" = 1 ] ||
+    fail "a bold tag in prose must fail"
+
+cat >"$tmp/metadata-unbalanced-backtick-tag.md" <<'BODY'
+## Problem
+
+An unclosed ` backtick with <details> in prose.
+
+## Acceptance criteria
+
+- [ ] [CI] Criterion
+BODY
+[ "$(run_personal 'Refuse unbalanced backtick with tag' "$tmp/metadata-unbalanced-backtick-tag.md")" = 1 ] ||
+    fail "an unbalanced backtick followed by an HTML tag must fail closed"
+
 echo "==> metadata: acceptance criteria are tagged rendered task-list items"
 for case_name in untagged non-task; do
     if [ "$case_name" = untagged ]; then
