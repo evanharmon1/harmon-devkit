@@ -46,15 +46,21 @@ the same code. `label-registry-support` is an internal runtime package rather
 than a workflow. Its `SKILL.md` ensures legacy category-sync engines vendor the
 shared interpreter that `track-work` and `triage` both call.
 
-**harmon-devkit uses the `universal/` skills itself.** Each is symlinked into
-`.agents/skills/`, with `.claude/skills` pointing at that directory for Claude
-Code compatibility. Consumers vendor a pinned copy, but the source repo cannot
+**harmon-devkit uses the `universal/` and `matt-pocock/` skills itself.** Each
+is symlinked into `.agents/skills/`, with `.claude/skills` pointing at that
+directory for Claude Code compatibility. `.skills-sync.yaml` and the weekly
+`sync-harmon-devkit.yml` workflow are present here because the copier template
+renders them, but the sync cannot vendor into this repo: every dogfood symlink
+is a local skill whose name collides with the incoming vendored copy, so
+`sync-skills.sh` refuses (the scheduled run fails on that guard by design).
+That is the wanted outcome — vendoring a released copy over the live source
+would make `verify:skills` fail on every edit until a release and pin bump. Consumers vendor a pinned copy, but the source repo cannot
 vendor from itself without waiting on its own release. The symlink makes the
 authored skill the live one, so a change is dogfooded in the session that writes
 it instead of a release and a pin bump later:
 
 ```sh
-ln -s ../../ai/skills/universal/<name> .agents/skills/<name>
+ln -s ../../ai/skills/<category>/<name> .agents/skills/<name>
 ln -s ../.agents/skills .claude/skills
 ```
 
