@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.37.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.36.0...v0.37.0) (2026-08-28)
+
+
+### Features
+
+* add stage ledgers to gauntlet and shepherd skills ([#619](https://github.com/evanharmon1/harmon-devkit/issues/619)) ([f6c912e](https://github.com/evanharmon1/harmon-devkit/commit/f6c912e6580444160da17db40e8646cc01565f1b))
+* **skills:** dogfood the matt-pocock skills via .agents/skills symlinks ([#660](https://github.com/evanharmon1/harmon-devkit/issues/660)) ([42c1d97](https://github.com/evanharmon1/harmon-devkit/commit/42c1d972215d2fb935a94ab942ec45c689e9dbee))
+* **skills:** orchestrators claim on behalf of dispatched subagents ([#612](https://github.com/evanharmon1/harmon-devkit/issues/612)) ([2bfb0d5](https://github.com/evanharmon1/harmon-devkit/commit/2bfb0d51aebde9504cd33bb7b11ebab175d918d6))
+* **skills:** standardize-repo vendors + refreshes skills as a first-class step ([#613](https://github.com/evanharmon1/harmon-devkit/issues/613)) ([bebb75b](https://github.com/evanharmon1/harmon-devkit/commit/bebb75b0b21ccd7a7abd6d9bbd8d7d3eb28a2bfe))
+* test skills vendoring status ([#628](https://github.com/evanharmon1/harmon-devkit/issues/628)) ([c1c2a7f](https://github.com/evanharmon1/harmon-devkit/commit/c1c2a7f39b11cf7ec133d6a9849a3262163aec2c))
+
+
+### Bug Fixes
+
+* **agy-adapter:** anchor CLAUDE_PROJECT_DIR on the worktree root ([#649](https://github.com/evanharmon1/harmon-devkit/issues/649)) ([120fdbd](https://github.com/evanharmon1/harmon-devkit/commit/120fdbdbc5bcad7ea83d0a8022f01bdb2571c08b))
+* **gauntlet:** use security as pre-PR gate ([#661](https://github.com/evanharmon1/harmon-devkit/issues/661)) ([d1a995f](https://github.com/evanharmon1/harmon-devkit/commit/d1a995f6e3c75438aee3194a17a1463010d744a0))
+* **track-work:** accept backticked angle-bracket placeholders ([#650](https://github.com/evanharmon1/harmon-devkit/issues/650)) ([8be1ca5](https://github.com/evanharmon1/harmon-devkit/commit/8be1ca55c74483f6929b66f384e9e332b97d61e8))
+* **track-work:** allow completed post-merge criteria ticks ([#625](https://github.com/evanharmon1/harmon-devkit/issues/625)) ([612c63b](https://github.com/evanharmon1/harmon-devkit/commit/612c63b2099f73994fc6b12812dc547578247392))
+* **triage:** allow absent layer classification ([#606](https://github.com/evanharmon1/harmon-devkit/issues/606)) ([64333ed](https://github.com/evanharmon1/harmon-devkit/commit/64333ed5ff0d31fcb21b2a4f9032f7b2c57d2506))
+* **triage:** set organization native issue Types ([#611](https://github.com/evanharmon1/harmon-devkit/issues/611)) ([552643d](https://github.com/evanharmon1/harmon-devkit/commit/552643d92280ef9e0fbc5f3fd54ebbac700cb186))
+
 ## [0.36.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.35.0...v0.36.0) (2026-08-25)
 
 
