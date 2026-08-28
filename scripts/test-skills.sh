@@ -1285,8 +1285,8 @@ LEDGER_TABLE_EXPECTED='| 📍 Ledger | |
 | **Stage** | ⚔️ challenge · **round 2/4** · local (`task challenge`) |
 | **Round** | 🔴 1 P1 open · 🟡 2 P2 deferred · ⚪ 1 P3 noted · ✅ verify green |
 | **Next** | fix P1 → `task verify` → ⚔️ challenge round 3 |'
-LEDGER_LEGEND_EXPECTED='Stage glyphs: 🔨 implement · 🧪 verify · ⚔️ challenge · 🔍 review · 🏗️ ci ·
-🚢 shepherd. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
+LEDGER_LEGEND_EXPECTED='Stage glyphs: 🔨 implement · 🧪 verify · ⚔️ challenge · 🔍 review · 🛡️ security ·
+🏗️ ci · 🚢 shepherd. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
 ⚪ P3 noted · ⏳ waiting on CI or a reviewer · ⛔ blocked/escalating · 🏁 stage
 converged.'
 LEDGER_TRIGGER_EXPECTED=$'Post it at every
