@@ -2,8 +2,8 @@
 name: gauntlet
 description: >-
   Run the second-model review gauntlet — adversarial challenge, then verification
-  review, each to convergence under its own resolved cap, then the CI mirror and
-  the draft PR. Entry: implementation complete and the definition-of-done gate
+  review, each to convergence under its own resolved cap, then the security gate
+  and draft PR. Entry: implementation complete and the definition-of-done gate
   green. Exit: a draft PR is open and the shepherd stage takes over. Convergence
   is the exit; fixing findings is not. Invoke as /gauntlet.
 disable-model-invocation: true
@@ -16,8 +16,8 @@ allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branc
 
 The stage between "the implementation is done and the definition-of-done gate
 is green" and "a draft PR exists". It runs the adversarial second-model review
-to convergence, then the verification review to convergence, then the CI
-mirror, then the PR-open ritual — and hands the draft to `/shepherd`.
+to convergence, then the verification review to convergence, then the security
+gate and PR-open ritual — and hands the draft to `/shepherd`.
 
 **The central rule: convergence is the exit, fixes are not.** A stage does not
 end because you fixed everything the reviewer said. It ends when the rounds
@@ -54,8 +54,8 @@ legend:
 | **Round** | 🔴 1 P1 open · 🟡 2 P2 deferred · ⚪ 1 P3 noted · ✅ verify green |
 | **Next** | fix P1 → `task verify` → ⚔️ challenge round 3 |
 
-Stage glyphs: 🔨 implement · 🧪 verify · ⚔️ challenge · 🔍 review · 🏗️ ci ·
-🚢 shepherd. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
+Stage glyphs: 🔨 implement · 🧪 verify · ⚔️ challenge · 🔍 review · 🛡️ security ·
+🏗️ ci · 🚢 shepherd. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
 ⚪ P3 noted · ⏳ waiting on CI or a reviewer · ⛔ blocked/escalating · 🏁 stage
 converged.
 The same glyph always means the same thing, so a reader can tell
@@ -285,7 +285,7 @@ cap actually guarantees.
 **A cap of 0 skips that stage outright.** Do not run `task challenge` (or
 `task review`) at all when its resolved cap is 0 — move straight to the next
 stage. Skipping a heuristic stage never skips a **deterministic** one:
-`task verify`, `task ci`, and every adjudication/recording obligation another
+`task verify`, `task security`, and every adjudication/recording obligation another
 enabled stage still owes (the ledger, the sidecar, the §10 PR-body transfer)
 are unchanged. Say so plainly in the announcement (e.g. "challenge ≤0 —
 skipped") so a later round or a different session does not read a missing
@@ -629,10 +629,11 @@ appending blindly would hand the shepherd four copies of one finding. A P2 you
 judge worth fixing immediately may of course be fixed in place; it just does
 not hold the stage open. One accounting note rides with that: a P2 fix
 committed after the stage's exit-eligible round is a commit no round of this
-stage reviews — that is acceptable only because the next gate in the
-pipeline (the other stage's rounds, `task ci`, and the PR's cloud review)
-covers it. A P2 fix you would not want reviewed there is a P2 to defer, not
-to slip in after convergence. The sidecar rides into the PR body in §10.
+stage reviews. Commit it and re-run the definition-of-done gate (`task verify`
+where it exists) before proceeding; the next gate in the pipeline (the other
+stage's rounds, `task security`, and the PR's cloud review) then covers the
+verified commit. A P2 fix you would not want reviewed there is a P2 to defer,
+not to slip in after convergence. The sidecar rides into the PR body in §10.
 
 **3. Round-2 provenance checkpoint.** For every finding, record on the table
 whether its subject **exists only because an earlier round of this same stage
@@ -775,22 +776,31 @@ head="$(git rev-parse HEAD)"          # right
 # head=a1b2c3d                        # wrong — retyped from scrollback
 ```
 
-## 9. CI mirror
+## 9. Security gate
 
-`task ci` where it exists — the full local mirror. Fix whatever it catches.
-This is the last cheap failure; everything after it costs a round on the PR.
-Run it against the final committed SHA and produce a fresh helper marker for
-§10, exactly as §3 does but with `task ci` as the gate:
+`task security` — Semgrep CE + gitleaks + dependency audit. This is the
+pre-publication security gate; fix whatever it catches. Run it against the final
+committed SHA and produce a fresh helper marker for §10, exactly as §3 does but
+with `task security` as the gate:
 
 ```sh
 sha="$(git rev-parse HEAD)"
 token="GAUNTLET-GREEN-${sha}-$$"
 out="$(mktemp)"
-task ci >"$out" 2>&1 && printf '\n%s\n' "$token" >>"$out"
+task security >"$out" 2>&1 && printf '\n%s\n' "$token" >>"$out"
 ```
 
 The helper's post-gate clean-tree and `HEAD == sha` checks prevent a successful
 gate from authorizing a different or partially generated commit.
+
+If remediation changes the tree, commit it, re-run the definition-of-done gate
+(`task verify` where it exists), then re-run `task security` against that new
+SHA. A security-only marker never authorizes code changed after the last green
+definition-of-done gate. Repository policy may require additional gates here;
+as everywhere in this skill, that policy outranks this default procedure.
+
+`task ci` (the full local CI mirror) remains available on demand when CI is red
+and you want to iterate locally, but it is not a mandatory pre-PR step.
 
 ## 10. Open the draft PR — the stage's exit ceremony
 

@@ -1285,8 +1285,8 @@ LEDGER_TABLE_EXPECTED='| 📍 Ledger | |
 | **Stage** | ⚔️ challenge · **round 2/4** · local (`task challenge`) |
 | **Round** | 🔴 1 P1 open · 🟡 2 P2 deferred · ⚪ 1 P3 noted · ✅ verify green |
 | **Next** | fix P1 → `task verify` → ⚔️ challenge round 3 |'
-LEDGER_LEGEND_EXPECTED='Stage glyphs: 🔨 implement · 🧪 verify · ⚔️ challenge · 🔍 review · 🏗️ ci ·
-🚢 shepherd. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
+LEDGER_LEGEND_EXPECTED='Stage glyphs: 🔨 implement · 🧪 verify · ⚔️ challenge · 🔍 review · 🛡️ security ·
+🏗️ ci · 🚢 shepherd. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
 ⚪ P3 noted · ⏳ waiting on CI or a reviewer · ⛔ blocked/escalating · 🏁 stage
 converged.'
 LEDGER_TRIGGER_EXPECTED=$'Post it at every
@@ -1454,6 +1454,20 @@ assert_shepherd_ledger_hooks() {
     grep -qF 'gh pr edit <n> --repo "$repo" --body-file <file>' "$file"
 }
 
+assert_gauntlet_security_gate() {
+    local file="$1"
+    grep -qF 'then the security gate' "$file" || return 1
+    grep -qF '`task verify`, `task security`' "$file" || return 1
+    grep -qF 'Commit it and re-run the definition-of-done gate (`task verify`' "$file" || return 1
+    grep -qF "stage's rounds, \`task security\`, and the PR's cloud review) then covers the" "$file" || return 1
+    grep -qF '## 9. Security gate' "$file" || return 1
+    grep -qF 'task security >"$out" 2>&1' "$file" || return 1
+    grep -qF 'A security-only marker never authorizes code changed after the last green' "$file" || return 1
+    grep -qF 'Repository policy may require additional gates here' "$file" || return 1
+    grep -qF '`task ci` (the full local CI mirror) remains available on demand' "$file" || return 1
+    ! grep -qF '## 9. CI mirror' "$file"
+}
+
 expect_ok "gauntlet carries the canonical ledger rows and glyph legend" \
     assert_ledger_contract "$GAUNTLET_SKILL"
 expect_ok "shepherd carries the canonical ledger rows and glyph legend" \
@@ -1462,6 +1476,8 @@ expect_ok "gauntlet and shepherd ledger contracts are byte-identical" \
     assert_shared_ledger "$GAUNTLET_SKILL" "$SHEPHERD_SKILL"
 expect_ok "gauntlet hooks ledger entry and exit/escalation events" \
     assert_gauntlet_ledger_hooks "$GAUNTLET_SKILL"
+expect_ok "gauntlet uses security as its pre-PR gate and keeps CI on demand" \
+    assert_gauntlet_security_gate "$GAUNTLET_SKILL"
 expect_ok "shepherd hooks round, push, Codex result, and ready events" \
     assert_shepherd_ledger_hooks "$SHEPHERD_SKILL"
 
