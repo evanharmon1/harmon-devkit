@@ -1458,7 +1458,8 @@ assert_gauntlet_security_gate() {
     local file="$1"
     grep -qF 'then the security gate' "$file" || return 1
     grep -qF '`task verify`, `task security`' "$file" || return 1
-    grep -qF "pipeline (the other stage's rounds, \`task security\`, and the PR's cloud review)" "$file" || return 1
+    grep -qF 'Commit it and re-run the definition-of-done gate (`task verify`' "$file" || return 1
+    grep -qF "stage's rounds, \`task security\`, and the PR's cloud review) then covers the" "$file" || return 1
     grep -qF '## 9. Security gate' "$file" || return 1
     grep -qF 'task security >"$out" 2>&1' "$file" || return 1
     grep -qF 'A security-only marker never authorizes code changed after the last green' "$file" || return 1

@@ -629,10 +629,11 @@ appending blindly would hand the shepherd four copies of one finding. A P2 you
 judge worth fixing immediately may of course be fixed in place; it just does
 not hold the stage open. One accounting note rides with that: a P2 fix
 committed after the stage's exit-eligible round is a commit no round of this
-stage reviews — that is acceptable only because the next gate in the
-pipeline (the other stage's rounds, `task security`, and the PR's cloud review)
-covers it. A P2 fix you would not want reviewed there is a P2 to defer, not
-to slip in after convergence. The sidecar rides into the PR body in §10.
+stage reviews. Commit it and re-run the definition-of-done gate (`task verify`
+where it exists) before proceeding; the next gate in the pipeline (the other
+stage's rounds, `task security`, and the PR's cloud review) then covers the
+verified commit. A P2 fix you would not want reviewed there is a P2 to defer,
+not to slip in after convergence. The sidecar rides into the PR body in §10.
 
 **3. Round-2 provenance checkpoint.** For every finding, record on the table
 whether its subject **exists only because an earlier round of this same stage
