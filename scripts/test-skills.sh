@@ -1461,6 +1461,8 @@ assert_gauntlet_security_gate() {
     grep -qF "pipeline (the other stage's rounds, \`task security\`, and the PR's cloud review)" "$file" || return 1
     grep -qF '## 9. Security gate' "$file" || return 1
     grep -qF 'task security >"$out" 2>&1' "$file" || return 1
+    grep -qF 'A security-only marker never authorizes code changed after the last green' "$file" || return 1
+    grep -qF 'Repository policy may require additional gates here' "$file" || return 1
     grep -qF '`task ci` (the full local CI mirror) remains available on demand' "$file" || return 1
     ! grep -qF '## 9. CI mirror' "$file"
 }

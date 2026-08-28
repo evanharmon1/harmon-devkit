@@ -792,6 +792,12 @@ task security >"$out" 2>&1 && printf '\n%s\n' "$token" >>"$out"
 The helper's post-gate clean-tree and `HEAD == sha` checks prevent a successful
 gate from authorizing a different or partially generated commit.
 
+If remediation changes the tree, commit it, re-run the definition-of-done gate
+(`task verify` where it exists), then re-run `task security` against that new
+SHA. A security-only marker never authorizes code changed after the last green
+definition-of-done gate. Repository policy may require additional gates here;
+as everywhere in this skill, that policy outranks this default procedure.
+
 `task ci` (the full local CI mirror) remains available on demand when CI is red
 and you want to iterate locally, but it is not a mandatory pre-PR step.
 
