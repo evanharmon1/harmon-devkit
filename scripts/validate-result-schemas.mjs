@@ -312,15 +312,38 @@ function checkHeadAgreement(kind, envelope, errors) {
   }
 }
 
+// checkAppliedDispositionsUnique — applied_dispositions[].finding_id must
+// be unique. Always runs for role integrator, independent of `verdict`:
+// this is a structural defect in the array itself, not a clean-verdict
+// rule, and rejecting it explicitly (rather than building a keep-last Map
+// keyed by finding_id, which silently drops the earlier entry) is the
+// point — a duplicate here means two different claims about the same
+// finding's disposition, and neither one should be silently discarded.
+function checkAppliedDispositionsUnique(payload, errors) {
+  const seen = new Set()
+  for (const entry of payload.applied_dispositions ?? []) {
+    if (typeof entry.finding_id !== 'string') continue
+    if (seen.has(entry.finding_id)) {
+      errors.push(`$result.payload.applied_dispositions: duplicate finding_id ${entry.finding_id}`)
+    }
+    seen.add(entry.finding_id)
+  }
+}
+
 // checkIntegratorCleanVerdict — a `clean` verdict is a claim about the
-// WHOLE payload, not just its own field: every check must actually be
-// green-or-skipped, no thread may be left unanswered, the Codex cycle (if
-// any) must itself be clean, and every finding raised must be accounted
-// for by a non-deferred applied disposition. Same-document, always runs
-// for role integrator — `verdict` and everything it constrains are all
-// sibling fields of one payload instance.
+// WHOLE payload, not just its own field: at least one check must actually
+// have run (AGENTS.md's readiness gate: an empty check list is
+// indeterminate, not a pass) and every one of them green-or-skipped, no
+// thread may be left unanswered, the Codex cycle (if any) must itself be
+// clean, and every finding raised must be accounted for by a non-deferred
+// applied disposition. Same-document, always runs for role integrator —
+// `verdict` and everything it constrains are all sibling fields of one
+// payload instance.
 function checkIntegratorCleanVerdict(payload, errors) {
   if (payload.verdict !== 'clean') return
+  if (!Array.isArray(payload.checks) || payload.checks.length === 0) {
+    errors.push('$result.payload.checks: must be non-empty when verdict is clean — an empty check list is indeterminate, not a pass')
+  }
   for (const check of payload.checks ?? []) {
     if (check.bucket !== 'pass' && check.bucket !== 'skipping') {
       errors.push(
@@ -382,7 +405,10 @@ function validateEnvelopeInstance(instance, kind, options) {
         checkActiveRun(instance, options, errors)
         if (role === 'implementer') checkImplementerStatus(instance, errors)
         if (role === 'reviewer') checkFindingIds(instance, options, errors)
-        if (role === 'integrator') checkIntegratorCleanVerdict(instance.payload, errors)
+        if (role === 'integrator') {
+          checkAppliedDispositionsUnique(instance.payload, errors)
+          checkIntegratorCleanVerdict(instance.payload, errors)
+        }
         checkHeadAgreement(role, instance, errors)
       }
     }
@@ -498,6 +524,22 @@ function checkAdjudicationAgainstPass(document, passes, errors) {
     }
   }
 
+  // A round is one pass per configured finder (spec § Configuration); a
+  // retry REPLACES that finder's pass, it never joins a second one at its
+  // side. Two --pass files naming the same finder are therefore never a
+  // legitimate two-finder round — reject and name the finder.
+  const finderSeenAt = new Map()
+  for (const { file, data } of passes) {
+    const finder = data.payload.finder
+    if (finderSeenAt.has(finder)) {
+      errors.push(
+        `$adjudication: --pass ${file} repeats finder ${finder}, already supplied by ${finderSeenAt.get(finder)} — a round is one pass per finder`
+      )
+    } else {
+      finderSeenAt.set(finder, file)
+    }
+  }
+
   const passFindings = new Map()
   for (const { data } of passes) {
     for (const finding of data.payload.findings ?? []) {
@@ -604,7 +646,10 @@ function checkSettlementReferenceType(document, errors) {
 // checkRunPromotionOutcome — promotion is non-null if and only if outcome
 // is "ready-for-review", in both directions: a promoted run that reports a
 // different outcome, or a ready-for-review outcome with no promotion
-// entry, are both inconsistent documents.
+// entry, are both inconsistent documents. Reaching ready-for-review always
+// means a PR exists (the readiness gate promotes a draft PR — there is no
+// promotion without one), so both of those states additionally require a
+// non-null `pr`.
 function checkRunPromotionOutcome(document, errors) {
   const promoted = document.promotion !== null && document.promotion !== undefined
   const ready = document.outcome === 'ready-for-review'
@@ -613,6 +658,9 @@ function checkRunPromotionOutcome(document, errors) {
   }
   if (ready && !promoted) {
     errors.push('$run.promotion: must be non-null when outcome is "ready-for-review"')
+  }
+  if ((promoted || ready) && (document.pr === null || document.pr === undefined)) {
+    errors.push('$run.pr: must be non-null when outcome is "ready-for-review" or promotion is present')
   }
 }
 
@@ -660,6 +708,22 @@ function checkEvidenceMarkerRunId(document, errors) {
     if (marker && typeof marker.run_id === 'string' && marker.run_id !== document.run_id) {
       errors.push(
         `$run.evidence_comments[${index}].marker.run_id: ${marker.run_id} does not match the run's own run_id ${document.run_id}`
+      )
+    }
+  }
+}
+
+// checkAdjudicationRunIdMatchesRun — each --adjudication document's own
+// run_id must equal the run record's run_id: a foreign run's adjudication
+// document could otherwise settle a finding_id that only coincidentally
+// collides with one from THIS run (finding ids are unique within a run,
+// not globally). Named per offending file, same as the pass-agreement
+// checks above.
+function checkAdjudicationRunIdMatchesRun(document, adjudications, errors) {
+  for (const { file, data } of adjudications) {
+    if (data.run_id !== document.run_id) {
+      errors.push(
+        `$run: --adjudication ${file} has run_id ${data.run_id}, not this run's own run_id ${document.run_id}`
       )
     }
   }
@@ -772,7 +836,10 @@ function main() {
       checkEvidenceCommentsUniqueness(instance, errors)
       checkRunPromotionOutcome(instance, errors)
       checkSettlementReferenceType(instance, errors)
-      if (options.adjudications.length > 0) checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
+      if (options.adjudications.length > 0) {
+        checkAdjudicationRunIdMatchesRun(instance, options.adjudications, errors)
+        checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
+      }
     }
     checkTimestampRealness(instance, errors, '$run')
     report(errors, 'run record OK')

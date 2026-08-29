@@ -98,10 +98,14 @@ keyword, for every one of these:
   still matches its finding's own `priority` in whichever pass returned it
   (a copy that has drifted from its source is worse than no copy), and that
   the document's own `run_id`/`stage`/`round`/`reviewed_head` agree with the
-  passes'. Without `--pass` an adjudication document is still checked for
-  internal self-consistency (`checkAdjudicationEntries`,
-  `checkAdjudicationIdAttribution`) — it just isn't cross-checked against
-  anything external.
+  passes'. Every supplied pass's own `payload.finder` must also be distinct
+  — a round is one pass **per finder** (same spec line), so two `--pass`
+  files repeating one finder are never a legitimate multi-finder round; a
+  retry replaces that finder's pass, it does not join a second one at its
+  side, so the repeat is rejected naming the finder. Without `--pass` an
+  adjudication document is still checked for internal self-consistency
+  (`checkAdjudicationEntries`, `checkAdjudicationIdAttribution`) — it just
+  isn't cross-checked against anything external.
 - **Adjudication uniqueness across the run (`--known-adjudicated
   <ids.json>`)** — a finding is adjudicated in exactly one round document,
   ever (see `adjudication.schema.json`'s own `$comment` for the full
@@ -117,7 +121,11 @@ keyword, for every one of these:
   finding it names was ever actually deferred (that fact lives in an
   adjudication document, a different document entirely — spec § Results:
   "there it is settled to `fix`, `decline`, or `file`" describes exactly
-  this transition). With one or more `--adjudication` files, every
+  this transition). Each supplied `--adjudication` document's own `run_id`
+  must first equal the run record's `run_id` — finding ids are unique
+  *within a run*, not globally, so a foreign run's document could otherwise
+  settle a finding_id that only coincidentally collides with one from this
+  run. With one or more `--adjudication` files, every
   settlement's `finding_id` must be adjudicated **exactly once** across the
   union of the supplied documents, with disposition `defer` — zero matches
   or more than one are both rejected (naming which documents disagree, in
@@ -160,18 +168,29 @@ instance being validated:
   bookkeeping and content disagree.
 - **A `clean` integrator verdict is a claim about the whole payload** —
   `checkIntegratorCleanVerdict` reads `verdict` and, when it is `clean`,
-  requires every sibling field to actually be clean too: every `checks[]`
-  entry's `bucket` is `pass` or `skipping`, `unanswered_thread_roots` is
-  empty, `codex_cycle` is `null` or has `exit_code: 0` with `accepted`
-  present (never `10`/findings — a clean verdict cannot rest on an
-  unresolved Codex cycle), every `findings[].id` has a matching
-  `applied_dispositions[]` entry, and no applied disposition is `defer` (a
-  deferred finding is carried forward, not clean). All same-document; the
-  check runs unconditionally for role `integrator`.
+  requires every sibling field to actually be clean too: `checks` is
+  **non-empty** (AGENTS.md's readiness gate: an empty check list is
+  indeterminate, not a pass) and every entry's `bucket` is `pass` or
+  `skipping`, `unanswered_thread_roots` is empty, `codex_cycle` is `null`
+  or has `exit_code: 0` with `accepted` present (never `10`/findings — a
+  clean verdict cannot rest on an unresolved Codex cycle), every
+  `findings[].id` has a matching `applied_dispositions[]` entry, and no
+  applied disposition is `defer` (a deferred finding is carried forward,
+  not clean). All same-document; the check runs unconditionally for role
+  `integrator`.
+- **`applied_dispositions[].finding_id` is unique** — checked separately
+  from, and unconditionally on, the clean-verdict rule above
+  (`checkAppliedDispositionsUnique`): a duplicate is two different claims
+  about the same finding's disposition, and rejecting it outright is the
+  point — building a keep-last `Map` instead would silently discard
+  whichever claim came first.
 - **`run.schema.json`'s `promotion` ⇔ `outcome: "ready-for-review"`, both
-  directions** — a non-null `promotion` with any other outcome, or an
-  outcome of `"ready-for-review"` with a null `promotion`, are both
-  inconsistent documents (`checkRunPromotionOutcome`).
+  directions, and both additionally require a non-null `pr`** — a non-null
+  `promotion` with any other outcome, or an outcome of
+  `"ready-for-review"` with a null `promotion`, are both inconsistent
+  documents; so is either of those states with `pr: null`, since reaching
+  ready-for-review always means a PR exists — there is no promotion
+  without one (`checkRunPromotionOutcome`).
 - **`run.schema.json`'s `settlements[].reference.type` must match
   `disposition`** — `fix → sha` (a 40-hex value), `file → issue_number`
   (`^[1-9][0-9]*$`), `decline → comment_id` (non-empty) — the evidence a

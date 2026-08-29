@@ -322,6 +322,14 @@ run_context_case \
     --pass "$two_finder_dir/two-finder-a.pass.json"
 
 run_context_case \
+    "two --pass files repeating the same finder are rejected" \
+    adjudication \
+    "$two_finder_dir/two-finder-union-adjudication.json" \
+    "repeats finder codex-cli" \
+    --pass "$two_finder_dir/two-finder-a.pass.json" \
+    --pass "$two_finder_dir/two-finder-a.pass.json"
+
+run_context_case \
     "an adjudication entry already adjudicated by an earlier round document is rejected" \
     adjudication \
     "$adjudication_pass_dir/known-adjudicated-collision.json" \
@@ -342,6 +350,13 @@ run_context_case \
     run \
     "$fixtures_dir/run.schema/invalid/settlement-of-unknown-finding.json" \
     "is not adjudicated in any supplied --adjudication document" \
+    --adjudication "$settlement_cross_check_adjudication"
+
+run_context_case \
+    "an --adjudication document belonging to a foreign run is rejected" \
+    run \
+    "$fixtures_dir/run.schema/valid/fresh-kickoff.json" \
+    "not this run's own run_id" \
     --adjudication "$settlement_cross_check_adjudication"
 
 # Accepting cases for the same flags, so a false-positive rejection (the flag
