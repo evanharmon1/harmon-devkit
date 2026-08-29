@@ -28,6 +28,28 @@ fail() {
 command -v node >/dev/null 2>&1 || fail "node is required to validate the result schemas"
 [ -f "$validator" ] || fail "missing required asset: $validator"
 
+# is_context_only_fixture PATH — true for a fixture the generic per-directory
+# loop below must not validate directly. Two kinds:
+#   - a *.known-ids.json sidecar: matches the invalid/*.json glob (it IS a
+#     .json file) but is never itself passed to the validator as a document
+#     to validate — only as the argument to another fixture's --known-ids.
+#   - a fixture whose invalid-ness depends ENTIRELY on a run-context flag
+#     (--known-ids, --run-id/--initiated-by) the generic loop never passes.
+#     Both of these are, by construction, schema-valid and receipt-valid on
+#     their own — that is what makes the flagged case meaningful to test —
+#     so the generic loop's flagless invocation would otherwise accept them,
+#     contradicting "every invalid/*.json is rejected". They are exercised
+#     instead by the named run-context regression cases below, which pass
+#     the exact flag each one needs.
+is_context_only_fixture() {
+    case "$1" in
+    *.known-ids.json) return 0 ;;
+    */result.envelope.schema/invalid/run-mismatch.json) return 0 ;;
+    */result.reviewer.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
 # kind_for_dir DIR — map a fixtures/<dir> basename to the validator's <kind>
 # positional argument.
 kind_for_dir() {
@@ -80,6 +102,7 @@ for dir in "$fixtures_dir"/*/; do
     if [ -d "${dir}invalid" ]; then
         for f in "${dir}invalid"/*.json; do
             [ -f "$f" ] || continue
+            is_context_only_fixture "$f" && continue
             reason_file="${f%.json}.reason"
             [ -f "$reason_file" ] ||
                 fail "invalid fixture $f has no sibling .reason file naming the expected rejection"
