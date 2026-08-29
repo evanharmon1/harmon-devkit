@@ -15,7 +15,12 @@
   },
   "payload": {
     "checks": [
-      { "name": "ci/build", "bucket": "pass", "run_id": "1003" }
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1003",
+        "required": true
+      }
     ],
     "codex_cycle": {
       "head": "02eeacbff2e17dc4a111ddf15710b2f39ff68b62",
@@ -29,9 +34,14 @@
       "exit_code": 10
     },
     "findings": [
-      { "id": "review-9988776655", "body": "Please add a regression test for the empty-array case." }
+      {
+        "id": "review-9988776655",
+        "body": "Please add a regression test for the empty-array case."
+      }
     ],
-    "unanswered_thread_roots": ["review-9988776655"],
+    "unanswered_thread_roots": [
+      "review-9988776655"
+    ],
     "settled_at": "2026-08-29T18:05:00Z",
     "verdict": "findings"
   }

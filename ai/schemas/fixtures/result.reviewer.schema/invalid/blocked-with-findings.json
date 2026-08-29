@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "blocked",
+  "head": "3031a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "produced_at": "2026-08-29T20:31:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-3031-blocked-with-findings",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "3031a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r1-codex-cli-1",
+        "path": "some/file.md",
+        "line": 5,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "a blocked finder should not report real findings"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 1, "P2": 0, "P3": 0 }
+  }
+}

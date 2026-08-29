@@ -142,6 +142,150 @@ done
 [ "$fixture_dirs_found" -gt 0 ] || fail "no fixture directories found under $fixtures_dir"
 echo "PASS: fixture corpus OK ($valid_count valid, $invalid_count invalid, $fixture_dirs_found schema(s))"
 
+# --- Native harness composition (result.schema.json) -----------------------
+# result.schema.json is a self-contained composition (envelope properties +
+# $defs.<role> + allOf role dispatch) a native JSON-Schema validator can use
+# with no separate dispatch script. Two properties to prove: (a) it accepts
+# every valid role fixture and rejects every invalid one whose violation is
+# schema-level (a receipt/context-only violation — one that needs a sibling
+# envelope field, another document, or run context this composed schema
+# cannot see — is correctly NOT caught here; that is
+# scripts/validate-result-schemas.mjs's job, and SEMANTIC_ONLY below is the
+# explicit, auditable list of which fixtures those are); (b) $defs.<role>
+# never drifts from the standalone result.<role>.schema.json it was copied
+# from.
+node --input-type=module - "$schemas_dir" "$fixtures_dir" <<'NODE'
+import { createSchemaValidator, canonicalJson } from './scripts/lib/json-schema-subset.mjs'
+import { readFileSync, readdirSync } from 'node:fs'
+import path from 'node:path'
+
+const [schemasDir, fixturesDir] = process.argv.slice(2)
+
+const composed = JSON.parse(readFileSync(path.join(schemasDir, 'result.schema.json'), 'utf8'))
+const engine = createSchemaValidator(composed)
+engine.assertSupportedSchema(composed)
+
+const ROLE_DIRS = {
+  implementer: 'result.implementer.schema',
+  reviewer: 'result.reviewer.schema',
+  integrator: 'result.integrator.schema'
+}
+
+// Fixtures whose invalid-ness needs a receipt-validation / run-context check
+// this composed schema alone cannot express (ai/schemas/README.md's
+// "Composition" / "Receipt validation" sections name every one of these
+// checks). result.schema.json correctly ACCEPTS these fixtures on their
+// own; scripts/validate-result-schemas.mjs is what rejects them.
+const SEMANTIC_ONLY = new Set([
+  'result.implementer.schema/invalid/empty-ac_test_map-when-completed.json',
+  'result.implementer.schema/invalid/missing-ac_test_map-when-completed.json',
+  'result.implementer.schema/invalid/missing-blocked_question-when-blocked.json',
+  'result.implementer.schema/invalid/missing-handoff-when-completed.json',
+  'result.implementer.schema/invalid/missing-summary-when-completed.json',
+  'result.implementer.schema/invalid/null-blocked_question-when-blocked.json',
+  'result.reviewer.schema/invalid/counts-mismatch-tally.json',
+  'result.reviewer.schema/invalid/duplicate-finding-id-within-pass.json',
+  'result.reviewer.schema/invalid/duplicate-id-across-passes.json',
+  'result.reviewer.schema/invalid/finding-id-finder-mismatch.json',
+  'result.reviewer.schema/invalid/finding-id-round-mismatch.json',
+  'result.reviewer.schema/invalid/finding-id-stage-mismatch.json',
+  'result.reviewer.schema/invalid/head-mismatch.json',
+  'result.reviewer.schema/invalid/blocked-with-findings.json',
+  'result.integrator.schema/invalid/accepted-reviewed_commit-mismatch.json',
+  'result.integrator.schema/invalid/applied-dispositions-duplicate-finding-id.json',
+  'result.integrator.schema/invalid/blocked-with-clean-verdict.json',
+  'result.integrator.schema/invalid/clean-with-empty-checks.json',
+  'result.integrator.schema/invalid/clean-with-failing-check.json',
+  'result.integrator.schema/invalid/clean-with-pending-cycle.json',
+  'result.integrator.schema/invalid/clean-with-required-check-skipping.json',
+  'result.integrator.schema/invalid/clean-with-unanswered-thread.json',
+  'result.integrator.schema/invalid/clean-with-unapplied-finding.json',
+  'result.integrator.schema/invalid/codex-cycle-nonterminal-with-accepted.json',
+  'result.integrator.schema/invalid/head-mismatch.json'
+])
+
+let failures = 0
+let validChecked = 0
+let invalidChecked = 0
+const semanticOnlySeen = new Set()
+
+for (const dir of Object.values(ROLE_DIRS)) {
+  const validDir = path.join(fixturesDir, dir, 'valid')
+  for (const entry of readdirSync(validDir)) {
+    if (!entry.endsWith('.json')) continue
+    const file = path.join(validDir, entry)
+    const instance = JSON.parse(readFileSync(file, 'utf8'))
+    const errors = engine.validate(instance, composed, '$result')
+    validChecked += 1
+    if (errors.length > 0) {
+      console.error(`FAIL: valid fixture rejected by result.schema.json: ${file} -> ${errors.join('; ')}`)
+      failures += 1
+    }
+  }
+  const invalidDir = path.join(fixturesDir, dir, 'invalid')
+  for (const entry of readdirSync(invalidDir)) {
+    if (!entry.endsWith('.json') || entry.includes('.known-ids.')) continue
+    const relKey = `${dir}/invalid/${entry}`
+    const file = path.join(invalidDir, entry)
+    if (SEMANTIC_ONLY.has(relKey)) {
+      semanticOnlySeen.add(relKey)
+      continue
+    }
+    const instance = JSON.parse(readFileSync(file, 'utf8'))
+    const errors = engine.validate(instance, composed, '$result')
+    invalidChecked += 1
+    if (errors.length === 0) {
+      console.error(
+        `FAIL: invalid fixture accepted by result.schema.json alone, expected a schema-level rejection: ${file}`
+      )
+      failures += 1
+    }
+  }
+}
+for (const key of SEMANTIC_ONLY) {
+  if (!semanticOnlySeen.has(key)) {
+    console.error(`FAIL: SEMANTIC_ONLY names a fixture that no longer exists: ${key}`)
+    failures += 1
+  }
+}
+if (failures === 0) {
+  console.log(
+    `PASS: result.schema.json accepts ${validChecked} valid role fixtures and rejects ${invalidChecked} schema-level invalid ones (${semanticOnlySeen.size} left to the validator script)`
+  )
+}
+
+// $defs.<role> must never drift from the standalone result.<role>.schema.json
+function stripDocMeta(doc) {
+  const { $schema, $id, title, $comment, ...rest } = doc
+  return rest
+}
+// The one necessary edit when nesting reviewer's own $defs.finding under
+// this file's $defs.reviewer: its internal #/$defs/finding reference
+// becomes #/$defs/reviewer/$defs/finding so it still resolves. Normalize
+// exactly that rewrite back before comparing — nothing else should differ.
+function normalizeReviewerRefs(fragment) {
+  return JSON.parse(JSON.stringify(fragment).replaceAll('#/$defs/reviewer/$defs/finding', '#/$defs/finding'))
+}
+
+for (const role of Object.keys(ROLE_DIRS)) {
+  const standalone = stripDocMeta(
+    JSON.parse(readFileSync(path.join(schemasDir, `result.${role}.schema.json`), 'utf8'))
+  )
+  let composedDef = composed.$defs[role]
+  if (role === 'reviewer') composedDef = normalizeReviewerRefs(composedDef)
+  if (canonicalJson(standalone) !== canonicalJson(composedDef)) {
+    console.error(
+      `FAIL: result.schema.json's \$defs.${role} has drifted from result.${role}.schema.json (compared minus $schema/$id/title/$comment)`
+    )
+    failures += 1
+  } else {
+    console.log(`PASS: result.schema.json's \$defs.${role} matches result.${role}.schema.json`)
+  }
+}
+
+process.exit(failures === 0 ? 0 : 1)
+NODE
+
 # --- Engine-level keyword tests (scripts/lib/json-schema-subset.mjs) -------
 # minimum/maximum and if/then/else were added to the shared subset engine
 # for this schema family (agent-registry.schema.json never needed them).
@@ -240,6 +384,37 @@ function expect(description, condition) {
   expect(
     'nested if/then: a null child is untouched by a condition scoped to it',
     engine.validate({ cycle: null }, schema, '$x').length === 0
+  )
+}
+
+// allOf — unconditional composition (result.schema.json's role dispatch:
+// one {if, then} member per role, ALL of them always evaluated against the
+// whole instance).
+{
+  const schema = {
+    type: 'object',
+    properties: { role: { enum: ['a', 'b'] } },
+    allOf: [
+      { if: { properties: { role: { const: 'a' } }, required: ['role'] }, then: { required: ['x'] } },
+      { if: { properties: { role: { const: 'b' } }, required: ['role'] }, then: { required: ['y'] } }
+    ]
+  }
+  const engine = createSchemaValidator(schema)
+  expect(
+    'allOf: the matching member\'s then-branch fires',
+    engine.validate({ role: 'a' }, schema, '$x').some((e) => e.includes('missing required property x'))
+  )
+  expect(
+    'allOf: a non-matching member\'s then-branch never fires',
+    !engine.validate({ role: 'a', x: 1 }, schema, '$x').some((e) => e.includes('missing required property y'))
+  )
+  expect(
+    'allOf: every member is evaluated (not just the first)',
+    engine.validate({ role: 'b' }, schema, '$x').some((e) => e.includes('missing required property y'))
+  )
+  expect(
+    'allOf: satisfying every member\'s requirement produces no false positive',
+    engine.validate({ role: 'a', x: 1 }, schema, '$x').length === 0
   )
 }
 
@@ -504,6 +679,57 @@ case "$out" in
 *) fail "a malformed --adjudication file failed for the wrong reason: $out" ;;
 esac
 echo "PASS: a malformed --adjudication file fails immediately, naming the file"
+
+# --integration-cap: only meaningful combined with a clean verdict whose
+# codex_cycle is null — context-only, so both sides reuse an existing
+# fixture with the flag rather than needing new committed files.
+run_context_case \
+    "a positive --integration-cap rejects a clean verdict with codex_cycle null" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/valid/codex-cycle-null.json" \
+    "must not be null when verdict is clean and the integration cap is 4" \
+    --integration-cap 4
+
+accept_context_case \
+    "--integration-cap 0 still permits codex_cycle null on a clean verdict" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/valid/codex-cycle-null.json" \
+    --integration-cap 0
+
+usage_error_case \
+    "a non-numeric --integration-cap is a usage error" \
+    integrator "$fixtures_dir/result.integrator.schema/valid/codex-cycle-null.json" --integration-cap not-a-number
+
+# The validator must find its own schemas by its OWN location, not the
+# caller's cwd — run each of these from $test_tmp, a directory with no
+# ai/schemas of its own, using absolute paths for the validator and fixture.
+if ! out="$(cd "$test_tmp" && node "$repo/$validator" implementer \
+    "$repo/$fixtures_dir/result.implementer.schema/valid/completed.json" \
+    --run-id "run-0397-omator" --initiated-by human 2>&1)"; then
+    fail "default schemas dir from a different cwd: expected acceptance, got -> $out"
+fi
+echo "PASS: the validator resolves its schemas script-relatively, independent of the caller's cwd"
+
+if ! out="$(cd "$test_tmp" && RESULT_SCHEMAS_DIR="$repo/$schemas_dir" node "$repo/$validator" implementer \
+    "$repo/$fixtures_dir/result.implementer.schema/valid/completed.json" \
+    --run-id "run-0397-omator" --initiated-by human 2>&1)"; then
+    fail "RESULT_SCHEMAS_DIR override: expected acceptance, got -> $out"
+fi
+echo "PASS: RESULT_SCHEMAS_DIR overrides the default schemas directory"
+
+if ! out="$(cd "$test_tmp" && node "$repo/$validator" implementer \
+    "$repo/$fixtures_dir/result.implementer.schema/valid/completed.json" \
+    --run-id "run-0397-omator" --initiated-by human --schemas-dir "$repo/$schemas_dir" 2>&1)"; then
+    fail "--schemas-dir override: expected acceptance, got -> $out"
+fi
+echo "PASS: --schemas-dir overrides the default schemas directory"
+
+if ! out="$(cd "$test_tmp" && RESULT_SCHEMAS_DIR="/nonexistent-dir-xyz" node "$repo/$validator" implementer \
+    "$repo/$fixtures_dir/result.implementer.schema/valid/completed.json" \
+    --schemas-dir "$repo/$schemas_dir" 2>&1)"; then
+    fail "--schemas-dir should win over a conflicting RESULT_SCHEMAS_DIR: got -> $out"
+fi
+echo "PASS: --schemas-dir wins over a conflicting RESULT_SCHEMAS_DIR"
 
 # --- Coverage: every required field and every enum has an invalid fixture --
 # Walks each schema file's own required[]/enum[] declarations (following

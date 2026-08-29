@@ -4,10 +4,24 @@
   "status": "completed",
   "head": "2100d78161edec62be10fe9e6f1230e4e48998b2",
   "produced_at": "2026-08-29T18:00:00Z",
-  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
-  "run": { "run_id": "run-4032-bad-exit-code-enum", "initiated_by": "human" },
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4032-bad-exit-code-enum",
+    "initiated_by": "human"
+  },
   "payload": {
-    "checks": [{ "name": "ci/build", "bucket": "pass", "run_id": "1025" }],
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1025",
+        "required": true
+      }
+    ],
     "codex_cycle": {
       "head": "2100d78161edec62be10fe9e6f1230e4e48998b2",
       "attempt": 1,

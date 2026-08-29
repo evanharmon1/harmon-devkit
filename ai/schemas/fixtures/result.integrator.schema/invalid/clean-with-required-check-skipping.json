@@ -2,7 +2,7 @@
   "schema": 2,
   "role": "integrator",
   "status": "completed",
-  "head": "c09e9a7f2ef1e4126c5d867bf8be1a3b04ff8d88",
+  "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
   "produced_at": "2026-08-29T18:00:00Z",
   "producer": {
     "harness": "claude-code",
@@ -10,25 +10,18 @@
     "tier": "standard"
   },
   "run": {
-    "run_id": "run-4039-unanswered-thread-roots-wrong-type",
+    "run_id": "run-4033-clean-with-required-check-skipping",
     "initiated_by": "human"
   },
   "payload": {
     "checks": [
-      {
-        "name": "ci/build",
-        "bucket": "pass",
-        "run_id": "1032",
-        "required": true
-      }
+      { "name": "ci/build", "bucket": "skipping", "run_id": "1001", "required": true }
     ],
     "codex_cycle": null,
     "findings": [],
-    "unanswered_thread_roots": [
-      12345,
-      67890
-    ],
+    "unanswered_thread_roots": [],
     "settled_at": "2026-08-29T18:00:00Z",
-    "verdict": "findings"
+    "verdict": "clean",
+    "applied_dispositions": []
   }
 }

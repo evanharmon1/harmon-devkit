@@ -318,6 +318,7 @@ tasks:
       - test:independence
       - test:confirm-answers
       - test:migrate-label-family
+      - test:result-schemas
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants

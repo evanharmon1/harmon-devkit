@@ -54,6 +54,21 @@
 //                                 finding_id must be adjudicated exactly
 //                                 once across the supplied documents, with
 //                                 disposition `defer`.
+//   --integration-cap <n>        (integrator only) the resolved [caps].
+//                                 integration value: when positive, a clean
+//                                 verdict with codex_cycle: null is rejected
+//                                 (a positive cap means a Codex cycle is
+//                                 owed); 0 leaves codex_cycle: null exactly
+//                                 as permitted without this flag. Without
+//                                 --integration-cap, unchanged.
+//   --schemas-dir <dir>          Directory holding the *.schema.json family.
+//                                 Overrides RESULT_SCHEMAS_DIR, which
+//                                 overrides the default of `ai/schemas`
+//                                 resolved relative to THIS SCRIPT's own
+//                                 location (not the current working
+//                                 directory) — so the validator finds its
+//                                 schemas the same way regardless of the
+//                                 caller's cwd.
 //
 // Exit 0 and a one-line summary when the fixture is valid; exit 1 and every
 // violation (one per line) otherwise. A usage error (bad kind, missing
@@ -61,9 +76,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 import { createSchemaValidator } from './lib/json-schema-subset.mjs'
 
-const SCHEMAS_DIR = path.resolve('ai/schemas')
+const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'ai', 'schemas')
 const KINDS = ['envelope', 'implementer', 'reviewer', 'integrator', 'adjudication', 'run']
 const FINDING_ID = /^(challenge|review)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
 const SHA_PATTERN = /^[0-9a-f]{40}$/
@@ -73,9 +89,34 @@ function usage() {
   console.error(
     'usage: validate-result-schemas.mjs <envelope|implementer|reviewer|integrator|adjudication|run> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
-      '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...]'
+      '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
+      '[--integration-cap <n>] [--schemas-dir <dir>]'
   )
 }
+
+// resolveSchemasDir ARGV — a --schemas-dir flag can appear anywhere in argv
+// (parseArgs below processes flags in a single left-to-right pass, but
+// --pass/--adjudication resolve and validate their context files, which need
+// SCHEMAS_DIR, DURING that same pass — so the directory must be known before
+// parseArgs starts, not discovered mid-parse). Scanned independently of
+// position for that reason; precedence is flag > RESULT_SCHEMAS_DIR env > the
+// script-relative default.
+function resolveSchemasDir(argv) {
+  const flagIndex = argv.indexOf('--schemas-dir')
+  if (flagIndex !== -1) {
+    const dir = argv[flagIndex + 1]
+    if (!dir) {
+      console.error('validate-result-schemas: --schemas-dir requires a directory argument')
+      usage()
+      process.exit(2)
+    }
+    return path.resolve(dir)
+  }
+  if (process.env.RESULT_SCHEMAS_DIR) return path.resolve(process.env.RESULT_SCHEMAS_DIR)
+  return DEFAULT_SCHEMAS_DIR
+}
+
+const SCHEMAS_DIR = resolveSchemasDir(process.argv.slice(2))
 
 function loadJson(file) {
   try {
@@ -130,7 +171,8 @@ function parseArgs(argv) {
     initiatedBy: null,
     passes: [],
     knownAdjudicated: null,
-    adjudications: []
+    adjudications: [],
+    integrationCap: null
   }
   for (let i = 0; i < rest.length; i += 1) {
     switch (rest[i]) {
@@ -168,6 +210,17 @@ function parseArgs(argv) {
       case '--known-adjudicated':
         options.knownAdjudicated = loadIdArray(rest[(i += 1)], '--known-adjudicated')
         break
+      case '--integration-cap': {
+        const raw = rest[(i += 1)]
+        const cap = Number(raw)
+        if (!Number.isInteger(cap) || cap < 0) {
+          console.error(`validate-result-schemas: --integration-cap must be a non-negative integer, got ${JSON.stringify(raw)}`)
+          usage()
+          process.exit(2)
+        }
+        options.integrationCap = cap
+        break
+      }
       case '--adjudication': {
         const adjudicationFile = rest[(i += 1)]
         const data = loadAndValidateContext(adjudicationFile, '--adjudication', (candidate) =>
@@ -176,6 +229,12 @@ function parseArgs(argv) {
         options.adjudications.push({ file: adjudicationFile, data })
         break
       }
+      case '--schemas-dir':
+        // Already resolved into SCHEMAS_DIR by resolveSchemasDir() before
+        // parsing began; consume its value here so it isn't mistaken for an
+        // unknown option.
+        i += 1
+        break
       default:
         console.error(`validate-result-schemas: unknown option ${rest[i]}`)
         usage()
@@ -246,6 +305,28 @@ function checkActiveRun(envelope, options, errors) {
         options.initiatedBy
       )}}`
     )
+  }
+}
+
+// checkReviewerBlockedStatus — a blocked finder contributes no findings at
+// all (spec § Configuration: the orchestrator retries it once), so
+// envelope status: blocked means findings must be empty and every count
+// zero — the same "blocked reviewer still validates against the same
+// shape, just empty" design the schema and README already describe, made
+// explicit as a receipt check. Cross-field (envelope status vs payload
+// content), always runs for role reviewer.
+function checkReviewerBlockedStatus(envelope, errors) {
+  if (envelope.status !== 'blocked') return
+  const { payload } = envelope
+  if (Array.isArray(payload.findings) && payload.findings.length > 0) {
+    errors.push('$result.payload.findings: must be empty when the envelope status is blocked')
+  }
+  if (payload.counts && typeof payload.counts === 'object') {
+    for (const priority of ['P0', 'P1', 'P2', 'P3']) {
+      if (payload.counts[priority] !== 0) {
+        errors.push(`$result.payload.counts.${priority}: must be 0 when the envelope status is blocked`)
+      }
+    }
   }
 }
 
@@ -357,6 +438,22 @@ function checkCodexCycleAcceptedScope(payload, errors) {
   }
 }
 
+// checkIntegrationCap — optional (--integration-cap <n>): when the
+// resolved integration cap is positive, a Codex cycle is required (spec
+// § Configuration: only "integration = 0 means no Codex cycle required"),
+// so a clean verdict with codex_cycle: null is inconsistent with that
+// policy — clean cannot rest on a cycle that was never even attempted
+// when one was owed. Cap 0 leaves codex_cycle: null exactly as permitted
+// without this flag at all; without the flag, this check does not run.
+function checkIntegrationCap(payload, cap, errors) {
+  if (cap === null || cap <= 0) return
+  if (payload.verdict === 'clean' && payload.codex_cycle === null) {
+    errors.push(
+      `$result.payload.codex_cycle: must not be null when verdict is clean and the integration cap is ${cap} (a positive cap requires a Codex cycle)`
+    )
+  }
+}
+
 // checkAppliedDispositionsUnique — applied_dispositions[].finding_id must
 // be unique. Always runs for role integrator, independent of `verdict`:
 // this is a structural defect in the array itself, not a clean-verdict
@@ -390,7 +487,13 @@ function checkIntegratorCleanVerdict(payload, errors) {
     errors.push('$result.payload.checks: must be non-empty when verdict is clean — an empty check list is indeterminate, not a pass')
   }
   for (const check of payload.checks ?? []) {
-    if (check.bucket !== 'pass' && check.bucket !== 'skipping') {
+    if (check.required === true) {
+      if (check.bucket !== 'pass') {
+        errors.push(
+          `$result.payload.checks: ${check.name} is required but has bucket ${JSON.stringify(check.bucket)}, incompatible with verdict clean`
+        )
+      }
+    } else if (check.bucket !== 'pass' && check.bucket !== 'skipping') {
       errors.push(
         `$result.payload.checks: ${check.name} has bucket ${JSON.stringify(check.bucket)}, incompatible with verdict clean`
       )
@@ -449,12 +552,16 @@ function validateEnvelopeInstance(instance, kind, options) {
       if (errors.length === 0) {
         checkActiveRun(instance, options, errors)
         if (role === 'implementer') checkImplementerStatus(instance, errors)
-        if (role === 'reviewer') checkFindingIds(instance, options, errors)
+        if (role === 'reviewer') {
+          checkReviewerBlockedStatus(instance, errors)
+          checkFindingIds(instance, options, errors)
+        }
         if (role === 'integrator') {
           checkIntegratorBlockedStatus(instance, errors)
           checkCodexCycleAcceptedScope(instance.payload, errors)
           checkAppliedDispositionsUnique(instance.payload, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
+          checkIntegrationCap(instance.payload, options.integrationCap, errors)
         }
         checkHeadAgreement(role, instance, errors)
       }

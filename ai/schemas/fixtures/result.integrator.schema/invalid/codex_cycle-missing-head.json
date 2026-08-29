@@ -4,10 +4,24 @@
   "status": "completed",
   "head": "09c807aa91b13a154a8b2a42c82788d263ba4a53",
   "produced_at": "2026-08-29T18:00:00Z",
-  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
-  "run": { "run_id": "run-4019-codex-cycle-missing-head", "initiated_by": "human" },
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4019-codex-cycle-missing-head",
+    "initiated_by": "human"
+  },
   "payload": {
-    "checks": [{ "name": "ci/build", "bucket": "pass", "run_id": "1012" }],
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1012",
+        "required": true
+      }
+    ],
     "codex_cycle": {
       "attempt": 1,
       "trigger_comment_id": "555000333",

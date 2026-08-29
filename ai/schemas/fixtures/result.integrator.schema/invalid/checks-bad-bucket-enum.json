@@ -4,10 +4,24 @@
   "status": "completed",
   "head": "dd49173d0aeb74c38b1f9698339b61aa0c18118e",
   "produced_at": "2026-08-29T18:00:00Z",
-  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
-  "run": { "run_id": "run-4031-checks-bad-bucket-enum", "initiated_by": "human" },
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4031-checks-bad-bucket-enum",
+    "initiated_by": "human"
+  },
   "payload": {
-    "checks": [{ "name": "ci/build", "bucket": "success", "run_id": "1024" }],
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "success",
+        "run_id": "1024",
+        "required": true
+      }
+    ],
     "codex_cycle": null,
     "findings": [],
     "unanswered_thread_roots": [],

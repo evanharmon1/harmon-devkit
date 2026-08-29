@@ -4,10 +4,24 @@
   "status": "completed",
   "head": "074dd1361f8a1e0701e003b785024e7b645428d1",
   "produced_at": "2026-08-29T18:00:00Z",
-  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
-  "run": { "run_id": "run-4011-missing-codex-cycle", "initiated_by": "human" },
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4011-missing-codex-cycle",
+    "initiated_by": "human"
+  },
   "payload": {
-    "checks": [{ "name": "ci/build", "bucket": "pass", "run_id": "1005" }],
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1005",
+        "required": true
+      }
+    ],
     "findings": [],
     "unanswered_thread_roots": [],
     "settled_at": "2026-08-29T18:00:00Z",

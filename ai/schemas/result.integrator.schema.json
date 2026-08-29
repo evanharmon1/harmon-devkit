@@ -27,7 +27,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "bucket", "run_id"],
+        "required": ["name", "bucket", "run_id", "required"],
         "properties": {
           "name": { "type": "string", "minLength": 1 },
           "bucket": {
@@ -38,6 +38,10 @@
             "description": "The CI run identifier backing this check, as a string (GitHub ids are strings throughout this schema family except run.schema.json's author_actor_id — see ai/schemas/README.md).",
             "type": "string",
             "minLength": 1
+          },
+          "required": {
+            "description": "Whether this is a required check (gh pr checks --required). A clean verdict demands bucket pass specifically from every required check; a non-required check may additionally be skipping (see checkIntegratorCleanVerdict) — an advisory check that never ran is not what blocks a clean read.",
+            "type": "boolean"
           }
         }
       }

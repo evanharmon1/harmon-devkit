@@ -15,7 +15,12 @@
   },
   "payload": {
     "checks": [
-      { "name": "ci/build", "bucket": "pass", "run_id": "1004" }
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1004",
+        "required": true
+      }
     ],
     "codex_cycle": {
       "head": "5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a",

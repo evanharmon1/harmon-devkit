@@ -23,6 +23,7 @@ files).
 - **Harness compatibility.** The example preserves the historical Claude-first destination so updating consumers do not strand their old managed tree. Codex and other harnesses can expose those same files through `.agents/skills`; harmon-init maintains migration-safe per-skill links automatically. Do not vendor two copies, because duplicated skill trees drift independently.
 - **Provenance.** Every synced destination gets a `.SKILLS_PROVENANCE` stamp recording the source, ref, resolved commit SHA, and the `# managed:` list of vendored dirs, with a do-not-edit marker for the managed skills.
 - **Agents ride along, optionally.** An `agents:` block vendors shared subagents (single `<name>.md` files) into their own dest, at the **same pinned ref**, in the same `task sync:skills` run. Omit the block and nothing about the sync changes.
+- **Schemas ride along too, optionally.** A `schemas:` block vendors shared JSON schemas (single `<name>.schema.json` files) into their own dest, at the **same pinned ref**, in the same `task sync:skills` run. Omit the block and nothing about the sync changes.
 
 ## Agents
 
@@ -57,6 +58,28 @@ Three things are specific to agents:
 Delete the `agents:` block and re-run `task sync:skills`. The vendored agents and their stamp are removed; your local agents in the same directory are not. Until you run that sync, `verify` reports the leftovers rather than ignoring them.
 
 That works because the skills stamp records `# agents-dest:`. It has to: `agents.dest` lives _inside_ the block you just deleted, so without the breadcrumb nothing would know where the agents had been put — they would sit there indefinitely, still stamped do-not-edit, pinned to a ref nothing will bump, invisible to both drift checks.
+
+## Schemas
+
+Shared JSON schemas live in harmon-devkit under `ai/schemas/<name>.schema.json` — flat, no categories. Add a `schemas:` block to request them:
+
+```yaml
+schemas:
+  names: ["*"] # or an explicit list of schema basenames (no .schema.json)
+  dest: .claude/schemas # must differ from the skills/agents dest
+```
+
+Everything the skills pass guarantees, the schemas pass guarantees too: pinned ref, flattened dest shared with your local schemas, a `.SCHEMAS_PROVENANCE` stamp whose `# managed:` line is the only thing the sync will replace or delete, a collision that fails **before** any deletion, and both drift checks (`verify` and `verify:skills:offline`).
+
+Three things are specific to schemas:
+
+- **One ref for all three.** Schemas, agents, and skills are pinned by the same `source.ref`. A result is only valid against the schema version a vendored skill or agent at that pin actually targets, so letting schemas drift to a different pin could leave a vendored skill emitting a shape its own vendored schema no longer describes.
+- **`names`, not categories.** Schemas are few and flat, so a consumer names them — or asks for all of them with `["*"]`. Mixing `"*"` with explicit names is a manifest error, not a union.
+- **Separate dest, always.** `schemas.dest` must differ from `dest` and from `agents.dest`. Each pass owns its own managed set; the sync refuses an overlapping arrangement instead of reasoning about another pass's deletions.
+
+### Stopping
+
+Delete the `schemas:` block and re-run `task sync:skills`. The vendored schemas and their stamp are removed; your local schemas in the same directory are not. Until you run that sync, `verify` reports the leftovers rather than ignoring them — the skills stamp records `# schemas-dest:` for the same breadcrumb reason the agents dest is recorded.
 
 ## What's in this bundle
 
@@ -106,12 +129,14 @@ That works because the skills stamp records `# agents-dest:`. It has to: `agents
    task sync:skills
    git add .skills-sync.yaml .claude/skills scripts/sync-skills.sh
    git add .claude/agents # only if your manifest has an `agents:` block
+   git add .claude/schemas # only if your manifest has a `schemas:` block
    git commit -m "chore: vendor shared agent skills from harmon-devkit"
    ```
 
-   Stage the agents dest too, or the committed manifest requests agents that no
-   commit contains — and the drift check fails on the next clone or CI run,
-   correctly, for a reason that looks nothing like "you forgot to `git add`".
+   Stage the agents/schemas dest too, or the committed manifest requests assets
+   that no commit contains — and the drift check fails on the next clone or CI
+   run, correctly, for a reason that looks nothing like "you forgot to
+   `git add`".
 
    Expose the same tree to Codex and other portable harnesses. The first branch
    handles a repo without `.agents/skills`; the second preserves an existing
@@ -204,18 +229,20 @@ pre-push:
 
 `verify:skills:offline` fails fast if the manifest ref and the vendored provenance disagree (i.e. you bumped the ref but forgot to re-sync). Renovate can automate the ref bump, but it cannot run the re-sync half — never merge a ref bump without the accompanying `task sync:skills` result.
 
-## Adding a new skill or agent
+## Adding a new skill, agent, or schema
 
-Both are authored in harmon-devkit, not here. See
+All three are authored in harmon-devkit, not here. See
 [`ai/skills/README.md`](../../ai/skills/README.md) for the skill layout and the
-unique-name-across-categories rule, and
+unique-name-across-categories rule,
 [`ai/agents/README.md`](../../ai/agents/README.md) for the agent layout and the
-portability contract. After it ships in a harmon-devkit release, bump your `ref`
-and re-sync.
+portability contract, and [`ai/schemas/README.md`](../../ai/schemas/README.md)
+for the schema family. After it ships in a harmon-devkit release, bump your
+`ref` and re-sync.
 
 A new **skill** arrives automatically if it lands in a category you already
-request. A new **agent** does not: `names` is an explicit list, so add it there
-first — unless you use `["*"]`, which picks up every agent at the new pin.
+request. A new **agent** or **schema** does not: `names` is an explicit list
+for each, so add it there first — unless you use `["*"]`, which picks up every
+agent or schema at the new pin.
 
 ## Auth
 

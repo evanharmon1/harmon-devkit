@@ -15,8 +15,24 @@
   },
   "payload": {
     "checks": [
-      { "name": "ci/build", "bucket": "pass", "run_id": "1001" },
-      { "name": "ci/test", "bucket": "pass", "run_id": "1002" }
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1001",
+        "required": true
+      },
+      {
+        "name": "ci/test",
+        "bucket": "pass",
+        "run_id": "1002",
+        "required": true
+      },
+      {
+        "name": "ci/optional-lint",
+        "bucket": "skipping",
+        "run_id": "1006",
+        "required": false
+      }
     ],
     "codex_cycle": {
       "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",

@@ -4,10 +4,24 @@
   "status": "completed",
   "head": "a43f9ca453f29a6b46c36dbec155a992c2085ffb",
   "produced_at": "2026-08-29T18:00:00Z",
-  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
-  "run": { "run_id": "run-4013-missing-unanswered-thread-roots", "initiated_by": "human" },
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4013-missing-unanswered-thread-roots",
+    "initiated_by": "human"
+  },
   "payload": {
-    "checks": [{ "name": "ci/build", "bucket": "pass", "run_id": "1007" }],
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1007",
+        "required": true
+      }
+    ],
     "codex_cycle": null,
     "findings": [],
     "settled_at": "2026-08-29T18:00:00Z",

@@ -15,7 +15,12 @@
   },
   "payload": {
     "checks": [
-      { "name": "ci/build", "bucket": "pass", "run_id": "1001" }
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1001",
+        "required": true
+      }
     ],
     "codex_cycle": {
       "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
@@ -29,7 +34,9 @@
       }
     },
     "findings": [],
-    "unanswered_thread_roots": ["review-1234567"],
+    "unanswered_thread_roots": [
+      "review-1234567"
+    ],
     "settled_at": "2026-08-29T18:00:00Z",
     "verdict": "clean",
     "applied_dispositions": []

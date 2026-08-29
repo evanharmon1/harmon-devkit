@@ -24,6 +24,12 @@
 //     `status`) are deliberately NOT expressed this way — see
 //     ai/schemas/README.md's "Composition" section for why those are
 //     receipt-validation semantic checks instead.
+//   - allOf — unconditional composition (every member schema applies to the
+//     whole instance, errors accumulate from all of them). Added for
+//     result.schema.json's role dispatch: one `{if, then}` pair per role,
+//     each `then` pointing `payload` at that role's `$defs` entry via
+//     `$ref`, so a native JSON-Schema validator (no separate dispatch
+//     script) can validate a full envelope+payload in one document.
 export const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   '$schema',
   '$id',
@@ -48,7 +54,8 @@ export const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   'maximum',
   'if',
   'then',
-  'else'
+  'else',
+  'allOf'
 ])
 
 export const SUPPORTED_INSTANCE_TYPES = new Set([
@@ -204,6 +211,9 @@ function assertSchemaKeywordValues(rule, location) {
   ) {
     schemaError(location, 'additionalProperties', 'must be a boolean')
   }
+  if (Object.hasOwn(rule, 'allOf') && (!Array.isArray(rule.allOf) || rule.allOf.length === 0)) {
+    schemaError(location, 'allOf', 'must be a non-empty array')
+  }
 }
 
 // createSchemaValidator ROOT — a validator bound to ROOT for `$ref`
@@ -268,6 +278,9 @@ export function createSchemaValidator(rootSchema) {
       if (Object.hasOwn(rule, keyword)) {
         assertSupportedSchema(rule[keyword], `${location}.${keyword}`, audit)
       }
+    }
+    for (const [index, child] of (rule.allOf ?? []).entries()) {
+      assertSupportedSchema(child, `${location}.allOf[${index}]`, audit)
     }
     audit.active.delete(rule)
     audit.complete.add(rule)
@@ -367,6 +380,14 @@ export function createSchemaValidator(rootSchema) {
       } else if (Object.hasOwn(rule, 'else')) {
         validateInto(value, rule.else, location, errors)
       }
+    }
+
+    // allOf: unconditional — every member applies to the whole instance at
+    // the SAME location, and every member's errors accumulate directly
+    // (unlike if/then, there is no trial: allOf has no condition to decide
+    // between branches, each member simply always applies).
+    for (const child of rule.allOf ?? []) {
+      validateInto(value, child, location, errors)
     }
   }
 
