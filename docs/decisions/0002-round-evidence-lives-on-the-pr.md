@@ -57,7 +57,7 @@ Nothing is deleted at PR open.
 - Anyone can post fenced JSON on a public PR, and an author can edit or delete
   a comment. The run record therefore stores each evidence comment's id,
   author, and payload digest, and the harvester accepts only comments it
-  names, from the orchestrator's login or the repo's trusted actors, whose
+  names, whose author's immutable actor ID is the orchestrator's or a trusted actor's, and whose
   body still matches the digest — anything else is reported as tampered.
 - "One comment per stage" is the normal case, not a limit: when a stage's
   rounds exceed GitHub's ~65 KB comment size, the comment is continued in

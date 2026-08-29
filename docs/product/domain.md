@@ -14,7 +14,8 @@ The core entities/nouns and what each means.
 | issue | The unit of work and of the success metric. Has one or more runs. |
 | run | One execution of the dev flow for an issue, from kickoff until ready-for-review or until it ends earlier (capped, abandoned, escalated); identified by `run_id`; owns a run record, stage transitions, and interventions. |
 | stage | A named phase of the lifecycle below. A confidence stage owns rounds. |
-| round | One reviewer pass in one confidence stage at one reviewed head; produces findings. |
+| pass | One finder's `result.reviewer` at one reviewed head in one confidence stage. |
+| round | The aggregate of one pass per configured finder at one reviewed head — one pass when one finder is configured; the unit caps and `min_rounds` count. Produces findings. |
 | finding | One reviewer observation, immutable, uniquely identified within the run. |
 | adjudication | The orchestrator's verdict on one finding: adjudicated priority and disposition. Exactly one per finding. |
 | exit | The computed outcome of a confidence stage at a point in time, from its adjudicated rounds. |
@@ -44,8 +45,10 @@ The states a key entity moves through, and what triggers each transition.
 
 The stages a change moves through from an issue to a merged, released change.
 Optional stages are marked; the rest run on every change. Stage names are the
-canonical vocabulary — skills, agents, config keys, and round records use the
-stage name, never a synonym (`gauntlet` is retired; see the glossary).
+canonical vocabulary — skills, config keys, and round records use the stage
+name, never a synonym (`gauntlet` is retired; see the glossary). **Agents are
+named for roles, not stages** (`implementer`, `reviewer`, `integrator`): one
+reviewer role serves both confidence stages.
 
 | # | Stage | What happens | Optional |
 |---|---|---|---|
@@ -77,6 +80,7 @@ stateDiagram-v2
     implement --> verify
     verify --> challenge : first pass, or fix from challenge
     verify --> review : fix from review
+    verify --> security : fix from a failed security scan
     challenge --> implement : continue, or diverging with de-scaffolding
     challenge --> review : converged / capped-clean
     challenge --> escalate : capped with P0/P1, or diverging refused
@@ -92,6 +96,7 @@ stateDiagram-v2
     integration --> merge : ready-for-review, human decision
     merge --> deployment
     merge --> release
+    deployment --> release : later rolling release PR
     deployment --> smoke
     deployment --> retro : smoke skipped
     deployment --> wrap : smoke and retro skipped

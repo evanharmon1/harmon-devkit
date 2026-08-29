@@ -55,8 +55,12 @@ where the stats script looks. The metric is reported over a **closed
 cohort**: issues kicked off inside the reporting window whose runs are all
 terminal, plus non-terminal runs with no run-record update for
 `[convergence].stale_after` (shipped default 7 days), which the script
-**terminalizes as abandoned** — so the reported share is reproducible
-for a given window and does not change with the hour it is queried.
+**terminalizes as abandoned**. Membership is frozen by an **observation
+cutoff** (`--as-of`, default: now): an issue belongs to the cohort by its
+first kickoff inside the window, and it is scored on the runs that existed
+at the cutoff — a run started after the cutoff neither removes the issue nor
+changes its score — so the same window and cutoff always report the same
+share.
 "Reached ready-for-review" means the run record carries the orchestrator's
 own promotion entry — the readiness-gate pass fingerprint and the
 `gh pr ready` it issued. A ready transition on the PR **without** that entry
@@ -148,7 +152,9 @@ authorization boundary only where something enforces it: the agent file's
 tool allowlist (`allowed-tools` frontmatter) denies everything not listed,
 and every permitted external write goes through a broker script that
 validates its one action (`push-round.sh` for the round push; a thread-reply
-helper that posts exactly the text it is given). The `reviewer` and
+helper that posts exactly the text it is given; the Codex-cycle helper's
+reserve → post → attach sequence for the `@codex review` trigger, which is
+the integrator's one authorized comment). The `reviewer` and
 `integrator` roles **must not run with ambient write credentials**: a
 harness that cannot restrict a subagent's tools (a plain subagent inheriting
 the orchestrator's shell and `gh` token) may not dispatch those roles, and
@@ -292,10 +298,10 @@ adjudicated rounds and `[convergence]`:
 
 | Outcome | Meaning | Orchestrator may |
 |---|---|---|
-| `continue` | no exit predicate satisfied; cap not reached | dispatch the next fix round |
+| `continue` | no exit predicate satisfied; cap not reached | dispatch the next round — a fix round when any disposition changes code, otherwise another reviewer pass on the unchanged head (a clean round under `min_rounds` changes nothing to fix) |
 | `converged` | **zero adjudicated P0/P1 of any class** (a universal precondition, not a predicate), an exit predicate satisfied, and `min_rounds` met | advance; or override **upward** (one more round) with a recorded reason |
 | `diverging` | adjudicated P0/P1 findings are feeding on earlier rounds' fixes, and the cap is not reached | dispatch a fix round **only** with a `delete` or `restructure` disposition on the `round:N` findings; otherwise the run stops with a blocker |
-| `capped` | cap reached | advance if zero adjudicated P0/P1 remain (**capped-clean**); otherwise **escalate to a human** — no PR is opened, and no further round is dispatched whatever else holds |
+| `capped` | cap reached | advance if zero adjudicated P0/P1 remain **and the final round reviewed the current head** (**capped-clean**); otherwise **escalate to a human** — no PR is opened, and no further round is dispatched whatever else holds. A P2 found by the final round is therefore `defer`red to integration rather than fixed pre-PR, since no round remains to review the fix |
 
 **Precedence is normative**: the script evaluates `capped`, then
 `diverging`, then `converged`, then `continue`, and returns the first that
@@ -391,14 +397,20 @@ The v2 shape, on top of the shipped migrated file:
   checks. **A `challenge` or `review` cap of 0 disables that confidence
   stage**: no round runs and the stage advances with exit `capped`, reason
   `disabled` — the one case where capped-clean needs no current-head
-  round — exactly as the migrated policy already defines it. A `min_rounds`
-  above a cap of 0 is a config error. Zero means something different for
+  round — exactly as the migrated policy already defines it. The effective
+  `min_rounds` for a stage is `min(min_rounds, cap)`, so a mixed policy
+  (`challenge = 2`, `review = 0`, `min_rounds = 1`) is valid and the disabled
+  stage simply owes nothing. Zero means something different for
   the integration caps, defined next: `integration = 0` waives only the
   Codex cycle, and `remediation = 0` means the first finding that needs a
   fix push escalates.
 - The **integration cap bounds Codex re-review cycles only.** Answering every
   human and CI finding is unconditional; `integration = 0` means "no Codex
-  cycle required", never "abandon reviews". That is why a policy may lower it
+  cycle required" — and, exactly as AGENTS.md already states for a 0 cap, the
+  readiness gate's Codex-verdict condition **drops out** under it while every
+  other condition stays; this is the one readiness-gate condition v2 touches,
+  and only by inheriting the existing rule — never "abandon reviews". That is
+  why a policy may lower it
   (resolves [#624](https://github.com/evanharmon1/harmon-devkit/issues/624)).
   When the last permitted Codex cycle finds something that is then fixed,
   the fix push moves the head and the readiness gate would need a cycle the
@@ -432,7 +444,10 @@ The v2 shape, on top of the shipped migrated file:
   stage and integration. With more than one finder, a **logical round** is
   one result per configured finder at the same `reviewed_head`; it is
   complete only when every finder has returned, its findings are the union,
-  and caps and `min_rounds` count logical rounds. A finder that fails returns
+  and caps and `min_rounds` count logical rounds. Vocabulary: each finder's
+  `result.reviewer` is a **pass**; the **round** is the aggregate of the
+  passes at one head — one pass when one finder is configured. Payload
+  cardinality: a round has one or more passes, each naming its finder. A finder that fails returns
   `blocked`; the orchestrator retries that finder **once**, and a second
   failure ends the run with exit `capped`, reason `finder_unavailable`, and
   a blocker naming the finder — never a round silently one finder short, and
@@ -443,7 +458,10 @@ The v2 shape, on top of the shipped migrated file:
   resolution** — `default_rigor` and `default_strategy`, the rigor level's
   `caps` pointer and tier profile, `[caps]`, `[convergence]`, `[gates]`
   (`docs_only_paths` included), `[role]`, `[stage]`, `[tier]`, `[strategy]`,
-  `[budget]` — is resolved from the merge-base copy, exactly as
+  `[budget]` — is resolved from the merge-base copy; and the same rule
+  covers **`agent-registry.json`** whenever it is in the diff, since it
+  supplies the role write boundaries and the finders' trusted actor IDs a
+  branch could otherwise widen for itself — exactly as
   AGENTS.md already requires for caps, so a branch cannot lower the gate it
   is changing or classify its code as docs-only. An explicit human
   instruction still overrides.
@@ -456,7 +474,9 @@ The v2 shape, on top of the shipped migrated file:
 Round JSONs and the adjudication record live in the git directory while the
 branch is worked (the run record too, as a working copy of the issue
 comment that is its durable home), **keyed by `run_id`**
-(`$(git rev-parse --git-path dev-flow/runs/<run_id>/)`) with a
+(`$(git rev-parse --git-common-dir)/dev-flow/runs/<run_id>/` — the
+**common** directory, so every linked worktree sees the same runs and
+removing a worktree deletes nothing) with a
 `dev-flow/branches/<branch>` pointer naming the current run — worktree-safe,
 invisible to `git status`, and immune to a reused branch name or an abandoned
 run: a new run gets a new directory, and the exit script only ever reads the
@@ -489,8 +509,8 @@ Two rules make the posted evidence trustworthy on a public repository:
   **deterministic** marker — `run_id`, stage, sequence — computable from the
   run record alone, and is reserved in the run directory before the GitHub
   write. Any resume, on any machine, first looks the marker up on the PR or
-  issue and adopts the comment it finds **only if that comment's author is
-  the run's orchestrator login (or a trusted actor)** — an untrusted
+  issue and adopts the comment it finds **only if that comment's author's
+  immutable actor ID is the run's orchestrator (or a trusted actor)** — an untrusted
   comment carrying the marker is reported, ignored, and does not suppress the
   legitimate post; only a marker with no trusted comment is posted — the same reserve-first rule the Codex cycle already follows, and
   recoverable without the clone that made the reservation.
