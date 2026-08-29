@@ -1,0 +1,21 @@
+{
+  "schema": 2,
+  "run_id": "run-6002-marker-foreign-run",
+  "initiated_by": "human",
+  "started_at": "2026-08-20T09:00:00Z",
+  "stage_transitions": [],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [
+    {
+      "id": "2000000002",
+      "author_actor_id": 12345678,
+      "login": "evanharmon1",
+      "digest": "sha256:abcdef0123456789",
+      "marker": { "run_id": "run-9999-some-other-run", "stage": "challenge", "sequence": 1 }
+    }
+  ],
+  "settlements": [],
+  "promotion": null
+}

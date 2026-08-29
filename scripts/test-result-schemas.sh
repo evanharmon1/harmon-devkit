@@ -29,13 +29,14 @@ command -v node >/dev/null 2>&1 || fail "node is required to validate the result
 [ -f "$validator" ] || fail "missing required asset: $validator"
 
 # is_context_only_fixture PATH — true for a fixture the generic per-directory
-# loop below must not validate directly. Two kinds:
-#   - a *.known-ids.json sidecar: matches the invalid/*.json glob (it IS a
-#     .json file) but is never itself passed to the validator as a document
-#     to validate — only as the argument to another fixture's --known-ids.
+# loop below must not validate directly. Three kinds:
+#   - a *.known-ids.json / *.pass.json sidecar: matches the invalid/*.json
+#     glob (it IS a .json file) but is never itself passed to the validator
+#     as a document to validate — only as the argument to another fixture's
+#     --known-ids / --pass.
 #   - a fixture whose invalid-ness depends ENTIRELY on a run-context flag
-#     (--known-ids, --run-id/--initiated-by) the generic loop never passes.
-#     Both of these are, by construction, schema-valid and receipt-valid on
+#     (--known-ids, --run-id/--initiated-by, --pass) the generic loop never
+#     passes. By construction these are schema-valid and receipt-valid on
 #     their own — that is what makes the flagged case meaningful to test —
 #     so the generic loop's flagless invocation would otherwise accept them,
 #     contradicting "every invalid/*.json is rejected". They are exercised
@@ -43,9 +44,13 @@ command -v node >/dev/null 2>&1 || fail "node is required to validate the result
 #     the exact flag each one needs.
 is_context_only_fixture() {
     case "$1" in
-    *.known-ids.json) return 0 ;;
+    *.known-ids.json | *.pass.json) return 0 ;;
     */result.envelope.schema/invalid/run-mismatch.json) return 0 ;;
     */result.reviewer.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
+    */adjudication.schema/invalid/pass-cross-check-missing-entry.json) return 0 ;;
+    */adjudication.schema/invalid/pass-cross-check-extra-entry.json) return 0 ;;
+    */adjudication.schema/invalid/pass-cross-check-reviewer-priority-drift.json) return 0 ;;
+    */adjudication.schema/invalid/pass-cross-check-head-mismatch.json) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -188,6 +193,43 @@ function expect(description, condition) {
   )
 }
 
+// if / then nested at a non-root property (result.integrator.schema.json's
+// codex_cycle: exit_code 0/10 requires accepted) — proves the engine
+// evaluates if/then wherever it appears in the schema tree, not only when
+// the whole instance is the thing being conditioned.
+{
+  const schema = {
+    type: 'object',
+    properties: {
+      cycle: {
+        type: ['object', 'null'],
+        properties: { exit_code: { enum: [0, 10, 11] }, accepted: { type: 'object' } },
+        if: { properties: { exit_code: { enum: [0, 10] } }, required: ['exit_code'] },
+        then: { required: ['accepted'] }
+      }
+    }
+  }
+  const engine = createSchemaValidator(schema)
+  expect(
+    'nested if/then: fires for a matching child object',
+    engine
+      .validate({ cycle: { exit_code: 0 } }, schema, '$x')
+      .some((e) => e.includes('cycle') && e.includes('accepted'))
+  )
+  expect(
+    'nested if/then: satisfied requirement produces no false positive',
+    engine.validate({ cycle: { exit_code: 0, accepted: {} } }, schema, '$x').length === 0
+  )
+  expect(
+    'nested if/then: a non-matching exit_code never requires accepted',
+    engine.validate({ cycle: { exit_code: 11 } }, schema, '$x').length === 0
+  )
+  expect(
+    'nested if/then: a null child is untouched by a condition scoped to it',
+    engine.validate({ cycle: null }, schema, '$x').length === 0
+  )
+}
+
 process.exit(failures === 0 ? 0 : 1)
 NODE
 echo "PASS: engine-level minimum/maximum and if/then/else keyword tests"
@@ -228,6 +270,36 @@ run_context_case \
     "is not the active run" \
     --run-id "run-0001-active" --initiated-by human
 
+adjudication_pass_dir="$fixtures_dir/adjudication.schema/invalid"
+
+run_context_case \
+    "an adjudication missing an entry for a pass finding is rejected" \
+    adjudication \
+    "$adjudication_pass_dir/pass-cross-check-missing-entry.json" \
+    "has no adjudication entry" \
+    --pass "$adjudication_pass_dir/pass-cross-check.pass.json"
+
+run_context_case \
+    "an adjudication entry naming an id absent from the pass is rejected" \
+    adjudication \
+    "$adjudication_pass_dir/pass-cross-check-extra-entry.json" \
+    "names a finding id absent from --pass" \
+    --pass "$adjudication_pass_dir/pass-cross-check.pass.json"
+
+run_context_case \
+    "an adjudication entry's reviewer_priority drifting from the pass finding's priority is rejected" \
+    adjudication \
+    "$adjudication_pass_dir/pass-cross-check-reviewer-priority-drift.json" \
+    "does not match the pass finding's own priority" \
+    --pass "$adjudication_pass_dir/pass-cross-check.pass.json"
+
+run_context_case \
+    "an adjudication document naming a reviewed_head that disagrees with the pass is rejected" \
+    adjudication \
+    "$adjudication_pass_dir/pass-cross-check-head-mismatch.json" \
+    "does not match the pass payload's reviewed_head" \
+    --pass "$adjudication_pass_dir/pass-cross-check.pass.json"
+
 # Accepting cases for the same flags, so a false-positive rejection (the flag
 # firing when it should not) is caught too.
 accept_context_case() {
@@ -252,12 +324,28 @@ accept_context_case \
     "$fixtures_dir/result.reviewer.schema/valid/single-finding-null-line.json" \
     --known-ids "$fixtures_dir/result.reviewer.schema/invalid/duplicate-id-across-passes.known-ids.json"
 
+accept_context_case \
+    "a genuine adjudication of its own pass is accepted (omator-397 challenge round 1)" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" \
+    --pass "$fixtures_dir/result.reviewer.schema/valid/omator-397-challenge-r1.json"
+
 # --- Coverage: every required field and every enum has an invalid fixture --
 # Walks each schema file's own required[]/enum[] declarations (following
-# properties/items/$defs — the only containers this family's schemas use)
-# and cross-checks that the schema's invalid/*.reason corpus names each one,
-# so "mutation tests per required field and per enum" is verified rather
-# than merely hand-curated.
+# properties/items/$ref/$defs — the only containers this family's schemas
+# use) and cross-checks that the schema's invalid/*.reason corpus names each
+# one, so "mutation tests per required field and per enum" is verified
+# rather than merely hand-curated. Each requirement/enum is keyed by its
+# FULL schema path (e.g. "adjudications[].override.reason"), matching the
+# validator's own error-location format, not by its bare property name —
+# two different properties sharing a name at different paths in the same
+# schema (adjudication.schema.json has a bare `reason` on every entry AND
+# a nested `override.reason`) must not let one satisfy coverage for the
+# other. The path is turned into a regex ([] -> \[\d+\] for array items) and
+# matched against the actual "$loc: missing required property X" / "$loc:
+# must be one of" text the validator prints — i.e. this checks that the
+# .reason corpus quotes an error at THIS path, not merely that the words
+# appear somewhere in the corpus.
 node --input-type=module - "$schemas_dir" "$fixtures_dir" <<'NODE'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import path from 'node:path'
@@ -265,41 +353,88 @@ import path from 'node:path'
 const [schemasDir, fixturesDir] = process.argv.slice(2)
 
 const DIR_TO_SCHEMA = {
-  'result.envelope.schema': 'result.envelope.schema.json',
-  'result.implementer.schema': 'result.implementer.schema.json',
-  'result.reviewer.schema': 'result.reviewer.schema.json',
-  'result.integrator.schema': 'result.integrator.schema.json',
-  'adjudication.schema': 'adjudication.schema.json',
-  'run.schema': 'run.schema.json'
+  'result.envelope.schema': ['result.envelope.schema.json', '$result'],
+  'result.implementer.schema': ['result.implementer.schema.json', '$result.payload'],
+  'result.reviewer.schema': ['result.reviewer.schema.json', '$result.payload'],
+  'result.integrator.schema': ['result.integrator.schema.json', '$result.payload'],
+  'adjudication.schema': ['adjudication.schema.json', '$adjudication'],
+  'run.schema': ['run.schema.json', '$run']
 }
 
-function collect(schema, required, enums, seen = new Set()) {
+function resolveRef(root, ref) {
+  if (typeof ref !== 'string' || !ref.startsWith('#/')) return undefined
+  return ref
+    .slice(2)
+    .split('/')
+    .reduce((node, part) => (node && typeof node === 'object' ? node[part] : undefined), root)
+}
+
+// collect ROOT SCHEMA CURRENT_PATH — CURRENT_PATH is the location of the
+// object SCHEMA itself describes (starts at the schema's own root
+// location, e.g. "$adjudication" or "$result.payload").
+function collect(root, schema, currentPath, required, enums, seen) {
   if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) return
+  if (schema.$ref) {
+    const target = resolveRef(root, schema.$ref)
+    if (target) collect(root, target, currentPath, required, enums, seen)
+    return
+  }
   if (seen.has(schema)) return
   seen.add(schema)
-  for (const name of schema.required ?? []) required.add(name)
-  for (const [key, child] of Object.entries(schema.properties ?? {})) {
-    if (Array.isArray(child.enum)) {
-      for (const value of child.enum) {
-        if (value !== null) enums.add(`${key}${value}`)
-      }
-    }
-    collect(child, required, enums, seen)
+  for (const name of schema.required ?? []) {
+    required.add(JSON.stringify({ parent: currentPath, name }))
   }
-  if (schema.items) collect(schema.items, required, enums, seen)
-  for (const child of Object.values(schema.$defs ?? {})) collect(child, required, enums, seen)
+  for (const [key, child] of Object.entries(schema.properties ?? {})) {
+    const childPath = `${currentPath}.${key}`
+    if (Array.isArray(child.enum) && child.enum.some((v) => v !== null)) {
+      enums.add(childPath)
+    }
+    collect(root, child, childPath, required, enums, seen)
+  }
+  if (schema.items) collect(root, schema.items, `${currentPath}[]`, required, enums, seen)
   for (const key of ['if', 'then', 'else']) {
-    if (schema[key]) collect(schema[key], required, enums, seen)
+    if (schema[key]) collect(root, schema[key], currentPath, required, enums, seen)
   }
 }
 
-let failures = 0
-for (const [dir, schemaFile] of Object.entries(DIR_TO_SCHEMA)) {
-  const schema = JSON.parse(readFileSync(path.join(schemasDir, schemaFile), 'utf8'))
-  const required = new Set()
-  const enums = new Set()
-  collect(schema, required, enums)
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 
+// pathRegexFragment PATH — PATH with literal regex metacharacters escaped
+// and every "[]" (an array item, index unknown at schema-walk time) turned
+// into a digit wildcard, so it matches the validator's real "[N]" location
+// segment for whatever N a fixture's violating item happens to sit at.
+function pathRegexFragment(p) {
+  return p
+    .split(/(\[\])/g)
+    .map((part) => (part === '[]' ? '\\[\\d+\\]' : escapeRegExp(part)))
+    .join('')
+}
+
+// checkCoverage — pure function of the collected requirement/enum sets and
+// the corpus's .reason text; returns one failure message per uncovered
+// item. Kept separate from disk I/O so the self-test below can call it
+// directly against a synthetic (fixture-free) reasons string.
+function checkCoverage(schemaFile, required, enums, reasonsText) {
+  const failures = []
+  for (const raw of required) {
+    const { parent, name } = JSON.parse(raw)
+    const re = new RegExp(`${pathRegexFragment(parent)}: missing required property ${escapeRegExp(name)}\\b`)
+    if (!re.test(reasonsText)) {
+      failures.push(`${schemaFile}: no invalid fixture covers missing required property '${name}' at '${parent}'`)
+    }
+  }
+  for (const fullPath of enums) {
+    const re = new RegExp(`${pathRegexFragment(fullPath)}: must be one of`)
+    if (!re.test(reasonsText)) {
+      failures.push(`${schemaFile}: no invalid fixture covers an enum violation at '${fullPath}'`)
+    }
+  }
+  return failures
+}
+
+function reasonsTextFor(dir) {
   const invalidDir = path.join(fixturesDir, dir, 'invalid')
   let reasons = ''
   if (existsSync(invalidDir)) {
@@ -307,21 +442,60 @@ for (const [dir, schemaFile] of Object.entries(DIR_TO_SCHEMA)) {
       if (entry.endsWith('.reason')) reasons += `${readFileSync(path.join(invalidDir, entry), 'utf8')}\n`
     }
   }
+  return reasons
+}
 
-  for (const name of required) {
-    if (!reasons.includes(`missing required property ${name}`)) {
-      console.error(`FAIL: ${schemaFile}: no invalid fixture covers missing required property '${name}'`)
-      failures += 1
-    }
+// Negative self-test FIRST: prove checkCoverage actually fails when
+// coverage is missing, against a REAL schema's REAL requirement/enum set,
+// before trusting it to pass the real corpus below. Without this, a
+// checker that always reports "complete" (the exact bug this replaces —
+// the old version split each entry into individual characters and matched
+// on the first one, which was satisfied by nearly anything) would go
+// uncaught by its own test suite.
+{
+  const [schemaFile] = DIR_TO_SCHEMA['adjudication.schema']
+  const schema = JSON.parse(readFileSync(path.join(schemasDir, schemaFile), 'utf8'))
+  const required = new Set()
+  const enums = new Set()
+  collect(schema, schema, '$adjudication', required, enums, new Set())
+  if (required.size === 0 || enums.size === 0) {
+    console.error('FAIL: self-test: adjudication.schema.json unexpectedly has no required fields or enums to test with')
+    process.exit(1)
   }
-  for (const pair of enums) {
-    const [key] = pair.split('')
-    if (!(reasons.includes('must be one of') && reasons.includes(key))) {
-      console.error(`FAIL: ${schemaFile}: no invalid fixture covers an enum violation on '${key}'`)
-      failures += 1
-    }
+  const emptyCorpusFailures = checkCoverage(schemaFile, required, enums, '')
+  if (emptyCorpusFailures.length !== required.size + enums.size) {
+    console.error(
+      `FAIL: self-test: checkCoverage against an EMPTY fixture corpus should report all ${required.size + enums.size} items uncovered, reported ${emptyCorpusFailures.length} — the checker is not actually checking anything`
+    )
+    process.exit(1)
   }
-  if (failures === 0) console.log(`PASS: ${schemaFile} required/enum coverage complete`)
+  // And the inverse: the REAL corpus must not ALSO fail against this same
+  // schema's requirements — proves the self-test's "empty" case and the
+  // real case actually exercise the same code path with different inputs,
+  // not two independently-broken checks that coincidentally agree.
+  const realFailures = checkCoverage(schemaFile, required, enums, reasonsTextFor('adjudication.schema'))
+  if (realFailures.length >= emptyCorpusFailures.length) {
+    console.error(
+      'FAIL: self-test: the real fixture corpus covers no more than an empty corpus would — checkCoverage is not path-sensitive'
+    )
+    process.exit(1)
+  }
+  console.log(
+    `PASS: coverage self-test (empty corpus: ${emptyCorpusFailures.length}/${emptyCorpusFailures.length} uncovered, real corpus: ${realFailures.length} uncovered)`
+  )
+}
+
+let failures = 0
+for (const [dir, [schemaFile, rootLocation]] of Object.entries(DIR_TO_SCHEMA)) {
+  const schema = JSON.parse(readFileSync(path.join(schemasDir, schemaFile), 'utf8'))
+  const required = new Set()
+  const enums = new Set()
+  collect(schema, schema, rootLocation, required, enums, new Set())
+
+  const schemaFailures = checkCoverage(schemaFile, required, enums, reasonsTextFor(dir))
+  for (const message of schemaFailures) console.error(`FAIL: ${message}`)
+  failures += schemaFailures.length
+  if (schemaFailures.length === 0) console.log(`PASS: ${schemaFile} required/enum coverage complete`)
 }
 process.exit(failures === 0 ? 0 : 1)
 NODE

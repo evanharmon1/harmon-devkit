@@ -9,6 +9,11 @@
 //   validate-result-schemas.mjs <kind> <file> [options]
 //
 //   kind: envelope | implementer | reviewer | integrator | adjudication | run
+//   `envelope` dispatches on the instance's own `role` field (after the
+//   envelope schema itself passes) and runs exactly the same payload +
+//   receipt checks as invoking the role's own kind name directly — it is
+//   not a payload-blind mode, just a way to validate a full result without
+//   the caller having to already know its role.
 //
 //   --known-ids <file.json>       JSON array of finding ids already used
 //                                 elsewhere in the run (reviewer only) —
@@ -17,6 +22,13 @@
 //   --run-id <id>                 The active run's run_id (with
 //   --initiated-by <human|foreman>  --initiated-by): rejects an
 //                                 envelope whose `run` names a different run.
+//   --pass <envelope.json>        (adjudication only) the reviewer envelope
+//                                 the adjudication document adjudicates:
+//                                 cross-checks completeness (every pass
+//                                 finding has exactly one entry, no entry
+//                                 names an id absent from the pass),
+//                                 reviewer_priority fidelity, and that
+//                                 run_id/stage/round/reviewed_head agree.
 //
 // Exit 0 and a one-line summary when the fixture is valid; exit 1 and every
 // violation (one per line) otherwise.
@@ -55,7 +67,7 @@ function parseArgs(argv) {
     usage()
     process.exit(2)
   }
-  const options = { knownIds: null, runId: null, initiatedBy: null }
+  const options = { knownIds: null, runId: null, initiatedBy: null, pass: null }
   for (let i = 0; i < rest.length; i += 1) {
     switch (rest[i]) {
       case '--known-ids':
@@ -66,6 +78,9 @@ function parseArgs(argv) {
         break
       case '--initiated-by':
         options.initiatedBy = rest[(i += 1)]
+        break
+      case '--pass':
+        options.pass = loadJson(rest[(i += 1)])
         break
       default:
         console.error(`validate-result-schemas: unknown option ${rest[i]}`)
@@ -249,6 +264,121 @@ function checkSettlements(document, errors) {
   }
 }
 
+// checkEvidenceMarkerRunId — every evidence comment's marker names the SAME
+// run it was posted for; a marker naming a foreign run_id could otherwise
+// be adopted by the wrong run's harvester (spec § Evidence, "a deterministic
+// marker — run_id, stage, sequence"). Context-free: both fields live in the
+// one run.schema.json document, no external input needed.
+function checkEvidenceMarkerRunId(document, errors) {
+  if (!Array.isArray(document.evidence_comments)) return
+  for (const [index, comment] of document.evidence_comments.entries()) {
+    const marker = comment.marker
+    if (marker && typeof marker.run_id === 'string' && marker.run_id !== document.run_id) {
+      errors.push(
+        `$run.evidence_comments[${index}].marker.run_id: ${marker.run_id} does not match the run's own run_id ${document.run_id}`
+      )
+    }
+  }
+}
+
+// checkAdjudicationAgainstPass — cross-checks an adjudication document
+// against the reviewer pass it adjudicates (--pass). Every pass finding
+// must have exactly one adjudication entry, no entry may name an id the
+// pass never returned, each entry's reviewer_priority must match the
+// finding's own priority, and the document's run_id/stage/round/
+// reviewed_head must agree with the pass envelope's run/payload. Without
+// --pass, none of this runs — the document is still schema-valid and
+// self-consistent on its own (checkAdjudicationEntries), just not cross-
+// checked against the pass it claims to be about.
+function checkAdjudicationAgainstPass(document, pass, errors) {
+  const passFindings = new Map()
+  for (const finding of pass?.payload?.findings ?? []) {
+    if (typeof finding.id === 'string') passFindings.set(finding.id, finding)
+  }
+  const adjudicated = new Set()
+  for (const entry of document.adjudications ?? []) {
+    if (typeof entry.finding_id !== 'string') continue
+    adjudicated.add(entry.finding_id)
+    const finding = passFindings.get(entry.finding_id)
+    if (!finding) {
+      errors.push(
+        `$adjudication.adjudications[finding_id=${entry.finding_id}]: names a finding id absent from --pass`
+      )
+      continue
+    }
+    if (entry.reviewer_priority !== finding.priority) {
+      errors.push(
+        `$adjudication.adjudications[finding_id=${entry.finding_id}].reviewer_priority: ${entry.reviewer_priority} does not match the pass finding's own priority ${finding.priority}`
+      )
+    }
+  }
+  for (const id of passFindings.keys()) {
+    if (!adjudicated.has(id)) {
+      errors.push(`$adjudication.adjudications: pass finding ${id} has no adjudication entry`)
+    }
+  }
+  const passRunId = pass?.run?.run_id
+  if (typeof passRunId === 'string' && document.run_id !== passRunId) {
+    errors.push(`$adjudication.run_id: ${document.run_id} does not match the pass envelope's run.run_id ${passRunId}`)
+  }
+  const passPayload = pass?.payload ?? {}
+  if (typeof passPayload.stage === 'string' && document.stage !== passPayload.stage) {
+    errors.push(`$adjudication.stage: ${document.stage} does not match the pass payload's stage ${passPayload.stage}`)
+  }
+  if (typeof passPayload.round === 'number' && document.round !== passPayload.round) {
+    errors.push(`$adjudication.round: ${document.round} does not match the pass payload's round ${passPayload.round}`)
+  }
+  if (typeof passPayload.reviewed_head === 'string' && document.reviewed_head !== passPayload.reviewed_head) {
+    errors.push(
+      `$adjudication.reviewed_head: ${document.reviewed_head} does not match the pass payload's reviewed_head ${passPayload.reviewed_head}`
+    )
+  }
+}
+
+// checkTimestampRealness — every *_at / at field must be a REAL instant, not
+// merely regex-shaped: "2026-02-30T10:00:00Z" matches every schema's
+// timestamp pattern but names a day that does not exist. JS's Date parser
+// silently rolls an impossible date over into the next real one, so a
+// round-trip through it — and back to the same Y-M-D h:m:s — is exactly the
+// test. One generic walk over the whole instance (any object key equal to
+// "at" or ending in "_at") rather than a per-schema keyword, since the
+// subset engine's `pattern` keyword can only check shape, never calendar
+// validity, and every schema in this family uses the same timestamp shape.
+const TIMESTAMP_KEY = /(^at$|_at$)/
+const TIMESTAMP_PARTS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/
+
+function isRealInstant(value) {
+  const input = TIMESTAMP_PARTS.exec(value)
+  if (!input) return true // shape violations are the schema pattern's job, not this check's
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return false
+  const rendered = TIMESTAMP_PARTS.exec(parsed.toISOString())
+  if (!rendered) return false
+  // Compare Y-M-D h:m:s (index 1-6); fractional seconds are deliberately
+  // excluded from the comparison, since normalising "no fraction" vs
+  // ".000" vs any other valid fractional spelling of the same instant is
+  // not what this check is proving.
+  for (let i = 1; i <= 6; i += 1) {
+    if (input[i] !== rendered[i]) return false
+  }
+  return true
+}
+
+function checkTimestampRealness(value, errors, location) {
+  if (value === null || typeof value !== 'object') return
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => checkTimestampRealness(item, errors, `${location}[${index}]`))
+    return
+  }
+  for (const [key, child] of Object.entries(value)) {
+    const childLocation = `${location}.${key}`
+    if (TIMESTAMP_KEY.test(key) && typeof child === 'string' && !isRealInstant(child)) {
+      errors.push(`${childLocation}: ${JSON.stringify(child)} is not a real instant`)
+    }
+    checkTimestampRealness(child, errors, childLocation)
+  }
+}
+
 function main() {
   const { kind, file, options } = parseArgs(process.argv.slice(2))
   const instance = loadJson(file)
@@ -257,9 +387,16 @@ function main() {
     const schema = loadSchema(`${kind === 'adjudication' ? 'adjudication' : 'run'}.schema.json`)
     const errors = validateAgainst(schema, instance, `$${kind}`)
     if (errors.length === 0) {
-      if (kind === 'adjudication') checkAdjudicationEntries(instance, errors)
-      if (kind === 'run') checkSettlements(instance, errors)
+      if (kind === 'adjudication') {
+        checkAdjudicationEntries(instance, errors)
+        if (options.pass) checkAdjudicationAgainstPass(instance, options.pass, errors)
+      }
+      if (kind === 'run') {
+        checkSettlements(instance, errors)
+        checkEvidenceMarkerRunId(instance, errors)
+      }
     }
+    checkTimestampRealness(instance, errors, `$${kind}`)
     report(errors, `${kind} record OK`)
     return
   }
@@ -267,20 +404,26 @@ function main() {
   const envelopeSchema = loadSchema('result.envelope.schema.json')
   const errors = validateAgainst(envelopeSchema, instance, '$result')
 
-  if (kind !== 'envelope' && errors.length === 0) {
-    if (instance.role !== kind) {
+  // `envelope` dispatches on the instance's own role — it is NOT a
+  // payload-blind mode. A caller who already knows the role (kind is one of
+  // implementer/reviewer/integrator) gets the extra assertion that the
+  // instance's role agrees with what they expected.
+  if (errors.length === 0) {
+    if (kind !== 'envelope' && instance.role !== kind) {
       errors.push(`$result.role: expected ${kind}, found ${JSON.stringify(instance.role)}`)
     } else {
-      const payloadSchema = loadSchema(`result.${kind}.schema.json`)
+      const role = instance.role
+      const payloadSchema = loadSchema(`result.${role}.schema.json`)
       errors.push(...validateAgainst(payloadSchema, instance.payload, '$result.payload'))
       if (errors.length === 0) {
         checkActiveRun(instance, options, errors)
-        if (kind === 'implementer') checkImplementerStatus(instance, errors)
-        if (kind === 'reviewer') checkFindingIds(instance, options, errors)
-        checkHeadAgreement(kind, instance, errors)
+        if (role === 'implementer') checkImplementerStatus(instance, errors)
+        if (role === 'reviewer') checkFindingIds(instance, options, errors)
+        checkHeadAgreement(role, instance, errors)
       }
     }
   }
+  checkTimestampRealness(instance, errors, '$result')
 
   report(errors, `${kind} result OK (role=${instance.role ?? 'n/a'}, status=${instance.status ?? 'n/a'})`)
 }

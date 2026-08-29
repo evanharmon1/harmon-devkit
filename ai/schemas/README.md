@@ -35,7 +35,19 @@ resolves which one applies:
 
 This is `scripts/validate-result-schemas.mjs`'s job (`<kind> <file>`, where
 `kind` is `envelope | implementer | reviewer | integrator | adjudication |
-run`). It exists because [`scripts/lib/json-schema-subset.mjs`](../../scripts/lib/json-schema-subset.mjs) —
+run`). **`kind: envelope` is a convenience for "I don't already know the
+role," not a payload-blind mode** — it runs steps 2 and 3 (and every receipt
+check the role-named `kind` would) by reading `role` off the instance itself;
+the only thing `kind: implementer/reviewer/integrator` adds on top is
+asserting the caller's expectation actually matches the instance's own
+`role`. A round-1 challenge-review fixture
+(`result.envelope.schema/invalid/empty-payload-for-role.json`) exists
+specifically because an earlier version of this validator DID skip payload
+dispatch under `kind: envelope`, silently accepting an envelope with an
+empty `payload` as long as its own shape was fine — the bug is now a
+regression fixture, not just a comment.
+
+It exists because [`scripts/lib/json-schema-subset.mjs`](../../scripts/lib/json-schema-subset.mjs) —
 the hand-rolled JSON-Schema-subset engine this family shares with
 `agent-registry.schema.json`'s validator, factored out so the ~350-line
 structural engine isn't duplicated — supports only same-document `#/...`
@@ -71,6 +83,24 @@ keyword, for every one of these:
   `round`, and `finder` fields. This is actually a same-document check (the
   id and the pass metadata are both in `payload`), and the validator
   performs it unconditionally, not only when a run context is supplied.
+- **Adjudication ↔ source pass agreement (`--pass <envelope.json>`)** — an
+  adjudication document claims to adjudicate one reviewer pass, but nothing
+  in its own shape proves that: the pass's findings are a different
+  document. With `--pass`, the validator cross-checks completeness (every
+  finding in the pass has exactly one adjudication entry, and no entry names
+  an id the pass never returned), that each entry's `reviewer_priority`
+  still matches the finding's own `priority` in the pass (a copy that has
+  drifted from its source is worse than no copy), and that the document's
+  `run_id`/`stage`/`round`/`reviewed_head` agree with the pass envelope's
+  `run.run_id` / payload `stage`/`round`/`reviewed_head`. Without `--pass`
+  an adjudication document is still checked for internal self-consistency
+  (`checkAdjudicationEntries`) — it just isn't cross-checked against
+  anything external.
+- **Evidence marker `run_id` agreement** — `run.schema.json`'s
+  `evidence_comments[].marker.run_id` must equal the run record's own
+  `run_id`. Unlike the checks above this one needs no external context (both
+  values live in the one `run.schema.json` document), so it always runs, not
+  only when extra CLI context is supplied.
 - **Adjudication override required when priorities differ** — each
   `adjudications[]` entry carries its own `reviewer_priority` (a copy of the
   finding's reviewer-asserted priority — see "Why `reviewer_priority` is
@@ -131,6 +161,12 @@ never needed it).
   `result.reviewer` field is something the orchestrator told the finder to
   use (`stage`/`round`/`reviewed_head`/`finder`), never something the finder
   computes from its own success.
+- **`human_tasks` is optional at every status**, matching Foreman v1
+  exactly (`read_result()` does `data.get('human_tasks', [])`) — a v1
+  blocked result in particular can carry only `schema`/`status`/
+  `blocked_question` with no `human_tasks` key at all
+  (`result.implementer.schema/valid/blocked-minimal.json`). When present it
+  is still constrained to an array of strings.
 - **`status` enum is `completed | blocked`, and only those two**, matching
   Foreman v1's `RESULT_STATUSES` exactly (`src/foreman/backend.py` at
   `v2.5.0`) — the spec names no third value for any role; a finder that
@@ -177,9 +213,31 @@ never needed it).
   `settled_at`, `promoted_at`, evidence `marker` timestamps) uses the same
   pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$`
   — UTC only, literal trailing `Z`, no other offset accepted, matching the
-  spec's own examples.
+  spec's own examples. **The pattern alone only proves the shape, never the
+  calendar** — `2026-02-30T10:00:00Z` matches it and names a day that does
+  not exist. `scripts/validate-result-schemas.mjs`'s `checkTimestampRealness`
+  is one generic walk over the whole instance (any object key equal to `at`
+  or ending in `_at`, whatever schema it belongs to) that round-trips each
+  value through `Date` parsing and confirms it re-renders to the same
+  Y-M-D h:m:s (fractional seconds excluded from the comparison, since
+  "no fraction" and `.000` spell the same instant) — an impossible date
+  rolls over to a different one and is rejected. A single generic walk was
+  chosen over a per-schema keyword because every schema in this family uses
+  the identical timestamp shape, so a per-schema version would just be the
+  same check copied six times.
 - **`producer.tier`** excludes `adaptive`: that value is a `.devflow.toml`
   resolution *input*, never a fact about a run that already executed.
+- **A terminal Codex cycle result must carry `accepted`.**
+  `result.integrator.schema.json`'s `codex_cycle` has a nested
+  `if: {exit_code: [0, 10]} then: {required: [accepted]}` — a clean (0) or
+  findings (10) result is, per AGENTS.md's shepherd contract, always backed
+  by a real surface (a review, comment, or reaction) carrying the evidence;
+  the pending/retry/escalate/indeterminate/PR-closed codes (11/12/13/2/14)
+  have no accepted evidence yet, so `accepted` stays optional for those.
+  This is nested (inside a property's own schema, not at the payload root)
+  precisely to prove `if`/`then` is not root-only in this engine — see the
+  "nested if/then" unit tests beside the root-level ones in
+  `scripts/test-result-schemas.sh`.
 
 ## Fixture layout
 
@@ -199,14 +257,20 @@ not `result.envelope`) so it reads as "fixtures for
 fixture has a sibling `invalid/*.reason` — a one-line plain-text file naming
 a substring the validator's rejection message must contain, so a test proves
 the fixture is rejected **for the documented reason**, not merely rejected.
-Two fixtures additionally need a same-named sidecar because the invariant
-they exercise needs context no single document carries (see "Receipt
-validation" above): `result.reviewer.schema/invalid/duplicate-id-across-passes.json`
+Several fixtures additionally need a same-named sidecar because the
+invariant they exercise needs context no single document carries (see
+"Receipt validation" above): `result.reviewer.schema/invalid/duplicate-id-across-passes.json`
 ships a `.known-ids.json` sidecar (a JSON array, passed as the validator's
-`--known-ids`), and the run-mismatch case
+`--known-ids`); the four `adjudication.schema/invalid/pass-cross-check-*.json`
+fixtures share one `.pass.json` sidecar (a reviewer envelope, passed as
+`--pass`); and the run-mismatch case
 (`result.envelope.schema/invalid/run-mismatch.json`) is exercised with a
 hardcoded `--run-id`/`--initiated-by` pair in `scripts/test-result-schemas.sh`
-rather than a sidecar, since those are two plain strings, not a document.
+rather than a sidecar, since those are two plain strings, not a document. All
+of these — plus the sidecars themselves — are excluded from the generic
+per-directory valid/invalid loop (`is_context_only_fixture` in
+`scripts/test-result-schemas.sh`) and exercised only by name, since they are,
+by construction, schema-valid and receipt-valid without the extra context.
 
 `ai/schemas/fixtures/result.reviewer.schema/valid/omator-397-*.json` and
 `ai/schemas/fixtures/adjudication.schema/valid/omator-397-*-adjudication.json`
@@ -234,7 +298,8 @@ commit; `finder` is `codex-cli` throughout, matching the ledger.
 
 ```sh
 node scripts/validate-result-schemas.mjs <envelope|implementer|reviewer|integrator|adjudication|run> <file> \
-  [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>]
+  [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
+  [--pass <reviewer-envelope.json>]
 ```
 
 Exit 0 and a one-line summary when valid; exit 1 and every violation (one per

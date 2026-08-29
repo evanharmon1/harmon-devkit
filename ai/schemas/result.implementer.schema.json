@@ -5,7 +5,6 @@
   "$comment": "This schema describes the SHAPE of `payload` for role: implementer — see result.envelope.schema.json for how the two compose. Fields and types are unchanged from Foreman v1's flat result.json (schema:1) — see ponderousdev/foreman src/foreman/prompts/implementer-preamble.md and src/foreman/backend.py:read_result() at v2.5.0. `status` itself is NOT repeated in this payload: it lives once, on the envelope. The v1-documented conditional requirements (summary/handoff/ac_test_map required iff status is completed; blocked_question iff blocked) therefore cannot be expressed as a structural keyword in THIS file, because the deciding field (envelope.status) is not part of the instance this schema validates — scripts/validate-result-schemas.mjs enforces them as a receipt-validation semantic check instead, reading both the envelope and the payload together. See ai/schemas/README.md 'Composition' and 'Why implementer's conditional fields are a semantic check, not if/then'.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["human_tasks"],
   "properties": {
     "summary": {
       "description": "Required (non-empty) when the envelope's status is completed; omitted or empty when blocked. Enforced by the validator, not by this schema.",
@@ -39,7 +38,7 @@
       }
     },
     "human_tasks": {
-      "description": "Always required, but may be empty. v1 defaulted a missing key to []; v2 requires the key so an empty result is explicit rather than inferred.",
+      "description": "Optional at every status, exactly as in v1: Foreman's read_result() does data.get('human_tasks', []), so a v1 blocked result in particular can carry only schema/status/blocked_question with no human_tasks key at all. When present, still constrained to an array of strings.",
       "type": "array",
       "items": { "type": "string" }
     },

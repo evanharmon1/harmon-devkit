@@ -84,6 +84,13 @@
           "description": "The verbatim exit code from ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2 indeterminate.",
           "enum": [0, 2, 10, 11, 12, 13, 14]
         }
+      },
+      "if": {
+        "properties": { "exit_code": { "enum": [0, 10] } },
+        "required": ["exit_code"]
+      },
+      "then": {
+        "required": ["accepted"]
       }
     },
     "findings": {
