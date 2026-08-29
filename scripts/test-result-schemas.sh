@@ -101,6 +101,74 @@ done
 [ "$fixture_dirs_found" -gt 0 ] || fail "no fixture directories found under $fixtures_dir"
 echo "PASS: fixture corpus OK ($valid_count valid, $invalid_count invalid, $fixture_dirs_found schema(s))"
 
+# --- Engine-level keyword tests (scripts/lib/json-schema-subset.mjs) -------
+# minimum/maximum and if/then/else were added to the shared subset engine
+# for this schema family (agent-registry.schema.json never needed them).
+# The fixture corpus exercises both in situ (round/line/attempt/sequence
+# lower bounds; the integrator's clean-verdict conditional), but the engine
+# itself is shared with scripts/validate-agent-registry.mjs, so it earns
+# direct, schema-agnostic tests of its own, isolated from any one schema's
+# semantics — mirroring how test-agent-registry.sh unit-tests the rest of
+# the engine's keywords via tiny inline schema/instance pairs.
+node --input-type=module - <<'NODE'
+import { createSchemaValidator } from './scripts/lib/json-schema-subset.mjs'
+
+let failures = 0
+function expect(description, condition) {
+  if (!condition) {
+    console.error(`FAIL: ${description}`)
+    failures += 1
+  } else {
+    console.log(`PASS: ${description}`)
+  }
+}
+
+// minimum / maximum
+{
+  const schema = { type: 'integer', minimum: 1, maximum: 3 }
+  const engine = createSchemaValidator(schema)
+  expect('minimum: rejects a value below it', engine.validate(0, schema, '$x').length > 0)
+  expect('minimum: accepts the boundary value', engine.validate(1, schema, '$x').length === 0)
+  expect('maximum: rejects a value above it', engine.validate(4, schema, '$x').length > 0)
+  expect('maximum: accepts the boundary value', engine.validate(3, schema, '$x').length === 0)
+  expect(
+    'minimum/maximum: error message names the bound',
+    engine.validate(0, schema, '$x').some((e) => e.includes('>= 1'))
+  )
+}
+
+// if / then / else
+{
+  const schema = {
+    type: 'object',
+    properties: { status: { enum: ['completed', 'blocked'] }, summary: { type: 'string' } },
+    if: { properties: { status: { const: 'completed' } }, required: ['status'] },
+    then: { required: ['summary'] },
+    else: { required: ['reason'] }
+  }
+  const engine = createSchemaValidator(schema)
+  expect(
+    'if/then: the then-branch requirement applies when if matches',
+    engine.validate({ status: 'completed' }, schema, '$x').some((e) => e.includes('summary'))
+  )
+  expect(
+    'if/then: the then-branch requirement is satisfied, no false positive',
+    engine.validate({ status: 'completed', summary: 'ok' }, schema, '$x').length === 0
+  )
+  expect(
+    'if/then/else: the else-branch requirement applies when if does not match',
+    engine.validate({ status: 'blocked' }, schema, '$x').some((e) => e.includes('reason'))
+  )
+  expect(
+    'if/then/else: a non-matching if never triggers the then-branch requirement',
+    !engine.validate({ status: 'blocked', reason: 'why' }, schema, '$x').some((e) => e.includes('summary'))
+  )
+}
+
+process.exit(failures === 0 ? 0 : 1)
+NODE
+echo "PASS: engine-level minimum/maximum and if/then/else keyword tests"
+
 # --- Receipt-validation regression tests requiring run context -------------
 # These need an argument no single fixture file can carry on its own (a set
 # of prior finding ids, or the run the envelope is checked against), so they
