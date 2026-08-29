@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/result.reviewer.schema.json",
+  "title": "Dev flow v2 reviewer payload — one pass",
+  "$comment": "This schema describes the SHAPE of `payload` for role: reviewer — see result.envelope.schema.json for how the two compose. One instance is one PASS: one finder's contribution to a round (docs/glossary.md, docs/product/domain.md § Concepts). A round is the aggregate of every configured finder's pass at the same reviewed_head, computed by the orchestrator/exit script from one-or-more pass documents — it is not a schema of its own. This payload is immutable once returned and carries NO adjudicated fields (no adjudicated_priority, no disposition) — additionalProperties:false enforces that; adjudication.schema.json is a separate, orchestrator-authored overlay.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stage", "round", "reviewed_head", "finder", "findings", "counts"],
+  "properties": {
+    "stage": {
+      "enum": ["challenge", "review"]
+    },
+    "round": {
+      "description": "This pass's round number within its stage, 1-based. Rounds are numbered independently per stage (challenge and review each start at 1) — see docs/product/domain.md 'A fix round returns to the stage that produced the findings; challenge and review keep separate round counts and caps.'",
+      "type": "integer",
+      "minimum": 1
+    },
+    "reviewed_head": {
+      "description": "Must equal the envelope's `head` — enforced by the validator's receipt-validation pass (schemas cannot see sibling fields outside their own instance).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "finder": {
+      "description": "The external review product that produced this pass (e.g. codex-cli, codex-cloud, coderabbit, copilot). Free string here — the finder catalog and its stage affinity are agent-registry.json's concern (#635), not this schema's. Must match the finder segment embedded in every finding id below (checked by the validator, not this schema).",
+      "type": "string",
+      "minLength": 1
+    },
+    "findings": {
+      "description": "May be empty — 'a reviewer round returns zero findings' is a normal, schema-valid pass (see specs/dev-flow-v2.md Acceptance criteria: a reviewer cannot end a stage — the reviewer's own recommendation, including an empty findings list, never decides the exit on its own).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "counts": {
+      "description": "Per-priority finding counts for this pass. The validator cross-checks these against the actual `findings` tally.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["P0", "P1", "P2", "P3"],
+      "properties": {
+        "P0": { "type": "integer", "minimum": 0 },
+        "P1": { "type": "integer", "minimum": 0 },
+        "P2": { "type": "integer", "minimum": 0 },
+        "P3": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path",
+        "line",
+        "class",
+        "provenance",
+        "fingerprint",
+        "priority",
+        "recommended_disposition",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "description": "Unique within the run by construction: <stage>-r<round>-<finder>-<n>. The validator checks the stage/round/finder segments match this pass's own stage/round/finder, and (given prior-run context) that the id collides with neither an earlier finding in this pass nor any finding already in the run.",
+          "type": "string",
+          "pattern": "^(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+        },
+        "path": {
+          "description": "Repo-relative path the finding is about.",
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "description": "1-based line number, or null when the finding is not line-bound (e.g. a whole-file or cross-file design finding). Design decision: null rather than 0 or omission, so 'not line-bound' is an explicit, typed value instead of a sentinel integer or an absent key a consumer could forget to check for.",
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "class": {
+          "enum": ["design", "correctness", "consistency", "hardening", "nit"]
+        },
+        "provenance": {
+          "description": "original: about the change under review. round:N: about round N's fix, where N is a round of THIS SAME STAGE (challenge's round:N never refers to a review round and vice versa — provenance feeds per-stage divergence predicates in specs/dev-flow-v2.md § Convergence model v0, which are explicitly scoped per stage). Asserted by the reviewer; the exit script (#636) verifies it against the diff and may downgrade original to round:N with recorded evidence, never the reverse.",
+          "type": "string",
+          "pattern": "^(original|round:[1-9][0-9]*)$"
+        },
+        "fingerprint": {
+          "description": "new: not seen before. repeat-of:<id> / supersedes:<id>: this finding is the same defect recurring, or a stronger restatement of an earlier one, where <id> is an earlier finding id in this run. Asserted by the reviewer (which has prior rounds' findings in its brief); the exit script (#636) verifies it.",
+          "type": "string",
+          "pattern": "^(new|repeat-of:(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*|supersedes:(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*)$"
+        },
+        "priority": {
+          "description": "The reviewer's own label. The orchestrator's adjudicated priority (which may differ) lives in adjudication.schema.json, never here.",
+          "enum": ["P0", "P1", "P2", "P3"]
+        },
+        "recommended_disposition": {
+          "description": "The reviewer's recommendation only — never binding. The orchestrator's actual disposition lives in adjudication.schema.json.",
+          "enum": ["fix", "restructure", "delete", "decline", "defer", "file"]
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

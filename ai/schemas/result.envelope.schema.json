@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/result.envelope.schema.json",
+  "title": "Dev flow v2 result envelope",
+  "$comment": "Composition: `payload` is deliberately untyped here ({type: object}). scripts/validate-result-schemas.mjs reads `role`, resolves the matching result.<role>.schema.json, and validates `payload` against THAT schema's own root -- see ai/schemas/README.md 'Composition'. The hand-rolled subset validator (scripts/lib/json-schema-subset.mjs) has no cross-file $ref, so each schema file stays self-contained and the validator script performs the role dispatch instead of the schema itself.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "role", "status", "head", "produced_at", "producer", "run", "payload"],
+  "properties": {
+    "schema": {
+      "$comment": "Dev flow v2's envelope generation. Foreman v1's flat result.json used schema:1; v2 wraps the same fields (plus new envelope metadata) and bumps to 2.",
+      "const": 2
+    },
+    "role": {
+      "description": "Which role produced this result -- selects the payload schema (result.<role>.schema.json). The orchestrator is not a role that returns a result: it authors adjudication.schema.json and run.schema.json documents directly, never through this envelope.",
+      "enum": ["implementer", "reviewer", "integrator"]
+    },
+    "status": {
+      "description": "completed: the role produced its full payload. blocked: the role could not (e.g. an implementer escalating a genuinely ambiguous spec per Foreman's v1 contract, or a finder that failed and will be retried once). See result.implementer.schema.json for the completed/blocked conditional fields it enforces via a receipt-validation semantic check, not a structural keyword, because the deciding field (this one) lives on the envelope while the conditioned fields live in payload.",
+      "enum": ["completed", "blocked"]
+    },
+    "head": {
+      "description": "The full commit SHA this result is about. Every head-shaped field elsewhere in a payload (reviewer's reviewed_head, integrator's codex_cycle.head and accepted.reviewed_commit) must equal this one -- enforced by the validator's receipt-validation pass, never by the payload schema alone, since the payload schema cannot see its sibling envelope field.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "produced_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "model", "tier"],
+      "properties": {
+        "harness": {
+          "description": "e.g. claude-code, codex-cli. Free string -- the harness/model catalog is agent-registry.json's concern (#635), not this schema's.",
+          "type": "string",
+          "minLength": 1
+        },
+        "model": { "type": "string", "minLength": 1 },
+        "tier": {
+          "description": "The tier the harness actually ran at. 'adaptive' is a config selector (.devflow.toml [role.*]), never an executed fact, so it is not a valid value here.",
+          "enum": ["local", "economy", "standard", "frontier", "apex"]
+        }
+      }
+    },
+    "run": {
+      "description": "Immutable run identity only -- nothing mutable lives here. Mutable run state (stage transitions, interventions, outcome, pr) lives solely in run.schema.json, so an envelope and the run record can never disagree about it. Receipt validation rejects a run whose run_id/initiated_by are not those of the run the branch pointer currently names.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "initiated_by"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "initiated_by": { "enum": ["human", "foreman"] }
+      }
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}

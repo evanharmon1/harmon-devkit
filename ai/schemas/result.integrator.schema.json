@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/result.integrator.schema.json",
+  "title": "Dev flow v2 integrator payload",
+  "$comment": "This schema describes the SHAPE of `payload` for role: integrator — see result.envelope.schema.json for how the two compose. Formerly result.shepherd; renamed per specs/dev-flow-v2.md § Roles and authority. The integrator polls CI and reviewers, posts given text, and returns this evidence — it never disposes findings or promotes the PR (that stays the orchestrator's, recorded in adjudication.schema.json and run.schema.json).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "checks",
+    "codex_cycle",
+    "findings",
+    "unanswered_thread_roots",
+    "settled_at",
+    "verdict"
+  ],
+  "if": {
+    "properties": { "verdict": { "const": "clean" } },
+    "required": ["verdict"]
+  },
+  "then": {
+    "required": ["applied_dispositions"]
+  },
+  "properties": {
+    "checks": {
+      "description": "One entry per CI check gh pr checks reports.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "bucket", "run_id"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "bucket": {
+            "description": "gh pr checks --json bucket's own categorization of state: pass, fail, pending, skipping, or cancel.",
+            "enum": ["pass", "fail", "pending", "skipping", "cancel"]
+          },
+          "run_id": {
+            "description": "The CI run identifier backing this check, as a string (GitHub ids are strings throughout this schema family except run.schema.json's author_actor_id — see ai/schemas/README.md).",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "codex_cycle": {
+      "description": "null when the resolved integration cap is 0 (per specs/dev-flow-v2.md § Configuration, 'integration = 0 means no Codex cycle required') — the readiness gate's Codex-verdict condition drops out identically. Otherwise the current-head cycle this integrator run drove.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["head", "attempt", "trigger_comment_id", "exit_code"],
+      "properties": {
+        "head": {
+          "description": "Must equal the envelope's `head` — enforced by the validator's receipt-validation pass.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "attempt": {
+          "description": "AGENTS.md's shepherd stage allows exactly two attempts per captured head before an incomplete cycle escalates.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "trigger_comment_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "accepted": {
+          "description": "Present only when the cycle reached a terminal, non-escalated result (exit_code 0 or 10) — absent for exit codes 2/11/12/13/14, where no accepted evidence exists yet.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["surface", "id", "reviewed_commit"],
+          "properties": {
+            "surface": {
+              "enum": ["review", "comment", "reaction"]
+            },
+            "id": { "type": "string", "minLength": 1 },
+            "reviewed_commit": {
+              "description": "Must equal the envelope's `head` — enforced by the validator's receipt-validation pass, exactly like `head` above (this is the second, GitHub-side stamp of the same invariant).",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          }
+        },
+        "exit_code": {
+          "description": "The verbatim exit code from ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2 indeterminate.",
+          "enum": [0, 2, 10, 11, 12, 13, 14]
+        }
+      }
+    },
+    "findings": {
+      "description": "Findings surfaced during integration (human review comments, CI failures needing adjudication, an unsettled Codex finding) carried verbatim for the orchestrator to adjudicate — id and body only, since the integrator never authors or interprets finding text. Unlike a reviewer pass's findings, these ids are NOT the challenge/review pass-id grammar: they are the GitHub-native identifier of whatever surfaced the finding (an inline review comment id, a review id, a locally-minted marker for a CI failure).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "body"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "body": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "unanswered_thread_roots": {
+      "description": "Ids of inline review comment threads still missing their required per-thread reply.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "settled_at": {
+      "description": "When this integrator pass was produced.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "verdict": {
+      "description": "clean: nothing outstanding (checks green, Codex cycle terminal-clean or its findings settled, every thread answered) — applied_dispositions is required (may be empty if nothing needed fixing to reach this state). findings: something surfaced still needs orchestrator adjudication. pending: still waiting on CI or a reviewer — waiting is never a round (AGENTS.md), so re-dispatching the integrator for another look is normal. escalate: the remediation cap was reached with something unresolved.",
+      "enum": ["clean", "findings", "pending", "escalate"]
+    },
+    "applied_dispositions": {
+      "description": "What was applied to reach the current verdict (empty array if nothing needed disposing). Required whenever verdict is clean; optional otherwise — enforced above via if/then, since both fields live in this same payload.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "disposition"],
+        "properties": {
+          "finding_id": { "type": "string", "minLength": 1 },
+          "disposition": {
+            "enum": ["fix", "restructure", "delete", "decline", "defer", "file"]
+          }
+        }
+      }
+    }
+  }
+}

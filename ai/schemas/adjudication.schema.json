@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/adjudication.schema.json",
+  "title": "Dev flow v2 adjudication record — one round's batch",
+  "$comment": "Orchestrator-authored, NOT wrapped in result.envelope.schema.json — the envelope is for agent->orchestrator results (see specs/dev-flow-v2.md 'Roles and authority' table); the orchestrator writes this document and run.schema.json directly. One instance covers one round's worth of NEW adjudications, matching how evidence is posted (docs/decisions/0002: 'one comment per round, the moment the round is adjudicated'). A run's full adjudicated view is the union of every round's adjudication document for that run; scripts/validate-result-schemas.mjs's run-context mode checks a finding_id is adjudicated in exactly one round's document across the whole run. `settlements[]` is deliberately NOT here: specs/dev-flow-v2.md states the run record is 'the only home of mutable run state' and settlements are appended over time as `defer` dispositions resolve during integration, so they live in run.schema.json instead — see its own $comment and ai/schemas/README.md 'Where settlements live'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "stage", "round", "reviewed_head", "adjudications"],
+  "properties": {
+    "schema": { "const": 2 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "stage": { "enum": ["challenge", "review"] },
+    "round": { "type": "integer", "minimum": 1 },
+    "reviewed_head": {
+      "description": "The head this round's pass(es) reviewed — must equal every adjudicated finding's originating pass's reviewed_head. Checked by the validator's run-context mode, which has the pass documents in hand.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "adjudications": {
+      "description": "Every finding introduced by this round, each adjudicated exactly once (docs/product/domain.md: 'A finding is adjudicated exactly once, and its adjudication is the only view scripts read'). 'Keyed by finding id' (specs/dev-flow-v2.md) is realized here as an array of entries each carrying its own finding_id, with uniqueness enforced by the validator — the hand-rolled subset validator has no patternProperties or schema-valued additionalProperties, so a JSON object dynamically keyed by finding id is not expressible; an array of tagged objects is the same shape already used for findings[]/checks[]/ac_test_map[] throughout this schema family.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/adjudicationEntry" }
+    }
+  },
+  "$defs": {
+    "adjudicationEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "reviewer_priority",
+        "adjudicated_priority",
+        "disposition",
+        "reason",
+        "evidence",
+        "override"
+      ],
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "pattern": "^(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+        },
+        "reviewer_priority": {
+          "description": "A copy of the finding's own reviewer-asserted priority, carried here so reviewer-vs-orchestrator disagreement is measurable from this document alone, without re-reading the pass (specs/dev-flow-v2.md: 'the raw reviewer output is kept so reviewer-vs-orchestrator disagreement can be measured'). The validator's run-context mode still cross-checks it against the originating pass's finding.",
+          "enum": ["P0", "P1", "P2", "P3"]
+        },
+        "adjudicated_priority": {
+          "enum": ["P0", "P1", "P2", "P3"]
+        },
+        "disposition": {
+          "enum": ["fix", "restructure", "delete", "decline", "defer", "file"]
+        },
+        "reason": {
+          "description": "Why this disposition, always required — every adjudication explains itself, not only overrides.",
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "override": {
+          "description": "null when adjudicated_priority equals reviewer_priority. Required (a non-null object with a reason) whenever they differ — specs/dev-flow-v2.md's upward-override / disagreement record. This is a cross-field (not cross-document) condition — adjudicated_priority and reviewer_priority are two sibling values within ONE entry — but the subset validator's if/then cannot express 'these two properties are unequal' (JSON Schema has no field-to-field comparison operator), so it is enforced as a semantic check, not a structural keyword. See ai/schemas/README.md.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["reason"],
+          "properties": {
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

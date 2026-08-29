@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/run.schema.json",
+  "title": "Dev flow v2 run record",
+  "$comment": "Orchestrator-authored, NOT wrapped in result.envelope.schema.json (see adjudication.schema.json's $comment for why). The ONLY home of mutable run state (specs/dev-flow-v2.md § Results): stage transitions, interventions, outcome, pr, evidence-comment bookkeeping, settlements, and the promotion entry. Reserved on the issue at kickoff and edited in place at every transition up to ready-for-review (docs/decisions/0002).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_id",
+    "initiated_by",
+    "started_at",
+    "stage_transitions",
+    "interventions",
+    "outcome",
+    "pr",
+    "evidence_comments",
+    "settlements",
+    "promotion"
+  ],
+  "properties": {
+    "schema": { "const": 2 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "initiated_by": { "enum": ["human", "foreman"] },
+    "started_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "stage_transitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "entered_at"],
+        "properties": {
+          "stage": {
+            "description": "The dev flow lifecycle stage names, docs/product/domain.md § Lifecycles. 'escalate' is not a named stage (it is a terminal edge in that doc's state diagram, not a numbered stage) — an escalated run instead sets `outcome: escalated` and its last real stage_transitions entry's `exit` names the reason.",
+            "enum": [
+              "kickoff", "claim", "explore", "plan", "implement", "verify",
+              "challenge", "review", "security", "integration", "merge",
+              "deployment", "release", "smoke", "retro", "wrap"
+            ]
+          },
+          "entered_at": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+          },
+          "exit": {
+            "description": "Optional — set when this stage transition is known to have ended (e.g. 'converged', 'capped: 1 adjudicated P1 remaining'). Absent while the stage is still the run's current one.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "interventions": {
+      "description": "Every human touchpoint between kickoff and gh pr ready. kind distinguishes asked (answering an implementer's blocked_question, which the success metric counts separately) from other (every other human action, which the success metric counts as an intervention) — docs/glossary.md 'intervention'.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "at", "note"],
+        "properties": {
+          "kind": { "enum": ["asked", "other"] },
+          "at": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+          },
+          "note": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "outcome": {
+      "description": "null while the run has not yet ended. One of the terminal states named by docs/glossary.md's 'run' entry once it has.",
+      "type": ["string", "null"],
+      "enum": [null, "ready-for-review", "capped", "escalated", "abandoned"]
+    },
+    "pr": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["number", "url"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string", "minLength": 1 }
+      }
+    },
+    "evidence_comments": {
+      "description": "Bookkeeping for every round/stage evidence comment posted to the issue or PR, so the harvester can authenticate what it reads back (specs/dev-flow-v2.md § Evidence: 'Authenticated when read').",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "author_actor_id", "login", "digest", "marker"],
+        "properties": {
+          "id": {
+            "description": "The GitHub comment id.",
+            "type": "string",
+            "minLength": 1
+          },
+          "author_actor_id": {
+            "description": "The immutable GitHub actor id used for every authentication comparison. An integer (unlike the string ids used elsewhere in this schema family) because the spec is explicit that this is the field arithmetic/equality checks run against, never displayed — see ai/schemas/README.md.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "login": {
+            "description": "Display only — a rename must never turn valid evidence into 'tampered', so authentication never compares this field.",
+            "type": "string",
+            "minLength": 1
+          },
+          "digest": {
+            "description": "A hash of the posted payload, so an edited comment is detected as tampered rather than silently replayed.",
+            "type": "string",
+            "minLength": 1
+          },
+          "marker": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["run_id", "stage", "sequence"],
+            "properties": {
+              "run_id": { "type": "string", "minLength": 1 },
+              "stage": { "type": "string", "minLength": 1 },
+              "sequence": {
+                "description": "1-based — the Nth comment continuing this stage's evidence when GitHub's size limit forces a split.",
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "settlements": {
+      "description": "Append-only. Each entry terminalizes exactly one finding's `defer` disposition (recorded in some round's adjudication.schema.json document) to one of the three terminal answers the readiness gate accepts. Immutable once appended — a finding still has exactly one adjudication (in adjudication.schema.json) and one terminal settlement (here), and neither document is edited in place to reflect the other.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "disposition", "settled_at", "reference"],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "pattern": "^(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+          },
+          "disposition": {
+            "description": "A settlement narrows a deferred finding to one of the three terminal answers — restructure/delete/defer are not valid settlement outcomes (specs/dev-flow-v2.md: 'there it is settled to fix, decline, or file').",
+            "enum": ["fix", "decline", "file"]
+          },
+          "settled_at": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+          },
+          "reference": {
+            "description": "The evidence a human or CI can follow to confirm the settlement: the fix commit's sha, the comment id explaining a decline, or the follow-up issue number.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "value"],
+            "properties": {
+              "type": { "enum": ["sha", "comment_id", "issue_number"] },
+              "value": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "promotion": {
+      "description": "null until the orchestrator promotes the draft to ready-for-review. 'Reached ready-for-review' for the success metric means this entry exists (specs/dev-flow-v2.md § Success metric) — a ready transition on the PR without it is an unexplained promotion, never counted as success.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["head", "promoted_at", "gate_fingerprint"],
+      "properties": {
+        "head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "promoted_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+        },
+        "gate_fingerprint": {
+          "description": "The readiness gate's pre/post-promotion content fingerprint over body, reviews, and comments (AGENTS.md § Readiness gate; the vendored shepherd skill's readiness-gate.sh).",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

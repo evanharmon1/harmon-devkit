@@ -1,0 +1,90 @@
+{
+  "schema": 2,
+  "run_id": "omator-397",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "0d30f5f8f03a7241f5d5b8f7b2ad37a7216d55fa",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: no mapped status",
+      "evidence": "no mapped status",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-2",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: ADR allows single-email merge",
+      "evidence": "ADR allows single-email merge",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-3",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: ADR allows persisted generated refs",
+      "evidence": "ADR allows persisted generated refs",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-4",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: preserved primary contact stuck under undo lock",
+      "evidence": "preserved primary contact stuck under undo lock",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-5",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: all-or-nothing over-claimed for phase B",
+      "evidence": "all-or-nothing over-claimed for phase B",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-6",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: bootstrap stamp vs 0 updated",
+      "evidence": "bootstrap stamp vs 0 updated",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-7",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: idempotency scenario unqualified",
+      "evidence": "idempotency scenario unqualified",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-8",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: Zoho scenario per-entity",
+      "evidence": "Zoho scenario per-entity",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-9",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: formula tests missing",
+      "evidence": "formula tests missing",
+      "override": null
+    }
+  ]
+}
