@@ -20,6 +20,9 @@ validator="scripts/validate-result-schemas.mjs"
 schemas_dir="ai/schemas"
 fixtures_dir="ai/schemas/fixtures"
 
+test_tmp="$(mktemp -d)"
+trap 'rm -rf "$test_tmp"' EXIT
+
 fail() {
     echo "TEST FAIL: $*" >&2
     exit 1
@@ -29,28 +32,36 @@ command -v node >/dev/null 2>&1 || fail "node is required to validate the result
 [ -f "$validator" ] || fail "missing required asset: $validator"
 
 # is_context_only_fixture PATH — true for a fixture the generic per-directory
-# loop below must not validate directly. Three kinds:
-#   - a *.known-ids.json / *.pass.json sidecar: matches the invalid/*.json
-#     glob (it IS a .json file) but is never itself passed to the validator
-#     as a document to validate — only as the argument to another fixture's
-#     --known-ids / --pass.
+# valid/invalid loops below must not validate directly (checked in BOTH —
+# a sidecar or a flag-dependent document can live under either, e.g. a
+# --pass sidecar naming a real reviewer envelope belongs beside the valid
+# adjudication document it supports). Three kinds:
+#   - a *.known-ids.json / *.pass.json / *.known-adjudicated.json /
+#     *.adjudication.json sidecar: matches the *.json glob (it IS a .json
+#     file) but is never itself passed to the validator as a document to
+#     validate — only as the argument to another fixture's --known-ids /
+#     --pass / --known-adjudicated / --adjudication.
 #   - a fixture whose invalid-ness depends ENTIRELY on a run-context flag
-#     (--known-ids, --run-id/--initiated-by, --pass) the generic loop never
-#     passes. By construction these are schema-valid and receipt-valid on
-#     their own — that is what makes the flagged case meaningful to test —
-#     so the generic loop's flagless invocation would otherwise accept them,
-#     contradicting "every invalid/*.json is rejected". They are exercised
-#     instead by the named run-context regression cases below, which pass
-#     the exact flag each one needs.
+#     (--known-ids, --run-id/--initiated-by, --pass, --known-adjudicated,
+#     --adjudication) the generic loop never passes. By construction these
+#     are schema-valid and receipt-valid on their own — that is what makes
+#     the flagged case meaningful to test — so the generic loop's flagless
+#     invocation would otherwise accept them, contradicting "every
+#     invalid/*.json is rejected". They are exercised instead by the named
+#     run-context regression cases below, which pass the exact flag each
+#     one needs.
 is_context_only_fixture() {
     case "$1" in
-    *.known-ids.json | *.pass.json) return 0 ;;
+    *.known-ids.json | *.pass.json | *.known-adjudicated.json | *.adjudication.json) return 0 ;;
     */result.envelope.schema/invalid/run-mismatch.json) return 0 ;;
     */result.reviewer.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-missing-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-extra-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-reviewer-priority-drift.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-head-mismatch.json) return 0 ;;
+    */adjudication.schema/invalid/known-adjudicated-collision.json) return 0 ;;
+    */run.schema/invalid/settlement-of-fixed-finding.json) return 0 ;;
+    */run.schema/invalid/settlement-of-unknown-finding.json) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -96,6 +107,7 @@ for dir in "$fixtures_dir"/*/; do
     if [ -d "${dir}valid" ]; then
         for f in "${dir}valid"/*.json; do
             [ -f "$f" ] || continue
+            is_context_only_fixture "$f" && continue
             valid_count=$((valid_count + 1))
             if ! out="$(node "$validator" "$kind" "$f" 2>&1)"; then
                 fail "valid fixture rejected: $f -> $out"
@@ -283,7 +295,7 @@ run_context_case \
     "an adjudication entry naming an id absent from the pass is rejected" \
     adjudication \
     "$adjudication_pass_dir/pass-cross-check-extra-entry.json" \
-    "names a finding id absent from --pass" \
+    "names a finding id absent from every --pass" \
     --pass "$adjudication_pass_dir/pass-cross-check.pass.json"
 
 run_context_case \
@@ -299,6 +311,38 @@ run_context_case \
     "$adjudication_pass_dir/pass-cross-check-head-mismatch.json" \
     "does not match the pass payload's reviewed_head" \
     --pass "$adjudication_pass_dir/pass-cross-check.pass.json"
+
+two_finder_dir="$fixtures_dir/adjudication.schema/valid"
+
+run_context_case \
+    "a union adjudication checked against only one of its two passes is rejected" \
+    adjudication \
+    "$two_finder_dir/two-finder-union-adjudication.json" \
+    "names a finding id absent from every --pass" \
+    --pass "$two_finder_dir/two-finder-a.pass.json"
+
+run_context_case \
+    "an adjudication entry already adjudicated by an earlier round document is rejected" \
+    adjudication \
+    "$adjudication_pass_dir/known-adjudicated-collision.json" \
+    "already adjudicated in an earlier round document of this run" \
+    --known-adjudicated "$adjudication_pass_dir/known-adjudicated-collision.known-adjudicated.json"
+
+settlement_cross_check_adjudication="$fixtures_dir/run.schema/invalid/settlement-cross-check.adjudication.json"
+
+run_context_case \
+    "a settlement of a finding adjudicated fix (not deferred) is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/settlement-of-fixed-finding.json" \
+    "was adjudicated fix, not defer" \
+    --adjudication "$settlement_cross_check_adjudication"
+
+run_context_case \
+    "a settlement of a finding absent from every supplied adjudication document is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/settlement-of-unknown-finding.json" \
+    "is not adjudicated in any supplied --adjudication document" \
+    --adjudication "$settlement_cross_check_adjudication"
 
 # Accepting cases for the same flags, so a false-positive rejection (the flag
 # firing when it should not) is caught too.
@@ -329,6 +373,101 @@ accept_context_case \
     adjudication \
     "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" \
     --pass "$fixtures_dir/result.reviewer.schema/valid/omator-397-challenge-r1.json"
+
+accept_context_case \
+    "a union adjudication checked against both of a two-finder round's passes is accepted" \
+    adjudication \
+    "$two_finder_dir/two-finder-union-adjudication.json" \
+    --pass "$two_finder_dir/two-finder-a.pass.json" \
+    --pass "$two_finder_dir/two-finder-b.pass.json"
+
+accept_context_case \
+    "a settlement of a genuinely deferred finding is accepted" \
+    run \
+    "$fixtures_dir/run.schema/valid/settlement-of-deferred.json" \
+    --adjudication "$settlement_cross_check_adjudication"
+
+# --- Argument validation: fail closed, never silently skip a check --------
+
+# A malformed --known-ids / --known-adjudicated file (valid JSON, but not an
+# array of strings) must abort validation entirely rather than silently
+# disable the check it was meant to feed — reuse any existing object-shaped
+# fixture as "not an array".
+not_an_array_file="$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json"
+
+fail_closed_case() {
+    local description="$1" kind="$2" file="$3" flag="$4" bad_file="$5" expected="$6"
+    local out status=0
+    out="$(node "$validator" "$kind" "$file" "$flag" "$bad_file" 2>&1)" || status=$?
+    if [ "$status" -ne 1 ]; then
+        fail "$description: expected exit 1, got $status: $out"
+    fi
+    case "$out" in
+    *"$expected"*) ;;
+    *) fail "$description failed for the wrong reason: $out" ;;
+    esac
+    echo "PASS: $description"
+}
+
+fail_closed_case \
+    "a --known-ids file that is not a JSON array of strings fails closed" \
+    reviewer \
+    "$fixtures_dir/result.reviewer.schema/valid/single-finding-null-line.json" \
+    --known-ids "$not_an_array_file" \
+    "must be a JSON array of strings"
+
+fail_closed_case \
+    "a --known-adjudicated file that is not a JSON array of strings fails closed" \
+    adjudication \
+    "$adjudication_pass_dir/known-adjudicated-collision.json" \
+    --known-adjudicated "$not_an_array_file" \
+    "must be a JSON array of strings"
+
+# --run-id and --initiated-by are a pair: one without the other is a usage
+# error (exit 2), not a guaranteed (and misleading) mismatch rejection.
+usage_error_case() {
+    local description="$1"
+    shift
+    local out status=0
+    out="$(node "$validator" "$@" 2>&1)" || status=$?
+    if [ "$status" -ne 2 ]; then
+        fail "$description: expected exit 2 (usage error), got $status: $out"
+    fi
+    echo "PASS: $description"
+}
+
+usage_error_case \
+    "--run-id without --initiated-by is a usage error" \
+    implementer "$fixtures_dir/result.implementer.schema/valid/completed.json" --run-id "run-0397-omator"
+
+usage_error_case \
+    "--initiated-by without --run-id is a usage error" \
+    implementer "$fixtures_dir/result.implementer.schema/valid/completed.json" --initiated-by human
+
+# A malformed --pass file must fail immediately, naming the --pass file
+# itself, before the primary document's own cross-checks ever run.
+printf '%s' '{"payload":{"findings":[]}}' >"$test_tmp/malformed-pass.json"
+if out="$(node "$validator" adjudication "$adjudication_pass_dir/pass-cross-check-missing-entry.json" \
+    --pass "$test_tmp/malformed-pass.json" 2>&1)"; then
+    fail "a malformed --pass file: expected rejection, validator accepted it"
+fi
+case "$out" in
+*"--pass file $test_tmp/malformed-pass.json is invalid"*) ;;
+*) fail "a malformed --pass file failed for the wrong reason: $out" ;;
+esac
+echo "PASS: a malformed --pass file fails immediately, naming the file"
+
+# Same contract for --adjudication (run kind's own context flag).
+printf '%s' '{"stage":"challenge"}' >"$test_tmp/malformed-adjudication.json"
+if out="$(node "$validator" run "$fixtures_dir/run.schema/valid/settlement-of-deferred.json" \
+    --adjudication "$test_tmp/malformed-adjudication.json" 2>&1)"; then
+    fail "a malformed --adjudication file: expected rejection, validator accepted it"
+fi
+case "$out" in
+*"--adjudication file $test_tmp/malformed-adjudication.json is invalid"*) ;;
+*) fail "a malformed --adjudication file failed for the wrong reason: $out" ;;
+esac
+echo "PASS: a malformed --adjudication file fails immediately, naming the file"
 
 # --- Coverage: every required field and every enum has an invalid fixture --
 # Walks each schema file's own required[]/enum[] declarations (following

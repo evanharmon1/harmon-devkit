@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-3020-known-adjudicated-collision",
+  "stage": "challenge",
+  "round": 2,
+  "reviewed_head": "3020a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r2-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "this id was already adjudicated in round 1's document",
+      "override": null
+    }
+  ]
+}

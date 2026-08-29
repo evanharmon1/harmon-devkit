@@ -1,0 +1,39 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4023-clean-with-unapplied-finding",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      { "name": "ci/build", "bucket": "pass", "run_id": "1001" }
+    ],
+    "codex_cycle": {
+      "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
+      "attempt": 1,
+      "trigger_comment_id": "555000111",
+      "exit_code": 0,
+      "accepted": {
+        "surface": "review",
+        "id": "777888",
+        "reviewed_commit": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae"
+      }
+    },
+    "findings": [
+      { "id": "review-9988776655", "body": "Please add a regression test for the empty-array case." }
+    ],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "clean",
+    "applied_dispositions": []
+  }
+}

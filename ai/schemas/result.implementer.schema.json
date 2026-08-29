@@ -7,17 +7,17 @@
   "additionalProperties": false,
   "properties": {
     "summary": {
-      "description": "Required (non-empty) when the envelope's status is completed; omitted or empty when blocked. Enforced by the validator, not by this schema.",
+      "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. Enforced by the validator, not by this schema.",
       "type": "string",
       "minLength": 1
     },
     "handoff": {
-      "description": "Required (non-empty) when the envelope's status is completed; omitted or empty when blocked. Enforced by the validator, not by this schema.",
+      "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. Enforced by the validator, not by this schema.",
       "type": "string",
       "minLength": 1
     },
     "ac_test_map": {
-      "description": "Required (non-empty) when the envelope's status is completed. Each entry's own shape (criterion + a non-empty tests[]) is enforced structurally regardless of status, since v1 never permitted a malformed entry either way — only the requiredness of the whole array is status-conditional.",
+      "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. Each entry's own shape (criterion + a non-empty tests[]) is enforced structurally regardless of status, since v1 never permitted a malformed entry either way — only the requiredness of the whole array is status-conditional.",
       "type": "array",
       "items": {
         "type": "object",
@@ -43,7 +43,7 @@
       "items": { "type": "string" }
     },
     "blocked_question": {
-      "description": "Required (present and non-empty) when the envelope's status is blocked; null or omitted when completed. Enforced by the validator, not by this schema.",
+      "description": "Required (non-null) when blocked; ignored when completed. Enforced by the validator, not by this schema.",
       "type": ["string", "null"]
     },
     "proposed_pr_title": {

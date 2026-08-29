@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "3010a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "produced_at": "2026-08-29T20:00:00Z",
+  "producer": {
+    "harness": "coderabbit",
+    "model": "coderabbit-1",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-3010-two-finder",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "3010a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+    "finder": "coderabbit",
+    "findings": [
+      {
+        "id": "challenge-r1-coderabbit-1",
+        "path": "some/other-file.md",
+        "line": 20,
+        "class": "hardening",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "coderabbit's finding in the two-finder round"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 0, "P2": 1, "P3": 0 }
+  }
+}

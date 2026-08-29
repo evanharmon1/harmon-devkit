@@ -1,0 +1,1 @@
+$result.payload.unanswered_thread_roots: must be empty when verdict is clean

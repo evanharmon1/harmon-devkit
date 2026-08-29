@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "run_id": "run-6040-settlement-cross-check",
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "6040a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "defer",
+      "reason": "carried to integration",
+      "evidence": "deferred at adjudication time",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r1-codex-cli-2",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "fixed at adjudication time, never deferred",
+      "override": null
+    }
+  ]
+}

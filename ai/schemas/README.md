@@ -83,19 +83,49 @@ keyword, for every one of these:
   `round`, and `finder` fields. This is actually a same-document check (the
   id and the pass metadata are both in `payload`), and the validator
   performs it unconditionally, not only when a run context is supplied.
-- **Adjudication ↔ source pass agreement (`--pass <envelope.json>`)** — an
-  adjudication document claims to adjudicate one reviewer pass, but nothing
-  in its own shape proves that: the pass's findings are a different
-  document. With `--pass`, the validator cross-checks completeness (every
-  finding in the pass has exactly one adjudication entry, and no entry names
-  an id the pass never returned), that each entry's `reviewer_priority`
-  still matches the finding's own `priority` in the pass (a copy that has
-  drifted from its source is worse than no copy), and that the document's
-  `run_id`/`stage`/`round`/`reviewed_head` agree with the pass envelope's
-  `run.run_id` / payload `stage`/`round`/`reviewed_head`. Without `--pass`
-  an adjudication document is still checked for internal self-consistency
-  (`checkAdjudicationEntries`) — it just isn't cross-checked against
+- **Adjudication ↔ source pass agreement (`--pass <envelope.json>`,
+  repeatable)** — an adjudication document claims to adjudicate one round's
+  reviewer pass(es), but nothing in its own shape proves that: the pass's
+  findings are a different document, and a round can be more than one pass
+  (spec § Configuration: "a logical round is one result per configured
+  finder at the same `reviewed_head`"). `--pass` may be given once per
+  finder in that round; the validator first checks every supplied pass
+  agrees with every other on `run_id`/`stage`/`round`/`reviewed_head`
+  (naming the offending `--pass` file if not), then cross-checks the
+  document against the UNION of their findings: completeness (every finding
+  across every pass has exactly one adjudication entry, and no entry names
+  an id absent from every pass), that each entry's `reviewer_priority`
+  still matches its finding's own `priority` in whichever pass returned it
+  (a copy that has drifted from its source is worse than no copy), and that
+  the document's own `run_id`/`stage`/`round`/`reviewed_head` agree with the
+  passes'. Without `--pass` an adjudication document is still checked for
+  internal self-consistency (`checkAdjudicationEntries`,
+  `checkAdjudicationIdAttribution`) — it just isn't cross-checked against
   anything external.
+- **Adjudication uniqueness across the run (`--known-adjudicated
+  <ids.json>`)** — a finding is adjudicated in exactly one round document,
+  ever (see `adjudication.schema.json`'s own `$comment` for the full
+  three-part story: within-document, id-grammar, and this one). Given the
+  ids an earlier round's document already adjudicated, this rejects any
+  entry in the current document naming one of them — mirroring
+  `--known-ids`' collision check on the reviewer side exactly, including
+  failing closed (see below) rather than silently skipping when the file
+  isn't shaped right.
+- **Settlement ↔ adjudication agreement (`--adjudication <file.json>`,
+  repeatable)** — `run.schema.json`'s `settlements[]` terminalizes a
+  `defer` disposition, but nothing in the run record itself proves the
+  finding it names was ever actually deferred (that fact lives in an
+  adjudication document, a different document entirely — spec § Results:
+  "there it is settled to `fix`, `decline`, or `file`" describes exactly
+  this transition). With one or more `--adjudication` files, every
+  settlement's `finding_id` must be adjudicated **exactly once** across the
+  union of the supplied documents, with disposition `defer` — zero matches
+  or more than one are both rejected (naming which documents disagree, in
+  the more-than-one case), and a match whose disposition isn't `defer`
+  (the finding was already resolved at adjudication time, never deferred)
+  is rejected too. Without `--adjudication`, unchanged: settlements are
+  still checked for an internal duplicate `finding_id`
+  (`checkSettlements`), just not against any adjudication.
 - **Evidence marker `run_id` agreement** — `run.schema.json`'s
   `evidence_comments[].marker.run_id` must equal the run record's own
   `run_id`. Unlike the checks above this one needs no external context (both
@@ -110,7 +140,13 @@ keyword, for every one of these:
   cannot express "these two properties disagree" as a structural condition
   the way it can express "this property equals X" — there is no `notEqual`
   or field-to-field comparison keyword in JSON Schema at all, so this is a
-  semantic check regardless of schema richness.
+  semantic check regardless of schema richness. The same reasoning is why
+  `run.schema.json`'s `promotion` ⇔ `outcome: "ready-for-review"` check
+  (below) and `settlements[].reference.type` ⇔ `disposition` check (below)
+  are semantic too, even though every value either reads is a sibling field
+  in the same document — the CONDITION in each case is an inequality or a
+  paired-values-must-agree rule, not a fixed value a property can be
+  checked against.
 
 Two structurally-adjacent checks are worth naming because they are **not**
 receipt validation, precisely because both values already live in the one
@@ -122,12 +158,68 @@ instance being validated:
   cross-checks each pass's declared `counts.P0..P3` against the true
   per-priority count in that same pass's `findings[]`, catching a pass whose
   bookkeeping and content disagree.
+- **A `clean` integrator verdict is a claim about the whole payload** —
+  `checkIntegratorCleanVerdict` reads `verdict` and, when it is `clean`,
+  requires every sibling field to actually be clean too: every `checks[]`
+  entry's `bucket` is `pass` or `skipping`, `unanswered_thread_roots` is
+  empty, `codex_cycle` is `null` or has `exit_code: 0` with `accepted`
+  present (never `10`/findings — a clean verdict cannot rest on an
+  unresolved Codex cycle), every `findings[].id` has a matching
+  `applied_dispositions[]` entry, and no applied disposition is `defer` (a
+  deferred finding is carried forward, not clean). All same-document; the
+  check runs unconditionally for role `integrator`.
+- **`run.schema.json`'s `promotion` ⇔ `outcome: "ready-for-review"`, both
+  directions** — a non-null `promotion` with any other outcome, or an
+  outcome of `"ready-for-review"` with a null `promotion`, are both
+  inconsistent documents (`checkRunPromotionOutcome`).
+- **`run.schema.json`'s `settlements[].reference.type` must match
+  `disposition`** — `fix → sha` (a 40-hex value), `file → issue_number`
+  (`^[1-9][0-9]*$`), `decline → comment_id` (non-empty) — the evidence a
+  human or CI can actually follow has to be shaped for what it claims to be
+  (`checkSettlementReferenceType`).
+- **`run.schema.json`'s `evidence_comments[]` uniqueness** — `id` is unique
+  (it is the harvester's own lookup key), and the `(marker.run_id,
+  marker.stage, marker.sequence)` triple is unique (that triple **is** the
+  deterministic marker the spec describes; two comments cannot legitimately
+  share one) — `checkEvidenceCommentsUniqueness`.
+- **Finding id round attribution without `--pass`**
+  (`checkAdjudicationIdAttribution`) — a finding id's own
+  `<stage>-r<round>` segments are part of its grammar, so they must equal
+  the adjudication document's own `stage`/`round` with no external context
+  at all; this runs unconditionally, and is what stops a finding from being
+  silently re-adjudicated under a different round's claimed stage/round
+  even before `--pass` or `--known-adjudicated` are considered.
+
+### Context files are validated before they are trusted
+
+`--pass` and `--adjudication` name other documents this family already has
+a validator for, so each one is validated in full — `--pass` as a complete
+reviewer envelope (envelope schema + reviewer payload + that payload's own
+receipt checks, with no run context of its own — no `--known-ids` is
+implied or inherited), `--adjudication` as a complete adjudication document
+— **before** the primary document's cross-checks against it ever run. An
+invalid context file fails immediately, naming that file, rather than
+producing a confusing cross-check failure against garbage. `--known-ids`
+and `--known-adjudicated` get the lighter version of the same discipline:
+each must be a JSON array of strings or the run fails closed with a clear
+error — a malformed file disables the very check it was meant to feed if
+this isn't enforced, which is worse than not being able to run the check at
+all, since it fails silently instead of loudly.
+
+`--run-id` and `--initiated-by` are one pair, not two independent flags:
+giving one without the other is a usage error (exit 2), not a check that
+happens to always fail, since `initiated_by` is a required enum that is
+never legitimately absent for a real run.
 
 ### Why `status`-conditional requirements are a semantic check, not `if`/`then`
 
 `result.implementer.schema.json`'s `summary`/`handoff`/`ac_test_map` are
-required only when `status: completed`; `blocked_question` only when
-`status: blocked`. The deciding field, `status`, lives on the **envelope**;
+required (non-empty) when the envelope's status is completed, and ignored
+(not forbidden — Foreman v1's `read_result()` tolerates the extra fields,
+and forbidding them would break a v1 producer that always sends the full
+shape) when blocked; `blocked_question` is required (non-null) when
+blocked, ignored when completed. The deciding field, `status`, lives on the
+**envelope**;
 the conditioned fields live in **`payload`** — two different instances from
 a schema's point of view (`result.implementer.schema.json` validates only
 `payload`). `if`/`then` composes conditions *within one instance*; it cannot
@@ -179,6 +271,22 @@ never needed it).
   full adjudicated view is the union of every round's document. A finding
   still has exactly one adjudication because a finding id names exactly one
   round.
+- **`run.schema.json`'s `stage_transitions[].stage` enum holds only the
+  stages within a run's own defined span**: `kickoff`, `claim`, `explore`,
+  `plan`, `implement`, `verify`, `challenge`, `review`, `security`,
+  `integration` — never `merge`, `deployment`, `release`, `smoke`, `retro`,
+  or `wrap`. `docs/product/domain.md`'s Concepts table scopes a "run" to
+  "from kickoff until ready-for-review or until it ends earlier", the same
+  boundary the spec draws when it says everything after ready-for-review
+  "is derived at read time ... never written by an actor" (§ Results).
+  `merge`/`deployment`/`release`/`smoke` are the spec's own named examples
+  of that derivation (from the PR timeline and repository-wide workflow/
+  release signals); `retro` and `wrap` are excluded for the identical
+  structural reason — domain.md's own lifecycle table places both after
+  `merge` too, so they fall outside the run's defined span exactly like the
+  four the spec names, even though the spec's § Results prose does not
+  enumerate them individually. See the enum's own `$comment` for the full
+  citation trail.
 - **Why `reviewer_priority` is duplicated inside each adjudication entry.**
   The spec keeps the raw reviewer output around specifically so
   "reviewer-vs-orchestrator disagreement can be measured" (§ Results); a copy
@@ -263,14 +371,23 @@ invariant they exercise needs context no single document carries (see
 ships a `.known-ids.json` sidecar (a JSON array, passed as the validator's
 `--known-ids`); the four `adjudication.schema/invalid/pass-cross-check-*.json`
 fixtures share one `.pass.json` sidecar (a reviewer envelope, passed as
-`--pass`); and the run-mismatch case
-(`result.envelope.schema/invalid/run-mismatch.json`) is exercised with a
-hardcoded `--run-id`/`--initiated-by` pair in `scripts/test-result-schemas.sh`
-rather than a sidecar, since those are two plain strings, not a document. All
-of these — plus the sidecars themselves — are excluded from the generic
-per-directory valid/invalid loop (`is_context_only_fixture` in
-`scripts/test-result-schemas.sh`) and exercised only by name, since they are,
-by construction, schema-valid and receipt-valid without the extra context.
+`--pass`); `adjudication.schema/invalid/known-adjudicated-collision.json`
+ships a `.known-adjudicated.json` sidecar; `run.schema/invalid/settlement-of-*-finding.json`
+and `run.schema/valid/settlement-of-deferred.json` share one
+`.adjudication.json` sidecar (an adjudication document, passed as
+`--adjudication`); `adjudication.schema/valid/two-finder-union-adjudication.json`
+(itself schema-valid and receipt-valid on its own, and so lives in the
+generic corpus as an ordinary valid fixture) is additionally exercised
+against two `.pass.json` sidecars together (accepted — a genuine two-finder
+round) and against only one of them (rejected, in the named cases); and the
+run-mismatch case (`result.envelope.schema/invalid/run-mismatch.json`) is
+exercised with a hardcoded `--run-id`/`--initiated-by` pair in
+`scripts/test-result-schemas.sh` rather than a sidecar, since those are two
+plain strings, not a document. All sidecars, and every fixture whose
+invalid-ness depends entirely on a flag the generic loop never passes, are
+excluded from both the valid and invalid per-directory loops
+(`is_context_only_fixture` in `scripts/test-result-schemas.sh`) and
+exercised only by name.
 
 `ai/schemas/fixtures/result.reviewer.schema/valid/omator-397-*.json` and
 `ai/schemas/fixtures/adjudication.schema/valid/omator-397-*-adjudication.json`
@@ -299,15 +416,21 @@ commit; `finder` is `codex-cli` throughout, matching the ledger.
 ```sh
 node scripts/validate-result-schemas.mjs <envelope|implementer|reviewer|integrator|adjudication|run> <file> \
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
-  [--pass <reviewer-envelope.json>]
+  [--pass <reviewer-envelope.json> ...] [--known-adjudicated <ids.json>] \
+  [--adjudication <file.json> ...]
 ```
 
-Exit 0 and a one-line summary when valid; exit 1 and every violation (one per
-line) otherwise. `scripts/test-result-schemas.sh` (wired into `task
-test:result-schemas`, run from `task verify`) runs the whole fixture corpus
-through this validator, the two run-context regression cases above, and a
-coverage check that every `required` field and every `enum` declared
-anywhere in each schema has at least one invalid fixture exercising it.
+`--pass` and `--adjudication` are repeatable (a round can be more than one
+finder's pass; a run's settlements can be checked against more than one
+round's adjudication document). `--run-id` and `--initiated-by` must be
+given together. Exit 0 and a one-line summary when valid; exit 1 and every
+violation (one per line) otherwise; exit 2 for a usage error (bad `kind`,
+missing file, `--run-id`/`--initiated-by` given alone). `scripts/test-result-schemas.sh`
+(wired into `task test:result-schemas`, run from `task verify`) runs the
+whole fixture corpus through this validator, every run-context regression
+case above, and a coverage check that every `required` field and every
+`enum` declared anywhere in each schema has at least one invalid fixture
+exercising it.
 
 ## The Foreman conformance contract
 

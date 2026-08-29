@@ -34,11 +34,10 @@
         "required": ["stage", "entered_at"],
         "properties": {
           "stage": {
-            "description": "The dev flow lifecycle stage names, docs/product/domain.md § Lifecycles. 'escalate' is not a named stage (it is a terminal edge in that doc's state diagram, not a numbered stage) — an escalated run instead sets `outcome: escalated` and its last real stage_transitions entry's `exit` names the reason.",
+            "description": "Only the stages within the run's own defined span: docs/product/domain.md's Concepts table scopes a 'run' to 'from kickoff until ready-for-review or until it ends earlier' — the same boundary specs/dev-flow-v2.md's Results section draws when it says everything after ready-for-review 'is derived at read time ... never written by an actor'. merge/deployment/release/smoke (stages 11-14) are the explicit examples given there (from the PR timeline and repository-wide workflow/release signals, never a stage_transitions entry); retro and wrap (15-16) are excluded for the identical reason — domain.md's own lifecycle table places both after merge, so they too fall outside the run's defined span even though the spec does not name them individually. 'escalate' is not a named stage at all (it is a terminal edge in that doc's state diagram) — an escalated run instead sets `outcome: escalated` and its last real stage_transitions entry's `exit` names the reason.",
             "enum": [
               "kickoff", "claim", "explore", "plan", "implement", "verify",
-              "challenge", "review", "security", "integration", "merge",
-              "deployment", "release", "smoke", "retro", "wrap"
+              "challenge", "review", "security", "integration"
             ]
           },
           "entered_at": {
