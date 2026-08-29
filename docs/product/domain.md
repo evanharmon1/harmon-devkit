@@ -90,8 +90,12 @@ stateDiagram-v2
     merge --> deployment
     merge --> release
     deployment --> smoke
+    deployment --> retro : smoke skipped
+    deployment --> wrap : smoke and retro skipped
     smoke --> retro
+    smoke --> wrap : retro skipped
     release --> retro
+    release --> wrap : retro skipped
     merge --> wrap
     retro --> wrap
     wrap --> [*]

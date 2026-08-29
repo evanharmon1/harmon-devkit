@@ -50,5 +50,8 @@ copy.
   author, and payload digest, and the harvester accepts only comments it
   names, from the orchestrator's login or the repo's trusted actors, whose
   body still matches the digest — anything else is reported as tampered.
-- Comment size is bounded (~65 KB); a stage whose rounds exceed it is split
-  across comments in order, which the stats script must reassemble.
+- "One comment per stage" is the normal case, not a limit: when a stage's
+  rounds exceed GitHub's ~65 KB comment size, the comment is continued in
+  order under the same marker sequence, and the stats script reassembles it.
+- A run that ends without a PR posts its stage comments on the issue instead,
+  beside the run record that lives there from kickoff.

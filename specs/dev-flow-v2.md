@@ -174,8 +174,10 @@ Every result is an **envelope** wrapping a per-role payload
   `provenance`, `fingerprint`, `priority` (the reviewer's label),
   `recommended_disposition`, `evidence`. **Immutable once returned.** A
   finding `id` is unique within the run by construction —
-  `<stage>-r<round>-<finder>-<n>` — so an adjudication or a `repeat-of`
-  reference can never resolve to a finding from another round.
+  `<stage>-r<round>-<finder>-<n>` — and receipt validation **rejects a
+  result whose ids collide** with each other or with any finding already in
+  the run, so an adjudication or a `repeat-of` reference can never resolve
+  to two findings.
 - **Heads must agree.** Receipt validation rejects any result whose payload
   names a head (`reviewed_head`, the integrator's reviewed-commit stamp)
   different from the envelope's `head`; a schema-valid result can never carry
@@ -198,8 +200,10 @@ Every result is an **envelope** wrapping a per-role payload
   stops at ready-for-review and nothing else holds the pen: merge and
   post-ready human commits from the PR's own timeline; deployment, release,
   and smoke from **repository-wide** workflow runs, releases, and the rolling
-  release PR, correlated to the run by the merged commit's presence in the
-  default branch at the event's SHA.
+  release PR, correlated to the run by the **first** delivery whose commit range
+  (previous deployment or release SHA, exclusive, to the event SHA) contains
+  the merge commit — later deliveries carry the commit too and are not this
+  run's.
 
 devkit ships **conformance fixtures** (valid and invalid examples per schema)
 beside the schemas. They are the shared contract with Foreman, which tests its
@@ -227,8 +231,10 @@ where it can be tested:
 
 - The script may **downgrade** a reviewer's `original` to `round:N`, or
   refuse a `repeat-of`/`supersedes`, only with evidence it records alongside
-  the finding; it never silently overrides, and a disagreement it cannot
-  decide keeps the reviewer's assertion and is logged as `unverified`.
+  the finding; it never silently overrides. A case it cannot decide is
+  logged `unverified` and **excluded from every exit predicate** — it keeps
+  the reviewer's text for the retro but cannot move the exit in either
+  direction, so a mistaken assertion can neither force nor hide divergence.
 - A finding's identity is stable across the fix that addresses it: a
   round-2 recurrence of a round-1 finding is detected as a repeat whether or
   not the fix rewrote the implicated lines.
@@ -346,9 +352,15 @@ directory while the branch is worked, **keyed by `run_id`**
 `dev-flow/branches/<branch>` pointer naming the current run — worktree-safe,
 invisible to `git status`, and immune to a reused branch name or an abandoned
 run: a new run gets a new directory, and the exit script only ever reads the
-run the pointer names. When the draft PR opens they are **posted as one PR
-comment per confidence stage** in a fenced block, and the run record is
-updated at every later transition up to ready-for-review. The renderer
+run the pointer names. When the draft PR opens they are **posted as one
+comment per confidence stage** on the PR, in a fenced block (continued in
+order across further comments only when GitHub's size limit forces it — the
+harvester reassembles by marker sequence). A run that **ends without a PR** —
+capped with P0/P1, abandoned, escalated — posts the same stage comments on
+the **issue**, beside the run record that already lives there, as part of its
+blocker report: the failed trajectories are the ones replay most needs, and
+they must not exist only in one clone. The run record is updated at every
+later transition up to ready-for-review. The renderer
 ([#637](https://github.com/evanharmon1/harmon-devkit/issues/637)) writes the
 human tables into the PR body from the same JSON. Nothing is deleted at PR
 open.
@@ -359,18 +371,24 @@ Two rules make the posted evidence trustworthy on a public repository:
   can quote the very credential a reviewer found. Every evidence post runs
   the repo's secret scanner over the JSON first and fails closed; the branch
   scan never sees git-directory files, so this is a separate obligation.
-- **Reserved before posted.** Each evidence comment is reserved in the run
-  directory (stage, attempt, the marker it will carry) before the GitHub
-  write, and the comment body carries that marker. A retry after a timed-out
-  response first looks the marker up on the PR and adopts the comment it
-  finds; only a marker with no comment is posted again — the same
-  reserve-first rule the Codex cycle already follows.
+- **Reserved before posted.** Each evidence comment carries a
+  **deterministic** marker — `run_id`, stage, sequence — computable from the
+  run record alone, and is reserved in the run directory before the GitHub
+  write. Any resume, on any machine, first looks the marker up on the PR or
+  issue and adopts the comment it finds; only a marker with no comment is
+  posted — the same reserve-first rule the Codex cycle already follows, and
+  recoverable without the clone that made the reservation.
 - **Authenticated when read.** The run record stores each evidence comment's
   id, author, and payload digest. The harvester accepts a comment only when
   its id is one the run record names, its author is the run's orchestrator
   login (or the repo's configured trusted actors), and its current body
   hashes to the recorded digest — so an edited, deleted, or impostor comment
-  is reported as tampered evidence, never silently replayed.
+  is reported as tampered evidence, never silently replayed. The run record
+  comment is subject to the **same author check**, so a stranger cannot
+  forge a record that vouches for their own evidence; an orchestrator that
+  rewrites its own record is outside the threat model — it could equally have
+  lied in the first place, and the reviewer's raw output on the same comments
+  is what the retro compares against.
 
 See [decision 0002](../docs/decisions/0002-round-evidence-lives-on-the-pr.md).
 
