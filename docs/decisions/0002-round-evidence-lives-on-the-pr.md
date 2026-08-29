@@ -25,10 +25,12 @@ the git directory is only a working copy:
 - The **run record** is a comment on the **issue**, reserved at kickoff and
   edited in place at every transition up to ready-for-review — it exists
   before any branch or PR does, so a run that dies early still has one.
-- The **round evidence** (round JSONs plus the adjudication record) is
-  **posted as one comment per confidence stage** in a fenced JSON block — on
-  the **PR** when the draft opens, or on the **issue** beside the run record
-  when the run ends without a PR.
+- The **round evidence** (a round's JSON plus its adjudication) is posted
+  to the **issue** as **one comment per round, the moment the round is
+  adjudicated** — so a worker lost mid-run forfeits at most the round in
+  flight. When the draft PR opens, one comment per confidence stage on the
+  **PR** carries the rounds so far and links the per-round issue comments;
+  the PR body renders the human tables from the same JSON.
 
 Nothing is deleted at PR open.
 

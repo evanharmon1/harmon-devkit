@@ -84,7 +84,8 @@ stateDiagram-v2
     review --> security : converged / capped-clean
     review --> escalate : capped with P0/P1, or diverging refused
     escalate --> wrap : terminal for this run — a human continues by kicking off a new run
-    security --> integration
+    security --> integration : clean
+    security --> implement : failed — fix, re-verify, re-scan
     integration --> implement : remediation (CI, human, or Codex finding needing code), under the remediation cap
     implement --> integration : remediation fix verified and pushed
     integration --> escalate : integration or remediation cap reached

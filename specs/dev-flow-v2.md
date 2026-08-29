@@ -51,7 +51,18 @@ denominator is every kicked-off issue, so abandoned runs count as failures;
 that is why the run record is created **at kickoff, on the issue**, as a
 comment the orchestrator reserves and then edits in place, before any branch
 or PR exists — a run that dies before `gh pr create` still leaves its record
-where the stats script looks. An **intervention** is any human action
+where the stats script looks. The metric is reported over a **closed
+cohort**: issues kicked off inside the reporting window whose runs are all
+terminal, plus non-terminal runs with no run-record update for
+`[convergence].stale_after` (shipped default 7 days), which the script
+**terminalizes as abandoned** — so the reported share is reproducible
+for a given window and does not change with the hour it is queried.
+"Reached ready-for-review" means the run record carries the orchestrator's
+own promotion entry — the readiness-gate pass fingerprint and the
+`gh pr ready` it issued. A ready transition on the PR **without** that entry
+is an unexplained promotion (AGENTS.md's known external-actor signature),
+is never counted as success, and is reconciled by the existing
+unexplained-promotion procedure. An **intervention** is any human action
 between kickoff and ready-for-review, except answering an implementer's
 `blocked_question`, which is counted separately as *asked*. A human fix after ready-for-review
 is a failure of the readiness gate, tracked as a second number. The metric is
@@ -119,7 +130,7 @@ file (`ai/agents/<role>.md`) is one implementation of a role.
 | `implementer` | `result.implementer` | commits on the branch; the round push via `push-round.sh` | open PRs, merge, adjudicate |
 | `reviewer` | `result.reviewer` | nothing outside its result | fix, dispose, decide an exit |
 | `integrator` | `result.integrator` | the Codex trigger comment; thread replies of **given** text | author reply text, dispose, promote |
-| orchestrator (the session) | — | dispositions, adjudication record, PR body, `gh pr ready` | merge; override an exit downward |
+| orchestrator (the session) | — | dispositions, adjudication record, `gh pr create --draft`, the PR body, evidence and run-record comments, `gh pr ready` | merge; override an exit downward |
 
 **This spec is the anchor; the implementation issues are reconciled to it.**
 [#634](https://github.com/evanharmon1/harmon-devkit/issues/634),
@@ -213,7 +224,9 @@ Every result is an **envelope** wrapping a per-role payload
 - The **run record** (`run.json`) is the only home of mutable run state —
   `interventions[]`, stage transitions, `outcome`, `pr`. An envelope carries
   only the immutable identity (`run_id`, `initiated_by`), so two documents can
-  never disagree. It is written by whoever kicked the run off — the session or
+  never disagree — and receipt validation **rejects a result whose `run_id`
+  is not the run the branch pointer names**, so a stale result from an
+  earlier retry or a concurrent run cannot attach to the wrong trajectory. It is written by whoever kicked the run off — the session or
   Foreman ([foreman#184](https://github.com/ponderousdev/foreman/issues/184)) —
   up to ready-for-review. Everything after that is **derived at read time** by
   `dev-flow-stats.sh`, never written by an actor, because the orchestrator
@@ -345,7 +358,9 @@ is clean, which is where omator#397 would have been stopped.
   stage feeding on itself. `unverified` findings count toward the totals.
 - `repeat_after_fix()` — true when any current-round finding is
   `repeat-of:<id>` (verified, or a script-detected repeat) where `<id>`'s
-  adjudicated disposition was `fix` in an earlier round.
+  adjudicated disposition **changed the code** — `fix`, `restructure`, or
+  `delete` — in an earlier round. (A repeat after `decline` is the reviewer
+  disagreeing, not the loop feeding on itself.)
 
 Boundary fixtures for each — empty current round, a single round, a
 denominator of zero, a repeat whose original was `decline`d — ship with the
@@ -373,10 +388,14 @@ The v2 shape, on top of the shipped migrated file:
   `converged` cannot fire. `remediation` bounds fix pushes in the integration
   stage (shipped default 4 at `standard`, scaling with the level like the
   others; its terminal action is escalation, below). There is no cap for
-  checks. **A cap of 0 disables the stage**: no round runs and the stage
-  advances with exit `capped`, reason `disabled` — the one case where
-  capped-clean needs no current-head round — exactly as the migrated policy
-  already defines it. A `min_rounds` above a cap of 0 is a config error.
+  checks. **A `challenge` or `review` cap of 0 disables that confidence
+  stage**: no round runs and the stage advances with exit `capped`, reason
+  `disabled` — the one case where capped-clean needs no current-head
+  round — exactly as the migrated policy already defines it. A `min_rounds`
+  above a cap of 0 is a config error. Zero means something different for
+  the integration caps, defined next: `integration = 0` waives only the
+  Codex cycle, and `remediation = 0` means the first finding that needs a
+  fix push escalates.
 - The **integration cap bounds Codex re-review cycles only.** Answering every
   human and CI finding is unconditional; `integration = 0` means "no Codex
   cycle required", never "abandon reviews". That is why a policy may lower it
@@ -412,10 +431,12 @@ The v2 shape, on top of the shipped migrated file:
 - `[stage.<stage>].finders[]` — which registry finders serve each confidence
   stage and integration. With more than one finder, a **logical round** is
   one result per configured finder at the same `reviewed_head`; it is
-  complete only when every finder has returned (a finder that fails is a
-  `blocked` result and the round is incomplete, never silently one finder
-  short), its findings are the union, and caps and `min_rounds` count
-  logical rounds.
+  complete only when every finder has returned, its findings are the union,
+  and caps and `min_rounds` count logical rounds. A finder that fails returns
+  `blocked`; the orchestrator retries that finder **once**, and a second
+  failure ends the run with exit `capped`, reason `finder_unavailable`, and
+  a blocker naming the finder — never a round silently one finder short, and
+  never an unbounded retry.
 - `tier:<role>:*` label values are hand-added to `label-registry.json`.
 - **Self-modified policy is read from the merge base.** When the change
   under review edits `.devflow.toml`, **every value read during policy
@@ -439,9 +460,14 @@ comment that is its durable home), **keyed by `run_id`**
 `dev-flow/branches/<branch>` pointer naming the current run — worktree-safe,
 invisible to `git status`, and immune to a reused branch name or an abandoned
 run: a new run gets a new directory, and the exit script only ever reads the
-run the pointer names. When the draft PR opens the round evidence is
-**posted as one comment per confidence stage** on the PR — the run record
-stays on the issue and is edited there — in a fenced block (continued in
+run the pointer names. **Each round's evidence is posted to the issue the
+moment the round is adjudicated** — one comment per round, beside the run
+record — so a worker that disappears after a round loses at most the round
+in flight, and no later process is needed to upload a trajectory. When the
+draft PR opens, the orchestrator posts **one comment per confidence stage**
+on the PR that carries the stage's rounds so far and links the per-round
+issue comments (later rounds append to the issue and are linked from the
+PR body) — the run record stays on the issue and is edited there — in a fenced block (continued in
 order across further comments only when GitHub's size limit forces it — the
 harvester reassembles by marker sequence). A run that **ends without a PR** —
 capped with P0/P1, abandoned, escalated — posts the same stage comments on
@@ -470,8 +496,10 @@ Two rules make the posted evidence trustworthy on a public repository:
   recoverable without the clone that made the reservation.
 - **Authenticated when read.** The run record stores each evidence comment's
   id, author, and payload digest. The harvester accepts a comment only when
-  its id is one the run record names, its author is the run's orchestrator
-  login (or the repo's configured trusted actors), and its current body
+  its id is one the run record names, its author's **immutable actor ID**
+  matches the run's orchestrator (or a configured trusted actor — logins are
+  stored for display only, since a rename would otherwise turn valid
+  evidence into "tampered"), and its current body
   hashes to the recorded digest — so an edited, deleted, or impostor comment
   is reported as tampered evidence, never silently replayed. The run record
   comment is subject to the **same author check**, so a stranger cannot
@@ -511,7 +539,7 @@ absorbed by the issue that carries their criteria;
 - [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (post refused); a stage split across comments (reassembled); a run capped before any PR (stage evidence and run record found on the issue).
 - [ ] `dev-flow-stats.sh` prints the success metric and replays policies.
 - [ ] AGENTS.md's Dev Loop is the stage table, the constitution rules, and references.
-- [ ] Foreman accepts envelope v2, reads `.devflow.toml`, writes run records, and requires converged round artifacts.
+- [ ] Foreman accepts envelope v2, reads `.devflow.toml`, writes run records, and requires round artifacts whose recomputed exit is a terminal clean outcome — `converged`, capped-clean, or `capped`/`disabled` — for each confidence stage.
 
 ## Acceptance criteria (Given / When / Then)
 
