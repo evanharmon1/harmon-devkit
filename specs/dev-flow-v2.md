@@ -112,6 +112,18 @@ file (`ai/agents/<role>.md`) is one implementation of a role.
 | `integrator` | `result.integrator` | the Codex trigger comment; thread replies of **given** text | author reply text, dispose, promote |
 | orchestrator (the session) | — | dispositions, adjudication record, PR body, `gh pr ready` | merge; override an exit downward |
 
+**Declared writes are enforced, not trusted.** A role's `writes` list is an
+authorization boundary only where something enforces it: the agent file's
+tool allowlist (`allowed-tools` frontmatter) denies everything not listed,
+and every permitted external write goes through a broker script that
+validates its one action (`push-round.sh` for the round push; a thread-reply
+helper that posts exactly the text it is given). A harness that cannot scope
+a subagent's tools (a plain subagent inheriting the orchestrator's shell and
+token) runs the role with the brokers as the only guard, and the run record
+says so — `producer.write_scoping = "brokers-only"` — so a reviewer of the
+metric can discount it. Foreman's sandbox is the equivalent scoping for
+headless runs.
+
 **Briefs are free-form; results are schema-bound.** The orchestrator → agent
 brief is prose. The agent → orchestrator result is validated on receipt
 against `ai/schemas/` before the orchestrator reads it.
@@ -139,7 +151,7 @@ Every result is an **envelope** wrapping a per-role payload
   "head": "<40-hex sha>",
   "produced_at": "2026-08-29T15:04:05Z",
   "producer": { "harness": "claude-code", "model": "…", "tier": "frontier" },
-  "run": { "run_id": "…", "initiated_by": "human", "interventions": [] },
+  "run": { "run_id": "…", "initiated_by": "human" },
   "payload": { }
 }
 ```
@@ -159,8 +171,16 @@ Every result is an **envelope** wrapping a per-role payload
   (`fix | restructure | delete | decline | defer`). Scripts read the
   adjudicated view; the raw reviewer output is kept so reviewer-vs-orchestrator
   disagreement can be measured.
-- The **run record** (`run.json`) is written by whoever kicked the run off —
-  the session or Foreman ([foreman#184](https://github.com/ponderousdev/foreman/issues/184)).
+- The **run record** (`run.json`) is the only home of mutable run state —
+  `interventions[]`, stage transitions, `outcome`, `pr`. An envelope carries
+  only the immutable identity (`run_id`, `initiated_by`), so two documents can
+  never disagree. It is written by whoever kicked the run off — the session or
+  Foreman ([foreman#184](https://github.com/ponderousdev/foreman/issues/184)) —
+  up to ready-for-review. Everything after that (merge, deployment, release,
+  post-ready human commits) is **derived at read time** by
+  `dev-flow-stats.sh` from GitHub's own timeline for the PR, never written by
+  an actor: the orchestrator stops at ready-for-review and nothing else holds
+  the pen.
 
 devkit ships **conformance fixtures** (valid and invalid examples per schema)
 beside the schemas. They are the shared contract with Foreman, which tests its
@@ -173,12 +193,22 @@ Finding fields:
 - `class ∈ design | correctness | consistency | hardening | nit`
 - `provenance ∈ original | round:N` — whether the finding is about the change
   or about round N's fix. **Asserted by the reviewer, verified by the exit
-  script**: a `path:line` inside a hunk introduced by round N's fix commit is
-  `round:N`; the script's answer overrides the assertion and logs the
-  disagreement. One fix commit per round keeps the mapping unambiguous.
+  script**: the script runs `git blame` for `path:line` **at the finding's
+  `reviewed_head`** — the tree the reviewer actually saw, so later edits and
+  renames cannot move the coordinate — and maps the blamed commit to the
+  round whose fix commit it is (`round:N`) or to none (`original`). The
+  script's answer overrides the assertion and logs the disagreement. One fix
+  commit per round keeps the commit → round mapping unambiguous.
 - `fingerprint ∈ new | repeat-of:<id> | supersedes:<id>` — asserted by the
-  reviewer (it has prior rounds' findings in its brief); the script requires
-  the referenced id to exist and share a path, else the assertion is refused.
+  reviewer (it has prior rounds' findings in its brief). The script computes
+  its own **anchor** for every finding — the blamed commit and the blame
+  hunk's line range at `reviewed_head`, carried forward through later fix
+  commits by blame rather than by line number — and checks the assertion
+  against it: `repeat-of`/`supersedes` must name an existing id whose anchor
+  overlaps, else the assertion is refused; a finding asserted `new` whose
+  anchor overlaps an unresolved prior finding is logged as a suspected repeat
+  and counted as one by `repeat_after_fix`. Path equality alone never
+  satisfies either test.
 
 Exit outcomes, computed per confidence stage by the exit script
 ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)) from the
@@ -187,13 +217,26 @@ adjudicated rounds and `[convergence]`:
 | Outcome | Meaning | Orchestrator may |
 |---|---|---|
 | `continue` | no exit predicate satisfied; cap not reached | dispatch the next fix round |
-| `converged` | an exit predicate satisfied, and `min_rounds` met | advance; or override **upward** (one more round) with a recorded reason |
+| `converged` | **zero adjudicated P0/P1 of any class** (a universal precondition, not a predicate), an exit predicate satisfied, and `min_rounds` met | advance; or override **upward** (one more round) with a recorded reason |
 | `diverging` | findings are feeding on earlier rounds' fixes | dispatch a fix round **only** with a `delete` or `restructure` disposition on the `round:N` findings; otherwise the run stops with a blocker |
-| `capped` | cap reached | advance if zero adjudicated P0/P1 remain; otherwise **escalate to a human** — no PR is opened |
+| `capped` | cap reached without `converged` or `diverging` | advance if zero adjudicated P0/P1 remain (**capped-clean**); otherwise **escalate to a human** — no PR is opened |
+
+**Precedence is normative**: the script evaluates `diverging`, then
+`converged`, then `capped`, then `continue`, and returns the first that holds.
+Divergence outranks convergence because a stage that is feeding on its own
+fixes has not converged whatever a single round looks like; the cap outranks
+`continue` because a cap is a ceiling. Two implementations given the same
+rounds and policy must return the same outcome and the same `reason`.
 
 Predicates are a **catalog implemented in the script** and composed in TOML
-per outcome with `any`/`all`, per-rigor overridable — the shape is the
-policy, so tuning never means editing the script:
+per outcome with `any`/`all` — the shape is the policy, so tuning never
+means editing the script. A rigor level may **tighten** this (add a
+`diverging` predicate, raise a `converged` threshold, remove a `converged`
+predicate) and never loosen it: `rigor:*` labels are advisory and can be
+applied by anyone with triage, so an override that could weaken an exit would
+let a label change safety semantics rather than the amount of review. Loosening
+is an explicit-instruction edit to the base `[convergence]` table, resolved
+from the merge base like every other cap.
 
 ```toml
 [convergence]
@@ -207,9 +250,13 @@ diverging = { any = [
 ] }
 ```
 
-Rounds whose `reviewed_head` is not an ancestor of the current head are
-excluded (`continue`, reason `invalidated`); incomparable rounds never
-converge. `dev-flow-stats.sh --replay` scores any candidate policy against
+**Only rounds that reviewed the current head can satisfy `converged` or
+`capped`-clean.** Rounds on an ancestor head still count toward trajectory
+predicates (`count_rising`, `provenance_share`, `repeat_after_fix`) and toward
+`min_rounds`, but a clean round on an ancestor is not a clean round on the
+code that will ship — any commit after it, a P2 fix included, needs a round of
+its own. Rounds whose `reviewed_head` is not an ancestor at all are excluded
+(`continue`, reason `invalidated`); incomparable rounds never converge. `dev-flow-stats.sh --replay` scores any candidate policy against
 every retained trajectory before it ships; the omator#397 ledger is the first
 fixture.
 
@@ -243,6 +290,13 @@ The v2 shape, on top of the shipped migrated file:
 - `[stage.<stage>].finders[]` — which registry finders serve each confidence
   stage and integration.
 - `tier:<role>:*` label values are hand-added to `label-registry.json`.
+- **Self-modified policy is read from the merge base.** When the change
+  under review edits `.devflow.toml`, every outcome-affecting v2 field —
+  `[caps]`, `[convergence]`, `[gates]` (`docs_only_paths` included),
+  `[role]`, `[stage]` — is resolved from the merge-base copy, exactly as
+  AGENTS.md already requires for caps, so a branch cannot lower the gate it
+  is changing or classify its code as docs-only. An explicit human
+  instruction still overrides.
 - **The legacy shape is refused** with a migration hint
   ([#604](https://github.com/evanharmon1/harmon-devkit/issues/604)). No skill
   or script carries both shapes.
@@ -250,14 +304,32 @@ The v2 shape, on top of the shipped migrated file:
 ## Evidence
 
 Round JSONs, the adjudication record, and the run record live in the git
-directory while the branch is worked
-(`$(git rev-parse --git-path dev-flow/<branch>/)`), worktree-safe and
-invisible to `git status`. When the draft PR opens they are **posted as one PR
+directory while the branch is worked, **keyed by `run_id`**
+(`$(git rev-parse --git-path dev-flow/runs/<run_id>/)`) with a
+`dev-flow/branches/<branch>` pointer naming the current run — worktree-safe,
+invisible to `git status`, and immune to a reused branch name or an abandoned
+run: a new run gets a new directory, and the exit script only ever reads the
+run the pointer names. When the draft PR opens they are **posted as one PR
 comment per confidence stage** in a fenced block, and the run record is
-updated at every later transition. The renderer
+updated at every later transition up to ready-for-review. The renderer
 ([#637](https://github.com/evanharmon1/harmon-devkit/issues/637)) writes the
 human tables into the PR body from the same JSON. Nothing is deleted at PR
-open. See [decision 0002](../docs/decisions/0002-round-evidence-lives-on-the-pr.md).
+open.
+
+Two rules make the posted evidence trustworthy on a public repository:
+
+- **Scanned before posted.** Finding and evidence strings are free text and
+  can quote the very credential a reviewer found. Every evidence post runs
+  the repo's secret scanner over the JSON first and fails closed; the branch
+  scan never sees git-directory files, so this is a separate obligation.
+- **Authenticated when read.** The run record stores each evidence comment's
+  id, author, and payload digest. The harvester accepts a comment only when
+  its id is one the run record names, its author is the run's orchestrator
+  login (or the repo's configured trusted actors), and its current body
+  hashes to the recorded digest — so an edited, deleted, or impostor comment
+  is reported as tampered evidence, never silently replayed.
+
+See [decision 0002](../docs/decisions/0002-round-evidence-lives-on-the-pr.md).
 
 ## Sequencing
 
@@ -283,7 +355,7 @@ absorbed by the issue that carries their criteria;
 
 - [ ] Roles, results, envelope, run record, and adjudication record exist as JSON schemas with valid/invalid fixtures.
 - [ ] The exit script computes `continue | converged | diverging | capped` from adjudicated rounds and `[convergence]`, verifies provenance and fingerprints, and replays omator#397.
-- [ ] The readiness gate accepts only a schema-valid `result.integrator` for the current head as evidence of a Codex verdict.
+- [ ] The readiness gate accepts only a schema-valid `result.integrator` for the current head as evidence of a Codex verdict — necessary, not sufficient: the gate's own pre/post-promotion content fingerprint over body, reviews, and comments (`readiness-gate.sh`) stays, because a human finding can land without moving the head.
 - [ ] `.devflow.toml` has `[caps]`, `[gates]`, `[convergence]`, `[role]`, `[stage]`; the legacy shape is refused.
 - [ ] Round evidence survives PR open and is harvestable with `gh api`.
 - [ ] `dev-flow-stats.sh` prints the success metric and replays policies.

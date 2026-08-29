@@ -40,7 +40,7 @@ stage name, never a synonym (`gauntlet` is retired; see the glossary).
 | 3 | explore | Research / scout the codebase or external sources before committing to a design. | yes |
 | 4 | plan | Design or spec the change; write the plan the implementer will be briefed with. | |
 | 5 | implement | The implementer produces the change on a branch and returns a result. | |
-| 6 | verify | The deterministic gate (`task verify`, or `task check` on a docs-only diff) — the only stage that is a **check**. | |
+| 6 | verify | The deterministic gate (`task verify`, or `task check` on a docs-only diff). A **check**. | |
 | 7 | challenge | Adversarial second-model rounds on design and approach, to convergence. Raises confidence; never authoritative. | |
 | 8 | review | Verification-lens second-model rounds on correctness, consistency, tests. Raises confidence; never authoritative. | |
 | 9 | security | `task security` — secret scan, SAST, dependency audit. A check. | |
@@ -62,10 +62,14 @@ stateDiagram-v2
     plan --> implement
     implement --> verify
     verify --> challenge
-    challenge --> implement : findings to fix
-    challenge --> review : converged / capped
-    review --> implement : findings to fix
-    review --> security : converged / capped
+    challenge --> implement : continue, or diverging with de-scaffolding
+    challenge --> review : converged / capped-clean
+    challenge --> escalate : capped with P0/P1, or diverging refused
+    review --> implement : continue, or diverging with de-scaffolding
+    review --> security : converged / capped-clean
+    review --> escalate : capped with P0/P1, or diverging refused
+    escalate --> implement : human decides
+    escalate --> wrap : human abandons
     security --> integration
     integration --> merge : ready-for-review, human decision
     merge --> deployment

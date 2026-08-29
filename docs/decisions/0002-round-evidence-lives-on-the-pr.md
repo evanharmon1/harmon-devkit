@@ -42,7 +42,13 @@ copy.
 
 - `gh api` can harvest every trajectory in a repository, which is what
   `dev-flow-stats.sh` and the retro skill read.
-- Evidence is public wherever the PR is; the round JSON must never carry
-  secrets or full file contents, only paths, lines, and finding text.
+- Evidence is public wherever the PR is. Finding text is free text and can
+  quote a credential a reviewer found, so every evidence post is secret-scanned
+  first and fails closed; the branch scan does not cover git-directory files.
+- Anyone can post fenced JSON on a public PR, and an author can edit or delete
+  a comment. The run record therefore stores each evidence comment's id,
+  author, and payload digest, and the harvester accepts only comments it
+  names, from the orchestrator's login or the repo's trusted actors, whose
+  body still matches the digest — anything else is reported as tampered.
 - Comment size is bounded (~65 KB); a stage whose rounds exceed it is split
   across comments in order, which the stats script must reassemble.
