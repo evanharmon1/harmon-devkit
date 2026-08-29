@@ -202,8 +202,12 @@ Every result is an **envelope** wrapping a per-role payload
   (`fix | restructure | delete | decline | defer | file`). `defer` is the
   disposition while a finding is carried to the integration stage; there it
   is settled to `fix`, `decline`, or `file` (a follow-up issue) — the three
-  terminal answers the readiness gate accepts — and the record is updated
-  once, so a finding still has exactly one adjudication. Scripts read the
+  terminal answers the readiness gate accepts. The settlement is **appended,
+  never edited in**: the evidence comment posted at PR open stays immutable
+  under its digest, and each settlement is a new, digest-recorded entry in
+  the run record (`settlements[]`, keyed by finding id, one per finding), so
+  a finding still has exactly one adjudication and one terminal settlement,
+  and neither invalidates the other's digest. Scripts read the
   adjudicated view; the raw reviewer output is kept so reviewer-vs-orchestrator
   disagreement can be measured.
 - The **run record** (`run.json`) is the only home of mutable run state —
@@ -253,8 +257,11 @@ where it can be tested:
   capped-clean, because fail-closed means a defect of unknown origin is still
   a defect — and is **excluded from the provenance-dependent predicates**
   (`provenance_share`, `repeat_after_fix`), whose truth needs the very fact
-  that could not be verified — while it still counts in `count_rising`,
-  which needs no provenance. So a mistaken assertion cannot force or hide a
+  that could not be verified — while it still counts toward `count_rising`'s
+  totals — that predicate's provenance guard (at least one *verified*
+  `round:N` finding in the current round) is still required for it to be
+  true, so unverified findings raise the counts but never satisfy the guard
+  on their own. So a mistaken assertion cannot force or hide a
   provenance-based divergence, and a self-feeding trajectory still shows in
   the counts.
 - A finding's identity is stable across the fix that addresses it: a
@@ -290,9 +297,13 @@ return the same outcome and the same `reason`.
 
 Predicates are a **catalog implemented in the script** and composed in TOML
 per outcome with `any`/`all` — the shape is the policy, so tuning never
-means editing the script. A rigor level may **tighten** this (add a
-`diverging` predicate, raise a `converged` threshold, remove a `converged`
-predicate) and never loosen it: `rigor:*` labels are advisory and can be
+means editing the script. A rigor level may **tighten** this and never
+loosen it, and tightening is defined **structurally**: add an entry to an
+`all` list, remove an entry from an `any` list, or raise a numeric
+threshold on `converged`; add an entry to any list or lower a threshold on
+`diverging`. Anything else is loosening — removing a `converged` `all`
+entry included, since `all` with fewer conditions is easier — and is
+refused. The reason: `rigor:*` labels are advisory and can be
 applied by anyone with triage, so an override that could weaken an exit would
 let a label change safety semantics rather than the amount of review. Loosening
 is an explicit-instruction edit to the base `[convergence]` table, resolved
@@ -362,11 +373,19 @@ The v2 shape, on top of the shipped migrated file:
   `converged` cannot fire. `remediation` bounds fix pushes in the integration
   stage (shipped default 4 at `standard`, scaling with the level like the
   others; its terminal action is escalation, below). There is no cap for
-  checks.
+  checks. **A cap of 0 disables the stage**: no round runs and the stage
+  advances with exit `capped`, reason `disabled` — the one case where
+  capped-clean needs no current-head round — exactly as the migrated policy
+  already defines it. A `min_rounds` above a cap of 0 is a config error.
 - The **integration cap bounds Codex re-review cycles only.** Answering every
   human and CI finding is unconditional; `integration = 0` means "no Codex
   cycle required", never "abandon reviews". That is why a policy may lower it
   (resolves [#624](https://github.com/evanharmon1/harmon-devkit/issues/624)).
+  When the last permitted Codex cycle finds something that is then fixed,
+  the fix push moves the head and the readiness gate would need a cycle the
+  cap forbids: that is `capped` for the integration stage — the run stops,
+  posts a blocker report naming the unreviewed head, and the PR stays draft
+  for a human to grant a cycle or promote. The verdict is never waived.
   This **deliberately revises** [#633](https://github.com/evanharmon1/harmon-devkit/issues/633)'s
   "rigor may raise it, never lower it" criterion: that rule assumed the cap
   bounded all findings, and once it bounds only Codex cycles, lowering it
@@ -391,12 +410,19 @@ The v2 shape, on top of the shipped migrated file:
   `frontier`, integrator `economy`, orchestrator `apex`) and optional
   `family`; a rigor level's `*_tier` keys override it.
 - `[stage.<stage>].finders[]` — which registry finders serve each confidence
-  stage and integration.
+  stage and integration. With more than one finder, a **logical round** is
+  one result per configured finder at the same `reviewed_head`; it is
+  complete only when every finder has returned (a finder that fails is a
+  `blocked` result and the round is incomplete, never silently one finder
+  short), its findings are the union, and caps and `min_rounds` count
+  logical rounds.
 - `tier:<role>:*` label values are hand-added to `label-registry.json`.
 - **Self-modified policy is read from the merge base.** When the change
-  under review edits `.devflow.toml`, every outcome-affecting v2 field —
-  `[caps]`, `[convergence]`, `[gates]` (`docs_only_paths` included),
-  `[role]`, `[stage]` — is resolved from the merge-base copy, exactly as
+  under review edits `.devflow.toml`, **every value read during policy
+  resolution** — `default_rigor` and `default_strategy`, the rigor level's
+  `caps` pointer and tier profile, `[caps]`, `[convergence]`, `[gates]`
+  (`docs_only_paths` included), `[role]`, `[stage]`, `[tier]`, `[strategy]`,
+  `[budget]` — is resolved from the merge-base copy, exactly as
   AGENTS.md already requires for caps, so a branch cannot lower the gate it
   is changing or classify its code as docs-only. An explicit human
   instruction still overrides.
@@ -437,8 +463,10 @@ Two rules make the posted evidence trustworthy on a public repository:
   **deterministic** marker — `run_id`, stage, sequence — computable from the
   run record alone, and is reserved in the run directory before the GitHub
   write. Any resume, on any machine, first looks the marker up on the PR or
-  issue and adopts the comment it finds; only a marker with no comment is
-  posted — the same reserve-first rule the Codex cycle already follows, and
+  issue and adopts the comment it finds **only if that comment's author is
+  the run's orchestrator login (or a trusted actor)** — an untrusted
+  comment carrying the marker is reported, ignored, and does not suppress the
+  legitimate post; only a marker with no trusted comment is posted — the same reserve-first rule the Codex cycle already follows, and
   recoverable without the clone that made the reservation.
 - **Authenticated when read.** The run record stores each evidence comment's
   id, author, and payload digest. The harvester accepts a comment only when

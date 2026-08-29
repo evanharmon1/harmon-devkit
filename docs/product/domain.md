@@ -83,9 +83,11 @@ stateDiagram-v2
     review --> implement : continue, or diverging with de-scaffolding (returns to review, not challenge)
     review --> security : converged / capped-clean
     review --> escalate : capped with P0/P1, or diverging refused
-    escalate --> implement : human decides
-    escalate --> wrap : human abandons
+    escalate --> wrap : terminal for this run — a human continues by kicking off a new run
     security --> integration
+    integration --> implement : remediation (CI, human, or Codex finding needing code), under the remediation cap
+    implement --> integration : remediation fix verified and pushed
+    integration --> escalate : integration or remediation cap reached
     integration --> merge : ready-for-review, human decision
     merge --> deployment
     merge --> release
