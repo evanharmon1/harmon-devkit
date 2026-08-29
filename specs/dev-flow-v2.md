@@ -40,11 +40,19 @@ schema-validated evidence, never a judgement made from feel. Concretely:
 
 ### Success metric
 
-The share of kicked-off issues whose run reaches `gh pr ready` with **zero
-interventions**. The denominator is every kicked-off issue, so abandoned runs
-count as failures. An **intervention** is any human action between kickoff
-and ready-for-review, except answering an implementer's `blocked_question`,
-which is counted separately as *asked*. A human fix after ready-for-review
+The share of kicked-off issues that reach `gh pr ready` with **zero
+interventions**. The unit is the **issue**, not the run: an issue may have
+several runs (a crash, an abandonment, a retry), and it succeeds only if the
+run that reached ready-for-review had zero interventions **and** every earlier
+run for the issue ended without a human action — a human re-kicking a failed
+run is itself an intervention, while a Foreman automatic retry is not. The
+denominator is every kicked-off issue, so abandoned runs count as failures;
+that is why the run record is created **at kickoff, on the issue**, as a
+comment the orchestrator reserves and then edits in place, before any branch
+or PR exists — a run that dies before `gh pr create` still leaves its record
+where the stats script looks. An **intervention** is any human action
+between kickoff and ready-for-review, except answering an implementer's
+`blocked_question`, which is counted separately as *asked*. A human fix after ready-for-review
 is a failure of the readiness gate, tracked as a second number. The metric is
 computed by `scripts/dev-flow-stats.sh` ([#663](https://github.com/evanharmon1/harmon-devkit/issues/663))
 from retained artifacts alone (§ Evidence). Baseline first; a target is set
@@ -117,12 +125,14 @@ authorization boundary only where something enforces it: the agent file's
 tool allowlist (`allowed-tools` frontmatter) denies everything not listed,
 and every permitted external write goes through a broker script that
 validates its one action (`push-round.sh` for the round push; a thread-reply
-helper that posts exactly the text it is given). A harness that cannot scope
-a subagent's tools (a plain subagent inheriting the orchestrator's shell and
-token) runs the role with the brokers as the only guard, and the run record
-says so — `producer.write_scoping = "brokers-only"` — so a reviewer of the
-metric can discount it. Foreman's sandbox is the equivalent scoping for
-headless runs.
+helper that posts exactly the text it is given). The `reviewer` and
+`integrator` roles **must not run with ambient write credentials**: a
+harness that cannot restrict a subagent's tools (a plain subagent inheriting
+the orchestrator's shell and `gh` token) may not dispatch those roles, and
+`/orchestrator` refuses the dispatch rather than disclosing the gap — a
+disclosed bypass is still a bypass. The implementer is the one role that
+legitimately pushes, through `push-round.sh`. Foreman's sandbox is the
+equivalent scoping for headless runs.
 
 **Briefs are free-form; results are schema-bound.** The orchestrator → agent
 brief is prose. The agent → orchestrator result is validated on receipt
@@ -162,7 +172,14 @@ Every result is an **envelope** wrapping a per-role payload
 - `reviewer` payload: one round — `stage`, `round`, `reviewed_head`,
   `finder`, and `findings[]`, each with `id`, `path`, `line`, `class`,
   `provenance`, `fingerprint`, `priority` (the reviewer's label),
-  `recommended_disposition`, `evidence`. **Immutable once returned.**
+  `recommended_disposition`, `evidence`. **Immutable once returned.** A
+  finding `id` is unique within the run by construction —
+  `<stage>-r<round>-<finder>-<n>` — so an adjudication or a `repeat-of`
+  reference can never resolve to a finding from another round.
+- **Heads must agree.** Receipt validation rejects any result whose payload
+  names a head (`reviewed_head`, the integrator's reviewed-commit stamp)
+  different from the envelope's `head`; a schema-valid result can never carry
+  stale evidence under a current-head label.
 - `integrator` payload: checks, the Codex cycle (accepted surface, comment id,
   reviewed-commit stamp, checker exit code), findings verbatim, unanswered
   thread roots, `settled_at`, `applied_dispositions`.
@@ -176,11 +193,13 @@ Every result is an **envelope** wrapping a per-role payload
   only the immutable identity (`run_id`, `initiated_by`), so two documents can
   never disagree. It is written by whoever kicked the run off — the session or
   Foreman ([foreman#184](https://github.com/ponderousdev/foreman/issues/184)) —
-  up to ready-for-review. Everything after that (merge, deployment, release,
-  post-ready human commits) is **derived at read time** by
-  `dev-flow-stats.sh` from GitHub's own timeline for the PR, never written by
-  an actor: the orchestrator stops at ready-for-review and nothing else holds
-  the pen.
+  up to ready-for-review. Everything after that is **derived at read time** by
+  `dev-flow-stats.sh`, never written by an actor, because the orchestrator
+  stops at ready-for-review and nothing else holds the pen: merge and
+  post-ready human commits from the PR's own timeline; deployment, release,
+  and smoke from **repository-wide** workflow runs, releases, and the rolling
+  release PR, correlated to the run by the merged commit's presence in the
+  default branch at the event's SHA.
 
 devkit ships **conformance fixtures** (valid and invalid examples per schema)
 beside the schemas. They are the shared contract with Foreman, which tests its
@@ -192,23 +211,32 @@ Finding fields:
 
 - `class ∈ design | correctness | consistency | hardening | nit`
 - `provenance ∈ original | round:N` — whether the finding is about the change
-  or about round N's fix. **Asserted by the reviewer, verified by the exit
-  script**: the script runs `git blame` for `path:line` **at the finding's
-  `reviewed_head`** — the tree the reviewer actually saw, so later edits and
-  renames cannot move the coordinate — and maps the blamed commit to the
-  round whose fix commit it is (`round:N`) or to none (`original`). The
-  script's answer overrides the assertion and logs the disagreement. One fix
-  commit per round keeps the commit → round mapping unambiguous.
+  or about round N's fix. Asserted by the reviewer; the exit script
+  **verifies** it.
 - `fingerprint ∈ new | repeat-of:<id> | supersedes:<id>` — asserted by the
-  reviewer (it has prior rounds' findings in its brief). The script computes
-  its own **anchor** for every finding — the blamed commit and the blame
-  hunk's line range at `reviewed_head`, carried forward through later fix
-  commits by blame rather than by line number — and checks the assertion
-  against it: `repeat-of`/`supersedes` must name an existing id whose anchor
-  overlaps, else the assertion is refused; a finding asserted `new` whose
-  anchor overlaps an unresolved prior finding is logged as a suspected repeat
-  and counted as one by `repeat_after_fix`. Path equality alone never
-  satisfies either test.
+  reviewer, which has prior rounds' findings in its brief; the exit script
+  **verifies** it.
+
+**Verification is a property, not a procedure.** Two rounds of review of
+this spec showed that any concrete mechanism written here (line numbers, then
+`git blame` anchors) accretes edge cases — deleted lines, a fix that exposes a
+defect in unchanged code, a repeat whose implicated line the fix rewrote — so
+this spec states the invariants and delegates the mechanism to the exit
+script ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)),
+where it can be tested:
+
+- The script may **downgrade** a reviewer's `original` to `round:N`, or
+  refuse a `repeat-of`/`supersedes`, only with evidence it records alongside
+  the finding; it never silently overrides, and a disagreement it cannot
+  decide keeps the reviewer's assertion and is logged as `unverified`.
+- A finding's identity is stable across the fix that addresses it: a
+  round-2 recurrence of a round-1 finding is detected as a repeat whether or
+  not the fix rewrote the implicated lines.
+- One fix commit per round, so "round N's fix" is one commit.
+- **Required test cases**, carried from these reviews: a finding on a line
+  deleted by the fix; a finding on an unchanged helper exposed by a fix; a
+  repeat after the fix rewrote the line; a rename between rounds; two
+  unrelated findings in one file (must not be a repeat).
 
 Exit outcomes, computed per confidence stage by the exit script
 ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)) from the
@@ -218,15 +246,19 @@ adjudicated rounds and `[convergence]`:
 |---|---|---|
 | `continue` | no exit predicate satisfied; cap not reached | dispatch the next fix round |
 | `converged` | **zero adjudicated P0/P1 of any class** (a universal precondition, not a predicate), an exit predicate satisfied, and `min_rounds` met | advance; or override **upward** (one more round) with a recorded reason |
-| `diverging` | findings are feeding on earlier rounds' fixes | dispatch a fix round **only** with a `delete` or `restructure` disposition on the `round:N` findings; otherwise the run stops with a blocker |
-| `capped` | cap reached without `converged` or `diverging` | advance if zero adjudicated P0/P1 remain (**capped-clean**); otherwise **escalate to a human** — no PR is opened |
+| `diverging` | adjudicated P0/P1 findings are feeding on earlier rounds' fixes, and the cap is not reached | dispatch a fix round **only** with a `delete` or `restructure` disposition on the `round:N` findings; otherwise the run stops with a blocker |
+| `capped` | cap reached | advance if zero adjudicated P0/P1 remain (**capped-clean**); otherwise **escalate to a human** — no PR is opened, and no further round is dispatched whatever else holds |
 
-**Precedence is normative**: the script evaluates `diverging`, then
-`converged`, then `capped`, then `continue`, and returns the first that holds.
-Divergence outranks convergence because a stage that is feeding on its own
-fixes has not converged whatever a single round looks like; the cap outranks
-`continue` because a cap is a ceiling. Two implementations given the same
-rounds and policy must return the same outcome and the same `reason`.
+**Precedence is normative**: the script evaluates `capped`, then
+`diverging`, then `converged`, then `continue`, and returns the first that
+holds. The cap comes first because it is a ceiling — a final round that is
+also diverging must escalate, never buy a round the cap forbids. Divergence
+outranks convergence because a stage feeding on its own fixes has not
+converged whatever a single round looks like. **Every predicate evaluates
+over adjudicated P0/P1 findings only**: a repeated P2 or a rising P3 count is
+information for the retro, never a reason to hold a stage open or force
+de-scaffolding. Two implementations given the same rounds and policy must
+return the same outcome and the same `reason`.
 
 Predicates are a **catalog implemented in the script** and composed in TOML
 per outcome with `any`/`all` — the shape is the policy, so tuning never
@@ -271,9 +303,14 @@ The v2 shape, on top of the shipped migrated file:
   floor per confidence stage below which `converged` cannot fire. There is
   no cap for checks.
 - The **integration cap bounds Codex re-review cycles only.** Answering every
-  human and CI finding is unconditional and uncapped; `integration = 0` means
-  "no Codex cycle required", never "abandon reviews". That is why a policy may
-  lower it (resolves [#624](https://github.com/evanharmon1/harmon-devkit/issues/624)).
+  human and CI finding is unconditional; `integration = 0` means "no Codex
+  cycle required", never "abandon reviews". That is why a policy may lower it
+  (resolves [#624](https://github.com/evanharmon1/harmon-devkit/issues/624)).
+  Unconditional is not unbounded: fix pushes in the integration stage are
+  counted by `[caps].remediation`, whose terminal action is **escalation
+  with the unresolved findings listed** — never abandoning them and never
+  promoting past them — so a flaky check or a reviewer who finds something new
+  after every push cannot run an unattended session forever.
 - `[gates]` — `round_code` (`task verify`), `round_docs` (`task check`),
   `docs_only_paths[]` (the **only** copy of the allowlist;
   [#632](https://github.com/evanharmon1/harmon-devkit/issues/632) reads it),
@@ -322,6 +359,12 @@ Two rules make the posted evidence trustworthy on a public repository:
   can quote the very credential a reviewer found. Every evidence post runs
   the repo's secret scanner over the JSON first and fails closed; the branch
   scan never sees git-directory files, so this is a separate obligation.
+- **Reserved before posted.** Each evidence comment is reserved in the run
+  directory (stage, attempt, the marker it will carry) before the GitHub
+  write, and the comment body carries that marker. A retry after a timed-out
+  response first looks the marker up on the PR and adopts the comment it
+  finds; only a marker with no comment is posted again — the same
+  reserve-first rule the Codex cycle already follows.
 - **Authenticated when read.** The run record stores each evidence comment's
   id, author, and payload digest. The harvester accepts a comment only when
   its id is one the run record names, its author is the run's orchestrator

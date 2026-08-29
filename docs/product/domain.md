@@ -11,7 +11,14 @@ The core entities/nouns and what each means.
 
 | Concept | Definition |
 |---|---|
-| TODO | TODO |
+| issue | The unit of work and of the success metric. Has one or more runs. |
+| run | One kickoff-to-ready execution of the dev flow for an issue, identified by `run_id`; owns a run record, stage transitions, and interventions. |
+| stage | A named phase of the lifecycle below. A confidence stage owns rounds. |
+| round | One reviewer pass in one confidence stage at one reviewed head; produces findings. |
+| finding | One reviewer observation, immutable, uniquely identified within the run. |
+| adjudication | The orchestrator's verdict on one finding: adjudicated priority and disposition. Exactly one per finding. |
+| exit | The computed outcome of a confidence stage at a point in time, from its adjudicated rounds. |
+| pull request | The durable home of a run's evidence once opened; at most one per run. |
 
 ## Relationships
 
@@ -19,7 +26,14 @@ How the concepts relate — ownership, cardinality, dependencies.
 
 ```mermaid
 erDiagram
-    TODO_A ||--o{ TODO_B : "TODO: relationship"
+    ISSUE ||--|{ RUN : "has (retries are new runs)"
+    RUN ||--o| PULL_REQUEST : "opens at most one"
+    RUN ||--|{ STAGE_TRANSITION : "records"
+    RUN ||--o{ ROUND : "spends, per confidence stage"
+    ROUND ||--o{ FINDING : "produces"
+    FINDING ||--|| ADJUDICATION : "receives exactly one"
+    FINDING }o--o| FINDING : "repeat-of / supersedes"
+    ROUND }o--|| EXIT : "feeds the stage's computed exit"
 ```
 
 ## Lifecycles
@@ -61,11 +75,12 @@ stateDiagram-v2
     explore --> plan
     plan --> implement
     implement --> verify
-    verify --> challenge
+    verify --> challenge : first pass, or fix from challenge
+    verify --> review : fix from review
     challenge --> implement : continue, or diverging with de-scaffolding
     challenge --> review : converged / capped-clean
     challenge --> escalate : capped with P0/P1, or diverging refused
-    review --> implement : continue, or diverging with de-scaffolding
+    review --> implement : continue, or diverging with de-scaffolding (returns to review, not challenge)
     review --> security : converged / capped-clean
     review --> escalate : capped with P0/P1, or diverging refused
     escalate --> implement : human decides
@@ -92,4 +107,9 @@ The rules that must always hold — constraints, validations, policies. These ar
 what specs and their acceptance criteria enforce (see
 [../../specs/](../../specs/)).
 
-- TODO: rule or invariant (e.g. "a TODO_A always has at least one TODO_B").
+- A fix round returns to the stage that produced the findings; challenge and
+  review keep separate round counts and caps.
+- A finding is adjudicated exactly once, and its adjudication is the only
+  view scripts read.
+- An issue succeeds only when the run that reached ready-for-review had zero
+  interventions and no earlier run for the issue ended in a human action.
