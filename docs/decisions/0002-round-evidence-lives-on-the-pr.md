@@ -28,7 +28,8 @@ the git directory is only a working copy:
 - The **round evidence** (a round's JSON plus its adjudication) is posted
   to the **issue** as **one comment per round, the moment the round is
   adjudicated** — so a worker lost mid-run forfeits at most the round in
-  flight. When the draft PR opens, one comment per confidence stage on the
+  flight. The same sequenced-continuation rule below applies to a single
+  round whose JSON exceeds the comment limit. When the draft PR opens, one comment per confidence stage on the
   **PR** carries the rounds so far and links the per-round issue comments;
   the PR body renders the human tables from the same JSON.
 

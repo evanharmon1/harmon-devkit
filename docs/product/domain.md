@@ -98,6 +98,8 @@ stateDiagram-v2
     merge --> release
     deployment --> release : later rolling release PR
     deployment --> smoke
+    smoke --> release : later rolling release PR
+    release --> smoke : smoke after release
     deployment --> retro : smoke skipped
     deployment --> wrap : smoke and retro skipped
     smoke --> retro

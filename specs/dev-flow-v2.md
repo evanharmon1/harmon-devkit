@@ -198,7 +198,8 @@ Every result is an **envelope** wrapping a per-role payload
 - `implementer` payload keeps every Foreman v1 field (`summary`, `handoff`,
   `ac_test_map`, `human_tasks`, `blocked_question`) so Foreman accepts the
   envelope with a validator widening ([foreman#182](https://github.com/ponderousdev/foreman/issues/182)).
-- `reviewer` payload: one round — `stage`, `round`, `reviewed_head`,
+- `reviewer` payload: one **pass** (one finder's contribution to a round;
+  the round is the aggregate, § Configuration) — `stage`, `round`, `reviewed_head`,
   `finder`, and `findings[]`, each with `id`, `path`, `line`, `class`,
   `provenance`, `fingerprint`, `priority` (the reviewer's label),
   `recommended_disposition`, `evidence`. **Immutable once returned.** A
@@ -231,7 +232,7 @@ Every result is an **envelope** wrapping a per-role payload
   `interventions[]`, stage transitions, `outcome`, `pr`. An envelope carries
   only the immutable identity (`run_id`, `initiated_by`), so two documents can
   never disagree — and receipt validation **rejects a result whose `run_id`
-  is not the run the branch pointer names**, so a stale result from an
+  and `initiated_by` are not those of the run the branch pointer names**, so a stale result from an
   earlier retry or a concurrent run cannot attach to the wrong trajectory. It is written by whoever kicked the run off — the session or
   Foreman ([foreman#184](https://github.com/ponderousdev/foreman/issues/184)) —
   up to ready-for-review. Everything after that is **derived at read time** by
@@ -559,7 +560,7 @@ absorbed by the issue that carries their criteria;
 - [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (post refused); a stage split across comments (reassembled); a run capped before any PR (stage evidence and run record found on the issue).
 - [ ] `dev-flow-stats.sh` prints the success metric and replays policies.
 - [ ] AGENTS.md's Dev Loop is the stage table, the constitution rules, and references.
-- [ ] Foreman accepts envelope v2, reads `.devflow.toml`, writes run records, and requires round artifacts whose recomputed exit is a terminal clean outcome — `converged`, capped-clean, or `capped`/`disabled` — for each confidence stage.
+- [ ] Foreman accepts envelope v2, reads `.devflow.toml`, writes run records, and requires, for each confidence stage, either round artifacts whose recomputed exit is a terminal clean outcome (`converged` or capped-clean) or — for a stage whose cap is 0 — the computed `capped`/`disabled` record alone, since a disabled stage runs no round.
 
 ## Acceptance criteria (Given / When / Then)
 
