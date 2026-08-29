@@ -145,9 +145,23 @@ function parseArgs(argv) {
         break
       case '--pass': {
         const passFile = rest[(i += 1)]
-        const data = loadAndValidateContext(passFile, '--pass', (candidate) =>
-          validateEnvelopeInstance(candidate, 'reviewer', { knownIds: null, runId: null, initiatedBy: null })
-        )
+        const data = loadAndValidateContext(passFile, '--pass', (candidate) => {
+          const errors = validateEnvelopeInstance(candidate, 'reviewer', {
+            knownIds: null,
+            runId: null,
+            initiatedBy: null
+          })
+          // A blocked finder contributes no pass at all (the orchestrator
+          // retries it once, spec § Configuration) — a status: blocked
+          // envelope is a perfectly valid standalone reviewer result (it
+          // just means the finder produced nothing), but it is never a
+          // legitimate --pass: there is no real finding content to cross-
+          // check an adjudication against.
+          if (errors.length === 0 && candidate.status === 'blocked') {
+            errors.push('$result.status: a blocked pass contributes no findings and cannot be used as --pass context')
+          }
+          return errors
+        })
         options.passes.push({ file: passFile, data })
         break
       }
@@ -312,6 +326,37 @@ function checkHeadAgreement(kind, envelope, errors) {
   }
 }
 
+// checkIntegratorBlockedStatus — envelope status: blocked means the
+// integrator did not complete its evidence-gathering pass, so it cannot
+// simultaneously claim payload.verdict: clean (blocked implies verdict is
+// one of pending/escalate/findings — whatever it actually observed before
+// being cut short, never a completed clean read). Cross-field (envelope
+// status vs payload verdict), so this is the envelope-level receipt check,
+// like checkImplementerStatus.
+function checkIntegratorBlockedStatus(envelope, errors) {
+  if (envelope.status === 'blocked' && envelope.payload.verdict === 'clean') {
+    errors.push('$result.payload.verdict: cannot be clean when the envelope status is blocked')
+  }
+}
+
+// checkCodexCycleAcceptedScope — the schema's if/then requires `accepted`
+// when exit_code is terminal (0/10); it does not forbid `accepted` for any
+// OTHER exit code, since "required when" is the only shape if/then can
+// express. `accepted` is evidence of a terminal result, so its presence
+// alongside a non-terminal exit_code (11 pending, 12 retry, 13 escalate,
+// 14 PR no longer open, 2 indeterminate) is contradictory and forbidden
+// here, in the validator, the same way "required when" and "forbidden
+// otherwise" are two separate assertions throughout this family.
+function checkCodexCycleAcceptedScope(payload, errors) {
+  const cycle = payload.codex_cycle
+  if (!cycle || typeof cycle !== 'object') return
+  if (![0, 10].includes(cycle.exit_code) && Object.hasOwn(cycle, 'accepted')) {
+    errors.push(
+      `$result.payload.codex_cycle.accepted: must be absent when exit_code is ${cycle.exit_code} (only 0/10 are terminal)`
+    )
+  }
+}
+
 // checkAppliedDispositionsUnique — applied_dispositions[].finding_id must
 // be unique. Always runs for role integrator, independent of `verdict`:
 // this is a structural defect in the array itself, not a clean-verdict
@@ -406,6 +451,8 @@ function validateEnvelopeInstance(instance, kind, options) {
         if (role === 'implementer') checkImplementerStatus(instance, errors)
         if (role === 'reviewer') checkFindingIds(instance, options, errors)
         if (role === 'integrator') {
+          checkIntegratorBlockedStatus(instance, errors)
+          checkCodexCycleAcceptedScope(instance.payload, errors)
           checkAppliedDispositionsUnique(instance.payload, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
         }
@@ -769,6 +816,33 @@ function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
   }
 }
 
+// checkDeferredFindingsSettledBeforePromotion — the converse of
+// checkSettlementsAgainstAdjudications above (which forbids a settlement
+// of anything but a deferred finding): a run cannot claim
+// outcome: ready-for-review while a finding the supplied --adjudication
+// documents deferred still has no settlement at all. "At most one
+// settlement per finding" is already enforced (checkSettlements); this is
+// the "at least one, once promoted" half, and only applies once promoted
+// — a run still short of ready-for-review may legitimately have
+// unsettled deferrals in flight.
+function checkDeferredFindingsSettledBeforePromotion(document, adjudications, errors) {
+  if (adjudications.length === 0 || document.outcome !== 'ready-for-review') return
+  const settledIds = new Set(
+    (document.settlements ?? [])
+      .map((entry) => entry.finding_id)
+      .filter((id) => typeof id === 'string')
+  )
+  for (const { data } of adjudications) {
+    for (const entry of data.adjudications ?? []) {
+      if (entry.disposition === 'defer' && typeof entry.finding_id === 'string' && !settledIds.has(entry.finding_id)) {
+        errors.push(
+          `$run.settlements: deferred finding ${entry.finding_id} has no settlement, required when outcome is ready-for-review`
+        )
+      }
+    }
+  }
+}
+
 // checkTimestampRealness — every *_at / at field must be a REAL instant, not
 // merely regex-shaped: "2026-02-30T10:00:00Z" matches every schema's
 // timestamp pattern but names a day that does not exist. JS's Date parser
@@ -839,6 +913,7 @@ function main() {
       if (options.adjudications.length > 0) {
         checkAdjudicationRunIdMatchesRun(instance, options.adjudications, errors)
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
+        checkDeferredFindingsSettledBeforePromotion(instance, options.adjudications, errors)
       }
     }
     checkTimestampRealness(instance, errors, '$run')

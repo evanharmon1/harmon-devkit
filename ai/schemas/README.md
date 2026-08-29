@@ -102,10 +102,15 @@ keyword, for every one of these:
   — a round is one pass **per finder** (same spec line), so two `--pass`
   files repeating one finder are never a legitimate multi-finder round; a
   retry replaces that finder's pass, it does not join a second one at its
-  side, so the repeat is rejected naming the finder. Without `--pass` an
-  adjudication document is still checked for internal self-consistency
-  (`checkAdjudicationEntries`, `checkAdjudicationIdAttribution`) — it just
-  isn't cross-checked against anything external.
+  side, so the repeat is rejected naming the finder. A `--pass` file whose
+  own `status` is `blocked` is rejected as context too, even though it is
+  a perfectly valid standalone reviewer result on its own: a blocked
+  finder contributes no findings at all (the orchestrator retries it once,
+  spec § Configuration), so there is nothing real to cross-check an
+  adjudication against. Without `--pass` an adjudication document is still
+  checked for internal self-consistency (`checkAdjudicationEntries`,
+  `checkAdjudicationIdAttribution`) — it just isn't cross-checked against
+  anything external.
 - **Adjudication uniqueness across the run (`--known-adjudicated
   <ids.json>`)** — a finding is adjudicated in exactly one round document,
   ever (see `adjudication.schema.json`'s own `$comment` for the full
@@ -131,9 +136,15 @@ keyword, for every one of these:
   or more than one are both rejected (naming which documents disagree, in
   the more-than-one case), and a match whose disposition isn't `defer`
   (the finding was already resolved at adjudication time, never deferred)
-  is rejected too. Without `--adjudication`, unchanged: settlements are
-  still checked for an internal duplicate `finding_id`
-  (`checkSettlements`), just not against any adjudication.
+  is rejected too. The converse also holds, but only once the run claims
+  to be done: when `outcome` is `"ready-for-review"`, every finding the
+  supplied documents deferred must have a settlement — a promoted run
+  cannot leave a deferred finding unresolved (a run still short of
+  ready-for-review may legitimately have deferrals still in flight,
+  so this half of the check does not apply there). Without
+  `--adjudication`, unchanged: settlements are still checked for an
+  internal duplicate `finding_id` (`checkSettlements`), just not against
+  any adjudication.
 - **Evidence marker `run_id` agreement** — `run.schema.json`'s
   `evidence_comments[].marker.run_id` must equal the run record's own
   `run_id`. Unlike the checks above this one needs no external context (both
@@ -178,6 +189,14 @@ instance being validated:
   applied disposition is `defer` (a deferred finding is carried forward,
   not clean). All same-document; the check runs unconditionally for role
   `integrator`.
+- **A blocked integrator cannot report a clean verdict**
+  (`checkIntegratorBlockedStatus`) — envelope `status: blocked` means the
+  integrator did not complete its evidence-gathering pass, so
+  `payload.verdict` can be `pending`, `escalate`, or `findings` (whatever
+  it actually observed before being cut short) but never `clean`, which is
+  specifically a claim of completion. Cross-field (envelope `status` vs.
+  payload `verdict`), so this lives at the envelope level like
+  `checkImplementerStatus`.
 - **`applied_dispositions[].finding_id` is unique** — checked separately
   from, and unconditionally on, the clean-verdict rule above
   (`checkAppliedDispositionsUnique`): a duplicate is two different claims
@@ -364,7 +383,12 @@ never needed it).
   This is nested (inside a property's own schema, not at the payload root)
   precisely to prove `if`/`then` is not root-only in this engine — see the
   "nested if/then" unit tests beside the root-level ones in
-  `scripts/test-result-schemas.sh`.
+  `scripts/test-result-schemas.sh`. "Optional for non-terminal codes" is
+  the schema's own limit — `if`/`then` can express "required when", never
+  "forbidden otherwise" — so `checkCodexCycleAcceptedScope` closes the gap
+  in the validator: `accepted` present alongside any exit_code other than
+  0/10 is rejected, since its presence is itself a claim of a terminal
+  result.
 
 ## Fixture layout
 

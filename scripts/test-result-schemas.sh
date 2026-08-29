@@ -62,6 +62,7 @@ is_context_only_fixture() {
     */adjudication.schema/invalid/known-adjudicated-collision.json) return 0 ;;
     */run.schema/invalid/settlement-of-fixed-finding.json) return 0 ;;
     */run.schema/invalid/settlement-of-unknown-finding.json) return 0 ;;
+    */run.schema/invalid/ready-with-unsettled-deferral.json) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -292,6 +293,13 @@ run_context_case \
     --pass "$adjudication_pass_dir/pass-cross-check.pass.json"
 
 run_context_case \
+    "a blocked pass is rejected as --pass context" \
+    adjudication \
+    "$adjudication_pass_dir/pass-cross-check-missing-entry.json" \
+    "a blocked pass contributes no findings and cannot be used as --pass context" \
+    --pass "$adjudication_pass_dir/pass-cross-check-blocked-pass.pass.json"
+
+run_context_case \
     "an adjudication entry naming an id absent from the pass is rejected" \
     adjudication \
     "$adjudication_pass_dir/pass-cross-check-extra-entry.json" \
@@ -359,6 +367,13 @@ run_context_case \
     "not this run's own run_id" \
     --adjudication "$settlement_cross_check_adjudication"
 
+run_context_case \
+    "a ready-for-review run with an unsettled deferred finding is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/ready-with-unsettled-deferral.json" \
+    "has no settlement, required when outcome is ready-for-review" \
+    --adjudication "$settlement_cross_check_adjudication"
+
 # Accepting cases for the same flags, so a false-positive rejection (the flag
 # firing when it should not) is caught too.
 accept_context_case() {
@@ -400,6 +415,12 @@ accept_context_case \
     "a settlement of a genuinely deferred finding is accepted" \
     run \
     "$fixtures_dir/run.schema/valid/settlement-of-deferred.json" \
+    --adjudication "$settlement_cross_check_adjudication"
+
+accept_context_case \
+    "a ready-for-review run whose deferred finding IS settled is accepted" \
+    run \
+    "$fixtures_dir/run.schema/valid/ready-with-settled-deferral.json" \
     --adjudication "$settlement_cross_check_adjudication"
 
 # --- Argument validation: fail closed, never silently skip a check --------

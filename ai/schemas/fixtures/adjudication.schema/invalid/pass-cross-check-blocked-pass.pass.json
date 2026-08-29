@@ -1,0 +1,24 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "blocked",
+  "head": "3030a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "produced_at": "2026-08-29T20:30:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-3030-blocked-pass",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "3030a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+    "finder": "codex-cli",
+    "findings": [],
+    "counts": { "P0": 0, "P1": 0, "P2": 0, "P3": 0 }
+  }
+}

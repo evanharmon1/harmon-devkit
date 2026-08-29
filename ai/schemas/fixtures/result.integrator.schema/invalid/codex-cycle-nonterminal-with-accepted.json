@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b",
+  "produced_at": "2026-08-29T18:06:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4031-codex-cycle-nonterminal-with-accepted",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      { "name": "ci/build", "bucket": "pass", "run_id": "1005" }
+    ],
+    "codex_cycle": {
+      "head": "6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b",
+      "attempt": 1,
+      "trigger_comment_id": "555000444",
+      "exit_code": 11,
+      "accepted": {
+        "surface": "review",
+        "id": "777888",
+        "reviewed_commit": "6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b"
+      }
+    },
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:06:00Z",
+    "verdict": "pending"
+  }
+}
