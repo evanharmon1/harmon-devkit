@@ -12,7 +12,7 @@ The core entities/nouns and what each means.
 | Concept | Definition |
 |---|---|
 | issue | The unit of work and of the success metric. Has one or more runs. |
-| run | One kickoff-to-ready execution of the dev flow for an issue, identified by `run_id`; owns a run record, stage transitions, and interventions. |
+| run | One execution of the dev flow for an issue, from kickoff until ready-for-review or until it ends earlier (capped, abandoned, escalated); identified by `run_id`; owns a run record, stage transitions, and interventions. |
 | stage | A named phase of the lifecycle below. A confidence stage owns rounds. |
 | round | One reviewer pass in one confidence stage at one reviewed head; produces findings. |
 | finding | One reviewer observation, immutable, uniquely identified within the run. |

@@ -199,7 +199,11 @@ Every result is an **envelope** wrapping a per-role payload
   thread roots, `settled_at`, `applied_dispositions`.
 - The **adjudication record** is a separate, orchestrator-authored document
   keyed by finding id: adjudicated priority and final disposition
-  (`fix | restructure | delete | decline | defer`). Scripts read the
+  (`fix | restructure | delete | decline | defer | file`). `defer` is the
+  disposition while a finding is carried to the integration stage; there it
+  is settled to `fix`, `decline`, or `file` (a follow-up issue) — the three
+  terminal answers the readiness gate accepts — and the record is updated
+  once, so a finding still has exactly one adjudication. Scripts read the
   adjudicated view; the raw reviewer output is kept so reviewer-vs-orchestrator
   disagreement can be measured.
 - The **run record** (`run.json`) is the only home of mutable run state —
@@ -247,9 +251,12 @@ where it can be tested:
   logged `unverified`. An unverified finding **keeps its adjudicated
   priority for gating** — an unverified P1 still blocks `converged` and
   capped-clean, because fail-closed means a defect of unknown origin is still
-  a defect — and is **excluded from the trajectory predicates** (`provenance_share`,
-  `count_rising`, `repeat_after_fix`), so a mistaken assertion can neither
-  force nor hide divergence.
+  a defect — and is **excluded from the provenance-dependent predicates**
+  (`provenance_share`, `repeat_after_fix`), whose truth needs the very fact
+  that could not be verified — while it still counts in `count_rising`,
+  which needs no provenance. So a mistaken assertion cannot force or hide a
+  provenance-based divergence, and a self-feeding trajectory still shows in
+  the counts.
 - A finding's identity is stable across the fix that addresses it: a
   round-2 recurrence of a round-1 finding is detected as a repeat whether or
   not the fix rewrote the implicated lines.
@@ -293,31 +300,38 @@ from the merge base like every other cap.
 
 ```toml
 [convergence]
-converged = { any = [
-  { predicate = "no_gating_findings", classes = ["design", "correctness"] },
-  { predicate = "provenance_share",  min = 0.5, exclude_classes = ["design"] },
-] }
+converged = { all = [ { predicate = "no_gating_findings" } ] }
 diverging = { any = [
-  { predicate = "count_rising", rounds = 2 },
+  { predicate = "count_rising",     increases = 2 },
   { predicate = "repeat_after_fix" },
+  { predicate = "provenance_share", min = 0.5, exclude_classes = ["design"] },
 ] }
 ```
 
 The v0 catalog, defined so two implementations agree. All predicates evaluate
-over **adjudicated P0/P1 findings** of the stage's rounds that are not
-`unverified`; "current round" is the latest round whose `reviewed_head` is the
-current head.
+over **adjudicated P0/P1 findings** of the stage's rounds; "current round"
+is the latest round whose `reviewed_head` is the current head. Because
+`converged` already requires zero P0/P1 in the current round, its predicate
+list in v0 is the trivial `no_gating_findings` — the catalog exists so later
+policies can add conditions (a minimum share of `nit`-class findings, a
+required finder), not because v0 needs them. The interesting predicates are
+the **divergence** ones: they read the trajectory *before* the current round
+is clean, which is where omator#397 would have been stopped.
 
-- `no_gating_findings(classes)` — true when the current round has zero
-  findings whose `class` is in `classes`. (The universal zero-P0/P1
-  precondition is checked separately and covers every class.)
+- `no_gating_findings()` — true when the current round has zero adjudicated
+  P0/P1 findings. (Identical to the universal precondition; listed so the
+  `converged` table is never empty.)
 - `provenance_share(min, exclude_classes)` — numerator: current-round
-  findings with `provenance = round:N` for any N; denominator: all
-  current-round findings; both after removing `exclude_classes`. True when
-  the denominator is non-zero and the ratio is ≥ `min`.
-- `count_rising(rounds)` — true when, over the last `rounds` consecutive
-  rounds ending at the current round, each round's finding count is strictly
-  greater than the previous round's. Needs at least `rounds` + 1 rounds.
+  P0/P1 findings with `provenance = round:N` for any N; denominator: all
+  current-round P0/P1 findings; both after removing `exclude_classes` and
+  `unverified` findings. True when the denominator is non-zero and the ratio
+  is ≥ `min` — most of what is still wrong is about earlier fixes.
+- `count_rising(increases)` — true when the P0/P1 count has **strictly
+  increased `increases` times in a row** ending at the current round (so it
+  reads `increases` + 1 rounds and is false with fewer), **and** the current
+  round contains at least one verified `round:N` finding — a rising count of
+  purely `original` findings is a change that was under-reviewed, not a
+  stage feeding on itself. `unverified` findings count toward the totals.
 - `repeat_after_fix()` — true when any current-round finding is
   `repeat-of:<id>` (verified, or a script-detected repeat) where `<id>`'s
   adjudicated disposition was `fix` in an earlier round.
@@ -392,14 +406,16 @@ The v2 shape, on top of the shipped migrated file:
 
 ## Evidence
 
-Round JSONs, the adjudication record, and the run record live in the git
-directory while the branch is worked, **keyed by `run_id`**
+Round JSONs and the adjudication record live in the git directory while the
+branch is worked (the run record too, as a working copy of the issue
+comment that is its durable home), **keyed by `run_id`**
 (`$(git rev-parse --git-path dev-flow/runs/<run_id>/)`) with a
 `dev-flow/branches/<branch>` pointer naming the current run — worktree-safe,
 invisible to `git status`, and immune to a reused branch name or an abandoned
 run: a new run gets a new directory, and the exit script only ever reads the
-run the pointer names. When the draft PR opens they are **posted as one
-comment per confidence stage** on the PR, in a fenced block (continued in
+run the pointer names. When the draft PR opens the round evidence is
+**posted as one comment per confidence stage** on the PR — the run record
+stays on the issue and is edited there — in a fenced block (continued in
 order across further comments only when GitHub's size limit forces it — the
 harvester reassembles by marker sequence). A run that **ends without a PR** —
 capped with P0/P1, abandoned, escalated — posts the same stage comments on
@@ -464,7 +480,7 @@ absorbed by the issue that carries their criteria;
 - [ ] The exit script computes `continue | converged | diverging | capped` from adjudicated rounds and `[convergence]`, verifies provenance and fingerprints, and replays omator#397.
 - [ ] The readiness gate accepts only a schema-valid `result.integrator` for the current head as evidence of a Codex verdict — necessary, not sufficient: the gate's own pre/post-promotion content fingerprint over body, reviews, and comments (`readiness-gate.sh`) stays, because a human finding can land without moving the head.
 - [ ] `.devflow.toml` has `[caps]`, `[gates]`, `[convergence]`, `[role]`, `[stage]`; the legacy shape is refused.
-- [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (post refused); a stage split across comments (reassembled).
+- [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (post refused); a stage split across comments (reassembled); a run capped before any PR (stage evidence and run record found on the issue).
 - [ ] `dev-flow-stats.sh` prints the success metric and replays policies.
 - [ ] AGENTS.md's Dev Loop is the stage table, the constitution rules, and references.
 - [ ] Foreman accepts envelope v2, reads `.devflow.toml`, writes run records, and requires converged round artifacts.
@@ -511,7 +527,19 @@ absorbed by the issue that carries their criteria;
 
 - **Given** a merged PR whose branch is deleted
 - **When** `dev-flow-stats.sh --run <id>` runs
-- **Then** the full trajectory is rendered from the PR's stage comments and run record
+- **Then** the full trajectory is rendered from the PR's stage comments and the issue's run record
+
+### Scenario: a run that never opened a PR is still counted
+
+- **Given** a run whose challenge stage capped with a P1 and escalated, with no branch left
+- **When** `dev-flow-stats.sh --repo <owner/repo>` runs
+- **Then** the issue counts in the denominator as a failure, and `--run <id>` renders its rounds from the issue's stage comments
+
+### Scenario: the remediation cap escalates
+
+- **Given** `remediation = 2` and a CI check that fails again after each of two fix pushes in the integration stage
+- **When** the next finding arrives
+- **Then** no third fix push is made; the run records `capped` for integration, posts a blocker report naming the unresolved finding, and the PR stays draft
 
 ### Scenario: Foreman and a session agree
 
