@@ -19,11 +19,18 @@ be read by a retro.
 ## Decision
 
 Round JSONs, the adjudication record, and the run record are kept in the git
-directory while a branch is worked, and when the draft PR opens they are
-**posted to the PR as one comment per confidence stage** in a fenced JSON
-block, with the run record updated on every later transition. Nothing is
-deleted at PR open. The PR is the durable home; the git directory is a working
-copy.
+directory while a branch is worked. Their durable homes are on GitHub, and
+the git directory is only a working copy:
+
+- The **run record** is a comment on the **issue**, reserved at kickoff and
+  edited in place at every transition up to ready-for-review — it exists
+  before any branch or PR does, so a run that dies early still has one.
+- The **round evidence** (round JSONs plus the adjudication record) is
+  **posted as one comment per confidence stage** in a fenced JSON block — on
+  the **PR** when the draft opens, or on the **issue** beside the run record
+  when the run ends without a PR.
+
+Nothing is deleted at PR open.
 
 ## Alternatives rejected
 

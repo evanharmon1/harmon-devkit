@@ -10,7 +10,8 @@
   [docs/product/domain.md § Lifecycles](../docs/product/domain.md),
   [docs/glossary.md](../docs/glossary.md),
   [docs/decisions/0002](../docs/decisions/0002-round-evidence-lives-on-the-pr.md),
-  harmon-init decision record 0008 (to be written beside 0006/0007).
+  [harmon-init decision record 0008](https://github.com/evanharmon1/harmon-init/pull/1114)
+  (beside 0006/0007; PR #1114).
 
 ## Problem / Why
 
@@ -119,6 +120,17 @@ file (`ai/agents/<role>.md`) is one implementation of a role.
 | `reviewer` | `result.reviewer` | nothing outside its result | fix, dispose, decide an exit |
 | `integrator` | `result.integrator` | the Codex trigger comment; thread replies of **given** text | author reply text, dispose, promote |
 | orchestrator (the session) | — | dispositions, adjudication record, PR body, `gh pr ready` | merge; override an exit downward |
+
+**This spec is the anchor; the implementation issues are reconciled to it.**
+[#634](https://github.com/evanharmon1/harmon-devkit/issues/634),
+[#635](https://github.com/evanharmon1/harmon-devkit/issues/635),
+[#638](https://github.com/evanharmon1/harmon-devkit/issues/638), and
+[#639](https://github.com/evanharmon1/harmon-devkit/issues/639) were written
+before it and still say `shepherd-watcher`/`result.shepherd`, put adjudication
+fields inside `result.reviewer`, and let the reviewer commit and push. Where
+an issue's criteria conflict with this table, the spec wins and the issue
+body is edited to match — and back-linked here — before the issue is claimed;
+that edit is part of closing [#633](https://github.com/evanharmon1/harmon-devkit/issues/633).
 
 **Declared writes are enforced, not trusted.** A role's `writes` list is an
 authorization boundary only where something enforces it: the agent file's
@@ -232,9 +244,12 @@ where it can be tested:
 - The script may **downgrade** a reviewer's `original` to `round:N`, or
   refuse a `repeat-of`/`supersedes`, only with evidence it records alongside
   the finding; it never silently overrides. A case it cannot decide is
-  logged `unverified` and **excluded from every exit predicate** — it keeps
-  the reviewer's text for the retro but cannot move the exit in either
-  direction, so a mistaken assertion can neither force nor hide divergence.
+  logged `unverified`. An unverified finding **keeps its adjudicated
+  priority for gating** — an unverified P1 still blocks `converged` and
+  capped-clean, because fail-closed means a defect of unknown origin is still
+  a defect — and is **excluded from the trajectory predicates** (`provenance_share`,
+  `count_rising`, `repeat_after_fix`), so a mistaken assertion can neither
+  force nor hide divergence.
 - A finding's identity is stable across the fix that addresses it: a
   round-2 recurrence of a round-1 finding is detected as a repeat whether or
   not the fix rewrote the implicated lines.
@@ -288,6 +303,29 @@ diverging = { any = [
 ] }
 ```
 
+The v0 catalog, defined so two implementations agree. All predicates evaluate
+over **adjudicated P0/P1 findings** of the stage's rounds that are not
+`unverified`; "current round" is the latest round whose `reviewed_head` is the
+current head.
+
+- `no_gating_findings(classes)` — true when the current round has zero
+  findings whose `class` is in `classes`. (The universal zero-P0/P1
+  precondition is checked separately and covers every class.)
+- `provenance_share(min, exclude_classes)` — numerator: current-round
+  findings with `provenance = round:N` for any N; denominator: all
+  current-round findings; both after removing `exclude_classes`. True when
+  the denominator is non-zero and the ratio is ≥ `min`.
+- `count_rising(rounds)` — true when, over the last `rounds` consecutive
+  rounds ending at the current round, each round's finding count is strictly
+  greater than the previous round's. Needs at least `rounds` + 1 rounds.
+- `repeat_after_fix()` — true when any current-round finding is
+  `repeat-of:<id>` (verified, or a script-detected repeat) where `<id>`'s
+  adjudicated disposition was `fix` in an earlier round.
+
+Boundary fixtures for each — empty current round, a single round, a
+denominator of zero, a repeat whose original was `decline`d — ship with the
+exit script and are part of the conformance set.
+
 **Only rounds that reviewed the current head can satisfy `converged` or
 `capped`-clean.** Rounds on an ancestor head still count toward trajectory
 predicates (`count_rising`, `provenance_share`, `repeat_after_fix`) and toward
@@ -304,14 +342,22 @@ Owned by harmon-init ([#1081](https://github.com/evanharmon1/harmon-init/issues/
 The v2 shape, on top of the shipped migrated file:
 
 - `[caps.<policy>]` — renamed from `[review.*]`: `challenge`, `review`,
-  `integration` (formerly `shepherd`), `min_rounds`. Each rigor level points at
-  one policy via `caps = "<policy>"`. A cap is a ceiling; `min_rounds` is a
-  floor per confidence stage below which `converged` cannot fire. There is
-  no cap for checks.
+  `integration` (formerly `shepherd`), `remediation`, `min_rounds`. Each
+  rigor level points at one policy via `caps = "<policy>"`. A cap is a
+  ceiling; `min_rounds` is a floor per confidence stage below which
+  `converged` cannot fire. `remediation` bounds fix pushes in the integration
+  stage (shipped default 4 at `standard`, scaling with the level like the
+  others; its terminal action is escalation, below). There is no cap for
+  checks.
 - The **integration cap bounds Codex re-review cycles only.** Answering every
   human and CI finding is unconditional; `integration = 0` means "no Codex
   cycle required", never "abandon reviews". That is why a policy may lower it
   (resolves [#624](https://github.com/evanharmon1/harmon-devkit/issues/624)).
+  This **deliberately revises** [#633](https://github.com/evanharmon1/harmon-devkit/issues/633)'s
+  "rigor may raise it, never lower it" criterion: that rule assumed the cap
+  bounded all findings, and once it bounds only Codex cycles, lowering it
+  removes nothing a human or CI raised — which is also what harmon-init's
+  shipped `review.none`/`driveby` values already do.
   Unconditional is not unbounded: fix pushes in the integration stage are
   counted by `[caps].remediation`, whose terminal action is **escalation
   with the unresolved findings listed** — never abandoning them and never
@@ -418,7 +464,7 @@ absorbed by the issue that carries their criteria;
 - [ ] The exit script computes `continue | converged | diverging | capped` from adjudicated rounds and `[convergence]`, verifies provenance and fingerprints, and replays omator#397.
 - [ ] The readiness gate accepts only a schema-valid `result.integrator` for the current head as evidence of a Codex verdict — necessary, not sufficient: the gate's own pre/post-promotion content fingerprint over body, reviews, and comments (`readiness-gate.sh`) stays, because a human finding can land without moving the head.
 - [ ] `.devflow.toml` has `[caps]`, `[gates]`, `[convergence]`, `[role]`, `[stage]`; the legacy shape is refused.
-- [ ] Round evidence survives PR open and is harvestable with `gh api`.
+- [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (post refused); a stage split across comments (reassembled).
 - [ ] `dev-flow-stats.sh` prints the success metric and replays policies.
 - [ ] AGENTS.md's Dev Loop is the stage table, the constitution rules, and references.
 - [ ] Foreman accepts envelope v2, reads `.devflow.toml`, writes run records, and requires converged round artifacts.
