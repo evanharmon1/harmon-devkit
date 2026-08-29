@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "148a7d00807420625aa60da6d45f7395b05f2e36",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
+  "run": { "run_id": "run-4010-missing-checks", "initiated_by": "human" },
+  "payload": {
+    "codex_cycle": null,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "clean",
+    "applied_dispositions": []
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schema": 2,
+  "run_id": "run-6019-missing-settlements",
+  "initiated_by": "human",
+  "started_at": "2026-08-29T09:00:00Z",
+  "stage_transitions": [],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "promotion": null
+}

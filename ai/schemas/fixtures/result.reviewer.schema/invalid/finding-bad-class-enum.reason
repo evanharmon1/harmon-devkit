@@ -1,0 +1,1 @@
+$result.payload.findings[0].class: must be one of "design", "correctness", "consistency", "hardening", "nit"

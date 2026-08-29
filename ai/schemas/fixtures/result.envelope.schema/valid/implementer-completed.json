@@ -1,0 +1,28 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "16c1ef31b175afd33d4da2f7cbea5de815c728bb",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-3001-envelope-valid",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "summary": "Implemented the dev-flow-v2 result schema family: six schema files, a shared validator engine, and a fixture corpus.",
+    "handoff": "Run ./scripts/test-result-schemas.sh to exercise the full fixture corpus before merging.",
+    "ac_test_map": [
+      {
+        "criterion": "Every result schema validates its own conformance fixture corpus",
+        "tests": ["scripts/test-result-schemas.sh"]
+      }
+    ],
+    "human_tasks": [],
+    "proposed_pr_title": "feat(schemas): dev-flow-v2 result schemas and fixture corpus"
+  }
+}

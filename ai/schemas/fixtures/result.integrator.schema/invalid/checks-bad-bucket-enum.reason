@@ -1,0 +1,1 @@
+$result.payload.checks[0].bucket: must be one of "pass", "fail", "pending", "skipping", "cancel"

@@ -1,0 +1,16 @@
+{
+  "schema": 2,
+  "run_id": "run-6042-promotion-missing-gate-fingerprint",
+  "initiated_by": "human",
+  "started_at": "2026-08-29T09:00:00Z",
+  "stage_transitions": [],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": {
+    "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
+    "promoted_at": "2026-08-29T12:00:00Z"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "run_id": "run-5020-entry-missing-adjudicated-priority",
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "86d67443d5b13bf1830ee12de50286ed7d5ee6ae",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "some evidence",
+      "override": null
+    }
+  ]
+}

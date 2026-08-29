@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "490da1b875fdb9864a24e58aa13953c8b5a18fd9",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
+  "run": { "run_id": "run-4025-accepted-missing-reviewed-commit", "initiated_by": "human" },
+  "payload": {
+    "checks": [{ "name": "ci/build", "bucket": "pass", "run_id": "1018" }],
+    "codex_cycle": {
+      "head": "490da1b875fdb9864a24e58aa13953c8b5a18fd9",
+      "attempt": 1,
+      "trigger_comment_id": "555000338",
+      "exit_code": 0,
+      "accepted": {
+        "surface": "review",
+        "id": "777890"
+      }
+    },
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "clean",
+    "applied_dispositions": []
+  }
+}

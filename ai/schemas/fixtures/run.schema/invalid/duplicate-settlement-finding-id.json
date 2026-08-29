@@ -1,0 +1,26 @@
+{
+  "schema": 2,
+  "run_id": "run-6051-duplicate-settlement-finding-id",
+  "initiated_by": "human",
+  "started_at": "2026-08-29T09:00:00Z",
+  "stage_transitions": [],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [
+    {
+      "finding_id": "challenge-r1-codex-cli-9",
+      "disposition": "fix",
+      "settled_at": "2026-08-29T12:00:00Z",
+      "reference": { "type": "sha", "value": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae" }
+    },
+    {
+      "finding_id": "challenge-r1-codex-cli-9",
+      "disposition": "decline",
+      "settled_at": "2026-08-29T13:00:00Z",
+      "reference": { "type": "comment_id", "value": "2000000008" }
+    }
+  ],
+  "promotion": null
+}

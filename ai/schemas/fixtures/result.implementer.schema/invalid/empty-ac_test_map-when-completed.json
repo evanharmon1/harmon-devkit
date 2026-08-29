@@ -1,0 +1,22 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "ccab81b8cf762a1d673373905d5ccf961855dde1",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-1004-empty-ac-test-map",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "summary": "Implemented the requested change.",
+    "handoff": "Run ./scripts/test-result-schemas.sh before merging.",
+    "ac_test_map": [],
+    "human_tasks": []
+  }
+}

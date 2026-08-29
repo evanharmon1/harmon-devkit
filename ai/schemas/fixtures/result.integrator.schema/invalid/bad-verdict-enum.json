@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "c57696ce01e49f7df8050f59b457bd2c51d366f9",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
+  "run": { "run_id": "run-4030-bad-verdict-enum", "initiated_by": "human" },
+  "payload": {
+    "checks": [{ "name": "ci/build", "bucket": "pass", "run_id": "1023" }],
+    "codex_cycle": null,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "resolved"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "24613b79eb4b706b3ed3988ac719be223a1d943b",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-1006-entry-missing-tests",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "summary": "Implemented the requested change.",
+    "handoff": "Run ./scripts/test-result-schemas.sh before merging.",
+    "ac_test_map": [
+      {
+        "criterion": "Every result schema validates its own conformance fixture corpus"
+      }
+    ],
+    "human_tasks": []
+  }
+}

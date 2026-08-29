@@ -1,0 +1,1 @@
+$result.payload.ac_test_map: required (non-empty array) when status is completed

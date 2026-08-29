@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "run_id": "run-6036-settlements-missing-settled-at",
+  "initiated_by": "human",
+  "started_at": "2026-08-29T09:00:00Z",
+  "stage_transitions": [],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [
+    {
+      "finding_id": "challenge-r1-codex-cli-9",
+      "disposition": "fix",
+      "reference": { "type": "sha", "value": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae" }
+    }
+  ],
+  "promotion": null
+}

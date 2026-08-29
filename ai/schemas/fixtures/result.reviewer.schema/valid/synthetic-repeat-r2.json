@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "45c8a1e84318cce7cebabf073e310e92095a0a15",
+  "produced_at": "2026-08-29T16:30:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-2152-synthetic-repeat",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 2,
+    "reviewed_head": "45c8a1e84318cce7cebabf073e310e92095a0a15",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r2-codex-cli-1",
+        "path": "scripts/lib/example.mjs",
+        "line": 47,
+        "class": "correctness",
+        "provenance": "round:1",
+        "fingerprint": "repeat-of:challenge-r1-codex-cli-1",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "the round 1 fix moved the off-by-one two lines down instead of removing it"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 1, "P2": 0, "P3": 0 }
+  }
+}

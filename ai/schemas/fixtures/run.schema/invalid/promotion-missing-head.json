@@ -1,0 +1,16 @@
+{
+  "schema": 2,
+  "run_id": "run-6040-promotion-missing-head",
+  "initiated_by": "human",
+  "started_at": "2026-08-29T09:00:00Z",
+  "stage_transitions": [],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": {
+    "promoted_at": "2026-08-29T12:00:00Z",
+    "gate_fingerprint": "sha256:fingerprint-of-pr-body-reviews-and-comments"
+  }
+}

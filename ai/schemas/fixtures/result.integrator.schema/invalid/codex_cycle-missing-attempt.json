@@ -1,0 +1,21 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "0d8f746ee6361328d77aaf74a8fe6b9f004512b3",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
+  "run": { "run_id": "run-4020-codex-cycle-missing-attempt", "initiated_by": "human" },
+  "payload": {
+    "checks": [{ "name": "ci/build", "bucket": "pass", "run_id": "1013" }],
+    "codex_cycle": {
+      "head": "0d8f746ee6361328d77aaf74a8fe6b9f004512b3",
+      "trigger_comment_id": "555000334",
+      "exit_code": 11
+    },
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "pending"
+  }
+}

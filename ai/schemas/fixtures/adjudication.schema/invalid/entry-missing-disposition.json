@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "run_id": "run-5021-entry-missing-disposition",
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "c6961ac84fde897a48529d1ca036aabd0fff5143",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "reason": "confirmed",
+      "evidence": "some evidence",
+      "override": null
+    }
+  ]
+}

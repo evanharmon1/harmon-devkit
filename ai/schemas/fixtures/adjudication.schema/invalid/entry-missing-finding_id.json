@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "run_id": "run-5018-entry-missing-finding-id",
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "488f4a2638238fd343c7ed6eb48b43aad9c1205b",
+  "adjudications": [
+    {
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "some evidence",
+      "override": null
+    }
+  ]
+}

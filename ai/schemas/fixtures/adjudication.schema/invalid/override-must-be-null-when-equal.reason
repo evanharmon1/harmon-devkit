@@ -1,0 +1,1 @@
+override: must be null when adjudicated_priority equals reviewer_priority

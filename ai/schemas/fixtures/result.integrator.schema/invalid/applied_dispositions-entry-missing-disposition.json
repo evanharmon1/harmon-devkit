@@ -1,0 +1,20 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "c48b38cc0b7ce56f8424a431b2c6648104086dd5",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
+  "run": { "run_id": "run-4029-applied-dispositions-missing-disposition", "initiated_by": "human" },
+  "payload": {
+    "checks": [{ "name": "ci/build", "bucket": "pass", "run_id": "1022" }],
+    "codex_cycle": null,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "clean",
+    "applied_dispositions": [
+      { "finding_id": "review-1122334455" }
+    ]
+  }
+}

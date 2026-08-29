@@ -1,0 +1,20 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "blocked",
+  "head": "391bd4302a428ad44a9460c2e02a1fd8e29e24e2",
+  "produced_at": "2026-08-29T16:12:30Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-1009-null-blocked-question",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "human_tasks": [],
+    "blocked_question": null
+  }
+}
