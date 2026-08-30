@@ -168,7 +168,9 @@ keyword, for every one of these:
   findings live in a different document, and a challenge/review round can
   be more than one pass (spec § Configuration: "a logical round is one
   result per configured finder at the same `reviewed_head`"); an
-  integration round is exactly one integrator envelope. Which role `--pass`
+  integration round is exactly one integrator envelope, so more than one
+  `--pass` for stage `integration` is rejected outright, naming the extra
+  file, before anything else in this check runs. Which role `--pass`
   is validated as (reviewer vs. integrator) is decided by the document's
   own `stage` — `integration` selects an integrator envelope, `challenge`/
   `review` a reviewer one — read before the rest of argv is even parsed,
@@ -243,6 +245,16 @@ keyword, for every one of these:
   `--adjudication`, unchanged: settlements are still checked for an
   internal duplicate `finding_id` (`checkSettlements`), just not against
   any adjudication.
+- **Adjudication union uniqueness (`--adjudication`, repeatable)** —
+  independent of settlements: across the UNION of every supplied
+  `--adjudication` document, a finding_id may be adjudicated at MOST once
+  (`checkAdjudicationsUnionUnique`). The settlement-vs-adjudication check
+  above only notices a cross-document collision when some settlement
+  happens to reference the colliding finding_id — a finding adjudicated
+  twice (two round documents genuinely both claiming it, or literally the
+  same document supplied twice by mistake) but never settled would
+  otherwise go unnoticed. Runs alongside the settlement checks, under the
+  same `--adjudication`/`--no-adjudications` gating.
 - **Evidence marker `run_id` agreement** — `run.schema.json`'s
   `evidence_comments[].marker.run_id` must equal the run record's own
   `run_id`. Unlike the checks above this one needs no external context (both
@@ -347,9 +359,21 @@ instance being validated:
   deterministic marker the spec describes; two comments cannot legitimately
   share one) — `checkEvidenceCommentsUniqueness`.
 - **`run.schema.json`'s `stage_transitions[]` array-wide coherence**
-  (`checkStageTransitionsOrder`) — the first entry is `kickoff`, later
-  entries strictly follow the enum's own canonical order (so no stage ever
-  repeats and none goes backward). Whether the LAST entry also needs `exit`
+  (`checkStageTransitionsOrder`) — the first entry is `kickoff`, and every
+  later entry is reached from the one right before it by either forward
+  progress along the canonical order (intermediate stages freely
+  skippable) or a REMEDIATION LOOP back to `implement` from `challenge`,
+  `review`, `security`, or `integration` (`REMEDIATION_TARGET`/
+  `REMEDIATION_SOURCES` — AGENTS.md's Dev Loop: a fix round can send the
+  run back to implement, then forward again) — never any other backward
+  move, and never the same entry immediately repeating itself (which is
+  neither forward nor a loop to a DIFFERENT stage). This is a check on
+  each entry's PAIR with its immediate predecessor, not a running maximum:
+  a stage a loop sends the run back past (e.g. `challenge`) can legitimately
+  recur LATER in the array once forward progress reaches it again, which a
+  once-per-array "no repeats anywhere" rule (the original, stricter version
+  of this check) would have wrongly rejected. Whether the LAST entry also
+  needs `exit`
   depends on whether the run is still going: while `outcome` is `null` (the
   run hasn't ended), the last entry is the run's current stage and has
   nothing to record an exit for yet, so only the earlier entries need one;
@@ -629,6 +653,17 @@ never needed it).
   `skipping` without blocking a clean read. Recording the distinction as an
   explicit field rather than inferring it from `name` keeps the schema
   agnostic to any particular CI's naming convention.
+- **`verdict: findings` requires a non-empty `findings` array.** The verdict
+  is a claim that something was actually surfaced; an empty array
+  contradicts it (there is nothing to adjudicate). Expressed as a SECOND,
+  independent `{if, then}` member in `allOf` — `verdict: clean`'s own
+  `applied_dispositions`-required condition already occupies the schema's
+  one direct `if`/`then` slot, and this engine's `if`/`then` is a single
+  conditional per schema node, so a second one composes via `allOf`
+  exactly the way `result.schema.json`'s role dispatch already does.
+  Mirrored verbatim in `result.schema.json`'s `$defs.integrator` — the
+  drift test (see "Native harness composition" above) covers this `allOf`
+  member too, not just the `if`/`then` pair it sits beside.
 - **A terminal Codex cycle result must carry `accepted`.**
   `result.integrator.schema.json`'s `codex_cycle` has a nested
   `if: {exit_code: [0, 10]} then: {required: [accepted]}` — a clean (0) or

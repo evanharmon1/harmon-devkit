@@ -554,6 +554,14 @@ run_context_case \
     --adjudication "$settlement_cross_check_adjudication"
 
 run_context_case \
+    "the same --adjudication document supplied twice is rejected: a finding cannot be adjudicated more than once" \
+    run \
+    "$fixtures_dir/run.schema/valid/settlement-of-deferred.json" \
+    "is adjudicated more than once across the supplied --adjudication documents" \
+    --adjudication "$settlement_cross_check_adjudication" \
+    --adjudication "$settlement_cross_check_adjudication"
+
+run_context_case \
     "a ready-for-review run with an unsettled deferred finding is rejected" \
     run \
     "$fixtures_dir/run.schema/invalid/ready-with-unsettled-deferral.json" \
@@ -601,6 +609,14 @@ run_context_case \
     adjudication \
     "$fixtures_dir/adjudication.schema/invalid/integration-head-mismatch.json" \
     "does not match the pass envelope's head" \
+    --pass "$fixtures_dir/adjudication.schema/valid/integration-adjudication.pass.json"
+
+run_context_case \
+    "a second --pass for an integration-stage adjudication is rejected, naming the extra file" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/integration-adjudication.json" \
+    "stage integration accepts at most one --pass" \
+    --pass "$fixtures_dir/adjudication.schema/valid/integration-adjudication.pass.json" \
     --pass "$fixtures_dir/adjudication.schema/valid/integration-adjudication.pass.json"
 
 accept_context_case \

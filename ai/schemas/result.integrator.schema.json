@@ -20,6 +20,18 @@
   "then": {
     "required": ["applied_dispositions"]
   },
+  "allOf": [
+    {
+      "$comment": "verdict: findings is a claim that something was actually surfaced — an empty findings array with that verdict is a contradiction (there is nothing to adjudicate). A second, independent {if, then} member, since this engine's if/then is a single conditional per schema node; allOf is how a second one composes alongside the verdict:clean one above.",
+      "if": {
+        "properties": { "verdict": { "const": "findings" } },
+        "required": ["verdict"]
+      },
+      "then": {
+        "properties": { "findings": { "minItems": 1 } }
+      }
+    }
+  ],
   "properties": {
     "checks": {
       "description": "One entry per CI check gh pr checks reports.",

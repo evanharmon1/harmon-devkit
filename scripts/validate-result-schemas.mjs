@@ -846,26 +846,41 @@ function checkAdjudicationUniqueAcrossRun(document, options, errors) {
 // checkAdjudicationAgainstPass — cross-checks an adjudication document
 // against the pass(es) it adjudicates (--pass, repeatable — a logical
 // challenge/review round is one pass per configured finder at the same
-// reviewed_head, spec § Configuration; a logical integration round is one
-// integrator envelope). Every pass agrees with every other on run_id (and,
-// for challenge/review, stage/round/reviewed_head too — mismatch names the
-// offending pass file); every finding across the UNION of the passes has
-// exactly one adjudication entry, no entry names an id absent from every
-// pass; and, for challenge/review, each entry's reviewer_priority matches
-// its finding's own priority, and every pass names a distinct finder.
-// Stage integration skips both of those last two: an integrator payload
-// carries no `finder` (there is exactly one integrator per attempt, never
-// multiple finders producing multiple passes) and its findings carry no
-// reviewer-asserted `priority` to compare against (ai/schemas/README.md).
-// The head binding is NOT skipped, though: `document.reviewed_head` is
-// still checked, just against the reference pass's ENVELOPE `head` rather
-// than a `payload.reviewed_head` field integrator payloads don't have.
-// Without --pass, none of this runs — the document is still schema-valid
-// and self-consistent on its own (checkAdjudicationEntries), just not
+// reviewed_head, spec § Configuration; a logical integration round is
+// exactly ONE integrator envelope, so more than one --pass for stage
+// integration is rejected outright, naming the extra file, before
+// anything else in this function runs). Every pass agrees with every
+// other on run_id (and, for challenge/review, stage/round/reviewed_head
+// too — mismatch names the offending pass file); every finding across the
+// UNION of the passes has exactly one adjudication entry, no entry names
+// an id absent from every pass; and, for challenge/review, each entry's
+// reviewer_priority matches its finding's own priority, and every pass
+// names a distinct finder. Stage integration skips both of those last
+// two: an integrator payload carries no `finder` (there is exactly one
+// integrator per attempt, never multiple finders producing multiple
+// passes) and its findings carry no reviewer-asserted `priority` to
+// compare against (ai/schemas/README.md). The head binding is NOT
+// skipped, though: `document.reviewed_head` is still checked, just
+// against the (single) pass's ENVELOPE `head` rather than a
+// `payload.reviewed_head` field integrator payloads don't have. Without
+// --pass, none of this runs — the document is still schema-valid and
+// self-consistent on its own (checkAdjudicationEntries), just not
 // cross-checked against anything external.
 function checkAdjudicationAgainstPass(document, passes, errors) {
   if (passes.length === 0) return
   const isIntegration = document.stage === 'integration'
+  // A challenge/review round is one pass PER FINDER (so more than one
+  // --pass is normal); an integration round is exactly one integrator
+  // envelope — there is only ever one integrator per attempt, so a
+  // second --pass here is never legitimate, and the multi-pass agreement
+  // checks below (which read fields like payload.stage/round/finder that
+  // an integrator payload doesn't even have) do not apply to it either.
+  if (isIntegration && passes.length > 1) {
+    errors.push(
+      `$adjudication: stage integration accepts at most one --pass (an integration round is exactly one integrator envelope) — found an extra one at ${passes[1].file}`
+    )
+    return
+  }
   const [reference, ...rest] = passes
   for (const other of rest) {
     if (other.data.run.run_id !== reference.data.run.run_id) {
@@ -873,7 +888,6 @@ function checkAdjudicationAgainstPass(document, passes, errors) {
         `$adjudication: --pass ${other.file} has run_id ${other.data.run.run_id}, disagreeing with ${reference.file}'s ${reference.data.run.run_id}`
       )
     }
-    if (isIntegration) continue
     if (other.data.payload.stage !== reference.data.payload.stage) {
       errors.push(
         `$adjudication: --pass ${other.file} has stage ${other.data.payload.stage}, disagreeing with ${reference.file}'s ${reference.data.payload.stage}`
@@ -1032,14 +1046,33 @@ const STAGE_ORDER = [
   'challenge', 'review', 'security', 'integration'
 ]
 
+// REMEDIATION_TARGET/SOURCES — a fix round found in challenge, review,
+// security, or integration can send the run back to implement (then
+// forward again from there) — AGENTS.md's Dev Loop: "a fix round returns
+// to the stage that produced the findings" for challenge/review's OWN
+// round counters, but the run's stage_transitions instead records the
+// coarser back-to-implement/forward-again cycle this produces at the
+// stage-transition level. implement is the only legal loop TARGET (never
+// e.g. straight back to verify or claim), and any of the four post-verify
+// stages may be the loop's SOURCE.
+const REMEDIATION_TARGET = 'implement'
+const REMEDIATION_SOURCES = new Set(['challenge', 'review', 'security', 'integration'])
+
 // checkStageTransitionsOrder — array-wide coherence the schema's minItems/
 // per-entry required/enum keywords cannot express (no positional "first
-// item" or "monotonic across siblings" keyword in this subset engine):
-// the first entry is kickoff, every later entry's stage strictly follows
-// the canonical order above (so no stage repeats and none goes backward),
-// and every entry but the last records how/why it ended. An entry whose
-// own `stage` failed the schema's enum is skipped here (parseFindingId-
-// style "shape violations are the schema's job, not this check's").
+// item" or "permitted-edge-between-siblings" keyword in this subset
+// engine): the first entry is kickoff, and every later entry is reached
+// from the one before it by either forward progress along the canonical
+// order above (intermediate stages freely skippable) or a remediation
+// loop back to implement (see REMEDIATION_TARGET/SOURCES) — never any
+// other backward move, and never a repeat of the SAME entry twice in a
+// row (which is neither forward nor a loop to a DIFFERENT stage). A stage
+// reached via a loop CAN recur later in the array — repetition across the
+// whole array was the old, stricter rule; only the pairwise edge from
+// each entry's immediate predecessor is checked here. Every entry but the
+// last also records how/why it ended. An entry whose own `stage` failed
+// the schema's enum is skipped here (parseFindingId-style "shape
+// violations are the schema's job, not this check's").
 function checkStageTransitionsOrder(document, errors) {
   const transitions = document.stage_transitions
   if (!Array.isArray(transitions) || transitions.length === 0) return
@@ -1048,17 +1081,22 @@ function checkStageTransitionsOrder(document, errors) {
       `$run.stage_transitions[0].stage: must be "kickoff" (the run's first transition), found ${JSON.stringify(transitions[0].stage)}`
     )
   }
-  let lastIndex = -1
-  for (const [index, transition] of transitions.entries()) {
+  let previousIndex = STAGE_ORDER.indexOf(transitions[0].stage)
+  for (let index = 1; index < transitions.length; index += 1) {
+    const transition = transitions[index]
     const stageIndex = STAGE_ORDER.indexOf(transition.stage)
     if (stageIndex === -1) continue
-    if (stageIndex <= lastIndex) {
-      errors.push(
-        `$run.stage_transitions[${index}].stage: ${transition.stage} is out of order or repeats an earlier entry`
-      )
-    } else {
-      lastIndex = stageIndex
+    if (previousIndex !== -1) {
+      const previousStage = STAGE_ORDER[previousIndex]
+      const isForward = stageIndex > previousIndex
+      const isRemediationLoop = transition.stage === REMEDIATION_TARGET && REMEDIATION_SOURCES.has(previousStage)
+      if (!isForward && !isRemediationLoop) {
+        errors.push(
+          `$run.stage_transitions[${index}].stage: ${transition.stage} is not a valid transition from ${previousStage} (must be forward progress or a remediation loop back to implement)`
+        )
+      }
     }
+    previousIndex = stageIndex
   }
   // While the run is still going (outcome: null), the LAST entry is the
   // run's current stage and has nothing to record an exit for yet; every
@@ -1168,6 +1206,31 @@ function checkAdjudicationRunIdMatchesRun(document, adjudications, errors) {
       errors.push(
         `$run: --adjudication ${file} has run_id ${data.run_id}, not this run's own run_id ${document.run_id}`
       )
+    }
+  }
+}
+
+// checkAdjudicationsUnionUnique — across the UNION of every supplied
+// --adjudication document, a finding_id may be adjudicated at most once —
+// independent of settlements. checkSettlementsAgainstAdjudications below
+// only notices a cross-document collision when some settlement happens to
+// reference the colliding finding_id; a finding double-adjudicated (two
+// genuinely different round documents both claiming it, or literally the
+// same document supplied twice) but never settled would otherwise pass
+// unnoticed. Runs whenever one or more --adjudication files are supplied;
+// with zero or one document, no cross-document collision is possible.
+function checkAdjudicationsUnionUnique(adjudications, errors) {
+  const seenAt = new Map()
+  for (const { file, data } of adjudications) {
+    for (const entry of data.adjudications ?? []) {
+      if (typeof entry.finding_id !== 'string') continue
+      if (seenAt.has(entry.finding_id)) {
+        errors.push(
+          `$run: finding ${entry.finding_id} is adjudicated more than once across the supplied --adjudication documents (${seenAt.get(entry.finding_id)}, ${file})`
+        )
+      } else {
+        seenAt.set(entry.finding_id, file)
+      }
     }
   }
 }
@@ -1323,6 +1386,7 @@ function main() {
       // exactly the "any settlement -> error" contract this flag promises.
       if (options.adjudications.length > 0 || options.noAdjudications) {
         checkAdjudicationRunIdMatchesRun(instance, options.adjudications, errors)
+        checkAdjudicationsUnionUnique(options.adjudications, errors)
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
         checkDeferredFindingsSettledBeforePromotion(instance, options.adjudications, errors)
       }
