@@ -312,7 +312,11 @@ cmd_delivery() {
                    and .source.type == "issue"
                    and (.source.issue.pull_request != null)
                    and (.source.issue.pull_request.merged_at != null)
-                   and (.source.issue.repository.full_name == $repo))
+                   and (.source.issue.repository.full_name == $repo)
+                   # a closing-keyword PR is context, never evidence — even
+                   # when its body (necessarily) also cross-references us
+                   and ((.source.issue.number as $p
+                         | any($closing_refs[]; .pr == $p)) | not))
           | {pr: .source.issue.number,
              url: .source.issue.pull_request.html_url,
              merged_at: .source.issue.pull_request.merged_at,
@@ -577,15 +581,15 @@ jq -n -L "$title_module_dir" \
   # The checkbox must be followed by whitespace (or end the line): GitHub
   # renders `- [x][CI]` as plain text, not a task item.
   def checkbox_line_re:
-    "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\]([ \\t]|$)";
+    "^([-*+]|[0-9]{1,9}[.)])[ \\t]+\\[[ \\txX]\\]([ \\t]|$)";
   def checkbox_unticked_re:
-    "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\]([ \\t]|$)";
+    "^([-*+]|[0-9]{1,9}[.)])[ \\t]+\\[[ \\t]\\]([ \\t]|$)";
   # The text immediately after an unticked checkbox marker — used only to
   # classify the track-work [CI]/[HUMAN] tag grammar, never to decide whether
   # a line counts as a criterion (checkbox_unticked_re already decided that).
   def checkbox_rest($line):
     ($line | capture(
-      "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\]([ \\t]+(?<rest>.*))?$"
+      "^([-*+]|[0-9]{1,9}[.)])[ \\t]+\\[[ \\txX]\\]([ \\t]+(?<rest>.*))?$"
     )).rest // "";
   # The track-work tag grammar exactly: case-insensitive [CI]/[HUMAN]
   # immediately after the checkbox, followed by whitespace or end-of-line;
@@ -606,44 +610,49 @@ jq -n -L "$title_module_dir" \
     # A fence closes only on the same delimiter character at least as long
     # as the opener (CommonMark), so a ``` sample nested inside a ```` block
     # does not end it early and count the sample as criteria.
-    # Text inside an HTML comment is invisible when rendered — a commented-
-    # out template must not supply a heading or a criterion — so comment
-    # spans are blanked first (`<!--` to the next `-->`, across lines).
-    | reduce .[] as $line ({html: false, lines: []};
-        ($line) as $l
-        | if .html then
-            (if ($l | test("-->")) then .html = false
-                | .lines += [$l | sub("^.*?-->"; "")]
-             else . end)
-          elif ($l | test("<!--")) then
-            (if ($l | test("<!--.*?-->")) then
-                .lines += [$l | gsub("<!--.*?-->"; "")]
-             else .html = true | .lines += [$l | sub("<!--.*$"; "")] end)
-          else .lines += [$l] end)
-    | .lines
-    | reduce .[] as $line ({in: false, fence: null, out: []};
+    # One walk tracks three states, fences first: inside a fence nothing is
+    # markup (a literal `<!--` in a code sample opens no comment); outside
+    # one, HTML-comment spans are invisible when rendered and are blanked
+    # (`<!--` to the next `-->`, across lines) before heading/criterion tests.
+    | reduce .[] as $raw ({in: false, fence: null, html: false, out: []};
         # A backtick opener whose info string contains a backtick is prose,
         # not a fence (CommonMark); tilde fences carry no such rule.
-        (($line | capture("^[ ]{0,3}(?<f>`{3,}|~{3,})(?<info>.*)$")) // null
+        (($raw | capture("^[ ]{0,3}(?<f>`{3,}|~{3,})(?<info>.*)$")) // null
          | if . != null and (.f | startswith("`")) and (.info | test("`"))
            then null else . end) as $m
         | if .fence != null then
             (if $m != null and ($m.f[0:1] == .fence[0:1])
                 and (($m.f | length) >= (.fence | length))
-                and ($line | test("^[ ]{0,3}(`+|~+)[ \\t]*$"))
+                and ($raw | test("^[ ]{0,3}(`+|~+)[ \\t]*$"))
              then .fence = null else . end)
-          elif $m != null then .fence = $m.f
-        # Headings are flush-left, like the criteria: an indented heading
-        # may be scoped to an enclosing list item, where a later flush-left
-        # task item is a sibling of the list rather than section content.
-        elif ($line | test("^##[ \\t]+")) then
-          .in = ($line
-                 | sub("^##[ \\t]+"; "")
-                 | sub("[ \\t]+#+[ \\t]*$"; "")
-                 | sub("[ \\t]+$"; "")
-                 | ascii_downcase) == "acceptance criteria"
-        elif .in then .out += [$line]
-        else . end)
+          else
+            # blank comment spans on this line, carrying open state across
+            ((if .html then
+                (if ($raw | test("-->")) then {html: false, l: ($raw | sub("^.*?-->"; ""))}
+                 else {html: true, l: ""} end)
+              else {html: false, l: $raw} end)
+             | if (.html | not) and (.l | test("<!--")) then
+                 (.l | gsub("<!--.*?-->"; "")) as $g
+                 | if ($g | test("<!--")) then {html: true, l: ($g | sub("<!--.*$"; ""))}
+                   else {html: false, l: $g} end
+               else . end) as $c
+            | .html = $c.html
+            | ($c.l) as $line
+            | if $m != null and ($c.l == $raw) then .fence = $m.f
+              # Headings are flush-left, like the criteria: an indented
+              # heading may be scoped to an enclosing list item, where a
+              # later flush-left task item is a sibling of the list. A
+              # level-one heading ends the section too.
+              elif ($line | test("^#[ \\t]+")) then .in = false
+              elif ($line | test("^##[ \\t]+")) then
+                .in = ($line
+                       | sub("^##[ \\t]+"; "")
+                       | sub("[ \\t]+#+[ \\t]*$"; "")
+                       | sub("[ \\t]+$"; "")
+                       | ascii_downcase) == "acceptance criteria"
+              elif .in then .out += [$line]
+              else . end
+          end)
     | .out;
   # An untagged box is not a criterion (the track-work contract), ticked or
   # not, so `total`/`unticked` count tagged items only. An UNTICKED untagged

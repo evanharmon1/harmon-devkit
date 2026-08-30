@@ -1510,6 +1510,13 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
   "body": "## Problem\n\n- [x] a ticked todo in prose\n\n## Verify\n\n${fence}\n- [x] [CI] fenced example\n${fence}\n"},
+ {"number": 72, "title": "(gauntlet): Comment opener inside a fence",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "## Acceptance criteria\n\n${fence}html\n<!-- literal\n${fence}\n- [x] [CI] still counted\n\n# Appendix\n\n- [ ] [CI] not a criterion\n1234567890. [ ] [CI] prose"},
  {"number": 68, "title": "(gauntlet): Commented-out template",
   "author": {"login": "testowner"},
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
@@ -1624,6 +1631,11 @@ jq -e '.open[] | select(.number == 71)
          and (.completion_reasons == ["completion-candidate:all-criteria-checked"])' \
     "$tmp/cc-scan.json" >/dev/null ||
     fail "#71: a backtick-bearing info string is prose, not a fence opener"
+jq -e '.open[] | select(.number == 72)
+       | .criteria.total == 1 and .criteria.unticked == 0
+         and (.completion_reasons == ["completion-candidate:all-criteria-checked"])' \
+    "$tmp/cc-scan.json" >/dev/null ||
+    fail "#72: fenced <!-- is literal, an H1 ends the section, ten-digit markers are prose"
 
 echo "==> scan: an outstanding [CI] criterion carries no completion flag"
 jq -e '.open[] | select(.number == 52)
@@ -1719,8 +1731,15 @@ cat >"$stub_dir/delivery-55.json" <<JSON
      "repository": {"nameWithOwner": "$repo"},
      "url": "https://github.com/$repo/pull/661"}]}}}}}
 JSON
-cat >"$stub_dir/timeline-55.json" <<'JSON'
-[]
+cat >"$stub_dir/timeline-55.json" <<JSON
+[{"event": "cross-referenced", "source": {"type": "issue", "issue": {
+   "number": 661, "state": "closed",
+   "repository": {"full_name": "$repo"},
+   "pull_request": {"html_url": "https://github.com/$repo/pull/661",
+     "merged_at": "2026-08-28T13:40:53Z"}}}}]
+JSON
+cat >"$stub_dir/pull-661.json" <<'JSON'
+{"number": 661, "title": "fix: x", "body": "Closes #55"}
 JSON
 
 echo "==> delivery: a merged closing reference on an open issue is context, not evidence"
@@ -1771,10 +1790,7 @@ jq -e '.verdict == "indeterminate" and .state == null and (.evidence == [])
 # decision, so the earlier evidence no longer counts.
 cat >"$stub_dir/delivery-60.json" <<JSON
 {"data": {"repository": {"issue": {"number": 60, "state": "OPEN",
-  "closedByPullRequestsReferences": {"nodes": [
-    {"number": 800, "state": "MERGED", "mergedAt": "2026-08-01T00:00:00Z",
-     "repository": {"nameWithOwner": "$repo"},
-     "url": "https://github.com/$repo/pull/800"}]}}}}}
+  "closedByPullRequestsReferences": {"nodes": []}}}}}
 JSON
 cat >"$stub_dir/timeline-60.json" <<JSON
 [{"event": "closed", "created_at": "2026-08-01T00:00:00Z"},
@@ -1788,7 +1804,7 @@ cat >"$stub_dir/timeline-60.json" <<JSON
 JSON
 
 cat >"$stub_dir/pull-800.json" <<'JSON'
-{"number": 800, "title": "fix: earlier delivery", "body": "Closes #60"}
+{"number": 800, "title": "fix: earlier delivery", "body": "Refs #60"}
 JSON
 
 echo "==> delivery: evidence merged before a later reopen is not trusted"
