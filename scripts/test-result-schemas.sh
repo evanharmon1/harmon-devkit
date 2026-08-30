@@ -62,6 +62,7 @@ is_context_only_fixture() {
     */adjudication.schema/invalid/pass-cross-check-reviewer-priority-drift.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/integration-head-mismatch.json) return 0 ;;
+    */adjudication.schema/invalid/integration-round-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/known-adjudicated-collision.json) return 0 ;;
     */run.schema/invalid/settlement-of-fixed-finding.json) return 0 ;;
     */run.schema/invalid/settlement-of-unknown-finding.json) return 0 ;;
@@ -215,7 +216,9 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/findings-wrong-cycle.json',
   'result.integrator.schema/invalid/known-ids-collision.json',
   'result.integrator.schema/invalid/clean-with-fix-disposition.json',
-  'result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json'
+  'result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json',
+  'result.integrator.schema/invalid/exit-code-13-with-pending.json',
+  'result.integrator.schema/invalid/exit-code-14-with-clean.json'
 ])
 
 let failures = 0
@@ -489,6 +492,13 @@ run_context_case \
     --pass "$adjudication_pass_dir/pass-cross-check-blocked-pass.pass.json"
 
 run_context_case \
+    "a blocked INTEGRATOR pass with no findings is still rejected as --pass context" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/integration-adjudication.json" \
+    "a blocked pass contributes no findings and cannot be used as --pass context" \
+    --pass "$fixtures_dir/adjudication.schema/invalid/integration-blocked-pass-no-findings.pass.json"
+
+run_context_case \
     "an adjudication entry naming an id absent from the pass is rejected" \
     adjudication \
     "$adjudication_pass_dir/pass-cross-check-extra-entry.json" \
@@ -636,12 +646,25 @@ accept_context_case \
     "$fixtures_dir/adjudication.schema/valid/integration-adjudication.json" \
     --pass "$fixtures_dir/adjudication.schema/valid/integration-adjudication.pass.json"
 
+accept_context_case \
+    "a blocked INTEGRATOR pass with non-empty findings is accepted as --pass context" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/integration-blocked-adjudication.json" \
+    --pass "$fixtures_dir/adjudication.schema/valid/integration-blocked-pass-with-findings.pass.json"
+
 run_context_case \
     "an integration-stage adjudication naming a reviewed_head that disagrees with the --pass envelope's head is rejected" \
     adjudication \
     "$fixtures_dir/adjudication.schema/invalid/integration-head-mismatch.json" \
     "does not match the pass envelope's head" \
     --pass "$fixtures_dir/adjudication.schema/valid/integration-adjudication.pass.json"
+
+run_context_case \
+    "an integration-stage adjudication naming a round that disagrees with the --pass envelope's codex_cycle.attempt is rejected" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/invalid/integration-round-mismatch.json" \
+    "does not match the pass envelope's codex_cycle.attempt" \
+    --pass "$fixtures_dir/adjudication.schema/invalid/integration-round-mismatch.pass.json"
 
 run_context_case \
     "a second --pass for an integration-stage adjudication is rejected, naming the extra file" \
@@ -841,8 +864,21 @@ accept_context_case \
     --receipt --run-id "$reviewer_receipt_run_id" --initiated-by human --known-ids "$empty_ids_file"
 
 usage_error_case \
-    "--receipt on an adjudication with neither --pass nor --known-adjudicated is a usage error" \
+    "--receipt on an adjudication with none of --pass, --known-adjudicated, or --run-id is a usage error" \
     adjudication "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" --receipt
+
+run_context_case \
+    "an adjudication document naming a run_id other than the given --run-id is rejected" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" \
+    "is not the active run" \
+    --run-id "wrong-run-id" --initiated-by human
+
+accept_context_case \
+    "an adjudication document naming the given --run-id is accepted" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" \
+    --run-id "omator-397" --initiated-by human
 
 usage_error_case \
     "--receipt on a run record without --adjudication is a usage error" \

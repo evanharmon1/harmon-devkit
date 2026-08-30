@@ -207,11 +207,14 @@ keyword, for every one of these:
   the document's own `run_id` and `reviewed_head` must agree with the
   reference pass — for challenge/review, `stage` and `round` must agree
   with it too, and `reviewed_head` is compared against the pass's own
-  `payload.reviewed_head`; for integration there is no `payload.stage`/
-  `round`/`reviewed_head` to compare (only `run_id` and the head binding
-  carry over), so `reviewed_head` is instead compared against the pass
-  ENVELOPE's own `head` — the equivalent fact, just living one level up.
-  Stage `integration` skips only the finder-distinctness and
+  `payload.reviewed_head`; integration has no `payload.stage`/`round`/
+  `reviewed_head` to compare against directly, but the equivalent facts
+  live elsewhere on the SAME pass, so both are still checked against
+  those: `reviewed_head` against the pass ENVELOPE's own `head`, and
+  `round` against the pass's `codex_cycle.attempt` (or `1` when
+  `codex_cycle` is `null`) — the same "cycle" `checkIntegratorFindingIds`
+  already reads off the pass's own finding ids. Stage `integration` skips
+  only the finder-distinctness and
   reviewer_priority-fidelity checks above: an integrator payload carries no
   `finder` field at all (there is exactly one integrator per attempt), and
   its findings carry no reviewer-asserted `priority` to compare an
@@ -220,12 +223,20 @@ keyword, for every one of these:
   nothing upstream to measure disagreement against. The head binding is
   never skipped for any stage. A `--pass` file whose own `status` is
   `blocked` is rejected as context too, even though it is a perfectly valid
-  standalone result on its own: a blocked finder or integrator contributes
-  no findings at all, so there is nothing real to cross-check an
-  adjudication against. Without `--pass` an adjudication document is still
-  checked for internal self-consistency (`checkAdjudicationEntries`,
-  `checkAdjudicationIdAttribution`) — it just isn't cross-checked against
-  anything external.
+  standalone result on its own — but the reason, and so the rule, differs
+  by role. A blocked REVIEWER contributes no findings at all
+  (`checkReviewerBlockedStatus` already forces its `findings` empty
+  unconditionally), so a blocked reviewer pass is rejected outright, no
+  further check needed. A blocked INTEGRATOR is different:
+  `checkIntegratorBlockedStatus` permits `verdict: findings` (or
+  `pending`/`escalate`) while blocked — only `clean` is forbidden — so a
+  blocked integrator CAN carry real findings gathered before being cut
+  short. A blocked integrator pass is accepted as context precisely when
+  its `findings[]` is non-empty, and rejected for the same "nothing real
+  to cross-check against" reason only when it is empty. Without `--pass`
+  an adjudication document is still checked for internal self-consistency
+  (`checkAdjudicationEntries`, `checkAdjudicationIdAttribution`) — it just
+  isn't cross-checked against anything external.
 - **Adjudication uniqueness across the run (`--known-adjudicated
   <ids.json>`)** — a finding is adjudicated in exactly one round document,
   ever (see `adjudication.schema.json`'s own `$comment` for the full
@@ -365,6 +376,20 @@ instance being validated:
   documents; so is either of those states with `pr: null`, since reaching
   ready-for-review always means a PR exists — there is no promotion
   without one (`checkRunPromotionOutcome`).
+- **`run.schema.json`'s chronology** (`checkRunChronology`) — `started_at`
+  must be no later than the first `stage_transitions` entry's
+  `entered_at`; `entered_at` must be non-decreasing across entries;
+  `promotion.promoted_at` must be no earlier than the LAST entry's
+  `entered_at`; and every `interventions[].at` and `settlements[].settled_at`
+  must be no earlier than `started_at`. Every value compared lives in this
+  one document, but the schema's `pattern` keyword only proves a value
+  LOOKS like a timestamp — it has no way to check one field's value
+  against another's, so this stays a receipt check like every other
+  paired-values comparison in this family. Compared via `Date`, not raw
+  string ordering: two otherwise-identical instants can be spelled with or
+  without a fractional-seconds suffix (`...:00Z` vs `...:00.500Z`), and
+  lexicographic string comparison gets that pair backwards (`.` sorts
+  below `Z`).
 - **`run.schema.json`'s `settlements[].reference.type` must match
   `disposition`** — `fix → sha` (a 40-hex value), `file → issue_number`
   (`^[1-9][0-9]*$`), `decline → comment_id` (non-empty) — the evidence a
@@ -375,6 +400,13 @@ instance being validated:
   marker.stage, marker.sequence)` triple is unique (that triple **is** the
   deterministic marker the spec describes; two comments cannot legitimately
   share one) — `checkEvidenceCommentsUniqueness`.
+- **`evidence_comments[]` marker sequences are contiguous from 1, per
+  stage** (`checkEvidenceMarkerSequenceContiguity`) — `sequence` is "the
+  Nth comment continuing this stage's evidence when GitHub's size limit
+  forces a split" (spec § Evidence), which only makes sense counted from 1
+  with no gaps; uniqueness above proves no two comments SHARE a sequence
+  number, this proves the numbers themselves — sorted, per `marker.stage`
+  — are exactly `1..N`, neither starting elsewhere nor skipping one.
 - **`run.schema.json`'s `stage_transitions[]` array-wide coherence**
   (`checkStageTransitionsOrder`) — the first entry is `kickoff`, and every
   later entry is reached from the one right before it by an edge
@@ -388,6 +420,15 @@ instance being validated:
   rule would allow — can never jump straight to `security` or
   `integration`, because the diagram draws no such edge; `verify`, by
   contrast, genuinely CAN skip straight to `security`, because it does.
+  One edge in the table needs history, not just the immediate
+  predecessor: `implement → integration` is the diagram's REMEDIATION
+  RETURN ("remediation fix verified and pushed"), which presupposes a
+  prior trip to `integration` to remediate FROM — so it is legal only once
+  an `integration` entry has already appeared somewhere earlier in the
+  array (`everVisitedIntegration`); the run's FIRST pass through
+  `implement` can only go forward to `verify`, never straight to
+  `integration`, since that would skip verify/challenge/review/security
+  entirely, which the diagram never permits.
   This is a check on each entry's PAIR with its immediate predecessor, not
   a running maximum or a once-per-array uniqueness rule: a stage a
   remediation loop sends the run back past (e.g. `challenge`, via
@@ -701,6 +742,21 @@ never needed it).
   in the validator: `accepted` present alongside any exit_code other than
   0/10 is rejected, since its presence is itself a claim of a terminal
   result.
+- **`codex_cycle.exit_code` constrains `verdict` beyond the terminal-vs-
+  nonterminal split above.** `EXIT_CODE_VERDICT_CONSTRAINTS` is one table,
+  keyed by the exit codes documented on `check-codex-cloud-review.sh`'s
+  `check` subcommand (same doc as `codex_cycle.exit_code`'s own
+  description): `11` (pending) and `12` (retry) require `verdict:
+  "pending"` exactly; `13` (escalate) requires `verdict: "escalate"`
+  exactly; `14` (PR no longer open) forbids `clean` and `pending`; `2`
+  (indeterminate) forbids `clean`. `0`/`10` are absent from the table on
+  purpose — `0` already ties to `verdict: clean` through
+  `checkIntegratorCleanVerdict`'s own codex_cycle rule, and `10` has no
+  single-verdict rule of its own. `checkCodexCycleExitCodeVerdict` reads
+  the table rather than this being expressible as `if`/`then`: WHICH
+  exit_code selects WHICH kind of rule (an exact match for some codes, a
+  small exclusion set for others) is itself data the schema's single
+  conditional-per-node shape cannot encode as one rule.
 
 ## Fixture layout
 

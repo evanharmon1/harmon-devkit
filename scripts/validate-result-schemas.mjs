@@ -256,14 +256,27 @@ function parseArgs(argv) {
             runId: null,
             initiatedBy: null
           })
-          // A blocked finder contributes no pass at all (the orchestrator
+          // A blocked REVIEWER contributes no pass at all (the orchestrator
           // retries it once, spec § Configuration) — a status: blocked
-          // envelope is a perfectly valid standalone reviewer result (it
+          // reviewer envelope is a perfectly valid standalone result (it
           // just means the finder produced nothing), but it is never a
-          // legitimate --pass: there is no real finding content to cross-
-          // check an adjudication against.
+          // legitimate --pass: checkReviewerBlockedStatus already forces
+          // its findings empty, so there is never real content to cross-
+          // check an adjudication against, unconditionally. A blocked
+          // INTEGRATOR is different: checkIntegratorBlockedStatus permits
+          // verdict findings/pending/escalate while blocked (only clean is
+          // forbidden), so a blocked integrator CAN carry real findings —
+          // evidence gathered before being cut short — and is accepted as
+          // --pass context precisely when it does; one with none is
+          // rejected for the same "nothing to adjudicate" reason.
           if (errors.length === 0 && candidate.status === 'blocked') {
-            errors.push('$result.status: a blocked pass contributes no findings and cannot be used as --pass context')
+            const hasFindings =
+              candidate.payload &&
+              Array.isArray(candidate.payload.findings) &&
+              candidate.payload.findings.length > 0
+            if (passRole === 'reviewer' || !hasFindings) {
+              errors.push('$result.status: a blocked pass contributes no findings and cannot be used as --pass context')
+            }
           }
           return errors
         })
@@ -353,7 +366,8 @@ const CONTEXT_FLAGS = {
   ],
   adjudication: [
     { flag: '--known-adjudicated', given: (o) => o.knownAdjudicated !== null },
-    { flag: '--pass', given: (o) => o.passes.length > 0 }
+    { flag: '--pass', given: (o) => o.passes.length > 0 },
+    RUN_ID_FLAG
   ],
   run: [{ flag: '--adjudication', given: (o) => o.adjudications.length > 0 || o.noAdjudications }]
 }
@@ -435,6 +449,21 @@ function checkActiveRun(envelope, options, errors) {
         options.initiatedBy
       )}}`
     )
+  }
+}
+
+// checkAdjudicationActiveRun — the envelope-shaped twin of checkActiveRun
+// above, adapted for adjudication.schema.json's shape: the document has
+// only `run_id` at its own top level (no wrapping envelope, and no
+// `initiated_by` field to compare — adjudication.schema.json's own
+// $comment explains why it is standalone, never wrapped in the envelope).
+// Runs whenever --run-id/--initiated-by are given, exactly like the
+// envelope version; --receipt now requires them for kind adjudication too
+// (CONTEXT_FLAGS.adjudication), so this comparison is then unconditional.
+function checkAdjudicationActiveRun(document, options, errors) {
+  if (options.runId === null) return
+  if (document.run_id !== options.runId) {
+    errors.push(`$adjudication.run_id: ${document.run_id} is not the active run ${options.runId}`)
   }
 }
 
@@ -564,6 +593,51 @@ function checkCodexCycleAcceptedScope(payload, errors) {
   if (![0, 10].includes(cycle.exit_code) && Object.hasOwn(cycle, 'accepted')) {
     errors.push(
       `$result.payload.codex_cycle.accepted: must be absent when exit_code is ${cycle.exit_code} (only 0/10 are terminal)`
+    )
+  }
+}
+
+// EXIT_CODE_VERDICT_CONSTRAINTS — what codex_cycle.exit_code implies about
+// payload.verdict, per the SAME exit-code contract
+// result.integrator.schema.json's codex_cycle.exit_code description
+// documents, which is itself ai/skills/universal/shepherd/assets/
+// check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
+// 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
+// indeterminate. 0/10 already constrain verdict structurally elsewhere
+// (checkIntegratorCleanVerdict requires exit_code 0 for verdict clean; no
+// analogous rule ties 10 to a single verdict) and so are absent from this
+// table; each entry here is either `equals` (verdict must be exactly this
+// value) or `excludes` (a set verdict must not be any member of).
+const EXIT_CODE_VERDICT_CONSTRAINTS = {
+  11: { equals: 'pending' },
+  12: { equals: 'pending' },
+  13: { equals: 'escalate' },
+  14: { excludes: new Set(['clean', 'pending']) },
+  2: { excludes: new Set(['clean']) }
+}
+
+// checkCodexCycleExitCodeVerdict — verdict and codex_cycle.exit_code are
+// sibling fields of one payload instance, but the CONDITION each
+// EXIT_CODE_VERDICT_CONSTRAINTS entry expresses is either "must equal
+// exactly this value" for a specific exit_code (a fixed value a JSON
+// Schema const could express) or "must not be ANY of these values" (a
+// small enum-exclusion set) — and which exit_code selects which rule is
+// itself data-dependent, which if/then's single conditional-per-node
+// shape cannot encode as one schema-level rule the way
+// checkIntegratorCleanVerdict's fixed verdict:clean condition can.
+function checkCodexCycleExitCodeVerdict(payload, errors) {
+  const cycle = payload.codex_cycle
+  if (!cycle || typeof cycle !== 'object') return
+  const constraint = EXIT_CODE_VERDICT_CONSTRAINTS[cycle.exit_code]
+  if (!constraint) return
+  if (constraint.equals && payload.verdict !== constraint.equals) {
+    errors.push(
+      `$result.payload.verdict: must be ${JSON.stringify(constraint.equals)} when codex_cycle.exit_code is ${cycle.exit_code}, found ${JSON.stringify(payload.verdict)}`
+    )
+  }
+  if (constraint.excludes && constraint.excludes.has(payload.verdict)) {
+    errors.push(
+      `$result.payload.verdict: must not be ${JSON.stringify(payload.verdict)} when codex_cycle.exit_code is ${cycle.exit_code}`
     )
   }
 }
@@ -767,6 +841,7 @@ function validateEnvelopeInstance(instance, kind, options) {
         if (role === 'integrator') {
           checkIntegratorBlockedStatus(instance, errors)
           checkCodexCycleAcceptedScope(instance.payload, errors)
+          checkCodexCycleExitCodeVerdict(instance.payload, errors)
           checkAppliedDispositionsUnique(instance.payload, errors)
           checkAppliedDispositionsKnownFindingIds(instance.payload, options.knownIds, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
@@ -1030,6 +1105,19 @@ function checkAdjudicationAgainstPass(document, passes, options, errors) {
         `$adjudication.reviewed_head: ${document.reviewed_head} does not match the pass envelope's head ${reference.data.head}`
       )
     }
+    // Likewise, an integrator payload has no `round` field — the
+    // equivalent fact is WHICH Codex cycle this integration round is
+    // (codex_cycle.attempt, or 1 when codex_cycle is null — the same
+    // "cycle" checkIntegratorFindingIds already reads off the pass's own
+    // finding ids), so the document's `round` is checked against that.
+    const referenceCycle = reference.data.payload.codex_cycle
+    const expectedRound =
+      referenceCycle && typeof referenceCycle === 'object' ? referenceCycle.attempt : 1
+    if (document.round !== expectedRound) {
+      errors.push(
+        `$adjudication.round: ${document.round} does not match the pass envelope's codex_cycle.attempt ${expectedRound}`
+      )
+    }
     return
   }
   if (document.stage !== referencePayload.stage) {
@@ -1151,14 +1239,27 @@ function checkStageTransitionsOrder(document, errors) {
     )
   }
   let previousStage = Object.hasOwn(ALLOWED_EDGES, transitions[0].stage) ? transitions[0].stage : null
+  let everVisitedIntegration = previousStage === 'integration'
   for (let index = 1; index < transitions.length; index += 1) {
     const transition = transitions[index]
     if (!Object.hasOwn(ALLOWED_EDGES, transition.stage)) continue
-    if (previousStage !== null && !ALLOWED_EDGES[previousStage].has(transition.stage)) {
-      errors.push(
-        `$run.stage_transitions[${index}].stage: ${transition.stage} is not a valid transition from ${previousStage} (docs/product/domain.md § Lifecycles)`
-      )
+    if (previousStage !== null) {
+      const edgeListed = ALLOWED_EDGES[previousStage].has(transition.stage)
+      // implement -> integration is the diagram's REMEDIATION RETURN edge
+      // ("remediation fix verified and pushed") — it presupposes a prior
+      // trip to integration to remediate FROM. On the run's first pass
+      // through implement, the only legal forward edge is to verify; a
+      // first-visit implement -> integration would skip verify/challenge/
+      // review/security entirely, which the diagram never permits.
+      const isPrematureRemediationReturn =
+        previousStage === 'implement' && transition.stage === 'integration' && !everVisitedIntegration
+      if (!edgeListed || isPrematureRemediationReturn) {
+        errors.push(
+          `$run.stage_transitions[${index}].stage: ${transition.stage} is not a valid transition from ${previousStage} (docs/product/domain.md § Lifecycles)`
+        )
+      }
     }
+    if (transition.stage === 'integration') everVisitedIntegration = true
     previousStage = transition.stage
   }
   // While the run is still going (outcome: null), the LAST entry is the
@@ -1183,6 +1284,81 @@ function checkStageTransitionsOrder(document, errors) {
       errors.push(
         `$run.stage_transitions[${lastIndex}].stage: must be "integration" when outcome is "ready-for-review", found ${JSON.stringify(transitions[lastIndex].stage)}`
       )
+    }
+  }
+}
+
+// isChronologicallyBefore A B — true iff timestamp A is strictly before B.
+// Compares via Date, not raw string ordering: two otherwise-identical
+// instants can be spelled with or without a fractional-seconds suffix
+// (e.g. "...:00Z" vs "...:00.500Z"), and lexicographic string comparison
+// gets that pair backwards ('.' sorts below 'Z'). A malformed value (also
+// checkTimestampRealness's job, not this one's) parses to NaN, and every
+// comparison against NaN is false — so a bad timestamp here simply never
+// trips a chronology error, rather than tripping one for the wrong reason.
+function isChronologicallyBefore(a, b) {
+  return new Date(a).getTime() < new Date(b).getTime()
+}
+
+// checkRunChronology — same-document ordering the schema's per-field
+// pattern keyword cannot express (it proves a value LOOKS like a
+// timestamp, never that it falls in the right place relative to another
+// field): started_at must be no later than the first stage_transitions
+// entry's entered_at; entered_at must be non-decreasing across entries;
+// promotion.promoted_at must be no earlier than the last entry's
+// entered_at; and every intervention's `at` and every settlement's
+// `settled_at` must be no earlier than started_at. Always runs — every
+// value compared lives in this one run.schema.json document.
+function checkRunChronology(document, errors) {
+  const startedAt = document.started_at
+  const transitions = Array.isArray(document.stage_transitions) ? document.stage_transitions : []
+  if (
+    typeof startedAt === 'string' &&
+    transitions.length > 0 &&
+    typeof transitions[0].entered_at === 'string' &&
+    isChronologicallyBefore(transitions[0].entered_at, startedAt)
+  ) {
+    errors.push(
+      `$run.stage_transitions[0].entered_at: ${transitions[0].entered_at} must not be before started_at ${startedAt}`
+    )
+  }
+  let previousEnteredAt = null
+  for (const [index, transition] of transitions.entries()) {
+    if (typeof transition.entered_at !== 'string') continue
+    if (previousEnteredAt !== null && isChronologicallyBefore(transition.entered_at, previousEnteredAt)) {
+      errors.push(
+        `$run.stage_transitions[${index}].entered_at: ${transition.entered_at} must not be before the previous entry's entered_at ${previousEnteredAt}`
+      )
+    }
+    previousEnteredAt = transition.entered_at
+  }
+  const lastEnteredAt =
+    transitions.length > 0 && typeof transitions[transitions.length - 1].entered_at === 'string'
+      ? transitions[transitions.length - 1].entered_at
+      : null
+  if (
+    document.promotion &&
+    typeof document.promotion === 'object' &&
+    typeof document.promotion.promoted_at === 'string' &&
+    lastEnteredAt !== null &&
+    isChronologicallyBefore(document.promotion.promoted_at, lastEnteredAt)
+  ) {
+    errors.push(
+      `$run.promotion.promoted_at: ${document.promotion.promoted_at} must not be before the last stage_transitions entry's entered_at ${lastEnteredAt}`
+    )
+  }
+  if (typeof startedAt === 'string') {
+    for (const [index, intervention] of (document.interventions ?? []).entries()) {
+      if (typeof intervention.at === 'string' && isChronologicallyBefore(intervention.at, startedAt)) {
+        errors.push(`$run.interventions[${index}].at: ${intervention.at} must not be before started_at ${startedAt}`)
+      }
+    }
+    for (const [index, settlement] of (document.settlements ?? []).entries()) {
+      if (typeof settlement.settled_at === 'string' && isChronologicallyBefore(settlement.settled_at, startedAt)) {
+        errors.push(
+          `$run.settlements[${index}].settled_at: ${settlement.settled_at} must not be before started_at ${startedAt}`
+        )
+      }
     }
   }
 }
@@ -1252,6 +1428,34 @@ function checkEvidenceMarkerRunId(document, errors) {
     if (marker && typeof marker.run_id === 'string' && marker.run_id !== document.run_id) {
       errors.push(
         `$run.evidence_comments[${index}].marker.run_id: ${marker.run_id} does not match the run's own run_id ${document.run_id}`
+      )
+    }
+  }
+}
+
+// checkEvidenceMarkerSequenceContiguity — spec § Evidence: sequence is
+// "the Nth comment continuing this stage's evidence when GitHub's size
+// limit forces a split" — which only makes sense counting from 1 with no
+// gaps, per stage (a different stage's evidence is a different sequence
+// entirely, so contiguity is checked WITHIN each marker.stage value, not
+// across the whole array). checkEvidenceCommentsUniqueness already proves
+// no two comments share a (run_id, stage, sequence) triple; this proves
+// the sequence NUMBERS themselves, sorted, are exactly 1..N — neither
+// starting elsewhere nor skipping one.
+function checkEvidenceMarkerSequenceContiguity(document, errors) {
+  const sequencesByStage = new Map()
+  for (const comment of document.evidence_comments ?? []) {
+    const marker = comment.marker
+    if (!marker || typeof marker.stage !== 'string' || typeof marker.sequence !== 'number') continue
+    if (!sequencesByStage.has(marker.stage)) sequencesByStage.set(marker.stage, [])
+    sequencesByStage.get(marker.stage).push(marker.sequence)
+  }
+  for (const [stage, sequences] of sequencesByStage) {
+    const sorted = [...sequences].sort((a, b) => a - b)
+    const contiguousFromOne = sorted.every((sequence, index) => sequence === index + 1)
+    if (!contiguousFromOne) {
+      errors.push(
+        `$run.evidence_comments: marker.stage ${JSON.stringify(stage)}'s sequences must start at 1 and be contiguous, found [${sorted.join(', ')}]`
       )
     }
   }
@@ -1423,6 +1627,7 @@ function main() {
   if (kind === 'adjudication') {
     const errors = validateAdjudicationInstance(instance)
     if (errors.length === 0) {
+      checkAdjudicationActiveRun(instance, options, errors)
       if (options.passes.length > 0) checkAdjudicationAgainstPass(instance, options.passes, options, errors)
       checkAdjudicationUniqueAcrossRun(instance, options, errors)
     }
@@ -1438,10 +1643,12 @@ function main() {
     if (errors.length === 0) {
       checkSettlements(instance, errors)
       checkEvidenceMarkerRunId(instance, errors)
+      checkEvidenceMarkerSequenceContiguity(instance, errors)
       checkEvidenceCommentsUniqueness(instance, errors)
       checkRunPromotionOutcome(instance, errors)
       checkSettlementReferenceType(instance, errors)
       checkStageTransitionsOrder(instance, errors)
+      checkRunChronology(instance, errors)
       // --no-adjudications asserts "confirmed zero", which runs the SAME
       // checks as one-or-more --adjudication documents, just against the
       // empty set: checkSettlementsAgainstAdjudications then rejects every

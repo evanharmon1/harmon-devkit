@@ -1,0 +1,1 @@
+$result.payload.verdict: must not be "clean" when codex_cycle.exit_code is 14

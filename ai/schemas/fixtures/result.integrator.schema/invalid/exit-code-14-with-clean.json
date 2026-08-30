@@ -1,0 +1,37 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "8fbd0ae8fe1e874129edff75ae90e0126b31c579",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4046-exit-code-14-with-clean",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1029",
+        "required": true
+      }
+    ],
+    "codex_cycle": {
+      "head": "8fbd0ae8fe1e874129edff75ae90e0126b31c579",
+      "attempt": 1,
+      "trigger_comment_id": "555000555",
+      "exit_code": 14
+    },
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "clean",
+    "applied_dispositions": []
+  }
+}
