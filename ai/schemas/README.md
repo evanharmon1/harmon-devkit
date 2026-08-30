@@ -157,6 +157,17 @@ keyword, for every one of these:
   validated — reviewer and integrator share the exact same collision check
   and error text, since "unique within the run by construction" makes no
   distinction between the two roles' id grammars.
+- **`applied_dispositions[].finding_id` must be a KNOWN finding
+  (`--known-ids`, integrator only)** — given the flag,
+  `checkAppliedDispositionsKnownFindingIds` requires every disposed-of
+  finding_id to be either one of THIS payload's own `findings[]` (raised
+  and disposed of in the same cycle) or already in `--known-ids` (an
+  earlier cycle's finding this one is now resolving); one in neither set
+  names something the validator has no record of at all. Without
+  `--known-ids` this stays unchecked — there is no way to distinguish a
+  legitimate reference to an older finding from a typo without knowing
+  the run's finding universe, the same reasoning the collision check above
+  already relies on.
 - **Finding id / pass metadata agreement** — a finding id's embedded
   `stage`/`round`/`finder` segments must match the pass's own `stage`,
   `round`, and `finder` fields. This is actually a same-document check (the
@@ -176,9 +187,13 @@ keyword, for every one of these:
   `review` a reviewer one — read before the rest of argv is even parsed,
   since `--pass` may appear anywhere on the command line. `--pass` may be
   given once per finder in a challenge/review round; the validator first
-  checks every supplied pass agrees with every other on `run_id` (and, for
-  challenge/review, `stage`/`round`/`reviewed_head` too — naming the
-  offending `--pass` file if not), then cross-checks the document against
+  checks every supplied pass agrees with every other on its full run
+  identity — `run_id` AND `initiated_by`, the pair that names a run — (and,
+  for challenge/review, `stage`/`round`/`reviewed_head` too — naming the
+  offending `--pass` file if not); when the caller also supplies
+  `--run-id`/`--initiated-by` (the active run), every pass is checked
+  against that identity too, not only against each other. It then
+  cross-checks the document against
   the UNION of their findings: completeness (every finding across every
   pass has exactly one adjudication entry, and no entry names an id absent
   from every pass), and — for challenge/review only — that each entry's
@@ -306,11 +321,13 @@ instance being validated:
   indeterminate, never a pass), while a non-required entry may additionally
   be `skipping`; `unanswered_thread_roots` is empty; `codex_cycle` is
   `null` or has `exit_code: 0` with `accepted` present (never `10`/findings
-  — a clean verdict cannot rest on an unresolved Codex cycle); every
-  `findings[].id` has a matching `applied_dispositions[]` entry; and no
-  applied disposition is `defer` (a deferred finding is carried forward,
-  not clean). All same-document; the check runs unconditionally for role
-  `integrator`.
+  — a clean verdict cannot rest on an unresolved Codex cycle); and every
+  `findings[].id` has a matching `applied_dispositions[]` entry whose
+  disposition is specifically `decline` or `file` — `fix`/`restructure`/
+  `delete` all change code (so the changed code has never itself been
+  through a cycle) and `defer` explicitly carries the finding forward, so
+  none of those four leaves the head exactly as a clean verdict claims.
+  All same-document; the check runs unconditionally for role `integrator`.
 - **A blocked integrator cannot report a clean verdict**
   (`checkIntegratorBlockedStatus`) — envelope `status: blocked` means the
   integrator did not complete its evidence-gathering pass, so
@@ -360,20 +377,24 @@ instance being validated:
   share one) — `checkEvidenceCommentsUniqueness`.
 - **`run.schema.json`'s `stage_transitions[]` array-wide coherence**
   (`checkStageTransitionsOrder`) — the first entry is `kickoff`, and every
-  later entry is reached from the one right before it by either forward
-  progress along the canonical order (intermediate stages freely
-  skippable) or a REMEDIATION LOOP back to `implement` from `challenge`,
-  `review`, `security`, or `integration` (`REMEDIATION_TARGET`/
-  `REMEDIATION_SOURCES` — AGENTS.md's Dev Loop: a fix round can send the
-  run back to implement, then forward again) — never any other backward
-  move, and never the same entry immediately repeating itself (which is
-  neither forward nor a loop to a DIFFERENT stage). This is a check on
-  each entry's PAIR with its immediate predecessor, not a running maximum:
-  a stage a loop sends the run back past (e.g. `challenge`) can legitimately
-  recur LATER in the array once forward progress reaches it again, which a
-  once-per-array "no repeats anywhere" rule (the original, stricter version
-  of this check) would have wrongly rejected. Whether the LAST entry also
-  needs `exit`
+  later entry is reached from the one right before it by an edge
+  `ALLOWED_EDGES` actually lists. That table is an exact transcription of
+  the run-span subset of `docs/product/domain.md`'s "Dev flow" lifecycle
+  (§ Lifecycles, the `stateDiagram-v2`), with every `--> escalate` edge
+  excluded (`escalate` is not itself a stage_transitions value — see
+  below) — not a derived "any forward stage, or a loop back to implement"
+  approximation. That distinction matters: `challenge` can reach `review`
+  or loop back to `implement`, but — unlike a plain "forward index"
+  rule would allow — can never jump straight to `security` or
+  `integration`, because the diagram draws no such edge; `verify`, by
+  contrast, genuinely CAN skip straight to `security`, because it does.
+  This is a check on each entry's PAIR with its immediate predecessor, not
+  a running maximum or a once-per-array uniqueness rule: a stage a
+  remediation loop sends the run back past (e.g. `challenge`, via
+  `challenge → implement → verify → challenge` again) can legitimately
+  recur LATER in the array once forward progress reaches it again — only
+  the pairwise edge is checked, never "has this stage appeared before."
+  Whether the LAST entry also needs `exit`
   depends on whether the run is still going: while `outcome` is `null` (the
   run hasn't ended), the last entry is the run's current stage and has
   nothing to record an exit for yet, so only the earlier entries need one;

@@ -1,1 +1,1 @@
-$run.stage_transitions[2].stage: kickoff is not a valid transition from claim (must be forward progress or a remediation loop back to implement)
+$run.stage_transitions[2].stage: kickoff is not a valid transition from claim (docs/product/domain.md § Lifecycles)

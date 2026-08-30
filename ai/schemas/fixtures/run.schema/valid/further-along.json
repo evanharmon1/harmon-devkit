@@ -6,6 +6,12 @@
   "stage_transitions": [
     { "stage": "kickoff", "entered_at": "2026-08-20T09:00:00Z", "exit": "claimed" },
     { "stage": "claim", "entered_at": "2026-08-20T09:05:00Z", "exit": "planned" },
+    { "stage": "plan", "entered_at": "2026-08-20T09:15:00Z", "exit": "briefed" },
+    { "stage": "implement", "entered_at": "2026-08-20T09:30:00Z", "exit": "verified" },
+    { "stage": "verify", "entered_at": "2026-08-20T12:00:00Z", "exit": "green" },
+    { "stage": "challenge", "entered_at": "2026-08-20T13:00:00Z", "exit": "converged, one deferred" },
+    { "stage": "review", "entered_at": "2026-08-20T15:00:00Z", "exit": "converged" },
+    { "stage": "security", "entered_at": "2026-08-20T17:00:00Z", "exit": "clean" },
     { "stage": "integration", "entered_at": "2026-08-21T08:00:00Z", "exit": "converged" }
   ],
   "interventions": [

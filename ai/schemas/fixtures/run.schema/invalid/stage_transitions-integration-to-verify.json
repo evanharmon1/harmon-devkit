@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "run_id": "run-6057-stage-transitions-backward-non-implement",
+  "run_id": "run-6060-stage-transitions-integration-to-verify",
   "initiated_by": "human",
   "started_at": "2026-08-29T09:00:00Z",
   "stage_transitions": [
@@ -9,9 +9,9 @@
     { "stage": "plan", "entered_at": "2026-08-29T09:04:00Z", "exit": "briefed" },
     { "stage": "implement", "entered_at": "2026-08-29T09:06:00Z", "exit": "verified" },
     { "stage": "verify", "entered_at": "2026-08-29T09:08:00Z", "exit": "green" },
-    { "stage": "challenge", "entered_at": "2026-08-29T09:10:00Z", "exit": "converged" },
-    { "stage": "review", "entered_at": "2026-08-29T09:15:00Z", "exit": "sent back" },
-    { "stage": "challenge", "entered_at": "2026-08-29T09:20:00Z" }
+    { "stage": "security", "entered_at": "2026-08-29T09:10:00Z", "exit": "clean" },
+    { "stage": "integration", "entered_at": "2026-08-29T09:12:00Z", "exit": "CI regressed" },
+    { "stage": "verify", "entered_at": "2026-08-29T09:14:00Z" }
   ],
   "interventions": [],
   "outcome": null,

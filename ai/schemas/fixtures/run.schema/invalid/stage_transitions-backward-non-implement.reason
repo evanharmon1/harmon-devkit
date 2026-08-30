@@ -1,1 +1,1 @@
-$run.stage_transitions[3].stage: challenge is not a valid transition from review (must be forward progress or a remediation loop back to implement)
+$run.stage_transitions[7].stage: challenge is not a valid transition from review (docs/product/domain.md § Lifecycles)

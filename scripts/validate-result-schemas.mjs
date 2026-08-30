@@ -43,7 +43,10 @@
 //                                 against the UNION of their findings:
 //                                 completeness, and that every pass agrees
 //                                 with the others (and the document) on
-//                                 run_id/stage/round/reviewed_head. For
+//                                 run_id/initiated_by/stage/round/
+//                                 reviewed_head — and, when --run-id/
+//                                 --initiated-by are also given, that every
+//                                 pass agrees with THAT active run too. For
 //                                 stage challenge/review this also checks
 //                                 reviewer_priority fidelity and that every
 //                                 pass names a distinct finder; stage
@@ -644,15 +647,43 @@ function checkIntegratorFindingIds(envelope, options, errors) {
   }
 }
 
+// checkAppliedDispositionsKnownFindingIds — optional (--known-ids
+// supplied): every applied_dispositions[].finding_id must be either a
+// finding this payload's OWN findings[] just raised, or one --known-ids
+// already knows about (a finding from an earlier cycle this disposition
+// is now resolving). Without --known-ids there is no way to distinguish
+// "a legitimate reference to an older finding" from "a typo or garbage
+// finding_id", so this stays unchecked entirely until the flag supplies
+// that universe — the same reasoning --known-ids already uses for the
+// collision check above.
+function checkAppliedDispositionsKnownFindingIds(payload, knownIds, errors) {
+  if (!Array.isArray(knownIds)) return
+  const currentFindingIds = new Set(
+    (payload.findings ?? []).filter((finding) => typeof finding.id === 'string').map((finding) => finding.id)
+  )
+  const known = new Set(knownIds)
+  for (const entry of payload.applied_dispositions ?? []) {
+    if (typeof entry.finding_id !== 'string') continue
+    if (!currentFindingIds.has(entry.finding_id) && !known.has(entry.finding_id)) {
+      errors.push(
+        `$result.payload.applied_dispositions: finding_id ${entry.finding_id} is neither one of this payload's own findings nor in --known-ids`
+      )
+    }
+  }
+}
+
 // checkIntegratorCleanVerdict — a `clean` verdict is a claim about the
 // WHOLE payload, not just its own field: at least one check must actually
 // have run (AGENTS.md's readiness gate: an empty check list is
 // indeterminate, not a pass) and every one of them green-or-skipped, no
 // thread may be left unanswered, the Codex cycle (if any) must itself be
-// clean, and every finding raised must be accounted for by a non-deferred
-// applied disposition. Same-document, always runs for role integrator —
-// `verdict` and everything it constrains are all sibling fields of one
-// payload instance.
+// clean, and every finding raised must be accounted for by an applied
+// disposition of `decline` or `file` specifically — `fix`/`restructure`/
+// `delete` all change code (so the changed code has never itself been
+// through a cycle) and `defer` explicitly carries the finding forward;
+// none of the four leaves the head exactly as claimed. Same-document,
+// always runs for role integrator — `verdict` and everything it
+// constrains are all sibling fields of one payload instance.
 function checkIntegratorCleanVerdict(payload, errors) {
   if (payload.verdict !== 'clean') return
   if (!Array.isArray(payload.checks) || payload.checks.length === 0) {
@@ -687,17 +718,22 @@ function checkIntegratorCleanVerdict(payload, errors) {
       .filter((entry) => typeof entry.finding_id === 'string')
       .map((entry) => [entry.finding_id, entry.disposition])
   )
+  // A clean verdict is a claim that the head needs no further review. Only
+  // decline and file leave the head exactly as it is; fix/restructure/
+  // delete all change code (so the changed code has never itself been
+  // through a cycle), and defer explicitly carries the finding forward —
+  // none of the four is compatible with "nothing outstanding."
   for (const finding of payload.findings ?? []) {
     if (typeof finding.id !== 'string') continue
-    if (!appliedTo.has(finding.id)) {
+    const disposition = appliedTo.get(finding.id)
+    if (disposition === undefined) {
       errors.push(
         `$result.payload.findings: finding ${finding.id} has no applied disposition, required when verdict is clean`
       )
-    }
-  }
-  for (const disposition of appliedTo.values()) {
-    if (disposition === 'defer') {
-      errors.push('$result.payload.applied_dispositions: a defer disposition is incompatible with verdict clean')
+    } else if (disposition !== 'decline' && disposition !== 'file') {
+      errors.push(
+        `$result.payload.applied_dispositions: finding ${finding.id}'s disposition ${disposition} is incompatible with verdict clean (only decline or file leave the head unchanged — fix/restructure/delete change code the next cycle would need to review, and defer carries the finding forward)`
+      )
     }
   }
 }
@@ -732,6 +768,7 @@ function validateEnvelopeInstance(instance, kind, options) {
           checkIntegratorBlockedStatus(instance, errors)
           checkCodexCycleAcceptedScope(instance.payload, errors)
           checkAppliedDispositionsUnique(instance.payload, errors)
+          checkAppliedDispositionsKnownFindingIds(instance.payload, options.knownIds, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
           checkIntegrationCap(instance.payload, options.integrationCap, errors)
           checkIntegratorFindingIds(instance, options, errors)
@@ -850,8 +887,13 @@ function checkAdjudicationUniqueAcrossRun(document, options, errors) {
 // exactly ONE integrator envelope, so more than one --pass for stage
 // integration is rejected outright, naming the extra file, before
 // anything else in this function runs). Every pass agrees with every
-// other on run_id (and, for challenge/review, stage/round/reviewed_head
-// too — mismatch names the offending pass file); every finding across the
+// other on its full run identity — run_id AND initiated_by, the pair that
+// names a run (result.envelope.schema.json's `run` description) — and,
+// for challenge/review, stage/round/reviewed_head too (mismatch names the
+// offending pass file); when the caller also supplies
+// --run-id/--initiated-by (OPTIONS, the active run), every pass is
+// checked against that identity too, not only against each other. Every
+// finding across the
 // UNION of the passes has exactly one adjudication entry, no entry names
 // an id absent from every pass; and, for challenge/review, each entry's
 // reviewer_priority matches its finding's own priority, and every pass
@@ -866,7 +908,7 @@ function checkAdjudicationUniqueAcrossRun(document, options, errors) {
 // --pass, none of this runs — the document is still schema-valid and
 // self-consistent on its own (checkAdjudicationEntries), just not
 // cross-checked against anything external.
-function checkAdjudicationAgainstPass(document, passes, errors) {
+function checkAdjudicationAgainstPass(document, passes, options, errors) {
   if (passes.length === 0) return
   const isIntegration = document.stage === 'integration'
   // A challenge/review round is one pass PER FINDER (so more than one
@@ -881,11 +923,33 @@ function checkAdjudicationAgainstPass(document, passes, errors) {
     )
     return
   }
+  // Every --pass must belong to the SAME run identity: its own run_id AND
+  // initiated_by, not just run_id — a run's identity is the pair (see
+  // result.envelope.schema.json's `run` description). When the caller also
+  // supplies --run-id/--initiated-by (the active run it considers this
+  // adjudication to be checked against), every pass is checked against
+  // THAT identity too, not only against each other.
+  for (const { file, data } of passes) {
+    if (options.runId !== null && (data.run.run_id !== options.runId || data.run.initiated_by !== options.initiatedBy)) {
+      errors.push(
+        `$adjudication: --pass ${file} has run {run_id: ${JSON.stringify(data.run.run_id)}, initiated_by: ${JSON.stringify(
+          data.run.initiated_by
+        )}} which is not the active run {run_id: ${JSON.stringify(options.runId)}, initiated_by: ${JSON.stringify(
+          options.initiatedBy
+        )}}`
+      )
+    }
+  }
   const [reference, ...rest] = passes
   for (const other of rest) {
     if (other.data.run.run_id !== reference.data.run.run_id) {
       errors.push(
         `$adjudication: --pass ${other.file} has run_id ${other.data.run.run_id}, disagreeing with ${reference.file}'s ${reference.data.run.run_id}`
+      )
+    }
+    if (other.data.run.initiated_by !== reference.data.run.initiated_by) {
+      errors.push(
+        `$adjudication: --pass ${other.file} has initiated_by ${other.data.run.initiated_by}, disagreeing with ${reference.file}'s ${reference.data.run.initiated_by}`
       )
     }
     if (other.data.payload.stage !== reference.data.payload.stage) {
@@ -1038,41 +1102,46 @@ function checkSettlementReferenceType(document, errors) {
   }
 }
 
-// STAGE_ORDER — the run-span stages in their canonical lifecycle order,
-// matching run.schema.json's stage_transitions[].stage enum exactly (see
-// that schema's own $comment for why the span stops at integration).
-const STAGE_ORDER = [
-  'kickoff', 'claim', 'explore', 'plan', 'implement', 'verify',
-  'challenge', 'review', 'security', 'integration'
-]
-
-// REMEDIATION_TARGET/SOURCES — a fix round found in challenge, review,
-// security, or integration can send the run back to implement (then
-// forward again from there) — AGENTS.md's Dev Loop: "a fix round returns
-// to the stage that produced the findings" for challenge/review's OWN
-// round counters, but the run's stage_transitions instead records the
-// coarser back-to-implement/forward-again cycle this produces at the
-// stage-transition level. implement is the only legal loop TARGET (never
-// e.g. straight back to verify or claim), and any of the four post-verify
-// stages may be the loop's SOURCE.
-const REMEDIATION_TARGET = 'implement'
-const REMEDIATION_SOURCES = new Set(['challenge', 'review', 'security', 'integration'])
+// ALLOWED_EDGES — the run-span subset of docs/product/domain.md's "Dev
+// flow" lifecycle (§ Lifecycles, the `stateDiagram-v2` under "Dev flow —
+// the lifecycle of one change"): stages 1-10 (kickoff..integration, the
+// run's own defined span — see run.schema.json's stage enum $comment),
+// with every `--> escalate` edge from that diagram deliberately excluded,
+// since `escalate` is not itself a stage_transitions value — an escalated
+// run instead ends its last real transition's `exit` and sets
+// `outcome: "escalated"` (already enforced below, unrelated to this
+// table). This is an exact transcription, not a derived "any forward
+// index" approximation: challenge, for instance, can reach review or loop
+// back to implement, but — unlike a plain monotonic-index rule would
+// allow — can never jump straight to security or integration, because the
+// diagram draws no such edge.
+const ALLOWED_EDGES = {
+  kickoff: new Set(['claim']),
+  claim: new Set(['explore', 'plan']),
+  explore: new Set(['plan']),
+  plan: new Set(['implement']),
+  implement: new Set(['verify', 'integration']),
+  verify: new Set(['challenge', 'review', 'security']),
+  challenge: new Set(['implement', 'review']),
+  review: new Set(['implement', 'security']),
+  security: new Set(['integration', 'implement']),
+  integration: new Set(['implement'])
+}
 
 // checkStageTransitionsOrder — array-wide coherence the schema's minItems/
 // per-entry required/enum keywords cannot express (no positional "first
 // item" or "permitted-edge-between-siblings" keyword in this subset
 // engine): the first entry is kickoff, and every later entry is reached
-// from the one before it by either forward progress along the canonical
-// order above (intermediate stages freely skippable) or a remediation
-// loop back to implement (see REMEDIATION_TARGET/SOURCES) — never any
-// other backward move, and never a repeat of the SAME entry twice in a
-// row (which is neither forward nor a loop to a DIFFERENT stage). A stage
-// reached via a loop CAN recur later in the array — repetition across the
-// whole array was the old, stricter rule; only the pairwise edge from
-// each entry's immediate predecessor is checked here. Every entry but the
-// last also records how/why it ended. An entry whose own `stage` failed
-// the schema's enum is skipped here (parseFindingId-style "shape
-// violations are the schema's job, not this check's").
+// from the one right before it by an edge ALLOWED_EDGES actually lists —
+// never any other transition, including a repeat of the SAME entry twice
+// in a row (no stage has an edge to itself). A stage on a legal remediation
+// loop (e.g. challenge, reached again via verify after looping back through
+// implement) CAN recur later in the array — this checks only the pairwise
+// edge from each entry's immediate predecessor, never a once-per-array
+// uniqueness rule. Every entry but the last also records how/why it ended.
+// An entry whose own `stage` failed the schema's enum is skipped here
+// (parseFindingId-style "shape violations are the schema's job, not this
+// check's").
 function checkStageTransitionsOrder(document, errors) {
   const transitions = document.stage_transitions
   if (!Array.isArray(transitions) || transitions.length === 0) return
@@ -1081,22 +1150,16 @@ function checkStageTransitionsOrder(document, errors) {
       `$run.stage_transitions[0].stage: must be "kickoff" (the run's first transition), found ${JSON.stringify(transitions[0].stage)}`
     )
   }
-  let previousIndex = STAGE_ORDER.indexOf(transitions[0].stage)
+  let previousStage = Object.hasOwn(ALLOWED_EDGES, transitions[0].stage) ? transitions[0].stage : null
   for (let index = 1; index < transitions.length; index += 1) {
     const transition = transitions[index]
-    const stageIndex = STAGE_ORDER.indexOf(transition.stage)
-    if (stageIndex === -1) continue
-    if (previousIndex !== -1) {
-      const previousStage = STAGE_ORDER[previousIndex]
-      const isForward = stageIndex > previousIndex
-      const isRemediationLoop = transition.stage === REMEDIATION_TARGET && REMEDIATION_SOURCES.has(previousStage)
-      if (!isForward && !isRemediationLoop) {
-        errors.push(
-          `$run.stage_transitions[${index}].stage: ${transition.stage} is not a valid transition from ${previousStage} (must be forward progress or a remediation loop back to implement)`
-        )
-      }
+    if (!Object.hasOwn(ALLOWED_EDGES, transition.stage)) continue
+    if (previousStage !== null && !ALLOWED_EDGES[previousStage].has(transition.stage)) {
+      errors.push(
+        `$run.stage_transitions[${index}].stage: ${transition.stage} is not a valid transition from ${previousStage} (docs/product/domain.md § Lifecycles)`
+      )
     }
-    previousIndex = stageIndex
+    previousStage = transition.stage
   }
   // While the run is still going (outcome: null), the LAST entry is the
   // run's current stage and has nothing to record an exit for yet; every
@@ -1360,7 +1423,7 @@ function main() {
   if (kind === 'adjudication') {
     const errors = validateAdjudicationInstance(instance)
     if (errors.length === 0) {
-      if (options.passes.length > 0) checkAdjudicationAgainstPass(instance, options.passes, errors)
+      if (options.passes.length > 0) checkAdjudicationAgainstPass(instance, options.passes, options, errors)
       checkAdjudicationUniqueAcrossRun(instance, options, errors)
     }
     const skipped = skippedContextFlags(kind, role, options)

@@ -1,0 +1,1 @@
+$run.stage_transitions[7].stage: verify is not a valid transition from integration (docs/product/domain.md § Lifecycles)

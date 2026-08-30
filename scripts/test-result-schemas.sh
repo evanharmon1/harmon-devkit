@@ -56,6 +56,7 @@ is_context_only_fixture() {
     */result.envelope.schema/invalid/run-mismatch.json) return 0 ;;
     */result.reviewer.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
     */result.integrator.schema/invalid/known-ids-collision.json) return 0 ;;
+    */result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-missing-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-extra-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-reviewer-priority-drift.json) return 0 ;;
@@ -212,7 +213,9 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/head-mismatch.json',
   'result.integrator.schema/invalid/findings-duplicate-id.json',
   'result.integrator.schema/invalid/findings-wrong-cycle.json',
-  'result.integrator.schema/invalid/known-ids-collision.json'
+  'result.integrator.schema/invalid/known-ids-collision.json',
+  'result.integrator.schema/invalid/clean-with-fix-disposition.json',
+  'result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json'
 ])
 
 let failures = 0
@@ -523,6 +526,28 @@ run_context_case \
     --pass "$two_finder_dir/two-finder-a.pass.json" \
     --pass "$two_finder_dir/two-finder-a.pass.json"
 
+# --pass agreement covers the full run identity (run_id AND initiated_by),
+# not just run_id -- a --pass file with a foreign initiated_by is otherwise
+# schema-valid on its own, so this is context-only (needs the OTHER pass to
+# disagree with).
+sed 's/"initiated_by": "human"/"initiated_by": "foreman"/' "$two_finder_dir/two-finder-b.pass.json" \
+    >"$test_tmp/two-finder-b-foreign-initiated-by.pass.json"
+run_context_case \
+    "two --pass files disagreeing on initiated_by (same run_id) are rejected" \
+    adjudication \
+    "$two_finder_dir/two-finder-union-adjudication.json" \
+    "disagreeing with" \
+    --pass "$two_finder_dir/two-finder-a.pass.json" \
+    --pass "$test_tmp/two-finder-b-foreign-initiated-by.pass.json"
+
+run_context_case \
+    "a --pass file whose run identity disagrees with the given --run-id/--initiated-by is rejected" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" \
+    "is not the active run" \
+    --pass "$fixtures_dir/result.reviewer.schema/valid/omator-397-challenge-r1.json" \
+    --run-id "wrong-run-id" --initiated-by human
+
 run_context_case \
     "an adjudication entry already adjudicated by an earlier round document is rejected" \
     adjudication \
@@ -579,6 +604,13 @@ accept_context_case() {
     fi
     echo "PASS: $description"
 }
+
+accept_context_case \
+    "a --pass file matching the given --run-id/--initiated-by is accepted" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" \
+    --pass "$fixtures_dir/result.reviewer.schema/valid/omator-397-challenge-r1.json" \
+    --run-id "omator-397" --initiated-by human
 
 accept_context_case \
     "a run matching the active run is accepted" \
@@ -832,6 +864,19 @@ accept_context_case \
     integrator \
     "$fixtures_dir/result.integrator.schema/invalid/known-ids-collision.json" \
     --known-ids "$empty_ids_file"
+
+run_context_case \
+    "an applied_dispositions finding_id absent from both current findings and --known-ids is rejected" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json" \
+    "is neither one of this payload's own findings nor in --known-ids" \
+    --known-ids "$empty_ids_file"
+
+accept_context_case \
+    "an applied_dispositions finding_id present in --known-ids (an earlier cycle's finding) is accepted" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json" \
+    --known-ids "$fixtures_dir/result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.known-ids.json"
 
 usage_error_case \
     "--no-adjudications and --adjudication together are a usage error" \
