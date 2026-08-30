@@ -127,20 +127,19 @@ guard_out_path() {
 #
 # Read-only. Looks for TRUSTED delivery evidence for one open issue: a pull
 # request that is (a) in the SAME repository as the issue, (b) MERGED, and
-# (c) linked by GitHub's own graph — either a closedByPullRequestsReferences
-# entry (a closing keyword) or a cross-referenced timeline event whose
+# (c) linked by GitHub's own graph as a cross-referenced timeline event whose
 # source PR carries a non-null merged_at (the harmon-init#1080/#1107 "Refs"
 # case, where no closing keyword ever fired). A comment claiming "done", an
 # unmerged or closed-unmerged PR, and a PR from a different repository are
 # never evidence.
 #
-# `gh issue view --json closedByPullRequestsReferences` was the first design
-# here, but its fixed field set (confirmed live against
-# evanharmon1/harmon-init#1080/#1107 on gh 2.98.0) carries only
-# id/number/url/repository{name,owner} per linked PR — no state, no
-# mergedAt — so it cannot tell a merged closing PR from an open one. This
-# reads the same graph edge via `gh api graphql` instead, in one call
-# alongside the issue's own state.
+# Closing-keyword links (closedByPullRequestsReferences) are deliberately NOT
+# evidence: a `Closes #N` PR that merged while #N is still open is either a
+# state-propagation race, a merge to a non-default branch, or a human reopen
+# — all ambiguous, so SKILL.md keeps that case unreported. They are still
+# read (one GraphQL call, alongside the issue's own state — the `gh issue
+# view` JSON field carries neither state nor mergedAt, confirmed live on gh
+# 2.98.0) and emitted as `closing_references` so a human can see them.
 cmd_delivery() {
     local repo="" issue="" out=""
     while [ "$#" -gt 0 ]; do
@@ -242,8 +241,8 @@ cmd_delivery() {
       | ($timeline_arr[0]) as $timeline
       | (($iss.closedByPullRequestsReferences.nodes // [])
          | map(select(.repository.nameWithOwner == $repo and .state == "MERGED")
-               | {pr: .number, url: .url, merged_at: .mergedAt,
-                  via: "closing-reference"})) as $closing_ev
+               | {pr: .number, url: .url, merged_at: .mergedAt})
+         | sort_by(.pr)) as $closing_refs
       | ([$timeline[]
           | select(.event == "cross-referenced"
                    and .source.type == "issue"
@@ -260,7 +259,7 @@ cmd_delivery() {
       # span counts.
       | ([$timeline[] | select(.event == "reopened") | .created_at]
          | max // null) as $reopened_at
-      | ($closing_ev + $cross_ev
+      | ($cross_ev
          | map(select($reopened_at == null or .merged_at > $reopened_at))
          | unique_by(.pr) | sort_by(.pr)) as $evidence
       | {repo: $repo,
@@ -274,6 +273,7 @@ cmd_delivery() {
                    elif ($evidence | length) > 0 then "merged-delivery"
                    else "none" end),
          evidence: $evidence,
+         closing_references: $closing_refs,
          timeline_truncated: $timeline_truncated}
       # Say why a verdict is not the evidence-driven one, so the calling
       # model can list it under Unverified candidates or drop it knowingly.
@@ -282,7 +282,7 @@ cmd_delivery() {
         elif .verdict == "indeterminate"
         then .reason = "timeline page truncated at 100 events; later pages unread"
         elif $reopened_at != null and (.evidence | length) == 0
-             and (($closing_ev + $cross_ev) | length) > 0
+             and ($cross_ev | length) > 0
         then .reason = "issue was reopened after its merged delivery"
         else . end'
 }
@@ -526,9 +526,16 @@ jq -n -L "$title_module_dir" \
   # rather than a whole-body regex.
   def criteria_lines($body):
     (($body // "") | split("\n"))
-    | reduce .[] as $line ({in: false, fence: false, out: []};
-        if ($line | test("^[ ]{0,3}(```|~~~)")) then .fence = (.fence | not)
-        elif .fence then .
+    # A fence closes only on the same delimiter character at least as long
+    # as the opener (CommonMark), so a ``` sample nested inside a ```` block
+    # does not end it early and count the sample as criteria.
+    | reduce .[] as $line ({in: false, fence: null, out: []};
+        (($line | capture("^[ ]{0,3}(?<f>`{3,}|~{3,})")) // null) as $m
+        | if .fence != null then
+            (if $m != null and ($m.f[0:1] == .fence[0:1])
+                and (($m.f | length) >= (.fence | length))
+             then .fence = null else . end)
+          elif $m != null then .fence = $m.f
         elif ($line | test("^[ ]{0,3}##[ \\t]+")) then
           .in = ($line
                  | sub("^[ ]{0,3}##[ \\t]+"; "")

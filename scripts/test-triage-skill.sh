@@ -1511,7 +1511,7 @@ cat >"$stub_dir/issues-open.json" <<JSON
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
-  "body": "## Acceptance Criteria ##\n\n${fence}md\n- [ ] [CI] sample\n${fence}\n- [x] [CI] real\n> - [ ] [CI] quoted example\n    - [ ] [CI] indented code sample\n\n## Out of scope\n\n- [ ] [CI] not a criterion"}]
+  "body": "## Acceptance Criteria ##\n\n${fence}${fence}md\n${fence}\n- [ ] [CI] sample\n${fence}\n- [ ] [CI] still fenced\n${fence}${fence}\n- [x] [CI] real\n> - [ ] [CI] quoted example\n    - [ ] [CI] indented code sample\n\n## Out of scope\n\n- [ ] [CI] not a criterion"}]
 JSON
 cat >"$stub_dir/issues-closed.json" <<'JSON'
 []
@@ -1655,16 +1655,16 @@ cat >"$stub_dir/timeline-55.json" <<'JSON'
 []
 JSON
 
-echo "==> delivery: a merged same-repo closing reference reads merged-delivery"
+echo "==> delivery: a merged closing reference on an open issue is context, not evidence"
 [ "$(run "$scan" delivery --repo "$repo" --issue 55)" = 0 ] ||
     fail "delivery #55 failed: $(cat "$tmp/out")"
 jq -e --arg repo "$repo" '
-  .verdict == "merged-delivery"
-  and (.evidence == [{pr: 661,
+  .verdict == "none" and (.evidence == [])
+  and (.closing_references == [{pr: 661,
                        url: ("https://github.com/" + $repo + "/pull/661"),
-                       merged_at: "2026-08-28T13:40:53Z",
-                       via: "closing-reference"}])
-' "$tmp/out" >/dev/null || fail "delivery #55 must report closing-reference evidence"
+                       merged_at: "2026-08-28T13:40:53Z"}])
+' "$tmp/out" >/dev/null ||
+    fail "delivery #55 must surface but never trust a closing reference"
 
 cat >"$stub_dir/delivery-56.json" <<JSON
 {"data": {"repository": {"issue": {"number": 56, "state": "OPEN",
@@ -1680,8 +1680,9 @@ JSON
 echo "==> delivery: an open same-repo closing reference is not trusted evidence"
 [ "$(run "$scan" delivery --repo "$repo" --issue 56)" = 0 ] ||
     fail "delivery #56 failed: $(cat "$tmp/out")"
-jq -e '.verdict == "none" and (.evidence == [])' "$tmp/out" >/dev/null ||
-    fail "delivery #56 must not trust an open closing-reference PR"
+jq -e '.verdict == "none" and (.evidence == []) and (.closing_references == [])' \
+    "$tmp/out" >/dev/null ||
+    fail "delivery #56 must not list an open closing-reference PR"
 
 # delivery: a missing timeline fixture simulates a failed read — indeterminate
 # (never "none"), and still exit 0 so the calling model can list it under
