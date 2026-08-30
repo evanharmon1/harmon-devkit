@@ -1,0 +1,15 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "267c05b642c52175b393202bb50cff62d067e653",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": { "harness": "claude-code", "tier": "standard" },
+  "run": { "run_id": "run-3022-missing-producer-model", "initiated_by": "human" },
+  "payload": {
+    "summary": "Implemented the requested change.",
+    "handoff": "Run ./scripts/test-result-schemas.sh before merging.",
+    "ac_test_map": [ { "criterion": "Some criterion", "tests": ["scripts/test-result-schemas.sh"] } ],
+    "human_tasks": []
+  }
+}

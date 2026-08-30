@@ -1,0 +1,35 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "f436738ae01b1881801ecd223eb7571aa3755ead",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-2117-finding-missing-class",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "f436738ae01b1881801ecd223eb7571aa3755ead",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r1-codex-cli-1",
+        "path": "some/file.md",
+        "line": 10,
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "some evidence text"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 1, "P2": 0, "P3": 0 }
+  }
+}

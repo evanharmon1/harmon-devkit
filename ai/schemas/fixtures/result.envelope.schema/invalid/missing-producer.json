@@ -1,0 +1,14 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "c6961ac84fde897a48529d1ca036aabd0fff5143",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "run": { "run_id": "run-3020-missing-producer", "initiated_by": "human" },
+  "payload": {
+    "summary": "Implemented the requested change.",
+    "handoff": "Run ./scripts/test-result-schemas.sh before merging.",
+    "ac_test_map": [ { "criterion": "Some criterion", "tests": ["scripts/test-result-schemas.sh"] } ],
+    "human_tasks": []
+  }
+}

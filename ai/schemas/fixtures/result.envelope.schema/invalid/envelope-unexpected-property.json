@@ -1,0 +1,16 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "2f37763e2aa61cf7f2a05bebcb9fb385c2b08b50",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
+  "run": { "run_id": "run-3030-envelope-unexpected-property", "initiated_by": "human" },
+  "payload": {
+    "summary": "Implemented the requested change.",
+    "handoff": "Run ./scripts/test-result-schemas.sh before merging.",
+    "ac_test_map": [ { "criterion": "Some criterion", "tests": ["scripts/test-result-schemas.sh"] } ],
+    "human_tasks": []
+  },
+  "extra_top_level_field": "this should not be here"
+}

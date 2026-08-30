@@ -1,0 +1,1 @@
+$run.settlements[0].settled_at: 2026-08-29T09:23:00Z must not be before the first integration transition's entered_at 2026-08-29T09:30:00Z

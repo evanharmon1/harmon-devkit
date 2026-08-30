@@ -1,0 +1,1 @@
+$run.stage_transitions[7].stage: challenge is not a valid transition from review (docs/product/domain.md § Lifecycles)

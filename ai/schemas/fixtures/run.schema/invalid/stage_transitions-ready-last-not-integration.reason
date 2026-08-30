@@ -1,0 +1,1 @@
+$run.stage_transitions[1].stage: must be "integration" when outcome is "ready-for-review", found "claim"

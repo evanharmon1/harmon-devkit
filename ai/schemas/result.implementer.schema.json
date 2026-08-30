@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/result.implementer.schema.json",
+  "title": "Dev flow v2 implementer payload",
+  "$comment": "This schema describes the SHAPE of `payload` for role: implementer — see result.envelope.schema.json for how the two compose. Fields and types are unchanged from Foreman v1's flat result.json (schema:1) — see ponderousdev/foreman src/foreman/prompts/implementer-preamble.md and src/foreman/backend.py:read_result() at v2.5.0. `status` itself is NOT repeated in this payload: it lives once, on the envelope. The v1-documented conditional requirements (summary/handoff/ac_test_map required iff status is completed; blocked_question iff blocked) therefore cannot be expressed as a structural keyword in THIS file, because the deciding field (envelope.status) is not part of the instance this schema validates — scripts/validate-result-schemas.mjs enforces them as a receipt-validation semantic check instead, reading both the envelope and the payload together. See ai/schemas/README.md 'Composition' and 'Why implementer's conditional fields are a semantic check, not if/then'.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. No minLength here: Foreman v1 serializes this as \"\" (empty string, not absent) on a blocked result, so the schema must accept that shape. Enforced by the validator, not by this schema — checkImplementerStatus rejects an empty string on a completed result exactly as it would a missing one.",
+      "type": "string"
+    },
+    "handoff": {
+      "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. No minLength here: Foreman v1 serializes this as \"\" (empty string, not absent) on a blocked result, so the schema must accept that shape. Enforced by the validator, not by this schema — checkImplementerStatus rejects an empty string on a completed result exactly as it would a missing one.",
+      "type": "string"
+    },
+    "ac_test_map": {
+      "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. Each entry's own shape (criterion + a non-empty tests[]) is enforced structurally regardless of status, since v1 never permitted a malformed entry either way — only the requiredness of the whole array is status-conditional.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "tests"],
+        "properties": {
+          "criterion": {
+            "description": "The [CI] acceptance criterion text, verbatim.",
+            "type": "string",
+            "minLength": 1
+          },
+          "tests": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "human_tasks": {
+      "description": "Optional at every status, exactly as in v1: Foreman's read_result() does data.get('human_tasks', []), so a v1 blocked result in particular can carry only schema/status/blocked_question with no human_tasks key at all. When present, still constrained to an array of strings.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "blocked_question": {
+      "description": "Required (non-null) when blocked; ignored when completed. Enforced by the validator, not by this schema.",
+      "type": ["string", "null"]
+    },
+    "proposed_pr_title": {
+      "description": "Optional at every status, exactly as in v1.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

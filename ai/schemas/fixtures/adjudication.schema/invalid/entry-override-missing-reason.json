@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-5030-override-missing-reason",
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "bb1a3bf7205ec11143f91d9566e08243559e4968",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "some evidence",
+      "override": {}
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "fa070236b87a98a66aa1ce48329ffeb0a6d20766",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": { "model": "claude-sonnet-5", "tier": "standard" },
+  "run": { "run_id": "run-3021-missing-producer-harness", "initiated_by": "human" },
+  "payload": {
+    "summary": "Implemented the requested change.",
+    "handoff": "Run ./scripts/test-result-schemas.sh before merging.",
+    "ac_test_map": [ { "criterion": "Some criterion", "tests": ["scripts/test-result-schemas.sh"] } ],
+    "human_tasks": []
+  }
+}

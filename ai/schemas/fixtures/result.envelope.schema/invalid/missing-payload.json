@@ -1,0 +1,9 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "c30a5f01656f742da2f92b6d32116a7514ce4940",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
+  "run": { "run_id": "run-3029-missing-payload", "initiated_by": "human" }
+}

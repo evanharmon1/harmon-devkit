@@ -1,0 +1,1 @@
+type issue_number requires a positive integer string

@@ -1,0 +1,47 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "3001a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "produced_at": "2026-08-29T19:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-3001-pass-cross-check",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "3001a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r1-codex-cli-1",
+        "path": "some/file.md",
+        "line": 5,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "first finding for the pass cross-check fixtures"
+      },
+      {
+        "id": "challenge-r1-codex-cli-2",
+        "path": "some/other-file.md",
+        "line": 12,
+        "class": "hardening",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "second finding for the pass cross-check fixtures"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 1, "P2": 1, "P3": 0 }
+  }
+}

@@ -1,0 +1,129 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "0d30f5f8f03a7241f5d5b8f7b2ad37a7216d55fa",
+  "produced_at": "2026-07-14T09:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "omator-397",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "review",
+    "round": 1,
+    "reviewed_head": "0d30f5f8f03a7241f5d5b8f7b2ad37a7216d55fa",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r1-codex-cli-1",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 207,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "no mapped status"
+      },
+      {
+        "id": "review-r1-codex-cli-2",
+        "path": "docs/decisions/0014-import-refs-batches-and-undo.md",
+        "line": 38,
+        "class": "consistency",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "ADR allows single-email merge"
+      },
+      {
+        "id": "review-r1-codex-cli-3",
+        "path": "docs/decisions/0014-import-refs-batches-and-undo.md",
+        "line": 25,
+        "class": "consistency",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "ADR allows persisted generated refs"
+      },
+      {
+        "id": "review-r1-codex-cli-4",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 217,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "preserved primary contact stuck under undo lock"
+      },
+      {
+        "id": "review-r1-codex-cli-5",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 242,
+        "class": "consistency",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "all-or-nothing over-claimed for phase B"
+      },
+      {
+        "id": "review-r1-codex-cli-6",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 344,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "bootstrap stamp vs 0 updated"
+      },
+      {
+        "id": "review-r1-codex-cli-7",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 313,
+        "class": "hardening",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "idempotency scenario unqualified"
+      },
+      {
+        "id": "review-r1-codex-cli-8",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 302,
+        "class": "hardening",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "Zoho scenario per-entity"
+      },
+      {
+        "id": "review-r1-codex-cli-9",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 290,
+        "class": "hardening",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "formula tests missing"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 5,
+      "P2": 4,
+      "P3": 0
+    }
+  }
+}

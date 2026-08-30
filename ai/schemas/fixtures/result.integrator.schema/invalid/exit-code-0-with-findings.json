@@ -1,0 +1,45 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "9fbd0ae8fe1e874129edff75ae90e0126b31c580",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4048-exit-code-0-with-findings",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1031",
+        "required": true
+      }
+    ],
+    "codex_cycle": {
+      "head": "9fbd0ae8fe1e874129edff75ae90e0126b31c580",
+      "cycle": 1,
+      "attempt": 1,
+      "trigger_comment_id": "555000777",
+      "exit_code": 0,
+      "accepted": {
+        "surface": "review",
+        "id": "778000",
+        "reviewed_commit": "9fbd0ae8fe1e874129edff75ae90e0126b31c580"
+      }
+    },
+    "integration_round": 1,
+    "findings": [
+      { "id": "integration-r1-human-1", "body": "leftover finding despite a clean Codex cycle", "source_id": "999111" }
+    ],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "findings"
+  }
+}

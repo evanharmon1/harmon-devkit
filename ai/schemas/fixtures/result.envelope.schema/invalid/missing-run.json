@@ -1,0 +1,14 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "a89dc5bb1299b7f079f453ab773017e9f376a94a",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
+  "payload": {
+    "summary": "Implemented the requested change.",
+    "handoff": "Run ./scripts/test-result-schemas.sh before merging.",
+    "ac_test_map": [ { "criterion": "Some criterion", "tests": ["scripts/test-result-schemas.sh"] } ],
+    "human_tasks": []
+  }
+}

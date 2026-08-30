@@ -1,0 +1,21 @@
+{
+  "schema": 2,
+  "run_id": "run-6033-marker-missing-sequence",
+  "initiated_by": "human",
+  "started_at": "2026-08-29T09:00:00Z",
+  "stage_transitions": [],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [
+    {
+      "id": "2000000006",
+      "author_actor_id": 12345678,
+      "login": "evanharmon1",
+      "digest": "sha256:abcdef0123456789",
+      "marker": { "run_id": "run-6033-marker-missing-sequence", "stage": "challenge", "destination": "issue", "round": 1 }
+    }
+  ],
+  "settlements": [],
+  "promotion": null
+}

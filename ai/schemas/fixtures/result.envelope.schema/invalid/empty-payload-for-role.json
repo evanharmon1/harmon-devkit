@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "af7e3874c84e80061f71e539c124345d7f0e9fcb",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-2200-empty-payload",
+    "initiated_by": "human"
+  },
+  "payload": {}
+}

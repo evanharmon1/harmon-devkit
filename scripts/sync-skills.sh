@@ -44,17 +44,27 @@
 #     names: [implementer]   # explicit list, or ["*"] for every agent at the pin
 #     path: ai/agents        # optional; where agents live in the source (default)
 #     dest: .claude/agents   # shared with local agents, same managed-set rule
+#   schemas:                 # OPTIONAL — omit the block entirely and nothing changes
+#     names: ["*"]           # explicit list of schema basenames (no .schema.json), or ["*"] for every schema at the pin
+#     path: ai/schemas       # optional; where schemas live in the source (default)
+#     dest: .claude/schemas  # shared with local schemas, same managed-set rule
 #
-# Agents ride the SAME manifest and therefore the same pinned ref as skills.
-# That is deliberate: a shared agent is thin and defers to a skill by reading it
-# (`.claude/skills/<name>/SKILL.md`), so a version skew between the two would
-# leave an agent following a procedure that no longer exists. One ref, one
-# `task sync:skills`, both kinds of asset.
+# Agents and schemas ride the SAME manifest and therefore the same pinned ref as
+# skills. For agents that is deliberate: a shared agent is thin and defers to a
+# skill by reading it (`.claude/skills/<name>/SKILL.md`), so a version skew
+# between the two would leave an agent following a procedure that no longer
+# exists. Schemas ride the same pin for the parallel reason: a role's result is
+# only valid against the schema version an agent or skill at that pin actually
+# targets, so letting schemas drift to a different pin from skills/agents would
+# let a vendored skill emit a shape its own vendored schema no longer describes.
+# One ref, one `task sync:skills`, all three kinds of asset.
 #
 # Agents are single Markdown files, flat, so the agents pass has no categories
 # and no legacy-stamp migration — it is the simpler twin of the skills pass, not
-# a copy of it. The two never share a destination (refused below), so each owns
-# its own provenance file and managed set.
+# a copy of it. Schemas are single JSON files, flat, so the schemas pass is the
+# same simple twin shape too — no categories, no legacy-stamp migration. All
+# three passes (skills, agents, schemas) use mutually exclusive destinations
+# (refused below), so each owns its own provenance file and managed set.
 set -euo pipefail
 
 MANIFEST="${2:-.skills-sync.yaml}"
@@ -104,23 +114,34 @@ agents_enabled() {
     [ -n "$_ae" ] && [ "$_ae" != "null" ]
 }
 
-# repo_has_synced — 0 when this repo has run at least one sync, proven by EITHER
-# provenance stamp existing.
+# schemas_enabled — 0 when the manifest carries a `schemas:` block. A manifest
+# without one behaves exactly as it did before schemas existed.
+schemas_enabled() {
+    _se="$(manifest_get '.schemas')"
+    [ -n "$_se" ] && [ "$_se" != "null" ]
+}
+
+# repo_has_synced — 0 when this repo has run at least one sync, proven by ANY
+# of the three provenance stamps existing.
 #
 # The "not synced yet, skip cleanly" rule exists for a FRESH SCAFFOLD, so that a
 # newly generated repo's CI and pre-push stay green before its first sync. A
-# fresh scaffold has neither stamp. Once either one exists, a missing stamp for
-# an asset kind the manifest requests is drift, not newness.
+# fresh scaffold has none of the stamps. Once any one exists, a missing stamp
+# for an asset kind the manifest requests is drift, not newness.
 #
 # Asked symmetrically on purpose: guarding one direction only moves the hole
 # rather than closing it. Making the agents skip conditional on the skills stamp
 # (and not the reverse) left a repo that had synced both, then lost its vendored
 # skills, passing every check — the agents stamp proved a sync had run, and
-# nothing consulted it.
+# nothing consulted it. Schemas are checked the same symmetric way, for the same
+# reason, against the same failure mode.
 repo_has_synced() {
     [ -f "$(manifest_get '.dest')/.SKILLS_PROVENANCE" ] && return 0
     if agents_enabled; then
         [ -f "$(agents_dest)/.AGENTS_PROVENANCE" ] && return 0
+    fi
+    if schemas_enabled; then
+        [ -f "$(schemas_dest)/.SCHEMAS_PROVENANCE" ] && return 0
     fi
     return 1
 }
@@ -180,6 +201,20 @@ list_agent_names() {
     for _lan_f in "$_lan_dir"/*.md; do
         [ -f "$_lan_f" ] || continue # empty dir: glob stayed literal
         basename "$_lan_f" .md
+    done | sort
+}
+
+# list_schema_names DIR — names (basename minus .schema.json) of the schema
+# files in DIR, one per line, sorted. Non-files never count. Unlike
+# list_agent_names, this needs no README special-case: the `*.schema.json` glob
+# already excludes README.md (wrong suffix) and the fixtures/ subdirectory
+# (not a file), so nothing extra has to be filtered out.
+list_schema_names() {
+    _lsn_dir="$1"
+    [ -d "$_lsn_dir" ] || return 0
+    for _lsn_f in "$_lsn_dir"/*.schema.json; do
+        [ -f "$_lsn_f" ] || continue # empty dir: glob stayed literal
+        basename "$_lsn_f" .schema.json
     done | sort
 }
 
@@ -451,6 +486,36 @@ assert_agents_names() {
     esac
 }
 
+# assert_schemas_names — require `.schemas.names` to be a YAML SEQUENCE.
+#
+# The same data-loss guard as assert_agents_names, for the same reason:
+# `yq '.schemas.names[]'` exits 0 and prints NOTHING when the key is missing or
+# holds a scalar — so `names: "*"`, the natural mis-spelling of `names: ["*"]`,
+# would resolve the incoming set to empty, and the pass would then delete every
+# schema it manages, write an empty `# managed:` stamp, and exit 0. `verify`
+# would agree afterwards, because an empty managed set really is in sync with
+# an empty incoming set. The typo destroys the vendored schemas and every check
+# reports success.
+#
+# A mapping is refused for the same reason it is dangerous: `[]` over a mapping
+# iterates its VALUES, so `names: {a: b}` silently means `[b]`.
+#
+# An explicit empty sequence is allowed — `names: []` is an unambiguous "vendor
+# no schemas", the same way an empty `categories` list vendors no skills. What
+# is refused is a shape that *reads* as a request and *resolves* as nothing.
+assert_schemas_names() {
+    _asn_type="$(manifest_get '.schemas.names | type')"
+    case "$_asn_type" in
+    '!!seq') return 0 ;;
+    '!!null')
+        die "manifest: schemas.names is required when a 'schemas:' block is present (use [] to vendor none)"
+        ;;
+    *)
+        die "manifest: schemas.names must be a list, got $_asn_type — write names: [\"*\"], not names: \"*\""
+        ;;
+    esac
+}
+
 # vendor_agents CLONE NAMES OUTDIR — materialise the named agents (newline
 # list, or the single entry `*` meaning every agent at the pin) from CLONE,
 # flat, into OUTDIR.
@@ -484,6 +549,37 @@ $2
 EOF
 }
 
+# vendor_schemas CLONE NAMES OUTDIR — materialise the named schemas (newline
+# list, or the single entry `*` meaning every schema at the pin) from CLONE,
+# flat, into OUTDIR. No README special-case: `*.schema.json` never matches
+# README.md in the first place.
+vendor_schemas() {
+    _vs_src="$1/$(manifest_get '.schemas.path // "ai/schemas"')"
+    [ -d "$_vs_src" ] || die "schemas path not found in the pinned clone ($_vs_src)"
+    mkdir -p "$3"
+    # The wildcard is resolved BEFORE assert_sane_name, which rejects `*` as an
+    # unsafe name — it is a manifest sentinel, never a filename.
+    if printf '%s\n' "$2" | grep -qxF '*'; then
+        [ "$(printf '%s\n' "$2" | grep -cv '^$')" -eq 1 ] ||
+            die "manifest: schemas.names is either [\"*\"] (every schema) or an explicit list, not both"
+        for _vs_f in "$_vs_src"/*.schema.json; do
+            [ -f "$_vs_f" ] || continue # no schemas at this ref: glob stayed literal
+            _vs_n="$(basename "$_vs_f" .schema.json)"
+            cp "$_vs_f" "$3/$_vs_n.schema.json"
+        done
+        return 0
+    fi
+    while IFS= read -r _vs_name; do
+        [ -n "$_vs_name" ] || continue
+        assert_sane_name "$_vs_name"
+        [ -f "$_vs_src/$_vs_name.schema.json" ] ||
+            die "schema '$_vs_name' missing in the pinned source ($_vs_src/$_vs_name.schema.json)"
+        cp "$_vs_src/$_vs_name.schema.json" "$3/$_vs_name.schema.json"
+    done <<EOF
+$2
+EOF
+}
+
 # agents_managed_names PROV — the vendored agent names the sync owns, one per
 # line. Simpler than the skills equivalent: agents shipped with the `# managed:`
 # line from their first release, so there is no legacy generation to reconstruct
@@ -493,6 +589,19 @@ agents_managed_names() {
     [ -f "$1" ] || return 0
     grep -q '^# managed:' "$1" ||
         die "agents provenance '$1' has no '# managed:' line — inspect it by hand before re-syncing"
+    prov_list "$1" "managed"
+}
+
+# schemas_managed_names PROV — the vendored schema names the sync owns, one per
+# line. Simpler than the skills equivalent: schemas shipped with the
+# `# managed:` line from their first release, so there is no legacy generation
+# to reconstruct from an older pin. A stamp without the line is therefore not a
+# legacy format — it is damage, and guessing what it owned could delete a local
+# schema.
+schemas_managed_names() {
+    [ -f "$1" ] || return 0
+    grep -q '^# managed:' "$1" ||
+        die "schemas provenance '$1' has no '# managed:' line — inspect it by hand before re-syncing"
     prov_list "$1" "managed"
 }
 
@@ -511,6 +620,21 @@ write_agents_provenance() {
     } >"$1"
 }
 
+write_schemas_provenance() {
+    _wsp_csv="$(echo "$2" | grep -v '^$' | paste -sd ',' - | sed 's/,/, /g' || true)"
+    {
+        echo "# VENDORED from harmon-devkit — DO NOT EDIT the managed schemas here."
+        echo "# source: $(manifest_get '.source.repo')"
+        echo "# ref: $(manifest_get '.source.ref') ($3)"
+        echo "# path: $(manifest_get '.schemas.path // "ai/schemas"')"
+        echo "# names: $(manifest_get '.schemas.names | join(", ")')"
+        echo "# managed:${_wsp_csv:+ $_wsp_csv}"
+        echo "# update: edit $MANIFEST, then run 'task sync:skills' and commit."
+        echo "# Any file NOT listed on '# managed:' is a local schema owned by this"
+        echo "# repo — the sync never touches it."
+    } >"$1"
+}
+
 write_provenance() {
     _wp_managed_csv="$(echo "$2" | grep -v '^$' | paste -sd ',' - | sed 's/,/, /g' || true)"
     {
@@ -519,12 +643,14 @@ write_provenance() {
         echo "# ref: $(manifest_get '.source.ref') ($3)"
         echo "# path: $(manifest_get '.source.path // "ai/skills"')"
         echo "# categories: $(manifest_get '.categories | join(", ")')"
-        # Breadcrumb for de-vendoring. `agents.dest` lives INSIDE the optional
-        # agents block, so deleting that block also deletes the only record of
-        # where the agents went — leaving vendored files that claim to be
-        # managed, with nothing able to find them. The skills stamp is always
-        # findable (`dest` is top-level and required), so it carries the pointer.
+        # Breadcrumbs for de-vendoring. `agents.dest`/`schemas.dest` live INSIDE
+        # their own optional blocks, so deleting either block also deletes the
+        # only record of where those files went — leaving vendored files that
+        # claim to be managed, with nothing able to find them. The skills stamp
+        # is always findable (`dest` is top-level and required), so it carries
+        # both pointers.
         echo "# agents-dest:${4:+ $4}"
+        echo "# schemas-dest:${5:+ $5}"
         echo "# managed:${_wp_managed_csv:+ $_wp_managed_csv}"
         echo "# update: edit $MANIFEST, then run 'task sync:skills' and commit."
         echo "# Any directory NOT listed on '# managed:' is a local skill owned by this"
@@ -565,6 +691,54 @@ agents_dest() {
     echo "$_ad"
 }
 
+# schemas_dest — the validated schemas destination. Also refuses sharing the
+# skills dest, and — when agents are enabled — the agents dest: three-way
+# non-overlap, for the same reason agents_dest refuses sharing the skills dest.
+# Independent managed sets over one directory would each have to reason about
+# the other's deletions, and that is a correctness argument worth not having.
+schemas_dest() {
+    _scd_dest="$(manifest_get '.schemas.dest')"
+    [ -n "$_scd_dest" ] && [ "$_scd_dest" != "null" ] || die "manifest: schemas.dest is required when a 'schemas:' block is present"
+    _scd_dest="$(normalize_path "$_scd_dest")"
+    assert_safe_dest "$_scd_dest" "schemas"
+    # Not just inequality — NON-OVERLAP, against the skills dest first. Either
+    # dest containing the other is the same hazard as sharing one: the skills
+    # pass does `rm -rf` on a managed skill directory, so a schemas dest nested
+    # inside one is deleted wholesale (stamp, managed schemas, and any LOCAL
+    # schema parked there) on every sync. Normalize before comparing — a
+    # trailing slash or a `./` alias must not spell the same directory a second
+    # way past a bare string compare.
+    _scd_skills="$(normalize_path "$(manifest_get '.dest')")"
+    case "$_scd_dest" in
+    "$_scd_skills" | "$_scd_skills"/*)
+        die "manifest: schemas.dest ('$_scd_dest') must not be the skills dest or live inside it — each pass owns its own directory"
+        ;;
+    esac
+    case "$_scd_skills" in
+    "$_scd_dest"/*)
+        die "manifest: the skills dest ('$_scd_skills') lives inside schemas.dest ('$_scd_dest') — each pass owns its own directory"
+        ;;
+    esac
+    # Then against the agents dest, when agents are in play. Local temp names
+    # are distinct from agents_dest's own (_ad/_sd) on purpose: agents_dest is
+    # called mid-function here, and this shell has no `local` — reusing its
+    # variable names would have it clobber ours out from under us.
+    if agents_enabled; then
+        _scd_agents="$(agents_dest)"
+        case "$_scd_dest" in
+        "$_scd_agents" | "$_scd_agents"/*)
+            die "manifest: schemas.dest ('$_scd_dest') must not be the agents dest or live inside it — each pass owns its own directory"
+            ;;
+        esac
+        case "$_scd_agents" in
+        "$_scd_dest"/*)
+            die "manifest: the agents dest ('$_scd_agents') lives inside schemas.dest ('$_scd_dest') — each pass owns its own directory"
+            ;;
+        esac
+    fi
+    echo "$_scd_dest"
+}
+
 # orphaned_agents_dest PROV — echo the agents dest recorded on a skills stamp
 # whose manifest no longer requests agents, when agents are still vendored
 # there. Empty when there is nothing to de-vendor.
@@ -582,28 +756,51 @@ orphaned_agents_dest() {
     echo "$_oad"
 }
 
-# assert_orphan_usable DEST — validate a de-vendor target, in PARENT context.
+# orphaned_schemas_dest PROV — echo the schemas dest recorded on a skills stamp
+# whose manifest no longer requests schemas, when schemas are still vendored
+# there. Empty when there is nothing to de-vendor.
 #
-# Deliberately not inside orphaned_agents_dest, which runs inside `$( )`. `die`
-# there exits only the subshell: the message prints, the caller's `[ -n "$x" ]
-# || return 0` reads the empty result as "nothing to do", and the run continues
-# reporting success. Observed exactly that — a damaged orphan stamp printed its
-# error, the sync exited 0, and the skills stamp was rewritten with an empty
-# breadcrumb, leaving agents no later run could find.
+# Only ever called with schemas DISABLED, so the dest cannot come from the
+# manifest — it comes from the stamp, which is why the breadcrumb exists. It is
+# validated like any other dest before anything deletes under it: the stamp is
+# committed config, but a corrupted line must not become an rm.
+orphaned_schemas_dest() {
+    [ -f "$1" ] || return 0
+    _osd="$(prov_field "$1" "schemas-dest")"
+    [ -n "$_osd" ] || return 0
+    _osd="$(normalize_path "$_osd")"
+    [ -f "$_osd/.SCHEMAS_PROVENANCE" ] || return 0
+    echo "$_osd"
+}
+
+# assert_orphan_usable DEST PROV_NAME — validate a de-vendor target, in PARENT
+# context. PROV_NAME is the provenance filename to look for under DEST
+# (`.AGENTS_PROVENANCE` or `.SCHEMAS_PROVENANCE`) — one function shared by both
+# passes, since the failure mode and the fix are identical either way, and
+# PROV_NAME already names the kind in every message that quotes the path.
+#
+# Deliberately not inside orphaned_agents_dest/orphaned_schemas_dest, which run
+# inside `$( )`. `die` there exits only the subshell: the message prints, the
+# caller's `[ -n "$x" ] || return 0` reads the empty result as "nothing to do",
+# and the run continues reporting success. Observed exactly that — a damaged
+# orphan stamp printed its error, the sync exited 0, and the skills stamp was
+# rewritten with an empty breadcrumb, leaving the orphaned files no later run
+# could find.
 #
 # So the checks that must ABORT live here, where the shell is the parent and
 # `die` means what it says, and they run before the skills pass mutates
 # anything.
 assert_orphan_usable() {
-    assert_safe_dest "$1" "orphaned agents"
-    _aou_prov="$1/.AGENTS_PROVENANCE"
+    assert_safe_dest "$1" "orphaned vendored files"
+    _aou_prov="$1/$2"
     grep -q '^# managed:' "$_aou_prov" ||
-        die "agents provenance '$_aou_prov' has no '# managed:' line — inspect it by hand before re-syncing"
-    # Every NAME too, not just the line's presence. devendor_agents validates
-    # each name before its `rm`, which is correct but too late: by then the
-    # skills stamp carries an empty breadcrumb, so aborting there leaves agents
-    # no later run can find. Validating here — parent context, pre-mutation —
-    # means a stamp carrying `../bad` aborts with the pointer still intact.
+        die "provenance '$_aou_prov' has no '# managed:' line — inspect it by hand before re-syncing"
+    # Every NAME too, not just the line's presence. devendor_agents/
+    # devendor_schemas validate each name before their `rm`, which is correct
+    # but too late: by then the skills stamp carries an empty breadcrumb, so
+    # aborting there leaves the orphan no later run can find. Validating here —
+    # parent context, pre-mutation — means a stamp carrying `../bad` aborts
+    # with the pointer still intact.
     while IFS= read -r _aou_n; do
         [ -n "$_aou_n" ] || continue
         assert_sane_name "$_aou_n"
@@ -626,6 +823,22 @@ stale_agents_dest() {
     [ -n "$_sad" ] || return 0
     [ "$_sad" != "$(normalize_path "$2")" ] || return 0
     echo "$_sad"
+}
+
+# stale_schemas_dest PROV CURRENT — the schemas dest a previous sync used and
+# this one no longer will, when schemas are still vendored there. Empty when
+# there is nothing to clean up. CURRENT is the dest this run will use, or empty
+# when the manifest no longer requests schemas at all.
+#
+# Moving `schemas.dest` is the same stranding bug as deleting the block, one
+# variant over: the pass would vendor into the new location, leave the old one
+# untouched, and both verify modes would inspect only the new one and pass. The
+# old copy stays on disk, still stamped, still loaded by the harness.
+stale_schemas_dest() {
+    _ssd="$(orphaned_schemas_dest "$1")"
+    [ -n "$_ssd" ] || return 0
+    [ "$_ssd" != "$(normalize_path "$2")" ] || return 0
+    echo "$_ssd"
 }
 
 # devendor_agents DEST — remove the agents this sync previously managed, plus
@@ -651,6 +864,25 @@ $_dv_managed
 EOF
     rm -f "$_dv_prov"
     echo "de-vendored $_dv_n agent(s) from $1 — ${2:-the manifest no longer requests agents}"
+}
+
+# devendor_schemas DEST NOTE — remove the schemas this sync previously managed,
+# plus their stamp, after the manifest stopped requesting them. Twin of
+# devendor_agents; see there for the rationale.
+devendor_schemas() {
+    _dvs_prov="$1/.SCHEMAS_PROVENANCE"
+    _dvs_managed="$(schemas_managed_names "$_dvs_prov")"
+    _dvs_n=0
+    while IFS= read -r _dvs_name; do
+        [ -n "$_dvs_name" ] || continue
+        assert_sane_name "$_dvs_name"
+        rm -f "${1:?}/${_dvs_name:?}.schema.json"
+        _dvs_n=$((_dvs_n + 1))
+    done <<EOF
+$_dvs_managed
+EOF
+    rm -f "$_dvs_prov"
+    echo "de-vendored $_dvs_n schema(s) from $1 — ${2:-the manifest no longer requests schemas}"
 }
 
 # agents_preflight CLONE — resolve and validate everything the agents pass
@@ -691,6 +923,38 @@ $_AGP_MANAGED
 EOF
 }
 
+# schemas_preflight CLONE — resolve and validate everything the schemas pass
+# needs, WITHOUT mutating anything. Twin of agents_preflight; see there for why
+# this runs before any pass starts deleting.
+#
+# Results land in _SCP_* globals for schemas_apply.
+schemas_preflight() {
+    _SCP_DEST="$(schemas_dest)"
+    _SCP_PROV="$_SCP_DEST/.SCHEMAS_PROVENANCE"
+    assert_schemas_names
+    vendor_schemas "$1" "$(manifest_get '.schemas.names[]')" "$WORKDIR/vendor-schemas"
+    _SCP_INCOMING="$(list_schema_names "$WORKDIR/vendor-schemas")"
+    _SCP_MANAGED="$(schemas_managed_names "$_SCP_PROV")"
+
+    # Collision gate: a file we do not own that an incoming schema wants is
+    # local work. Checked here, before ANY deletion anywhere in the run.
+    while IFS= read -r _scp_name; do
+        [ -n "$_scp_name" ] || continue
+        if [ -e "$_SCP_DEST/$_scp_name.schema.json" ] && ! printf '%s\n' "$_SCP_MANAGED" | grep -qxF "$_scp_name"; then
+            die "local schema '$_scp_name' collides with an incoming vendored schema — rename the local file or drop it from $MANIFEST"
+        fi
+    done <<EOF
+$_SCP_INCOMING
+EOF
+    # Names about to be rm'd are validated here too, for the same reason.
+    while IFS= read -r _scp_name; do
+        [ -n "$_scp_name" ] || continue
+        assert_sane_name "$_scp_name"
+    done <<EOF
+$_SCP_MANAGED
+EOF
+}
+
 # agents_apply RESOLVED_SHA — mutate the agents dest using what
 # agents_preflight resolved. Replaces only what this sync owns.
 agents_apply() {
@@ -720,6 +984,35 @@ EOF
     echo "vendored $_sa_n agent(s) → $_sa_dest @ $(manifest_get '.source.ref')"
 }
 
+# schemas_apply RESOLVED_SHA — mutate the schemas dest using what
+# schemas_preflight resolved. Replaces only what this sync owns.
+schemas_apply() {
+    _scap_dest="$_SCP_DEST"
+    _scap_prov="$_SCP_PROV"
+    _scap_incoming="$_SCP_INCOMING"
+    _scap_managed="$_SCP_MANAGED"
+
+    while IFS= read -r _scap_name; do
+        [ -n "$_scap_name" ] || continue
+        assert_sane_name "$_scap_name"
+        rm -f "${_scap_dest:?}/${_scap_name:?}.schema.json"
+    done <<EOF
+$_scap_managed
+EOF
+    rm -f "$_scap_prov"
+    mkdir -p "$_scap_dest"
+    _scap_n=0
+    while IFS= read -r _scap_name; do
+        [ -n "$_scap_name" ] || continue
+        cp "$WORKDIR/vendor-schemas/$_scap_name.schema.json" "$_scap_dest/$_scap_name.schema.json"
+        _scap_n=$((_scap_n + 1))
+    done <<EOF
+$_scap_incoming
+EOF
+    write_schemas_provenance "$_scap_prov" "$_scap_incoming" "$1"
+    echo "vendored $_scap_n schema(s) → $_scap_dest @ $(manifest_get '.source.ref')"
+}
+
 cmd_sync() {
     require_tools
     WORKDIR="$(mktemp -d)"
@@ -727,10 +1020,11 @@ cmd_sync() {
     # dest is committed config (.skills-sync.yaml), but sync deletes paths under
     # it — so refuse anything that could reach outside the repo before any rm.
     assert_safe_dest "$dest" "skills"
-    # Validate the agents dest too, before the skills pass starts deleting: a
-    # manifest that would be rejected halfway through should be rejected before
-    # anything is removed.
+    # Validate the agents and schemas dests too, before the skills pass starts
+    # deleting: a manifest that would be rejected halfway through should be
+    # rejected before anything is removed.
     if agents_enabled; then agents_dest >/dev/null; fi
+    if schemas_enabled; then schemas_dest >/dev/null; fi
     ref="$(manifest_get '.source.ref')"
     [ -n "$ref" ] && [ "$ref" != "null" ] || die "manifest: .source.ref is required"
 
@@ -755,26 +1049,34 @@ cmd_sync() {
 $incoming
 EOF
 
-    # Capture the de-vendor breadcrumb BEFORE anything rewrites the stamp. The
+    # Capture the de-vendor breadcrumbs BEFORE anything rewrites the stamp. The
     # skills pass deletes and re-writes $prov further down, and the new stamp is
-    # written with an empty `# agents-dest:` (agents are disabled on this path) —
-    # so reading it afterwards would always find nothing to de-vendor, and the
-    # orphaned agents would survive the very run meant to remove them.
-    # Covers BOTH stranding cases: the block removed entirely, and agents.dest
-    # moved while the block stays. Either way the previous location is only
+    # written with empty `# agents-dest:`/`# schemas-dest:` lines for whichever
+    # pass is disabled on this run — so reading it afterwards would always find
+    # nothing to de-vendor, and the orphaned files would survive the very run
+    # meant to remove them.
+    # Covers BOTH stranding cases per pass: the block removed entirely, and its
+    # dest moved while the block stays. Either way the previous location is only
     # recoverable from the breadcrumb, which the skills pass is about to erase.
     if agents_enabled; then
         _cs_orphan="$(stale_agents_dest "$prov" "$(agents_dest)")"
     else
         _cs_orphan="$(stale_agents_dest "$prov" "")"
     fi
-    [ -z "$_cs_orphan" ] || assert_orphan_usable "$_cs_orphan"
+    [ -z "$_cs_orphan" ] || assert_orphan_usable "$_cs_orphan" ".AGENTS_PROVENANCE"
+    if schemas_enabled; then
+        _cs_sorphan="$(stale_schemas_dest "$prov" "$(schemas_dest)")"
+    else
+        _cs_sorphan="$(stale_schemas_dest "$prov" "")"
+    fi
+    [ -z "$_cs_sorphan" ] || assert_orphan_usable "$_cs_sorphan" ".SCHEMAS_PROVENANCE"
 
-    # Preflight the agents pass while the tree is still untouched. Everything
-    # that can make it die — a name absent at the pin, a corrupt stamp, a
-    # collision with a local agent — is resolved here, so the run cannot replace
-    # skills and then fail, leaving the two kinds of asset at different pins.
+    # Preflight the agents and schemas passes while the tree is still untouched.
+    # Everything that can make either die — a name absent at the pin, a corrupt
+    # stamp, a collision with a local file — is resolved here, so the run cannot
+    # replace skills and then fail, leaving assets skewed across pins.
     if agents_enabled; then agents_preflight "$WORKDIR/devkit"; fi
+    if schemas_enabled; then schemas_preflight "$WORKDIR/devkit"; fi
 
     # Replace only what we own.
     while IFS= read -r name; do
@@ -794,11 +1096,11 @@ EOF
     done <<EOF
 $incoming
 EOF
-    if agents_enabled; then
-        write_provenance "$prov" "$incoming" "$resolved" "$(agents_dest)"
-    else
-        write_provenance "$prov" "$incoming" "$resolved"
-    fi
+    _cs_adest=""
+    if agents_enabled; then _cs_adest="$(agents_dest)"; fi
+    _cs_sdest=""
+    if schemas_enabled; then _cs_sdest="$(schemas_dest)"; fi
+    write_provenance "$prov" "$incoming" "$resolved" "$_cs_adest" "$_cs_sdest"
 
     cats="$(manifest_get '.categories | join(", ")')"
     if [ "$n" -eq 0 ]; then
@@ -814,7 +1116,15 @@ EOF
             devendor_agents "$_cs_orphan"
         fi
     fi
+    if [ -n "$_cs_sorphan" ]; then
+        if schemas_enabled; then
+            devendor_schemas "$_cs_sorphan" "schemas.dest moved to $(schemas_dest)"
+        else
+            devendor_schemas "$_cs_sorphan"
+        fi
+    fi
     if agents_enabled; then agents_apply "$resolved"; fi
+    if schemas_enabled; then schemas_apply "$resolved"; fi
 }
 
 # verify_agents_pass CLONE — drift-check the vendored agents against the pin.
@@ -824,7 +1134,7 @@ verify_agents_pass() {
     _vap_prov="$_vap_dest/.AGENTS_PROVENANCE"
     _vap_stale="$(stale_agents_dest "$(manifest_get '.dest')/.SKILLS_PROVENANCE" "$_vap_dest")"
     if [ -n "$_vap_stale" ]; then
-        assert_orphan_usable "$_vap_stale"
+        assert_orphan_usable "$_vap_stale" ".AGENTS_PROVENANCE"
         die "agents are still vendored in $_vap_stale but agents.dest is now $_vap_dest — run 'task sync:skills' to de-vendor the old location, and commit"
     fi
     if [ ! -f "$_vap_prov" ]; then
@@ -876,6 +1186,68 @@ EOF
         die "run 'task sync:skills' and commit the result."
     fi
     echo "✓ vendored agents in sync with $_vap_ref (local agents untouched/ignored)"
+}
+
+# verify_schemas_pass CLONE — drift-check the vendored schemas against the pin.
+# Requires CLONE to hold a clone of the manifest ref. Dies on drift. Twin of
+# verify_agents_pass; see there for the rationale behind each check.
+verify_schemas_pass() {
+    _vsp_dest="$(schemas_dest)"
+    _vsp_prov="$_vsp_dest/.SCHEMAS_PROVENANCE"
+    _vsp_stale="$(stale_schemas_dest "$(manifest_get '.dest')/.SKILLS_PROVENANCE" "$_vsp_dest")"
+    if [ -n "$_vsp_stale" ]; then
+        assert_orphan_usable "$_vsp_stale" ".SCHEMAS_PROVENANCE"
+        die "schemas are still vendored in $_vsp_stale but schemas.dest is now $_vsp_dest — run 'task sync:skills' to de-vendor the old location, and commit"
+    fi
+    if [ ! -f "$_vsp_prov" ]; then
+        # "Not synced yet" is only benign on a repo that has never synced at
+        # all. Where the SKILLS stamp exists, this repo has run the sync — so a
+        # missing schemas stamp means the `schemas:` block was added and never
+        # applied, and skipping would let schema adoption pass CI with no
+        # schema files committed. That is exactly the drift this feature exists
+        # to catch, so it fails instead.
+        if repo_has_synced; then
+            die "manifest requests schemas but none are vendored ($_vsp_prov missing) — run 'task sync:skills' and commit"
+        fi
+        echo "verify:skills: schemas not synced yet — skipping (run 'task sync:skills')"
+        return 0
+    fi
+    _vsp_ref="$(manifest_get '.source.ref')"
+    _vsp_pinned="$(prov_field "$_vsp_prov" "ref" | sed 's/ (.*//')"
+    [ "$_vsp_pinned" = "$_vsp_ref" ] ||
+        die "vendored schemas ref ($_vsp_pinned) != manifest ref ($_vsp_ref) — run 'task sync:skills' and commit"
+
+    assert_schemas_names
+    vendor_schemas "$1" "$(manifest_get '.schemas.names[]')" "$WORKDIR/vendor-schemas"
+    _vsp_incoming="$(list_schema_names "$WORKDIR/vendor-schemas")"
+    _vsp_managed="$(schemas_managed_names "$_vsp_prov")"
+
+    _vsp_drift=0
+    while IFS= read -r _vsp_n; do
+        [ -n "$_vsp_n" ] || continue
+        if ! diff "$_vsp_dest/$_vsp_n.schema.json" "$WORKDIR/vendor-schemas/$_vsp_n.schema.json" >/dev/null 2>&1; then
+            echo "✗ vendored schema '$_vsp_n' differs from the pin:" >&2
+            diff "$_vsp_dest/$_vsp_n.schema.json" "$WORKDIR/vendor-schemas/$_vsp_n.schema.json" >&2 || true
+            _vsp_drift=1
+        fi
+    done <<EOF
+$_vsp_incoming
+EOF
+    # A managed schema no longer named by the manifest is a leftover to clean up.
+    while IFS= read -r _vsp_n; do
+        [ -n "$_vsp_n" ] || continue
+        if ! printf '%s\n' "$_vsp_incoming" | grep -qxF "$_vsp_n"; then
+            echo "✗ '$_vsp_n' is vendored (managed) but no longer shipped by the pin" >&2
+            _vsp_drift=1
+        fi
+    done <<EOF
+$_vsp_managed
+EOF
+    if [ "$_vsp_drift" -ne 0 ]; then
+        echo "" >&2
+        die "run 'task sync:skills' and commit the result."
+    fi
+    echo "✓ vendored schemas in sync with $_vsp_ref (local schemas untouched/ignored)"
 }
 
 cmd_verify() {
@@ -945,8 +1317,18 @@ EOF
     else
         _cv_orphan="$(stale_agents_dest "$prov" "")"
         if [ -n "$_cv_orphan" ]; then
-            assert_orphan_usable "$_cv_orphan"
+            assert_orphan_usable "$_cv_orphan" ".AGENTS_PROVENANCE"
             die "agents are still vendored in $_cv_orphan but the manifest no longer requests them — run 'task sync:skills' to de-vendor, and commit"
+        fi
+    fi
+
+    if schemas_enabled; then
+        verify_schemas_pass "$WORKDIR/devkit"
+    else
+        _cv_sorphan="$(stale_schemas_dest "$prov" "")"
+        if [ -n "$_cv_sorphan" ]; then
+            assert_orphan_usable "$_cv_sorphan" ".SCHEMAS_PROVENANCE"
+            die "schemas are still vendored in $_cv_sorphan but the manifest no longer requests them — run 'task sync:skills' to de-vendor, and commit"
         fi
     fi
 }
@@ -989,7 +1371,7 @@ cmd_verify_offline() {
         _cvo_stale="$(stale_agents_dest "$prov" "")"
     fi
     if [ -n "$_cvo_stale" ]; then
-        assert_orphan_usable "$_cvo_stale"
+        assert_orphan_usable "$_cvo_stale" ".AGENTS_PROVENANCE"
         die "agents are still vendored in $_cvo_stale but the manifest no longer points there — run 'task sync:skills' to de-vendor, and commit"
     fi
 
@@ -1007,6 +1389,34 @@ cmd_verify_offline() {
             echo "✓ vendored agents ref matches manifest ($ref) — offline check"
         else
             die "manifest ref ($ref) != vendored agents ref — run 'task sync:skills' and commit"
+        fi
+    fi
+
+    # Stranded schemas, same ordering rationale as stranded agents above.
+    if schemas_enabled; then
+        _cvo_sstale="$(stale_schemas_dest "$prov" "$(schemas_dest)")"
+    else
+        _cvo_sstale="$(stale_schemas_dest "$prov" "")"
+    fi
+    if [ -n "$_cvo_sstale" ]; then
+        assert_orphan_usable "$_cvo_sstale" ".SCHEMAS_PROVENANCE"
+        die "schemas are still vendored in $_cvo_sstale but the manifest no longer points there — run 'task sync:skills' to de-vendor, and commit"
+    fi
+
+    # Schemas are stamped independently, so their ref is checked independently —
+    # bumping the manifest and re-syncing only skills must not pass this hook.
+    if schemas_enabled; then
+        _cvo_sprov="$(schemas_dest)/.SCHEMAS_PROVENANCE"
+        if [ ! -f "$_cvo_sprov" ]; then
+            # Same rule as the networked check: benign only before the repo's
+            # first sync, drift once the skills stamp proves it has run one.
+            ! repo_has_synced ||
+                die "manifest requests schemas but none are vendored ($_cvo_sprov missing) — run 'task sync:skills' and commit"
+            echo "verify:skills:offline: schemas not synced yet — skipping (run 'task sync:skills')"
+        elif [ "$(prov_field "$_cvo_sprov" "ref" | sed 's/ (.*//')" = "$ref" ]; then
+            echo "✓ vendored schemas ref matches manifest ($ref) — offline check"
+        else
+            die "manifest ref ($ref) != vendored schemas ref — run 'task sync:skills' and commit"
         fi
     fi
 
@@ -1077,6 +1487,12 @@ cmd_status() {
         _cs_agents_ref="$(status_prov_ref "$_cs_agents_dest/.AGENTS_PROVENANCE")"
         [ -n "$_cs_agents_ref" ] || _cs_never=1
     fi
+    _cs_schemas_ref=""
+    if schemas_enabled; then
+        _cs_schemas_dest="$(schemas_dest)"
+        _cs_schemas_ref="$(status_prov_ref "$_cs_schemas_dest/.SCHEMAS_PROVENANCE")"
+        [ -n "$_cs_schemas_ref" ] || _cs_never=1
+    fi
 
     _cs_state="in-sync"
     _cs_latest="unknown"
@@ -1086,7 +1502,8 @@ cmd_status() {
         _cs_vendored="none"
         _cs_status="$STATUS_NEVER_VENDORED"
     elif [ "$_cs_skills_ref" != "$_cs_pinned" ] ||
-        { agents_enabled && [ "$_cs_agents_ref" != "$_cs_pinned" ]; }; then
+        { agents_enabled && [ "$_cs_agents_ref" != "$_cs_pinned" ]; } ||
+        { schemas_enabled && [ "$_cs_schemas_ref" != "$_cs_pinned" ]; }; then
         _cs_state="pin-moved"
         _cs_status="$STATUS_PIN_MOVED"
     elif [ "$_cs_offline" -eq 0 ] &&

@@ -35,16 +35,18 @@ One of four repos in **harmon-platform** (Evan's developer & DevOps platform + h
 - `scripts/` — standalone scripts and utilities: `appleScripts/`
   (AppleScript/Automator apps), plus the harmon-init helper scripts
   (`status.sh`, `lint-hygiene.sh`, `test-*.sh`, …) that back the Taskfile.
-- `ai/` — AI assets by type: `skills/`, `agents/`, `prompts/`, `rules/`,
-  `evals/`, `tools/`, `workflows/`, `mcp/`, `knowledge/`, `memories/`. `skills/`
-  is the populated one (Agent Skills convention — a `SKILL.md` with
-  `name`/`description` frontmatter); the standouts are `repo/standardize-repo`
+- `ai/` — AI assets by type: `skills/`, `agents/`, `schemas/`, `prompts/`,
+  `rules/`, `evals/`, `tools/`, `workflows/`, `mcp/`, `knowledge/`,
+  `memories/`. `skills/` is the populated one (Agent Skills convention — a
+  `SKILL.md` with `name`/`description` frontmatter); the standouts are `repo/standardize-repo`
   (applies harmon-init's conventions to a repo), the `design/` suite, and the
   `universal/` dev-workflow session suite (`/kickoff`, `/breakdown`,
   `/claim`, `/implement`, `/gauntlet`, `/shepherd`, `/retro`, `/wrap`). `agents/` holds shared
   subagents — one flat `<name>.md` each, thin by design and deferring to the
   skills above; see [ai/agents/README.md](ai/agents/README.md) for the layout
-  and the portability contract.
+  and the portability contract. `schemas/` holds shared JSON Schemas for
+  dev-flow v2 agent results, with a conformance fixture corpus under
+  `ai/schemas/fixtures/`.
 - `snippets/` — small reusable code snippets (placeholder).
 - `docs/` — project docs (see [docs/README.md](docs/README.md)); the
   new-project [checklist](docs/CHECKLIST.md) lives here.

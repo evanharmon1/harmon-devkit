@@ -1,0 +1,14 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "head": "3a90dc26d2df83c4b54017a488f170705c25717e",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "standard" },
+  "run": { "run_id": "run-3014-missing-status", "initiated_by": "human" },
+  "payload": {
+    "summary": "Implemented the requested change.",
+    "handoff": "Run ./scripts/test-result-schemas.sh before merging.",
+    "ac_test_map": [ { "criterion": "Some criterion", "tests": ["scripts/test-result-schemas.sh"] } ],
+    "human_tasks": []
+  }
+}

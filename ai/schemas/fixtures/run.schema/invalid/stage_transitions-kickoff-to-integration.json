@@ -1,0 +1,16 @@
+{
+  "schema": 2,
+  "run_id": "run-6059-stage-transitions-kickoff-to-integration",
+  "initiated_by": "human",
+  "started_at": "2026-08-29T09:00:00Z",
+  "stage_transitions": [
+    { "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z", "exit": "claimed" },
+    { "stage": "integration", "entered_at": "2026-08-29T09:05:00Z" }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null
+}

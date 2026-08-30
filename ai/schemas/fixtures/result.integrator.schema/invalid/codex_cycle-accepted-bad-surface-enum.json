@@ -1,0 +1,44 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "5a2db899f8663e878d0715305f1b58734562236b",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4033-accepted-bad-surface-enum",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1026",
+        "required": true
+      }
+    ],
+    "codex_cycle": {
+      "head": "5a2db899f8663e878d0715305f1b58734562236b",
+      "cycle": 1,
+      "attempt": 1,
+      "trigger_comment_id": "555000340",
+      "exit_code": 0,
+      "accepted": {
+        "surface": "email",
+        "id": "777891",
+        "reviewed_commit": "5a2db899f8663e878d0715305f1b58734562236b"
+      }
+    },
+    "integration_round": 1,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "clean",
+    "applied_dispositions": []
+  }
+}

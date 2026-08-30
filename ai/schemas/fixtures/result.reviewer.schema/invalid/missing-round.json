@@ -1,0 +1,35 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "e5006507b2b4f8deb035a648af45997dba894dad",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-2102-missing-round",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "reviewed_head": "e5006507b2b4f8deb035a648af45997dba894dad",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r1-codex-cli-1",
+        "path": "some/file.md",
+        "line": 10,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "some evidence text"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 1, "P2": 0, "P3": 0 }
+  }
+}

@@ -1,0 +1,1 @@
+override: required (with a reason) when adjudicated_priority (P1) differs from reviewer_priority (P2)

@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-5025-bad-adjudicated-priority-enum",
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "cd6cca2ae5d13699d09e4c59a1a7f45da0cb788c",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P4",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "some evidence",
+      "override": null
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-3022-id-round-mismatch",
+  "stage": "challenge",
+  "round": 2,
+  "reviewed_head": "3022a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "this id names round 1 but the document is round 2",
+      "override": null
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+$result.payload.handoff: required (non-empty) when status is completed

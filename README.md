@@ -56,7 +56,7 @@ See [`templates/README.md`](./templates/README.md) for conventions and per-categ
 
 ## AI Assets
 
-`ai/` collects reusable AI assets organized by type — `skills/`, `agents/`, `prompts/`, `rules/`, `evals/`, `tools/`, `workflows/`, `mcp/`, `knowledge/`, and `memories/`. Most are placeholders for now; the populated areas are **skills** (the Agent Skills convention — a `SKILL.md` with `name`/`description` frontmatter) and **agents** (shared subagents, one flat `<name>.md` each).
+`ai/` collects reusable AI assets organized by type — `skills/`, `agents/`, `schemas/`, `prompts/`, `rules/`, `evals/`, `tools/`, `workflows/`, `mcp/`, `knowledge/`, and `memories/`. Most are placeholders for now; the populated areas are **skills** (the Agent Skills convention — a `SKILL.md` with `name`/`description` frontmatter), **agents** (shared subagents, one flat `<name>.md` each), and **schemas** (shared JSON Schemas for dev-flow v2 agent results, with a conformance fixture corpus).
 
 Skills are grouped into **category subdirectories** (`universal/`, `backend/`, `frontend/`, `infra/`, `mobile/`, `repo/`) so consumer repos can vendor a selected subset via the [`skills-sync`](./templates/skills-sync/) template. Skill directory names must be **unique across categories** (they are flattened on vendor) — [`ai/skills/README.md`](./ai/skills/README.md) documents the layout, the constraint, and how to add a skill.
 
@@ -82,6 +82,8 @@ Agents are a flat directory — one `<name>.md` per subagent, no categories yet.
 | Agent | Status | Description |
 | --- | --- | --- |
 | [`implementer`](./ai/agents/implementer.md) | Ready | Implements a written plan — or a review finding the caller has already confirmed — in a fresh context, and returns a verified change plus a report. Refuses a brief that isn't self-contained. Never branches, adjudicates review findings, pushes, opens PRs, or merges |
+
+[`ai/schemas/`](./ai/schemas/) holds shared JSON Schemas for dev-flow v2 agent results, with a conformance fixture corpus (`ai/schemas/fixtures/`) validated against them.
 
 ## Inspired by Other Boilerplate Repos
 

@@ -1,0 +1,32 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "5becce9ed65a5b208e29b65aebab8a8fe1ca0659",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4017-checks-entry-missing-bucket",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "ci/build",
+        "run_id": "1011",
+        "required": true
+      }
+    ],
+    "codex_cycle": null,
+    "integration_round": 1,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "clean",
+    "applied_dispositions": []
+  }
+}

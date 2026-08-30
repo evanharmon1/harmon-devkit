@@ -1,0 +1,1 @@
+$result.payload.blocked_question: required (non-empty) when status is blocked

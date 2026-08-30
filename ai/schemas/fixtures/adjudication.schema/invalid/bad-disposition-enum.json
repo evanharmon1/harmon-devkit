@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-5027-bad-disposition-enum",
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "dde84a62ca427096ba57d763e9a4452c32cd6a4e",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "ignore",
+      "reason": "confirmed",
+      "evidence": "some evidence",
+      "override": null
+    }
+  ]
+}

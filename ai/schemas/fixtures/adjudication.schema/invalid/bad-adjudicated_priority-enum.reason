@@ -1,0 +1,1 @@
+$adjudication.adjudications[0].adjudicated_priority: must be one of "P0", "P1", "P2", "P3"

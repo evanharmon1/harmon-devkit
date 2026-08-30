@@ -1,0 +1,28 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "badb58abe880ad58f9cd6bac400dd7344e48a401",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-2113-counts-missing-p1",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "badb58abe880ad58f9cd6bac400dd7344e48a401",
+    "finder": "codex-cli",
+    "findings": [],
+    "counts": {
+      "P0": 0,
+      "P2": 0,
+      "P3": 0
+    }
+  }
+}

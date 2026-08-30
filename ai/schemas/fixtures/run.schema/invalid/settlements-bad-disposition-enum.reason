@@ -1,0 +1,1 @@
+$run.settlements[0].disposition: must be one of "fix", "decline", "file"

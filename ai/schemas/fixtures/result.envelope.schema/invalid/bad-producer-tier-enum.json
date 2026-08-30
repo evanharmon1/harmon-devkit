@@ -1,0 +1,15 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "cd6cca2ae5d13699d09e4c59a1a7f45da0cb788c",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "adaptive" },
+  "run": { "run_id": "run-3024-bad-producer-tier-enum", "initiated_by": "human" },
+  "payload": {
+    "summary": "Implemented the requested change.",
+    "handoff": "Run ./scripts/test-result-schemas.sh before merging.",
+    "ac_test_map": [ { "criterion": "Some criterion", "tests": ["scripts/test-result-schemas.sh"] } ],
+    "human_tasks": []
+  }
+}

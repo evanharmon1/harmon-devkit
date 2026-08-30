@@ -1,0 +1,35 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "93c32dd7856e07064b6e6eeeafdcd8a414729d3e",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-2121-finding-missing-recommended-disposition",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "93c32dd7856e07064b6e6eeeafdcd8a414729d3e",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r1-codex-cli-1",
+        "path": "some/file.md",
+        "line": 10,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "evidence": "some evidence text"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 1, "P2": 0, "P3": 0 }
+  }
+}

@@ -1,0 +1,135 @@
+{
+  "schema": 2,
+  "run_id": "omator-397",
+  "stage": "challenge",
+  "round": 2,
+  "reviewed_head": "efa9005196b949db6278a75619868883cf8a39dd",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r2-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "delete",
+      "reason": "omator#397 ledger: single-file name-only dedupe contradicts rule (stale r1 text)",
+      "evidence": "single-file name-only dedupe contradicts rule (stale r1 text)",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-2",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "restructure",
+      "reason": "omator#397 ledger: row-number refs reusable as importRef",
+      "evidence": "row-number refs reusable as importRef",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-3",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: blank/unmapped cell semantics undefined",
+      "evidence": "blank/unmapped cell semantics undefined",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-4",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "restructure",
+      "reason": "omator#397 ledger: negative matches not snapshotted",
+      "evidence": "negative matches not snapshotted",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-5",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "restructure",
+      "reason": "omator#397 ledger: snapshot exceeds document size",
+      "evidence": "snapshot exceeds document size",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-6",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: cap check per chunk only proves one slot",
+      "evidence": "cap check per chunk only proves one slot",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-7",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: primary contact loses ref on export",
+      "evidence": "primary contact loses ref on export",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-8",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: mapping changes don't invalidate preview",
+      "evidence": "mapping changes don't invalidate preview",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-9",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "restructure",
+      "reason": "omator#397 ledger: undo intermediate states dangle primaryContactId",
+      "evidence": "undo intermediate states dangle primaryContactId",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-10",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "restructure",
+      "reason": "omator#397 ledger: undo chunk doesn't recheck updatedAt",
+      "evidence": "undo chunk doesn't recheck updatedAt",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-11",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: failed batch has no completedAt cutoff",
+      "evidence": "failed batch has no completedAt cutoff",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-12",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: primaryContactId ownership not an invariant",
+      "evidence": "primaryContactId ownership not an invariant",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-13",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: CSV formula injection",
+      "evidence": "CSV formula injection",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r2-codex-cli-14",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: paginated export inconsistent",
+      "evidence": "paginated export inconsistent",
+      "override": null
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+$result.producer.tier: must be one of "local", "economy", "standard", "frontier", "apex"

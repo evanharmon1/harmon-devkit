@@ -1,0 +1,1 @@
+$run.stage_transitions[0].stage: must be one of "kickoff", "claim", "explore", "plan", "implement", "verify", "challenge", "review", "security", "integration"

@@ -1,0 +1,8 @@
+{
+  "schema": 2,
+  "run_id": "run-5016-bad-stage-enum",
+  "stage": "triage",
+  "round": 1,
+  "reviewed_head": "9c44f6d4f3d12fb4567990932c451356ad7c0491",
+  "adjudications": []
+}

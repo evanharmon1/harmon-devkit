@@ -1,0 +1,20 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "blocked",
+  "head": "de5e9bbf8cca746daca248f4b2405c385c2e8069",
+  "produced_at": "2026-08-29T16:12:30Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-3002-envelope-valid-blocked",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "human_tasks": [],
+    "blocked_question": "Should the envelope carry the run id or should the run record be the sole source of truth for it?"
+  }
+}

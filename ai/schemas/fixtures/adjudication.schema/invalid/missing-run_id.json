@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "0fa9ed0608ae79fc330d7178cc29134719b2bd89",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "some evidence",
+      "override": null
+    }
+  ]
+}

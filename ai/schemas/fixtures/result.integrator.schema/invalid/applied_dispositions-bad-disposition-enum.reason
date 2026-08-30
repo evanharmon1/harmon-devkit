@@ -1,0 +1,1 @@
+$result.payload.applied_dispositions[0].disposition: must be one of "fix", "restructure", "delete", "decline", "defer", "file"

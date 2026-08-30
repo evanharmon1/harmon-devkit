@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "blocked",
+  "head": "16e1a5dda56e4f443be70c917078d18d84191cee",
+  "produced_at": "2026-08-29T16:12:30Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-0513-blocked-minimal",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "blocked_question": "The issue asks for a run record but does not say whether settlements are keyed by finding id or appended as a log -- which is it?"
+  }
+}

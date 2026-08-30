@@ -1,0 +1,1 @@
+$result.payload.codex_cycle.exit_code: must be one of 0, 2, 10, 11, 12, 13, 14

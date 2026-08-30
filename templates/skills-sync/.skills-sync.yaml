@@ -17,3 +17,14 @@ dest: .claude/skills # Claude-first default; expose it through .agents/skills fo
 agents:
   names: [implementer] # explicit list, or ["*"] for every agent at the pin
   dest: .claude/agents # must differ from the skills dest above
+
+# OPTIONAL. Delete this block and the sync behaves exactly as it did before
+# schemas existed. Schemas ride the SAME pinned ref as skills/agents: a role's
+# result is only valid against the schema version a vendored skill or agent at
+# that pin actually targets, so letting schemas drift to a different pin could
+# leave a vendored skill emitting a shape its own vendored schema no longer
+# describes.
+# Commented out below: uncomment once `ref` is a harmon-devkit release that ships ai/schemas — v0.38.0 or later.
+# schemas:
+#   names: ["*"] # explicit list of schema basenames (no .schema.json), or ["*"] for every schema at the pin
+#   dest: .claude/schemas # must differ from the skills/agents dest above

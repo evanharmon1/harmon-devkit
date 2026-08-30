@@ -1,6 +1,6 @@
 # Harmon DevKit Documentation
 
-My personal developer kit: reusable templates and boilerplates, standalone scripts, and AI assets (skills, prompts, agents).
+My personal developer kit: reusable templates and boilerplates, standalone scripts, and AI assets (skills, prompts, agents, schemas).
 
 This is the **hub** — read it when you're unsure where something belongs. It
 **routes; it does not hold facts.** Every doc has a *type* and lives in a

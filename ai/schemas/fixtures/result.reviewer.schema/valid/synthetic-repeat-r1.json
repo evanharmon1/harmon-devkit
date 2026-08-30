@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "40b3169cbf5ff76ca08377625db0ee23c32976d0",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-2152-synthetic-repeat",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "40b3169cbf5ff76ca08377625db0ee23c32976d0",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r1-codex-cli-1",
+        "path": "scripts/lib/example.mjs",
+        "line": 42,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "off-by-one when paginating the last page"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 1, "P2": 0, "P3": 0 }
+  }
+}

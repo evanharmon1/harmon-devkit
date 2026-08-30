@@ -1,0 +1,28 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4033-clean-with-required-check-skipping",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      { "name": "ci/build", "bucket": "skipping", "run_id": "1001", "required": true }
+    ],
+    "codex_cycle": null,
+    "integration_round": 1,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "clean",
+    "applied_dispositions": []
+  }
+}

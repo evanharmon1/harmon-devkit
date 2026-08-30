@@ -1,0 +1,20 @@
+{
+  "schema": 2,
+  "run_id": "run-6050-reference-type-mismatch",
+  "initiated_by": "human",
+  "started_at": "2026-08-29T09:00:00Z",
+  "stage_transitions": [{ "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z" }],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "disposition": "fix",
+      "settled_at": "2026-08-29T10:00:00Z",
+      "reference": { "type": "comment_id", "value": "some comment" }
+    }
+  ],
+  "promotion": null
+}

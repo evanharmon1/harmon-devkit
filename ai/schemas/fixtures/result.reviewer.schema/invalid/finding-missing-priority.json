@@ -1,0 +1,35 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "28a9efeb7f5c63d4291fde9a6b952706b1787cf2",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-2120-finding-missing-priority",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "28a9efeb7f5c63d4291fde9a6b952706b1787cf2",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r1-codex-cli-1",
+        "path": "some/file.md",
+        "line": 10,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "recommended_disposition": "fix",
+        "evidence": "some evidence text"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 0, "P2": 0, "P3": 0 }
+  }
+}

@@ -1,0 +1,1 @@
+$run.stage_transitions[1].entered_at: 2026-08-29T09:05:00Z must not be before the previous entry's entered_at 2026-08-29T09:10:00Z

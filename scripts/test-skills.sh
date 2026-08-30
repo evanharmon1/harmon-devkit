@@ -994,6 +994,430 @@ sed -i.bak 's/^# ref: .*/# ref: v9.9.9-absent (deadbeef)/' "$CO/vendored/agents/
 expect_fail_contains "offline check catches an agents ref mismatch" "vendored agents ref" \
     run_sync_at "$CO" verify-offline
 
+# ── sync-skills.sh schemas pass ─────────────────────────────────────────
+echo "==> sync-skills.sh (schemas)"
+
+# Add schemas to the source repo at a new tag. README.md documents the
+# directory and a fixtures/ subdirectory holds conformance fixtures — neither
+# is a *.schema.json file, so both are naturally excluded from the vendoring
+# glob (no README special-case needed the way vendor_agents has one).
+mkschema() {
+    mkdir -p "$1/ai/schemas"
+    {
+        echo "{"
+        echo "  \"\$schema\": \"https://json-schema.org/draft/2020-12/schema\","
+        echo "  \"title\": \"$2\","
+        echo "  \"type\": \"object\""
+        echo "}"
+    } >"$1/ai/schemas/$2.schema.json"
+}
+mkschema "$SRC" sch-one
+mkschema "$SRC" sch-two
+echo "# Schemas" >"$SRC/ai/schemas/README.md"
+mkdir -p "$SRC/ai/schemas/fixtures/sch-one/valid"
+echo '{}' >"$SRC/ai/schemas/fixtures/sch-one/valid/example.json"
+git_commit_all "$SRC" "add schemas"
+git -C "$SRC" tag v0.2.0-schemas
+
+# write_schemas_manifest_at DIR REF NAMES_YAML [DEST]
+write_schemas_manifest_at() {
+    local dir="$1" ref="$2" names="$3" sdest="${4:-vendored/schemas}"
+    {
+        echo "source:"
+        echo "  repo: file://$SRC"
+        echo "  ref: $ref"
+        echo "categories:"
+        echo "  - universal"
+        echo "dest: vendored/skills"
+        echo "schemas:"
+        echo "  names: $names"
+        echo "  dest: $sdest"
+    } >"$dir/.skills-sync.yaml"
+}
+
+# write_agents_and_schemas_manifest_at DIR REF AGENT_NAMES AGENT_DEST SCHEMA_NAMES SCHEMA_DEST
+write_agents_and_schemas_manifest_at() {
+    local dir="$1" ref="$2" anames="$3" adest="$4" snames="$5" sdest="$6"
+    {
+        echo "source:"
+        echo "  repo: file://$SRC"
+        echo "  ref: $ref"
+        echo "categories:"
+        echo "  - universal"
+        echo "dest: vendored/skills"
+        echo "agents:"
+        echo "  names: $anames"
+        echo "  dest: $adest"
+        echo "schemas:"
+        echo "  names: $snames"
+        echo "  dest: $sdest"
+    } >"$dir/.skills-sync.yaml"
+}
+
+# --- a manifest with NO schemas block is untouched by any of this --------
+SCH_NONE="$TMPROOT/consumer-noschemas"
+mkdir -p "$SCH_NONE"
+write_manifest_at "$SCH_NONE" v0.2.0-schemas universal
+expect_ok "no schemas block: sync still succeeds" run_sync_at "$SCH_NONE" sync
+expect_ok "no schemas block: nothing vendored to a schemas dest" test ! -e "$SCH_NONE/vendored/schemas"
+expect_ok "no schemas block: verify passes" run_sync_at "$SCH_NONE" verify
+expect_ok "no schemas block: verify-offline passes" run_sync_at "$SCH_NONE" verify-offline
+
+# --- explicit name list --------------------------------------------------
+SCH_A="$TMPROOT/consumer-schemas"
+mkdir -p "$SCH_A"
+write_schemas_manifest_at "$SCH_A" v0.2.0-schemas "[sch-one]"
+expect_ok "schemas: verify skips cleanly before first sync" run_sync_at "$SCH_A" verify
+expect_ok "schemas: sync vendors the named schema" run_sync_at "$SCH_A" sync
+SCH_A_PROV="$SCH_A/vendored/schemas/.SCHEMAS_PROVENANCE"
+expect_ok "named schema vendored flat" test -f "$SCH_A/vendored/schemas/sch-one.schema.json"
+expect_ok "unnamed schema not vendored" test ! -e "$SCH_A/vendored/schemas/sch-two.schema.json"
+expect_ok "schemas provenance records the ref" grep -q "^# ref: v0.2.0-schemas " "$SCH_A_PROV"
+expect_ok "schemas provenance lists the managed set" grep -q "^# managed: sch-one$" "$SCH_A_PROV"
+expect_ok "schemas provenance carries do-not-edit marker" grep -q "DO NOT EDIT" "$SCH_A_PROV"
+expect_ok "skills still vendored alongside schemas" test -f "$SCH_A/vendored/skills/uni-one/SKILL.md"
+expect_ok "schemas: verify passes right after sync" run_sync_at "$SCH_A" verify
+expect_ok "schemas: verify-offline passes right after sync" run_sync_at "$SCH_A" verify-offline
+
+# Tamper -> drift, then re-sync heals.
+echo '{"tampered": true}' >>"$SCH_A/vendored/schemas/sch-one.schema.json"
+expect_fail "schemas: verify detects a hand-edited vendored schema" run_sync_at "$SCH_A" verify
+expect_ok "schemas: re-sync heals the drift" run_sync_at "$SCH_A" sync
+expect_ok "schemas: verify passes again after re-sync" run_sync_at "$SCH_A" verify
+
+# A local (unmanaged) schema is never touched or reported.
+echo '{"local": true}' >"$SCH_A/vendored/schemas/local-only.schema.json"
+expect_ok "local schema survives a re-sync" bash -c "
+    cd '$SCH_A' && bash '$SCRIPTS/sync-skills.sh' sync >/dev/null && test -f vendored/schemas/local-only.schema.json"
+expect_ok "schemas: verify ignores a local schema" run_sync_at "$SCH_A" verify
+
+# A local schema whose name collides with an incoming one is refused BEFORE any
+# delete — the local file must still be there afterwards.
+echo '{"mine": true}' >"$SCH_A/vendored/schemas/sch-two.schema.json"
+write_schemas_manifest_at "$SCH_A" v0.2.0-schemas "[sch-one, sch-two]"
+expect_fail_contains "collision with a local schema is refused" "collides with an incoming vendored schema" \
+    run_sync_at "$SCH_A" sync
+expect_ok "refused collision left the local schema intact" \
+    grep -q "mine" "$SCH_A/vendored/schemas/sch-two.schema.json"
+expect_ok "refused collision left the managed schema intact" test -f "$SCH_A/vendored/schemas/sch-one.schema.json"
+rm -f "$SCH_A/vendored/schemas/sch-two.schema.json" "$SCH_A/vendored/schemas/local-only.schema.json"
+
+# Dropping a name from the manifest cleans up what the sync owns.
+write_schemas_manifest_at "$SCH_A" v0.2.0-schemas "[sch-two]"
+expect_ok "schemas: re-sync after a name swap" run_sync_at "$SCH_A" sync
+expect_ok "swapped-out schema removed" test ! -e "$SCH_A/vendored/schemas/sch-one.schema.json"
+expect_ok "swapped-in schema vendored" test -f "$SCH_A/vendored/schemas/sch-two.schema.json"
+
+# --- wildcard ------------------------------------------------------------
+SCH_STAR="$TMPROOT/consumer-schemas-star"
+mkdir -p "$SCH_STAR"
+write_schemas_manifest_at "$SCH_STAR" v0.2.0-schemas '["*"]'
+expect_ok "wildcard: sync succeeds" run_sync_at "$SCH_STAR" sync
+expect_ok "wildcard vendors every schema (1/2)" test -f "$SCH_STAR/vendored/schemas/sch-one.schema.json"
+expect_ok "wildcard vendors every schema (2/2)" test -f "$SCH_STAR/vendored/schemas/sch-two.schema.json"
+expect_ok "wildcard never vendors README.md" test ! -e "$SCH_STAR/vendored/schemas/README.md"
+expect_ok "wildcard never vendors the fixtures/ subdirectory" test ! -e "$SCH_STAR/vendored/schemas/fixtures"
+expect_ok "wildcard: verify passes" run_sync_at "$SCH_STAR" verify
+
+# The wildcard is all-or-nothing: mixing it with explicit names is a manifest
+# error, not a silent union.
+write_schemas_manifest_at "$SCH_STAR" v0.2.0-schemas '["*", sch-one]'
+expect_fail_contains "wildcard mixed with explicit names is refused" \
+    "not both" run_sync_at "$SCH_STAR" sync
+
+# --- manifest errors -----------------------------------------------------
+SCH_ERR="$TMPROOT/consumer-schemas-err"
+mkdir -p "$SCH_ERR"
+write_schemas_manifest_at "$SCH_ERR" v0.2.0-schemas "[nope]"
+expect_fail_contains "a missing schema name fails clearly" "missing in the pinned source" \
+    run_sync_at "$SCH_ERR" sync
+
+write_schemas_manifest_at "$SCH_ERR" v0.2.0-schemas "[sch-one]" "vendored/skills"
+expect_fail_contains "schemas.dest sharing the skills dest is refused" "each pass owns its own directory" \
+    run_sync_at "$SCH_ERR" sync
+
+for bad in "/etc/schemas" "//etc//schemas" "/" "../outside" "./../outside" "vendored/../../outside"; do
+    write_schemas_manifest_at "$SCH_ERR" v0.2.0-schemas "[sch-one]" "$bad"
+    expect_fail "schemas: sync refuses unsafe dest '$bad'" run_sync_at "$SCH_ERR" sync
+done
+
+# An unsafe schemas dest is caught BEFORE the skills pass deletes anything —
+# a manifest that cannot complete must not half-apply.
+SCH_HALT="$TMPROOT/consumer-schemas-halt"
+mkdir -p "$SCH_HALT"
+write_schemas_manifest_at "$SCH_HALT" v0.2.0-schemas "[sch-one]"
+run_sync_at "$SCH_HALT" sync >/dev/null
+write_schemas_manifest_at "$SCH_HALT" v0.2.0-schemas "[sch-one]" "/etc/schemas"
+expect_fail "schemas: bad dest aborts the whole sync" run_sync_at "$SCH_HALT" sync
+expect_ok "aborted sync left the skills pass untouched" test -f "$SCH_HALT/vendored/skills/uni-one/SKILL.md"
+
+# --- de-vendoring: removing the schemas block must not strand the files ----
+# Same stranding hazard as agents; see that section above for the rationale.
+SCH_DEVENDOR="$TMPROOT/consumer-schemas-devendor"
+mkdir -p "$SCH_DEVENDOR"
+write_schemas_manifest_at "$SCH_DEVENDOR" v0.2.0-schemas "[sch-one]"
+run_sync_at "$SCH_DEVENDOR" sync >/dev/null
+expect_ok "de-vendor: schema vendored to begin with" test -f "$SCH_DEVENDOR/vendored/schemas/sch-one.schema.json"
+expect_ok "de-vendor: skills stamp records the schemas dest" \
+    grep -q "^# schemas-dest: vendored/schemas$" "$SCH_DEVENDOR/vendored/skills/.SKILLS_PROVENANCE"
+# A local schema in the same directory must survive the de-vendor.
+echo '{"local": true}' >"$SCH_DEVENDOR/vendored/schemas/mine.schema.json"
+
+# Drop the schemas block entirely.
+write_manifest_at "$SCH_DEVENDOR" v0.2.0-schemas universal
+expect_fail_contains "de-vendor: verify flags schemas left behind" \
+    "no longer requests them" run_sync_at "$SCH_DEVENDOR" verify
+expect_ok "de-vendor: sync removes them" run_sync_at "$SCH_DEVENDOR" sync
+expect_ok "de-vendor: managed schema gone" test ! -e "$SCH_DEVENDOR/vendored/schemas/sch-one.schema.json"
+expect_ok "de-vendor: schemas stamp gone" test ! -e "$SCH_DEVENDOR/vendored/schemas/.SCHEMAS_PROVENANCE"
+expect_ok "de-vendor: LOCAL schema survived" grep -q "local" "$SCH_DEVENDOR/vendored/schemas/mine.schema.json"
+expect_ok "de-vendor: verify passes afterwards" run_sync_at "$SCH_DEVENDOR" verify
+expect_ok "de-vendor: breadcrumb cleared from the skills stamp" \
+    grep -q "^# schemas-dest:$" "$SCH_DEVENDOR/vendored/skills/.SKILLS_PROVENANCE"
+# Idempotent: a second sync with no block has nothing left to remove.
+expect_ok "de-vendor: repeat sync is a no-op" run_sync_at "$SCH_DEVENDOR" sync
+
+# A repo that NEVER had schemas is unaffected by any of this.
+SCH_NEVER="$TMPROOT/consumer-never-schemas"
+mkdir -p "$SCH_NEVER"
+write_manifest_at "$SCH_NEVER" v0.2.0-schemas universal
+expect_ok "never-schemas: sync succeeds" run_sync_at "$SCH_NEVER" sync
+expect_ok "never-schemas: empty breadcrumb written" \
+    grep -q "^# schemas-dest:$" "$SCH_NEVER/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "never-schemas: verify passes" run_sync_at "$SCH_NEVER" verify
+
+# --- overlapping dests are refused, not just identical ones ---------------
+SCH_OVERLAP="$TMPROOT/consumer-schemas-overlap"
+mkdir -p "$SCH_OVERLAP"
+write_schemas_manifest_at "$SCH_OVERLAP" v0.2.0-schemas "[sch-one]" "vendored/skills/uni-one"
+expect_fail_contains "schemas.dest nested inside the skills dest is refused" \
+    "live inside it" run_sync_at "$SCH_OVERLAP" sync
+write_schemas_manifest_at "$SCH_OVERLAP" v0.2.0-schemas "[sch-one]" "vendored"
+expect_fail_contains "skills dest nested inside schemas.dest is refused" \
+    "lives inside schemas.dest" run_sync_at "$SCH_OVERLAP" sync
+# A trailing slash must not spell the same directory a second way past the check.
+write_schemas_manifest_at "$SCH_OVERLAP" v0.2.0-schemas "[sch-one]" "vendored/skills/"
+expect_fail_contains "a trailing slash cannot alias past the overlap check" \
+    "each pass owns its own directory" run_sync_at "$SCH_OVERLAP" sync
+# Path ALIASES must not slip past either. `./x`, `x//y` and `x/./y` name the
+# same directory as `x/y`, and a string compare only caught some of them.
+for alias in "./vendored/skills/uni-one" "vendored//skills/uni-one" "vendored/./skills/uni-one" "./vendored/skills"; do
+    write_schemas_manifest_at "$SCH_OVERLAP" v0.2.0-schemas "[sch-one]" "$alias"
+    expect_fail_contains "overlap alias '$alias' is refused" \
+        "each pass owns its own directory" run_sync_at "$SCH_OVERLAP" sync
+done
+
+# Sibling directories remain fine, including when spelled with an alias.
+write_schemas_manifest_at "$SCH_OVERLAP" v0.2.0-schemas "[sch-one]" "vendored/schemas"
+expect_ok "sibling dests are still accepted" run_sync_at "$SCH_OVERLAP" sync
+write_schemas_manifest_at "$SCH_OVERLAP" v0.2.0-schemas "[sch-one]" "./vendored/schemas/"
+expect_ok "an aliased sibling dest is still accepted" run_sync_at "$SCH_OVERLAP" sync
+expect_ok "the aliased sibling vendored normally" test -f "$SCH_OVERLAP/vendored/schemas/sch-one.schema.json"
+# ...and normalization must not make an aliased spelling look like a moved dest.
+expect_ok "an aliased spelling is not mistaken for a dest change" run_sync_at "$SCH_OVERLAP" verify
+
+# --- three-way overlap: schemas dest vs agents dest ------------------------
+# Non-overlap is required pairwise against BOTH other passes, not just skills.
+SCH_AGENTS_OVERLAP="$TMPROOT/consumer-schemas-agents-overlap"
+mkdir -p "$SCH_AGENTS_OVERLAP"
+write_agents_and_schemas_manifest_at "$SCH_AGENTS_OVERLAP" v0.2.0-schemas \
+    "[ag-one]" "vendored/agents" "[sch-one]" "vendored/agents/nested"
+expect_fail_contains "schemas.dest nested inside agents.dest is refused" \
+    "live inside it" run_sync_at "$SCH_AGENTS_OVERLAP" sync
+write_agents_and_schemas_manifest_at "$SCH_AGENTS_OVERLAP" v0.2.0-schemas \
+    "[ag-one]" "vendored/agents" "[sch-one]" "vendored"
+expect_fail_contains "agents dest nested inside schemas.dest is refused" \
+    "lives inside schemas.dest" run_sync_at "$SCH_AGENTS_OVERLAP" sync
+write_agents_and_schemas_manifest_at "$SCH_AGENTS_OVERLAP" v0.2.0-schemas \
+    "[ag-one]" "vendored/agents" "[sch-one]" "vendored/agents"
+expect_fail_contains "schemas.dest identical to agents.dest is refused" \
+    "each pass owns its own directory" run_sync_at "$SCH_AGENTS_OVERLAP" sync
+write_agents_and_schemas_manifest_at "$SCH_AGENTS_OVERLAP" v0.2.0-schemas \
+    "[ag-one]" "vendored/agents" "[sch-one]" "vendored/schemas"
+expect_ok "sibling agents/schemas dests are accepted" run_sync_at "$SCH_AGENTS_OVERLAP" sync
+expect_ok "agents vendored alongside schemas" test -f "$SCH_AGENTS_OVERLAP/vendored/agents/ag-one.md"
+expect_ok "schemas vendored alongside agents" test -f "$SCH_AGENTS_OVERLAP/vendored/schemas/sch-one.schema.json"
+
+# --- moving schemas.dest must not strand the old location ------------------
+SCH_MOVED="$TMPROOT/consumer-schemas-moved"
+mkdir -p "$SCH_MOVED"
+write_schemas_manifest_at "$SCH_MOVED" v0.2.0-schemas "[sch-one]" "vendored/schemas-a"
+run_sync_at "$SCH_MOVED" sync >/dev/null
+echo '{"local": true}' >"$SCH_MOVED/vendored/schemas-a/mine.schema.json"
+write_schemas_manifest_at "$SCH_MOVED" v0.2.0-schemas "[sch-one]" "vendored/schemas-b"
+expect_fail_contains "verify flags schemas left at the old dest" \
+    "schemas.dest is now" run_sync_at "$SCH_MOVED" verify
+expect_fail_contains "offline check flags schemas left at the old dest" \
+    "no longer points there" run_sync_at "$SCH_MOVED" verify-offline
+expect_ok "sync migrates the dest" run_sync_at "$SCH_MOVED" sync
+expect_ok "old dest's managed schema removed" test ! -e "$SCH_MOVED/vendored/schemas-a/sch-one.schema.json"
+expect_ok "old dest's stamp removed" test ! -e "$SCH_MOVED/vendored/schemas-a/.SCHEMAS_PROVENANCE"
+expect_ok "old dest's LOCAL schema survived the move" grep -q "local" "$SCH_MOVED/vendored/schemas-a/mine.schema.json"
+expect_ok "new dest has the schema" test -f "$SCH_MOVED/vendored/schemas-b/sch-one.schema.json"
+expect_ok "verify passes after the move" run_sync_at "$SCH_MOVED" verify
+expect_ok "offline check passes after the move" run_sync_at "$SCH_MOVED" verify-offline
+
+# --- offline check must see a removed block too ---------------------------
+# cmd_verify caught this already; an asymmetry would have the pre-push hook
+# wave through exactly what CI then rejects.
+SCH_OFFLINE_ORPHAN="$TMPROOT/consumer-schemas-offline-orphan"
+mkdir -p "$SCH_OFFLINE_ORPHAN"
+write_schemas_manifest_at "$SCH_OFFLINE_ORPHAN" v0.2.0-schemas "[sch-one]"
+run_sync_at "$SCH_OFFLINE_ORPHAN" sync >/dev/null
+write_manifest_at "$SCH_OFFLINE_ORPHAN" v0.2.0-schemas universal
+expect_fail_contains "offline check flags a removed block's leftovers" \
+    "no longer points there" run_sync_at "$SCH_OFFLINE_ORPHAN" verify-offline
+expect_ok "sync de-vendors them" run_sync_at "$SCH_OFFLINE_ORPHAN" sync
+expect_ok "offline check passes after de-vendoring" run_sync_at "$SCH_OFFLINE_ORPHAN" verify-offline
+
+# --- a damaged orphan stamp must abort BEFORE the breadcrumb is cleared ----
+# devendor_schemas runs after the skills stamp is rewritten with an empty
+# breadcrumb. A stamp problem discovered there would abort with the pointer
+# already erased, making the orphan permanently unfindable while checks pass.
+SCH_DAMAGED="$TMPROOT/consumer-schemas-damaged"
+mkdir -p "$SCH_DAMAGED"
+write_schemas_manifest_at "$SCH_DAMAGED" v0.2.0-schemas "[sch-one]"
+run_sync_at "$SCH_DAMAGED" sync >/dev/null
+grep -v '^# managed:' "$SCH_DAMAGED/vendored/schemas/.SCHEMAS_PROVENANCE" >"$SCH_DAMAGED/tmp-prov" &&
+    mv "$SCH_DAMAGED/tmp-prov" "$SCH_DAMAGED/vendored/schemas/.SCHEMAS_PROVENANCE"
+write_manifest_at "$SCH_DAMAGED" v0.2.0-schemas universal
+expect_fail_contains "a damaged orphan stamp aborts the sync" "no '# managed:' line" \
+    run_sync_at "$SCH_DAMAGED" sync
+expect_ok "aborted de-vendor kept the breadcrumb findable" \
+    grep -q "^# schemas-dest: vendored/schemas$" "$SCH_DAMAGED/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "aborted de-vendor left the schemas in place" test -f "$SCH_DAMAGED/vendored/schemas/sch-one.schema.json"
+
+# Same rule one level deeper: an UNSAFE NAME on the managed line must abort
+# before the breadcrumb is cleared too.
+SCH_BADNAME="$TMPROOT/consumer-schemas-badname"
+mkdir -p "$SCH_BADNAME"
+write_schemas_manifest_at "$SCH_BADNAME" v0.2.0-schemas "[sch-one]"
+run_sync_at "$SCH_BADNAME" sync >/dev/null
+sed 's|^# managed:.*|# managed: ../bad|' "$SCH_BADNAME/vendored/schemas/.SCHEMAS_PROVENANCE" >"$SCH_BADNAME/tmp-prov" &&
+    mv "$SCH_BADNAME/tmp-prov" "$SCH_BADNAME/vendored/schemas/.SCHEMAS_PROVENANCE"
+write_manifest_at "$SCH_BADNAME" v0.2.0-schemas universal
+expect_fail_contains "an unsafe name in the orphan stamp aborts the sync" \
+    "refusing unsafe skill name" run_sync_at "$SCH_BADNAME" sync
+expect_ok "unsafe-name abort kept the breadcrumb findable" \
+    grep -q "^# schemas-dest: vendored/schemas$" "$SCH_BADNAME/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "unsafe-name abort left the schemas in place" test -f "$SCH_BADNAME/vendored/schemas/sch-one.schema.json"
+
+# --- a fresh scaffold's clean skip must not hit the network ---------------
+SCH_FRESH_NOCLONE="$TMPROOT/consumer-schemas-fresh-noclone"
+mkdir -p "$SCH_FRESH_NOCLONE"
+write_schemas_manifest_at "$SCH_FRESH_NOCLONE" v9.9.9-unreachable "[sch-one]"
+expect_ok "fresh scaffold: verify skips without cloning an unreachable ref" \
+    run_sync_at "$SCH_FRESH_NOCLONE" verify
+
+# --- a malformed schemas.names must never resolve to "vendor nothing" ------
+SCH_MALFORMED="$TMPROOT/consumer-schemas-malformed"
+mkdir -p "$SCH_MALFORMED"
+write_schemas_manifest_at "$SCH_MALFORMED" v0.2.0-schemas '["*"]'
+run_sync_at "$SCH_MALFORMED" sync >/dev/null
+expect_ok "malformed guard: schemas vendored to begin with" test -f "$SCH_MALFORMED/vendored/schemas/sch-one.schema.json"
+
+write_bad_schema_names() {
+    {
+        echo "source:"
+        echo "  repo: file://$SRC"
+        echo "  ref: v0.2.0-schemas"
+        echo "categories:"
+        echo "  - universal"
+        echo "dest: vendored/skills"
+        echo "schemas:"
+        [ -n "$1" ] && echo "  names: $1"
+        echo "  dest: vendored/schemas"
+    } >"$SCH_MALFORMED/.skills-sync.yaml"
+}
+
+write_bad_schema_names '"*"'
+expect_fail_contains "scalar schemas.names is refused" "must be a list" run_sync_at "$SCH_MALFORMED" sync
+expect_ok "refused scalar left the schemas intact" test -f "$SCH_MALFORMED/vendored/schemas/sch-one.schema.json"
+
+write_bad_schema_names '{a: b}'
+expect_fail_contains "mapping schemas.names is refused" "must be a list" run_sync_at "$SCH_MALFORMED" sync
+expect_ok "refused mapping left the schemas intact" test -f "$SCH_MALFORMED/vendored/schemas/sch-two.schema.json"
+
+write_bad_schema_names ""
+expect_fail_contains "missing schemas.names is refused" "schemas.names is required" run_sync_at "$SCH_MALFORMED" sync
+expect_ok "refused missing-names left the schemas intact" test -f "$SCH_MALFORMED/vendored/schemas/sch-one.schema.json"
+
+write_bad_schema_names '"*"'
+expect_fail_contains "verify also refuses a malformed schemas.names" "must be a list" \
+    run_sync_at "$SCH_MALFORMED" verify
+
+# An EXPLICIT empty list is unambiguous intent and still works — it vendors
+# nothing, exactly as an empty categories list vendors no skills.
+write_bad_schema_names "[]"
+expect_ok "explicit empty schemas.names is allowed" run_sync_at "$SCH_MALFORMED" sync
+expect_ok "explicit empty list vendored no schemas" test ! -e "$SCH_MALFORMED/vendored/schemas/sch-one.schema.json"
+expect_ok "explicit empty list still stamped provenance" test -f "$SCH_MALFORMED/vendored/schemas/.SCHEMAS_PROVENANCE"
+expect_ok "explicit empty list verifies" run_sync_at "$SCH_MALFORMED" verify
+
+# --- adding a schemas block without syncing is DRIFT, not a fresh scaffold --
+# The skills stamp proves this repo has run a sync, so a missing schemas stamp
+# means the block was added and never applied.
+SCH_UNSYNCED="$TMPROOT/consumer-schemas-unsynced"
+mkdir -p "$SCH_UNSYNCED"
+write_manifest_at "$SCH_UNSYNCED" v0.2.0-schemas universal
+run_sync_at "$SCH_UNSYNCED" sync >/dev/null # skills only — no schemas block yet
+write_schemas_manifest_at "$SCH_UNSYNCED" v0.2.0-schemas "[sch-one]"
+expect_fail_contains "verify fails when a schemas block was never synced" \
+    "requests schemas but none are vendored" run_sync_at "$SCH_UNSYNCED" verify
+expect_fail_contains "offline check fails when a schemas block was never synced" \
+    "requests schemas but none are vendored" run_sync_at "$SCH_UNSYNCED" verify-offline
+expect_ok "syncing clears it" run_sync_at "$SCH_UNSYNCED" sync
+expect_ok "verify passes once the schemas are vendored" run_sync_at "$SCH_UNSYNCED" verify
+
+# The mirror case: schemas stamped, skills gone. The schemas stamp proves a
+# sync has run, so this is drift too.
+SCH_SKILLS_LOST="$TMPROOT/consumer-schemas-skills-lost"
+mkdir -p "$SCH_SKILLS_LOST"
+write_schemas_manifest_at "$SCH_SKILLS_LOST" v0.2.0-schemas "[sch-one]"
+run_sync_at "$SCH_SKILLS_LOST" sync >/dev/null
+rm -rf "$SCH_SKILLS_LOST/vendored/skills"
+expect_fail_contains "verify fails when the vendored skills went missing" \
+    "requests skills but none are vendored" run_sync_at "$SCH_SKILLS_LOST" verify
+expect_fail_contains "offline check fails when the vendored skills went missing" \
+    "requests skills but none are vendored" run_sync_at "$SCH_SKILLS_LOST" verify-offline
+expect_ok "re-syncing restores them" run_sync_at "$SCH_SKILLS_LOST" sync
+expect_ok "verify passes once skills are back" run_sync_at "$SCH_SKILLS_LOST" verify
+
+# A repo that has never synced ANYTHING still skips cleanly.
+SCH_FRESH="$TMPROOT/consumer-schemas-fresh"
+mkdir -p "$SCH_FRESH"
+write_schemas_manifest_at "$SCH_FRESH" v0.2.0-schemas "[sch-one]"
+expect_ok "fresh scaffold: verify still skips cleanly" run_sync_at "$SCH_FRESH" verify
+expect_ok "fresh scaffold: offline check still skips cleanly" run_sync_at "$SCH_FRESH" verify-offline
+
+# --- a failing schemas pass must not leave skills bumped ------------------
+# Both kinds of asset are pinned to ONE ref so they cannot skew.
+SCH_SKEW="$TMPROOT/consumer-schemas-skew"
+mkdir -p "$SCH_SKEW"
+write_schemas_manifest_at "$SCH_SKEW" v0.2.0-schemas "[sch-one]"
+run_sync_at "$SCH_SKEW" sync >/dev/null
+expect_ok "skew guard: baseline skill is the old one" test -f "$SCH_SKEW/vendored/skills/uni-one/SKILL.md"
+# Plant a local schema that the NEXT sync's incoming set will collide with.
+echo '{"local": true}' >"$SCH_SKEW/vendored/schemas/sch-two.schema.json"
+write_schemas_manifest_at "$SCH_SKEW" v0.2.0-schemas "[sch-one, sch-two]"
+expect_fail_contains "skew guard: the colliding sync fails" "collides with an incoming" \
+    run_sync_at "$SCH_SKEW" sync
+expect_ok "skew guard: skills provenance was NOT rewritten" \
+    grep -q "^# ref: v0.2.0-schemas " "$SCH_SKEW/vendored/skills/.SKILLS_PROVENANCE"
+expect_ok "skew guard: the local schema survived" grep -q "local" "$SCH_SKEW/vendored/schemas/sch-two.schema.json"
+expect_ok "skew guard: the managed schema survived" test -f "$SCH_SKEW/vendored/schemas/sch-one.schema.json"
+
+# --- offline ref check covers schemas independently -----------------------
+SCH_OFFLINE="$TMPROOT/consumer-schemas-offline"
+mkdir -p "$SCH_OFFLINE"
+write_schemas_manifest_at "$SCH_OFFLINE" v0.2.0-schemas "[sch-one]"
+run_sync_at "$SCH_OFFLINE" sync >/dev/null
+expect_ok "schemas: offline check passes after sync" run_sync_at "$SCH_OFFLINE" verify-offline
+# Bump only the schemas provenance ref -> offline must notice.
+sed -i.bak 's/^# ref: .*/# ref: v9.9.9-absent (deadbeef)/' "$SCH_OFFLINE/vendored/schemas/.SCHEMAS_PROVENANCE"
+expect_fail_contains "offline check catches a schemas ref mismatch" "vendored schemas ref" \
+    run_sync_at "$SCH_OFFLINE" verify-offline
+
 # ── sync-skills.sh status ───────────────────────────────────────────────
 echo "==> sync-skills.sh (status)"
 
@@ -1266,6 +1690,62 @@ expect_status "agents provenance mismatch reports pin-moved" 11 \
     "$STATUS_AGENTS/.skills-sync.yaml" "$STATUS_AGENTS_ROOT" "$STATUS_AGENTS_PROV" \
     run_status_at "$STATUS_AGENTS" status --offline
 expect_ok "agents pin-moved offline makes zero upstream probes" test "$(status_probe_count)" = 0
+
+# With schemas enabled, either missing stamp means never-vendored. The parent
+# snapshot also proves status leaves both destinations and both stamps intact.
+STATUS_SCHEMAS="$TMPROOT/consumer-status-schemas"
+mkdir -p "$STATUS_SCHEMAS"
+write_schemas_manifest_at "$STATUS_SCHEMAS" v1.2.3 "[sch-one]"
+run_sync_at "$STATUS_SCHEMAS" sync >/dev/null
+STATUS_SCHEMAS_ROOT="$STATUS_SCHEMAS/vendored"
+STATUS_SCHEMAS_PROV="$STATUS_SCHEMAS/vendored/skills/.SKILLS_PROVENANCE"
+STATUS_SCHEMAS_SKILLS_STAMP="$TMPROOT/status-schemas-skills-stamp"
+STATUS_SCHEMAS_SCHEMAS_STAMP="$TMPROOT/status-schemas-schemas-stamp"
+cp "$STATUS_SCHEMAS/vendored/skills/.SKILLS_PROVENANCE" "$STATUS_SCHEMAS_SKILLS_STAMP"
+cp "$STATUS_SCHEMAS/vendored/schemas/.SCHEMAS_PROVENANCE" "$STATUS_SCHEMAS_SCHEMAS_STAMP"
+reset_status_probe
+expect_status "schemas with both stamps report in-sync offline" 0 \
+    "state=in-sync pinned=v1.2.3 vendored=v1.2.3 latest=unknown" \
+    "" \
+    "$STATUS_SCHEMAS/.skills-sync.yaml" "$STATUS_SCHEMAS_ROOT" "$STATUS_SCHEMAS_PROV" \
+    run_status_at "$STATUS_SCHEMAS" status --offline
+expect_ok "schemas in-sync offline makes zero upstream probes" test "$(status_probe_count)" = 0
+sed -i.bak '/^# managed:/d' "$STATUS_SCHEMAS/vendored/schemas/.SCHEMAS_PROVENANCE"
+reset_status_probe
+expect_status "schemas require a complete provenance stamp" 10 \
+    "state=never-vendored pinned=v1.2.3 vendored=none latest=unknown" \
+    "" \
+    "$STATUS_SCHEMAS/.skills-sync.yaml" "$STATUS_SCHEMAS_ROOT" "$STATUS_SCHEMAS_PROV" \
+    run_status_at "$STATUS_SCHEMAS" status
+expect_ok "damaged-schemas-stamp status makes zero upstream probes" test "$(status_probe_count)" = 0
+cp "$STATUS_SCHEMAS_SCHEMAS_STAMP" "$STATUS_SCHEMAS/vendored/schemas/.SCHEMAS_PROVENANCE"
+rm "$STATUS_SCHEMAS/vendored/skills/.SKILLS_PROVENANCE"
+reset_status_probe
+expect_status "schemas require the skills provenance stamp" 10 \
+    "state=never-vendored pinned=v1.2.3 vendored=none latest=unknown" \
+    "" \
+    "$STATUS_SCHEMAS/.skills-sync.yaml" "$STATUS_SCHEMAS_ROOT" "$STATUS_SCHEMAS_PROV" \
+    run_status_at "$STATUS_SCHEMAS" status
+expect_ok "missing-skills-stamp status makes zero upstream probes" test "$(status_probe_count)" = 0
+cp "$STATUS_SCHEMAS_SKILLS_STAMP" "$STATUS_SCHEMAS/vendored/skills/.SKILLS_PROVENANCE"
+rm "$STATUS_SCHEMAS/vendored/schemas/.SCHEMAS_PROVENANCE"
+reset_status_probe
+expect_status "schemas require the schemas provenance stamp" 10 \
+    "state=never-vendored pinned=v1.2.3 vendored=none latest=unknown" \
+    "" \
+    "$STATUS_SCHEMAS/.skills-sync.yaml" "$STATUS_SCHEMAS_ROOT" "$STATUS_SCHEMAS_PROV" \
+    run_status_at "$STATUS_SCHEMAS" status
+expect_ok "missing-schemas-stamp status makes zero upstream probes" test "$(status_probe_count)" = 0
+cp "$STATUS_SCHEMAS_SCHEMAS_STAMP" "$STATUS_SCHEMAS/vendored/schemas/.SCHEMAS_PROVENANCE"
+sed -i.bak 's/^# ref: .*/# ref: v1.2.2 (fixture)/' \
+    "$STATUS_SCHEMAS/vendored/schemas/.SCHEMAS_PROVENANCE"
+reset_status_probe
+expect_status "schemas provenance mismatch reports pin-moved" 11 \
+    "state=pin-moved pinned=v1.2.3 vendored=v1.2.3 latest=unknown" \
+    "" \
+    "$STATUS_SCHEMAS/.skills-sync.yaml" "$STATUS_SCHEMAS_ROOT" "$STATUS_SCHEMAS_PROV" \
+    run_status_at "$STATUS_SCHEMAS" status --offline
+expect_ok "schemas pin-moved offline makes zero upstream probes" test "$(status_probe_count)" = 0
 
 # ── standardize-repo audit assets ─────────────────────────────────────
 echo "==> standardize-repo audit assets"

@@ -1,0 +1,15 @@
+{
+  "schema": 2,
+  "run_id": "run-6023-interventions-missing-kind",
+  "initiated_by": "human",
+  "started_at": "2026-08-29T09:00:00Z",
+  "stage_transitions": [],
+  "interventions": [
+    { "at": "2026-08-29T10:00:00Z", "note": "some human action" }
+  ],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null
+}

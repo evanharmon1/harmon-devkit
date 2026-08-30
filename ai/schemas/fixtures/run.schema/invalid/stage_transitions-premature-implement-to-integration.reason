@@ -1,0 +1,1 @@
+$run.stage_transitions[4].stage: integration is not a valid transition from implement (docs/product/domain.md § Lifecycles)
