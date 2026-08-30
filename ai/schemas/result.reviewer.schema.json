@@ -60,9 +60,9 @@
       ],
       "properties": {
         "id": {
-          "description": "Unique within the run by construction: <stage>-r<round>-<finder>-<n>. The validator checks the stage/round/finder segments match this pass's own stage/round/finder, and (given prior-run context) that the id collides with neither an earlier finding in this pass nor any finding already in the run.",
+          "description": "Unique within the run by construction: <stage>-r<round>-<finder>-<n>. The validator checks the stage/round/finder segments match this pass's own stage/round/finder, and (given prior-run context) that the id collides with neither an earlier finding in this pass nor any finding already in the run. The stage word also admits `integration` (result.integrator.schema.json's findings[].id grammar), so a repeat-of/supersedes reference below can name an integration-stage finding — a reviewer pass's own stage/round/finder cross-check still confines its OWN id to challenge/review, since payload.stage itself has no integration value.",
           "type": "string",
-          "pattern": "^(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+          "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
         },
         "path": {
           "description": "Repo-relative path the finding is about.",
@@ -85,7 +85,7 @@
         "fingerprint": {
           "description": "new: not seen before. repeat-of:<id> / supersedes:<id>: this finding is the same defect recurring, or a stronger restatement of an earlier one, where <id> is an earlier finding id in this run. Asserted by the reviewer (which has prior rounds' findings in its brief); the exit script (#636) verifies it.",
           "type": "string",
-          "pattern": "^(new|repeat-of:(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*|supersedes:(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*)$"
+          "pattern": "^(new|repeat-of:(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*|supersedes:(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*)$"
         },
         "priority": {
           "description": "The reviewer's own label. The orchestrator's adjudicated priority (which may differ) lives in adjudication.schema.json, never here.",

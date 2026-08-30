@@ -24,6 +24,7 @@ agents:
 # that pin actually targets, so letting schemas drift to a different pin could
 # leave a vendored skill emitting a shape its own vendored schema no longer
 # describes.
-schemas:
-  names: ["*"] # explicit list of schema basenames (no .schema.json), or ["*"] for every schema at the pin
-  dest: .claude/schemas # must differ from the skills/agents dest above
+# Commented out below: uncomment once `ref` is a harmon-devkit release that ships ai/schemas — v0.38.0 or later.
+# schemas:
+#   names: ["*"] # explicit list of schema basenames (no .schema.json), or ["*"] for every schema at the pin
+#   dest: .claude/schemas # must differ from the skills/agents dest above

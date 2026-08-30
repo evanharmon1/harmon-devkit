@@ -35,8 +35,9 @@
     },
     "findings": [
       {
-        "id": "review-9988776655",
-        "body": "Please add a regression test for the empty-array case."
+        "id": "integration-r1-human-1",
+        "body": "Please add a regression test for the empty-array case.",
+        "source_id": "review-9988776655"
       }
     ],
     "unanswered_thread_roots": [

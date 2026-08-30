@@ -3,7 +3,7 @@
   "run_id": "run-6050-reference-type-mismatch",
   "initiated_by": "human",
   "started_at": "2026-08-29T09:00:00Z",
-  "stage_transitions": [],
+  "stage_transitions": [{ "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z" }],
   "interventions": [],
   "outcome": null,
   "pr": null,

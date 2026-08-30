@@ -98,15 +98,24 @@
       }
     },
     "findings": {
-      "description": "Findings surfaced during integration (human review comments, CI failures needing adjudication, an unsettled Codex finding) carried verbatim for the orchestrator to adjudicate — id and body only, since the integrator never authors or interprets finding text. Unlike a reviewer pass's findings, these ids are NOT the challenge/review pass-id grammar: they are the GitHub-native identifier of whatever surfaced the finding (an inline review comment id, a review id, a locally-minted marker for a CI failure).",
+      "description": "Findings surfaced during integration (human review comments, CI failures needing adjudication, an unsettled Codex finding) carried verbatim for the orchestrator to adjudicate — id, body, and source_id only, since the integrator never authors or interprets finding text. `id` follows the SAME finding-id grammar as a reviewer pass, with stage fixed to `integration`: integration-r<cycle>-<finder>-<n>, where cycle is codex_cycle.attempt (or 1 when codex_cycle is null) and finder is the registry finder slug or `human` — this is what gives an integration finding an adjudication path through adjudication.schema.json exactly like a reviewer finding. `source_id` carries what `id` held before this schema adopted that grammar: the GitHub-native identifier of whatever surfaced the finding (an inline review comment id, a review id, a locally-minted marker for a CI failure).",
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "body"],
+        "required": ["id", "body", "source_id"],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "body": { "type": "string", "minLength": 1 }
+          "id": {
+            "description": "integration-r<cycle>-<finder>-<n> — see the findings[] description above.",
+            "type": "string",
+            "pattern": "^integration-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+          },
+          "body": { "type": "string", "minLength": 1 },
+          "source_id": {
+            "description": "The GitHub-native id of the surfacing comment, review, or check — what `id` held before integrator findings adopted the shared finding-id grammar.",
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
@@ -132,7 +141,10 @@
         "additionalProperties": false,
         "required": ["finding_id", "disposition"],
         "properties": {
-          "finding_id": { "type": "string", "minLength": 1 },
+          "finding_id": {
+            "type": "string",
+            "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+          },
           "disposition": {
             "enum": ["fix", "restructure", "delete", "decline", "defer", "file"]
           }

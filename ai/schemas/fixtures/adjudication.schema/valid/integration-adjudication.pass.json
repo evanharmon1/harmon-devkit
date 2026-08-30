@@ -2,35 +2,31 @@
   "schema": 2,
   "role": "integrator",
   "status": "completed",
-  "head": "8fbd0ae8fe1e874129edff75ae90e0126b31c574",
-  "produced_at": "2026-08-29T18:00:00Z",
+  "head": "6060a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "produced_at": "2026-08-29T19:00:00Z",
   "producer": {
     "harness": "claude-code",
     "model": "claude-sonnet-5",
     "tier": "standard"
   },
   "run": {
-    "run_id": "run-4027-findings-entry-missing-body",
+    "run_id": "run-6060-integration-adjudication",
     "initiated_by": "human"
   },
   "payload": {
     "checks": [
-      {
-        "name": "ci/build",
-        "bucket": "pass",
-        "run_id": "1020",
-        "required": true
-      }
+      { "name": "ci/build", "bucket": "pass", "run_id": "2001", "required": true }
     ],
     "codex_cycle": null,
     "findings": [
       {
         "id": "integration-r1-human-1",
-        "source_id": "review-1122334455"
+        "body": "Please add a regression test for the empty-array case.",
+        "source_id": "review-1234500001"
       }
     ],
     "unanswered_thread_roots": [],
-    "settled_at": "2026-08-29T18:00:00Z",
+    "settled_at": "2026-08-29T19:00:00Z",
     "verdict": "findings"
   }
 }

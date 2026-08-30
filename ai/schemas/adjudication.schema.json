@@ -9,7 +9,10 @@
   "properties": {
     "schema": { "const": 2 },
     "run_id": { "type": "string", "minLength": 1 },
-    "stage": { "enum": ["challenge", "review"] },
+    "stage": {
+      "description": "challenge/review: adjudicates a reviewer pass's findings (--pass names a reviewer envelope). integration: adjudicates an integrator payload's findings instead (--pass names an integrator envelope) — its findings carry no reviewer-asserted priority, so the validator's pass cross-check skips the reviewer_priority fidelity comparison for this stage (ai/schemas/README.md).",
+      "enum": ["challenge", "review", "integration"]
+    },
     "round": { "type": "integer", "minimum": 1 },
     "reviewed_head": {
       "description": "The head this round's pass(es) reviewed — must equal every adjudicated finding's originating pass's reviewed_head. Checked by the validator's run-context mode, which has the pass documents in hand.",
@@ -38,7 +41,7 @@
       "properties": {
         "finding_id": {
           "type": "string",
-          "pattern": "^(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+          "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
         },
         "reviewer_priority": {
           "description": "A copy of the finding's own reviewer-asserted priority, carried here so reviewer-vs-orchestrator disagreement is measurable from this document alone, without re-reading the pass (specs/dev-flow-v2.md: 'the raw reviewer output is kept so reviewer-vs-orchestrator disagreement can be measured'). The validator's run-context mode still cross-checks it against the originating pass's finding.",

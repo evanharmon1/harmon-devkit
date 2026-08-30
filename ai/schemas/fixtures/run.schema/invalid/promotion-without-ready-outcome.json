@@ -3,7 +3,7 @@
   "run_id": "run-6060-promotion-without-ready-outcome",
   "initiated_by": "human",
   "started_at": "2026-08-29T09:00:00Z",
-  "stage_transitions": [],
+  "stage_transitions": [{ "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z" }],
   "interventions": [],
   "outcome": "capped",
   "pr": null,

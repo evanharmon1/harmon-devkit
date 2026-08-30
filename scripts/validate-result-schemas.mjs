@@ -25,20 +25,31 @@
 //                                 without the other is a usage error, not a
 //                                 guaranteed-mismatch: rejects an envelope
 //                                 whose `run` names a different run.
-//   --pass <envelope.json>        (adjudication only, repeatable) a reviewer
-//                                 envelope this document adjudicates. Each
-//                                 file is itself validated as a full
-//                                 reviewer envelope (envelope schema +
-//                                 reviewer payload + its own receipt checks,
-//                                 no run context) before anything else runs;
-//                                 an invalid --pass file fails immediately,
-//                                 naming that file. With one or more --pass,
-//                                 the document is cross-checked against the
-//                                 UNION of their findings: completeness,
-//                                 reviewer_priority fidelity, and that every
-//                                 pass agrees with the others (and the
-//                                 document) on run_id/stage/round/
-//                                 reviewed_head.
+//   --pass <envelope.json>        (adjudication only, repeatable) the
+//                                 envelope this document adjudicates: a
+//                                 reviewer envelope for stage challenge/
+//                                 review, or an INTEGRATOR envelope for
+//                                 stage integration (the document's own
+//                                 `stage` decides which — read before
+//                                 parsing the rest of argv, since --pass may
+//                                 appear anywhere). Each file is itself
+//                                 validated in full (envelope schema + its
+//                                 role's payload + its own receipt checks,
+//                                 no run context) before anything else
+//                                 runs; an invalid --pass file fails
+//                                 immediately, naming that file. With one or
+//                                 more --pass, the document is cross-checked
+//                                 against the UNION of their findings:
+//                                 completeness, and that every pass agrees
+//                                 with the others (and the document) on
+//                                 run_id/stage/round/reviewed_head. For
+//                                 stage challenge/review this also checks
+//                                 reviewer_priority fidelity and that every
+//                                 pass names a distinct finder; stage
+//                                 integration skips both — an integrator
+//                                 payload carries no finder and its
+//                                 findings carry no reviewer-asserted
+//                                 priority to compare against.
 //   --known-adjudicated <file.json>  (adjudication only) JSON array of
 //                                 finding ids already adjudicated in an
 //                                 earlier round document of this run —
@@ -69,10 +80,32 @@
 //                                 directory) — so the validator finds its
 //                                 schemas the same way regardless of the
 //                                 caller's cwd.
+//   --receipt                    Require every context flag applicable to
+//                                 this invocation's <kind> (envelope kinds:
+//                                 --run-id/--initiated-by; reviewer: also
+//                                 --known-ids; integrator: also
+//                                 --integration-cap; adjudication: --pass
+//                                 and --known-adjudicated; run:
+//                                 --adjudication) — a missing one is a
+//                                 usage error (exit 2), not a silently
+//                                 narrower check. Without --receipt, an
+//                                 omitted flag simply skips the checks it
+//                                 would have fed (named in the success
+//                                 message's "context skipped" list) — the
+//                                 orchestrator's real invocation always
+//                                 uses --receipt; a bare invocation is for
+//                                 one-off schema/fixture work where the run
+//                                 context genuinely is not available.
+//
+// The success message always names any applicable context flag that was
+// NOT given, e.g. "reviewer result OK (role=reviewer, status=completed,
+// context skipped: --known-ids, --run-id)" — so a bare (non-"--receipt")
+// invocation's reduced guarantee is visible, not silent.
 //
 // Exit 0 and a one-line summary when the fixture is valid; exit 1 and every
 // violation (one per line) otherwise. A usage error (bad kind, missing
-// file, a paired flag given alone) exits 2.
+// file, a paired flag given alone, or a --receipt-required flag missing)
+// exits 2.
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -81,7 +114,7 @@ import { createSchemaValidator } from './lib/json-schema-subset.mjs'
 
 const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'ai', 'schemas')
 const KINDS = ['envelope', 'implementer', 'reviewer', 'integrator', 'adjudication', 'run']
-const FINDING_ID = /^(challenge|review)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
+const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
 const SHA_PATTERN = /^[0-9a-f]{40}$/
 const ISSUE_NUMBER_PATTERN = /^[1-9][0-9]*$/
 
@@ -90,7 +123,7 @@ function usage() {
     'usage: validate-result-schemas.mjs <envelope|implementer|reviewer|integrator|adjudication|run> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
-      '[--integration-cap <n>] [--schemas-dir <dir>]'
+      '[--integration-cap <n>] [--schemas-dir <dir>] [--receipt]'
   )
 }
 
@@ -165,6 +198,17 @@ function parseArgs(argv) {
     usage()
     process.exit(2)
   }
+  // --pass's own expected role: a reviewer envelope for stage challenge/
+  // review, an integrator envelope for stage integration. --pass is parsed
+  // (and its file validated) as the loop below reaches it, which may be
+  // before OR after this document's own `stage` would otherwise be known —
+  // so peek at it now, from the primary file already in hand, rather than
+  // discovering it mid-parse.
+  let passRole = 'reviewer'
+  if (kind === 'adjudication') {
+    const peek = loadJson(file)
+    if (peek && peek.stage === 'integration') passRole = 'integrator'
+  }
   const options = {
     knownIds: null,
     runId: null,
@@ -172,7 +216,8 @@ function parseArgs(argv) {
     passes: [],
     knownAdjudicated: null,
     adjudications: [],
-    integrationCap: null
+    integrationCap: null,
+    receipt: false
   }
   for (let i = 0; i < rest.length; i += 1) {
     switch (rest[i]) {
@@ -188,7 +233,7 @@ function parseArgs(argv) {
       case '--pass': {
         const passFile = rest[(i += 1)]
         const data = loadAndValidateContext(passFile, '--pass', (candidate) => {
-          const errors = validateEnvelopeInstance(candidate, 'reviewer', {
+          const errors = validateEnvelopeInstance(candidate, passRole, {
             knownIds: null,
             runId: null,
             initiatedBy: null
@@ -235,6 +280,9 @@ function parseArgs(argv) {
         // unknown option.
         i += 1
         break
+      case '--receipt':
+        options.receipt = true
+        break
       default:
         console.error(`validate-result-schemas: unknown option ${rest[i]}`)
         usage()
@@ -258,6 +306,55 @@ function parseFindingId(id) {
   if (!match) return null
   const [, stage, round, finder, n] = match
   return { stage, round: Number(round), finder, n: Number(n) }
+}
+
+// CONTEXT_FLAGS — the context flags applicable to each <kind>, in the fixed
+// order the success message and --receipt report them (alphabetical by
+// flag name), each paired with how to tell whether it was actually given.
+// Shared by the "context skipped" success-message suffix and --receipt's
+// requiredness check, so the two can never disagree about what applies.
+const RUN_ID_FLAG = { flag: '--run-id', given: (o) => o.runId !== null }
+const CONTEXT_FLAGS = {
+  implementer: [RUN_ID_FLAG],
+  reviewer: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
+  integrator: [{ flag: '--integration-cap', given: (o) => o.integrationCap !== null }, RUN_ID_FLAG],
+  adjudication: [
+    { flag: '--known-adjudicated', given: (o) => o.knownAdjudicated !== null },
+    { flag: '--pass', given: (o) => o.passes.length > 0 }
+  ],
+  run: [{ flag: '--adjudication', given: (o) => o.adjudications.length > 0 }]
+}
+
+// applicableContextSpecs KIND ROLE — ROLE is only consulted for kind
+// 'envelope' (which dispatches on the instance's own role and so inherits
+// that role's context flags); every other kind ignores it. An
+// unrecognised role (a garbage or missing `role` on an envelope-kind
+// instance) falls back to the universal envelope baseline (--run-id only)
+// rather than guessing at extras it cannot confirm apply.
+function applicableContextSpecs(kind, role) {
+  if (kind === 'envelope') return CONTEXT_FLAGS[role] ?? [RUN_ID_FLAG]
+  return CONTEXT_FLAGS[kind] ?? []
+}
+
+function skippedContextFlags(kind, role, options) {
+  return applicableContextSpecs(kind, role)
+    .filter((spec) => !spec.given(options))
+    .map((spec) => spec.flag)
+}
+
+// checkReceiptRequirements — with --receipt, every context flag applicable
+// to this invocation must actually be given; a missing one is a usage
+// error (exit 2), matching how --run-id given without --initiated-by is
+// already treated as a usage error rather than a guaranteed rejection.
+function checkReceiptRequirements(kind, role, options) {
+  if (!options.receipt) return
+  const missing = skippedContextFlags(kind, role, options)
+  if (missing.length === 0) return
+  for (const flag of missing) {
+    console.error(`validate-result-schemas: --receipt requires ${flag} for kind ${kind}`)
+  }
+  usage()
+  process.exit(2)
 }
 
 function validateAgainst(schema, instance, location) {
@@ -641,19 +738,25 @@ function checkAdjudicationUniqueAcrossRun(document, options, errors) {
 }
 
 // checkAdjudicationAgainstPass — cross-checks an adjudication document
-// against the reviewer pass(es) it adjudicates (--pass, repeatable — a
-// logical round is one pass per configured finder at the same
-// reviewed_head, spec § Configuration). Every pass agrees with every other
-// on run_id/stage/round/reviewed_head (mismatch names the offending pass
-// file); the document is checked against that same agreed metadata; every
-// finding across the UNION of the passes has exactly one adjudication
-// entry, no entry names an id absent from every pass, and each entry's
-// reviewer_priority matches its finding's own priority. Without --pass,
-// none of this runs — the document is still schema-valid and self-
-// consistent on its own (checkAdjudicationEntries), just not cross-checked
-// against anything external.
+// against the pass(es) it adjudicates (--pass, repeatable — a logical
+// challenge/review round is one pass per configured finder at the same
+// reviewed_head, spec § Configuration; a logical integration round is one
+// integrator envelope). Every pass agrees with every other on run_id (and,
+// for challenge/review, stage/round/reviewed_head too — mismatch names the
+// offending pass file); every finding across the UNION of the passes has
+// exactly one adjudication entry, no entry names an id absent from every
+// pass; and, for challenge/review, each entry's reviewer_priority matches
+// its finding's own priority, and every pass names a distinct finder.
+// Stage integration skips both of those last two: an integrator payload
+// carries no `finder` (there is exactly one integrator per attempt, never
+// multiple finders producing multiple passes) and its findings carry no
+// reviewer-asserted `priority` to compare against (ai/schemas/README.md).
+// Without --pass, none of this runs — the document is still schema-valid
+// and self-consistent on its own (checkAdjudicationEntries), just not
+// cross-checked against anything external.
 function checkAdjudicationAgainstPass(document, passes, errors) {
   if (passes.length === 0) return
+  const isIntegration = document.stage === 'integration'
   const [reference, ...rest] = passes
   for (const other of rest) {
     if (other.data.run.run_id !== reference.data.run.run_id) {
@@ -661,6 +764,7 @@ function checkAdjudicationAgainstPass(document, passes, errors) {
         `$adjudication: --pass ${other.file} has run_id ${other.data.run.run_id}, disagreeing with ${reference.file}'s ${reference.data.run.run_id}`
       )
     }
+    if (isIntegration) continue
     if (other.data.payload.stage !== reference.data.payload.stage) {
       errors.push(
         `$adjudication: --pass ${other.file} has stage ${other.data.payload.stage}, disagreeing with ${reference.file}'s ${reference.data.payload.stage}`
@@ -678,19 +782,22 @@ function checkAdjudicationAgainstPass(document, passes, errors) {
     }
   }
 
-  // A round is one pass per configured finder (spec § Configuration); a
-  // retry REPLACES that finder's pass, it never joins a second one at its
-  // side. Two --pass files naming the same finder are therefore never a
-  // legitimate two-finder round — reject and name the finder.
-  const finderSeenAt = new Map()
-  for (const { file, data } of passes) {
-    const finder = data.payload.finder
-    if (finderSeenAt.has(finder)) {
-      errors.push(
-        `$adjudication: --pass ${file} repeats finder ${finder}, already supplied by ${finderSeenAt.get(finder)} — a round is one pass per finder`
-      )
-    } else {
-      finderSeenAt.set(finder, file)
+  // A challenge/review round is one pass per configured finder (spec §
+  // Configuration); a retry REPLACES that finder's pass, it never joins a
+  // second one at its side. Two --pass files naming the same finder are
+  // therefore never a legitimate two-finder round — reject and name the
+  // finder. Not applicable to integration: no `finder` field exists there.
+  if (!isIntegration) {
+    const finderSeenAt = new Map()
+    for (const { file, data } of passes) {
+      const finder = data.payload.finder
+      if (finderSeenAt.has(finder)) {
+        errors.push(
+          `$adjudication: --pass ${file} repeats finder ${finder}, already supplied by ${finderSeenAt.get(finder)} — a round is one pass per finder`
+        )
+      } else {
+        finderSeenAt.set(finder, file)
+      }
     }
   }
 
@@ -711,7 +818,7 @@ function checkAdjudicationAgainstPass(document, passes, errors) {
       )
       continue
     }
-    if (entry.reviewer_priority !== finding.priority) {
+    if (!isIntegration && entry.reviewer_priority !== finding.priority) {
       errors.push(
         `$adjudication.adjudications[finding_id=${entry.finding_id}].reviewer_priority: ${entry.reviewer_priority} does not match the pass finding's own priority ${finding.priority}`
       )
@@ -727,6 +834,7 @@ function checkAdjudicationAgainstPass(document, passes, errors) {
   if (document.run_id !== referenceRun.run_id) {
     errors.push(`$adjudication.run_id: ${document.run_id} does not match the pass envelope's run.run_id ${referenceRun.run_id}`)
   }
+  if (isIntegration) return
   if (document.stage !== referencePayload.stage) {
     errors.push(`$adjudication.stage: ${document.stage} does not match the pass payload's stage ${referencePayload.stage}`)
   }
@@ -793,6 +901,52 @@ function checkSettlementReferenceType(document, errors) {
       errors.push(`$run.settlements[${index}].reference.value: type issue_number requires a positive integer string`)
     } else if (reference.type === 'comment_id' && typeof reference.value === 'string' && reference.value.trim() === '') {
       errors.push(`$run.settlements[${index}].reference.value: type comment_id requires a non-empty value`)
+    }
+  }
+}
+
+// STAGE_ORDER — the run-span stages in their canonical lifecycle order,
+// matching run.schema.json's stage_transitions[].stage enum exactly (see
+// that schema's own $comment for why the span stops at integration).
+const STAGE_ORDER = [
+  'kickoff', 'claim', 'explore', 'plan', 'implement', 'verify',
+  'challenge', 'review', 'security', 'integration'
+]
+
+// checkStageTransitionsOrder — array-wide coherence the schema's minItems/
+// per-entry required/enum keywords cannot express (no positional "first
+// item" or "monotonic across siblings" keyword in this subset engine):
+// the first entry is kickoff, every later entry's stage strictly follows
+// the canonical order above (so no stage repeats and none goes backward),
+// and every entry but the last records how/why it ended. An entry whose
+// own `stage` failed the schema's enum is skipped here (parseFindingId-
+// style "shape violations are the schema's job, not this check's").
+function checkStageTransitionsOrder(document, errors) {
+  const transitions = document.stage_transitions
+  if (!Array.isArray(transitions) || transitions.length === 0) return
+  if (transitions[0].stage !== 'kickoff') {
+    errors.push(
+      `$run.stage_transitions[0].stage: must be "kickoff" (the run's first transition), found ${JSON.stringify(transitions[0].stage)}`
+    )
+  }
+  let lastIndex = -1
+  for (const [index, transition] of transitions.entries()) {
+    const stageIndex = STAGE_ORDER.indexOf(transition.stage)
+    if (stageIndex === -1) continue
+    if (stageIndex <= lastIndex) {
+      errors.push(
+        `$run.stage_transitions[${index}].stage: ${transition.stage} is out of order or repeats an earlier entry`
+      )
+    } else {
+      lastIndex = stageIndex
+    }
+  }
+  for (const [index, transition] of transitions.entries()) {
+    if (index === transitions.length - 1) continue
+    if (typeof transition.exit !== 'string' || transition.exit.trim() === '') {
+      errors.push(
+        `$run.stage_transitions[${index}].exit: required (non-empty) — every entry but the last must record how/why it ended`
+      )
     }
   }
 }
@@ -997,6 +1151,8 @@ function checkTimestampRealness(value, errors, location) {
 function main() {
   const { kind, file, options } = parseArgs(process.argv.slice(2))
   const instance = loadJson(file)
+  const role = kind === 'envelope' ? instance.role : kind
+  checkReceiptRequirements(kind, role, options)
 
   if (kind === 'adjudication') {
     const errors = validateAdjudicationInstance(instance)
@@ -1004,7 +1160,9 @@ function main() {
       if (options.passes.length > 0) checkAdjudicationAgainstPass(instance, options.passes, errors)
       checkAdjudicationUniqueAcrossRun(instance, options, errors)
     }
-    report(errors, 'adjudication record OK')
+    const skipped = skippedContextFlags(kind, role, options)
+    const suffix = skipped.length > 0 ? ` (context skipped: ${skipped.join(', ')})` : ''
+    report(errors, `adjudication record OK${suffix}`)
     return
   }
 
@@ -1017,6 +1175,7 @@ function main() {
       checkEvidenceCommentsUniqueness(instance, errors)
       checkRunPromotionOutcome(instance, errors)
       checkSettlementReferenceType(instance, errors)
+      checkStageTransitionsOrder(instance, errors)
       if (options.adjudications.length > 0) {
         checkAdjudicationRunIdMatchesRun(instance, options.adjudications, errors)
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
@@ -1024,12 +1183,16 @@ function main() {
       }
     }
     checkTimestampRealness(instance, errors, '$run')
-    report(errors, 'run record OK')
+    const skipped = skippedContextFlags(kind, role, options)
+    const suffix = skipped.length > 0 ? ` (context skipped: ${skipped.join(', ')})` : ''
+    report(errors, `run record OK${suffix}`)
     return
   }
 
   const errors = validateEnvelopeInstance(instance, kind, options)
-  report(errors, `${kind} result OK (role=${instance.role ?? 'n/a'}, status=${instance.status ?? 'n/a'})`)
+  const skipped = skippedContextFlags(kind, role, options)
+  const skippedPart = skipped.length > 0 ? `, context skipped: ${skipped.join(', ')}` : ''
+  report(errors, `${kind} result OK (role=${instance.role ?? 'n/a'}, status=${instance.status ?? 'n/a'}${skippedPart})`)
 }
 
 function report(errors, okMessage) {

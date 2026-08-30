@@ -27,7 +27,9 @@
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
     },
     "stage_transitions": {
+      "description": "Non-empty: a run always has at least kicked off. Structural shape (minItems, per-entry required) is a schema keyword; the array-wide coherence rule — first entry is kickoff, entries strictly follow the enum's own order with no stage repeated, and every entry but the last has exit — needs positional/cross-entry reasoning this subset engine cannot express, so it is a receipt check (checkStageTransitionsOrder in scripts/validate-result-schemas.mjs) instead. See ai/schemas/README.md.",
       "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -117,7 +119,13 @@
             "required": ["run_id", "stage", "sequence"],
             "properties": {
               "run_id": { "type": "string", "minLength": 1 },
-              "stage": { "type": "string", "minLength": 1 },
+              "stage": {
+                "description": "The same run-span stage list as stage_transitions[].stage above — an evidence comment is always posted for one of the run's own defined stages.",
+                "enum": [
+                  "kickoff", "claim", "explore", "plan", "implement", "verify",
+                  "challenge", "review", "security", "integration"
+                ]
+              },
               "sequence": {
                 "description": "1-based — the Nth comment continuing this stage's evidence when GitHub's size limit forces a split.",
                 "type": "integer",
@@ -138,7 +146,7 @@
         "properties": {
           "finding_id": {
             "type": "string",
-            "pattern": "^(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+            "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
           },
           "disposition": {
             "description": "A settlement narrows a deferred finding to one of the three terminal answers — restructure/delete/defer are not valid settlement outcomes (specs/dev-flow-v2.md: 'there it is settled to fix, decline, or file').",

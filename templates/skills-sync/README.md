@@ -23,7 +23,7 @@ files).
 - **Harness compatibility.** The example preserves the historical Claude-first destination so updating consumers do not strand their old managed tree. Codex and other harnesses can expose those same files through `.agents/skills`; harmon-init maintains migration-safe per-skill links automatically. Do not vendor two copies, because duplicated skill trees drift independently.
 - **Provenance.** Every synced destination gets a `.SKILLS_PROVENANCE` stamp recording the source, ref, resolved commit SHA, and the `# managed:` list of vendored dirs, with a do-not-edit marker for the managed skills.
 - **Agents ride along, optionally.** An `agents:` block vendors shared subagents (single `<name>.md` files) into their own dest, at the **same pinned ref**, in the same `task sync:skills` run. Omit the block and nothing about the sync changes.
-- **Schemas ride along too, optionally.** A `schemas:` block vendors shared JSON schemas (single `<name>.schema.json` files) into their own dest, at the **same pinned ref**, in the same `task sync:skills` run. Omit the block and nothing about the sync changes.
+- **Schemas ride along too, optionally.** A `schemas:` block vendors shared JSON schemas (single `<name>.schema.json` files) into their own dest, at the **same pinned ref**, in the same `task sync:skills` run. Omit the block and nothing about the sync changes. The example manifest ships this block **commented out**, since no harmon-devkit release has shipped `ai/schemas` yet — see "Schemas" below before uncommenting it.
 
 ## Agents
 
@@ -60,6 +60,8 @@ Delete the `agents:` block and re-run `task sync:skills`. The vendored agents an
 That works because the skills stamp records `# agents-dest:`. It has to: `agents.dest` lives _inside_ the block you just deleted, so without the breadcrumb nothing would know where the agents had been put — they would sit there indefinitely, still stamped do-not-edit, pinned to a ref nothing will bump, invisible to both drift checks.
 
 ## Schemas
+
+> **Ships commented out in the example manifest.** No harmon-devkit release has vendored `ai/schemas` yet, so pointing `ref` at one and requesting schemas would fail. Uncomment the block once `ref` is a harmon-devkit release that ships `ai/schemas` — v0.38.0 or later.
 
 Shared JSON schemas live in harmon-devkit under `ai/schemas/<name>.schema.json` — flat, no categories. Add a `schemas:` block to request them:
 

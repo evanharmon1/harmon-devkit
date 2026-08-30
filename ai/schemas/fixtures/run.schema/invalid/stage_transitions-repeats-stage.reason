@@ -1,0 +1,1 @@
+$run.stage_transitions[2].stage: kickoff is out of order or repeats an earlier entry

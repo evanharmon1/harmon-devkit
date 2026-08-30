@@ -29,7 +29,7 @@
     "verdict": "clean",
     "applied_dispositions": [
       {
-        "finding_id": "review-1122334455",
+        "finding_id": "integration-r1-human-1",
         "disposition": "ignore"
       }
     ]

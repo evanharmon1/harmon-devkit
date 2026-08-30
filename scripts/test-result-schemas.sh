@@ -580,6 +580,12 @@ accept_context_case \
     --pass "$fixtures_dir/result.reviewer.schema/valid/omator-397-challenge-r1.json"
 
 accept_context_case \
+    "an integration-stage adjudication is checked against an INTEGRATOR --pass envelope, priority fidelity skipped" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/integration-adjudication.json" \
+    --pass "$fixtures_dir/adjudication.schema/valid/integration-adjudication.pass.json"
+
+accept_context_case \
     "a union adjudication checked against both of a two-finder round's passes is accepted" \
     adjudication \
     "$two_finder_dir/two-finder-union-adjudication.json" \
@@ -730,6 +736,55 @@ if ! out="$(cd "$test_tmp" && RESULT_SCHEMAS_DIR="/nonexistent-dir-xyz" node "$r
     fail "--schemas-dir should win over a conflicting RESULT_SCHEMAS_DIR: got -> $out"
 fi
 echo "PASS: --schemas-dir wins over a conflicting RESULT_SCHEMAS_DIR"
+
+# --receipt: without it, an omitted context flag simply skips the checks it
+# would have fed, and the success message says so; with it, every context
+# flag applicable to <kind> is required, naming each missing one.
+reviewer_receipt_fixture="$fixtures_dir/result.reviewer.schema/valid/single-finding-null-line.json"
+reviewer_receipt_run_id="run-2150-single-finding-null-line"
+empty_ids_file="$test_tmp/empty-ids.json"
+printf '[]' >"$empty_ids_file"
+
+out="$(node "$validator" reviewer "$reviewer_receipt_fixture" 2>&1)" || fail "reviewer with no context flags should still be accepted: $out"
+case "$out" in
+*"context skipped: --known-ids, --run-id"*) ;;
+*) fail "the success message should name every applicable flag that was skipped, got: $out" ;;
+esac
+echo "PASS: the success message names every applicable context flag left unsupplied"
+
+out="$(node "$validator" reviewer "$reviewer_receipt_fixture" \
+    --run-id "$reviewer_receipt_run_id" --initiated-by human --known-ids "$empty_ids_file" 2>&1)" ||
+    fail "reviewer with every applicable flag supplied should be accepted: $out"
+case "$out" in
+*"context skipped"*) fail "no context was actually skipped, the message should not claim otherwise: $out" ;;
+esac
+echo "PASS: the success message omits 'context skipped' once every applicable flag is supplied"
+
+receipt_status=0
+out="$(node "$validator" reviewer "$reviewer_receipt_fixture" --receipt 2>&1)" || receipt_status=$?
+[ "$receipt_status" -eq 2 ] || fail "--receipt with no context flags: expected exit 2 (usage error), got $receipt_status: $out"
+case "$out" in
+*"--receipt requires --known-ids"*"--receipt requires --run-id"*) ;;
+*) fail "--receipt's usage error should name every missing applicable flag, got: $out" ;;
+esac
+echo "PASS: --receipt's usage error names every missing applicable flag"
+
+accept_context_case \
+    "--receipt is satisfied once every applicable reviewer flag is supplied" \
+    reviewer "$reviewer_receipt_fixture" \
+    --receipt --run-id "$reviewer_receipt_run_id" --initiated-by human --known-ids "$empty_ids_file"
+
+usage_error_case \
+    "--receipt on an adjudication with neither --pass nor --known-adjudicated is a usage error" \
+    adjudication "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" --receipt
+
+usage_error_case \
+    "--receipt on a run record without --adjudication is a usage error" \
+    run "$fixtures_dir/run.schema/valid/fresh-kickoff.json" --receipt
+
+usage_error_case \
+    "--receipt on an integrator result without --integration-cap (or --run-id) is a usage error" \
+    integrator "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" --receipt
 
 # --- Coverage: every required field and every enum has an invalid fixture --
 # Walks each schema file's own required[]/enum[] declarations (following
