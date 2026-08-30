@@ -1,0 +1,1 @@
+$result.payload.verdict: must be "clean" when codex_cycle.exit_code is 0, found "findings"

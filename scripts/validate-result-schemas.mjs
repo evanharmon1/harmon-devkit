@@ -26,20 +26,26 @@
 //                                 without the other is a usage error, not a
 //                                 guaranteed-mismatch: rejects an envelope
 //                                 whose `run` names a different run.
-//   --pass <envelope.json>        (adjudication only, repeatable) the
-//                                 envelope this document adjudicates: a
-//                                 reviewer envelope for stage challenge/
-//                                 review, or an INTEGRATOR envelope for
-//                                 stage integration (the document's own
-//                                 `stage` decides which — read before
-//                                 parsing the rest of argv, since --pass may
-//                                 appear anywhere). Each file is itself
-//                                 validated in full (envelope schema + its
-//                                 role's payload + its own receipt checks,
-//                                 no run context) before anything else
-//                                 runs; an invalid --pass file fails
-//                                 immediately, naming that file. With one or
-//                                 more --pass, the document is cross-checked
+//   --pass <envelope.json>        (adjudication and run, repeatable) an
+//                                 envelope some adjudication in scope
+//                                 adjudicates: a reviewer envelope for stage
+//                                 challenge/review, or an INTEGRATOR
+//                                 envelope for stage integration. For kind
+//                                 adjudication, the ONE document's own
+//                                 `stage` decides which role every --pass
+//                                 must be (read before parsing the rest of
+//                                 argv, since --pass may appear anywhere).
+//                                 For kind run, each --pass file's OWN
+//                                 `role` decides instead — a run's history
+//                                 can carry both reviewer and integrator
+//                                 passes across its different rounds. Each
+//                                 file is itself validated in full (envelope
+//                                 schema + its role's payload + its own
+//                                 receipt checks, no run context) before
+//                                 anything else runs; an invalid --pass file
+//                                 fails immediately, naming that file. For
+//                                 kind adjudication, with one or more
+//                                 --pass, the document is cross-checked
 //                                 against the UNION of their findings:
 //                                 completeness, and that every pass agrees
 //                                 with the others (and the document) on
@@ -53,7 +59,12 @@
 //                                 integration skips both — an integrator
 //                                 payload carries no finder and its
 //                                 findings carry no reviewer-asserted
-//                                 priority to compare against.
+//                                 priority to compare against. For kind run,
+//                                 see --adjudication below — the same
+//                                 cross-check applies per --adjudication
+//                                 document, against whichever supplied
+//                                 --pass files match its own (stage, round,
+//                                 run_id).
 //   --known-adjudicated <file.json>  (adjudication only) JSON array of
 //                                 finding ids already adjudicated in an
 //                                 earlier round document of this run —
@@ -68,7 +79,13 @@
 //                                 more --adjudication, every settlement's
 //                                 finding_id must be adjudicated exactly
 //                                 once across the supplied documents, with
-//                                 disposition `defer`.
+//                                 disposition `defer`. Each document is also
+//                                 grouped with whichever supplied --pass
+//                                 files match its own (stage, round,
+//                                 run_id) and cross-checked against them
+//                                 (see --pass above); a document with no
+//                                 matching --pass among the supplied files
+//                                 is only an error under --receipt.
 //   --no-adjudications           (run only) an explicit "confirmed zero":
 //                                 there is genuinely no adjudication history
 //                                 for this run yet (a fresh kickoff, or one
@@ -83,12 +100,28 @@
 //                                 --adjudication file. Mutually exclusive
 //                                 with --adjudication (a usage error).
 //   --integration-cap <n>        (integrator only) the resolved [caps].
-//                                 integration value: when positive, a clean
+//                                 integration value. 0 means codex_cycle
+//                                 must be null outright (no cycle is
+//                                 required OR permitted). Above 0: a clean
 //                                 verdict with codex_cycle: null is rejected
 //                                 (a positive cap means a Codex cycle is
-//                                 owed); 0 leaves codex_cycle: null exactly
-//                                 as permitted without this flag. Without
-//                                 --integration-cap, unchanged.
+//                                 owed), and codex_cycle.cycle must not
+//                                 exceed the cap. Without --integration-cap,
+//                                 none of this runs.
+//   --challenge-cap <n>           (run only) the resolved [caps].challenge
+//   --review-cap <n>              value / [caps].review value — unrelated
+//                                 to --pass/--adjudication matching above,
+//                                 this is about stage_transitions coherence.
+//                                 Each is meaningful only at 0: it waives
+//                                 the corresponding stage's history
+//                                 requirement, letting a run that has
+//                                 disabled challenge and/or review entirely
+//                                 go straight from verify to review/security
+//                                 without ever visiting the skipped stage
+//                                 first. Any other value, or
+//                                 the flag simply not given, leaves the
+//                                 stage required exactly as if no cap were
+//                                 configured.
 //   --schemas-dir <dir>          Directory holding the *.schema.json family.
 //                                 Overrides RESULT_SCHEMAS_DIR, which
 //                                 overrides the default of `ai/schemas`
@@ -140,7 +173,8 @@ function usage() {
     'usage: validate-result-schemas.mjs <envelope|implementer|reviewer|integrator|adjudication|run> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
-      '[--no-adjudications] [--integration-cap <n>] [--schemas-dir <dir>] [--receipt]'
+      '[--no-adjudications] [--integration-cap <n>] [--challenge-cap <n>] [--review-cap <n>] ' +
+      '[--schemas-dir <dir>] [--receipt]'
   )
 }
 
@@ -209,6 +243,21 @@ function loadAndValidateContext(file, flag, validate) {
   return data
 }
 
+// parseNonNegativeIntFlag RAW FLAG — shared by every *-cap flag
+// (--integration-cap, --challenge-cap, --review-cap): a resolved
+// .devflow.toml cap is always a non-negative integer, never fractional or
+// negative, so any other input is a usage error naming which flag and
+// what was actually given, not a guaranteed-mismatch validation failure.
+function parseNonNegativeIntFlag(raw, flag) {
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 0) {
+    console.error(`validate-result-schemas: ${flag} must be a non-negative integer, got ${JSON.stringify(raw)}`)
+    usage()
+    process.exit(2)
+  }
+  return value
+}
+
 function parseArgs(argv) {
   const [kind, file, ...rest] = argv
   if (!kind || !file || !KINDS.includes(kind)) {
@@ -234,6 +283,8 @@ function parseArgs(argv) {
     knownAdjudicated: null,
     adjudications: [],
     integrationCap: null,
+    challengeCap: null,
+    reviewCap: null,
     receipt: false,
     noAdjudications: false
   }
@@ -250,8 +301,15 @@ function parseArgs(argv) {
         break
       case '--pass': {
         const passFile = rest[(i += 1)]
+        // kind 'run' can adjudicate BOTH reviewer rounds (challenge/review)
+        // and an integrator round (integration) over its own history, so a
+        // single fixed passRole (decided once, above, only for kind
+        // 'adjudication' — which adjudicates exactly one stage) does not
+        // apply: each --pass file's OWN role decides how it validates,
+        // exactly like top-level kind 'envelope' dispatch.
+        const dispatchRole = kind === 'run' ? 'envelope' : passRole
         const data = loadAndValidateContext(passFile, '--pass', (candidate) => {
-          const errors = validateEnvelopeInstance(candidate, passRole, {
+          const errors = validateEnvelopeInstance(candidate, dispatchRole, {
             knownIds: null,
             runId: null,
             initiatedBy: null
@@ -274,7 +332,8 @@ function parseArgs(argv) {
               candidate.payload &&
               Array.isArray(candidate.payload.findings) &&
               candidate.payload.findings.length > 0
-            if (passRole === 'reviewer' || !hasFindings) {
+            const candidateRole = kind === 'run' ? candidate.role : passRole
+            if (candidateRole === 'reviewer' || !hasFindings) {
               errors.push('$result.status: a blocked pass contributes no findings and cannot be used as --pass context')
             }
           }
@@ -286,17 +345,15 @@ function parseArgs(argv) {
       case '--known-adjudicated':
         options.knownAdjudicated = loadIdArray(rest[(i += 1)], '--known-adjudicated')
         break
-      case '--integration-cap': {
-        const raw = rest[(i += 1)]
-        const cap = Number(raw)
-        if (!Number.isInteger(cap) || cap < 0) {
-          console.error(`validate-result-schemas: --integration-cap must be a non-negative integer, got ${JSON.stringify(raw)}`)
-          usage()
-          process.exit(2)
-        }
-        options.integrationCap = cap
+      case '--integration-cap':
+        options.integrationCap = parseNonNegativeIntFlag(rest[(i += 1)], '--integration-cap')
         break
-      }
+      case '--challenge-cap':
+        options.challengeCap = parseNonNegativeIntFlag(rest[(i += 1)], '--challenge-cap')
+        break
+      case '--review-cap':
+        options.reviewCap = parseNonNegativeIntFlag(rest[(i += 1)], '--review-cap')
+        break
       case '--adjudication': {
         const adjudicationFile = rest[(i += 1)]
         const data = loadAndValidateContext(adjudicationFile, '--adjudication', (candidate) =>
@@ -566,6 +623,22 @@ function checkHeadAgreement(kind, envelope, errors) {
   }
 }
 
+// checkIntegratorSettledAtAgreement — payload.settled_at ("when this
+// integrator pass was produced") and the envelope's own produced_at name
+// the SAME event: the integrator's one production instant, stamped once
+// on the envelope and once inside its own payload. Exact equality, not a
+// tolerance window: both fields are written by the SAME orchestrator call
+// that builds this one JSON document, not read from two independent
+// clocks or external systems the way e.g. a GitHub check's own timestamp
+// would be — so a real difference between them is a mistake in what
+// produced the envelope, not measurement noise to tolerate.
+function checkIntegratorSettledAtAgreement(envelope, errors) {
+  const settledAt = envelope.payload.settled_at
+  if (typeof settledAt === 'string' && typeof envelope.produced_at === 'string' && settledAt !== envelope.produced_at) {
+    errors.push(`$result.payload.settled_at: ${settledAt} does not match envelope produced_at ${envelope.produced_at}`)
+  }
+}
+
 // checkIntegratorBlockedStatus — envelope status: blocked means the
 // integrator did not complete its evidence-gathering pass, so it cannot
 // simultaneously claim payload.verdict: clean (blocked implies verdict is
@@ -603,13 +676,15 @@ function checkCodexCycleAcceptedScope(payload, errors) {
 // documents, which is itself ai/skills/universal/shepherd/assets/
 // check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
 // 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
-// indeterminate. 0 is the one code absent from this table — it already
-// constrains verdict structurally elsewhere (checkIntegratorCleanVerdict
-// requires exit_code 0 for verdict clean); 10 gets its own entry here
-// alongside the rest. Each entry is either `equals` (verdict must be
-// exactly this value) or `excludes` (a set verdict must not be any
-// member of).
+// indeterminate. checkIntegratorCleanVerdict separately requires exit_code
+// 0 (with accepted present) when verdict IS clean — that is the OTHER
+// direction of this same equivalence (clean implies 0); the 0 entry here
+// is what closes the loop the other way (0 implies clean), the same
+// two-direction shape every other exit code in this table already gets.
+// Each entry is either `equals` (verdict must be exactly this value) or
+// `excludes` (a set verdict must not be any member of).
 const EXIT_CODE_VERDICT_CONSTRAINTS = {
+  0: { equals: 'clean' },
   10: { equals: 'findings' },
   11: { equals: 'pending' },
   12: { equals: 'pending' },
@@ -644,19 +719,34 @@ function checkCodexCycleExitCodeVerdict(payload, errors) {
   }
 }
 
-// checkIntegrationCap — optional (--integration-cap <n>): when the
-// resolved integration cap is positive, a Codex cycle is required (spec
-// § Configuration: only "integration = 0 means no Codex cycle required"),
-// so a clean verdict with codex_cycle: null is inconsistent with that
-// policy — clean cannot rest on a cycle that was never even attempted
-// when one was owed. Cap 0 leaves codex_cycle: null exactly as permitted
-// without this flag at all; without the flag, this check does not run.
+// checkIntegrationCap — optional (--integration-cap <n>). Cap 0 means
+// integration never ran at all (spec § Configuration: "integration = 0
+// means no Codex cycle required") — stricter than merely "not required":
+// no cycle is PERMITTED either, so codex_cycle must be null outright.
+// Above 0, two things hold: a clean verdict with codex_cycle: null is
+// inconsistent with a cycle being owed (clean cannot rest on a cycle that
+// was never even attempted), and codex_cycle.cycle — the run-wide
+// integration cycle ordinal this same cap bounds (AGENTS.md's resolved
+// [caps].integration) — must not exceed the cap itself. Without the flag,
+// none of this runs.
 function checkIntegrationCap(payload, cap, errors) {
-  if (cap === null || cap <= 0) return
+  if (cap === null) return
+  if (cap === 0) {
+    if (payload.codex_cycle !== null && payload.codex_cycle !== undefined) {
+      errors.push(
+        '$result.payload.codex_cycle: must be null when the integration cap is 0 (no Codex cycle is required or permitted)'
+      )
+    }
+    return
+  }
   if (payload.verdict === 'clean' && payload.codex_cycle === null) {
     errors.push(
       `$result.payload.codex_cycle: must not be null when verdict is clean and the integration cap is ${cap} (a positive cap requires a Codex cycle)`
     )
+  }
+  const cycle = payload.codex_cycle
+  if (cycle && typeof cycle === 'object' && typeof cycle.cycle === 'number' && cycle.cycle > cap) {
+    errors.push(`$result.payload.codex_cycle.cycle: ${cycle.cycle} exceeds the integration cap ${cap}`)
   }
 }
 
@@ -852,6 +942,7 @@ function validateEnvelopeInstance(instance, kind, options) {
           checkIntegratorCleanVerdict(instance.payload, errors)
           checkIntegrationCap(instance.payload, options.integrationCap, errors)
           checkIntegratorFindingIds(instance, options, errors)
+          checkIntegratorSettledAtAgreement(instance, errors)
         }
         checkHeadAgreement(role, instance, errors)
       }
@@ -1242,7 +1333,20 @@ const ALLOWED_EDGES = {
 // An entry whose own `stage` failed the schema's enum is skipped here
 // (parseFindingId-style "shape violations are the schema's job, not this
 // check's").
-function checkStageTransitionsOrder(document, errors) {
+//
+// Two of verify's three listed edges are HISTORY-sensitive the same way
+// implement -> integration is: verify -> review and verify -> security are
+// each structurally legal (ALLOWED_EDGES lists them), but only legitimate
+// once for a run that is skipping stages it has already been through on an
+// earlier loop through verify — never on a run's FIRST pass, which would
+// otherwise let a run skip challenge and/or review outright. The escape
+// hatch is a resolved cap of 0 for the stage being skipped (AGENTS.md:
+// ".devflow.toml"'s [caps].challenge/review — a 0 cap disables that stage
+// for this run entirely, so skipping it is not a shortcut, it is correct):
+// --challenge-cap 0 / --review-cap 0 waive the corresponding history
+// requirement; any other value, or the flag simply not given, leaves the
+// stage required exactly as if no cap were configured at all.
+function checkStageTransitionsOrder(document, options, errors) {
   const transitions = document.stage_transitions
   if (!Array.isArray(transitions) || transitions.length === 0) return
   if (transitions[0].stage !== 'kickoff') {
@@ -1252,6 +1356,8 @@ function checkStageTransitionsOrder(document, errors) {
   }
   let previousStage = Object.hasOwn(ALLOWED_EDGES, transitions[0].stage) ? transitions[0].stage : null
   let everVisitedIntegration = previousStage === 'integration'
+  let everVisitedChallenge = previousStage === 'challenge'
+  let everVisitedReview = previousStage === 'review'
   for (let index = 1; index < transitions.length; index += 1) {
     const transition = transitions[index]
     if (!Object.hasOwn(ALLOWED_EDGES, transition.stage)) continue
@@ -1265,13 +1371,22 @@ function checkStageTransitionsOrder(document, errors) {
       // review/security entirely, which the diagram never permits.
       const isPrematureRemediationReturn =
         previousStage === 'implement' && transition.stage === 'integration' && !everVisitedIntegration
-      if (!edgeListed || isPrematureRemediationReturn) {
+      const isPrematureChallengeSkip =
+        previousStage === 'verify' &&
+        transition.stage === 'review' &&
+        !everVisitedChallenge &&
+        options.challengeCap !== 0
+      const isPrematureReviewSkip =
+        previousStage === 'verify' && transition.stage === 'security' && !everVisitedReview && options.reviewCap !== 0
+      if (!edgeListed || isPrematureRemediationReturn || isPrematureChallengeSkip || isPrematureReviewSkip) {
         errors.push(
           `$run.stage_transitions[${index}].stage: ${transition.stage} is not a valid transition from ${previousStage} (docs/product/domain.md § Lifecycles)`
         )
       }
     }
     if (transition.stage === 'integration') everVisitedIntegration = true
+    if (transition.stage === 'challenge') everVisitedChallenge = true
+    if (transition.stage === 'review') everVisitedReview = true
     previousStage = transition.stage
   }
   // While the run is still going (outcome: null), the LAST entry is the
@@ -1318,9 +1433,14 @@ function isChronologicallyBefore(a, b) {
 // field): started_at must be no later than the first stage_transitions
 // entry's entered_at; entered_at must be non-decreasing across entries;
 // promotion.promoted_at must be no earlier than the last entry's
-// entered_at; and every intervention's `at` and every settlement's
-// `settled_at` must be no earlier than started_at. Always runs — every
-// value compared lives in this one run.schema.json document.
+// entered_at; every intervention's `at` and every settlement's
+// `settled_at` must be no earlier than started_at, and no later than
+// promotion.promoted_at when the run has been promoted; and a
+// settlement's `settled_at` must additionally be no earlier than the
+// run's first `integration` transition's entered_at (a deferred finding
+// is settled during integration, never before the run has even reached
+// it). Always runs — every value compared lives in this one
+// run.schema.json document.
 function checkRunChronology(document, errors) {
   const startedAt = document.started_at
   const transitions = Array.isArray(document.stage_transitions) ? document.stage_transitions : []
@@ -1376,13 +1496,40 @@ function checkRunChronology(document, errors) {
   // Upper bound: a settlement resolves a finding BEFORE the run can be
   // promoted (the readiness gate requires every deferred finding settled
   // first — checkDeferredFindingsSettledBeforePromotion), so once promoted
-  // no settlement should postdate that promotion.
+  // no settlement should postdate that promotion. Every human intervention
+  // is bounded the same way: promotion is the last thing an agent does in
+  // this run's own span (AGENTS.md's Dev Loop — merge is a separate human
+  // decision afterward), so nothing recorded as an intervention DURING the
+  // run can postdate it either.
   if (document.promotion && typeof document.promotion === 'object' && typeof document.promotion.promoted_at === 'string') {
     const promotedAt = document.promotion.promoted_at
+    for (const [index, intervention] of (document.interventions ?? []).entries()) {
+      if (typeof intervention.at === 'string' && isChronologicallyBefore(promotedAt, intervention.at)) {
+        errors.push(
+          `$run.interventions[${index}].at: ${intervention.at} must not be after promotion.promoted_at ${promotedAt}`
+        )
+      }
+    }
     for (const [index, settlement] of (document.settlements ?? []).entries()) {
       if (typeof settlement.settled_at === 'string' && isChronologicallyBefore(promotedAt, settlement.settled_at)) {
         errors.push(
           `$run.settlements[${index}].settled_at: ${settlement.settled_at} must not be after promotion.promoted_at ${promotedAt}`
+        )
+      }
+    }
+  }
+  // Lower bound, more specific than started_at above: a deferred finding is
+  // settled DURING integration (specs/dev-flow-v2.md — settlement narrows a
+  // defer to fix/decline/file, which the readiness gate requires before
+  // promotion, and the readiness gate is what integration converges
+  // toward), so no settlement should predate the run's first arrival there.
+  const firstIntegrationEntry = transitions.find((transition) => transition.stage === 'integration')
+  if (firstIntegrationEntry && typeof firstIntegrationEntry.entered_at === 'string') {
+    const firstIntegrationAt = firstIntegrationEntry.entered_at
+    for (const [index, settlement] of (document.settlements ?? []).entries()) {
+      if (typeof settlement.settled_at === 'string' && isChronologicallyBefore(settlement.settled_at, firstIntegrationAt)) {
+        errors.push(
+          `$run.settlements[${index}].settled_at: ${settlement.settled_at} must not be before the first integration transition's entered_at ${firstIntegrationAt}`
         )
       }
     }
@@ -1395,7 +1542,13 @@ function checkRunChronology(document, errors) {
 // entry, are both inconsistent documents. Reaching ready-for-review always
 // means a PR exists (the readiness gate promotes a draft PR — there is no
 // promotion without one), so both of those states additionally require a
-// non-null `pr`.
+// non-null `pr`. `pr` itself can go non-null earlier than either — AGENTS.md's
+// Dev Loop opens the draft PR and only then enters the `integration` stage
+// (that is what the draft PR's existence kicks off: shepherding, Codex
+// cloud review cycles) — so a non-null `pr`, on its own, always requires
+// stage_transitions to already record having reached `integration`; it is
+// never legitimate for the PR to exist ahead of the run's own record of
+// entering the stage the PR's existence triggers.
 function checkRunPromotionOutcome(document, errors) {
   const promoted = document.promotion !== null && document.promotion !== undefined
   const ready = document.outcome === 'ready-for-review'
@@ -1407,6 +1560,12 @@ function checkRunPromotionOutcome(document, errors) {
   }
   if ((promoted || ready) && (document.pr === null || document.pr === undefined)) {
     errors.push('$run.pr: must be non-null when outcome is "ready-for-review" or promotion is present')
+  }
+  const hasPr = document.pr !== null && document.pr !== undefined
+  const hasIntegrationEntry =
+    Array.isArray(document.stage_transitions) && document.stage_transitions.some((transition) => transition.stage === 'integration')
+  if (hasPr && !hasIntegrationEntry) {
+    errors.push('$run.pr: must be null unless stage_transitions records having reached "integration"')
   }
 }
 
@@ -1460,6 +1619,26 @@ function checkEvidenceMarkerRunId(document, errors) {
     if (marker && typeof marker.run_id === 'string' && marker.run_id !== document.run_id) {
       errors.push(
         `$run.evidence_comments[${index}].marker.run_id: ${marker.run_id} does not match the run's own run_id ${document.run_id}`
+      )
+    }
+  }
+}
+
+// checkEvidenceMarkerStageVisited — an evidence comment's marker.stage
+// names one of the run's own defined stages structurally (the schema's
+// enum), but nothing schema-level proves this run's OWN history actually
+// reached it — that fact lives in stage_transitions, a sibling array in
+// the SAME document (unlike checkAdjudicationStagesVisited, which checks
+// an EXTERNAL --adjudication document's stage against this run's history,
+// this needs no context flag at all).
+function checkEvidenceMarkerStageVisited(document, errors) {
+  if (!Array.isArray(document.evidence_comments)) return
+  const visitedStages = new Set((document.stage_transitions ?? []).map((transition) => transition.stage))
+  for (const [index, comment] of document.evidence_comments.entries()) {
+    const marker = comment.marker
+    if (marker && typeof marker.stage === 'string' && !visitedStages.has(marker.stage)) {
+      errors.push(
+        `$run.evidence_comments[${index}].marker.stage: ${marker.stage} never appears in this run's stage_transitions`
       )
     }
   }
@@ -1563,6 +1742,50 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
         `$run: --adjudication ${file} has stage ${data.stage}, which never appears in this run's stage_transitions`
       )
     }
+  }
+}
+
+// checkAdjudicationsHaveSourcePass — kind run's own use of --pass (also now
+// accepted, repeatable, on this kind — previously adjudication-only): each
+// supplied --adjudication document is grouped with the --pass files whose
+// OWN (stage, round, run_id) match it — an integrator pass matches by
+// stage 'integration' and its codex_cycle.cycle (or 1 when codex_cycle is
+// null, mirroring checkIntegratorFindingIds/checkAdjudicationAgainstPass
+// exactly); a reviewer pass matches by payload.stage/payload.round
+// directly. run_id is the only identity field adjudication.schema.json
+// carries (unlike a --pass envelope's run.initiated_by, which has no
+// adjudication-side counterpart to compare against here). Once grouped,
+// the cross-check is exactly checkAdjudicationAgainstPass — completeness,
+// priority fidelity, multi-pass agreement — reused verbatim, not
+// reimplemented. A document with NO matching pass among the supplied
+// files is only an ERROR in --receipt mode: AGENTS.md's shepherd stage
+// requires a pass behind every adjudication, but a bare, non-receipt
+// invocation is for one-off document work where the source pass genuinely
+// may not be at hand, the same "applicable context, --receipt makes it
+// mandatory" shape as every other flag in this file — --pass is
+// deliberately NOT added to CONTEXT_FLAGS.run, though, because that table
+// gates on "was ANY --pass given", not "does EVERY document have ITS
+// match", and the latter is what this function actually decides.
+function checkAdjudicationsHaveSourcePass(adjudications, passes, options, errors) {
+  for (const { file, data: document } of adjudications) {
+    const isIntegration = document.stage === 'integration'
+    const matching = passes.filter(({ data: pass }) => {
+      if (!pass.run || pass.run.run_id !== document.run_id) return false
+      if (isIntegration) {
+        if (pass.role !== 'integrator') return false
+        const cycle = pass.payload.codex_cycle
+        const passRound = cycle && typeof cycle === 'object' ? cycle.cycle : 1
+        return passRound === document.round
+      }
+      return pass.role === 'reviewer' && pass.payload.stage === document.stage && pass.payload.round === document.round
+    })
+    if (matching.length === 0) {
+      if (options.receipt) {
+        errors.push(`$run: no source pass for ${document.stage} r${document.round} (--adjudication ${file})`)
+      }
+      continue
+    }
+    checkAdjudicationAgainstPass(document, matching, options, errors)
   }
 }
 
@@ -1707,21 +1930,25 @@ function main() {
     if (errors.length === 0) {
       checkSettlements(instance, errors)
       checkEvidenceMarkerRunId(instance, errors)
+      checkEvidenceMarkerStageVisited(instance, errors)
       checkEvidenceMarkerSequenceContiguity(instance, errors)
       checkEvidenceCommentsUniqueness(instance, errors)
       checkRunPromotionOutcome(instance, errors)
       checkSettlementReferenceType(instance, errors)
-      checkStageTransitionsOrder(instance, errors)
+      checkStageTransitionsOrder(instance, options, errors)
       checkRunChronology(instance, errors)
       // --no-adjudications asserts "confirmed zero", which runs the SAME
       // checks as one-or-more --adjudication documents, just against the
       // empty set: checkSettlementsAgainstAdjudications then rejects every
       // existing settlement (none of them can be adjudicated by nothing),
       // exactly the "any settlement -> error" contract this flag promises.
+      // --pass needs no similar empty-set companion: checkAdjudicationsHave
+      // SourcePass simply iterates zero adjudications when there are none.
       if (options.adjudications.length > 0 || options.noAdjudications) {
         checkAdjudicationRunIdMatchesRun(instance, options.adjudications, errors)
         checkAdjudicationsUnionUnique(options.adjudications, errors)
         checkAdjudicationStagesVisited(instance, options.adjudications, errors)
+        checkAdjudicationsHaveSourcePass(options.adjudications, options.passes, options, errors)
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
         checkDeferredFindingsSettledBeforePromotion(instance, options.adjudications, errors)
       }

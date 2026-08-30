@@ -1,0 +1,1 @@
+$run.pr: must be null unless stage_transitions records having reached "integration"

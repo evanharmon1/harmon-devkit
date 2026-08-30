@@ -139,15 +139,20 @@ keyword, for every one of these:
 - **Run matching** — the envelope's `run` must match the run the caller
   considers active (`--run-id`/`--initiated-by`), which is external context
   no single document carries.
-- **Integration cap (`--integration-cap <n>`, integrator only)** — whether a
-  `clean` verdict with `codex_cycle: null` is acceptable depends on the
-  resolved `[caps].integration` value from `.devflow.toml` (AGENTS.md's
-  readiness gate: the Codex-cycle condition "drops out when the resolved
-  shepherd cap is 0"), and nothing in the payload itself says what that cap
-  is. Given a positive cap, `checkIntegrationCap` rejects `codex_cycle: null`
-  on a clean verdict (a positive cap means a cycle was owed); given `0` or no
-  flag at all, `codex_cycle: null` on a clean verdict is exactly as permitted
-  as it always was.
+- **Integration cap (`--integration-cap <n>`, integrator only)** — three
+  things depend on the resolved `[caps].integration` value from
+  `.devflow.toml` (AGENTS.md's readiness gate: the Codex-cycle condition
+  "drops out when the resolved shepherd cap is 0"), and nothing in the
+  payload itself says what that cap is, hence the flag. Without it, none of
+  this runs — `codex_cycle` behaves exactly as if no cap were configured.
+  Given `0`, `checkIntegrationCap` requires `codex_cycle: null` outright: a
+  cap of `0` means integration never ran at all, so a cycle is not merely
+  unnecessary but actively not permitted either — stricter than the mere
+  absence of a requirement. Given a positive cap: `codex_cycle: null` on a
+  `clean` verdict is rejected (a positive cap means a cycle was owed), and
+  `codex_cycle.cycle` — the SAME run-wide integration cycle ordinal this
+  cap bounds (AGENTS.md's resolved `[caps].integration`, and see
+  `codex_cycle.cycle`'s own description) — must not exceed the cap.
 - **Duplicate finding ids across the run (`--known-ids <ids.json>`)** — a
   finding id must be unique *within the run*, not just within one pass's or
   payload's own `findings[]` array (unique *within one pass/payload* **is**
@@ -282,6 +287,33 @@ keyword, for every one of these:
   same document supplied twice by mistake) but never settled would
   otherwise go unnoticed. Runs alongside the settlement checks, under the
   same `--adjudication`/`--no-adjudications` gating.
+- **Adjudication ↔ source pass agreement, on kind `run` (`--pass
+  <envelope.json>`, repeatable — also now accepted on this kind, not just
+  `adjudication`)** — `checkAdjudicationsHaveSourcePass`. Every supplied
+  `--adjudication` document is grouped with the `--pass` files whose OWN
+  `(stage, round, run_id)` match it — a `stage: "integration"` document
+  matches an integrator pass by its `codex_cycle.cycle` (or `1` when
+  `codex_cycle` is null, the SAME rule `checkIntegratorFindingIds` and the
+  `adjudication`-kind cross-check already use); every other stage matches a
+  reviewer pass by `payload.stage`/`payload.round` directly. Once grouped,
+  the cross-check is `checkAdjudicationAgainstPass` itself, reused
+  verbatim — completeness, priority fidelity, multi-pass agreement all
+  apply exactly as they do for kind `adjudication`. A run's history can
+  carry BOTH reviewer and integrator passes across its different rounds, so
+  each `--pass` file's own `role` decides how it validates here, unlike kind
+  `adjudication`'s single document (which peeks its own `stage` once, up
+  front, to fix one role for every `--pass` it is given). A document with NO
+  matching pass among the supplied files is only an error under
+  `--receipt`: the shepherd stage always has a pass behind every
+  adjudication, but a bare invocation is for one-off document work where
+  the source pass genuinely may not be at hand — the same "applicable
+  context, `--receipt` makes it mandatory" shape as every other flag in
+  this file. `--pass` is deliberately NOT one of kind `run`'s
+  `CONTEXT_FLAGS`, though: that table gates on "was ANY `--pass` given",
+  and what this check actually decides is finer than that — "does EVERY
+  document have ITS OWN match" — so the per-document "no source pass for
+  `<stage>` r`<N>`" message is a validator-script rejection, not a
+  `--receipt` usage error.
 - **Evidence marker `run_id` agreement** — `run.schema.json`'s
   `evidence_comments[].marker.run_id` must equal the run record's own
   `run_id`. Unlike the checks above this one needs no external context (both
@@ -459,16 +491,32 @@ instance being validated:
   or loop back to `implement`, but — unlike a plain "forward index"
   rule would allow — can never jump straight to `security` or
   `integration`, because the diagram draws no such edge; `verify`, by
-  contrast, genuinely CAN skip straight to `security`, because it does.
-  One edge in the table needs history, not just the immediate
-  predecessor: `implement → integration` is the diagram's REMEDIATION
+  contrast, is STRUCTURALLY listed as reaching any of `challenge`, `review`,
+  or `security` directly — though two of those three are further
+  history-gated, below.
+  Three edges in the table need history, not just the immediate
+  predecessor. `implement → integration` is the diagram's REMEDIATION
   RETURN ("remediation fix verified and pushed"), which presupposes a
   prior trip to `integration` to remediate FROM — so it is legal only once
   an `integration` entry has already appeared somewhere earlier in the
   array (`everVisitedIntegration`); the run's FIRST pass through
   `implement` can only go forward to `verify`, never straight to
   `integration`, since that would skip verify/challenge/review/security
-  entirely, which the diagram never permits.
+  entirely, which the diagram never permits. `verify → review` and
+  `verify → security` are the other two: each is legitimate only once the
+  stage it would otherwise skip (`challenge` for the first, `review` for
+  the second) has already appeared earlier in the array
+  (`everVisitedChallenge` / `everVisitedReview`) — a run resuming past a
+  stage it already finished on an earlier loop through `verify`, never a
+  run skipping that stage outright on its first pass. The escape hatch is
+  the resolved cap for the stage being skipped: `--challenge-cap 0` /
+  `--review-cap 0` (run only) waive the corresponding history requirement
+  outright, since a `0` cap means that stage is disabled for this run
+  entirely (AGENTS.md's `.devflow.toml` `[caps].challenge`/`[caps].review`)
+  and skipping a disabled stage is correct, not a shortcut. Any other
+  value, or the flag simply not given, leaves the stage required exactly
+  as if no cap were configured — these two flags are optional context, not
+  part of `--receipt`'s required set for kind `run`.
   This is a check on each entry's PAIR with its immediate predecessor, not
   a running maximum or a once-per-array uniqueness rule: a stage a
   remediation loop sends the run back past (e.g. `challenge`, via
@@ -794,13 +842,15 @@ never needed it).
   nonterminal split above.** `EXIT_CODE_VERDICT_CONSTRAINTS` is one table,
   keyed by the exit codes documented on `check-codex-cloud-review.sh`'s
   `check` subcommand (same doc as `codex_cycle.exit_code`'s own
-  description): `10` (findings) requires `verdict: "findings"` exactly;
-  `11` (pending) and `12` (retry) require `verdict: "pending"` exactly;
-  `13` (escalate) requires `verdict: "escalate"` exactly; `14` (PR no
-  longer open) forbids `clean` and `pending`; `2` (indeterminate) forbids
-  `clean`. `0` is the one code absent from the table — it already ties to
-  `verdict: clean` through `checkIntegratorCleanVerdict`'s own codex_cycle
-  rule. `checkCodexCycleExitCodeVerdict` reads
+  description): `0` (clean) and `10` (findings) each require the matching
+  `verdict` exactly; `11` (pending) and `12` (retry) require `verdict:
+  "pending"` exactly; `13` (escalate) requires `verdict: "escalate"`
+  exactly; `14` (PR no longer open) forbids `clean` and `pending`; `2`
+  (indeterminate) forbids `clean`. `checkIntegratorCleanVerdict` separately
+  requires exit_code 0 (with `accepted` present) when verdict IS clean —
+  that is the OTHER direction of the same equivalence the `0` entry here
+  closes the other way, the same two-direction shape every other exit code
+  in the table already gets. `checkCodexCycleExitCodeVerdict` reads
   the table rather than this being expressible as `if`/`then`: WHICH
   exit_code selects WHICH kind of rule (an exact match for some codes, a
   small exclusion set for others) is itself data the schema's single
@@ -881,18 +931,25 @@ node scripts/validate-result-schemas.mjs <envelope|implementer|reviewer|integrat
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
   [--pass <envelope.json> ...] [--known-adjudicated <ids.json>] \
   [--adjudication <file.json> ... | --no-adjudications] \
-  [--integration-cap <n>] [--schemas-dir <dir>] [--receipt]
+  [--integration-cap <n>] [--challenge-cap <n>] [--review-cap <n>] \
+  [--schemas-dir <dir>] [--receipt]
 ```
 
 `--pass` and `--adjudication` are repeatable (a round can be more than one
 finder's pass; a run's settlements can be checked against more than one
-round's adjudication document). `--run-id` and `--initiated-by` must be
+round's adjudication document). `--pass` is also accepted on kind `run` now,
+not only `adjudication` — see the adjudication-vs-source-pass bullet above.
+`--run-id` and `--initiated-by` must be
 given together. `--no-adjudications` (run only) asserts a confirmed-empty
 adjudication history in place of real `--adjudication` files — see
 "`--receipt`: a reduced check is visible, never silent" above; mutually
 exclusive with `--adjudication` (a usage error together). `--integration-cap
 <n>` (integrator only) is the resolved `[caps].integration` value — see the
-receipt-validation bullet above. The
+receipt-validation bullet above. `--challenge-cap <n>` / `--review-cap <n>`
+(run only) are the resolved `[caps].challenge` / `[caps].review` values;
+only `0` is meaningful, waiving `stage_transitions`' history requirement for
+a run that has disabled the corresponding stage entirely (see the
+`checkStageTransitionsOrder` bullet above). The
 schemas directory defaults to `ai/schemas` resolved **relative to the
 script's own location**, not the caller's working directory, so the
 validator can be invoked from anywhere; override it with the

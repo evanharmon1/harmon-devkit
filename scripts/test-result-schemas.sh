@@ -219,7 +219,9 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json',
   'result.integrator.schema/invalid/exit-code-13-with-pending.json',
   'result.integrator.schema/invalid/exit-code-14-with-clean.json',
-  'result.integrator.schema/invalid/exit-code-10-with-pending.json'
+  'result.integrator.schema/invalid/exit-code-10-with-pending.json',
+  'result.integrator.schema/invalid/exit-code-0-with-findings.json',
+  'result.integrator.schema/invalid/settled-at-produced-at-mismatch.json'
 ])
 
 let failures = 0
@@ -596,6 +598,26 @@ run_context_case \
     "never appears in this run's stage_transitions" \
     --adjudication "$fixtures_dir/run.schema/invalid/stage-not-visited.adjudication.json"
 
+# --pass is also now accepted (repeatable) on kind run: each --adjudication
+# document is cross-checked against whichever supplied --pass files match
+# its own (stage, round, run_id), reusing checkAdjudicationAgainstPass
+# exactly as kind adjudication itself does. The two accepting cases live
+# further down, alongside accept_context_case's own definition.
+run_context_case \
+    "a run's --adjudication document with no matching --pass among the supplied files is rejected under --receipt" \
+    run \
+    "$fixtures_dir/run.schema/valid/omator-397-run.json" \
+    "no source pass for challenge r1" \
+    --receipt --adjudication "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json"
+
+run_context_case \
+    "a run's --adjudication entry naming a finding absent from its matching --pass is rejected" \
+    run \
+    "$fixtures_dir/run.schema/valid/source-pass-mismatch-run.json" \
+    "names a finding id absent from every --pass" \
+    --adjudication "$fixtures_dir/run.schema/invalid/source-pass-mismatch.adjudication.json" \
+    --pass "$fixtures_dir/run.schema/invalid/source-pass-mismatch.pass.json"
+
 run_context_case \
     "the same --adjudication document supplied twice is rejected: a finding cannot be adjudicated more than once" \
     run \
@@ -701,6 +723,19 @@ accept_context_case \
     "$fixtures_dir/run.schema/valid/ready-with-settled-deferral.json" \
     --adjudication "$settlement_cross_check_adjudication"
 
+accept_context_case \
+    "a run's --adjudication document with a matching --pass is accepted" \
+    run \
+    "$fixtures_dir/run.schema/valid/omator-397-run.json" \
+    --adjudication "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" \
+    --pass "$fixtures_dir/result.reviewer.schema/valid/omator-397-challenge-r1.json"
+
+accept_context_case \
+    "the same --adjudication document with no --pass and no --receipt needs no source pass" \
+    run \
+    "$fixtures_dir/run.schema/valid/omator-397-run.json" \
+    --adjudication "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json"
+
 # --- Argument validation: fail closed, never silently skip a check --------
 
 # A malformed --known-ids / --known-adjudicated file (valid JSON, but not an
@@ -798,6 +833,23 @@ accept_context_case \
     integrator \
     "$fixtures_dir/result.integrator.schema/valid/codex-cycle-null.json" \
     --integration-cap 0
+
+run_context_case \
+    "--integration-cap 0 rejects a non-null codex_cycle" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" \
+    "must be null when the integration cap is 0" \
+    --integration-cap 0
+
+sed 's/"cycle": 1,/"cycle": 99,/' "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" \
+    >"$test_tmp/codex-cycle-99.json"
+
+run_context_case \
+    "an --integration-cap ceiling rejects a codex_cycle.cycle above it" \
+    integrator \
+    "$test_tmp/codex-cycle-99.json" \
+    "codex_cycle.cycle: 99 exceeds the integration cap 2" \
+    --integration-cap 2
 
 usage_error_case \
     "a non-numeric --integration-cap is a usage error" \
