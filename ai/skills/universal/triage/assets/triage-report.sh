@@ -5,7 +5,9 @@
 # The triage skill labels what it may label and reports everything else here:
 # stale claims, blocked-without-reason, aging needs-* states, closed-completed
 # issues with unticked criteria, duplicate closes missing pointers, title
-# violations, tier/method proposals. One rolling issue, not a stream — re-runs
+# violations, possible-completion candidates (an open issue whose delivery
+# looks finished — advisory only), tier/method proposals. One rolling issue,
+# not a stream — re-runs
 # UPSERT it: the body is regenerated from the current scan every run, so an
 # entry for a resolved problem disappears on the next run and re-runs are
 # idempotent (same findings in, byte-identical body out — the timestamp is
