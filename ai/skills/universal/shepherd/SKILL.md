@@ -1068,15 +1068,15 @@ is optional in addition, never a substitute for per-thread replies.
 
 ## 5. Fix, gate, push, re-watch
 
-- Every shepherd-round fix must **pass the full local CI mirror**
-  (`task ci`) before each push — actually run it and confirm exit 0, not
-  just intend to; a fix that can't pass locally doesn't get pushed.
+- Every shepherd-round fix must **pass the definition-of-done gate**
+  (`task verify`) before each push — actually run it and confirm exit 0,
+  not just intend to; a fix that can't pass locally doesn't get pushed.
   Confirming exit 0 is mechanical: the push — like any external write
   gated on a local check — chains only off the **gate's verdict**, and
   what it pushes is the **gated commit itself**, never the mutable
   `HEAD`. Capture the SHA before the gate and push that refspec — in the
   same foreground chain,
-  `sha="$(git rev-parse HEAD)"; task ci && git push <remote> "$sha:<branch>" …`
+  `sha="$(git rev-parse HEAD)"; task verify && git push <remote> "$sha:<branch>" …`
   — or, when the gate
   ran in the background and wrote its verdict as a marker line, off
   `"$skill_dir"/assets/require-marker.sh <file> <token>` (exit 0 only when
@@ -1084,8 +1084,8 @@ is optional in addition, never a substitute for per-thread replies.
   file *says*, not which run said it, so bind the verdict to this run
   *and* to the commit it gated: fresh per-run output file, token minted
   before the gate starts and carrying the SHA under test —
-  `sha="$(git rev-parse HEAD)"; t="CI-GREEN-$sha-$$"; out="$(mktemp)"`,
-  gate as `task ci >"$out" 2>&1 && printf '\n%s\n' "$t" >>"$out"` — the
+  `sha="$(git rev-parse HEAD)"; t="VERIFY-GREEN-$sha-$$"; out="$(mktemp)"`,
+  gate as `task verify >"$out" 2>&1 && printf '\n%s\n' "$t" >>"$out"` — the
   leading newline is load-bearing: without it, gate output that ends
   without a newline glues itself to the token and a green gate is
   refused forever — push as
@@ -1101,14 +1101,16 @@ is optional in addition, never a substitute for per-thread replies.
   clean-tree rule below still governs what the gate ran on). Never
   chain a push
   off a reader's exit — `tail`, `head`, `cat`, and `grep` succeed by
-  *printing* whatever they found, so `tail -1 ci.out && git push` pushes
-  on a marker that says FAILED (observed: the marker was written
-  correctly, displayed, and never parsed). The
-  mirror is the right gate because it runs the same stages the remote
-  pipeline will judge (including security), so a round is never burned on
-  a failure that three local minutes would have caught. In the rare repo
-  without a `task ci`, run the definition-of-done gate (`task verify`) and
-  say so — that is the floor, never skipped. Gate the exact commit that
+  *printing* whatever they found, so `tail -1 verify.out && git push`
+  pushes on a marker that says FAILED (observed: the marker was written
+  correctly, displayed, and never parsed). `task verify` is the right
+  per-round gate because it is the repo's own definition-of-done check, so
+  a round is never burned on a failure that a few local minutes would have
+  caught; it is not a mandatory pre-push step to also re-run the full local
+  CI mirror (`task ci`, where the repo has one) — that stays available on
+  demand to reproduce a red CI run. In the rare repo without a `task
+  verify`, run whatever fast lint/build gate the repo does have and say
+  so — that is the floor, never skipped. Gate the exact commit that
   will travel: commit the complete fix first and run the gate with a
   **clean tree**, so it cannot pass on the strength of uncommitted or
   untracked files that the push would then omit. Never `--no-verify`,
