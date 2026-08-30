@@ -100,6 +100,11 @@ case "${1:-} ${2:-}" in
         fi
     fi
     ;;
+api\ repos/*/pulls/*)
+    pr="${2##*/}"
+    [ -f "${GH_STUB_DIR:?}/pull-$pr.json" ] || exit 1
+    emit "${GH_STUB_DIR:?}/pull-$pr.json"
+    ;;
 api\ repos/*/issues/*/timeline)
     # triage-scan.sh delivery's bounded one-page timeline read.
     n="${2%/timeline}"
@@ -1505,6 +1510,13 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
   "body": "## Problem\n\n- [x] a ticked todo in prose\n\n## Verify\n\n${fence}\n- [x] [CI] fenced example\n${fence}\n"},
+ {"number": 67, "title": "(gauntlet): Only nested checked items",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "## Acceptance criteria\n\n- options:\n  - [x] [CI] nested one\n   - [x] [CI] nested two"},
  {"number": 63, "title": "(gauntlet): Only untagged boxes",
   "author": {"login": "testowner"},
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
@@ -1518,7 +1530,7 @@ cat >"$stub_dir/issues-open.json" <<JSON
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
-  "body": "## Acceptance Criteria ##\n\n${fence}md\n${fence}markdown\n- [ ] [CI] sample\n${fence}\n- [x] [CI] real\n- [x] untagged ticked box\n> - [ ] [CI] quoted example\n    - [ ] [CI] indented code sample\n\n## Out of scope\n\n- [ ] [CI] not a criterion"}]
+  "body": "## Acceptance Criteria ##\n\n${fence}md\n${fence}markdown\n- [ ] [CI] sample\n${fence}\n- [x] [CI] real\n- [x] untagged ticked box\n- alternatives:\n  - [ ] [CI] nested child\n> - [ ] [CI] quoted example\n    - [ ] [CI] indented code sample\n\n## Out of scope\n\n- [ ] [CI] not a criterion"}]
 JSON
 cat >"$stub_dir/issues-closed.json" <<'JSON'
 []
@@ -1571,6 +1583,10 @@ jq -e '.open[] | select(.number == 63)
        | .criteria.total == 0 and (.completion_reasons == [])' \
     "$tmp/cc-scan.json" >/dev/null ||
     fail "#63 has only untagged boxes, which are not criteria"
+jq -e '.open[] | select(.number == 67)
+       | .criteria.total == 0 and (.completion_reasons == [])' \
+    "$tmp/cc-scan.json" >/dev/null ||
+    fail "#67 has only nested items, which are not top-level criteria"
 
 echo "==> scan: an outstanding [CI] criterion carries no completion flag"
 jq -e '.open[] | select(.number == 52)
@@ -1594,6 +1610,10 @@ cat >"$stub_dir/timeline-50.json" <<JSON
      "diff_url": "https://github.com/$repo/pull/1107.diff",
      "patch_url": "https://github.com/$repo/pull/1107.patch",
      "merged_at": "2026-08-29T14:44:42Z"}}}}]
+JSON
+
+cat >"$stub_dir/pull-1107.json" <<'JSON'
+{"number": 1107, "title": "feat: deliver it", "body": "Refs #50\n\nDelivers the thing."}
 JSON
 
 echo "==> delivery: the #1080/#1107 shape reads merged-delivery via cross-reference"
@@ -1730,6 +1750,10 @@ cat >"$stub_dir/timeline-60.json" <<JSON
      "merged_at": "2026-08-01T00:00:00Z"}}}}]
 JSON
 
+cat >"$stub_dir/pull-800.json" <<'JSON'
+{"number": 800, "title": "fix: earlier delivery", "body": "Closes #60"}
+JSON
+
 echo "==> delivery: evidence merged before a later reopen is not trusted"
 [ "$(run "$scan" delivery --repo "$repo" --issue 60)" = 0 ] ||
     fail "delivery #60 failed: $(cat "$tmp/out")"
@@ -1771,6 +1795,63 @@ echo "==> delivery: a truncated timeline with no evidence is indeterminate"
 jq -e '.verdict == "indeterminate" and .timeline_truncated == true
        and (.reason | test("truncated"))' "$tmp/out" >/dev/null ||
     fail "delivery #62 must not read a truncated empty page as none"
+
+# delivery: the merged PR only mentioned the issue in a COMMENT — the
+# timeline event looks identical, but the PR's own title/body never names
+# the issue, so it is not evidence.
+cat >"$stub_dir/delivery-64.json" <<JSON
+{"data": {"repository": {"issue": {"number": 64, "state": "OPEN",
+  "closedByPullRequestsReferences": {"nodes": []}}}}}
+JSON
+cat >"$stub_dir/timeline-64.json" <<JSON
+[{"event": "cross-referenced", "source": {"type": "issue", "issue": {
+   "number": 900, "state": "closed",
+   "repository": {"full_name": "$repo"},
+   "pull_request": {"html_url": "https://github.com/$repo/pull/900",
+     "merged_at": "2026-08-01T00:00:00Z"}}}}]
+JSON
+cat >"$stub_dir/pull-900.json" <<'JSON'
+{"number": 900, "title": "chore: unrelated", "body": "Refs #640 only"}
+JSON
+
+echo "==> delivery: a cross-reference from a PR comment is not trusted evidence"
+[ "$(run "$scan" delivery --repo "$repo" --issue 64)" = 0 ] ||
+    fail "delivery #64 failed: $(cat "$tmp/out")"
+jq -e '.verdict == "none" and (.evidence == [])
+       and (.reason | test("do not name this issue"))' "$tmp/out" >/dev/null ||
+    fail "delivery #64 must require the PR body/title to name the issue"
+
+# delivery: the candidate PR itself could not be read — indeterminate.
+cat >"$stub_dir/delivery-65.json" <<JSON
+{"data": {"repository": {"issue": {"number": 65, "state": "OPEN",
+  "closedByPullRequestsReferences": {"nodes": []}}}}}
+JSON
+cat >"$stub_dir/timeline-65.json" <<JSON
+[{"event": "cross-referenced", "source": {"type": "issue", "issue": {
+   "number": 901, "state": "closed",
+   "repository": {"full_name": "$repo"},
+   "pull_request": {"html_url": "https://github.com/$repo/pull/901",
+     "merged_at": "2026-08-01T00:00:00Z"}}}}]
+JSON
+
+echo "==> delivery: an unreadable candidate PR is indeterminate, not none"
+[ "$(run "$scan" delivery --repo "$repo" --issue 65)" = 0 ] ||
+    fail "delivery #65 failed: $(cat "$tmp/out")"
+jq -e '.verdict == "indeterminate" and (.reason | test("could not read"))' \
+    "$tmp/out" >/dev/null || fail "delivery #65 must be indeterminate"
+
+# delivery: a closed issue whose timeline is unreadable is still settled by
+# the first read — none, with its known state, not indeterminate.
+cat >"$stub_dir/delivery-66.json" <<JSON
+{"data": {"repository": {"issue": {"number": 66, "state": "CLOSED",
+  "closedByPullRequestsReferences": {"nodes": []}}}}}
+JSON
+
+echo "==> delivery: a closed issue with an unreadable timeline is none, not indeterminate"
+[ "$(run "$scan" delivery --repo "$repo" --issue 66)" = 0 ] ||
+    fail "delivery #66 failed: $(cat "$tmp/out")"
+jq -e '.verdict == "none" and .state == "CLOSED"' "$tmp/out" >/dev/null ||
+    fail "delivery #66 must return none with its known state"
 
 echo "==> delivery: refuses a mismatched --repo when the run is bound"
 [ "$(run env TRIAGE_REPO="$repo" "$scan" delivery --repo other/elsewhere \

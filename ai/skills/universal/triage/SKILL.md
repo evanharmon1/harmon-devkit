@@ -247,7 +247,7 @@ a finding):
 | `missing-work-type` on an org repo   | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state remains `"unset"` after 2a because no enabled Type is clearly applicable or its enabled-Type lookup was unavailable; state why it was not set |
 | `legacy-work-type-label` (org only)  | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state is `"unset"` — the label is legacy there and proves nothing; mention the label itself for cleanup |
 | `completion-candidate:all-criteria-checked` | nothing — the flag is the finding | always; category `possible completion`; evidence "all N criteria ticked, issue still open"; suggested action "confirm delivery; close as completed, or untick what is not actually done" |
-| `completion-candidate:human-only-remaining` | `"$DIR/assets/triage-scan.sh" delivery --repo "$REPO" --issue <n>` (costs one read from the budget) | only when `delivery`'s `verdict` is `merged-delivery` — category `possible completion`; name the evidence PR(s) (`via` is always `cross-reference`; a merged closing-keyword PR appears under `closing_references` for context only and is never evidence — see below); suggested action "verify the remaining `[HUMAN]` criteria; with explicit human authorization tick them, then close as completed". A `none` verdict is not reported; an `indeterminate` verdict, or a candidate the reading budget never reaches, goes to `## Unverified candidates` instead |
+| `completion-candidate:human-only-remaining` | `"$DIR/assets/triage-scan.sh" delivery --repo "$REPO" --issue <n>` (costs one read from the budget — internally it makes the issue read, one timeline page, and one bounded read per merged cross-referencing PR to confirm that PR's own title or body names the issue) | only when `delivery`'s `verdict` is `merged-delivery` — category `possible completion`; name the evidence PR(s) (`via` is always `cross-reference`; a merged closing-keyword PR appears under `closing_references` for context only and is never evidence — see below); suggested action "verify the remaining `[HUMAN]` criteria; with explicit human authorization tick them, then close as completed". A `none` verdict is not reported; an `indeterminate` verdict, or a candidate the reading budget never reaches, goes to `## Unverified candidates` instead |
 | `closed_flagged` state `completed`   | nothing — `unticked_criteria` is the finding         | always; note the unticked count                                            |
 | `closed_flagged` state `duplicate`   | `gh issue view <n> --repo "$REPO" --comments`        | no comment points at the surviving issue (`#<number>`)                     |
 
@@ -262,7 +262,9 @@ release means report it.
 are deliberately NOT promoted to a `completion-candidate:*` flag or a
 finding — treat them as ambiguous and leave the issue unreported on this
 axis: a "done"/"delivered"-shaped comment (a comment is never trusted
-evidence, whoever posted it); a merged PR sitting beside an unticked `[CI]`
+evidence, whoever posted it — including a comment on a merged PR that
+mentions the issue: `delivery` requires the PR's own title or body to name
+it); a nested or indented task item (criteria are flush-left); a merged PR sitting beside an unticked `[CI]`
 or an untagged criterion (that is partial delivery, not completion); an
 issue with no acceptance criteria at all; a merged PR from a different
 repository; and a closing-keyword PR that merged while the issue stayed

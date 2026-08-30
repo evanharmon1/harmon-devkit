@@ -211,6 +211,24 @@ cmd_delivery() {
         reason="$repo#$issue was not found"
     fi
 
+    [ -z "$out" ] || exec >"$out"
+
+    # A non-open issue is settled by the first read alone: no completion
+    # candidate, whatever the timeline would say — and no timeline read is
+    # spent, so a later read failure can never blur a known closed state.
+    if [ "$closing_ok" -eq 1 ]; then
+        local issue_state
+        issue_state="$(jq -r '.data.repository.issue.state' "$delivery_tmp/closing.json")"
+        if [ "$issue_state" != "OPEN" ]; then
+            jq -n --arg repo "$repo" --argjson issue "$issue" \
+                --arg state "$issue_state" '
+              {repo: $repo, issue: $issue, state: $state, verdict: "none",
+               evidence: [], closing_references: [], timeline_truncated: false,
+               reason: "issue is \($state), not open"}'
+            return 0
+        fi
+    fi
+
     # One bounded page — not paginated — for cross-referenced (Refs-style)
     # links a closing keyword never produced.
     local timeline_ok=1 timeline_truncated=false
@@ -223,12 +241,46 @@ cmd_delivery() {
             timeline_truncated=true
     fi
 
-    [ -z "$out" ] || exec >"$out"
-
     if [ "$closing_ok" -eq 0 ] || [ "$timeline_ok" -eq 0 ]; then
         jq -n --arg repo "$repo" --argjson issue "$issue" --arg reason "$reason" '
           {repo: $repo, issue: $issue, state: null, verdict: "indeterminate",
-           evidence: [], timeline_truncated: false, reason: $reason}'
+           evidence: [], closing_references: [], timeline_truncated: false,
+           reason: $reason}'
+        return 0
+    fi
+
+    # (3) A cross-referenced event says only that SOME text on the source PR
+    # mentioned this issue — a comment on an already-merged PR produces the
+    # same event as the PR body does, and comments are never evidence. So each
+    # merged same-repo candidate costs one bounded PR read, and only a PR
+    # whose own title or body references the issue (`#N` or its URL) stays
+    # evidence. A failed PR read is indeterminate, never a silent drop.
+    local candidates pr pr_ok=1
+    candidates="$(jq -r --arg repo "$repo" '
+      [.[] | select(.event == "cross-referenced"
+                    and .source.type == "issue"
+                    and (.source.issue.pull_request != null)
+                    and (.source.issue.pull_request.merged_at != null)
+                    and (.source.issue.repository.full_name == $repo))
+       | .source.issue.number] | unique | .[]' "$delivery_tmp/timeline.json")"
+    printf '[]' >"$delivery_tmp/pr-bodies.json"
+    for pr in $candidates; do
+        if ! gh api "repos/$repo/pulls/$pr" >"$delivery_tmp/pr-$pr.json" 2>/dev/null; then
+            pr_ok=0
+            reason="could not read $repo#$pr, a merged pull request cross-referencing this issue"
+            break
+        fi
+        jq -s --argjson pr "$pr" '.[0] + [{pr: $pr,
+              title: (.[1].title // ""), body: (.[1].body // "")}]' \
+            "$delivery_tmp/pr-bodies.json" "$delivery_tmp/pr-$pr.json" \
+            >"$delivery_tmp/pr-bodies.next" &&
+            mv "$delivery_tmp/pr-bodies.next" "$delivery_tmp/pr-bodies.json"
+    done
+    if [ "$pr_ok" -eq 0 ]; then
+        jq -n --arg repo "$repo" --argjson issue "$issue" --arg reason "$reason" '
+          {repo: $repo, issue: $issue, state: "OPEN", verdict: "indeterminate",
+           evidence: [], closing_references: [], timeline_truncated: false,
+           reason: $reason}'
         return 0
     fi
 
@@ -237,6 +289,7 @@ cmd_delivery() {
         --argjson issue_num "$issue" \
         --slurpfile closing_arr "$delivery_tmp/closing.json" \
         --slurpfile timeline_arr "$delivery_tmp/timeline.json" \
+        --slurpfile bodies_arr "$delivery_tmp/pr-bodies.json" \
         --argjson timeline_truncated "$timeline_truncated" '
       ($closing_arr[0].data.repository.issue) as $iss
       | ($timeline_arr[0]) as $timeline
@@ -253,7 +306,15 @@ cmd_delivery() {
           | {pr: .source.issue.number,
              url: .source.issue.pull_request.html_url,
              merged_at: .source.issue.pull_request.merged_at,
-             via: "cross-reference"}]) as $cross_ev
+             via: "cross-reference"}]
+         # keep only PRs whose own title/body names this issue
+         | map(. as $ev
+               | select(any($bodies_arr[0][]; .pr == $ev.pr
+                            and ((.title + "\n" + .body)
+                                 | test("(^|[^A-Za-z0-9_/#])#" + ($issue_num | tostring) + "([^0-9]|$)")
+                                   or test("github\\.com/" + $repo + "/issues/"
+                                           + ($issue_num | tostring) + "([^0-9]|$)")))))
+        ) as $cross_ev
       # A human reopening an issue after its delivery merged is a decision,
       # not a completion signal: evidence merged before the latest `reopened`
       # event is discarded, so only delivery that landed on the CURRENT open
@@ -285,6 +346,8 @@ cmd_delivery() {
         elif $reopened_at != null and (.evidence | length) == 0
              and ($cross_ev | length) > 0
         then .reason = "issue was reopened after its merged delivery"
+        elif (.evidence | length) == 0 and ($bodies_arr[0] | length) > 0
+        then .reason = "merged cross-referencing PR(s) do not name this issue in their own title or body"
         else . end'
 }
 
@@ -497,19 +560,20 @@ jq -n -L "$title_module_dir" \
   # extended to also match a ticked box ([x]/[X]) so a line counts whether
   # ticked or not; checkbox_unticked_re is the original, unticked-only form.
   # Unlike the closed_flagged count, a CRITERION is a top-level rendered item
-  # only: a blockquoted `> - [x]` is a quoted example and four-plus leading
-  # spaces render as an indented code block, so neither may count — either
-  # would mint a false completion candidate.
+  # only, and flush-left: a blockquoted `> - [x]` is a quoted example, an
+  # indented item is a nested child (or, at four spaces, a code block), and
+  # the authoring contract writes criteria at column 0 — so none of those
+  # may count; any of them would mint or suppress a completion candidate.
   def checkbox_line_re:
-    "^[ ]{0,3}([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\]";
+    "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\]";
   def checkbox_unticked_re:
-    "^[ ]{0,3}([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\]";
+    "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\]";
   # The text immediately after an unticked checkbox marker — used only to
   # classify the track-work [CI]/[HUMAN] tag grammar, never to decide whether
   # a line counts as a criterion (checkbox_unticked_re already decided that).
   def checkbox_rest($line):
     ($line | capture(
-      "^[ ]{0,3}([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\][ \\t]*(?<rest>.*)$"
+      "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\][ \\t]*(?<rest>.*)$"
     )).rest;
   # The track-work tag grammar exactly: case-insensitive [CI]/[HUMAN]
   # immediately after the checkbox, followed by whitespace or end-of-line;
