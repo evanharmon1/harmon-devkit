@@ -211,8 +211,9 @@ keyword, for every one of these:
   `reviewed_head` to compare against directly, but the equivalent facts
   live elsewhere on the SAME pass, so both are still checked against
   those: `reviewed_head` against the pass ENVELOPE's own `head`, and
-  `round` against the pass's `codex_cycle.attempt` (or `1` when
-  `codex_cycle` is `null`) — the same "cycle" `checkIntegratorFindingIds`
+  `round` against the pass's `codex_cycle.cycle` (or `1` when
+  `codex_cycle` is `null`) — never `.attempt` (see the field-shape bullet
+  below for the distinction) — the same "cycle" `checkIntegratorFindingIds`
   already reads off the pass's own finding ids. Stage `integration` skips
   only the finder-distinctness and
   reviewer_priority-fidelity checks above: an integrator payload carries no
@@ -361,14 +362,23 @@ instance being validated:
   point — building a keep-last `Map` instead would silently discard
   whichever claim came first.
 - **`findings[].id` is unique within the integrator payload, and its cycle
-  segment must match `codex_cycle.attempt`** (`checkIntegratorFindingIds`)
+  segment must match `codex_cycle.cycle`** (`checkIntegratorFindingIds`)
   — the reviewer-side twin of `checkFindingIds`' duplicate check, and of
   its round-segment agreement check: an integration finding's id embeds
-  WHICH Codex cycle surfaced it (`integration-r<cycle>-<finder>-<n>`,
-  `cycle` = `codex_cycle.attempt` or `1` when null), so an id claiming a
-  different cycle than the payload's own `codex_cycle.attempt` is two
-  fields disagreeing about the same fact. Runs unconditionally for role
-  `integrator`.
+  WHICH run-wide integration cycle surfaced it
+  (`integration-r<cycle>-<finder>-<n>`, `cycle` = `codex_cycle.cycle` or
+  `1` when null), so an id claiming a different cycle than the payload's
+  own `codex_cycle.cycle` is two fields disagreeing about the same fact.
+  Runs unconditionally for role `integrator`.
+- **`codex_cycle.cycle` and `codex_cycle.attempt` count two different
+  things.** `cycle` is the run-wide integration cycle ordinal, counted
+  against the resolved `[caps].integration` cap and incrementing with
+  every new current-head Codex cycle the run drives; `attempt` is the
+  retry count (1-2) within ONE cycle's own captured head, per AGENTS.md's
+  "two attempts per captured head" rule. Every place that reads "which
+  cycle is this" — an integration finding id's own round segment, an
+  integration-stage adjudication's `round` — reads `cycle`, never
+  `attempt`, which says nothing about the run's overall cycle count.
 - **`run.schema.json`'s `promotion` ⇔ `outcome: "ready-for-review"`, both
   directions, and both additionally require a non-null `pr`** — a non-null
   `promotion` with any other outcome, or an outcome of
@@ -380,8 +390,13 @@ instance being validated:
   must be no later than the first `stage_transitions` entry's
   `entered_at`; `entered_at` must be non-decreasing across entries;
   `promotion.promoted_at` must be no earlier than the LAST entry's
-  `entered_at`; and every `interventions[].at` and `settlements[].settled_at`
-  must be no earlier than `started_at`. Every value compared lives in this
+  `entered_at`; every `interventions[].at` and `settlements[].settled_at`
+  must be no earlier than `started_at`; and — the upper bound on the same
+  pair — when `promotion` is non-null, every `settlements[].settled_at`
+  must be no LATER than `promotion.promoted_at` either (the readiness gate
+  requires every deferred finding settled before promotion,
+  `checkDeferredFindingsSettledBeforePromotion`, so no settlement should
+  ever postdate it). Every value compared lives in this
   one document, but the schema's `pattern` keyword only proves a value
   LOOKS like a timestamp — it has no way to check one field's value
   against another's, so this stays a receipt check like every other
@@ -395,18 +410,43 @@ instance being validated:
   (`^[1-9][0-9]*$`), `decline → comment_id` (non-empty) — the evidence a
   human or CI can actually follow has to be shaped for what it claims to be
   (`checkSettlementReferenceType`).
+- **`marker.destination` and `marker.round`** — spec § Evidence describes
+  three comment kinds sharing one mechanism: a per-round comment ("each
+  round's evidence is posted to the issue... one comment per round"), a
+  per-stage rollup comment ("one comment per confidence stage" on the PR,
+  linking the per-round issue comments), and the run record's own comment.
+  `destination` (`issue | pr`) records where a comment landed — `issue`
+  covers every per-round comment, the run record, and a per-stage comment
+  for a run that ends without ever opening a PR; `pr` is the per-stage
+  rollup once a draft PR exists. `round` is the 1-based round number for a
+  per-round comment, `null` for a per-stage rollup (whichever destination
+  it landed on) — a stage comment aggregates the stage's rounds so far, so
+  no single round describes it. Both are plain schema keywords
+  (`marker.required`, `destination`'s enum, `round`'s `{type: ["integer",
+  "null"], minimum: 1}` mirroring `result.reviewer.schema.json`'s
+  `findings[].line`), not a validator check.
 - **`run.schema.json`'s `evidence_comments[]` uniqueness** — `id` is unique
-  (it is the harvester's own lookup key), and the `(marker.run_id,
-  marker.stage, marker.sequence)` triple is unique (that triple **is** the
-  deterministic marker the spec describes; two comments cannot legitimately
-  share one) — `checkEvidenceCommentsUniqueness`.
+  (it is the harvester's own lookup key), and the `(marker.destination,
+  marker.stage, marker.round, marker.sequence)` tuple is unique (that tuple
+  **is** the deterministic marker the spec describes; two comments cannot
+  legitimately share one) — `checkEvidenceCommentsUniqueness`. `destination`
+  and `round` join `stage`/`sequence` in the key because they are what let a
+  stage's per-round issue comment and that same stage's PR rollup comment
+  coexist at `sequence: 1` without colliding: same stage, different
+  destination/round.
 - **`evidence_comments[]` marker sequences are contiguous from 1, per
-  stage** (`checkEvidenceMarkerSequenceContiguity`) — `sequence` is "the
-  Nth comment continuing this stage's evidence when GitHub's size limit
-  forces a split" (spec § Evidence), which only makes sense counted from 1
-  with no gaps; uniqueness above proves no two comments SHARE a sequence
-  number, this proves the numbers themselves — sorted, per `marker.stage`
-  — are exactly `1..N`, neither starting elsewhere nor skipping one.
+  `(destination, stage, round)` grouping** (`checkEvidenceMarkerSequenceContiguity`)
+  — `sequence` is "the Nth comment continuing this stage's evidence when
+  GitHub's size limit forces a split" (spec § Evidence), which only makes
+  sense counted from 1 with no gaps; uniqueness above proves no two comments
+  SHARE a `(destination, stage, round, sequence)` tuple, this proves the
+  sequence numbers themselves — sorted, within each `(destination, stage,
+  round)` grouping — are exactly `1..N`, neither starting elsewhere nor
+  skipping one. A stage's per-round issue comment and its PR rollup comment
+  are different groupings and each starts its own split count at 1 —
+  `ai/schemas/fixtures/run.schema/valid/further-along.json` carries exactly
+  that pair (an issue round-1 comment and a PR stage comment, both
+  `sequence: 1`) as the affirmative case.
 - **`run.schema.json`'s `stage_transitions[]` array-wide coherence**
   (`checkStageTransitionsOrder`) — the first entry is `kickoff`, and every
   later entry is reached from the one right before it by an edge
@@ -612,7 +652,7 @@ never needed it).
   marker) — free-form, no adjudication path. It now follows the SAME
   `<stage>-r<round>-<finder>-<n>` grammar a reviewer finding uses, with
   stage fixed to `integration` (`integration-r<cycle>-<finder>-<n>`,
-  `cycle` = `codex_cycle.attempt` or `1` when `codex_cycle` is null,
+  `cycle` = `codex_cycle.cycle` or `1` when `codex_cycle` is null,
   `finder` = the registry finder slug or `human`) — this, plus the
   `adjudication.schema.json` stage above, is what gives an integration
   finding a real path through the SAME adjudicate → settle machinery a
@@ -665,6 +705,14 @@ never needed it).
   integration, null required for it) — `checkAdjudicationEntries`, since
   that condition reads a sibling field (`stage`) the property's own schema
   cannot see.
+- **`disposition: defer` is rejected for stage `integration`.** Everywhere
+  else, `defer` is how a finding survives past its own stage into the run
+  record's `settlements[]` for later resolution. Integration is the last
+  stop before promotion — nothing downstream would ever settle a deferral
+  raised there — so an integration finding needs one of the terminal
+  answers instead: `fix | restructure | delete | decline | file`. Checked
+  by `checkAdjudicationEntries` alongside the reviewer_priority/override
+  nullability above, since it is the same stage-conditional branch.
 - **`adjudications[]` and `settlements[]` are arrays of tagged objects, not
   a JSON object keyed by finding id**, even though the spec's prose says
   "keyed by finding id." `scripts/lib/json-schema-subset.mjs` has no
@@ -746,13 +794,13 @@ never needed it).
   nonterminal split above.** `EXIT_CODE_VERDICT_CONSTRAINTS` is one table,
   keyed by the exit codes documented on `check-codex-cloud-review.sh`'s
   `check` subcommand (same doc as `codex_cycle.exit_code`'s own
-  description): `11` (pending) and `12` (retry) require `verdict:
-  "pending"` exactly; `13` (escalate) requires `verdict: "escalate"`
-  exactly; `14` (PR no longer open) forbids `clean` and `pending`; `2`
-  (indeterminate) forbids `clean`. `0`/`10` are absent from the table on
-  purpose — `0` already ties to `verdict: clean` through
-  `checkIntegratorCleanVerdict`'s own codex_cycle rule, and `10` has no
-  single-verdict rule of its own. `checkCodexCycleExitCodeVerdict` reads
+  description): `10` (findings) requires `verdict: "findings"` exactly;
+  `11` (pending) and `12` (retry) require `verdict: "pending"` exactly;
+  `13` (escalate) requires `verdict: "escalate"` exactly; `14` (PR no
+  longer open) forbids `clean` and `pending`; `2` (indeterminate) forbids
+  `clean`. `0` is the one code absent from the table — it already ties to
+  `verdict: clean` through `checkIntegratorCleanVerdict`'s own codex_cycle
+  rule. `checkCodexCycleExitCodeVerdict` reads
   the table rather than this being expressible as `if`/`then`: WHICH
   exit_code selects WHICH kind of rule (an exact match for some codes, a
   small exclusion set for others) is itself data the schema's single
@@ -882,8 +930,9 @@ same pinned ref, without either implementation reading the other's source.
   (`^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$`),
   unique within the run by construction. A reviewer finding's stage/round/
   finder segments must match the pass that returned it; an integrator
-  finding's stage is always `integration`, its round segment is the Codex
-  cycle attempt (or `1` when there was none), and its finder segment is the
+  finding's stage is always `integration`, its round segment is
+  `codex_cycle.cycle` (not `.attempt` — see "Field-shape decisions"
+  above) (or `1` when there was none), and its finder segment is the
   registry finder slug or `human`.
 - Every head-shaped field in a payload (`reviewed_head`, `codex_cycle.head`,
   `codex_cycle.accepted.reviewed_commit`) must equal the enclosing envelope's

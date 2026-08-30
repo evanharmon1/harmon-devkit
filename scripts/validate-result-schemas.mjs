@@ -603,12 +603,14 @@ function checkCodexCycleAcceptedScope(payload, errors) {
 // documents, which is itself ai/skills/universal/shepherd/assets/
 // check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
 // 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
-// indeterminate. 0/10 already constrain verdict structurally elsewhere
-// (checkIntegratorCleanVerdict requires exit_code 0 for verdict clean; no
-// analogous rule ties 10 to a single verdict) and so are absent from this
-// table; each entry here is either `equals` (verdict must be exactly this
-// value) or `excludes` (a set verdict must not be any member of).
+// indeterminate. 0 is the one code absent from this table — it already
+// constrains verdict structurally elsewhere (checkIntegratorCleanVerdict
+// requires exit_code 0 for verdict clean); 10 gets its own entry here
+// alongside the rest. Each entry is either `equals` (verdict must be
+// exactly this value) or `excludes` (a set verdict must not be any
+// member of).
 const EXIT_CODE_VERDICT_CONSTRAINTS = {
+  10: { equals: 'findings' },
   11: { equals: 'pending' },
   12: { equals: 'pending' },
   13: { equals: 'escalate' },
@@ -683,19 +685,22 @@ function checkAppliedDispositionsUnique(payload, errors) {
 // — same semantics as checkFindingIds' reviewer-side collision check: an
 // integration finding id is unique within the run by construction exactly
 // like a reviewer finding id); its <cycle> segment (the r<N>) must equal
-// codex_cycle.attempt, or 1 when codex_cycle is null
+// codex_cycle.cycle, or 1 when codex_cycle is null
 // (result.integrator.schema.json's findings[] description) — the id's
-// grammar names WHICH Codex cycle surfaced the finding, so a mismatch is
-// two fields disagreeing about the same fact; and its finder segment must
-// be non-empty — the schema's own [a-z0-9-]+ pattern already guarantees
-// this structurally, restated here because parseFindingId's shared (.+)
-// group is looser than any one schema's own character class. Always runs
-// for role integrator.
+// grammar names WHICH run-wide integration cycle surfaced the finding, so
+// a mismatch is two fields disagreeing about the same fact. This is
+// codex_cycle.cycle, never .attempt: attempt counts RETRIES within one
+// cycle's own captured head, cycle counts CYCLES across the whole run —
+// see codex_cycle.cycle's own schema description for the full
+// distinction. Its finder segment must also be non-empty — the schema's
+// own [a-z0-9-]+ pattern already guarantees this structurally, restated
+// here because parseFindingId's shared (.+) group is looser than any one
+// schema's own character class. Always runs for role integrator.
 function checkIntegratorFindingIds(envelope, options, errors) {
   const { payload } = envelope
   if (!Array.isArray(payload.findings)) return
   const expectedCycle =
-    payload.codex_cycle && typeof payload.codex_cycle === 'object' ? payload.codex_cycle.attempt : 1
+    payload.codex_cycle && typeof payload.codex_cycle === 'object' ? payload.codex_cycle.cycle : 1
   const seen = new Set()
   for (const finding of payload.findings) {
     if (typeof finding.id !== 'string') continue
@@ -712,7 +717,7 @@ function checkIntegratorFindingIds(envelope, options, errors) {
     if (!parsed) continue
     if (parsed.round !== expectedCycle) {
       errors.push(
-        `$result.payload.findings: finding id ${finding.id} names cycle ${parsed.round}, codex_cycle.attempt is ${expectedCycle}`
+        `$result.payload.findings: finding id ${finding.id} names cycle ${parsed.round}, codex_cycle.cycle is ${expectedCycle}`
       )
     }
     if (parsed.finder.length === 0) {
@@ -889,6 +894,11 @@ function checkAdjudicationEntries(document, errors) {
       if (entry.override !== null) {
         errors.push(
           `$adjudication.adjudications[finding_id=${entry.finding_id}].override: must be null for stage integration (there is no reviewer priority for adjudicated_priority to differ from)`
+        )
+      }
+      if (entry.disposition === 'defer') {
+        errors.push(
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].disposition: defer is not allowed for stage integration (an integration finding needs a terminal answer: fix, restructure, delete, decline, or file)`
         )
       }
       continue
@@ -1106,16 +1116,18 @@ function checkAdjudicationAgainstPass(document, passes, options, errors) {
       )
     }
     // Likewise, an integrator payload has no `round` field — the
-    // equivalent fact is WHICH Codex cycle this integration round is
-    // (codex_cycle.attempt, or 1 when codex_cycle is null — the same
-    // "cycle" checkIntegratorFindingIds already reads off the pass's own
-    // finding ids), so the document's `round` is checked against that.
+    // equivalent fact is WHICH run-wide integration cycle this round is
+    // (codex_cycle.cycle, or 1 when codex_cycle is null — the SAME field
+    // checkIntegratorFindingIds reads off the pass's own finding ids;
+    // never .attempt, which counts retries within one cycle's captured
+    // head and says nothing about which cycle in the run this is), so the
+    // document's `round` is checked against codex_cycle.cycle.
     const referenceCycle = reference.data.payload.codex_cycle
     const expectedRound =
-      referenceCycle && typeof referenceCycle === 'object' ? referenceCycle.attempt : 1
+      referenceCycle && typeof referenceCycle === 'object' ? referenceCycle.cycle : 1
     if (document.round !== expectedRound) {
       errors.push(
-        `$adjudication.round: ${document.round} does not match the pass envelope's codex_cycle.attempt ${expectedRound}`
+        `$adjudication.round: ${document.round} does not match the pass envelope's codex_cycle.cycle ${expectedRound}`
       )
     }
     return
@@ -1361,6 +1373,20 @@ function checkRunChronology(document, errors) {
       }
     }
   }
+  // Upper bound: a settlement resolves a finding BEFORE the run can be
+  // promoted (the readiness gate requires every deferred finding settled
+  // first — checkDeferredFindingsSettledBeforePromotion), so once promoted
+  // no settlement should postdate that promotion.
+  if (document.promotion && typeof document.promotion === 'object' && typeof document.promotion.promoted_at === 'string') {
+    const promotedAt = document.promotion.promoted_at
+    for (const [index, settlement] of (document.settlements ?? []).entries()) {
+      if (typeof settlement.settled_at === 'string' && isChronologicallyBefore(promotedAt, settlement.settled_at)) {
+        errors.push(
+          `$run.settlements[${index}].settled_at: ${settlement.settled_at} must not be after promotion.promoted_at ${promotedAt}`
+        )
+      }
+    }
+  }
 }
 
 // checkRunPromotionOutcome — promotion is non-null if and only if outcome
@@ -1385,9 +1411,13 @@ function checkRunPromotionOutcome(document, errors) {
 }
 
 // checkEvidenceCommentsUniqueness — evidence_comments[].id is unique (it is
-// the harvester's own lookup key), and each (marker.run_id, marker.stage,
-// marker.sequence) triple is unique (that triple IS the deterministic
-// marker the spec describes — two comments cannot legitimately share one).
+// the harvester's own lookup key), and each (marker.destination, marker.stage,
+// marker.round, marker.sequence) tuple is unique (that tuple IS the
+// deterministic marker the spec describes — two comments cannot legitimately
+// share one). destination and round join stage/sequence in the key because
+// they are what let a stage's per-round issue comment and that same stage's
+// PR rollup comment coexist at sequence 1 without colliding: same stage,
+// different destination/round.
 function checkEvidenceCommentsUniqueness(document, errors) {
   const seenIds = new Set()
   const seenMarkers = new Set()
@@ -1403,12 +1433,14 @@ function checkEvidenceCommentsUniqueness(document, errors) {
       marker &&
       typeof marker.run_id === 'string' &&
       typeof marker.stage === 'string' &&
+      (typeof marker.destination === 'string' || marker.destination === null) &&
+      (typeof marker.round === 'number' || marker.round === null) &&
       typeof marker.sequence === 'number'
     ) {
-      const key = JSON.stringify([marker.run_id, marker.stage, marker.sequence])
+      const key = JSON.stringify([marker.destination, marker.stage, marker.round, marker.sequence])
       if (seenMarkers.has(key)) {
         errors.push(
-          `$run.evidence_comments[${index}].marker: duplicate marker (run_id=${marker.run_id}, stage=${marker.stage}, sequence=${marker.sequence})`
+          `$run.evidence_comments[${index}].marker: duplicate marker (destination=${marker.destination}, stage=${marker.stage}, round=${marker.round}, sequence=${marker.sequence})`
         )
       }
       seenMarkers.add(key)
@@ -1436,26 +1468,39 @@ function checkEvidenceMarkerRunId(document, errors) {
 // checkEvidenceMarkerSequenceContiguity — spec § Evidence: sequence is
 // "the Nth comment continuing this stage's evidence when GitHub's size
 // limit forces a split" — which only makes sense counting from 1 with no
-// gaps, per stage (a different stage's evidence is a different sequence
-// entirely, so contiguity is checked WITHIN each marker.stage value, not
-// across the whole array). checkEvidenceCommentsUniqueness already proves
-// no two comments share a (run_id, stage, sequence) triple; this proves
-// the sequence NUMBERS themselves, sorted, are exactly 1..N — neither
-// starting elsewhere nor skipping one.
+// gaps, WITHIN one (destination, stage, round) grouping, not across the
+// whole array: a stage's per-round issue comment and that same stage's PR
+// rollup comment are different groupings (different destination/round) and
+// each starts its own split count at 1. checkEvidenceCommentsUniqueness
+// already proves no two comments share a (destination, stage, round,
+// sequence) tuple; this proves the sequence NUMBERS themselves, sorted
+// within each grouping, are exactly 1..N — neither starting elsewhere nor
+// skipping one.
 function checkEvidenceMarkerSequenceContiguity(document, errors) {
-  const sequencesByStage = new Map()
+  const sequencesByGroup = new Map()
   for (const comment of document.evidence_comments ?? []) {
     const marker = comment.marker
-    if (!marker || typeof marker.stage !== 'string' || typeof marker.sequence !== 'number') continue
-    if (!sequencesByStage.has(marker.stage)) sequencesByStage.set(marker.stage, [])
-    sequencesByStage.get(marker.stage).push(marker.sequence)
+    if (
+      !marker ||
+      typeof marker.stage !== 'string' ||
+      (typeof marker.destination !== 'string' && marker.destination !== null) ||
+      (typeof marker.round !== 'number' && marker.round !== null) ||
+      typeof marker.sequence !== 'number'
+    ) {
+      continue
+    }
+    const groupKey = JSON.stringify([marker.destination, marker.stage, marker.round])
+    if (!sequencesByGroup.has(groupKey)) {
+      sequencesByGroup.set(groupKey, { destination: marker.destination, stage: marker.stage, round: marker.round, sequences: [] })
+    }
+    sequencesByGroup.get(groupKey).sequences.push(marker.sequence)
   }
-  for (const [stage, sequences] of sequencesByStage) {
+  for (const { destination, stage, round, sequences } of sequencesByGroup.values()) {
     const sorted = [...sequences].sort((a, b) => a - b)
     const contiguousFromOne = sorted.every((sequence, index) => sequence === index + 1)
     if (!contiguousFromOne) {
       errors.push(
-        `$run.evidence_comments: marker.stage ${JSON.stringify(stage)}'s sequences must start at 1 and be contiguous, found [${sorted.join(', ')}]`
+        `$run.evidence_comments: marker (destination=${destination}, stage=${stage}, round=${round})'s sequences must start at 1 and be contiguous, found [${sorted.join(', ')}]`
       )
     }
   }
@@ -1498,6 +1543,25 @@ function checkAdjudicationsUnionUnique(adjudications, errors) {
       } else {
         seenAt.set(entry.finding_id, file)
       }
+    }
+  }
+}
+
+// checkAdjudicationStagesVisited — a --adjudication document adjudicates a
+// round of some stage (challenge/review/integration), but nothing proves
+// the run ever actually WAS in that stage — that fact lives in a
+// different document (run.schema.json's own stage_transitions). An
+// adjudication naming a stage the run's own history never records
+// entering is a document about a round this run could not have run.
+// Runs alongside the other --adjudication-dependent checks, under the
+// same --adjudication/--no-adjudications gating in main().
+function checkAdjudicationStagesVisited(document, adjudications, errors) {
+  const visitedStages = new Set((document.stage_transitions ?? []).map((transition) => transition.stage))
+  for (const { file, data } of adjudications) {
+    if (typeof data.stage === 'string' && !visitedStages.has(data.stage)) {
+      errors.push(
+        `$run: --adjudication ${file} has stage ${data.stage}, which never appears in this run's stage_transitions`
+      )
     }
   }
 }
@@ -1657,6 +1721,7 @@ function main() {
       if (options.adjudications.length > 0 || options.noAdjudications) {
         checkAdjudicationRunIdMatchesRun(instance, options.adjudications, errors)
         checkAdjudicationsUnionUnique(options.adjudications, errors)
+        checkAdjudicationStagesVisited(instance, options.adjudications, errors)
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
         checkDeferredFindingsSettledBeforePromotion(instance, options.adjudications, errors)
       }

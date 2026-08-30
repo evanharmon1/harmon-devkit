@@ -2,7 +2,7 @@
   "schema": 2,
   "role": "integrator",
   "status": "completed",
-  "head": "0d8f746ee6361328d77aaf74a8fe6b9f004512b3",
+  "head": "8fbd0ae8fe1e874129edff75ae90e0126b31c580",
   "produced_at": "2026-08-29T18:00:00Z",
   "producer": {
     "harness": "claude-code",
@@ -10,7 +10,7 @@
     "tier": "standard"
   },
   "run": {
-    "run_id": "run-4020-codex-cycle-missing-attempt",
+    "run_id": "run-4047-exit-code-10-with-pending",
     "initiated_by": "human"
   },
   "payload": {
@@ -18,15 +18,21 @@
       {
         "name": "ci/build",
         "bucket": "pass",
-        "run_id": "1013",
+        "run_id": "1030",
         "required": true
       }
     ],
     "codex_cycle": {
-      "head": "0d8f746ee6361328d77aaf74a8fe6b9f004512b3",
+      "head": "8fbd0ae8fe1e874129edff75ae90e0126b31c580",
       "cycle": 1,
-      "trigger_comment_id": "555000334",
-      "exit_code": 11
+      "attempt": 1,
+      "trigger_comment_id": "555000666",
+      "exit_code": 10,
+      "accepted": {
+        "surface": "review",
+        "id": "777999",
+        "reviewed_commit": "8fbd0ae8fe1e874129edff75ae90e0126b31c580"
+      }
     },
     "findings": [],
     "unanswered_thread_roots": [],

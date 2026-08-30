@@ -13,14 +13,14 @@
       "author_actor_id": 12345678,
       "login": "evanharmon1",
       "digest": "sha256:abcdef0123456789",
-      "marker": { "run_id": "run-6071-duplicate-marker", "stage": "challenge", "sequence": 1 }
+      "marker": { "run_id": "run-6071-duplicate-marker", "stage": "challenge", "destination": "issue", "round": 1, "sequence": 1 }
     },
     {
       "id": "2000000012",
       "author_actor_id": 12345678,
       "login": "evanharmon1",
       "digest": "sha256:fedcba9876543210",
-      "marker": { "run_id": "run-6071-duplicate-marker", "stage": "challenge", "sequence": 1 }
+      "marker": { "run_id": "run-6071-duplicate-marker", "stage": "challenge", "destination": "issue", "round": 1, "sequence": 1 }
     }
   ],
   "settlements": [],

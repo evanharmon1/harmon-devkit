@@ -15,14 +15,14 @@
       "author_actor_id": 12345678,
       "login": "evanharmon1",
       "digest": "sha256:abcdef0123456789",
-      "marker": { "run_id": "run-6073-evidence-marker-sequence-gap", "stage": "challenge", "sequence": 1 }
+      "marker": { "run_id": "run-6073-evidence-marker-sequence-gap", "stage": "challenge", "destination": "issue", "round": 1, "sequence": 1 }
     },
     {
       "id": "2000000022",
       "author_actor_id": 12345678,
       "login": "evanharmon1",
       "digest": "sha256:0123456789abcdef",
-      "marker": { "run_id": "run-6073-evidence-marker-sequence-gap", "stage": "challenge", "sequence": 3 }
+      "marker": { "run_id": "run-6073-evidence-marker-sequence-gap", "stage": "challenge", "destination": "issue", "round": 1, "sequence": 3 }
     }
   ],
   "settlements": [],

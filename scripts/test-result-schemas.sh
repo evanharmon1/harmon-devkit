@@ -218,7 +218,8 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/clean-with-fix-disposition.json',
   'result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json',
   'result.integrator.schema/invalid/exit-code-13-with-pending.json',
-  'result.integrator.schema/invalid/exit-code-14-with-clean.json'
+  'result.integrator.schema/invalid/exit-code-14-with-clean.json',
+  'result.integrator.schema/invalid/exit-code-10-with-pending.json'
 ])
 
 let failures = 0
@@ -589,6 +590,13 @@ run_context_case \
     --adjudication "$settlement_cross_check_adjudication"
 
 run_context_case \
+    "an --adjudication document naming a stage this run's stage_transitions never visited is rejected" \
+    run \
+    "$fixtures_dir/run.schema/valid/fresh-kickoff.json" \
+    "never appears in this run's stage_transitions" \
+    --adjudication "$fixtures_dir/run.schema/invalid/stage-not-visited.adjudication.json"
+
+run_context_case \
     "the same --adjudication document supplied twice is rejected: a finding cannot be adjudicated more than once" \
     run \
     "$fixtures_dir/run.schema/valid/settlement-of-deferred.json" \
@@ -660,10 +668,10 @@ run_context_case \
     --pass "$fixtures_dir/adjudication.schema/valid/integration-adjudication.pass.json"
 
 run_context_case \
-    "an integration-stage adjudication naming a round that disagrees with the --pass envelope's codex_cycle.attempt is rejected" \
+    "an integration-stage adjudication naming a round that disagrees with the --pass envelope's codex_cycle.cycle is rejected" \
     adjudication \
     "$fixtures_dir/adjudication.schema/invalid/integration-round-mismatch.json" \
-    "does not match the pass envelope's codex_cycle.attempt" \
+    "does not match the pass envelope's codex_cycle.cycle" \
     --pass "$fixtures_dir/adjudication.schema/invalid/integration-round-mismatch.pass.json"
 
 run_context_case \

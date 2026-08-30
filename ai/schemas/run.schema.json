@@ -116,7 +116,7 @@
           "marker": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["run_id", "stage", "sequence"],
+            "required": ["run_id", "stage", "destination", "round", "sequence"],
             "properties": {
               "run_id": { "type": "string", "minLength": 1 },
               "stage": {
@@ -125,6 +125,15 @@
                   "kickoff", "claim", "explore", "plan", "implement", "verify",
                   "challenge", "review", "security", "integration"
                 ]
+              },
+              "destination": {
+                "description": "Where this comment was posted (specs/dev-flow-v2.md § Evidence). `issue` covers every per-round comment — the spec is explicit that 'each round's evidence is posted to the issue' with no exception — the run record's own home, and a per-stage comment for a run that ends without ever opening a PR. `pr` is the per-stage rollup comment posted once the draft PR exists, linking back to the per-round issue comments.",
+                "enum": ["issue", "pr"]
+              },
+              "round": {
+                "description": "1-based: the round this comment carries evidence for, when it is one of the per-round comments the spec posts to the issue as each round is adjudicated. `null` for a per-stage rollup comment (whichever destination it landed on) — a stage comment aggregates the stage's rounds so far, so no single round number describes it.",
+                "type": ["integer", "null"],
+                "minimum": 1
               },
               "sequence": {
                 "description": "1-based — the Nth comment continuing this stage's evidence when GitHub's size limit forces a split.",

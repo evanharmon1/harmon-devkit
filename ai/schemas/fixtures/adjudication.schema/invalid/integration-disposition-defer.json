@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-6064-integration-disposition-defer",
+  "stage": "integration",
+  "round": 1,
+  "reviewed_head": "6064a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "integration-r1-human-1",
+      "reviewer_priority": null,
+      "adjudicated_priority": "P2",
+      "disposition": "defer",
+      "reason": "Not actually deferrable at this stage -- this fixture exists to prove it is rejected.",
+      "evidence": "Integration is the last stop before promotion; nothing downstream would ever settle a deferral.",
+      "override": null
+    }
+  ]
+}

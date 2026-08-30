@@ -62,15 +62,20 @@
       "description": "null when the resolved integration cap is 0 (per specs/dev-flow-v2.md § Configuration, 'integration = 0 means no Codex cycle required') — the readiness gate's Codex-verdict condition drops out identically. Otherwise the current-head cycle this integrator run drove.",
       "type": ["object", "null"],
       "additionalProperties": false,
-      "required": ["head", "attempt", "trigger_comment_id", "exit_code"],
+      "required": ["head", "cycle", "attempt", "trigger_comment_id", "exit_code"],
       "properties": {
         "head": {
           "description": "Must equal the envelope's `head` — enforced by the validator's receipt-validation pass.",
           "type": "string",
           "pattern": "^[0-9a-f]{40}$"
         },
+        "cycle": {
+          "description": "The run-wide integration cycle ordinal, counted against the resolved [caps].integration cap — increases with every new current-head Codex cycle this run drives (a fresh captured head, not a retry of the same one). Distinct from `attempt`: `cycle` counts CYCLES across the whole run, `attempt` counts RETRIES within one cycle's own captured head. This is what an integration finding id's own round segment and an integration-stage adjudication's `round` are checked against (checkIntegratorFindingIds, checkAdjudicationAgainstPass) — never `attempt`, which is scoped to a single head's retry budget and says nothing about which cycle in the run this is.",
+          "type": "integer",
+          "minimum": 1
+        },
         "attempt": {
-          "description": "AGENTS.md's shepherd stage allows exactly two attempts per captured head before an incomplete cycle escalates.",
+          "description": "AGENTS.md's shepherd stage allows exactly two attempts per captured head before an incomplete cycle escalates. Distinct from `cycle` — see its description.",
           "type": "integer",
           "minimum": 1,
           "maximum": 2

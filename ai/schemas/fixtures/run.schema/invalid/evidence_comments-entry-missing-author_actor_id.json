@@ -12,7 +12,7 @@
       "id": "2000000002",
       "login": "evanharmon1",
       "digest": "sha256:abcdef0123456789",
-      "marker": { "run_id": "run-6029-evidence-comments-missing-author-actor-id", "stage": "challenge", "sequence": 1 }
+      "marker": { "run_id": "run-6029-evidence-comments-missing-author-actor-id", "stage": "challenge", "destination": "issue", "round": 1, "sequence": 1 }
     }
   ],
   "settlements": [],

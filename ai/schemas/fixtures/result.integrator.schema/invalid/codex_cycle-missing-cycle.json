@@ -2,7 +2,7 @@
   "schema": 2,
   "role": "integrator",
   "status": "completed",
-  "head": "0d8f746ee6361328d77aaf74a8fe6b9f004512b3",
+  "head": "0d8f746ee6361328d77aaf74a8fe6b9f004512b4",
   "produced_at": "2026-08-29T18:00:00Z",
   "producer": {
     "harness": "claude-code",
@@ -10,7 +10,7 @@
     "tier": "standard"
   },
   "run": {
-    "run_id": "run-4020-codex-cycle-missing-attempt",
+    "run_id": "run-4048-codex-cycle-missing-cycle",
     "initiated_by": "human"
   },
   "payload": {
@@ -18,14 +18,14 @@
       {
         "name": "ci/build",
         "bucket": "pass",
-        "run_id": "1013",
+        "run_id": "1031",
         "required": true
       }
     ],
     "codex_cycle": {
-      "head": "0d8f746ee6361328d77aaf74a8fe6b9f004512b3",
-      "cycle": 1,
-      "trigger_comment_id": "555000334",
+      "head": "0d8f746ee6361328d77aaf74a8fe6b9f004512b4",
+      "attempt": 1,
+      "trigger_comment_id": "555000777",
       "exit_code": 11
     },
     "findings": [],

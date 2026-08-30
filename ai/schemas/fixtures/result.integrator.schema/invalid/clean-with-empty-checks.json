@@ -17,6 +17,7 @@
     "checks": [],
     "codex_cycle": {
       "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
+      "cycle": 1,
       "attempt": 1,
       "trigger_comment_id": "555000111",
       "exit_code": 0,

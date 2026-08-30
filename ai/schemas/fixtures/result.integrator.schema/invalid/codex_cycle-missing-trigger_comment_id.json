@@ -24,6 +24,7 @@
     ],
     "codex_cycle": {
       "head": "d3793167b0243a468eda84ff765048db68020097",
+      "cycle": 1,
       "attempt": 1,
       "exit_code": 11
     },

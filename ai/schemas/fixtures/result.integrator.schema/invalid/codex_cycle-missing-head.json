@@ -23,6 +23,7 @@
       }
     ],
     "codex_cycle": {
+      "cycle": 1,
       "attempt": 1,
       "trigger_comment_id": "555000333",
       "exit_code": 11

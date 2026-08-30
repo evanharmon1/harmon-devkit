@@ -24,6 +24,7 @@
     ],
     "codex_cycle": {
       "head": "a43f9ca453f29a6b46c36dbec155a992c2085ffc",
+      "cycle": 1,
       "attempt": 1,
       "trigger_comment_id": "555000342",
       "exit_code": 0,
