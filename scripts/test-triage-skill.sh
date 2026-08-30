@@ -1488,14 +1488,28 @@ cat >"$stub_dir/issues-open.json" <<JSON
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
-  "body": "- [x] [CI] one\n- [X] [Human] two"},
+  "body": "## Acceptance criteria\n\n- [x] [CI] one\n- [X] [Human] two"},
  {"number": 52, "title": "(gauntlet): A CI criterion is still outstanding",
   "author": {"login": "testowner"},
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
-  "body": "- [ ] [CI] one\n- [x] [HUMAN] two"}]
+  "body": "## Acceptance criteria\n\n- [ ] [CI] one\n- [x] [HUMAN] two"},
+ {"number": 58, "title": "(gauntlet): Task lists outside the section",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "## Problem\n\n- [x] a ticked todo in prose\n\n## Verify\n\n$()$(\n- [x] [CI] fenced example\n)$()\n"},
+ {"number": 59, "title": "(gauntlet): Fenced sample inside the section",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "## Acceptance Criteria ##\n\n$()$(md\n- [ ] [CI] sample\n)$()\n- [x] [CI] real\n\n## Out of scope\n\n- [ ] [CI] not a criterion"}]
 JSON
 cat >"$stub_dir/issues-closed.json" <<'JSON'
 []
@@ -1531,6 +1545,19 @@ jq -e '.open[] | select(.number == 50)
        | .flags | index("completion-candidate:all-criteria-checked") == null' \
     "$cc_scan" >/dev/null ||
     fail "the two completion flags must be mutually exclusive"
+
+echo "==> scan: checkboxes outside the Acceptance criteria section are not criteria"
+jq -e '.open[] | select(.number == 58)
+       | .criteria.total == 0 and (.completion_reasons == [])' \
+    "$tmp/cc-scan.json" >/dev/null ||
+    fail "#58 has no acceptance-criteria section, so it has no criteria"
+jq -e '.open[] | select(.number == 59)
+       | .criteria == {total: 1, unticked: 0, unticked_ci: 0,
+                       unticked_human: 0, unticked_untagged: 0}
+         and (.completion_reasons
+              == ["completion-candidate:all-criteria-checked"])' \
+    "$tmp/cc-scan.json" >/dev/null ||
+    fail "#59 must count only the unfenced item inside its section"
 
 echo "==> scan: an outstanding [CI] criterion carries no completion flag"
 jq -e '.open[] | select(.number == 52)
@@ -1615,7 +1642,7 @@ jq -e '.verdict == "none" and (.evidence == [])' "$tmp/out" >/dev/null ||
 # delivery: the closing-reference (closedByPullRequestsReferences) path —
 # MERGED and same-repo is trusted; OPEN and same-repo is not.
 cat >"$stub_dir/delivery-55.json" <<JSON
-{"data": {"repository": {"issue": {"number": 55, "state": "CLOSED",
+{"data": {"repository": {"issue": {"number": 55, "state": "OPEN",
   "closedByPullRequestsReferences": {"nodes": [
     {"number": 661, "state": "MERGED",
      "mergedAt": "2026-08-28T13:40:53Z",
@@ -1669,6 +1696,68 @@ jq -e '.verdict == "indeterminate" and .state == null and (.evidence == [])
        and ((.reason | length) > 0)' "$tmp/out" >/dev/null ||
     fail "delivery #57 must report indeterminate with a reason"
 
+# delivery: the issue was reopened AFTER its delivery merged — a human
+# decision, so the earlier evidence no longer counts.
+cat >"$stub_dir/delivery-60.json" <<JSON
+{"data": {"repository": {"issue": {"number": 60, "state": "OPEN",
+  "closedByPullRequestsReferences": {"nodes": [
+    {"number": 800, "state": "MERGED", "mergedAt": "2026-08-01T00:00:00Z",
+     "repository": {"nameWithOwner": "$repo"},
+     "url": "https://github.com/$repo/pull/800"}]}}}}}
+JSON
+cat >"$stub_dir/timeline-60.json" <<JSON
+[{"event": "closed", "created_at": "2026-08-01T00:00:00Z"},
+ {"event": "reopened", "created_at": "2026-08-02T00:00:00Z"},
+ {"event": "cross-referenced", "created_at": "2026-08-01T00:00:00Z",
+  "source": {"type": "issue", "issue": {
+   "number": 800, "state": "closed",
+   "repository": {"full_name": "$repo"},
+   "pull_request": {"html_url": "https://github.com/$repo/pull/800",
+     "merged_at": "2026-08-01T00:00:00Z"}}}}]
+JSON
+
+echo "==> delivery: evidence merged before a later reopen is not trusted"
+[ "$(run "$scan" delivery --repo "$repo" --issue 60)" = 0 ] ||
+    fail "delivery #60 failed: $(cat "$tmp/out")"
+jq -e '.verdict == "none" and (.evidence == [])
+       and (.reason | test("reopened"))' "$tmp/out" >/dev/null ||
+    fail "delivery #60 must discard evidence that predates the reopen"
+
+# delivery: the candidate closed between the scan and this read.
+cat >"$stub_dir/delivery-61.json" <<JSON
+{"data": {"repository": {"issue": {"number": 61, "state": "CLOSED",
+  "closedByPullRequestsReferences": {"nodes": [
+    {"number": 801, "state": "MERGED", "mergedAt": "2026-08-01T00:00:00Z",
+     "repository": {"nameWithOwner": "$repo"},
+     "url": "https://github.com/$repo/pull/801"}]}}}}}
+JSON
+cat >"$stub_dir/timeline-61.json" <<'JSON'
+[]
+JSON
+
+echo "==> delivery: a closed issue is never a completion candidate"
+[ "$(run "$scan" delivery --repo "$repo" --issue 61)" = 0 ] ||
+    fail "delivery #61 failed: $(cat "$tmp/out")"
+jq -e '.verdict == "none" and .state == "CLOSED"
+       and (.reason | test("not open"))' "$tmp/out" >/dev/null ||
+    fail "delivery #61 must report none for a closed issue"
+
+# delivery: a full 100-event page with nothing on it is not a proven
+# negative — later pages were never read.
+cat >"$stub_dir/delivery-62.json" <<JSON
+{"data": {"repository": {"issue": {"number": 62, "state": "OPEN",
+  "closedByPullRequestsReferences": {"nodes": []}}}}}
+JSON
+jq -n '[range(100) | {event: "commented", created_at: "2026-08-01T00:00:00Z"}]' \
+    >"$stub_dir/timeline-62.json"
+
+echo "==> delivery: a truncated timeline with no evidence is indeterminate"
+[ "$(run "$scan" delivery --repo "$repo" --issue 62)" = 0 ] ||
+    fail "delivery #62 failed: $(cat "$tmp/out")"
+jq -e '.verdict == "indeterminate" and .timeline_truncated == true
+       and (.reason | test("truncated"))' "$tmp/out" >/dev/null ||
+    fail "delivery #62 must not read a truncated empty page as none"
+
 echo "==> delivery: refuses a mismatched --repo when the run is bound"
 [ "$(run env TRIAGE_REPO="$repo" "$scan" delivery --repo other/elsewhere \
     --issue 50)" = 4 ] || fail "bound delivery repo mismatch must exit 4"
@@ -1694,7 +1783,7 @@ cat >"$stub_dir/issues-open.json" <<JSON
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
-  "body": "- [x] [CI] one\n- [X] [Human] two"}]
+  "body": "## Acceptance criteria\n\n- [x] [CI] one\n- [X] [Human] two"}]
 JSON
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
     fail "re-scan after #50 closed failed: $(cat "$tmp/out")"

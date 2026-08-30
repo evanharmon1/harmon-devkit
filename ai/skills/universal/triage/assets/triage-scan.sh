@@ -254,14 +254,34 @@ cmd_delivery() {
              url: .source.issue.pull_request.html_url,
              merged_at: .source.issue.pull_request.merged_at,
              via: "cross-reference"}]) as $cross_ev
-      | ($closing_ev + $cross_ev | unique_by(.pr) | sort_by(.pr)) as $evidence
+      # A human reopening an issue after its delivery merged is a decision,
+      # not a completion signal: evidence merged before the latest `reopened`
+      # event is discarded, so only delivery that landed on the CURRENT open
+      # span counts.
+      | ([$timeline[] | select(.event == "reopened") | .created_at]
+         | max // null) as $reopened_at
+      | ($closing_ev + $cross_ev
+         | map(select($reopened_at == null or .merged_at > $reopened_at))
+         | unique_by(.pr) | sort_by(.pr)) as $evidence
       | {repo: $repo,
          issue: $issue_num,
          state: $iss.state,
-         verdict: (if ($evidence | length) > 0
-                   then "merged-delivery" else "none" end),
+         verdict: (if $iss.state != "OPEN" then "none"
+                   elif ($evidence | length) > 0 then "merged-delivery"
+                   elif $timeline_truncated then "indeterminate"
+                   else "none" end),
          evidence: $evidence,
-         timeline_truncated: $timeline_truncated}'
+         timeline_truncated: $timeline_truncated}
+      # Say why a verdict is not the evidence-driven one, so the calling
+      # model can list it under Unverified candidates or drop it knowingly.
+      | if $iss.state != "OPEN"
+        then .reason = "issue is \($iss.state), not open"
+        elif .verdict == "indeterminate"
+        then .reason = "timeline page truncated at 100 events with no evidence on it"
+        elif $reopened_at != null and (.evidence | length) == 0
+             and (($closing_ev + $cross_ev) | length) > 0
+        then .reason = "issue was reopened after its merged delivery"
+        else . end'
 }
 
 if [ "${1:-}" = "delivery" ]; then
@@ -490,8 +510,29 @@ jq -n -L "$title_module_dir" \
     if ($rest | test("^\\[ci\\]([ \\t]|$)"; "i")) then "ci"
     elif ($rest | test("^\\[human\\]([ \\t]|$)"; "i")) then "human"
     else "untagged" end;
+  # Only the rendered `## Acceptance criteria` section holds criteria
+  # (the track-work authoring contract): a task list in another section, a
+  # quoted example, or a fenced code sample is not one, and an issue with no
+  # such section has no criteria at all. Lines are taken from that heading
+  # (case-insensitive, any trailing hashes) up to the next level-two
+  # heading, skipping fenced blocks — which is why this stays a line walk
+  # rather than a whole-body regex.
+  def criteria_lines($body):
+    (($body // "") | split("\n"))
+    | reduce .[] as $line ({in: false, fence: false, out: []};
+        if ($line | test("^[ ]{0,3}(```|~~~)")) then .fence = (.fence | not)
+        elif .fence then .
+        elif ($line | test("^[ ]{0,3}##[ \\t]+")) then
+          .in = ($line
+                 | sub("^[ ]{0,3}##[ \\t]+"; "")
+                 | sub("[ \\t]+#+[ \\t]*$"; "")
+                 | sub("[ \\t]+$"; "")
+                 | ascii_downcase) == "acceptance criteria"
+        elif .in then .out += [$line]
+        else . end)
+    | .out;
   def criteria_facts($body):
-    (($body // "") | split("\n")) as $lines
+    criteria_lines($body) as $lines
     | ([$lines[] | select(test(checkbox_line_re))] | length) as $total
     | ([$lines[] | select(test(checkbox_unticked_re))]) as $unticked_lines
     | ($unticked_lines | length) as $unticked

@@ -264,7 +264,13 @@ or an untagged criterion (that is partial delivery, not completion); an
 issue with no acceptance criteria at all; a merged PR from a different
 repository; and a closing-keyword PR that merged while the issue stayed
 open — GitHub closes those itself, so a leftover open issue there is a race
-to re-check, not a signal to report.
+to re-check, not a signal to report; an issue **reopened after** its delivery
+merged (a human decision — `delivery` discards evidence older than the
+latest reopen); and a timeline page truncated at 100 events with nothing
+on it (`delivery` reports `indeterminate`, never `none`, because later
+pages were not read). Task-list items outside the rendered
+`## Acceptance criteria` section, or inside a fenced block, are not
+criteria at all — an issue without that section has no criteria.
 
 The rows whose Verify column names a command spend the reading budget from
 step 1 — `gh issue view` for the first four, and one
