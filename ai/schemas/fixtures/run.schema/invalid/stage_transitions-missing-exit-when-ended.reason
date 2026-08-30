@@ -1,0 +1,1 @@
+$run.stage_transitions[1].exit: required (non-empty)

@@ -1,0 +1,1 @@
+$result.payload.summary: required (non-empty) when status is completed

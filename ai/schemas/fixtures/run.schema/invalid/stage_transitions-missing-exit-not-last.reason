@@ -1,1 +1,1 @@
-$run.stage_transitions[0].exit: required (non-empty) — every entry but the last must record how/why it ended
+$run.stage_transitions[0].exit: required (non-empty)

@@ -163,24 +163,31 @@ keyword, for every one of these:
   from every pass), and — for challenge/review only — that each entry's
   `reviewer_priority` still matches its finding's own `priority` in
   whichever pass returned it (a copy that has drifted from its source is
-  worse than no copy), that every supplied pass's own `payload.finder` is
-  distinct (a round is one pass **per finder**, same spec line, so two
+  worse than no copy), and that every supplied pass's own `payload.finder`
+  is distinct (a round is one pass **per finder**, same spec line, so two
   `--pass` files repeating one finder are never a legitimate multi-finder
   round — a retry replaces that finder's pass, it does not join a second
-  one at its side, so the repeat is rejected naming the finder), and that
-  the document's own `run_id`/`stage`/`round`/`reviewed_head` agree with
-  the passes'. Stage `integration` skips both of those last two checks: an
-  integrator payload carries no `finder` field at all (there is exactly one
-  integrator per attempt), and its findings carry no reviewer-asserted
-  `priority` to compare an adjudication entry's `reviewer_priority`
-  against — the orchestrator assigns that field's value itself for an
-  integration finding, with nothing upstream to measure disagreement
-  against. A `--pass` file whose own `status` is `blocked` is rejected as
-  context too, even though it is a perfectly valid standalone result on
-  its own: a blocked finder or integrator contributes no findings at all,
-  so there is nothing real to cross-check an adjudication against. Without
-  `--pass` an adjudication document is still checked for internal
-  self-consistency (`checkAdjudicationEntries`,
+  one at its side, so the repeat is rejected naming the finder). Finally,
+  the document's own `run_id` and `reviewed_head` must agree with the
+  reference pass — for challenge/review, `stage` and `round` must agree
+  with it too, and `reviewed_head` is compared against the pass's own
+  `payload.reviewed_head`; for integration there is no `payload.stage`/
+  `round`/`reviewed_head` to compare (only `run_id` and the head binding
+  carry over), so `reviewed_head` is instead compared against the pass
+  ENVELOPE's own `head` — the equivalent fact, just living one level up.
+  Stage `integration` skips only the finder-distinctness and
+  reviewer_priority-fidelity checks above: an integrator payload carries no
+  `finder` field at all (there is exactly one integrator per attempt), and
+  its findings carry no reviewer-asserted `priority` to compare an
+  adjudication entry's `reviewer_priority` against — the orchestrator
+  assigns that field's value itself for an integration finding, with
+  nothing upstream to measure disagreement against. The head binding is
+  never skipped for any stage. A `--pass` file whose own `status` is
+  `blocked` is rejected as context too, even though it is a perfectly valid
+  standalone result on its own: a blocked finder or integrator contributes
+  no findings at all, so there is nothing real to cross-check an
+  adjudication against. Without `--pass` an adjudication document is still
+  checked for internal self-consistency (`checkAdjudicationEntries`,
   `checkAdjudicationIdAttribution`) — it just isn't cross-checked against
   anything external.
 - **Adjudication uniqueness across the run (`--known-adjudicated
@@ -286,6 +293,15 @@ instance being validated:
   about the same finding's disposition, and rejecting it outright is the
   point — building a keep-last `Map` instead would silently discard
   whichever claim came first.
+- **`findings[].id` is unique within the integrator payload, and its cycle
+  segment must match `codex_cycle.attempt`** (`checkIntegratorFindingIds`)
+  — the reviewer-side twin of `checkFindingIds`' duplicate check, and of
+  its round-segment agreement check: an integration finding's id embeds
+  WHICH Codex cycle surfaced it (`integration-r<cycle>-<finder>-<n>`,
+  `cycle` = `codex_cycle.attempt` or `1` when null), so an id claiming a
+  different cycle than the payload's own `codex_cycle.attempt` is two
+  fields disagreeing about the same fact. Runs unconditionally for role
+  `integrator`.
 - **`run.schema.json`'s `promotion` ⇔ `outcome: "ready-for-review"`, both
   directions, and both additionally require a non-null `pr`** — a non-null
   `promotion` with any other outcome, or an outcome of
@@ -306,12 +322,25 @@ instance being validated:
 - **`run.schema.json`'s `stage_transitions[]` array-wide coherence**
   (`checkStageTransitionsOrder`) — the first entry is `kickoff`, later
   entries strictly follow the enum's own canonical order (so no stage ever
-  repeats and none goes backward), and every entry but the last carries
-  `exit`. `minItems: 1` (schema-level) proves the array is non-empty; the
-  rest needs positional/cross-entry reasoning — "the first item", "every
-  item but the last" — this subset engine's `items` keyword has no way to
-  express, since it validates every array entry against the same schema
-  independently, blind to the entry's own position or its siblings.
+  repeats and none goes backward). Whether the LAST entry also needs `exit`
+  depends on whether the run is still going: while `outcome` is `null` (the
+  run hasn't ended), the last entry is the run's current stage and has
+  nothing to record an exit for yet, so only the earlier entries need one;
+  once `outcome` is decided (non-null, whatever it is), the run is no
+  longer "still in" any stage, so the last entry owes an exit too, exactly
+  like every other. And when `outcome` is specifically `"ready-for-review"`,
+  the last entry's `stage` must literally be `integration` — reaching
+  ready-for-review always means the run got through integration (the
+  readiness gate promotes a draft PR shepherded out of that stage,
+  AGENTS.md's Dev Loop), so the run cannot have ended there from anywhere
+  else. `minItems: 1` (schema-level) proves the array is non-empty; the
+  rest needs positional/cross-entry reasoning, and some of it a SIBLING
+  field outside the array (`outcome`) — "the first item", "every item but
+  the last, unless X", "the last item's value depends on a field elsewhere
+  in the document" — this subset engine's `items` keyword has no way to
+  express any of that, since it validates every array entry against the
+  same schema independently, blind to the entry's own position, its
+  siblings, or anything outside the array.
 - **Finding id round attribution without `--pass`**
   (`checkAdjudicationIdAttribution`) — a finding id's own
   `<stage>-r<round>` segments are part of its grammar, so they must equal
@@ -340,11 +369,11 @@ applicable flag supplied, and nothing said so. Two things close that gap:
   envelope`, its dispatched role) must actually be given — a missing one is
   a usage error (exit 2) naming each flag still missing, the same treatment
   `--run-id` given without `--initiated-by` already gets. This is the
-  orchestrator's own invocation: a real run always has a real `--run-id`,
-  real prior passes, a real adjudication history, so there is never a
-  legitimate reason for it to fall back to a narrower check. A bare
-  invocation (no `--receipt`) is for one-off schema/fixture work, where
-  that context genuinely does not exist yet.
+  orchestrator's own invocation: a real run always has a real `--run-id`
+  and real prior passes, so there is never a legitimate reason for it to
+  fall back to a narrower check on those. A bare invocation (no `--receipt`)
+  is for one-off schema/fixture work, where that context genuinely does not
+  exist yet.
 
 Which flags are "applicable" is the same set the two mechanisms above
 share, so they can never disagree: envelope kinds (`implementer`,
@@ -352,6 +381,20 @@ share, so they can never disagree: envelope kinds (`implementer`,
 `--run-id`/`--initiated-by`; `reviewer` also requires `--known-ids`;
 `integrator` also requires `--integration-cap`; `adjudication` requires
 `--pass` and `--known-adjudicated`; `run` requires `--adjudication`.
+
+`run`'s `--adjudication` is the one exception to "a real run always has
+real context to supply": a fresh kickoff, or a run that genuinely never
+needed to adjudicate anything, has NO adjudication documents — not because
+the flag was skipped, but because there is nothing to give it. `--no-adjudications`
+is the explicit "confirmed zero" for exactly that case: it satisfies
+`--receipt`'s requirement in place of a real `--adjudication` file, and
+runs the identical settlement checks against the empty set — which means
+any settlement the run record DOES claim is then rejected outright, since
+an empty adjudication history cannot have adjudicated anything.
+`--no-adjudications` and `--adjudication` answer the same question and are
+mutually exclusive (a usage error together); with neither, `run`'s
+settlement-vs-adjudication checks simply don't run (the pre-`--receipt`
+default: no context, no narrower check either).
 
 ### Context files are validated before they are trusted
 
@@ -422,6 +465,16 @@ never needed it).
   `blocked_question` with no `human_tasks` key at all
   (`result.implementer.schema/valid/blocked-minimal.json`). When present it
   is still constrained to an array of strings.
+- **`summary` and `handoff` have no `minLength`**, even though both are
+  "required (non-empty) when completed." Foreman v1 serializes them as `""`
+  — present, empty — rather than omitting the key on a blocked result
+  (`result.implementer.schema/valid/blocked-with-empty-v1-fields.json`
+  demonstrates the shape); a schema-level `minLength: 1` would reject that
+  wire format outright, before the validator ever gets a chance to see that
+  the fields are supposed to be ignored at that status. Nothing is lost on
+  the completed side: `checkImplementerStatus` already treats an empty
+  string exactly like a missing key (`result.implementer.schema/invalid/empty-summary-when-completed.json`
+  and its `handoff` twin are the regression fixtures proving it).
 - **`status` enum is `completed | blocked`, and only those two**, matching
   Foreman v1's `RESULT_STATUSES` exactly (`src/foreman/backend.py` at
   `v2.5.0`) — the spec names no third value for any role; a finder that
@@ -469,9 +522,10 @@ never needed it).
   enumerate them individually. See the enum's own `$comment` for the full
   citation trail. The array itself is `minItems: 1` (a run has always at
   least kicked off); the rest of its array-wide shape — first entry is
-  `kickoff`, no stage repeats or goes backward, every entry but the last
-  has `exit` — is `checkStageTransitionsOrder`, a receipt check (see
-  above), since none of that is a single-entry schema keyword.
+  `kickoff`, no stage repeats or goes backward, an outcome-dependent exit
+  requirement, and (when `outcome` is `"ready-for-review"`) a last entry
+  fixed to `integration` — is `checkStageTransitionsOrder`, a receipt check
+  (see above), since none of that is a single-entry schema keyword.
   `evidence_comments[].marker.stage` reuses this SAME enum (previously a
   free string) — an evidence comment is always posted for one of the run's
   own defined stages, never an arbitrary word.
@@ -622,15 +676,19 @@ commit; `finder` is `codex-cli` throughout, matching the ledger.
 node scripts/validate-result-schemas.mjs <envelope|implementer|reviewer|integrator|adjudication|run> <file> \
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
   [--pass <envelope.json> ...] [--known-adjudicated <ids.json>] \
-  [--adjudication <file.json> ...] [--integration-cap <n>] [--schemas-dir <dir>] \
-  [--receipt]
+  [--adjudication <file.json> ... | --no-adjudications] \
+  [--integration-cap <n>] [--schemas-dir <dir>] [--receipt]
 ```
 
 `--pass` and `--adjudication` are repeatable (a round can be more than one
 finder's pass; a run's settlements can be checked against more than one
 round's adjudication document). `--run-id` and `--initiated-by` must be
-given together. `--integration-cap <n>` (integrator only) is the resolved
-`[caps].integration` value — see the receipt-validation bullet above. The
+given together. `--no-adjudications` (run only) asserts a confirmed-empty
+adjudication history in place of real `--adjudication` files — see
+"`--receipt`: a reduced check is visible, never silent" above; mutually
+exclusive with `--adjudication` (a usage error together). `--integration-cap
+<n>` (integrator only) is the resolved `[caps].integration` value — see the
+receipt-validation bullet above. The
 schemas directory defaults to `ai/schemas` resolved **relative to the
 script's own location**, not the caller's working directory, so the
 validator can be invoked from anywhere; override it with the

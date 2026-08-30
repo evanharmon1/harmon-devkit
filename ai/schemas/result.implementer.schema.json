@@ -7,14 +7,12 @@
   "additionalProperties": false,
   "properties": {
     "summary": {
-      "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. Enforced by the validator, not by this schema.",
-      "type": "string",
-      "minLength": 1
+      "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. No minLength here: Foreman v1 serializes this as \"\" (empty string, not absent) on a blocked result, so the schema must accept that shape. Enforced by the validator, not by this schema — checkImplementerStatus rejects an empty string on a completed result exactly as it would a missing one.",
+      "type": "string"
     },
     "handoff": {
-      "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. Enforced by the validator, not by this schema.",
-      "type": "string",
-      "minLength": 1
+      "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. No minLength here: Foreman v1 serializes this as \"\" (empty string, not absent) on a blocked result, so the schema must accept that shape. Enforced by the validator, not by this schema — checkImplementerStatus rejects an empty string on a completed result exactly as it would a missing one.",
+      "type": "string"
     },
     "ac_test_map": {
       "description": "Required (non-empty) when the envelope's status is completed; ignored when blocked. Each entry's own shape (criterion + a non-empty tests[]) is enforced structurally regardless of status, since v1 never permitted a malformed entry either way — only the requiredness of the whole array is status-conditional.",

@@ -5,7 +5,7 @@
   "started_at": "2026-08-29T09:00:00Z",
   "stage_transitions": [
     { "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z", "exit": "claimed" },
-    { "stage": "integration", "entered_at": "2026-08-29T10:00:00Z" }
+    { "stage": "integration", "entered_at": "2026-08-29T10:00:00Z", "exit": "converged" }
   ],
   "interventions": [],
   "outcome": "ready-for-review",

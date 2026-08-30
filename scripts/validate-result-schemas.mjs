@@ -65,6 +65,19 @@
 //                                 finding_id must be adjudicated exactly
 //                                 once across the supplied documents, with
 //                                 disposition `defer`.
+//   --no-adjudications           (run only) an explicit "confirmed zero":
+//                                 there is genuinely no adjudication history
+//                                 for this run yet (a fresh kickoff, or one
+//                                 that never needed to adjudicate anything),
+//                                 as opposed to --adjudication simply not
+//                                 having been supplied. Runs the same
+//                                 settlement checks --adjudication would,
+//                                 against the empty set — any settlement at
+//                                 all is then rejected, since nothing can
+//                                 have adjudicated it. Satisfies --receipt's
+//                                 requirement for `run` in place of a real
+//                                 --adjudication file. Mutually exclusive
+//                                 with --adjudication (a usage error).
 //   --integration-cap <n>        (integrator only) the resolved [caps].
 //                                 integration value: when positive, a clean
 //                                 verdict with codex_cycle: null is rejected
@@ -123,7 +136,7 @@ function usage() {
     'usage: validate-result-schemas.mjs <envelope|implementer|reviewer|integrator|adjudication|run> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
-      '[--integration-cap <n>] [--schemas-dir <dir>] [--receipt]'
+      '[--no-adjudications] [--integration-cap <n>] [--schemas-dir <dir>] [--receipt]'
   )
 }
 
@@ -217,7 +230,8 @@ function parseArgs(argv) {
     knownAdjudicated: null,
     adjudications: [],
     integrationCap: null,
-    receipt: false
+    receipt: false,
+    noAdjudications: false
   }
   for (let i = 0; i < rest.length; i += 1) {
     switch (rest[i]) {
@@ -283,6 +297,9 @@ function parseArgs(argv) {
       case '--receipt':
         options.receipt = true
         break
+      case '--no-adjudications':
+        options.noAdjudications = true
+        break
       default:
         console.error(`validate-result-schemas: unknown option ${rest[i]}`)
         usage()
@@ -295,6 +312,14 @@ function parseArgs(argv) {
   // rejection for the wrong reason.
   if ((options.runId === null) !== (options.initiatedBy === null)) {
     console.error('validate-result-schemas: --run-id and --initiated-by must be given together')
+    usage()
+    process.exit(2)
+  }
+  // --no-adjudications asserts "confirmed zero" (a real, checkable fact);
+  // --adjudication supplies actual documents. The two are answers to the
+  // same question and cannot both be given.
+  if (options.noAdjudications && options.adjudications.length > 0) {
+    console.error('validate-result-schemas: --no-adjudications and --adjudication are mutually exclusive')
     usage()
     process.exit(2)
   }
@@ -322,7 +347,7 @@ const CONTEXT_FLAGS = {
     { flag: '--known-adjudicated', given: (o) => o.knownAdjudicated !== null },
     { flag: '--pass', given: (o) => o.passes.length > 0 }
   ],
-  run: [{ flag: '--adjudication', given: (o) => o.adjudications.length > 0 }]
+  run: [{ flag: '--adjudication', given: (o) => o.adjudications.length > 0 || o.noAdjudications }]
 }
 
 // applicableContextSpecs KIND ROLE — ROLE is only consulted for kind
@@ -569,6 +594,42 @@ function checkAppliedDispositionsUnique(payload, errors) {
   }
 }
 
+// checkIntegratorFindingIds — findings[].id must be unique within the
+// payload (no schema keyword expresses cross-array uniqueness on a
+// sub-key, same reasoning as checkFindingIds' reviewer-side duplicate
+// check); its <cycle> segment (the r<N>) must equal codex_cycle.attempt,
+// or 1 when codex_cycle is null (result.integrator.schema.json's
+// findings[] description) — the id's grammar names WHICH Codex cycle
+// surfaced the finding, so a mismatch is two fields disagreeing about the
+// same fact; and its finder segment must be non-empty — the schema's own
+// [a-z0-9-]+ pattern already guarantees this structurally, restated here
+// because parseFindingId's shared (.+) group is looser than any one
+// schema's own character class. Always runs for role integrator.
+function checkIntegratorFindingIds(envelope, errors) {
+  const { payload } = envelope
+  if (!Array.isArray(payload.findings)) return
+  const expectedCycle =
+    payload.codex_cycle && typeof payload.codex_cycle === 'object' ? payload.codex_cycle.attempt : 1
+  const seen = new Set()
+  for (const finding of payload.findings) {
+    if (typeof finding.id !== 'string') continue
+    if (seen.has(finding.id)) {
+      errors.push(`$result.payload.findings: duplicate finding id ${finding.id} within this payload`)
+    }
+    seen.add(finding.id)
+    const parsed = parseFindingId(finding.id)
+    if (!parsed) continue
+    if (parsed.round !== expectedCycle) {
+      errors.push(
+        `$result.payload.findings: finding id ${finding.id} names cycle ${parsed.round}, codex_cycle.attempt is ${expectedCycle}`
+      )
+    }
+    if (parsed.finder.length === 0) {
+      errors.push(`$result.payload.findings: finding id ${finding.id} has an empty finder segment`)
+    }
+  }
+}
+
 // checkIntegratorCleanVerdict — a `clean` verdict is a claim about the
 // WHOLE payload, not just its own field: at least one check must actually
 // have run (AGENTS.md's readiness gate: an empty check list is
@@ -659,6 +720,7 @@ function validateEnvelopeInstance(instance, kind, options) {
           checkAppliedDispositionsUnique(instance.payload, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
           checkIntegrationCap(instance.payload, options.integrationCap, errors)
+          checkIntegratorFindingIds(instance, errors)
         }
         checkHeadAgreement(role, instance, errors)
       }
@@ -751,6 +813,9 @@ function checkAdjudicationUniqueAcrossRun(document, options, errors) {
 // carries no `finder` (there is exactly one integrator per attempt, never
 // multiple finders producing multiple passes) and its findings carry no
 // reviewer-asserted `priority` to compare against (ai/schemas/README.md).
+// The head binding is NOT skipped, though: `document.reviewed_head` is
+// still checked, just against the reference pass's ENVELOPE `head` rather
+// than a `payload.reviewed_head` field integrator payloads don't have.
 // Without --pass, none of this runs — the document is still schema-valid
 // and self-consistent on its own (checkAdjudicationEntries), just not
 // cross-checked against anything external.
@@ -834,7 +899,17 @@ function checkAdjudicationAgainstPass(document, passes, errors) {
   if (document.run_id !== referenceRun.run_id) {
     errors.push(`$adjudication.run_id: ${document.run_id} does not match the pass envelope's run.run_id ${referenceRun.run_id}`)
   }
-  if (isIntegration) return
+  if (isIntegration) {
+    // An integrator payload has no reviewed_head field of its own — the
+    // equivalent fact lives on the ENVELOPE (reference.data.head), so the
+    // head-binding check compares against that instead of referencePayload.
+    if (document.reviewed_head !== reference.data.head) {
+      errors.push(
+        `$adjudication.reviewed_head: ${document.reviewed_head} does not match the pass envelope's head ${reference.data.head}`
+      )
+    }
+    return
+  }
   if (document.stage !== referencePayload.stage) {
     errors.push(`$adjudication.stage: ${document.stage} does not match the pass payload's stage ${referencePayload.stage}`)
   }
@@ -941,11 +1016,27 @@ function checkStageTransitionsOrder(document, errors) {
       lastIndex = stageIndex
     }
   }
+  // While the run is still going (outcome: null), the LAST entry is the
+  // run's current stage and has nothing to record an exit for yet; every
+  // earlier entry has already been left, so it must have one. Once outcome
+  // is decided (non-null — the run has ended, one way or another), the run
+  // is no longer "still in" any stage, so the last entry owes an exit too.
+  const ended = document.outcome !== null && document.outcome !== undefined
   for (const [index, transition] of transitions.entries()) {
-    if (index === transitions.length - 1) continue
+    if (index === transitions.length - 1 && !ended) continue
     if (typeof transition.exit !== 'string' || transition.exit.trim() === '') {
+      errors.push(`$run.stage_transitions[${index}].exit: required (non-empty)`)
+    }
+  }
+  // Reaching ready-for-review always means the run got through integration
+  // (the readiness gate promotes a draft PR shepherded out of that stage —
+  // AGENTS.md's Dev Loop), so the last stage_transitions entry must BE
+  // integration, not merely have progressed at all.
+  if (document.outcome === 'ready-for-review') {
+    const lastIndex = transitions.length - 1
+    if (transitions[lastIndex].stage !== 'integration') {
       errors.push(
-        `$run.stage_transitions[${index}].exit: required (non-empty) — every entry but the last must record how/why it ended`
+        `$run.stage_transitions[${lastIndex}].stage: must be "integration" when outcome is "ready-for-review", found ${JSON.stringify(transitions[lastIndex].stage)}`
       )
     }
   }
@@ -1037,14 +1128,19 @@ function checkAdjudicationRunIdMatchesRun(document, adjudications, errors) {
   }
 }
 
-// checkSettlementsAgainstAdjudications — with one or more --adjudication
-// documents supplied, every settlement's finding must be adjudicated
-// exactly once across the union of those documents, with disposition
-// defer (settlements only ever terminalize a deferred finding). Without
-// --adjudication, unchanged — settlements are still checked for internal
-// duplicate finding_id (checkSettlements) but not against any adjudication.
+// checkSettlementsAgainstAdjudications — every settlement's finding must be
+// adjudicated exactly once across the union of the supplied --adjudication
+// documents, with disposition defer (settlements only ever terminalize a
+// deferred finding). The caller only reaches this with an ADJUDICATIONS
+// array that is either non-empty (one or more --adjudication) or
+// deliberately empty (--no-adjudications, a confirmed "zero documents") —
+// there is no internal early-return on an empty array here, because for
+// --no-adjudications an empty array must still reject every settlement
+// (nothing can have adjudicated it), not silently pass. Without either
+// flag, main() never calls this at all — settlements are still checked for
+// internal duplicate finding_id (checkSettlements) but not against any
+// adjudication.
 function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
-  if (adjudications.length === 0) return
   const byFindingId = new Map()
   for (const { file, data } of adjudications) {
     for (const entry of data.adjudications ?? []) {
@@ -1176,7 +1272,12 @@ function main() {
       checkRunPromotionOutcome(instance, errors)
       checkSettlementReferenceType(instance, errors)
       checkStageTransitionsOrder(instance, errors)
-      if (options.adjudications.length > 0) {
+      // --no-adjudications asserts "confirmed zero", which runs the SAME
+      // checks as one-or-more --adjudication documents, just against the
+      // empty set: checkSettlementsAgainstAdjudications then rejects every
+      // existing settlement (none of them can be adjudicated by nothing),
+      // exactly the "any settlement -> error" contract this flag promises.
+      if (options.adjudications.length > 0 || options.noAdjudications) {
         checkAdjudicationRunIdMatchesRun(instance, options.adjudications, errors)
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
         checkDeferredFindingsSettledBeforePromotion(instance, options.adjudications, errors)

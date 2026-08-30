@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "12cb21faad77cd7f62c16bebfdc21dca96cc6725",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-1004-empty-handoff",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "summary": "Implemented the requested change.",
+    "handoff": "",
+    "ac_test_map": [
+      {
+        "criterion": "Every result schema validates its own conformance fixture corpus",
+        "tests": ["scripts/test-result-schemas.sh"]
+      }
+    ],
+    "human_tasks": []
+  }
+}

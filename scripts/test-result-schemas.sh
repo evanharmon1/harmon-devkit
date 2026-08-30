@@ -59,6 +59,7 @@ is_context_only_fixture() {
     */adjudication.schema/invalid/pass-cross-check-extra-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-reviewer-priority-drift.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-head-mismatch.json) return 0 ;;
+    */adjudication.schema/invalid/integration-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/known-adjudicated-collision.json) return 0 ;;
     */run.schema/invalid/settlement-of-fixed-finding.json) return 0 ;;
     */run.schema/invalid/settlement-of-unknown-finding.json) return 0 ;;
@@ -183,6 +184,8 @@ const SEMANTIC_ONLY = new Set([
   'result.implementer.schema/invalid/missing-handoff-when-completed.json',
   'result.implementer.schema/invalid/missing-summary-when-completed.json',
   'result.implementer.schema/invalid/null-blocked_question-when-blocked.json',
+  'result.implementer.schema/invalid/empty-summary-when-completed.json',
+  'result.implementer.schema/invalid/empty-handoff-when-completed.json',
   'result.reviewer.schema/invalid/counts-mismatch-tally.json',
   'result.reviewer.schema/invalid/duplicate-finding-id-within-pass.json',
   'result.reviewer.schema/invalid/duplicate-id-across-passes.json',
@@ -201,7 +204,9 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/clean-with-unanswered-thread.json',
   'result.integrator.schema/invalid/clean-with-unapplied-finding.json',
   'result.integrator.schema/invalid/codex-cycle-nonterminal-with-accepted.json',
-  'result.integrator.schema/invalid/head-mismatch.json'
+  'result.integrator.schema/invalid/head-mismatch.json',
+  'result.integrator.schema/invalid/findings-duplicate-id.json',
+  'result.integrator.schema/invalid/findings-wrong-cycle.json'
 ])
 
 let failures = 0
@@ -585,6 +590,13 @@ accept_context_case \
     "$fixtures_dir/adjudication.schema/valid/integration-adjudication.json" \
     --pass "$fixtures_dir/adjudication.schema/valid/integration-adjudication.pass.json"
 
+run_context_case \
+    "an integration-stage adjudication naming a reviewed_head that disagrees with the --pass envelope's head is rejected" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/invalid/integration-head-mismatch.json" \
+    "does not match the pass envelope's head" \
+    --pass "$fixtures_dir/adjudication.schema/valid/integration-adjudication.pass.json"
+
 accept_context_case \
     "a union adjudication checked against both of a two-finder round's passes is accepted" \
     adjudication \
@@ -785,6 +797,26 @@ usage_error_case \
 usage_error_case \
     "--receipt on an integrator result without --integration-cap (or --run-id) is a usage error" \
     integrator "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" --receipt
+
+usage_error_case \
+    "--no-adjudications and --adjudication together are a usage error" \
+    run "$fixtures_dir/run.schema/valid/fresh-kickoff.json" \
+    --no-adjudications --adjudication "$settlement_cross_check_adjudication"
+
+accept_context_case \
+    "--receipt is satisfied for a fresh kickoff run by --no-adjudications" \
+    run "$fixtures_dir/run.schema/valid/fresh-kickoff.json" --receipt --no-adjudications
+
+accept_context_case \
+    "--receipt is satisfied for a ready-for-review run that never adjudicated anything" \
+    run "$fixtures_dir/run.schema/valid/ready-with-no-adjudications.json" --receipt --no-adjudications
+
+run_context_case \
+    "--no-adjudications rejects any existing settlement, since nothing can have adjudicated it" \
+    run \
+    "$fixtures_dir/run.schema/valid/ready-with-settled-deferral.json" \
+    "is not adjudicated in any supplied --adjudication document" \
+    --no-adjudications
 
 # --- Coverage: every required field and every enum has an invalid fixture --
 # Walks each schema file's own required[]/enum[] declarations (following
