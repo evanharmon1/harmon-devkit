@@ -1108,9 +1108,15 @@ is optional in addition, never a substitute for per-thread replies.
   a round is never burned on a failure that a few local minutes would have
   caught; it is not a mandatory pre-push step to also re-run the full local
   CI mirror (`task ci`, where the repo has one) — that stays available on
-  demand to reproduce a red CI run. In the rare repo without a `task
-  verify`, run whatever fast lint/build gate the repo does have and say
-  so — that is the floor, never skipped. Gate the exact commit that
+  demand to reproduce a red CI run. **`task verify` does not include a
+  secret scan** the way `task ci` (verify + security) did, so a push must
+  stay scanned some other way: where a `pre-push` hook is installed it runs
+  the scan automatically on every push and nothing more is owed; where it
+  is not, run the repo's secret-scan target (e.g. `task security:secrets`)
+  yourself before pushing each round's commit — the same obligation the
+  repo's pre-draft challenge/review rounds already carry. In the rare repo
+  without a `task verify`, run whatever fast lint/build gate the repo does
+  have and say so — that is the floor, never skipped. Gate the exact commit that
   will travel: commit the complete fix first and run the gate with a
   **clean tree**, so it cannot pass on the strength of uncommitted or
   untracked files that the push would then omit. Never `--no-verify`,
