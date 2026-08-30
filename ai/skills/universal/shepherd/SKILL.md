@@ -1110,11 +1110,16 @@ is optional in addition, never a substitute for per-thread replies.
   CI mirror (`task ci`, where the repo has one) — that stays available on
   demand to reproduce a red CI run. **`task verify` does not include a
   secret scan** the way `task ci` (verify + security) did, so a push must
-  stay scanned some other way: where a `pre-push` hook is installed it runs
-  the scan automatically on every push and nothing more is owed; where it
-  is not, run the repo's secret-scan target (e.g. `task security:secrets`)
-  yourself before pushing each round's commit — the same obligation the
-  repo's pre-draft challenge/review rounds already carry. In the rare repo
+  stay scanned some other way. **Do not assume an installed `pre-push` hook
+  covers this** — a hook family can be wired to run anything (this repo's
+  own `templates/skills-sync/README.md` documents a pre-push hook whose
+  only command is the skills-drift check, no secret scan at all), so an
+  installed hook is evidence only once you have actually read what it
+  runs. Where it does invoke the repo's secret-scan target, nothing more
+  is owed; otherwise — including when you have not checked — run that
+  target (e.g. `task security:secrets`) yourself before pushing each
+  round's commit, the same obligation the repo's pre-draft challenge/review
+  rounds already carry. In the rare repo
   without a `task verify`, run whatever fast lint/build gate the repo does
   have and say so — that is the floor, never skipped. Gate the exact commit that
   will travel: commit the complete fix first and run the gate with a
