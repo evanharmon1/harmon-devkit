@@ -1470,6 +1470,8 @@ jq -e '[.open[].number] | index(22) != null' "$tmp/out" >/dev/null ||
 
 # ── completion candidates (issue #671) ──────────────────────────────────────
 : >"$GH_STUB_LOG"
+# Backticks would be command substitutions in this unquoted heredoc.
+fence='```'
 cat >"$stub_dir/issues-open.json" <<JSON
 [{"number": 99, "title": "Triage report", "body": "$marker",
   "author": {"login": "testowner"},
@@ -1502,14 +1504,14 @@ cat >"$stub_dir/issues-open.json" <<JSON
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
-  "body": "## Problem\n\n- [x] a ticked todo in prose\n\n## Verify\n\n$()$(\n- [x] [CI] fenced example\n)$()\n"},
+  "body": "## Problem\n\n- [x] a ticked todo in prose\n\n## Verify\n\n${fence}\n- [x] [CI] fenced example\n${fence}\n"},
  {"number": 59, "title": "(gauntlet): Fenced sample inside the section",
   "author": {"login": "testowner"},
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
-  "body": "## Acceptance Criteria ##\n\n$()$(md\n- [ ] [CI] sample\n)$()\n- [x] [CI] real\n\n## Out of scope\n\n- [ ] [CI] not a criterion"}]
+  "body": "## Acceptance Criteria ##\n\n${fence}md\n- [ ] [CI] sample\n${fence}\n- [x] [CI] real\n> - [ ] [CI] quoted example\n    - [ ] [CI] indented code sample\n\n## Out of scope\n\n- [ ] [CI] not a criterion"}]
 JSON
 cat >"$stub_dir/issues-closed.json" <<'JSON'
 []

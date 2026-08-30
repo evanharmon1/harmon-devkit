@@ -266,9 +266,12 @@ cmd_delivery() {
       | {repo: $repo,
          issue: $issue_num,
          state: $iss.state,
+         # A truncated page can hide a later `reopened` event as easily as
+         # a later merge, so truncation is indeterminate whatever the first
+         # page held — a verdict either way would rest on events unread.
          verdict: (if $iss.state != "OPEN" then "none"
-                   elif ($evidence | length) > 0 then "merged-delivery"
                    elif $timeline_truncated then "indeterminate"
+                   elif ($evidence | length) > 0 then "merged-delivery"
                    else "none" end),
          evidence: $evidence,
          timeline_truncated: $timeline_truncated}
@@ -277,7 +280,7 @@ cmd_delivery() {
       | if $iss.state != "OPEN"
         then .reason = "issue is \($iss.state), not open"
         elif .verdict == "indeterminate"
-        then .reason = "timeline page truncated at 100 events with no evidence on it"
+        then .reason = "timeline page truncated at 100 events; later pages unread"
         elif $reopened_at != null and (.evidence | length) == 0
              and (($closing_ev + $cross_ev) | length) > 0
         then .reason = "issue was reopened after its merged delivery"
@@ -492,16 +495,20 @@ jq -n -L "$title_module_dir" \
   # below (unordered/ordered markers, any indentation, any blockquote depth),
   # extended to also match a ticked box ([x]/[X]) so a line counts whether
   # ticked or not; checkbox_unticked_re is the original, unticked-only form.
+  # Unlike the closed_flagged count, a CRITERION is a top-level rendered item
+  # only: a blockquoted `> - [x]` is a quoted example and four-plus leading
+  # spaces render as an indented code block, so neither may count — either
+  # would mint a false completion candidate.
   def checkbox_line_re:
-    "^[ \\t]*(>[ \\t]*)*([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\]";
+    "^[ ]{0,3}([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\]";
   def checkbox_unticked_re:
-    "^[ \\t]*(>[ \\t]*)*([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\]";
+    "^[ ]{0,3}([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\]";
   # The text immediately after an unticked checkbox marker — used only to
   # classify the track-work [CI]/[HUMAN] tag grammar, never to decide whether
   # a line counts as a criterion (checkbox_unticked_re already decided that).
   def checkbox_rest($line):
     ($line | capture(
-      "^[ \\t]*(>[ \\t]*)*([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\][ \\t]*(?<rest>.*)$"
+      "^[ ]{0,3}([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\][ \\t]*(?<rest>.*)$"
     )).rest;
   # The track-work tag grammar exactly: case-insensitive [CI]/[HUMAN]
   # immediately after the checkbox, followed by whitespace or end-of-line;
