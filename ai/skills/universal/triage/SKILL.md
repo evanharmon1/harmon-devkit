@@ -42,6 +42,13 @@ it in the summary; never work around it).
   retired prefix `strategy:*` replaces — still reserved), `claim:*`,
   `suggest:*`, `agent:*`, milestones, close states, assignees, issue bodies or
   titles.
+- **"Possible completion" is advisory only.** The scan's
+  `completion-candidate:*` flags (step 3) exist to surface an open issue whose
+  delivery looks finished — never to act on that finding. The skill never
+  ticks acceptance-criteria checkboxes, removes claim labels, edits an
+  ordinary issue's body, or closes an issue; the scripts have no write path
+  for any of that. A possible-completion finding is a report entry, and a
+  human decides what happens to it.
 - **Dry-run is the default.** Pass `--execute` to a script only when your
   runner said the mode is EXECUTE.
 - **When unsure, do nothing.** A skipped label costs nothing — the issue keeps
@@ -86,7 +93,11 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
   `"unset"` for a bulk-read organization Type, `"unknown"` when a per-issue
   read is required, `"n/a"` on personal repos), `native_type` (the exact Type
   name only when state is `"set"`, otherwise `null`), `needs_labels`,
-  `claim_labels`, `days_since_update`, and `flags`.
+  `claim_labels`, `days_since_update`, `criteria` (acceptance-criteria
+  checkbox facts — `total`, `unticked`, `unticked_ci`, `unticked_human`,
+  `unticked_untagged`, using the track-work `[CI]`/`[HUMAN]` tag grammar),
+  `completion_reasons` (machine-readable strings backing the
+  `completion-candidate:*` flags below), and `flags`.
 - `closed_flagged[]` — closed issues for report step 3 only.
 - `report_issue` — the rolling report issue (already excluded from the lists;
   never label it, never add report entries about it).
@@ -232,6 +243,8 @@ a finding):
 | `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
 | `missing-work-type` on an org repo   | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state remains `"unset"` after 2a because no enabled Type is clearly applicable or its enabled-Type lookup was unavailable; state why it was not set |
 | `legacy-work-type-label` (org only)  | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state is `"unset"` — the label is legacy there and proves nothing; mention the label itself for cleanup |
+| `completion-candidate:all-criteria-checked` | nothing — the flag is the finding | always; category `possible completion`; evidence "all N criteria ticked, issue still open"; suggested action "confirm delivery; close as completed, or untick what is not actually done" |
+| `completion-candidate:human-only-remaining` | `"$DIR/assets/triage-scan.sh" delivery --repo "$REPO" --issue <n>` (costs one read from the budget) | only when `delivery`'s `verdict` is `merged-delivery` — category `possible completion`; name the evidence PR(s) and each one's `via`; suggested action "verify the remaining `[HUMAN]` criteria; with explicit human authorization tick them, then close as completed". A `none` verdict is not reported; an `indeterminate` verdict, or a candidate the reading budget never reaches, goes to `## Unverified candidates` instead |
 | `closed_flagged` state `completed`   | nothing — `unticked_criteria` is the finding         | always; note the unticked count                                            |
 | `closed_flagged` state `duplicate`   | `gh issue view <n> --repo "$REPO" --comments`        | no comment points at the surviving issue (`#<number>`)                     |
 
@@ -242,10 +255,23 @@ repo, and a forged one must not suppress the report — when in doubt, the live
 `claim:*` label is the stronger signal: label present and no *trusted*
 release means report it.
 
-The first four rows marked "verify with `gh issue view`" spend the reading
-budget from step 1. The rows whose flag **is** the finding are deterministic:
-write them for **every** flagged issue in the scan, budget or not — the scan
-already did the work.
+**Out of scope heuristics.** These patterns look like completion signals but
+are deliberately NOT promoted to a `completion-candidate:*` flag or a
+finding — treat them as ambiguous and leave the issue unreported on this
+axis: a "done"/"delivered"-shaped comment (a comment is never trusted
+evidence, whoever posted it); a merged PR sitting beside an unticked `[CI]`
+or an untagged criterion (that is partial delivery, not completion); an
+issue with no acceptance criteria at all; a merged PR from a different
+repository; and a closing-keyword PR that merged while the issue stayed
+open — GitHub closes those itself, so a leftover open issue there is a race
+to re-check, not a signal to report.
+
+The rows whose Verify column names a command spend the reading budget from
+step 1 — `gh issue view` for the first four, and one
+`triage-scan.sh delivery` call for `completion-candidate:human-only-remaining`.
+The rows whose flag **is** the finding are deterministic: write them for
+**every** flagged issue in the scan, budget or not — the scan already did the
+work.
 
 Then these optional **aggregate** sections (plain `##` headings at the end of
 the entries file, no entry keys):

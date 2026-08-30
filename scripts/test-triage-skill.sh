@@ -74,6 +74,17 @@ case "${1:-} ${2:-}" in
         else
             printf '%s\n' "${GH_STUB_ENABLED_NATIVE_TYPES:-Bug}"
         fi
+    elif printf '%s' "$*" | grep -q 'closedByPullRequestsReferences'; then
+        # triage-scan.sh delivery's combined issue-state + closing-refs read.
+        # The issue number rides in the -F n=<value> arg; fixture file missing
+        # simulates a read failure (cat/set -e exits nonzero).
+        n=""
+        prev=""
+        for a in "$@"; do
+            [ "$prev" != "-F" ] || case "$a" in n=*) n="${a#n=}" ;; esac
+            prev="$a"
+        done
+        emit "${GH_STUB_DIR:?}/delivery-${n:?}.json"
     else
         [ "${GH_STUB_NATIVE_TYPE:-}" = "ERROR" ] && exit 1
         if [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then
@@ -88,6 +99,12 @@ case "${1:-} ${2:-}" in
             printf '%s\n' unset
         fi
     fi
+    ;;
+api\ repos/*/issues/*/timeline)
+    # triage-scan.sh delivery's bounded one-page timeline read.
+    n="${2%/timeline}"
+    n="${n##*/}"
+    emit "${GH_STUB_DIR:?}/timeline-${n:?}.json"
     ;;
 api\ repos/*/issues/*)
     n="${2##*/}"
@@ -1450,6 +1467,256 @@ echo "==> scan: --all includes the quiet issue"
     fail "scan --all failed"
 jq -e '[.open[].number] | index(22) != null' "$tmp/out" >/dev/null ||
     fail "--all must include the quiet issue"
+
+# ── completion candidates (issue #671) ──────────────────────────────────────
+: >"$GH_STUB_LOG"
+cat >"$stub_dir/issues-open.json" <<JSON
+[{"number": 99, "title": "Triage report", "body": "$marker",
+  "author": {"login": "testowner"},
+  "labels": [], "createdAt": "2026-01-01T00:00:00Z",
+  "updatedAt": "2026-01-01T00:00:00Z", "assignees": []},
+ {"number": 50, "title": "(gauntlet): Retire the ci mirror step",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "## Acceptance criteria\n\n- [x] [CI] one\n- [x] [ci] two\n- [ ] [HUMAN] needs a human"},
+ {"number": 51, "title": "(gauntlet): All criteria are checked",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "- [x] [CI] one\n- [X] [Human] two"},
+ {"number": 52, "title": "(gauntlet): A CI criterion is still outstanding",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "- [ ] [CI] one\n- [x] [HUMAN] two"}]
+JSON
+cat >"$stub_dir/issues-closed.json" <<'JSON'
+[]
+JSON
+
+echo "==> scan: all-criteria-checked flags an all-ticked open issue"
+# --all: #52 (outstanding [CI], no completion flag) carries no OTHER flag
+# either, so it would otherwise be filtered out before its absence of a
+# completion flag could even be asserted.
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
+    fail "completion-candidate scan failed: $(cat "$tmp/out")"
+cc_scan="$tmp/cc-scan.json"
+cp "$tmp/out" "$cc_scan"
+jq -e '.open[] | select(.number == 51)
+       | .criteria == {total: 2, unticked: 0, unticked_ci: 0,
+                        unticked_human: 0, unticked_untagged: 0}
+         and (.completion_reasons
+              == ["completion-candidate:all-criteria-checked"])
+         and (.flags
+              | index("completion-candidate:all-criteria-checked") != null)' \
+    "$cc_scan" >/dev/null || fail "#51 must read all-criteria-checked"
+
+echo "==> scan: human-only-remaining flags the #1080 shape"
+jq -e '.open[] | select(.number == 50)
+       | .criteria == {total: 3, unticked: 1, unticked_ci: 0,
+                        unticked_human: 1, unticked_untagged: 0}
+         and (.completion_reasons
+              == ["completion-candidate:human-only-remaining"])
+         and (.flags
+              | index("completion-candidate:human-only-remaining") != null)' \
+    "$cc_scan" >/dev/null || fail "#50 must read human-only-remaining"
+jq -e '.open[] | select(.number == 50)
+       | .flags | index("completion-candidate:all-criteria-checked") == null' \
+    "$cc_scan" >/dev/null ||
+    fail "the two completion flags must be mutually exclusive"
+
+echo "==> scan: an outstanding [CI] criterion carries no completion flag"
+jq -e '.open[] | select(.number == 52)
+       | (.completion_reasons == [])
+         and ([.flags[] | select(startswith("completion-candidate"))] == [])' \
+    "$cc_scan" >/dev/null || fail "#52 must not read as a completion candidate"
+
+# delivery: harmon-init#1080's exact shape — a Refs-linked PR, so
+# closedByPullRequestsReferences is empty and the only trusted signal is the
+# cross-referenced timeline event with a non-null merged_at.
+cat >"$stub_dir/delivery-50.json" <<JSON
+{"data": {"repository": {"issue": {"number": 50, "state": "OPEN",
+  "closedByPullRequestsReferences": {"nodes": []}}}}}
+JSON
+cat >"$stub_dir/timeline-50.json" <<JSON
+[{"event": "cross-referenced", "source": {"type": "issue", "issue": {
+   "number": 1107, "state": "closed",
+   "repository": {"full_name": "$repo"},
+   "pull_request": {"url": "https://api.github.com/repos/$repo/pulls/1107",
+     "html_url": "https://github.com/$repo/pull/1107",
+     "diff_url": "https://github.com/$repo/pull/1107.diff",
+     "patch_url": "https://github.com/$repo/pull/1107.patch",
+     "merged_at": "2026-08-29T14:44:42Z"}}}}]
+JSON
+
+echo "==> delivery: the #1080/#1107 shape reads merged-delivery via cross-reference"
+[ "$(run "$scan" delivery --repo "$repo" --issue 50)" = 0 ] ||
+    fail "delivery #50 failed: $(cat "$tmp/out")"
+jq -e --arg repo "$repo" '
+  .verdict == "merged-delivery" and .state == "OPEN"
+  and (.evidence == [{pr: 1107,
+                       url: ("https://github.com/" + $repo + "/pull/1107"),
+                       merged_at: "2026-08-29T14:44:42Z",
+                       via: "cross-reference"}])
+' "$tmp/out" >/dev/null || fail "delivery #50 must report cross-reference evidence"
+
+# delivery: partial delivery — the cross-referencing same-repo PR is still
+# open (merged_at null), so it is not trusted evidence.
+cat >"$stub_dir/delivery-53.json" <<JSON
+{"data": {"repository": {"issue": {"number": 53, "state": "OPEN",
+  "closedByPullRequestsReferences": {"nodes": []}}}}}
+JSON
+cat >"$stub_dir/timeline-53.json" <<JSON
+[{"event": "cross-referenced", "source": {"type": "issue", "issue": {
+   "number": 900, "state": "open",
+   "repository": {"full_name": "$repo"},
+   "pull_request": {"url": "https://api.github.com/repos/$repo/pulls/900",
+     "html_url": "https://github.com/$repo/pull/900",
+     "merged_at": null}}}}]
+JSON
+
+echo "==> delivery: an open same-repo cross-referencing PR is not trusted evidence"
+[ "$(run "$scan" delivery --repo "$repo" --issue 53)" = 0 ] ||
+    fail "delivery #53 failed: $(cat "$tmp/out")"
+jq -e '.verdict == "none" and (.evidence == [])' "$tmp/out" >/dev/null ||
+    fail "delivery #53 must not trust an unmerged PR"
+
+# delivery: an unrelated merged PR from a DIFFERENT repository, plus a
+# commit-reference event and a comment — none of these are trusted evidence.
+cat >"$stub_dir/delivery-54.json" <<JSON
+{"data": {"repository": {"issue": {"number": 54, "state": "OPEN",
+  "closedByPullRequestsReferences": {"nodes": []}}}}}
+JSON
+cat >"$stub_dir/timeline-54.json" <<'JSON'
+[{"event": "referenced", "commit_id": "abc123"},
+ {"event": "commented", "body": "looks done to me!"},
+ {"event": "cross-referenced", "source": {"type": "issue", "issue": {
+   "number": 42, "state": "closed",
+   "repository": {"full_name": "someoneelse/otherrepo"},
+   "pull_request": {
+     "url": "https://api.github.com/repos/someoneelse/otherrepo/pulls/42",
+     "html_url": "https://github.com/someoneelse/otherrepo/pull/42",
+     "merged_at": "2026-08-01T00:00:00Z"}}}}]
+JSON
+
+echo "==> delivery: a merged PR from a different repository is not trusted evidence"
+[ "$(run "$scan" delivery --repo "$repo" --issue 54)" = 0 ] ||
+    fail "delivery #54 failed: $(cat "$tmp/out")"
+jq -e '.verdict == "none" and (.evidence == [])' "$tmp/out" >/dev/null ||
+    fail "delivery #54 must ignore a cross-repo PR, a commit ref, and a comment"
+
+# delivery: the closing-reference (closedByPullRequestsReferences) path —
+# MERGED and same-repo is trusted; OPEN and same-repo is not.
+cat >"$stub_dir/delivery-55.json" <<JSON
+{"data": {"repository": {"issue": {"number": 55, "state": "CLOSED",
+  "closedByPullRequestsReferences": {"nodes": [
+    {"number": 661, "state": "MERGED",
+     "mergedAt": "2026-08-28T13:40:53Z",
+     "repository": {"nameWithOwner": "$repo"},
+     "url": "https://github.com/$repo/pull/661"}]}}}}}
+JSON
+cat >"$stub_dir/timeline-55.json" <<'JSON'
+[]
+JSON
+
+echo "==> delivery: a merged same-repo closing reference reads merged-delivery"
+[ "$(run "$scan" delivery --repo "$repo" --issue 55)" = 0 ] ||
+    fail "delivery #55 failed: $(cat "$tmp/out")"
+jq -e --arg repo "$repo" '
+  .verdict == "merged-delivery"
+  and (.evidence == [{pr: 661,
+                       url: ("https://github.com/" + $repo + "/pull/661"),
+                       merged_at: "2026-08-28T13:40:53Z",
+                       via: "closing-reference"}])
+' "$tmp/out" >/dev/null || fail "delivery #55 must report closing-reference evidence"
+
+cat >"$stub_dir/delivery-56.json" <<JSON
+{"data": {"repository": {"issue": {"number": 56, "state": "OPEN",
+  "closedByPullRequestsReferences": {"nodes": [
+    {"number": 700, "state": "OPEN", "mergedAt": null,
+     "repository": {"nameWithOwner": "$repo"},
+     "url": "https://github.com/$repo/pull/700"}]}}}}}
+JSON
+cat >"$stub_dir/timeline-56.json" <<'JSON'
+[]
+JSON
+
+echo "==> delivery: an open same-repo closing reference is not trusted evidence"
+[ "$(run "$scan" delivery --repo "$repo" --issue 56)" = 0 ] ||
+    fail "delivery #56 failed: $(cat "$tmp/out")"
+jq -e '.verdict == "none" and (.evidence == [])' "$tmp/out" >/dev/null ||
+    fail "delivery #56 must not trust an open closing-reference PR"
+
+# delivery: a missing timeline fixture simulates a failed read — indeterminate
+# (never "none"), and still exit 0 so the calling model can list it under
+# "## Unverified candidates".
+cat >"$stub_dir/delivery-57.json" <<JSON
+{"data": {"repository": {"issue": {"number": 57, "state": "OPEN",
+  "closedByPullRequestsReferences": {"nodes": []}}}}}
+JSON
+
+echo "==> delivery: a failed timeline read reports indeterminate, not none"
+[ "$(run "$scan" delivery --repo "$repo" --issue 57)" = 0 ] ||
+    fail "delivery #57 (indeterminate) must still exit 0: $(cat "$tmp/out")"
+jq -e '.verdict == "indeterminate" and .state == null and (.evidence == [])
+       and ((.reason | length) > 0)' "$tmp/out" >/dev/null ||
+    fail "delivery #57 must report indeterminate with a reason"
+
+echo "==> delivery: refuses a mismatched --repo when the run is bound"
+[ "$(run env TRIAGE_REPO="$repo" "$scan" delivery --repo other/elsewhere \
+    --issue 50)" = 4 ] || fail "bound delivery repo mismatch must exit 4"
+
+echo "==> delivery: refuses a non-numeric --issue"
+[ "$(run "$scan" delivery --repo "$repo" --issue abc)" = 2 ] ||
+    fail "non-numeric delivery --issue must exit 2"
+
+echo "==> completion candidates: scan + delivery never mutate anything"
+grep -qE '(issue edit|issue close|issue comment|label (create|edit|delete))' \
+    "$GH_STUB_LOG" &&
+    fail "completion-candidate scan/delivery calls must never mutate anything"
+
+echo "==> scan: a resolved completion candidate disappears from a re-scan"
+cat >"$stub_dir/issues-open.json" <<JSON
+[{"number": 99, "title": "Triage report", "body": "$marker",
+  "author": {"login": "testowner"},
+  "labels": [], "createdAt": "2026-01-01T00:00:00Z",
+  "updatedAt": "2026-01-01T00:00:00Z", "assignees": []},
+ {"number": 51, "title": "(gauntlet): All criteria are checked",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "- [x] [CI] one\n- [X] [Human] two"}]
+JSON
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
+    fail "re-scan after #50 closed failed: $(cat "$tmp/out")"
+jq -e '[.open[].number] | index(50) == null' "$tmp/out" >/dev/null ||
+    fail "#50 must no longer appear once it is gone from the open list"
+
+echo "==> report sync: a completion candidate no longer in scope leaves the body"
+cc_entries="$tmp/cc-entries.md"
+cat >"$cc_entries" <<'MD'
+### #51 — possible completion: all criteria checked, issue still open
+<!-- triage-entry:51 -->
+- Evidence: all 2 criteria ticked, issue still open.
+- Suggested action: confirm delivery; close as completed, or untick what is
+  not actually done.
+MD
+[ "$(run env TRIAGE_NOW=2026-01-01 "$report" sync --repo "$repo" \
+    --entries-file "$cc_entries")" = 0 ] ||
+    fail "completion-candidate report sync failed: $(cat "$tmp/out")"
+grep -q "triage-entry:51" "$tmp/out" ||
+    fail "surviving completion candidate must stay in the report body"
+grep -q "triage-entry:50" "$tmp/out" &&
+    fail "a completion candidate no longer present must not linger in the body"
 
 # ── wrapper ──────────────────────────────────────────────────────────────────
 export GH_STUB_REPO="$repo"

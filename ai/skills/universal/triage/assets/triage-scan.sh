@@ -15,6 +15,14 @@
 #   - per open issue: work-type/axis state (none | ok | conflict), needs-*
 #     labels, claim markers, staleness, and candidate flags for the rolling
 #     report
+#   - per open issue: acceptance-criteria checkbox facts (`criteria` —
+#     total/unticked/unticked_ci/unticked_human/unticked_untagged, using the
+#     track-work [CI]/[HUMAN] tag grammar) and, from those, high-confidence
+#     ADVISORY "possible completion" candidates — `completion_reasons` and the
+#     matching `completion-candidate:all-criteria-checked` /
+#     `completion-candidate:human-only-remaining` flags. This scan never
+#     ticks, edits, or closes anything; it only reports a candidate for a
+#     human (or the `delivery` subcommand below) to confirm.
 #   - flagged closed issues: closed-completed with unticked acceptance
 #     criteria, and duplicate closes (pointer presence is per-issue judgment
 #     the skill verifies from comments)
@@ -34,13 +42,26 @@
 # Usage:
 #   triage-scan.sh --repo owner/repo [--manifest PATH] [--limit N]
 #                  [--closed-limit N] [--all] [--out PATH]
+#   triage-scan.sh delivery --repo owner/repo --issue N [--out PATH]
 #
 # --out writes the scan itself (bound under TRIAGE_SCRATCH when the wrapper
 # set it), so the calling model never needs a shell redirection — granted
 # Bash commands accept redirections to arbitrary paths, and the skill's own
 # idiom must not normalize that.
 #
-# Exit: 0 = scan emitted, 2 = usage/environment error,
+# `delivery` is a second, read-only report: for a single open issue, it looks
+# for TRUSTED delivery evidence — a pull request in the SAME repository,
+# MERGED, and linked by GitHub's own graph (a closing-keyword reference or a
+# cross-referenced timeline event) — and never a comment, a different
+# repository's PR, or an unmerged/closed-unmerged one. It exists so the
+# `completion-candidate:human-only-remaining` flag above can be confirmed
+# before it is reported: an issue whose [CI] criteria are all ticked and only
+# a [HUMAN] one remains still needs a human to close it, but a genuinely
+# merged delivery (harmon-init#1080, closed by harmon-init#1107 via "Refs",
+# not a closing keyword) is worth surfacing. It writes nothing, ever, and
+# never guesses: either read failing reports `indeterminate`, not `none`.
+#
+# Exit: 0 = scan (or delivery report) emitted, 2 = usage/environment error,
 #       4 = refused (repo or out-path outside this run's binding).
 set -euo pipefail
 
@@ -49,7 +70,8 @@ title_module_dir="$script_dir/../../issue-title-support/assets"
 
 usage() {
     echo "Usage: $0 --repo owner/repo [--manifest PATH] [--limit N]" >&2
-    echo "          [--closed-limit N] [--all]" >&2
+    echo "          [--closed-limit N] [--all] [--out PATH]" >&2
+    echo "       $0 delivery --repo owner/repo --issue N [--out PATH]" >&2
     exit 2
 }
 
@@ -57,6 +79,196 @@ die() {
     echo "triage-scan: $*" >&2
     exit 2
 }
+
+# gh issue view/edit accept URLs as well as numbers, and a URL names its own
+# repository — which would bypass the TRIAGE_REPO binding entirely. Numbers
+# only. Same rule as triage-apply.sh.
+guard_issue_number() {
+    local issue="$1"
+    case "$issue" in
+    '' | *[!0-9]*) die "refused: --issue must be a plain issue number (got '$issue')" ;;
+    esac
+}
+
+# Reads are bound too: a scan (or delivery report) of a different repository
+# would land that repo's issue data in the run's scratch dir, where the report
+# pipeline can publish it. Same rule as the write scripts.
+guard_repo_binding() {
+    local repo="$1"
+    if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then
+        echo "triage-scan: refused: --repo '$repo' does not match this run's" \
+            "bound repository '$TRIAGE_REPO'" >&2
+        exit 4
+    fi
+}
+
+# --out is bound under TRIAGE_SCRATCH the same way for both subcommands: the
+# calling model never needs a shell redirection, and a path outside this run's
+# scratch directory is refused rather than silently honored.
+guard_out_path() {
+    local out="$1" out_abs
+    [ -n "$out" ] || return 0
+    [ -n "${TRIAGE_SCRATCH:-}" ] || return 0
+    out_abs="$(cd "$(dirname "$out")" 2>/dev/null && pwd)/$(basename "$out")" || {
+        echo "triage-scan: could not resolve --out path" >&2
+        exit 2
+    }
+    case "$out_abs" in
+    "$TRIAGE_SCRATCH"/*) ;;
+    *)
+        echo "triage-scan: refused: --out must live under this run's" \
+            "scratch directory ($TRIAGE_SCRATCH)" >&2
+        exit 4
+        ;;
+    esac
+}
+
+# triage-scan.sh delivery --repo owner/repo --issue N [--out PATH]
+#
+# Read-only. Looks for TRUSTED delivery evidence for one open issue: a pull
+# request that is (a) in the SAME repository as the issue, (b) MERGED, and
+# (c) linked by GitHub's own graph — either a closedByPullRequestsReferences
+# entry (a closing keyword) or a cross-referenced timeline event whose
+# source PR carries a non-null merged_at (the harmon-init#1080/#1107 "Refs"
+# case, where no closing keyword ever fired). A comment claiming "done", an
+# unmerged or closed-unmerged PR, and a PR from a different repository are
+# never evidence.
+#
+# `gh issue view --json closedByPullRequestsReferences` was the first design
+# here, but its fixed field set (confirmed live against
+# evanharmon1/harmon-init#1080/#1107 on gh 2.98.0) carries only
+# id/number/url/repository{name,owner} per linked PR — no state, no
+# mergedAt — so it cannot tell a merged closing PR from an open one. This
+# reads the same graph edge via `gh api graphql` instead, in one call
+# alongside the issue's own state.
+cmd_delivery() {
+    local repo="" issue="" out=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --repo)
+            [ "$#" -ge 2 ] || usage
+            repo="$2"
+            shift 2
+            ;;
+        --issue)
+            [ "$#" -ge 2 ] || usage
+            issue="$2"
+            shift 2
+            ;;
+        --out)
+            [ "$#" -ge 2 ] || usage
+            out="$2"
+            shift 2
+            ;;
+        *) usage ;;
+        esac
+    done
+    [ -n "$repo" ] && [ -n "$issue" ] || usage
+    guard_issue_number "$issue"
+    guard_repo_binding "$repo"
+    guard_out_path "$out"
+
+    local owner name
+    owner="${repo%%/*}"
+    name="${repo#*/}"
+
+    # Both reads land in temp files, not shell variables: a real timeline page
+    # (up to 100 events, each carrying full actor objects) can be large enough
+    # that passing it back through --argjson on the command line overflows
+    # ARG_MAX, where a --slurpfile read from disk does not.
+    local delivery_tmp
+    delivery_tmp="$(mktemp -d)" || die "could not create a temp directory"
+    trap 'rm -rf "$delivery_tmp"' RETURN
+
+    local closing_ok=1 reason=""
+    if ! gh api graphql \
+        -f query='query($o: String!, $r: String!, $n: Int!) {
+            repository(owner: $o, name: $r) {
+              issue(number: $n) {
+                number
+                state
+                closedByPullRequestsReferences(first: 100) {
+                  nodes {
+                    number
+                    state
+                    mergedAt
+                    repository { nameWithOwner }
+                    url
+                  }
+                }
+              }
+            }
+          }' \
+        -f o="$owner" -f r="$name" -F n="$issue" \
+        >"$delivery_tmp/closing.json" 2>/dev/null; then
+        closing_ok=0
+        reason="could not read $repo#$issue's closing pull request links"
+    fi
+    if [ "$closing_ok" -eq 1 ] &&
+        [ "$(jq -r '.data.repository.issue == null' \
+            "$delivery_tmp/closing.json" 2>/dev/null)" = "true" ]; then
+        closing_ok=0
+        reason="$repo#$issue was not found"
+    fi
+
+    # One bounded page — not paginated — for cross-referenced (Refs-style)
+    # links a closing keyword never produced.
+    local timeline_ok=1 timeline_truncated=false
+    if ! gh api "repos/$repo/issues/$issue/timeline" -X GET -f per_page=100 \
+        >"$delivery_tmp/timeline.json" 2>/dev/null; then
+        timeline_ok=0
+        [ -n "$reason" ] || reason="could not read $repo#$issue's timeline"
+    else
+        [ "$(jq 'length' "$delivery_tmp/timeline.json")" -lt 100 ] ||
+            timeline_truncated=true
+    fi
+
+    [ -z "$out" ] || exec >"$out"
+
+    if [ "$closing_ok" -eq 0 ] || [ "$timeline_ok" -eq 0 ]; then
+        jq -n --arg repo "$repo" --argjson issue "$issue" --arg reason "$reason" '
+          {repo: $repo, issue: $issue, state: null, verdict: "indeterminate",
+           evidence: [], timeline_truncated: false, reason: $reason}'
+        return 0
+    fi
+
+    jq -n \
+        --arg repo "$repo" \
+        --argjson issue_num "$issue" \
+        --slurpfile closing_arr "$delivery_tmp/closing.json" \
+        --slurpfile timeline_arr "$delivery_tmp/timeline.json" \
+        --argjson timeline_truncated "$timeline_truncated" '
+      ($closing_arr[0].data.repository.issue) as $iss
+      | ($timeline_arr[0]) as $timeline
+      | (($iss.closedByPullRequestsReferences.nodes // [])
+         | map(select(.repository.nameWithOwner == $repo and .state == "MERGED")
+               | {pr: .number, url: .url, merged_at: .mergedAt,
+                  via: "closing-reference"})) as $closing_ev
+      | ([$timeline[]
+          | select(.event == "cross-referenced"
+                   and .source.type == "issue"
+                   and (.source.issue.pull_request != null)
+                   and (.source.issue.pull_request.merged_at != null)
+                   and (.source.issue.repository.full_name == $repo))
+          | {pr: .source.issue.number,
+             url: .source.issue.pull_request.html_url,
+             merged_at: .source.issue.pull_request.merged_at,
+             via: "cross-reference"}]) as $cross_ev
+      | ($closing_ev + $cross_ev | unique_by(.pr) | sort_by(.pr)) as $evidence
+      | {repo: $repo,
+         issue: $issue_num,
+         state: $iss.state,
+         verdict: (if ($evidence | length) > 0
+                   then "merged-delivery" else "none" end),
+         evidence: $evidence,
+         timeline_truncated: $timeline_truncated}'
+}
+
+if [ "${1:-}" = "delivery" ]; then
+    shift
+    cmd_delivery "$@"
+    exit 0
+fi
 
 [ -r "$title_module_dir/issue-title.jq" ] ||
     die "shared issue-title predicate is missing"
@@ -99,14 +311,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 [ -n "$repo" ] || usage
-# Reads are bound too: a scan of a different repository would land that
-# repo's issue data in the run's scratch dir, where the report pipeline can
-# publish it. Same rule as the write scripts.
-if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then
-    echo "triage-scan: refused: --repo '$repo' does not match this run's" \
-        "bound repository '$TRIAGE_REPO'" >&2
-    exit 4
-fi
+guard_repo_binding "$repo"
 # Same manifest rule as triage-apply.sh: a bound run reads the repo's own
 # manifest only — a worker-writable one would define its own vocabulary.
 if [ -n "${TRIAGE_REPO:-}" ] && [ "$manifest" != "./label-registry.json" ]; then
@@ -115,20 +320,7 @@ if [ -n "${TRIAGE_REPO:-}" ] && [ "$manifest" != "./label-registry.json" ]; then
     exit 4
 fi
 
-if [ -n "$out" ] && [ -n "${TRIAGE_SCRATCH:-}" ]; then
-    out_abs="$(cd "$(dirname "$out")" 2>/dev/null && pwd)/$(basename "$out")" || {
-        echo "triage-scan: could not resolve --out path" >&2
-        exit 2
-    }
-    case "$out_abs" in
-    "$TRIAGE_SCRATCH"/*) ;;
-    *)
-        echo "triage-scan: refused: --out must live under this run's" \
-            "scratch directory ($TRIAGE_SCRATCH)" >&2
-        exit 4
-        ;;
-    esac
-fi
+guard_out_path "$out"
 
 claim_stale="${TRIAGE_CLAIM_STALE_DAYS:-14}"
 needs_stale="${TRIAGE_NEEDS_STALE_DAYS:-30}"
@@ -195,7 +387,7 @@ report_json=null
 # which also stops natively-typed issues starving the reading budget. Older
 # gh (or an API refusal) falls back to the per-issue path: native_type_mode
 # says which.
-open_fields="number,title,labels,createdAt,updatedAt,assignees"
+open_fields="number,title,labels,createdAt,updatedAt,assignees,body"
 native_type_mode="n/a"
 open_json=""
 if [ "$owner_type" = "Organization" ]; then
@@ -224,6 +416,15 @@ truncated_open=false
 truncated_closed=false
 [ "$(jq length <<<"$closed_json")" -lt "$closed_limit" ] || truncated_closed=true
 
+# open_json/closed_json now carry every issue body (needed for the
+# criteria/completion facts below), which at a real repo's scale can be large
+# enough that handing them to jq via --argjson on the command line overflows
+# ARG_MAX. A temp-file + --slurpfile read does not share that limit.
+scan_tmp="$(mktemp -d)" || die "could not create a temp directory"
+trap 'rm -rf "$scan_tmp"' EXIT
+printf '%s' "$open_json" >"$scan_tmp/open.json"
+printf '%s' "$closed_json" >"$scan_tmp/closed.json"
+
 # --out: the scan owns its output file so the caller needs no redirection.
 [ -z "$out" ] || exec >"$out"
 
@@ -236,8 +437,8 @@ jq -n -L "$title_module_dir" \
     --argjson report "$report_json" \
     --argjson allow "$allow_json" \
     --argjson vocabulary "$vocabulary" \
-    --argjson open "$open_json" \
-    --argjson closed "$closed_json" \
+    --slurpfile open_arr "$scan_tmp/open.json" \
+    --slurpfile closed_arr "$scan_tmp/closed.json" \
     --argjson claim_stale "$claim_stale" \
     --argjson needs_stale "$needs_stale" \
     --argjson all "$all" \
@@ -246,6 +447,7 @@ jq -n -L "$title_module_dir" \
     --arg native_type_mode "$native_type_mode" \
     --argjson wt "$wt_json" '
   include "issue-title";
+  ($open_arr[0]) as $open | ($closed_arr[0]) as $closed |
   def axis_labels($ls; $a): [$ls[] | select(startswith($a + ":"))];
   def axis_known($ls; $a):
     [axis_labels($ls; $a)[] | select(. as $l | $known | index($l) != null)];
@@ -264,6 +466,47 @@ jq -n -L "$title_module_dir" \
     axis_state($ls; $a) as $state
     | ($state != "ok"
        and ($state != "none" or (axis_optional_when_absent($a) | not)));
+
+  # Acceptance-criteria checkbox facts, for the "possible completion"
+  # candidates. checkbox_line_re is the SAME predicate closed_flagged uses
+  # below (unordered/ordered markers, any indentation, any blockquote depth),
+  # extended to also match a ticked box ([x]/[X]) so a line counts whether
+  # ticked or not; checkbox_unticked_re is the original, unticked-only form.
+  def checkbox_line_re:
+    "^[ \\t]*(>[ \\t]*)*([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\]";
+  def checkbox_unticked_re:
+    "^[ \\t]*(>[ \\t]*)*([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\]";
+  # The text immediately after an unticked checkbox marker — used only to
+  # classify the track-work [CI]/[HUMAN] tag grammar, never to decide whether
+  # a line counts as a criterion (checkbox_unticked_re already decided that).
+  def checkbox_rest($line):
+    ($line | capture(
+      "^[ \\t]*(>[ \\t]*)*([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\][ \\t]*(?<rest>.*)$"
+    )).rest;
+  # The track-work tag grammar exactly: case-insensitive [CI]/[HUMAN]
+  # immediately after the checkbox, followed by whitespace or end-of-line;
+  # anything else unticked is untagged.
+  def rest_tag($rest):
+    if ($rest | test("^\\[ci\\]([ \\t]|$)"; "i")) then "ci"
+    elif ($rest | test("^\\[human\\]([ \\t]|$)"; "i")) then "human"
+    else "untagged" end;
+  def criteria_facts($body):
+    (($body // "") | split("\n")) as $lines
+    | ([$lines[] | select(test(checkbox_line_re))] | length) as $total
+    | ([$lines[] | select(test(checkbox_unticked_re))]) as $unticked_lines
+    | ($unticked_lines | length) as $unticked
+    | ([$unticked_lines[] | rest_tag(checkbox_rest(.))]) as $tags
+    | { total: $total,
+        unticked: $unticked,
+        unticked_ci: ([$tags[] | select(. == "ci")] | length),
+        unticked_human: ([$tags[] | select(. == "human")] | length),
+        unticked_untagged: ([$tags[] | select(. == "untagged")] | length) };
+  def completion_reasons($crit):
+    [ (if ($crit.total >= 1 and $crit.unticked == 0)
+       then "completion-candidate:all-criteria-checked" else empty end),
+      (if ($crit.total >= 1 and $crit.unticked_ci == 0
+           and $crit.unticked_untagged == 0 and $crit.unticked_human >= 1)
+       then "completion-candidate:human-only-remaining" else empty end) ];
 
   {
     repo: $repo,
@@ -338,6 +581,8 @@ jq -n -L "$title_module_dir" \
            # the exemption stays only where native Type is unreadable.
            or ($owner_type == "Organization" and $nts == "unset"))
             as $needs_triage_worthy
+        | criteria_facts(.body) as $crit
+        | completion_reasons($crit) as $creasons
         | {number, title, updatedAt,
            days_since_update: $days,
            labels: $ls,
@@ -357,6 +602,8 @@ jq -n -L "$title_module_dir" \
                             | with_entries(select(.value | length > 0))),
            needs_labels: $needs,
            claim_labels: $claims,
+           criteria: $crit,
+           completion_reasons: $creasons,
            flags:
              ([ # With a bulk-read native Type state, a typed org
                 # issue needs no work-type attention at all — the flag fires
@@ -403,7 +650,8 @@ jq -n -L "$title_module_dir" \
                 (if (.title | length) > 70
                  then "title-long" else empty end),
                 (if (.title | issue_title_valid | not)
-                 then "title-malformed" else empty end)
+                 then "title-malformed" else empty end),
+                $creasons[]
               ])}
         | select(($all == 1) or ((.flags | length) > 0))
       ],
