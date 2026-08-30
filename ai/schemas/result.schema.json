@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/result.schema.json",
   "title": "Dev flow v2 result — native harness entry point",
-  "$comment": "A SELF-CONTAINED composition of result.envelope.schema.json plus the three result.<role>.schema.json payload shapes, for a harness with its own native JSON-Schema validator (Workflow/Agent `schema`) that cannot run scripts/validate-result-schemas.mjs's role dispatch. `payload` is dispatched by role via `allOf` (one {if, then} pair per role — `if` matches `role`, `then` points `payload` at that role's `$defs` entry). The envelope-level `properties` (every key but `payload`, which stays the untyped {type: object} both files already agree on) and `required` above are copied VERBATIM from result.envelope.schema.json, and `$defs.implementer` / `$defs.reviewer` / `$defs.integrator` are their standalone schema files' bodies inlined VERBATIM too (same type/additionalProperties/required/properties/$defs/if/then), minus only $schema/$id/title/$comment, which make no sense on a $defs entry — scripts/test-result-schemas.sh asserts both equalities directly so neither representation can silently drift apart from its source. The one necessary edit anywhere in this file is `$defs.reviewer`'s own internal reference: the standalone file's `#/$defs/finding` becomes `#/$defs/reviewer/$defs/finding` here, since `finding` now lives nested under this file's `$defs.reviewer` rather than at that file's own root — the equality test normalizes exactly this one rewrite before comparing, and nothing else. Two more `allOf` members enforce the implementer completed/blocked REQUIREDNESS (payload.summary/handoff/ac_test_map present when role=implementer and status=completed; payload.blocked_question present when blocked) — this is expressible HERE, unlike in the standalone result.implementer.schema.json, precisely because `role` and `status` are both envelope-level fields this composed document can see in the same `if` as the `payload` property its `then` reaches into; the standalone payload-only schema never sees `status` at all. This does NOT cover the non-empty half of that same rule (an empty-string summary or a null blocked_question still satisfies plain `required`) — that half, and every other receipt-validation semantic check (head agreement, run matching, id/pass/adjudication cross-checks, every integrator cross-field rule), still needs context or sibling fields no single schema-keyword condition can express; scripts/validate-result-schemas.mjs's checkImplementerStatus and friends add all of it on top for any harness that can run them. See ai/schemas/README.md 'Native harness composition (result.schema.json)'. result.envelope.schema.json stays the deliberately envelope-only shape (payload: {type: object}, no dispatch) for whichever purpose only needs to validate the envelope fields themselves.",
+  "$comment": "A SELF-CONTAINED composition of result.envelope.schema.json plus the three result.<role>.schema.json payload shapes, for a harness with its own native JSON-Schema validator (Workflow/Agent `schema`) that cannot run scripts/validate-result-schemas.mjs's role dispatch. `payload` is dispatched by role via `allOf` (one {if, then} pair per role — `if` matches `role`, `then` points `payload` at that role's `$defs` entry). The envelope-level `properties` (every key but `payload`, which stays the untyped {type: object} both files already agree on) and `required` above are copied VERBATIM from result.envelope.schema.json, and `$defs.implementer` / `$defs.reviewer` / `$defs.integrator` are their standalone schema files' bodies inlined VERBATIM too (same type/additionalProperties/required/properties/$defs/if/then), minus only $schema/$id/title/$comment, which make no sense on a $defs entry — scripts/test-result-schemas.sh asserts both equalities directly so neither representation can silently drift apart from its source. The one necessary edit anywhere in this file is `$defs.reviewer`'s own internal reference: the standalone file's `#/$defs/finding` becomes `#/$defs/reviewer/$defs/finding` here, since `finding` now lives nested under this file's `$defs.reviewer` rather than at that file's own root — the equality test normalizes exactly this one rewrite before comparing, and nothing else. Two more `allOf` members enforce the implementer completed/blocked REQUIREDNESS AND non-emptiness (payload.summary/handoff/ac_test_map present AND minLength/minItems-non-empty when role=implementer and status=completed; payload.blocked_question present AND non-empty when blocked) — this is expressible HERE, unlike in the standalone result.implementer.schema.json, precisely because `role` and `status` are both envelope-level fields this composed document can see in the same `if` as the `payload` property its `then` reaches into; the standalone payload-only schema never sees `status` at all, so ITS `$defs.implementer.properties.summary` (etc.) stays a bare `type: string` with no `minLength` — Foreman v1 serializes summary as `\"\"` on a BLOCKED result, a shape the shared, unconditional property definition must still accept; only the status-conditional `then` branch here may add `minLength`/`minItems`, and only for the completed/blocked case each actually applies to. Every OTHER receipt-validation semantic check (head agreement, run matching, id/pass/adjudication cross-checks, every integrator cross-field rule) still needs context or sibling fields no single schema-keyword condition can express; scripts/validate-result-schemas.mjs's checkImplementerStatus and friends add all of it on top for any harness that can run them. See ai/schemas/README.md 'Native harness composition (result.schema.json)'. result.envelope.schema.json stays the deliberately envelope-only shape (payload: {type: object}, no dispatch) for whichever purpose only needs to validate the envelope fields themselves.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "role", "status", "head", "produced_at", "producer", "run", "payload"],
@@ -77,14 +77,32 @@
         "properties": { "role": { "const": "implementer" }, "status": { "const": "completed" } },
         "required": ["role", "status"]
       },
-      "then": { "properties": { "payload": { "required": ["summary", "handoff", "ac_test_map"] } } }
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["summary", "handoff", "ac_test_map"],
+            "properties": {
+              "summary": { "minLength": 1 },
+              "handoff": { "minLength": 1 },
+              "ac_test_map": { "minItems": 1 }
+            }
+          }
+        }
+      }
     },
     {
       "if": {
         "properties": { "role": { "const": "implementer" }, "status": { "const": "blocked" } },
         "required": ["role", "status"]
       },
-      "then": { "properties": { "payload": { "required": ["blocked_question"] } } }
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["blocked_question"],
+            "properties": { "blocked_question": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -244,6 +262,7 @@
       "required": [
         "checks",
         "codex_cycle",
+        "integration_round",
         "findings",
         "unanswered_thread_roots",
         "settled_at",
@@ -306,7 +325,7 @@
               "pattern": "^[0-9a-f]{40}$"
             },
             "cycle": {
-              "description": "The run-wide integration cycle ordinal, counted against the resolved [caps].integration cap — increases with every new current-head Codex cycle this run drives (a fresh captured head, not a retry of the same one). Distinct from `attempt`: `cycle` counts CYCLES across the whole run, `attempt` counts RETRIES within one cycle's own captured head. This is what an integration finding id's own round segment and an integration-stage adjudication's `round` are checked against (checkIntegratorFindingIds, checkAdjudicationAgainstPass) — never `attempt`, which is scoped to a single head's retry budget and says nothing about which cycle in the run this is.",
+              "description": "The run-wide Codex cycle ordinal, counted against the resolved [caps].integration cap — increases with every new current-head Codex cycle this run drives (a fresh captured head, not a retry of the same one). Distinct from `attempt`: `cycle` counts CYCLES across the whole run, `attempt` counts RETRIES within one cycle's own captured head. Also distinct from the sibling `integration_round` (one level up, on the payload itself): `cycle` is null whenever `codex_cycle` itself is null (no Codex cycle ran this pass), so it is never what an integration finding id's round segment or an adjudication's `round` are checked against — see `integration_round`'s own description.",
               "type": "integer",
               "minimum": 1
             },
@@ -350,8 +369,13 @@
             "required": ["accepted"]
           }
         },
+        "integration_round": {
+          "description": "The run-wide ordinal of THIS integrator pass — independent of whether a Codex cycle ran (codex_cycle is null exactly when the resolved integration cap is 0, but a pass still happens and still needs an ordinal). This is what an integration finding id's own round segment and an integration-stage adjudication's `round` are checked against (checkIntegratorFindingIds, checkAdjudicationAgainstPass) — never `codex_cycle.cycle`, which counts Codex cycles specifically and is absent whenever codex_cycle itself is null, nor `codex_cycle.attempt`, which counts retries within one cycle's own captured head. Three different counters: integration_round counts passes, cycle counts Codex cycles, attempt counts retries per head.",
+          "type": "integer",
+          "minimum": 1
+        },
         "findings": {
-          "description": "Findings surfaced during integration (human review comments, CI failures needing adjudication, an unsettled Codex finding) carried verbatim for the orchestrator to adjudicate — id, body, and source_id only, since the integrator never authors or interprets finding text. `id` follows the SAME finding-id grammar as a reviewer pass, with stage fixed to `integration`: integration-r<cycle>-<finder>-<n>, where cycle is codex_cycle.cycle (or 1 when codex_cycle is null) and finder is the registry finder slug or `human` — this is what gives an integration finding an adjudication path through adjudication.schema.json exactly like a reviewer finding. `source_id` carries what `id` held before this schema adopted that grammar: the GitHub-native identifier of whatever surfaced the finding (an inline review comment id, a review id, a locally-minted marker for a CI failure).",
+          "description": "Findings surfaced during integration (human review comments, CI failures needing adjudication, an unsettled Codex finding) carried verbatim for the orchestrator to adjudicate — id, body, and source_id only, since the integrator never authors or interprets finding text. `id` follows the SAME finding-id grammar as a reviewer pass, with stage fixed to `integration`: integration-r<round>-<finder>-<n>, where round is the sibling `integration_round` and finder is the registry finder slug or `human` — this is what gives an integration finding an adjudication path through adjudication.schema.json exactly like a reviewer finding. `source_id` carries what `id` held before this schema adopted that grammar: the GitHub-native identifier of whatever surfaced the finding (an inline review comment id, a review id, a locally-minted marker for a CI failure).",
           "type": "array",
           "items": {
             "type": "object",
@@ -359,7 +383,7 @@
             "required": ["id", "body", "source_id"],
             "properties": {
               "id": {
-                "description": "integration-r<cycle>-<finder>-<n> — see the findings[] description above.",
+                "description": "integration-r<round>-<finder>-<n> — see the findings[] description above.",
                 "type": "string",
                 "pattern": "^integration-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
               },

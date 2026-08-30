@@ -34,6 +34,7 @@
       },
       "exit_code": 10
     },
+    "integration_round": 1,
     "findings": [
       {
         "id": "integration-r1-human-1",

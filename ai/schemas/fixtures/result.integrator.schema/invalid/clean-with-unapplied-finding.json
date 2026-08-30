@@ -34,6 +34,7 @@
         "reviewed_commit": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae"
       }
     },
+    "integration_round": 1,
     "findings": [
       {
         "id": "integration-r1-human-1",

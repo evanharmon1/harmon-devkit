@@ -28,6 +28,7 @@
       "attempt": 1,
       "trigger_comment_id": "555000335"
     },
+    "integration_round": 1,
     "findings": [],
     "unanswered_thread_roots": [],
     "settled_at": "2026-08-29T18:00:00Z",

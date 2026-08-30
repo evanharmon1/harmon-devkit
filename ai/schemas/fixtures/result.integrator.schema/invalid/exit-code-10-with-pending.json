@@ -34,6 +34,7 @@
         "reviewed_commit": "8fbd0ae8fe1e874129edff75ae90e0126b31c580"
       }
     },
+    "integration_round": 1,
     "findings": [],
     "unanswered_thread_roots": [],
     "settled_at": "2026-08-29T18:00:00Z",

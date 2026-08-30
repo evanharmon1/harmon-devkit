@@ -29,6 +29,7 @@
       "trigger_comment_id": "555000333",
       "exit_code": 0
     },
+    "integration_round": 1,
     "findings": [],
     "unanswered_thread_roots": [],
     "settled_at": "2026-08-29T18:05:00Z",

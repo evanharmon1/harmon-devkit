@@ -2,7 +2,7 @@
   "schema": 2,
   "role": "integrator",
   "status": "completed",
-  "head": "24498335135ba6ac15fa54ec750d2c751d42da1a",
+  "head": "2a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b",
   "produced_at": "2026-08-29T18:00:00Z",
   "producer": {
     "harness": "claude-code",
@@ -10,23 +10,29 @@
     "tier": "standard"
   },
   "run": {
-    "run_id": "run-4016-checks-entry-missing-name",
+    "run_id": "run-4051-exit-code-2-with-pending",
     "initiated_by": "human"
   },
   "payload": {
     "checks": [
       {
-        "bucket": "pass",
-        "run_id": "1010",
+        "name": "ci/build",
+        "bucket": "pending",
+        "run_id": "1034",
         "required": true
       }
     ],
-    "codex_cycle": null,
+    "codex_cycle": {
+      "head": "2a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b",
+      "cycle": 1,
+      "attempt": 2,
+      "trigger_comment_id": "555000888",
+      "exit_code": 2
+    },
     "integration_round": 1,
     "findings": [],
     "unanswered_thread_roots": [],
     "settled_at": "2026-08-29T18:00:00Z",
-    "verdict": "clean",
-    "applied_dispositions": []
+    "verdict": "pending"
   }
 }

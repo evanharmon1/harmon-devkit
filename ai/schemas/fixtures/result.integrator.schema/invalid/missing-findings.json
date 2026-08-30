@@ -23,6 +23,7 @@
       }
     ],
     "codex_cycle": null,
+    "integration_round": 1,
     "unanswered_thread_roots": [],
     "settled_at": "2026-08-29T18:00:00Z",
     "verdict": "clean",

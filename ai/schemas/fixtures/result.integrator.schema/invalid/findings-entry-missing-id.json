@@ -23,6 +23,7 @@
       }
     ],
     "codex_cycle": null,
+    "integration_round": 1,
     "findings": [
       {
         "body": "Please add a regression test.",

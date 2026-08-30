@@ -8,6 +8,7 @@
   "run": { "run_id": "run-4010-missing-checks", "initiated_by": "human" },
   "payload": {
     "codex_cycle": null,
+    "integration_round": 1,
     "findings": [],
     "unanswered_thread_roots": [],
     "settled_at": "2026-08-29T18:00:00Z",

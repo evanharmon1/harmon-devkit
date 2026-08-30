@@ -23,6 +23,7 @@
       }
     ],
     "codex_cycle": null,
+    "integration_round": 1,
     "findings": [],
     "unanswered_thread_roots": [
       12345,

@@ -23,6 +23,7 @@
       }
     ],
     "codex_cycle": null,
+    "integration_round": 1,
     "findings": [],
     "settled_at": "2026-08-29T18:00:00Z",
     "verdict": "clean",

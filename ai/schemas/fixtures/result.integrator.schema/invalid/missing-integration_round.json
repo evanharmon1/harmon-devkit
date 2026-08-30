@@ -2,7 +2,7 @@
   "schema": 2,
   "role": "integrator",
   "status": "completed",
-  "head": "24498335135ba6ac15fa54ec750d2c751d42da1a",
+  "head": "184dd1361f8a1e0701e003b785024e7b645428d1",
   "produced_at": "2026-08-29T18:00:00Z",
   "producer": {
     "harness": "claude-code",
@@ -10,19 +10,19 @@
     "tier": "standard"
   },
   "run": {
-    "run_id": "run-4016-checks-entry-missing-name",
+    "run_id": "run-4050-missing-integration-round",
     "initiated_by": "human"
   },
   "payload": {
     "checks": [
       {
+        "name": "ci/build",
         "bucket": "pass",
-        "run_id": "1010",
+        "run_id": "1033",
         "required": true
       }
     ],
     "codex_cycle": null,
-    "integration_round": 1,
     "findings": [],
     "unanswered_thread_roots": [],
     "settled_at": "2026-08-29T18:00:00Z",

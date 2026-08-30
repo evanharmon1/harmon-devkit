@@ -23,6 +23,7 @@
       }
     ],
     "codex_cycle": null,
+    "integration_round": 1,
     "findings": [
       {
         "id": "integration-r1-human-1",
