@@ -17,9 +17,10 @@
 //   the caller having to already know its role.
 //
 //   --known-ids <file.json>       JSON array of finding ids already used
-//                                 elsewhere in the run (reviewer only) —
-//                                 rejects a collision (spec: "a finding id
-//                                 is unique within the run by construction").
+//                                 elsewhere in the run (reviewer and
+//                                 integrator) — rejects a collision (spec:
+//                                 "a finding id is unique within the run by
+//                                 construction").
 //   --run-id <id>                 The active run's run_id. Must be given
 //   --initiated-by <human|foreman>  together with --initiated-by — one
 //                                 without the other is a usage error, not a
@@ -342,7 +343,11 @@ const RUN_ID_FLAG = { flag: '--run-id', given: (o) => o.runId !== null }
 const CONTEXT_FLAGS = {
   implementer: [RUN_ID_FLAG],
   reviewer: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
-  integrator: [{ flag: '--integration-cap', given: (o) => o.integrationCap !== null }, RUN_ID_FLAG],
+  integrator: [
+    { flag: '--integration-cap', given: (o) => o.integrationCap !== null },
+    { flag: '--known-ids', given: (o) => o.knownIds !== null },
+    RUN_ID_FLAG
+  ],
   adjudication: [
     { flag: '--known-adjudicated', given: (o) => o.knownAdjudicated !== null },
     { flag: '--pass', given: (o) => o.passes.length > 0 }
@@ -597,15 +602,19 @@ function checkAppliedDispositionsUnique(payload, errors) {
 // checkIntegratorFindingIds — findings[].id must be unique within the
 // payload (no schema keyword expresses cross-array uniqueness on a
 // sub-key, same reasoning as checkFindingIds' reviewer-side duplicate
-// check); its <cycle> segment (the r<N>) must equal codex_cycle.attempt,
-// or 1 when codex_cycle is null (result.integrator.schema.json's
-// findings[] description) — the id's grammar names WHICH Codex cycle
-// surfaced the finding, so a mismatch is two fields disagreeing about the
-// same fact; and its finder segment must be non-empty — the schema's own
-// [a-z0-9-]+ pattern already guarantees this structurally, restated here
-// because parseFindingId's shared (.+) group is looser than any one
-// schema's own character class. Always runs for role integrator.
-function checkIntegratorFindingIds(envelope, errors) {
+// check) AND unique within the run (given prior-run context, --known-ids
+// — same semantics as checkFindingIds' reviewer-side collision check: an
+// integration finding id is unique within the run by construction exactly
+// like a reviewer finding id); its <cycle> segment (the r<N>) must equal
+// codex_cycle.attempt, or 1 when codex_cycle is null
+// (result.integrator.schema.json's findings[] description) — the id's
+// grammar names WHICH Codex cycle surfaced the finding, so a mismatch is
+// two fields disagreeing about the same fact; and its finder segment must
+// be non-empty — the schema's own [a-z0-9-]+ pattern already guarantees
+// this structurally, restated here because parseFindingId's shared (.+)
+// group is looser than any one schema's own character class. Always runs
+// for role integrator.
+function checkIntegratorFindingIds(envelope, options, errors) {
   const { payload } = envelope
   if (!Array.isArray(payload.findings)) return
   const expectedCycle =
@@ -617,6 +626,11 @@ function checkIntegratorFindingIds(envelope, errors) {
       errors.push(`$result.payload.findings: duplicate finding id ${finding.id} within this payload`)
     }
     seen.add(finding.id)
+    if (Array.isArray(options.knownIds) && options.knownIds.includes(finding.id)) {
+      errors.push(
+        `$result.payload.findings: finding id ${finding.id} collides with a finding already in the run`
+      )
+    }
     const parsed = parseFindingId(finding.id)
     if (!parsed) continue
     if (parsed.round !== expectedCycle) {
@@ -720,7 +734,7 @@ function validateEnvelopeInstance(instance, kind, options) {
           checkAppliedDispositionsUnique(instance.payload, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
           checkIntegrationCap(instance.payload, options.integrationCap, errors)
-          checkIntegratorFindingIds(instance, errors)
+          checkIntegratorFindingIds(instance, options, errors)
         }
         checkHeadAgreement(role, instance, errors)
       }
@@ -731,17 +745,47 @@ function validateEnvelopeInstance(instance, kind, options) {
 }
 
 // checkAdjudicationEntries — internal self-consistency, always run: no
-// duplicate finding_id within the document, and override present (with a
-// reason) exactly when adjudicated_priority differs from reviewer_priority.
+// duplicate finding_id within the document; reviewer_priority's nullness
+// matches its stage (non-null — one of P0-P3 — for challenge/review, since
+// every reviewer finding carries one; null for integration, since an
+// integrator finding carries no reviewer-asserted priority to copy — the
+// schema only bounds the SHAPE of whichever it is, not which stage gets
+// which, since `stage` is a sibling field the payload-only enum/type check
+// cannot see). For challenge/review, override is present (with a reason)
+// exactly when adjudicated_priority differs from reviewer_priority. For
+// integration, override is unconditionally null — there is no reviewer
+// priority for adjudicated_priority to differ FROM, so the
+// differs-from-what comparison this rule is built on does not apply; an
+// override here would claim a disagreement that cannot exist.
 function checkAdjudicationEntries(document, errors) {
   if (!Array.isArray(document.adjudications)) return
   const seen = new Set()
+  const isIntegration = document.stage === 'integration'
   for (const entry of document.adjudications) {
     if (typeof entry.finding_id === 'string') {
       if (seen.has(entry.finding_id)) {
         errors.push(`$adjudication.adjudications: duplicate finding_id ${entry.finding_id}`)
       }
       seen.add(entry.finding_id)
+    }
+    if (isIntegration) {
+      if (entry.reviewer_priority !== null) {
+        errors.push(
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].reviewer_priority: must be null for stage integration (no reviewer pass to copy a priority from)`
+        )
+      }
+      if (entry.override !== null) {
+        errors.push(
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].override: must be null for stage integration (there is no reviewer priority for adjudicated_priority to differ from)`
+        )
+      }
+      continue
+    }
+    if (entry.reviewer_priority === null) {
+      errors.push(
+        `$adjudication.adjudications[finding_id=${entry.finding_id}].reviewer_priority: must not be null outside stage integration`
+      )
+      continue
     }
     if (entry.reviewer_priority === entry.adjudicated_priority) {
       if (entry.override !== null) {

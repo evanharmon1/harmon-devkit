@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/result.schema.json",
   "title": "Dev flow v2 result — native harness entry point",
-  "$comment": "A SELF-CONTAINED composition of result.envelope.schema.json plus the three result.<role>.schema.json payload shapes, for a harness with its own native JSON-Schema validator (Workflow/Agent `schema`) that cannot run scripts/validate-result-schemas.mjs's role dispatch. `payload` is dispatched by role via `allOf` (one {if, then} pair per role — `if` matches `role`, `then` points `payload` at that role's `$defs` entry). The envelope-level `properties` (every key but `payload`, which stays the untyped {type: object} both files already agree on) and `required` above are copied VERBATIM from result.envelope.schema.json, and `$defs.implementer` / `$defs.reviewer` / `$defs.integrator` are their standalone schema files' bodies inlined VERBATIM too (same type/additionalProperties/required/properties/$defs/if/then), minus only $schema/$id/title/$comment, which make no sense on a $defs entry — scripts/test-result-schemas.sh asserts both equalities directly so neither representation can silently drift apart from its source. The one necessary edit anywhere in this file is `$defs.reviewer`'s own internal reference: the standalone file's `#/$defs/finding` becomes `#/$defs/reviewer/$defs/finding` here, since `finding` now lives nested under this file's `$defs.reviewer` rather than at that file's own root — the equality test normalizes exactly this one rewrite before comparing, and nothing else. This file is deliberately NOT where the receipt-validation semantic checks live (head agreement, run matching, id/pass/adjudication cross-checks, the implementer status-conditional fields, every integrator cross-field rule) — those need context or sibling fields no single schema instance can see; scripts/validate-result-schemas.mjs adds them on top for any harness that can run it. See ai/schemas/README.md 'Native harness composition (result.schema.json)'. result.envelope.schema.json stays the deliberately envelope-only shape (payload: {type: object}, no dispatch) for whichever purpose only needs to validate the envelope fields themselves.",
+  "$comment": "A SELF-CONTAINED composition of result.envelope.schema.json plus the three result.<role>.schema.json payload shapes, for a harness with its own native JSON-Schema validator (Workflow/Agent `schema`) that cannot run scripts/validate-result-schemas.mjs's role dispatch. `payload` is dispatched by role via `allOf` (one {if, then} pair per role — `if` matches `role`, `then` points `payload` at that role's `$defs` entry). The envelope-level `properties` (every key but `payload`, which stays the untyped {type: object} both files already agree on) and `required` above are copied VERBATIM from result.envelope.schema.json, and `$defs.implementer` / `$defs.reviewer` / `$defs.integrator` are their standalone schema files' bodies inlined VERBATIM too (same type/additionalProperties/required/properties/$defs/if/then), minus only $schema/$id/title/$comment, which make no sense on a $defs entry — scripts/test-result-schemas.sh asserts both equalities directly so neither representation can silently drift apart from its source. The one necessary edit anywhere in this file is `$defs.reviewer`'s own internal reference: the standalone file's `#/$defs/finding` becomes `#/$defs/reviewer/$defs/finding` here, since `finding` now lives nested under this file's `$defs.reviewer` rather than at that file's own root — the equality test normalizes exactly this one rewrite before comparing, and nothing else. Two more `allOf` members enforce the implementer completed/blocked REQUIREDNESS (payload.summary/handoff/ac_test_map present when role=implementer and status=completed; payload.blocked_question present when blocked) — this is expressible HERE, unlike in the standalone result.implementer.schema.json, precisely because `role` and `status` are both envelope-level fields this composed document can see in the same `if` as the `payload` property its `then` reaches into; the standalone payload-only schema never sees `status` at all. This does NOT cover the non-empty half of that same rule (an empty-string summary or a null blocked_question still satisfies plain `required`) — that half, and every other receipt-validation semantic check (head agreement, run matching, id/pass/adjudication cross-checks, every integrator cross-field rule), still needs context or sibling fields no single schema-keyword condition can express; scripts/validate-result-schemas.mjs's checkImplementerStatus and friends add all of it on top for any harness that can run them. See ai/schemas/README.md 'Native harness composition (result.schema.json)'. result.envelope.schema.json stays the deliberately envelope-only shape (payload: {type: object}, no dispatch) for whichever purpose only needs to validate the envelope fields themselves.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "role", "status", "head", "produced_at", "producer", "run", "payload"],
@@ -71,6 +71,20 @@
     {
       "if": { "properties": { "role": { "const": "integrator" } }, "required": ["role"] },
       "then": { "properties": { "payload": { "$ref": "#/$defs/integrator" } } }
+    },
+    {
+      "if": {
+        "properties": { "role": { "const": "implementer" }, "status": { "const": "completed" } },
+        "required": ["role", "status"]
+      },
+      "then": { "properties": { "payload": { "required": ["summary", "handoff", "ac_test_map"] } } }
+    },
+    {
+      "if": {
+        "properties": { "role": { "const": "implementer" }, "status": { "const": "blocked" } },
+        "required": ["role", "status"]
+      },
+      "then": { "properties": { "payload": { "required": ["blocked_question"] } } }
     }
   ],
   "$defs": {

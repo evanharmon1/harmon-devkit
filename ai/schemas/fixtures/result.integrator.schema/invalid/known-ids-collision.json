@@ -1,0 +1,37 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "25875c1e89ba5d823e6833bbdb09a46b36a96efc",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-4041-known-ids-collision",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1019",
+        "required": true
+      }
+    ],
+    "codex_cycle": null,
+    "findings": [
+      {
+        "id": "integration-r1-human-1",
+        "body": "Please add a regression test.",
+        "source_id": "review-1234567893"
+      }
+    ],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "findings"
+  }
+}

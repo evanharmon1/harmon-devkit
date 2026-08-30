@@ -79,19 +79,34 @@ role dispatch expressed structurally instead of in a script:
 ]
 ```
 
-**It is a schema-level subset of the real contract, not a replacement for
-the validator script.** `result.schema.json` alone accepts every genuinely
-valid result, but it also accepts some instances the script rejects —
-anything the "Receipt validation" section below describes, by construction,
-since none of that is expressible as a JSON Schema keyword at all (a
-duplicate finding id across two documents, a counts tally that disagrees
-with the findings array, a blocked reviewer that still reports findings —
-none of it is visible to a validator holding only one document). Use
-`result.schema.json` where only structural, single-document validation is
-possible; use `scripts/validate-result-schemas.mjs` (which loads the same
-per-role bodies from the standalone `result.<role>.schema.json` files, not
-from this composed one) wherever a real `node` call is available, since it
-adds every receipt check on top for free.
+Two more `allOf` members ride the same mechanism for a narrower purpose:
+the implementer completed/blocked REQUIREDNESS (`payload.summary`/
+`handoff`/`ac_test_map` present when `role: implementer` and
+`status: completed`; `payload.blocked_question` present when `blocked`).
+This is the one piece of receipt validation this composed document CAN
+express, precisely because `role` and `status` are both envelope-level
+fields it can see in the same `if` as the `payload` property its `then`
+reaches into — the standalone `result.implementer.schema.json` validates
+`payload` alone and never sees `status` at all, so it cannot express this
+condition regardless of how it's structured. It only proves presence,
+though: an empty-string `summary` or a `null` `blocked_question` still
+satisfies plain `required`, so the non-empty half of the same rule stays
+the validator's job (`checkImplementerStatus`).
+
+**Beyond that one case, it is a schema-level subset of the real contract,
+not a replacement for the validator script.** `result.schema.json` alone
+accepts every genuinely valid result, but it also accepts some instances
+the script rejects — most of what the "Receipt validation" section below
+describes, by construction, since none of it is expressible as a JSON
+Schema keyword at all (a duplicate finding id across two documents, a
+counts tally that disagrees with the findings array, a blocked reviewer
+that still reports findings — none of it is visible to a validator holding
+only one document). Use `result.schema.json` where only structural,
+single-document validation is possible; use
+`scripts/validate-result-schemas.mjs` (which loads the same per-role
+bodies from the standalone `result.<role>.schema.json` files, not from
+this composed one) wherever a real `node` call is available, since it adds
+every receipt check on top for free.
 
 The one non-verbatim edit is `$defs.reviewer`'s own nested
 `$defs.finding`: the standalone `result.reviewer.schema.json` refs it as
@@ -133,11 +148,15 @@ keyword, for every one of these:
   on a clean verdict (a positive cap means a cycle was owed); given `0` or no
   flag at all, `codex_cycle: null` on a clean verdict is exactly as permitted
   as it always was.
-- **Duplicate finding ids across passes** — a finding id must be unique
-  *within the run*, not just within one pass's `findings[]` array (unique
-  *within one pass* **is** structurally checkable and is — see below). Ids
-  from earlier passes are run context (`--known-ids`), not part of the
-  instance being validated.
+- **Duplicate finding ids across the run (`--known-ids <ids.json>`)** — a
+  finding id must be unique *within the run*, not just within one pass's or
+  payload's own `findings[]` array (unique *within one pass/payload* **is**
+  structurally checkable and is — see below, `checkFindingIds` for reviewer
+  and `checkIntegratorFindingIds` for integrator). Ids from earlier passes
+  or integrator payloads are run context, not part of the instance being
+  validated — reviewer and integrator share the exact same collision check
+  and error text, since "unique within the run by construction" makes no
+  distinction between the two roles' id grammars.
 - **Finding id / pass metadata agreement** — a finding id's embedded
   `stage`/`round`/`finder` segments must match the pass's own `stage`,
   `round`, and `finder` fields. This is actually a same-document check (the
@@ -229,7 +248,8 @@ keyword, for every one of these:
   `run_id`. Unlike the checks above this one needs no external context (both
   values live in the one `run.schema.json` document), so it always runs, not
   only when extra CLI context is supplied.
-- **Adjudication override required when priorities differ** — each
+- **Adjudication override required when priorities differ — challenge/
+  review only; integration is unconditionally null** — each
   `adjudications[]` entry carries its own `reviewer_priority` (a copy of the
   finding's reviewer-asserted priority — see "Why `reviewer_priority` is
   duplicated" below) alongside `adjudicated_priority`; the two are sibling
@@ -238,7 +258,14 @@ keyword, for every one of these:
   cannot express "these two properties disagree" as a structural condition
   the way it can express "this property equals X" — there is no `notEqual`
   or field-to-field comparison keyword in JSON Schema at all, so this is a
-  semantic check regardless of schema richness. The same reasoning is why
+  semantic check regardless of schema richness. For stage `integration`,
+  though, the rule this is built on — "override records a disagreement
+  between reviewer_priority and adjudicated_priority" — cannot even be
+  ASKED, because `reviewer_priority` is `null` there (see the field-shape
+  bullet below): there is no reviewer priority for `adjudicated_priority`
+  to differ FROM, so `override` is unconditionally required to be `null`
+  for that stage instead of following the equals/differs branching at all
+  (`checkAdjudicationEntries`). The same equals/differs reasoning is why
   `run.schema.json`'s `promotion` ⇔ `outcome: "ready-for-review"` check
   (below) and `settlements[].reference.type` ⇔ `disposition` check (below)
   are semantic too, even though every value either reads is a sibling field
@@ -379,8 +406,9 @@ Which flags are "applicable" is the same set the two mechanisms above
 share, so they can never disagree: envelope kinds (`implementer`,
 `reviewer`, `integrator`, and `envelope`'s own dispatched role) require
 `--run-id`/`--initiated-by`; `reviewer` also requires `--known-ids`;
-`integrator` also requires `--integration-cap`; `adjudication` requires
-`--pass` and `--known-adjudicated`; `run` requires `--adjudication`.
+`integrator` also requires `--integration-cap` and `--known-ids`;
+`adjudication` requires `--pass` and `--known-adjudicated`; `run` requires
+`--adjudication`.
 
 `run`'s `--adjudication` is the one exception to "a real run always has
 real context to supply": a fresh kickoff, or a run that genuinely never
@@ -535,6 +563,22 @@ never needed it).
   living in the adjudication entry itself makes that comparison — and the
   override-required check above — computable from the adjudication document
   alone, without also loading the pass that produced the finding.
+- **`reviewer_priority` is `["string", "null"]`, with the P0-P3 enum kept
+  for the string case only.** An integration finding has no reviewer pass
+  and so no reviewer-asserted priority to copy — `null` there, not an
+  arbitrary placeholder value, is what "nothing to copy" looks like.
+  Structurally this is `{type: ["string", "null"], if: {type: "string"},
+  then: {enum: [...]}}` rather than `enum` directly on the property: the
+  subset engine's `enum` keyword checks every value unconditionally,
+  regardless of `type`, so an enum sitting next to `type: ["string",
+  "null"]` would reject `null` outright (`null` is never equal to any of
+  "P0".."P3") — nesting it in a `then` that only fires when the value IS a
+  string is what lets `null` through structurally while still bounding the
+  string case to exactly four values. The VALIDATOR decides which
+  nullability is correct for which stage (non-null required outside
+  integration, null required for it) — `checkAdjudicationEntries`, since
+  that condition reads a sibling field (`stage`) the property's own schema
+  cannot see.
 - **`adjudications[]` and `settlements[]` are arrays of tagged objects, not
   a JSON object keyed by finding id**, even though the spec's prose says
   "keyed by finding id." `scripts/lib/json-schema-subset.mjs` has no

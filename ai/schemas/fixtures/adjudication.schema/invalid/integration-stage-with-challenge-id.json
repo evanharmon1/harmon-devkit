@@ -7,7 +7,7 @@
   "adjudications": [
     {
       "finding_id": "challenge-r1-codex-cli-1",
-      "reviewer_priority": "P2",
+      "reviewer_priority": null,
       "adjudicated_priority": "P2",
       "disposition": "fix",
       "reason": "A regression test is cheap to add and closes a real gap.",

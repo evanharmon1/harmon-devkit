@@ -55,6 +55,7 @@ is_context_only_fixture() {
     *.known-ids.json | *.pass.json | *.known-adjudicated.json | *.adjudication.json) return 0 ;;
     */result.envelope.schema/invalid/run-mismatch.json) return 0 ;;
     */result.reviewer.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
+    */result.integrator.schema/invalid/known-ids-collision.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-missing-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-extra-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-reviewer-priority-drift.json) return 0 ;;
@@ -178,11 +179,15 @@ const ROLE_DIRS = {
 // checks). result.schema.json correctly ACCEPTS these fixtures on their
 // own; scripts/validate-result-schemas.mjs is what rejects them.
 const SEMANTIC_ONLY = new Set([
+  // The "missing-*" implementer status-conditional fixtures moved OFF this
+  // list once result.schema.json's allOf gained the completed/blocked
+  // requiredness branches (role+status are both envelope-level, visible to
+  // the composed document unlike the standalone payload-only schema) — see
+  // ai/schemas/result.schema.json's own $comment. Only the "empty"/"null"
+  // variants stay here: plain `required` proves a key is PRESENT, never
+  // that its value is non-empty/non-null, so those still need the
+  // validator's checkImplementerStatus.
   'result.implementer.schema/invalid/empty-ac_test_map-when-completed.json',
-  'result.implementer.schema/invalid/missing-ac_test_map-when-completed.json',
-  'result.implementer.schema/invalid/missing-blocked_question-when-blocked.json',
-  'result.implementer.schema/invalid/missing-handoff-when-completed.json',
-  'result.implementer.schema/invalid/missing-summary-when-completed.json',
   'result.implementer.schema/invalid/null-blocked_question-when-blocked.json',
   'result.implementer.schema/invalid/empty-summary-when-completed.json',
   'result.implementer.schema/invalid/empty-handoff-when-completed.json',
@@ -206,7 +211,8 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/codex-cycle-nonterminal-with-accepted.json',
   'result.integrator.schema/invalid/head-mismatch.json',
   'result.integrator.schema/invalid/findings-duplicate-id.json',
-  'result.integrator.schema/invalid/findings-wrong-cycle.json'
+  'result.integrator.schema/invalid/findings-wrong-cycle.json',
+  'result.integrator.schema/invalid/known-ids-collision.json'
 ])
 
 let failures = 0
@@ -795,8 +801,21 @@ usage_error_case \
     run "$fixtures_dir/run.schema/valid/fresh-kickoff.json" --receipt
 
 usage_error_case \
-    "--receipt on an integrator result without --integration-cap (or --run-id) is a usage error" \
+    "--receipt on an integrator result without --integration-cap, --known-ids, or --run-id is a usage error" \
     integrator "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" --receipt
+
+run_context_case \
+    "an integrator finding id colliding with --known-ids is rejected" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/invalid/known-ids-collision.json" \
+    "collides with a finding already in the run" \
+    --known-ids "$fixtures_dir/result.integrator.schema/invalid/known-ids-collision.known-ids.json"
+
+accept_context_case \
+    "an integrator finding id absent from --known-ids is accepted" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/invalid/known-ids-collision.json" \
+    --known-ids "$empty_ids_file"
 
 usage_error_case \
     "--no-adjudications and --adjudication together are a usage error" \
@@ -869,15 +888,21 @@ function collect(root, schema, currentPath, required, enums, seen) {
   }
   if (seen.has(schema)) return
   seen.add(schema)
+  // Self-check at CURRENT_PATH, not just from the parent's properties loop:
+  // a type-conditional field (e.g. adjudication.schema.json's
+  // reviewer_priority, {type: [string,null], if: {type: string}, then:
+  // {enum: [...]}}) puts its enum inside `then`, still describing the SAME
+  // location — if/then/else recurse at the SAME currentPath below for
+  // exactly this reason, so the enum must be attributed there too, not
+  // only when a schema node is reached directly as a named property.
+  if (Array.isArray(schema.enum) && schema.enum.some((v) => v !== null)) {
+    enums.add(currentPath)
+  }
   for (const name of schema.required ?? []) {
     required.add(JSON.stringify({ parent: currentPath, name }))
   }
   for (const [key, child] of Object.entries(schema.properties ?? {})) {
-    const childPath = `${currentPath}.${key}`
-    if (Array.isArray(child.enum) && child.enum.some((v) => v !== null)) {
-      enums.add(childPath)
-    }
-    collect(root, child, childPath, required, enums, seen)
+    collect(root, child, `${currentPath}.${key}`, required, enums, seen)
   }
   if (schema.items) collect(root, schema.items, `${currentPath}[]`, required, enums, seen)
   for (const key of ['if', 'then', 'else']) {

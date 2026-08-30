@@ -44,8 +44,10 @@
           "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
         },
         "reviewer_priority": {
-          "description": "A copy of the finding's own reviewer-asserted priority, carried here so reviewer-vs-orchestrator disagreement is measurable from this document alone, without re-reading the pass (specs/dev-flow-v2.md: 'the raw reviewer output is kept so reviewer-vs-orchestrator disagreement can be measured'). The validator's run-context mode still cross-checks it against the originating pass's finding.",
-          "enum": ["P0", "P1", "P2", "P3"]
+          "description": "A copy of the finding's own reviewer-asserted priority, carried here so reviewer-vs-orchestrator disagreement is measurable from this document alone, without re-reading the pass (specs/dev-flow-v2.md: 'the raw reviewer output is kept so reviewer-vs-orchestrator disagreement can be measured'). The validator's run-context mode still cross-checks it against the originating pass's finding. null for stage integration ONLY: an integrator finding carries no reviewer-asserted priority to copy — there is no reviewer pass — so there is nothing to be null instead of copying incorrectly. Non-null (one of P0-P3) is still required for challenge/review. The validator enforces which is which by stage; this schema only bounds the shape (a string here is always P0-P3, never an arbitrary string).",
+          "type": ["string", "null"],
+          "if": { "type": "string" },
+          "then": { "enum": ["P0", "P1", "P2", "P3"] }
         },
         "adjudicated_priority": {
           "enum": ["P0", "P1", "P2", "P3"]
