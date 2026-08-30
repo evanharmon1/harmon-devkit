@@ -1510,6 +1510,34 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
   "body": "## Problem\n\n- [x] a ticked todo in prose\n\n## Verify\n\n${fence}\n- [x] [CI] fenced example\n${fence}\n"},
+ {"number": 68, "title": "(gauntlet): Commented-out template",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "## Problem\n\n<!--\n## Acceptance criteria\n\n- [x] [CI] placeholder\n-->\ntext <!-- - [x] [CI] inline --> more"},
+ {"number": 69, "title": "(gauntlet): Heading nested in a list",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "- item\n  ## Acceptance criteria\n- [x] [CI] sibling"},
+ {"number": 70, "title": "(gauntlet): No space after the checkbox",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "## Acceptance criteria\n\n- [x][CI] not rendered as a task"},
+ {"number": 71, "title": "(gauntlet): Backtick in a fence info string",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "## Acceptance criteria\n\n${fence}bad${fence}info\n- [x] [CI] still rendered"},
  {"number": 67, "title": "(gauntlet): Only nested checked items",
   "author": {"login": "testowner"},
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
@@ -1587,6 +1615,15 @@ jq -e '.open[] | select(.number == 67)
        | .criteria.total == 0 and (.completion_reasons == [])' \
     "$tmp/cc-scan.json" >/dev/null ||
     fail "#67 has only nested items, which are not top-level criteria"
+jq -e '[.open[] | select(.number == 68 or .number == 69 or .number == 70)]
+       | length == 3 and all(.criteria.total == 0 and .completion_reasons == [])' \
+    "$tmp/cc-scan.json" >/dev/null ||
+    fail "#68/#69/#70 (HTML comment, nested heading, no-space box) are not criteria"
+jq -e '.open[] | select(.number == 71)
+       | .criteria.total == 1
+         and (.completion_reasons == ["completion-candidate:all-criteria-checked"])' \
+    "$tmp/cc-scan.json" >/dev/null ||
+    fail "#71: a backtick-bearing info string is prose, not a fence opener"
 
 echo "==> scan: an outstanding [CI] criterion carries no completion flag"
 jq -e '.open[] | select(.number == 52)
@@ -1613,7 +1650,7 @@ cat >"$stub_dir/timeline-50.json" <<JSON
 JSON
 
 cat >"$stub_dir/pull-1107.json" <<'JSON'
-{"number": 1107, "title": "feat: deliver it", "body": "Refs #50\n\nDelivers the thing."}
+{"number": 1107, "title": "feat: deliver it", "body": "Refs testowner/testrepo#50\n\nDelivers the thing."}
 JSON
 
 echo "==> delivery: the #1080/#1107 shape reads merged-delivery via cross-reference"
@@ -1786,8 +1823,12 @@ cat >"$stub_dir/delivery-62.json" <<JSON
 {"data": {"repository": {"issue": {"number": 62, "state": "OPEN",
   "closedByPullRequestsReferences": {"nodes": []}}}}}
 JSON
-jq -n '[range(100) | {event: "commented", created_at: "2026-08-01T00:00:00Z"}]' \
+jq -n --arg repo "$repo" '[range(99) | {event: "commented", created_at: "2026-08-01T00:00:00Z"}]
+  + [{event: "cross-referenced", source: {type: "issue", issue: {
+       number: 950, state: "closed", repository: {full_name: $repo},
+       pull_request: {html_url: "x", merged_at: "2026-08-01T00:00:00Z"}}}}]' \
     >"$stub_dir/timeline-62.json"
+# no pull-950.json on purpose: a truncated page must never spend PR reads
 
 echo "==> delivery: a truncated timeline with no evidence is indeterminate"
 [ "$(run "$scan" delivery --repo "$repo" --issue 62)" = 0 ] ||

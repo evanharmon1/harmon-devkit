@@ -253,8 +253,18 @@ cmd_delivery() {
     # mentioned this issue — a comment on an already-merged PR produces the
     # same event as the PR body does, and comments are never evidence. So each
     # merged same-repo candidate costs one bounded PR read, and only a PR
-    # whose own title or body references the issue (`#N` or its URL) stays
+    # whose own title or body references the issue (`#N`, `owner/repo#N`,
+    # or its URL) stays
     # evidence. A failed PR read is indeterminate, never a silent drop.
+    # A truncated page already fixes the verdict at indeterminate; do not
+    # spend up to 100 PR reads deciding evidence the verdict will not use.
+    if [ "$timeline_truncated" = true ]; then
+        jq -n --arg repo "$repo" --argjson issue "$issue" '
+          {repo: $repo, issue: $issue, state: "OPEN", verdict: "indeterminate",
+           evidence: [], closing_references: [], timeline_truncated: true,
+           reason: "timeline page truncated at 100 events; later pages unread"}'
+        return 0
+    fi
     local candidates pr pr_ok=1
     candidates="$(jq -r --arg repo "$repo" '
       [.[] | select(.event == "cross-referenced"
@@ -311,7 +321,7 @@ cmd_delivery() {
          | map(. as $ev
                | select(any($bodies_arr[0][]; .pr == $ev.pr
                             and ((.title + "\n" + .body)
-                                 | test("(^|[^A-Za-z0-9_/#])#" + ($issue_num | tostring) + "([^0-9]|$)")
+                                 | test("(^|[^A-Za-z0-9_/#])(" + ($repo | gsub("\\."; "\\\\.")) + ")?#" + ($issue_num | tostring) + "([^0-9]|$)")
                                    or test("github\\.com/" + $repo + "/issues/"
                                            + ($issue_num | tostring) + "([^0-9]|$)")))))
         ) as $cross_ev
@@ -564,17 +574,19 @@ jq -n -L "$title_module_dir" \
   # indented item is a nested child (or, at four spaces, a code block), and
   # the authoring contract writes criteria at column 0 — so none of those
   # may count; any of them would mint or suppress a completion candidate.
+  # The checkbox must be followed by whitespace (or end the line): GitHub
+  # renders `- [x][CI]` as plain text, not a task item.
   def checkbox_line_re:
-    "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\]";
+    "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\]([ \\t]|$)";
   def checkbox_unticked_re:
-    "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\]";
+    "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\]([ \\t]|$)";
   # The text immediately after an unticked checkbox marker — used only to
   # classify the track-work [CI]/[HUMAN] tag grammar, never to decide whether
   # a line counts as a criterion (checkbox_unticked_re already decided that).
   def checkbox_rest($line):
     ($line | capture(
-      "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\][ \\t]*(?<rest>.*)$"
-    )).rest;
+      "^([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\]([ \\t]+(?<rest>.*))?$"
+    )).rest // "";
   # The track-work tag grammar exactly: case-insensitive [CI]/[HUMAN]
   # immediately after the checkbox, followed by whitespace or end-of-line;
   # anything else unticked is untagged.
@@ -594,17 +606,39 @@ jq -n -L "$title_module_dir" \
     # A fence closes only on the same delimiter character at least as long
     # as the opener (CommonMark), so a ``` sample nested inside a ```` block
     # does not end it early and count the sample as criteria.
+    # Text inside an HTML comment is invisible when rendered — a commented-
+    # out template must not supply a heading or a criterion — so comment
+    # spans are blanked first (`<!--` to the next `-->`, across lines).
+    | reduce .[] as $line ({html: false, lines: []};
+        ($line) as $l
+        | if .html then
+            (if ($l | test("-->")) then .html = false
+                | .lines += [$l | sub("^.*?-->"; "")]
+             else . end)
+          elif ($l | test("<!--")) then
+            (if ($l | test("<!--.*?-->")) then
+                .lines += [$l | gsub("<!--.*?-->"; "")]
+             else .html = true | .lines += [$l | sub("<!--.*$"; "")] end)
+          else .lines += [$l] end)
+    | .lines
     | reduce .[] as $line ({in: false, fence: null, out: []};
-        (($line | capture("^[ ]{0,3}(?<f>`{3,}|~{3,})")) // null) as $m
+        # A backtick opener whose info string contains a backtick is prose,
+        # not a fence (CommonMark); tilde fences carry no such rule.
+        (($line | capture("^[ ]{0,3}(?<f>`{3,}|~{3,})(?<info>.*)$")) // null
+         | if . != null and (.f | startswith("`")) and (.info | test("`"))
+           then null else . end) as $m
         | if .fence != null then
             (if $m != null and ($m.f[0:1] == .fence[0:1])
                 and (($m.f | length) >= (.fence | length))
                 and ($line | test("^[ ]{0,3}(`+|~+)[ \\t]*$"))
              then .fence = null else . end)
           elif $m != null then .fence = $m.f
-        elif ($line | test("^[ ]{0,3}##[ \\t]+")) then
+        # Headings are flush-left, like the criteria: an indented heading
+        # may be scoped to an enclosing list item, where a later flush-left
+        # task item is a sibling of the list rather than section content.
+        elif ($line | test("^##[ \\t]+")) then
           .in = ($line
-                 | sub("^[ ]{0,3}##[ \\t]+"; "")
+                 | sub("^##[ \\t]+"; "")
                  | sub("[ \\t]+#+[ \\t]*$"; "")
                  | sub("[ \\t]+$"; "")
                  | ascii_downcase) == "acceptance criteria"
