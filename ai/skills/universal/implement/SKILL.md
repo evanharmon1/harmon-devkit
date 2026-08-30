@@ -343,6 +343,10 @@ second PR is the expensive way to find out.
 - **Gate the exact commit that will travel.** Where fixes landed after the last
   gate run, re-run `task verify` with a **clean tree**, so it cannot pass on
   the strength of uncommitted or untracked files the push would then omit.
+  Where the fix followed a step 7 **security** finding, re-run `task
+  security` too, against that same commit — a security-only marker never
+  authorizes code changed after the last green definition-of-done gate, and
+  `task verify` does not itself exercise the security checks.
 - Conventional-commit message and PR title, per the repo's commitlint config.
   Watch for repo-specific title rules that gate a release — harmon-init
   requires a `fix:`/`feat:` title on any PR touching `template/`, and its
