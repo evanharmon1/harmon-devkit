@@ -1505,13 +1505,20 @@ cat >"$stub_dir/issues-open.json" <<JSON
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
   "body": "## Problem\n\n- [x] a ticked todo in prose\n\n## Verify\n\n${fence}\n- [x] [CI] fenced example\n${fence}\n"},
+ {"number": 63, "title": "(gauntlet): Only untagged boxes",
+  "author": {"login": "testowner"},
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [],
+  "body": "## Acceptance criteria\n\n- [x] done\n- [x] also done"},
  {"number": 59, "title": "(gauntlet): Fenced sample inside the section",
   "author": {"login": "testowner"},
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
              {"name": "domain:auth"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [],
-  "body": "## Acceptance Criteria ##\n\n${fence}${fence}md\n${fence}\n- [ ] [CI] sample\n${fence}\n- [ ] [CI] still fenced\n${fence}${fence}\n- [x] [CI] real\n> - [ ] [CI] quoted example\n    - [ ] [CI] indented code sample\n\n## Out of scope\n\n- [ ] [CI] not a criterion"}]
+  "body": "## Acceptance Criteria ##\n\n${fence}md\n${fence}markdown\n- [ ] [CI] sample\n${fence}\n- [x] [CI] real\n- [x] untagged ticked box\n> - [ ] [CI] quoted example\n    - [ ] [CI] indented code sample\n\n## Out of scope\n\n- [ ] [CI] not a criterion"}]
 JSON
 cat >"$stub_dir/issues-closed.json" <<'JSON'
 []
@@ -1559,7 +1566,11 @@ jq -e '.open[] | select(.number == 59)
          and (.completion_reasons
               == ["completion-candidate:all-criteria-checked"])' \
     "$tmp/cc-scan.json" >/dev/null ||
-    fail "#59 must count only the unfenced item inside its section"
+    fail "#59 must count only the unfenced tagged item inside its section"
+jq -e '.open[] | select(.number == 63)
+       | .criteria.total == 0 and (.completion_reasons == [])' \
+    "$tmp/cc-scan.json" >/dev/null ||
+    fail "#63 has only untagged boxes, which are not criteria"
 
 echo "==> scan: an outstanding [CI] criterion carries no completion flag"
 jq -e '.open[] | select(.number == 52)

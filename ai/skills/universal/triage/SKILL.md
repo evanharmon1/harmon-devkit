@@ -95,7 +95,10 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
   name only when state is `"set"`, otherwise `null`), `needs_labels`,
   `claim_labels`, `days_since_update`, `criteria` (acceptance-criteria
   checkbox facts — `total`, `unticked`, `unticked_ci`, `unticked_human`,
-  `unticked_untagged`, using the track-work `[CI]`/`[HUMAN]` tag grammar),
+  `unticked_untagged`, using the track-work `[CI]`/`[HUMAN]` tag grammar —
+  an untagged box is not a criterion and is excluded from `total`, but an
+  unticked one is still counted in `unticked_untagged` and blocks both
+  candidates),
   `completion_reasons` (machine-readable strings backing the
   `completion-candidate:*` flags below), and `flags`.
 - `closed_flagged[]` — closed issues for report step 3 only.

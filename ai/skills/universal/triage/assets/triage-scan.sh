@@ -51,9 +51,10 @@
 #
 # `delivery` is a second, read-only report: for a single open issue, it looks
 # for TRUSTED delivery evidence — a pull request in the SAME repository,
-# MERGED, and linked by GitHub's own graph (a closing-keyword reference or a
-# cross-referenced timeline event) — and never a comment, a different
-# repository's PR, or an unmerged/closed-unmerged one. It exists so the
+# MERGED, and linked by GitHub's own graph as a cross-referenced timeline
+# event — and never a comment, a different repository's PR, an
+# unmerged/closed-unmerged one, or a closing-keyword reference (reported as
+# context only; see cmd_delivery). It exists so the
 # `completion-candidate:human-only-remaining` flag above can be confirmed
 # before it is reported: an issue whose [CI] criteria are all ticked and only
 # a [HUMAN] one remains still needs a human to close it, but a genuinely
@@ -508,7 +509,7 @@ jq -n -L "$title_module_dir" \
   # a line counts as a criterion (checkbox_unticked_re already decided that).
   def checkbox_rest($line):
     ($line | capture(
-      "^[ ]{0,3}([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\t]\\][ \\t]*(?<rest>.*)$"
+      "^[ ]{0,3}([-*+]|[0-9]+[.)])[ \\t]+\\[[ \\txX]\\][ \\t]*(?<rest>.*)$"
     )).rest;
   # The track-work tag grammar exactly: case-insensitive [CI]/[HUMAN]
   # immediately after the checkbox, followed by whitespace or end-of-line;
@@ -534,6 +535,7 @@ jq -n -L "$title_module_dir" \
         | if .fence != null then
             (if $m != null and ($m.f[0:1] == .fence[0:1])
                 and (($m.f | length) >= (.fence | length))
+                and ($line | test("^[ ]{0,3}(`+|~+)[ \\t]*$"))
              then .fence = null else . end)
           elif $m != null then .fence = $m.f
         elif ($line | test("^[ ]{0,3}##[ \\t]+")) then
@@ -545,19 +547,25 @@ jq -n -L "$title_module_dir" \
         elif .in then .out += [$line]
         else . end)
     | .out;
+  # An untagged box is not a criterion (the track-work contract), ticked or
+  # not, so `total`/`unticked` count tagged items only. An UNTICKED untagged
+  # box is still reported separately and still blocks both candidates: it is
+  # a malformed criterion a human has to read, not one this scan may ignore.
   def criteria_facts($body):
     criteria_lines($body) as $lines
-    | ([$lines[] | select(test(checkbox_line_re))] | length) as $total
+    | ([$lines[] | select(test(checkbox_line_re))
+        | select(rest_tag(checkbox_rest(.)) != "untagged")] | length) as $total
     | ([$lines[] | select(test(checkbox_unticked_re))]) as $unticked_lines
-    | ($unticked_lines | length) as $unticked
     | ([$unticked_lines[] | rest_tag(checkbox_rest(.))]) as $tags
+    | ([$tags[] | select(. != "untagged")] | length) as $unticked
     | { total: $total,
         unticked: $unticked,
         unticked_ci: ([$tags[] | select(. == "ci")] | length),
         unticked_human: ([$tags[] | select(. == "human")] | length),
         unticked_untagged: ([$tags[] | select(. == "untagged")] | length) };
   def completion_reasons($crit):
-    [ (if ($crit.total >= 1 and $crit.unticked == 0)
+    [ (if ($crit.total >= 1 and $crit.unticked == 0
+           and $crit.unticked_untagged == 0)
        then "completion-candidate:all-criteria-checked" else empty end),
       (if ($crit.total >= 1 and $crit.unticked_ci == 0
            and $crit.unticked_untagged == 0 and $crit.unticked_human >= 1)
