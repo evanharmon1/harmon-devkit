@@ -68,10 +68,10 @@ runs:
           | tar -xz -C /tmp actionlint
         sudo mv /tmp/actionlint /usr/local/bin/
         # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
-        YQ_VERSION=4.53.4
+        YQ_VERSION=4.53.6
         # Raw-binary download: fail closed on a checksum mismatch (a version
         # bump must update the pinned hash).
-        YQ_SHA256=f67d8a6a2dc2308c961f83d5ba8707fd4c7c44ad77902fef87eb3a4646cdfa2a
+        YQ_SHA256=c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385
         curl -fsSL --retry 3 -o /tmp/yq \
           "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
         echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
@@ -94,5 +94,5 @@ runs:
       shell: bash
       run: |
         # renovate: datasource=npm depName=snyk
-        SNYK_VERSION=1.1306.4
+        SNYK_VERSION=1.1307.0
         npm install --global "snyk@${SNYK_VERSION}"
