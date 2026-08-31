@@ -3,7 +3,7 @@ name: implement
 description: >-
   Drive a claimed issue to a ready-for-review PR — read the issue as a spec, work the
   repo's own dev loop (inner lint gate, definition-of-done gate, second-model
-  review, CI mirror), tick acceptance criteria as they are verified, open the
+  review, security gate), tick acceptance criteria as they are verified, open the
   PR, then continue through the shepherd stage until it reaches a terminal
   condition. Never claims, never merges. Invoke as /implement [issue # or URL].
 disable-model-invocation: true
@@ -290,8 +290,8 @@ gauntlet's entry gate would stop by design, so the steps below remain the
 procedure there — as they do wherever the skill is not vendored.
 
 Where the repo runs one (harmon-init and harmon-devkit: `task challenge`, then
-`task review`), it belongs here — after `verify` is green, before the CI
-mirror. Follow the repo's own adjudication contract; the shape it is usually in:
+`task review`), it belongs here — after `verify` is green, before the security
+gate. Follow the repo's own adjudication contract; the shape it is usually in:
 
 - Treat every finding as a **hypothesis**. Verify it against the code, classify
   it confirmed / plausible-but-unproven / false positive, fix only what is
@@ -313,10 +313,17 @@ mirror. Follow the repo's own adjudication contract; the shape it is usually in:
   substance so a re-reported finding is not recorded twice — a stage exits on a
   clean re-run, so an unchanged deferred finding is reported again by design.
 
-## 7. CI mirror
+## 7. Security gate
 
-Run the full local mirror (`task ci` where it exists) and fix what it catches.
-This is the last cheap failure; everything after it costs a round on the PR.
+Run the repo's pre-publication security gate (`task security` where it
+exists — Semgrep + gitleaks + dependency audit, ~1 min) and fix what it
+catches. This is the last cheap failure before the draft PR; everything after
+it costs a round on the PR.
+
+`task ci` (the full local CI mirror, where the repo has one) remains
+available on demand to reproduce a red CI run locally — it is not a
+mandatory pre-PR step. The pre-PR gate is `task verify` (step 5) plus this
+security gate.
 
 ## 8. Open the draft PR
 
@@ -333,10 +340,17 @@ second PR is the expensive way to find out.
   with no changes in it (or fail outright). Stage the change, commit it with a
   conventional message, and confirm the tree is clean before pushing. Never
   `--no-verify`: the commit hooks are part of the gate.
-- **Gate the exact commit that will travel.** Where fixes landed after the last
-  gate run, re-run `task verify` (or `task ci`) with a **clean tree**, so it
-  cannot pass on the strength of uncommitted or untracked files the push would
-  then omit.
+- **Gate the exact commit that will travel.** Compare against the last time
+  **`task verify` itself** ran, not just the last gate of any kind — step 7's
+  security gate only runs `task security`, so a step-6 review fix landing
+  after step 5's verify but before step 7 is not re-verified by step 7 alone.
+  Where anything changed since `task verify` last ran, re-run it with a
+  **clean tree**, so it cannot pass on the strength of uncommitted or
+  untracked files the push would then omit. Where the fix followed a step 7
+  **security** finding, also re-run `task security` against that same
+  commit — a security-only marker never authorizes code changed after the
+  last green definition-of-done gate, and `task verify` does not itself
+  exercise the security checks.
 - Conventional-commit message and PR title, per the repo's commitlint config.
   Watch for repo-specific title rules that gate a release — harmon-init
   requires a `fix:`/`feat:` title on any PR touching `template/`, and its

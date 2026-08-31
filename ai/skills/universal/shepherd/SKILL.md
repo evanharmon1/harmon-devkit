@@ -1068,15 +1068,28 @@ is optional in addition, never a substitute for per-thread replies.
 
 ## 5. Fix, gate, push, re-watch
 
-- Every shepherd-round fix must **pass the full local CI mirror**
-  (`task ci`) before each push — actually run it and confirm exit 0, not
-  just intend to; a fix that can't pass locally doesn't get pushed.
+- Every shepherd-round fix must **pass the definition-of-done gate**
+  (`task verify`) before each push — actually run it and confirm exit 0,
+  not just intend to; a fix that can't pass locally doesn't get pushed.
+  `task verify` does not include a secret scan the way the old mandatory
+  `task ci` (verify + security) did, so **the secret-scan target is part of
+  the same gate chain, not a separate prose reminder** — include it in
+  every worked recipe below rather than assuming an installed `pre-push`
+  hook already covers it. **Do not assume that**: a hook family can be
+  wired to run anything (this repo's own `templates/skills-sync/README.md`
+  documents a pre-push hook whose only command is the skills-drift check,
+  no secret scan at all), so an installed hook is evidence only once you
+  have actually read what it runs. Where you have confirmed it does invoke
+  the repo's secret-scan target, the explicit step below is redundant and
+  may be dropped from the chain; otherwise — including when you have not
+  checked — keep it in the chain, the same obligation the repo's
+  pre-draft challenge/review rounds already carry.
   Confirming exit 0 is mechanical: the push — like any external write
   gated on a local check — chains only off the **gate's verdict**, and
   what it pushes is the **gated commit itself**, never the mutable
   `HEAD`. Capture the SHA before the gate and push that refspec — in the
   same foreground chain,
-  `sha="$(git rev-parse HEAD)"; task ci && git push <remote> "$sha:<branch>" …`
+  `sha="$(git rev-parse HEAD)"; task verify && task security:secrets && git push <remote> "$sha:<branch>" …`
   — or, when the gate
   ran in the background and wrote its verdict as a marker line, off
   `"$skill_dir"/assets/require-marker.sh <file> <token>` (exit 0 only when
@@ -1084,8 +1097,8 @@ is optional in addition, never a substitute for per-thread replies.
   file *says*, not which run said it, so bind the verdict to this run
   *and* to the commit it gated: fresh per-run output file, token minted
   before the gate starts and carrying the SHA under test —
-  `sha="$(git rev-parse HEAD)"; t="CI-GREEN-$sha-$$"; out="$(mktemp)"`,
-  gate as `task ci >"$out" 2>&1 && printf '\n%s\n' "$t" >>"$out"` — the
+  `sha="$(git rev-parse HEAD)"; t="VERIFY-GREEN-$sha-$$"; out="$(mktemp)"`,
+  gate as `task verify >"$out" 2>&1 && task security:secrets >>"$out" 2>&1 && printf '\n%s\n' "$t" >>"$out"` — the
   leading newline is load-bearing: without it, gate output that ends
   without a newline glues itself to the token and a green gate is
   refused forever — push as
@@ -1093,7 +1106,10 @@ is optional in addition, never a substitute for per-thread replies.
   — a stale file from an
   earlier gate can never contain this run's token, a failed gate writes
   no token at all, and the ungated commit cannot travel because `$sha`
-  is what travels. Comparing HEAD to `$sha` and then pushing `HEAD` is
+  is what travels. (Substitute the repo's own secret-scan target for
+  `task security:secrets` where it is named differently, and drop that
+  step from both chains only once you have confirmed the installed hook
+  already runs it.) Comparing HEAD to `$sha` and then pushing `HEAD` is
   **not** an alternative: `git push` re-reads the ref at push time, so a
   commit landing between the comparison and the push ships ungated —
   the SHA refspec is what closes that window (a HEAD that moved simply
@@ -1101,18 +1117,22 @@ is optional in addition, never a substitute for per-thread replies.
   clean-tree rule below still governs what the gate ran on). Never
   chain a push
   off a reader's exit — `tail`, `head`, `cat`, and `grep` succeed by
-  *printing* whatever they found, so `tail -1 ci.out && git push` pushes
-  on a marker that says FAILED (observed: the marker was written
-  correctly, displayed, and never parsed). The
-  mirror is the right gate because it runs the same stages the remote
-  pipeline will judge (including security), so a round is never burned on
-  a failure that three local minutes would have caught. In the rare repo
-  without a `task ci`, run the definition-of-done gate (`task verify`) and
-  say so — that is the floor, never skipped. Gate the exact commit that
+  *printing* whatever they found, so `tail -1 verify.out && git push`
+  pushes on a marker that says FAILED (observed: the marker was written
+  correctly, displayed, and never parsed). `task verify` is the right
+  per-round gate because it is the repo's own definition-of-done check, so
+  a round is never burned on a failure that a few local minutes would have
+  caught; it is not a mandatory pre-push step to also re-run the full local
+  CI mirror (`task ci`, where the repo has one) — that stays available on
+  demand to reproduce a red CI run. In the rare repo without a `task
+  verify`, run the repo's own full definition-of-done gate under whatever
+  name it uses (`make test`, `npm test`, …) — the complete equivalent, not
+  a lesser fast lint/build substitute — and say so; that is the floor,
+  never skipped. Gate the exact commit that
   will travel: commit the complete fix first and run the gate with a
   **clean tree**, so it cannot pass on the strength of uncommitted or
-  untracked files that the push would then omit. Never `--no-verify`,
-  never weaken a gate to get through it.
+  untracked files that the push would then omit. Never disable or bypass a
+  gate to get through it.
 - Do **not** re-enter the local challenge/review loops — the post-push
   cloud/bot review is the second-model check at this stage.
 - **Git transport is HTTPS authenticated by `gh`**, not SSH: on provisioned
