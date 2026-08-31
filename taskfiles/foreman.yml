@@ -11,7 +11,7 @@ version: "3"
 
 vars:
   # renovate: datasource=github-tags depName=ponderousdev/foreman extractVersion=^v(?<version>.*)$
-  FOREMAN_VERSION: 2.5.0
+  FOREMAN_VERSION: 2.8.0
   FOREMAN: uvx --from git+https://github.com/ponderousdev/foreman@v{{.FOREMAN_VERSION}} foreman
 
 tasks:
