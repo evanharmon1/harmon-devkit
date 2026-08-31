@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.38.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.37.0...v0.38.0) (2026-08-31)
+
+
+### Features
+
+* **schemas:** Dev flow v2 result schemas and conformance fixtures ([#678](https://github.com/evanharmon1/harmon-devkit/issues/678)) ([e96f20e](https://github.com/evanharmon1/harmon-devkit/commit/e96f20e68b29d097fc3b5f14e0994533ab95617c))
+* **triage:** surface apparently completed open issues as advisory candidates ([#677](https://github.com/evanharmon1/harmon-devkit/issues/677)) ([887283b](https://github.com/evanharmon1/harmon-devkit/commit/887283b562be51dc6a817dfdeb79fb44357759f3))
+
+
+### Bug Fixes
+
+* **skills:** make task ci an on-demand tool, not a mandatory pre-PR/push gate ([#690](https://github.com/evanharmon1/harmon-devkit/issues/690)) ([d8e2ad8](https://github.com/evanharmon1/harmon-devkit/commit/d8e2ad87cedfbc8c1c26a4b5670071ce7c940f13))
+
 ## [0.37.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.36.0...v0.37.0) (2026-08-28)
 
 
