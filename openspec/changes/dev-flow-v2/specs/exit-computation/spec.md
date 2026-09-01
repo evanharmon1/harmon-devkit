@@ -1,0 +1,137 @@
+## Purpose
+
+Defines deterministic receipt validation and confidence-stage exit computation
+from policy, role results, adjudications, repository history, and current-head
+state.
+
+## ADDED Requirements
+
+### Requirement: Results are validated before interpretation
+
+Every role result SHALL use the version 2 envelope, bind to the active run's
+identity and initiating actor, and agree with its payload on any named head.
+Finding IDs SHALL be unique across the run. The orchestrator SHALL validate a
+result before reading its recommendation or evidence.
+
+#### Scenario: A stale retry returns into a newer run
+
+- **WHEN** a schema-valid result names a `run_id` or `initiated_by` different from the active branch pointer's run
+- **THEN** receipt validation rejects the result and it contributes no pass or finding
+
+### Requirement: Logical rounds require every configured finder
+
+A confidence-stage logical round SHALL contain one completed pass from every
+configured finder at one `reviewed_head`. Each retained pass SHALL have exactly
+one adjudication document and each adjudication SHALL refer to one retained
+pass. A missing or twice-blocked finder SHALL yield `capped` with reason
+`finder_unavailable`; a round SHALL NOT silently proceed with fewer finders.
+
+#### Scenario: One of two review finders is unavailable
+
+- **WHEN** one finder completes and the other remains blocked after its single retry
+- **THEN** no logical round is counted and the stage returns `capped` with the unavailable finder named
+
+### Requirement: Exit computation is deterministic and ordered
+
+For the same validated trajectory, resolved policy, and current head, every
+implementation SHALL return the same outcome and reason. The evaluator SHALL
+apply precedence in this order: `capped`, `diverging`, `converged`, then
+`continue`. Reviewer or challenger recommendations SHALL NOT determine the
+outcome.
+
+#### Scenario: The final permitted round is also diverging
+
+- **WHEN** the cap is reached on a trajectory that satisfies a divergence predicate
+- **THEN** the outcome is `capped`, because the cap forbids the extra remediation round divergence would otherwise require
+
+### Requirement: Convergence is gated by current-head cleanliness
+
+`converged` SHALL require zero adjudicated P0 or P1 findings of every class on
+a logical round that reviewed the current head, a configured convergence
+predicate, and the effective minimum rounds. A zero-finding round MAY end the
+stage once its minimum is met. A final clean round at the cap SHALL be
+capped-clean without requiring a forbidden confirmation round.
+
+#### Scenario: Reviewer reports clean below the floor
+
+- **WHEN** a clean logical round completes before the effective `min_rounds`
+- **THEN** the evaluator returns `continue` and does not consult the reviewer's exit recommendation
+
+#### Scenario: The capped final round is clean
+
+- **WHEN** the last permitted round reviewed the current head and has zero adjudicated P0/P1 findings
+- **THEN** the stage may advance as capped-clean without another round
+
+### Requirement: Provenance and fingerprint assertions are verified
+
+The evaluator SHALL verify `original`, `round:N`, `repeat-of`, and `supersedes`
+assertions against repository and run evidence, recording any correction and
+its evidence. An undecidable assertion SHALL remain `unverified`, retain its
+adjudicated priority for gating, and be excluded from predicates that require
+verified provenance without disappearing from total counts.
+
+#### Scenario: A finding claims original provenance on round-one code
+
+- **WHEN** evidence proves the implicated behavior was introduced by round 1's fix
+- **THEN** computation uses `round:1` for provenance predicates and records the disagreement
+
+#### Scenario: A deleted line prevents mechanical attribution
+
+- **WHEN** the evaluator cannot reliably attribute a finding after the fix deleted its original line
+- **THEN** the finding is marked unverified, still blocks if adjudicated P1, and cannot alone satisfy a provenance-share predicate
+
+### Requirement: Divergence detects self-feeding remediation
+
+Divergence predicates SHALL evaluate only adjudicated P0/P1 findings and SHALL
+detect verified provenance share, strictly rising gating-finding counts with a
+verified round-provenance guard, and repeats after a code-changing disposition.
+A repeat after `decline` SHALL NOT count as a repeat after fix. A diverging
+stage SHALL permit only `delete` or `restructure` dispositions on the
+round-provenance findings; otherwise it SHALL stop with a blocker.
+
+#### Scenario: A fixed finding repeats
+
+- **WHEN** a current finding is verified as a repeat of an earlier finding whose disposition changed code
+- **THEN** the repeat-after-fix predicate is true even if the fix rewrote or renamed the implicated line
+
+#### Scenario: Divergence is answered with another hardening fix
+
+- **WHEN** a diverging outcome has only `fix` dispositions for its round-provenance findings
+- **THEN** the stage refuses another fix round and reports the required delete-or-restructure decision
+
+### Requirement: Head ancestry controls usable evidence
+
+Only a logical round that reviewed the current head SHALL satisfy convergence
+or capped-clean. Ancestor-head rounds MAY inform trajectory predicates and
+minimum-round counts. Rounds on incomparable heads SHALL be excluded and yield
+`continue` with reason `invalidated` when no valid current-head exit remains.
+
+#### Scenario: A P2 fix lands after a clean review
+
+- **WHEN** any commit is added after the clean round, including a P2-only fix
+- **THEN** the clean ancestor round cannot certify the new head and another permitted round is required
+
+### Requirement: Caps constrain retained trajectory records
+
+No confidence pass or adjudication round number SHALL exceed its resolved
+stage cap, and a cap-zero confidence stage SHALL contain no rounds. Integration
+cycle numbers and remediation loops SHALL remain within their separate limits;
+code-changing integration dispositions past remediation SHALL be rejected.
+Legal stage skipping SHALL require the corresponding cap-zero policy.
+
+#### Scenario: A disabled challenge stage contains a pass
+
+- **WHEN** challenge has cap zero but the trajectory includes challenge round 1
+- **THEN** receipt validation rejects the trajectory as inconsistent with its resolved policy
+
+### Requirement: Exit tools expose a stable machine contract
+
+The exit surface SHALL return a structured verdict containing outcome, reason,
+rounds counted, and next round, with distinct terminal codes for continue,
+converged, diverging, capped, and indeterminate. DevKit and Foreman SHALL accept
+and reject the same conformance fixtures at a pinned contract version.
+
+#### Scenario: Two consumers replay the same fixture
+
+- **WHEN** DevKit's tool and Foreman's implementation evaluate the pinned trajectory and policy fixture
+- **THEN** both produce the same outcome and reason or the conformance test fails
