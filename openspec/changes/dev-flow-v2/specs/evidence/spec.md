@@ -22,10 +22,11 @@ record and reused branch names do not reuse trajectories.
 ### Requirement: Role outputs and adjudications remain immutable
 
 Raw role results and adjudication records SHALL be immutable after receipt.
-Mutable run state, including interventions, transitions, outcome, and PR, SHALL
-live only in the run record. Deferred-finding terminal settlements SHALL be
-append-only, keyed by finding ID, and SHALL NOT rewrite the original evidence
-comment or adjudication digest.
+Run history, including stage transitions, interventions, and terminal outcome,
+SHALL live in append-only run-record entries rather than editable summary fields.
+Deferred-finding terminal settlements SHALL likewise be append-only, keyed by
+finding ID, and SHALL NOT rewrite the original evidence comment or adjudication
+digest.
 
 #### Scenario: Integration settles a deferred finding
 
@@ -97,6 +98,25 @@ before computing metrics or exits.
 - **WHEN** a stage projection declares three segments but only two authenticate
 - **THEN** harvesting returns indeterminate rather than a partial trajectory
 
+### Requirement: Run history is append-only and as-of reconstructable
+
+Every run-record transition, intervention, and terminal-outcome entry SHALL carry
+an immutable timestamp, sequence, previous-entry digest, and canonical digest.
+Appending an entry SHALL extend that chain without editing an earlier entry. An
+`--as-of` read SHALL first validate the complete chain, then reconstruct state
+using only entries whose timestamps are at or before the cutoff. Editing or
+deleting any entry SHALL break sequence or digest validation and fail closed.
+
+#### Scenario: A transition occurs after the scoring cutoff
+
+- **WHEN** a valid run enters integration after the requested `--as-of` timestamp
+- **THEN** the reconstructed state excludes that transition and every later entry
+
+#### Scenario: A historical intervention is edited
+
+- **WHEN** an earlier intervention body changes without a new append-only entry
+- **THEN** its digest no longer extends the recorded chain and run validation fails
+
 ### Requirement: The success metric uses a closed immutable cohort
 
 Statistics SHALL report the share of kicked-off issues whose ready-reaching run
@@ -105,8 +125,8 @@ reported separately as asked and human fixes after readiness reported as a
 second failure measure. Cohort membership SHALL be fixed by first kickoff in
 the reporting window and an observation cutoff; stale nonterminal runs SHALL be
 terminalized as abandoned according to policy. Scoring at an earlier cutoff
-SHALL reconstruct the run state at that cutoff rather than read only the latest
-edited comment body.
+SHALL reconstruct the run state from the validated append-only entries at that
+cutoff rather than read only the latest comment body.
 
 #### Scenario: A new retry starts after the cutoff
 

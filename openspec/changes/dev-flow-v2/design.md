@@ -125,6 +125,12 @@ belong in `agent-registry.json`. `.devflow.toml` retains only `tier_order` and
 role/profile choices. Escalation moves one rung while retaining family; family
 fallback is a separate horizontal choice.
 
+A family-tier rung with several models requires exactly one explicit default;
+a singleton rung is unambiguous without a flag. Execution-control labels remain
+advisory: interactive off-default choices require attributable operator
+confirmation, while unattended consumers re-read trusted-actor configuration
+immediately before acting and otherwise fall back to defaults with a warning.
+
 The old `[tier.*]` family-to-model tables were rejected because they duplicated
 registry inventory and required every new model to be edited in two files. Both
 policy and registry use merge-base copies when either is self-modified.
@@ -156,13 +162,15 @@ belong to the orchestrator and are disclosed.
 
 Every role result uses one versioned envelope with producer, run, status, and
 head identity around a role payload. Raw passes and adjudications are immutable.
-`run.json` is the only mutable trajectory record. Deferred-finding settlements
-append by finding ID rather than editing the evidence comment they settle.
+`run.json` grows through digest-chained, append-only transitions, interventions,
+terminal outcomes, and deferred-finding settlements rather than editing prior
+history or the evidence comments those entries settle.
 
 Receipt validation joins the active run pointer, envelope, payload, prior IDs,
 adjudications, policy, and history before interpretation. This prevents stale
 retries, head disagreement, duplicate finding IDs, incomplete multi-finder
-rounds, and cap-inconsistent trajectories.
+rounds, cap-inconsistent trajectories, results predating their stage, out-of-
+order transitions, and reuse of an earlier-stage pass at the same head.
 
 ### 9. Exit computation is a deterministic precedence machine
 
@@ -188,8 +196,10 @@ byte-stable and golden-tested. Readiness reads JSON and append-only settlements,
 not human Markdown.
 
 PR publication is a transaction: validate local sources, bind the exact pushed
-head and draft PR, idempotently upsert, re-read and fingerprint, then retire
-local transfer records only after the remote postcondition is proven.
+head and draft PR, capture the body version, and merge generated sections into
+the latest body without changing human-owned sections. A concurrent mutation
+restarts from a fresh read. The writer re-reads and fingerprints the merged body,
+then retires local transfer records only after the remote postcondition is proven.
 
 ### 11. Evidence starts at kickoff and is authenticated at read time
 
@@ -201,8 +211,10 @@ runs leave the same evidence on the issue.
 
 Writes are reserve-first and secret-scanned. A detected secret produces a
 stable redacted public projection while preserving unredacted local evidence.
-Run records store immutable actor IDs and SHA-256 digests; harvesters reject
-edited, deleted, forged, or incomplete segmented evidence.
+Run records store immutable actor IDs and SHA-256 digests; their historical
+entries extend a sequence-and-digest chain. Harvesters reject edited, deleted,
+forged, or incomplete evidence, and `--as-of` reconstructs only validated entries
+at or before its cutoff instead of trusting a latest-body summary.
 
 This supports a closed-cohort success metric, immutable `--as-of` scoring,
 per-run inspection, convergence replay, and retros that start from retained

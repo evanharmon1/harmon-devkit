@@ -57,15 +57,25 @@ semantic source record, not merely confirm that three writes succeeded.
 ### Requirement: Remote handoff is idempotent and interruption-safe
 
 Publication SHALL validate local sidecar entries against adjudications, require
-the exact pushed head and a draft PR, upsert generated sections idempotently,
-re-read and fingerprint the remote body, and retain local source records until
-the remote postcondition is proven. An indeterminate or partial write SHALL be
-safe to retry without duplicating entries.
+the exact pushed head and a draft PR, and capture the remote body version before
+writing, using `updatedAt`, an ETag, or an exact full-body snapshot. It SHALL
+re-read the latest body, re-merge generated sections into that version while
+preserving every non-generated section, and compare-and-write against the
+captured version. A concurrent mutation between read and write SHALL restart the
+merge from a fresh read. Publication SHALL re-read and fingerprint the result and
+SHALL NOT retire local source records until the remote body matches the version
+and merged content it intended. An indeterminate or partial write SHALL be safe
+to retry without duplicating entries.
 
 #### Scenario: Interruption follows the PR-body write
 
 - **WHEN** the session stops after updating the body but before recording success locally
 - **THEN** a resumed handoff adopts the matching remote projection and does not create a duplicate section
+
+#### Scenario: A human edits the PR body during generated-section upsert
+
+- **WHEN** the remote body version changes after publication's initial read and before its write
+- **THEN** publication retries from the new body, preserves the human edit, and re-merges only its generated sections
 
 ### Requirement: Blocker reports bind to unresolved state
 

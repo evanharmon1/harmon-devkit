@@ -82,38 +82,43 @@ Implement tasks from an OpenSpec change.
    Do not copy `context` or `operationGuidance` verbatim into implementation
    files or planning artifacts unless the user separately asks for that content.
 
-5. **Show current progress**
+5. **Resolve apply mode and show current progress**
 
-   Display:
-   - Schema being used
-   - Progress: "N/M tasks complete"
-   - Remaining tasks overview
-   - Dynamic instruction from CLI
+   Read the task artifact for an explicit apply-mode declaration.
 
-6. **Select exactly one pending task**
+   - **Issue-mapped mode:** When the change declares `apply-mode: issue-mapped`
+     and links each task to one tracker issue, tracker state is authoritative.
+     A closed issue is complete and an open issue is pending regardless of the
+     task checkbox; an unreadable issue state is indeterminate and blocks
+     selection. Display progress from closed versus open linked issues.
+   - **Default mode:** Without that declaration, follow OpenSpec's normal apply
+     flow. Display CLI progress and use task checkboxes as completion state.
 
-   One apply invocation handles one task only. Each task in this repository maps
-   to one milestone issue and owns an independent claim, branch, Dev Loop, and
-   ready-for-review PR.
+   In either mode, display the schema, resolved apply mode, progress, remaining
+   work overview, and dynamic instruction from the CLI.
 
-   - If the user named a task or issue, select that pending task.
-   - Otherwise, show the pending tasks and ask the user to select one; do not
-     infer permission to batch them.
-   - Confirm the selected task maps to exactly one milestone issue.
-   - Use the repository's `/claim` workflow for that issue before implementation.
-   - Create or use the task's dedicated feature branch/worktree as required by
-     `AGENTS.md`; never combine another OpenSpec task or milestone issue into it.
+6. **Select work according to the resolved mode**
 
-7. **Implement the selected task through the repository Dev Loop**
+   - **Issue-mapped mode:** Select one task whose linked issue is open. If the
+     user did not name a task or issue, show the open linked issues and ask for
+     a selection. Use the repository's `/claim` workflow, then create or use
+     that issue's dedicated feature branch/worktree as required by `AGENTS.md`.
+   - **Default mode:** Process pending tasks in the normal OpenSpec order. Keep
+     the implementation within the repository's small-PR convention; stop at a
+     coherent PR boundary rather than accumulating an oversized change.
 
-   - Show which task is being worked on.
-   - Make only the code and documentation changes required by that task.
-   - Drive the task through the repository's complete Dev Loop to its own
-     ready-for-review PR; merging remains a human decision.
-   - Mark the task complete in the tasks file (`- [ ]` → `- [x]`) only when its
-     specified behavior and verification are complete.
-   - Stop after that task's PR handoff. Report the remaining tasks, but do not
-     select or implement another one in the same apply invocation.
+7. **Implement according to the resolved mode**
+
+   - Show which task is being worked on and keep changes minimal and focused.
+   - In issue-mapped mode, drive the selected issue through the complete Dev Loop
+     to its own ready-for-review PR, then stop. Do not edit the task checkbox in
+     that PR: the issue closes on merge and is the durable completion record.
+     Checkbox reconciliation belongs only in a change that lands on `main` after
+     issue-closing merges, or in archival reconciliation. Concurrent task PRs
+     therefore share no `tasks.md` state write.
+   - In default mode, mark each fully implemented task complete in the task file
+     (`- [ ]` → `- [x]`) and continue until done, blocked, interrupted, or at the
+     small-PR boundary resolved in step 6.
 
    **Pause if:**
    - Task is unclear → ask for clarification
@@ -125,9 +130,9 @@ Implement tasks from an OpenSpec change.
 8. **On completion or pause, show status**
 
    Display:
-   - The single task selected and whether it completed this session
-   - Overall progress: "N/M tasks complete"
-   - The task's branch and PR handoff state
+   - Apply mode and work handled this session
+   - Overall progress from the mode's authoritative state source
+   - Branch and PR handoff state where applicable
    - If all tasks are done: suggest archive
    - If tasks remain: stop and name the next apply invocation as the handoff
    - If paused: explain why and wait for guidance
@@ -135,28 +140,29 @@ Implement tasks from an OpenSpec change.
 **Output During Implementation**
 
 ```text
-## Implementing: <change-name> (schema: <schema-name>)
+## Implementing: <change-name> (schema: <schema-name>, mode: <apply-mode>)
 
 Working on task 3/7: <task description>
 [...implementation happening...]
-✓ Task complete
+✓ Ready-for-review PR handed off
 
-Stopping after this task's ready-for-review PR handoff.
+Issue state remains authoritative until merge closes it.
 ```
 
 **Output On Completion**
 
 ```text
-## Implementation Complete
+## Apply Run Complete
 
 **Change:** <change-name>
 **Schema:** <schema-name>
-**Progress:** 3/7 tasks complete
+**Mode:** issue-mapped
+**Progress:** 2/7 linked issues closed
 
 ### Completed This Session
-- [x] Task 3 — ready-for-review PR <reference>
+- Task 3 — ready-for-review PR <reference>; issue remains open until merge
 
-This apply run is complete. Start a new apply invocation for another task.
+This issue-mapped apply run is complete. Start a new invocation for another open issue.
 ```
 
 **Output On Pause (Issue Encountered)**
@@ -180,17 +186,15 @@ What would you like to do?
 ```
 
 **Guardrails**
-- Select exactly one task per apply invocation and stop after its PR handoff
-- Treat each task as one milestone issue with its own claim, branch, and PR
-- Never batch another task into the selected task's branch or PR
+- Honor the apply mode and authoritative state source resolved from task metadata
 - Always read context files before starting (from the apply instructions output)
 - If task is ambiguous, pause and ask before implementing
 - If implementation reveals issues, pause and suggest artifact updates
-- Keep code changes minimal and scoped to the single selected task
-- Update task checkbox immediately after completing each task
+- Keep code changes minimal and within the repository's small-PR convention
+- Update task checkboxes only in default mode; issue-mapped mode uses issue state
 - Pause on errors, blockers, or unclear requirements - don't guess
 - When a task needs work beyond what the spec describes, surface the added scope and pause - never silently narrow, defer, or simplify away specified behavior
-- Only mark a task `- [x]` when its specified behavior is fully implemented, not when it is partially done or deferred
+- In default mode, mark a task `- [x]` only when its specified behavior is fully implemented, not when it is partially done or deferred
 - Use contextFiles from CLI output, don't assume specific file names
 - Do not use context or operation guidance as proof that a task is complete
 - Apply relevant project context; report conflicts with controlling workflow inputs

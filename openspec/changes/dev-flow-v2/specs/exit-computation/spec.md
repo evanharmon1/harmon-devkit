@@ -10,13 +10,34 @@ state.
 
 Every role result SHALL use the version 2 envelope, bind to the active run's
 identity and initiating actor, and agree with its payload on any named head.
-Finding IDs SHALL be unique across the run. The orchestrator SHALL validate a
-result before reading its recommendation or evidence.
+Its `produced_at` SHALL be strictly after run start and the producing stage's
+entry transition, and strictly before promotion. Stage transitions SHALL be
+strictly ordered by sequence and time. A result SHALL belong to its producing
+stage; a pass from an earlier stage SHALL NOT count in a later stage even when
+both name the same head. Finding IDs SHALL be unique across the run. The
+orchestrator SHALL validate identity, chronology, stage, and payload agreement
+before reading a result's recommendation or evidence. The chronology-attack
+fixtures enumerated in `tasks.md` SHALL exercise these boundaries.
 
 #### Scenario: A stale retry returns into a newer run
 
 - **WHEN** a schema-valid result names a `run_id` or `initiated_by` different from the active branch pointer's run
 - **THEN** receipt validation rejects the result and it contributes no pass or finding
+
+#### Scenario: A pass predates its stage entry
+
+- **WHEN** a result's `produced_at` is not strictly after the producing stage's entry transition
+- **THEN** receipt validation rejects the result as chronologically impossible
+
+#### Scenario: An earlier-stage pass names the same head
+
+- **WHEN** a challenge pass and the active review stage name the same commit
+- **THEN** the challenge pass cannot satisfy a review finder slot or contribute to the review round
+
+#### Scenario: Stage transitions are out of order
+
+- **WHEN** transition timestamps or sequence numbers do not form one strict lifecycle order
+- **THEN** trajectory validation fails before any result contributes to exit computation
 
 ### Requirement: Logical rounds require every configured finder
 

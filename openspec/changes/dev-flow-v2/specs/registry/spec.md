@@ -59,15 +59,27 @@ finders whose surface is available before a PR exists.
 ### Requirement: Model strata live in registry inventory
 
 Every registered family model SHALL carry one tier from `local`, `economy`,
-`standard`, `frontier`, or `apex`. When a family has multiple models at one
-tier, at most one SHALL be marked as that family's default for the tier.
-Escalation SHALL move through the policy's tier order while retaining the
-resolved family; it SHALL NOT use a duplicated per-policy model map.
+`standard`, `frontier`, or `apex`. When a family has more than one model at one
+tier, exactly one SHALL carry `default: true`; registry validation SHALL reject
+both no default and multiple defaults. A family-tier rung containing one model
+needs no default flag. Escalation SHALL move through the policy's tier order
+while retaining the resolved family; it SHALL NOT use a duplicated per-policy
+model map.
 
 #### Scenario: Two models claim the same family-tier default
 
 - **WHEN** two models in one family and tier are both marked `default`
 - **THEN** registry validation fails as ambiguous
+
+#### Scenario: Several models declare no family-tier default
+
+- **WHEN** one family has multiple models at a tier and none carries `default: true`
+- **THEN** registry validation fails rather than selecting by order or inventory accident
+
+#### Scenario: A family-tier rung has one model
+
+- **WHEN** a family has exactly one model at a tier and that model omits `default`
+- **THEN** registry validation accepts the rung and resolution selects its sole model
 
 ### Requirement: Harnesses advertise executable role support
 
@@ -92,3 +104,23 @@ silently generate or apply them.
 
 - **WHEN** policy resolution encounters a tier label whose role slug is absent from the registry
 - **THEN** the label is rejected or ignored according to label-validation policy and cannot alter dispatch
+
+### Requirement: Execution-control labels require attributable provenance
+
+Before any `tier:*`, `strategy:*`, or `rigor:*` label changes execution, an
+interactive session SHALL obtain attributable operator confirmation for every
+off-default resolution. An unattended consumer SHALL re-read its trusted-actor
+configuration immediately before acting and verify the label's provenance end to
+end. If provenance is absent, stale, or untrusted, the consumer SHALL use the
+configured defaults and emit a warning. A consumer SHALL NOT apply an execution-
+control label to authorize its own run.
+
+#### Scenario: An interactive label requests an off-default tier
+
+- **WHEN** an interactive run resolves a tier label above or below its configured default without operator confirmation in the current session
+- **THEN** the off-default resolution remains unauthorized and no dispatch uses it
+
+#### Scenario: An unattended label has untrusted provenance
+
+- **WHEN** an unattended consumer cannot prove a control label came from an actor in its freshly re-read trusted-actor configuration
+- **THEN** it warns, falls back to configured defaults, and does not act on the label
