@@ -101,7 +101,22 @@ and harness preferences. Each `[stage.<stage>]` table SHALL use monomorphic
 array keys: `finders` as all-of, `finder_fallbacks` as preference order, and
 optional `pool` as an allowlist. Actor slugs and model choices SHALL resolve
 through `agent-registry.json`; `.devflow.toml` SHALL NOT duplicate model-tier
-tables or concrete model inventory.
+tables or concrete model inventory. A role tier supplied by the resolved rigor
+profile SHALL override that role's `[role.<slug>]` baseline; the baseline SHALL
+apply only when the profile omits a tier for that role. After that profile-or-
+baseline selection, applicable tier labels SHALL refine the role tier under the
+normal explicit-instruction, trusted-label, and capability-escalation precedence
+rules.
+
+#### Scenario: Rigor overrides a role baseline before label refinement
+
+- **WHEN** the resolved rigor profile supplies a reviewer tier that differs from `[role.reviewer].tier` and an authorized reviewer-tier label also applies
+- **THEN** resolution starts from the rigor profile's reviewer tier, ignores the baseline for that role, and then applies the label under the tier precedence rules
+
+#### Scenario: A rigor profile omits one role tier
+
+- **WHEN** the resolved rigor profile omits the integrator tier and `[role.integrator].tier` is present
+- **THEN** the integrator baseline supplies the tier before any applicable tier label refines it
 
 #### Scenario: The preferred family has no compatible harness
 

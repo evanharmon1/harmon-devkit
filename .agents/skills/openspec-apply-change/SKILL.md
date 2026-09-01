@@ -58,7 +58,17 @@ anchored to the repository root; never use a cwd-relative wrapper path.
 
    **Handle states:**
    - If `state: "blocked"` (missing artifacts): show message, suggest using `/openspec-continue-change` (if it is not installed, run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" status --change "<name>" --json` to see the next artifact and `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" instructions <artifact-id> --change "<name>" --json` for how to create it)
-   - If `state: "all_done"`: congratulate, suggest archive
+   - If `state: "all_done"`: treat it as a task-file projection, not yet as
+     authoritative completion. Read the task artifact's apply-mode declaration
+     before accepting it. In issue-mapped mode, resolve every linked issue again:
+     only `state: CLOSED` with `stateReason: COMPLETED` preserves `all_done`.
+     Any open or reopened issue makes its task pending again, so discard the
+     stale `all_done` state and continue to progress and selection using issue
+     state. A `NOT_PLANNED` or `DUPLICATE` closure, or an unreadable, missing, or
+     ambiguous issue state, is indeterminate and stops apply. Only after every
+     linked issue is authoritatively complete may you congratulate and suggest
+     archive. In default mode, the task file remains authoritative and
+     `all_done` may be accepted as returned.
    - Otherwise: proceed to implementation
 
    Before reading a task as implementable or starting any implementation, run:
@@ -119,8 +129,11 @@ anchored to the repository root; never use a cwd-relative wrapper path.
 
    - **Issue-mapped mode:** Select one task whose linked issue is open. If the
      user did not name a task or issue, show the open linked issues and ask for
-     a selection. Use the repository's `/claim` workflow, then create or use
-     that issue's dedicated feature branch/worktree as required by `AGENTS.md`.
+     a selection. Then **stop** and ask the operator to run `/claim <issue>`;
+     this apply skill never invokes, delegates, or emulates the user-invocable
+     claim workflow. Resume only after the operator confirms `/claim` completed
+     and the issue's dedicated feature branch/worktree required by `AGENTS.md`
+     is active.
    - **Default mode:** Process pending tasks in the normal OpenSpec order. Keep
      the implementation within the repository's small-PR convention; stop at a
      coherent PR boundary rather than accumulating an oversized change.
@@ -205,6 +218,7 @@ What would you like to do?
 
 **Guardrails**
 - Honor the apply mode and authoritative state source resolved from task metadata
+- Reconcile issue-mapped `all_done` against current linked-issue state before accepting completion
 - Always read context files before starting (from the apply instructions output)
 - If task is ambiguous, pause and ask before implementing
 - If implementation reveals issues, pause and suggest artifact updates
@@ -219,6 +233,7 @@ What would you like to do?
 - Consider every guidance entry; explain any inapplicable or conflicting advice
 - Do not copy runtime context or operation guidance into implementation files or planning artifacts
 - Preserve CLI-controlled blocked/ready/all-done behavior and completion criteria
+- Never invoke the user-invocable `/claim` workflow; stop for the operator and resume only after confirmation
 
 **Fluid Workflow Integration**
 

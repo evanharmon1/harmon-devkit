@@ -8,32 +8,30 @@ cd "$repo"
 skills=(.agents/skills/openspec-*/SKILL.md)
 fail=0
 
+command -v yq >/dev/null 2>&1 || {
+    echo "validate-openspec-skills: required tool 'yq' (v4) is not installed" >&2
+    exit 1
+}
+
 err() {
     echo "  ✗ $*" >&2
     fail=1
 }
 
-frontmatter_is_closed() {
-    awk '
-        NR == 1 && $0 != "---" { exit }
-        $0 == "---" { fences++ }
-        END { exit (fences >= 2 ? 0 : 1) }
-    ' "$1"
+frontmatter_is_valid() {
+    # --front-matter=extract starts at the line-1 fence and treats the first
+    # subsequent --- as the close. Parsing the extracted document is
+    # load-bearing: if the real close is deleted, a later Markdown thematic
+    # break cannot impersonate it because the intervening body is not YAML.
+    yq --front-matter=extract -e 'type == "!!map"' "$1" >/dev/null 2>&1
 }
 
 frontmatter_value() {
     local file="$1"
     local key="$2"
 
-    awk -v key="$key" '
-        NR == 1 && $0 != "---" { exit }
-        NR > 1 && $0 == "---" { exit }
-        index($0, key ":") == 1 {
-            sub("^" key ":[[:space:]]*", "")
-            print
-            exit
-        }
-    ' "$file"
+    KEY="$key" yq --front-matter=extract -r \
+        '.[strenv(KEY)] // ""' "$file"
 }
 
 frontmatter_key_count() {
@@ -71,8 +69,8 @@ for skill in "${skills[@]}"; do
         err "$skill: missing leading YAML frontmatter fence"
         continue
     fi
-    if ! frontmatter_is_closed "$skill"; then
-        err "$skill: frontmatter block is not closed"
+    if ! frontmatter_is_valid "$skill"; then
+        err "$skill: frontmatter must close at the first subsequent --- and contain valid YAML"
         continue
     fi
 

@@ -34,6 +34,13 @@ This is the **hub** — read it when you're unsure where something belongs. It
 | Guides (calm how-tos) | [guides/](guides/) — onboarding, deploying, troubleshooting, devcontainers |
 | Runbooks (crisis procedures) | [runbooks/](runbooks/) |
 | Post-generation setup | [CHECKLIST.md](CHECKLIST.md) |
+| Active change planning (OpenSpec) | [`../openspec/changes/`](../openspec/changes/) — proposals, designs, tasks, and capability delta specs |
+| Milestone-level anchor specs | [`../specs/`](../specs/) |
 
-Design intent is at [`../DESIGN.md`](../DESIGN.md); specs (WHAT to build) in
-[`../specs/`](../specs/) and tests in [`../tests/`](../tests/) — all at the repo root.
+Design intent is at [`../DESIGN.md`](../DESIGN.md). Active OpenSpec changes live
+under [`../openspec/changes/`](../openspec/changes/); their capability deltas are
+the implementation-ready contract for the change, while [`../specs/`](../specs/)
+holds milestone-level anchor specs. Validate that planning surface with
+`task openspec:validate`, and guard the vendored OpenSpec workflow skills with
+`task validate:openspec-skills`. Tests remain in [`../tests/`](../tests/) at the
+repo root.

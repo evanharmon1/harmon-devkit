@@ -153,6 +153,17 @@ anchored to the repository root; never use a cwd-relative wrapper path.
    indeterminate; do not move a change whose durable completion state and task
    projection differ.
 
+   Whether step 4 selected archive-without-sync or completed and verified a
+   sync, strictly validate the complete change before creating or moving any
+   archive content:
+
+   ```bash
+   "$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate "<name>" --type change --strict --no-interactive
+   ```
+
+   A non-zero or indeterminate result stops the workflow. Report the validation
+   errors and refuse to archive; neither archive path may move an invalid change.
+
    Generate the target name: use the change name as-is when it already starts with a `YYYY-MM-DD-` prefix; otherwise prepend the current date as `YYYY-MM-DD-<change-name>`. Never stack a second date (same rule as `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" archive`).
 
    Before creating the archive directory and again immediately before the move,
@@ -218,3 +229,4 @@ anchored to the repository root; never use a cwd-relative wrapper path.
 - Artifact rules constrain only the specs being written and are never operation guidance
 - Never copy runtime context, operation guidance, or artifact-rule text verbatim into output files
 - In issue-mapped mode, issue state is authoritative: reconcile the checkbox projection and refuse every open or indeterminate linked issue before moving the change
+- Strictly validate the complete change on both the sync-skipped and sync-complete archive paths; invalid or indeterminate changes never move

@@ -104,9 +104,13 @@ by `specs/dev-flow-v2.md` section **Convergence model v0** are normatively
 incorporated by reference. Every implementation SHALL implement and evaluate
 that catalog verbatim; a local subset, renamed parameter, altered predicate
 meaning, or different composition rule is nonconforming unless a later contract
-version replaces the imported catalog. A zero-finding round MAY end the stage
-once its minimum is met. A final clean round at the cap SHALL be capped-clean
-without requiring a forbidden confirmation round.
+version replaces the imported catalog. Below the cap, a zero-finding
+current-head round that meets the effective `min_rounds` MUST end the stage with
+outcome `converged` and reason `empty_round`; this dedicated empty-round exit is
+mandatory and does not depend on a consumer's preference. A final clean round
+at the cap SHALL instead return outcome `capped`, reason `clean`, the contract's
+capped terminal exit code, and an advance action without requiring a forbidden
+confirmation round.
 
 #### Scenario: A policy composes predicates from the anchor catalog
 
@@ -118,10 +122,15 @@ without requiring a forbidden confirmation round.
 - **WHEN** a clean logical round completes before the effective `min_rounds`
 - **THEN** the evaluator returns `continue` and does not consult the reviewer's exit recommendation
 
+#### Scenario: An empty round reaches the floor below the cap
+
+- **WHEN** a zero-finding logical round reviewed the current head, meets the effective `min_rounds`, and leaves at least one permitted round unspent
+- **THEN** the evaluator returns outcome `converged` with reason `empty_round` and directs the orchestrator to advance
+
 #### Scenario: The capped final round is clean
 
 - **WHEN** the last permitted round reviewed the current head and has zero adjudicated P0/P1 findings
-- **THEN** the stage may advance as capped-clean without another round
+- **THEN** the evaluator returns outcome `capped`, reason `clean`, no next round, the terminal exit code assigned to `capped`, and an advance action; the shared conformance corpus SHALL pin this complete verdict
 
 ### Requirement: Provenance and fingerprint assertions are verified
 
@@ -165,12 +174,22 @@ round-provenance findings; otherwise it SHALL stop with a blocker.
 Only a logical round that reviewed the current head SHALL satisfy convergence
 or capped-clean. Ancestor-head rounds MAY inform trajectory predicates and
 minimum-round counts. Rounds on incomparable heads SHALL be excluded and yield
-`continue` with reason `invalidated` when no valid current-head exit remains.
+`continue` with reason `invalidated` when no valid current-head exit remains and
+the cap still permits another round. If every retained round is head-invalidated
+and the cap is already spent, the `capped` precedence SHALL win: the evaluator
+MUST return outcome `capped` with reason `invalidated`, no next round, and an
+escalation action. It SHALL NOT return `continue` for work the cap forbids; an
+attributable human grant of another round is the only way forward.
 
 #### Scenario: A P2 fix lands after a clean review
 
 - **WHEN** any commit is added after the clean round, including a P2-only fix
 - **THEN** the clean ancestor round cannot certify the new head and another permitted round is required
+
+#### Scenario: Every retained round is invalidated at the cap
+
+- **WHEN** every retained round names a head incomparable with the current head and the resolved stage cap is spent
+- **THEN** the evaluator returns outcome `capped`, reason `invalidated`, no next round, and escalation; only a human grant may authorize another round
 
 ### Requirement: Caps constrain retained trajectory records
 
