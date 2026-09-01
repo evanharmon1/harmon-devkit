@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.39.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.38.0...v0.39.0) (2026-09-01)
+
+
+### Features
+
+* **openspec:** adopt OpenSpec tooling and spec the Dev flow v2 milestone ([#701](https://github.com/evanharmon1/harmon-devkit/issues/701)) ([1c5da62](https://github.com/evanharmon1/harmon-devkit/commit/1c5da622a37b060d55af697a613700f21b2278de))
+
 ## [0.38.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.37.0...v0.38.0) (2026-08-31)
 
 
