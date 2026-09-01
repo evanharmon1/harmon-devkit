@@ -77,7 +77,7 @@ This is an **agent-driven** operation - you will read delta specs and directly e
 
    If no delta specs found, inform user and stop.
 
-4. **For each delta spec, apply changes to main specs**
+4. **Stage the complete main-spec result without touching live specs**
 
    Before the first main-spec write, obtain one current specs-rule snapshot:
    - If archive invoked this workflow inline and supplied a valid snapshot from
@@ -94,6 +94,22 @@ This is an **agent-driven** operation - you will read delta specs and directly e
    by this merge. Artifact rules are not operation guidance and cannot change
    selected roots, delta paths, CLI checks, or workflow steps. Use their text as
    constraints without copying it verbatim into a main spec or summary.
+
+   Snapshot the complete live main-spec set, then create a temporary staging
+   planning root on the same filesystem containing that full set plus the change
+   and configuration needed for strict validation. Capture the repository-pinned
+   wrapper's absolute path before changing the working directory:
+
+   ```bash
+   openspec_wrapper="$(git rev-parse --show-toplevel)/scripts/openspec.sh"
+   ```
+
+   Apply every selected capability's addition, modification, rename, or retirement
+   only to the staging copy. Do not create, edit, move, or delete a live main spec
+   while any selected capability is still being merged. Record a manifest of the
+   complete live snapshot and every staged replacement or deletion so a concurrent
+   live edit is detected before installation and an interrupted installation can
+   restore the exact original set.
 
    For each capability delta spec path selected in step 3 — the full `existingOutputPaths` list, or the narrowed subset when a caller supplied one (these may belong to a selected store, not the repo):
 
@@ -164,11 +180,28 @@ This is an **agent-driven** operation - you will read delta specs and directly e
       - Add Requirements section with the ADDED requirements
       - Follow the **Main Spec Format Reference** below
 
-5. **Validate updated main specs and the change**
+5. **Validate the complete staged set, then install it transactionally**
 
-   Run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate --specs` with the same selected-root flags used earlier.
-   Then run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate "<name>" --type change --strict --no-interactive` with those flags.
-   If either validation fails, report the problems and do not claim the sync succeeded.
+   With the working directory set to the temporary planning root, run
+   `"$openspec_wrapper" validate --specs --strict --no-interactive`, then run
+   `"$openspec_wrapper" validate "<name>" --type change --strict --no-interactive`.
+   The staging root is the validation target, so do not pass a selected store flag
+   that would redirect these two commands back to the live store. If either
+   validation fails or is indeterminate, report the problems and stop with the
+   live main specs byte-for-byte unchanged.
+
+   After both validations pass, compare the live main-spec set with the snapshot
+   manifest and re-run every destination path guard. Any concurrent change or
+   guard failure invalidates the staged transaction and leaves the live set
+   untouched. Otherwise install the complete staged output as one all-or-nothing,
+   same-filesystem transaction using atomic replacements and a rollback copy of
+   every replaced or retired path; never move capabilities into place one at a
+   time while later capability work can still fail. If the environment cannot
+   guarantee rollback of the whole set, stop before the first live mutation. Any
+   installation or post-install validation failure SHALL restore the original set
+   before reporting failure, so no failure path leaves a partial main-spec sync.
+
+   Finally run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate --specs --strict --no-interactive` with the original selected-root flags, then run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate "<name>" --type change --strict --no-interactive` with those flags. Only a successful live revalidation commits the transaction and authorizes the success summary.
 
 6. **Show summary**
 

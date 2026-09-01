@@ -153,17 +153,29 @@ anchored to the repository root; never use a cwd-relative wrapper path.
    indeterminate; do not move a change whose durable completion state and task
    projection differ.
 
+   Generate the target name: use the change name as-is when it already starts with a `YYYY-MM-DD-` prefix; otherwise prepend the current date as `YYYY-MM-DD-<change-name>`. Never stack a second date (same rule as `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" archive`).
+
+   Before creating the archive directory and again immediately before the move,
+   guard the destination chain. Resolve the real planning root from
+   `planningHome.root`. Reject the destination if any existing file or directory
+   component between that root and `changes/archive/<target-name>` is a symlink.
+   Resolve the destination's real path when it exists, or the real path of its
+   nearest existing parent plus the remaining normalized components when it does
+   not, and require the result to equal the planning root or be contained beneath
+   its path-component boundary. Any resolution failure, symlink, or escape stops
+   the archive before `mkdir` or `mv`; a selected-store path never falls back to
+   the caller's repository.
+
    Create an `archive` directory under `planningHome.changesDir` if it doesn't exist:
 
    ```bash
    mkdir -p "<planningHome.changesDir>/archive"
    ```
 
-   Generate the target name: use the change name as-is when it already starts with a `YYYY-MM-DD-` prefix; otherwise prepend the current date as `YYYY-MM-DD-<change-name>`. Never stack a second date (same rule as `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" archive`).
-
    **Check if target already exists:**
    - If yes: Fail with error, suggest renaming existing archive or using different date
-   - If no: Move `changeRoot` to the archive directory
+   - If no: Re-run the destination-chain guard above, then move `changeRoot` to
+     the archive directory only if it still passes
 
    ```bash
    mv "<changeRoot>" "<planningHome.changesDir>/archive/<target-name>"

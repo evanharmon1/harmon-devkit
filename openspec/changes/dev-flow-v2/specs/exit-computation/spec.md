@@ -50,9 +50,26 @@ receive its single retry before the configured `finder_fallbacks` chain for that
 slot is attempted in order. Every substitution SHALL be recorded and disclosed,
 and the round SHALL retain exactly one completed pass for each configured primary
 slot. Each retained pass SHALL have exactly one adjudication document and each
-adjudication SHALL refer to one retained pass. Only exhaustion of the primary's
-retry and complete fallback chain SHALL yield `capped` with reason
-`finder_unavailable`; a round SHALL NOT silently proceed with fewer slots.
+adjudication SHALL refer to one retained pass. At policy resolution, cross-file
+validation SHALL prove that every confidence stage's breadth allowance can cover
+the primary attempt, its retry, and the complete fallback chain for every finder
+slot; an allowance that cannot cover that worst-case chain SHALL be rejected as
+incompatible before dispatch. At runtime, exhausting the remaining breadth while
+such a chain is in progress SHALL deterministically yield `capped` with reason
+`breadth_exhausted`, never a shortened chain or partial logical round. Only a
+fully attempted primary retry and complete fallback chain whose finders remain
+unavailable SHALL yield `capped` with reason `finder_unavailable`; a round SHALL
+NOT silently proceed with fewer slots.
+
+#### Scenario: Breadth cannot cover a configured fallback chain
+
+- **WHEN** a stage's breadth allowance is smaller than the primary, retry, and full fallback attempts required for every finder slot
+- **THEN** policy resolution rejects the stage as incompatible before any finder is dispatched
+
+#### Scenario: Remaining breadth is exhausted during a fallback chain
+
+- **WHEN** runtime breadth is exhausted after a primary attempt but before its retry and configured fallbacks can all be attempted
+- **THEN** no logical round is counted and the stage returns `capped` with reason `breadth_exhausted` and the unattempted chain entries named
 
 #### Scenario: One of two review finders is unavailable
 
@@ -81,9 +98,20 @@ outcome.
 
 `converged` SHALL require zero adjudicated P0 or P1 findings of every class on
 a logical round that reviewed the current head, a configured convergence
-predicate, and the effective minimum rounds. A zero-finding round MAY end the
-stage once its minimum is met. A final clean round at the cap SHALL be
-capped-clean without requiring a forbidden confirmation round.
+predicate, and the effective minimum rounds. The predicate catalog, its
+parameters, evaluation domains, and the `any`/`all` composition grammar defined
+by `specs/dev-flow-v2.md` section **Convergence model v0** are normatively
+incorporated by reference. Every implementation SHALL implement and evaluate
+that catalog verbatim; a local subset, renamed parameter, altered predicate
+meaning, or different composition rule is nonconforming unless a later contract
+version replaces the imported catalog. A zero-finding round MAY end the stage
+once its minimum is met. A final clean round at the cap SHALL be capped-clean
+without requiring a forbidden confirmation round.
+
+#### Scenario: A policy composes predicates from the anchor catalog
+
+- **WHEN** a valid convergence policy uses an imported predicate, its defined parameters, and nested `any` or `all` composition
+- **THEN** every implementation accepts and evaluates the expression with exactly the catalog semantics in `specs/dev-flow-v2.md` section **Convergence model v0**
 
 #### Scenario: Reviewer reports clean below the floor
 

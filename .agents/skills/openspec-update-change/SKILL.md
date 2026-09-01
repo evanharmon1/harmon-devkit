@@ -71,11 +71,19 @@ anchored to the repository root; never use a cwd-relative wrapper path.
 5. **Confirm and apply, one artifact at a time**
    - Show each proposed revision and why. Write only after the user confirms.
    - If the user rejects a revision, do not write it - leave that artifact unchanged.
-   - When a substantial rewrite is needed, get that artifact's rules and template first:
+   - Immediately before **every** artifact write, fetch that artifact's current
+     instructions, rules, and template. Do not treat a prior read or a small edit
+     as a reason to skip this lookup:
 
      ```bash
      "$(git rev-parse --show-toplevel)/scripts/openspec.sh" instructions "<artifact-id>" --change "<name>" --json
      ```
+
+   - Require a zero exit status and valid artifact-instruction JSON before the
+     write. Apply its `context`, `rules`, `template`, and `instruction` to that
+     write without copying those prompt inputs into the artifact. If the lookup
+     fails, stop before editing; rules can change between writes, so an earlier
+     snapshot never authorizes a later one.
 
 6. **Strictly validate the change before handoff**
    - After any artifact write and before announcing success or a next-step

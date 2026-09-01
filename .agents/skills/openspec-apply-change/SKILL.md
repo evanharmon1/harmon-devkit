@@ -61,6 +61,17 @@ anchored to the repository root; never use a cwd-relative wrapper path.
    - If `state: "all_done"`: congratulate, suggest archive
    - Otherwise: proceed to implementation
 
+   Before reading a task as implementable or starting any implementation, run:
+
+   ```bash
+   "$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate "<name>" --type change --strict --no-interactive
+   ```
+
+   A non-zero or indeterminate validation result stops apply. Report the
+   structural or semantic errors and refuse to begin a task until the complete
+   change validates strictly; artifact existence and apply state alone never
+   authorize implementation.
+
    Treat `context` as a required prompt-level input. Read and consider it, and
    apply relevant project facts, conventions, and constraints while implementing.
    Treat `operationGuidance` as optional additive advice. Read and consider every

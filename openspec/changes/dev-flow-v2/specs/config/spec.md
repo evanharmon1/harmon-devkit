@@ -10,13 +10,25 @@ stage.
 
 Every Dev flow v2 consumer SHALL require `schema_version = 2` and SHALL refuse
 both the pre-v1 legacy shape and the v1 migrated shape with a migration message
-that identifies the detected shape. No skill or script SHALL carry a fallback
+that identifies the detected shape from its controlling markers. Shape detection
+SHALL NOT use `[tier.*]`, which can occur in either older shape. The v1 migrated
+shape SHALL be identified by `rigor_order`, `[review.*]` tables, and the
+`[rigor.<level>].review` pointers into those tables. The pre-v1 legacy shape SHALL
+be identified by challenge, review, shepherd, and minimum-round caps directly on
+`[rigor.<level>]` together with `default_method` and `[method]`. A mixed or
+incomplete marker set SHALL be rejected with the markers it actually contains,
+not guessed into either shape. No skill or script SHALL carry a fallback
 interpreter for an older shape.
 
 #### Scenario: A v1 policy reaches a v2 consumer
 
-- **WHEN** a policy contains `[review.*]`, `[budget.*]`, or `[tier.*]` and does not conform to schema version 2
+- **WHEN** a policy has `rigor_order`, `[review.*]`, and rigor-to-review pointers but does not conform to schema version 2
 - **THEN** the consumer exits non-zero, identifies the v1 shape, and directs the operator to migrate the repository
+
+#### Scenario: A legacy policy carries tier tables
+
+- **WHEN** a policy has caps directly on `[rigor.*]`, `default_method`, and `[method]` and also contains `[tier.*]`
+- **THEN** the consumer identifies the legacy shape from its rigor and method markers and directs the operator to migrate it
 
 ### Requirement: Policy separates rounds, breadth, and spend
 

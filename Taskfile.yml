@@ -175,6 +175,7 @@ tasks:
     desc: Validate project config/artifacts
     cmds:
       - task: openspec:validate
+      - task: validate:openspec-skills
       - task: validate:skills
       - task: validate:agents
       - task: validate:independence
@@ -183,6 +184,11 @@ tasks:
     desc: Validate OpenSpec changes and specs (strict)
     cmds:
       - ./scripts/openspec.sh validate --all --strict --no-interactive
+
+  validate:openspec-skills:
+    desc: Guard vendored OpenSpec skills (pinned wrapper, frontmatter, permissions)
+    cmds:
+      - ./scripts/validate-openspec-skills.sh
 
   validate:skills:
     desc: Guard shared agent skills (unique names across categories, valid SKILL.md frontmatter)
