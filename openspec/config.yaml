@@ -1,0 +1,34 @@
+schema: spec-driven
+
+context: |
+  Harmon DevKit is a flat collection of independent, reusable developer assets,
+  not a monorepo or an application. Its main shipped surfaces are templates/,
+  scripts/, ai/, and snippets/; docs/ and specs/ describe the collection and its
+  architecture. Commands, CI, and hooks share Taskfile targets as their single
+  source of truth. Keep Taskfile commands trivial, put substantive shell logic
+  in scripts/*.sh, use Conventional Commits, and never bypass safety gates.
+  Agent skills follow the Agent Skills SKILL.md convention, shared agents are
+  deliberately thin, and dev-flow v2 contracts use JSON Schemas plus fixtures.
+  See openspec/project.md for the full OpenSpec project context.
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

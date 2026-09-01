@@ -34,6 +34,7 @@ This repo is part of **harmon-platform** — my custom development platform with
 | [`ai/`](./ai/)               | AI assets — skills, prompts, agents, rules, evals, etc. — see the [AI assets index](#ai-assets) below |
 | [`snippets/`](./snippets/)   | Small reusable code snippets (work in progress)                                                       |
 | [`docs/`](./docs/)           | Project docs, e.g. the harmon-init [post-generation checklist](./docs/CHECKLIST.md)                   |
+| [`openspec/`](./openspec/)   | Active OpenSpec change plans and capability deltas under [`changes/`](./openspec/changes/); root [`specs/`](./specs/) remain milestone-level anchor specs |
 
 ## Template Index
 
@@ -132,6 +133,13 @@ gate (check + validation + Taskfile/hook/skills guards + tests); `task ci` adds
 security. `task challenge` / `task review` run optional Codex second-model
 reviews (adversarial / verification checkpoint — advisory, local-only; see
 [docs/guides/codex-review.md](docs/guides/codex-review.md)).
+
+For planning changes, active work lives in `openspec/changes/<change-name>/`.
+Its capability delta specs are the implementation-ready contract for that
+change; the root `specs/` documents are milestone-level anchors rather than the
+active delta surface. Run `task openspec:validate` for strict change validation
+and `task validate:openspec-skills` to guard the vendored OpenSpec workflow
+skills, including their frontmatter, pinned wrapper, and declared permissions.
 
 #### Security
 
