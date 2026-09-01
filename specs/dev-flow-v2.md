@@ -468,7 +468,14 @@ The v2 shape is:
   Tier conflicts resolve strongest-wins by `tier_order`, with a concrete tier
   beating `adaptive`. Strategy conflicts are ambiguous: an interactive
   resolver asks, while unattended automation falls back to `default_strategy`
-  with a warning.
+  with a warning. Labels remain advisory and never outrank an explicit
+  instruction: an interactive session requires operator confirmation before
+  using any off-default label resolution, while unattended automation acts on
+  one only after verifying the label's provenance end to end against
+  trusted-actor configuration re-read immediately before acting, or falls back
+  to defaults with a warning.
+  Conflicting `rigor:*` labels resolve to the strongest recognized level in
+  `rigor_order`; values absent from that ranking are ignored.
 - `[rigor.<level>]` points to one same-named `[rounds.*]` policy and one
   same-named `[breadth.*]` envelope, carries the five role overrides
   (`orchestrator_tier`, `implementer_tier`, `challenger_tier`,
@@ -488,14 +495,16 @@ The v2 shape is:
   challenge or review value of 0 disables that confidence stage with
   `capped`/`disabled`; otherwise the effective floor is
   `min(min_rounds, cap)`. `integration` bounds Codex re-review cycles only:
-  0 drops only the readiness gate's Codex condition, never the obligation to
-  answer human or CI findings. A fix after the last permitted cycle stops with
-  a blocker naming the unreviewed head and leaves the PR draft.
-  `remediation` bounds integration-stage fix pushes; at its ceiling, or at the
-  first fix when it is 0, the run escalates with unresolved findings rather
-  than abandoning or promoting past them. `wall_clock_min` is a ceiling for
-  the **whole run**; reaching it posts a blocker report and stops, never trims
-  an unfinished stage to fit. There is no round cap for deterministic checks.
+  0 waives the readiness gate's Codex condition entirely, never the obligation
+  to answer human or CI findings. The post-fix unreviewed-head blocker applies
+  only when `integration > 0`: a fix after the last permitted cycle stops with
+  a blocker naming that head and leaves the PR draft. `remediation`
+  independently bounds integration-stage fix pushes, including when
+  `integration = 0`; at its ceiling, or at the first fix when it is 0, the run
+  escalates with unresolved findings rather than abandoning or promoting past
+  them. `wall_clock_min` is a ceiling for the **whole run**; reaching it posts
+  a blocker report and stops, never trims an unfinished stage to fit. There is
+  no round cap for deterministic checks.
 - `[breadth.<policy>]` is the **horizontal scale** and contains only
   `max_agent_runs` and `max_parallel_agents`. Review passes spend the rounds
   envelope instead. These ceilings bound orchestrated and council execution,
@@ -582,15 +591,17 @@ The v2 shape is:
   every implementer-capable registered harness is eligible. Strategy supplies
   the number and topology — including council's `distinct_families` constraint
   — while breadth supplies the ceilings. Before dispatch, strategy, pool,
-  breadth, and registry are cross-validated: a council requiring N distinct
-  families requires at least N eligible families in the implement-stage pool,
-  and `max_agent_runs >= N`. `max_parallel_agents >= N` applies only when the
-  strategy's coordination is parallel; sequential proposal dispatch needs only
-  the `max_agent_runs` coverage. A council with `synthesis = true` requires
+  breadth, and registry are cross-validated against every strategy's required
+  topology. Orchestrate requires `max_agent_runs >= min_agents` and, only under
+  parallel coordination, `max_parallel_agents >= min_agents`; sequential
+  dispatch needs only the run coverage. A council requiring N distinct families
+  likewise requires at least N eligible families in the implement-stage pool
+  and `max_agent_runs >= N`, plus `max_parallel_agents >= N` only under parallel
+  coordination. A council with `synthesis = true` requires
   `max_agent_runs >= N + 1` for the fresh synthesis dispatch. Judging itself
-  consumes no run. An unsatisfiable combination is reported incompatible at
-  resolution time, never allowed to deadlock at dispatch. Council judging
-  yields one artifact:
+  consumes no run. Any unsatisfiable strategy-and-breadth pair is reported
+  incompatible at resolution time, never allowed to deadlock at dispatch.
+  Council judging yields one artifact:
   either a selected proposal or, when `synthesis = true`, the output of one
   fresh implementer dispatch briefed with the source proposals. The judge
   writes no code, confidence roles remain write-free, and no new role is
@@ -613,7 +624,7 @@ The v2 shape is:
   hardcoding one result role.
 - There are **no `[tier.*]` tables**. Model-stratum classification belongs to
   `agent-registry.json` `families[].models[].tier`; when a family exposes two
-  models at one rung, exactly one carries `default: true`
+  or more models at one rung, exactly one carries `default: true`
   ([#635](https://github.com/evanharmon1/harmon-devkit/issues/635)). The
   resolved model is the chosen family's registry model at the resolved rung.
   When enabled by the rigor profile, escalation derives as one rung up
@@ -759,11 +770,12 @@ absorbed by the issue that carries their criteria;
 - **When** the readiness gate evaluates
 - **Then** it refuses until the comment is answered, with no Codex cycle required
 
-### Scenario: a legacy config is refused
+### Scenario: a legacy config cannot be the operating config
 
 - **Given** a legacy `.devflow.toml` with direct `[rigor.*]` caps, or a v1 file with `[review.*]` and `[budget.*]`
-- **When** any v2 skill or script reads it
+- **When** a v2 skill or script attempts to operate under it as the active config
 - **Then** it exits non-zero naming the migration, and no default is invented
+- **And** for a migration PR, policy resolution instead reads the historical merge-base copy under that copy's own legacy or v1 schema; that required historical read is not operation under the old file
 
 ### Scenario: evidence outlives the branch
 
